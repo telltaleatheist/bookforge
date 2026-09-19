@@ -58,7 +58,28 @@ export type InstallPlatform = 'win32' | 'darwin' | 'linux' | 'other';
  * borrowed: it means the installer threw something that is NOT a refusal, so
  * there is no owner's name to carry and the error's own words are the message.
  */
-export type CrucibleHostRefusalCode = BootstrapRefusalCode | 'install_failed';
+export type CrucibleHostRefusalCode =
+  | BootstrapRefusalCode
+  | 'install_failed'
+  /**
+   * THE NEVER-OLDER GATE, and it is THIS APP'S (crucible
+   * `docs/INSTALL-UNINSTALL.md` §6.5.3). The package's own gate is about the
+   * PACK on this disk; these two are about the ENGINE ANSWERING on this
+   * machine, which is a different fact and one only a caller that can reach
+   * `GET /v1/info` can read. So they are added here rather than borrowed.
+   */
+  | 'install_older_than_running'
+  | 'crucible_already_latest'
+  /**
+   * The release channel would not say what its latest release is (§6.5.2).
+   *
+   * BORROWED IN ADVANCE: crucible's `sdk/bootstrap/src/channel.ts` owns this
+   * name, and the vendored 1.0.1 tarball predates it, so the union cannot yet
+   * get it from `BootstrapRefusalCode`. It comes off this list at the re-vendor
+   * that brings the module in, and the spelling is the package's exactly so
+   * that day is a deletion rather than a rename.
+   */
+  | 'release_channel_unreadable';
 
 /**
  * A named refusal, in the package's own shape: `{code, message, command}`.

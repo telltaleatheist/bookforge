@@ -112,12 +112,12 @@ check('the package is PINNED, and to a vendored tarball rather than a directory'
   // node_modules follows it and deletes that repo's SDK source. The same rule
   // package.json already states for the client tarball.
   assert.match(pin, /^file:vendor\/crucible-bootstrap-.*\.tgz$/, `the pin is not a vendored tarball: ${pin}`);
-  // CRUCIBLE_RELEASE is now BOOTSTRAP_VERSION — what the vendored package says
+  // BOOTSTRAP_LIBRARY_VERSION is BOOTSTRAP_VERSION — what the vendored package says
   // about itself — so this compares the TARBALL ON DISK with the version inside
   // it. A re-vendor that swapped the file without the pin, or a pin edited
   // without the file, is red here. The old literal could not be asked that
   // question: it only ever agreed with itself.
-  assert.ok(pin.includes(install.CRUCIBLE_RELEASE), `vendor/ holds ${pin} but the package inside says ${install.CRUCIBLE_RELEASE}`);
+  assert.ok(pin.includes(install.BOOTSTRAP_LIBRARY_VERSION), `vendor/ holds ${pin} but the package inside says ${install.BOOTSTRAP_LIBRARY_VERSION}`);
   assert.ok(
     fs.existsSync(path.join(REPO, pin.slice('file:'.length))),
     'the pinned tarball is not in vendor/ — this build cannot be installed from',
@@ -140,8 +140,8 @@ check('the package is PINNED, and to a vendored tarball rather than a directory'
     const said = pkg[key];
     assert.ok(said, `${key} is gone from package.json — it is the sentence that explains the pin`);
     assert.ok(
-      said.includes(install.CRUCIBLE_RELEASE),
-      `${key} names a release the vendored package does not (${install.CRUCIBLE_RELEASE}): ${said}`,
+      said.includes(install.BOOTSTRAP_LIBRARY_VERSION),
+      `${key} names a library version the vendored package does not (${install.BOOTSTRAP_LIBRARY_VERSION}): ${said}`,
     );
   }
 });
@@ -238,9 +238,12 @@ check('the service install is lightweight and model requirements stay in the lat
     path.join(REPO, 'shared', 'crucible', 'bookforge.module.json'), 'utf-8'));
   const options = install.bookforgeInstallOptions(() => {});
 
-  // The release is PASSED, never defaulted: the package would default to its
-  // own version, which is the same number today and is not the same fact.
-  assert.strictEqual(options.release, install.CRUCIBLE_RELEASE);
+  // THE RELEASE IS NOT HERE, and that is crucible INSTALL-UNINSTALL.md §6.5.
+  // It used to be the vendored library's version, which is what made Set up
+  // install 1.0.1 over a running 1.0.2. Which Crucible a machine should have is
+  // the release channel's answer, read by driveCrucibleInstall at install time.
+  assert.strictEqual(options.release, undefined,
+    'bookforgeInstallOptions must not name a release; the channel owns that');
   assert.strictEqual(typeof options.onLine, 'function');
   // The three fields that went with the wheel and the host's distro ownership.
   assert.strictEqual(options.wheel, undefined);
@@ -306,6 +309,21 @@ const HOST_CONFIG = 'C:\\Users\\t\\AppData\\Local\\Crucible\\config.toml';
 
 const { startFakeCrucible } = require('./fake-crucible.js');
 
+/*
+ * THE RELEASE CHANNEL AND THE RUNNING ENGINE, BOTH SCRIPTED.
+ *
+ * crucible INSTALL-UNINSTALL.md §6.5.3. `driveCrucibleInstall` takes the pair as
+ * its third argument for exactly this: a keeper can put a channel at one version
+ * in front of an engine at another and watch what the gate does. A test that let
+ * either fall through would reach api.github.com and this machine's own
+ * Crucible, which is the same rule every other fixture in this file follows.
+ */
+const CHANNEL_LATEST = '9.9.9';
+const releaseSources = (latest = CHANNEL_LATEST, running = null) => ({
+  latest: async () => latest,
+  running: async () => running,
+});
+
 // Exercise the published SDK's real POSIX install and lifecycle driver with a
 // scripted host. No process, filesystem write, or network request can escape.
 function posixRunner(platform, start) {
@@ -314,7 +332,7 @@ function posixRunner(platform, start) {
   const sha = 'a'.repeat(64);
   const files = {
     [`${home}/config.toml`]: '[server]\nname="fixture"\nhost="127.0.0.1"\nport=7100\n[auth]\ntoken="fixture-secret"',
-    [`${home}/installation.json`]: JSON.stringify({ schema_version: 1, platform, home, release: install.CRUCIBLE_RELEASE,
+    [`${home}/installation.json`]: JSON.stringify({ schema_version: 1, platform, home, release: CHANNEL_LATEST,
       control: { command, args: ['-m', 'crucible.cli', 'local'], cwd: home } }),
     [command]: 'fixture',
   };
@@ -322,8 +340,8 @@ function posixRunner(platform, start) {
     platform, homedir: '/unused', env: {},
     run: async (argv, opts) => {
       let stdout;
-      if (argv[0] === 'bash') stdout = `home=${home}\nuser=fixture\nfree_kib=99999999\ncrucible=${home}/envs/server/bin/crucible\nsha256=${sha}\nrelease=${install.CRUCIBLE_RELEASE}\n`;
-      else if (argv[0] === 'curl') stdout = JSON.stringify({ schema: 1, version: install.CRUCIBLE_RELEASE,
+      if (argv[0] === 'bash') stdout = `home=${home}\nuser=fixture\nfree_kib=99999999\ncrucible=${home}/envs/server/bin/crucible\nsha256=${sha}\nrelease=${CHANNEL_LATEST}\n`;
+      else if (argv[0] === 'curl') stdout = JSON.stringify({ schema: 1, version: CHANNEL_LATEST,
         packs: [{ name: 'server', backend: platform === 'darwin' ? 'mlx-darwin' : 'cuda-linux', python: '3.11', bytes: 1,
           unpacked_bytes: 1, sha256: sha, parts: ['fixture.tar.zst'] }] });
       else {
@@ -350,7 +368,7 @@ for (const platform of ['darwin', 'linux']) {
     const r = posixRunner(platform, async () => { entered(); return waiting; });
     let returned = false;
     const pending = install.driveCrucibleInstall({ ...install.bookforgeInstallOptions(() => {}, { onStep: s => steps.push(`${s.name}:${s.status}`) }),
-      home: '/isolated/crucible' }, r).then(value => { returned = true; return value; });
+      home: '/isolated/crucible' }, r, releaseSources()).then(value => { returned = true; return value; });
     await started;
     assert.strictEqual(returned, false, 'service registration alone is not readiness');
     assert.ok(steps.includes('local-readiness:running'));
@@ -367,7 +385,7 @@ checkAsync('POSIX installation cannot succeed when startup reports unhealthy or 
     { state: 'running', name: 'unrelated', detail: 'ready' },
   ]) {
     await assert.rejects(install.driveCrucibleInstall({ ...install.bookforgeInstallOptions(() => {}), home: '/isolated/crucible' },
-      posixRunner('darwin', async () => ({ schema_version: 1, url: 'http://127.0.0.1:7100', ...status }))),
+      posixRunner('darwin', async () => ({ schema_version: 1, url: 'http://127.0.0.1:7100', ...status })), releaseSources()),
     /Startup failed|differs from the installed/);
   }
 });
@@ -396,7 +414,8 @@ checkAsync('fresh Windows install runs the native installer, verifies lifecycle,
       stream: async (argv, opts) => {
         calls.push(argv);
         assert.strictEqual(argv[0], 'powershell.exe');
-        assert.ok(argv.at(-1).endsWith(bootstrap.hostInstallCommand(install.CRUCIBLE_RELEASE)));
+        assert.ok(argv.at(-1).endsWith(bootstrap.hostInstallCommand(CHANNEL_LATEST)),
+          'the native installer is asked for the CHANNEL release, not the vendored library version');
         opts.onLine('native installed', 'stdout');
         files[exe] = 'python';
         files[path.win32.join(home, 'installation.json')] = JSON.stringify({ schema_version: 1, platform: 'win32', home,
@@ -412,7 +431,7 @@ checkAsync('fresh Windows install runs the native installer, verifies lifecycle,
         return { code: 0, failure: null, stderr: '', stdout: JSON.stringify({ schema_version: 1, state: 'running', name: 'native', url: fake.url, detail: 'ready' }) };
       },
     }});
-    const result = await install.driveCrucibleInstall(install.bookforgeInstallOptions((line) => lines.push(line), { onStep: (s) => steps.push(s.status) }), r);
+    const result = await install.driveCrucibleInstall(install.bookforgeInstallOptions((line) => lines.push(line), { onStep: (s) => steps.push(s.status) }), r, releaseSources());
     assert.strictEqual(result.backend, 'llama-windows');
     assert.strictEqual(result.server.name, 'native');
     assert.strictEqual(result.server.configPath, path.win32.join(home, 'pairing'));
@@ -422,23 +441,123 @@ checkAsync('fresh Windows install runs the native installer, verifies lifecycle,
   } finally { await fake.close(); }
 });
 
+/*
+ * NEVER AN OLDER CRUCIBLE — crucible docs/INSTALL-UNINSTALL.md §6.5.3.
+ *
+ * Owen, 2026-09-18: "It shouldn't install an older Crucible. Maybe it should
+ * pull 'latest' and latest should be the latest build. Like how WordPress does
+ * it."
+ *
+ * The runner in each case is one that FAILS THE TEST IF IT IS ASKED TO RUN
+ * ANYTHING. A refusal that spawned PowerShell first and then refused would be a
+ * machine that had already been touched, and the whole value of this gate is
+ * that it happens before that.
+ */
+const refusingRunner = () => winRunner({ runner: {
+  stream: async (argv) => { throw new Error(`nothing must be spawned: ${JSON.stringify(argv)}`); },
+  run: async (argv) => { throw new Error(`nothing must be run: ${JSON.stringify(argv)}`); },
+  readFile: () => { throw new Error('nothing must be read'); },
+}});
+
+checkAsync('a channel OLDER than the running engine refuses by name and spawns nothing', async () => {
+  await assert.rejects(
+    install.driveCrucibleInstall(install.bookforgeInstallOptions(() => {}), refusingRunner(), releaseSources('1.0.1', '1.0.2')),
+    (err) => {
+      assert.strictEqual(err.code, 'install_older_than_running');
+      assert.match(err.message, /install_older_than_running:/);
+      assert.match(err.message, /1\.0\.1/);
+      assert.match(err.message, /1\.0\.2/);
+      return true;
+    },
+  );
+});
+
+checkAsync('a channel EQUAL to the running engine says there is nothing to install, by name', async () => {
+  await assert.rejects(
+    install.driveCrucibleInstall(install.bookforgeInstallOptions(() => {}), refusingRunner(), releaseSources('1.0.2', '1.0.2')),
+    (err) => {
+      assert.strictEqual(err.code, 'crucible_already_latest');
+      assert.match(err.message, /nothing to install/);
+      return true;
+    },
+  );
+});
+
+checkAsync('a channel NEWER than the running engine proceeds, and installs the CHANNEL\'s release', async () => {
+  const asked = [];
+  const r = winRunner({ runner: {
+    stream: async (argv) => { asked.push(argv.at(-1)); return { code: 9, failure: null, stdout: '', stderr: 'stopped here on purpose' }; },
+  }});
+  await assert.rejects(
+    install.driveCrucibleInstall(install.bookforgeInstallOptions(() => {}), r, releaseSources('1.0.3', '1.0.2')),
+    /stopped here on purpose/,
+  );
+  assert.strictEqual(asked.length, 1, 'the install must have started');
+  assert.ok(asked[0].includes('1.0.3'), `the installer was asked for the wrong release: ${asked[0]}`);
+  assert.ok(!asked[0].includes(install.BOOTSTRAP_LIBRARY_VERSION),
+    'the vendored library version reached the installer; the channel owns which release is installed');
+});
+
+checkAsync('a machine with NO Crucible installs the channel\'s latest', async () => {
+  const asked = [];
+  const r = winRunner({ runner: {
+    stream: async (argv) => { asked.push(argv.at(-1)); return { code: 9, failure: null, stdout: '', stderr: 'stopped here on purpose' }; },
+  }});
+  await assert.rejects(
+    install.driveCrucibleInstall(install.bookforgeInstallOptions(() => {}), r, releaseSources('1.0.3', null)),
+    /stopped here on purpose/,
+  );
+  assert.ok(asked[0].includes('1.0.3'), `a bare machine must get the channel's latest: ${asked[0]}`);
+});
+
+checkAsync('an unreadable release channel is refused by name, never a vendored fallback', async () => {
+  const dead = {
+    latest: async () => { throw new install.CrucibleInstallError('release_channel_unreadable', 'could not read the release channel at https://fixture: ENOTFOUND'); },
+    running: async () => { throw new Error('the running engine must not be asked when the channel is unreadable'); },
+  };
+  await assert.rejects(
+    install.driveCrucibleInstall(install.bookforgeInstallOptions(() => {}), refusingRunner(), dead),
+    (err) => {
+      assert.strictEqual(err.code, 'release_channel_unreadable');
+      return true;
+    },
+  );
+  // And the reader itself, against a channel that answers something else.
+  for (const [body, status] of [['<html>404</html>', 200], ['{}', 200], ['{"tag_name":"nightly"}', 200], ['{}', 403]]) {
+    const fetchImpl = async () => new Response(body, { status });
+    await assert.rejects(install.crucibleChannelLatest(fetchImpl), (err) => {
+      assert.strictEqual(err.code, 'release_channel_unreadable', `${body} (HTTP ${status}) should refuse by name`);
+      return true;
+    });
+  }
+  assert.strictEqual(await install.crucibleChannelLatest(async () => new Response('{"tag_name":"v1.0.2"}')), '1.0.2');
+});
+
+checkAsync('the channel URL is the PROMOTED release, assembled from the package\'s repository slug', async () => {
+  const bootstrap = await import_bootstrap();
+  assert.strictEqual(install.CRUCIBLE_CHANNEL_URL, `https://api.github.com/repos/${bootstrap.RELEASE_REPO}/releases/latest`);
+  // `releases?per_page=1` is the newest TAG, which between a cut and its
+  // promotion is the unverified candidate promote_release.py holds back.
+  assert.ok(!install.CRUCIBLE_CHANNEL_URL.includes('per_page'));
+});
+
 checkAsync('native installer failure is surfaced before lifecycle or pairing is queried', async () => {
   const r = winRunner({ runner: {
     stream: async () => ({ code: 9, failure: null, stdout: '', stderr: 'download failed' }),
     run: async () => { throw new Error('must not start after failure'); },
     readFile: () => { throw new Error('must not read after failure'); },
   }});
-  await assert.rejects(install.driveCrucibleInstall(install.bookforgeInstallOptions(() => {}), r), /download failed/);
+  await assert.rejects(install.driveCrucibleInstall(install.bookforgeInstallOptions(() => {}), r, releaseSources()), /download failed/);
 });
 
 checkAsync('an interrupted native installer cannot be reported as success', async () => {
   const r = winRunner({ runner: { stream: async () => ({ code: null, failure: 'timeout', stdout: '', stderr: '' }) }});
-  await assert.rejects(install.driveCrucibleInstall(install.bookforgeInstallOptions(() => {}), r), /timeout/);
+  await assert.rejects(install.driveCrucibleInstall(install.bookforgeInstallOptions(() => {}), r, releaseSources()), /timeout/);
 });
 
 checkAsync('installer success without a published installation is a failure', async () => {
   const r = winRunner({ runner: { readFile: () => { throw Object.assign(new Error('absent'), { code: 'ENOENT' }); } }});
-  await assert.rejects(install.driveCrucibleInstall(install.bookforgeInstallOptions(() => {}), r), /register|Repair/);
+  await assert.rejects(install.driveCrucibleInstall(install.bookforgeInstallOptions(() => {}), r, releaseSources()), /register|Repair/);
 });
 
 check('main.ts refuses a concurrent install itself, with the host\'s own name', () => {
@@ -811,7 +930,7 @@ checkAsync('the adoption script reads the same release out of package.json as th
   const manifest = adopt.findManifest();
   assert.strictEqual(path.resolve(manifest.file), path.join(REPO, 'package.json'),
     `adopt found ${manifest.file}, not this repo's package.json`);
-  assert.strictEqual(adopt.pinnedVersion(manifest.parsed), install.CRUCIBLE_RELEASE,
+  assert.strictEqual(adopt.pinnedVersion(manifest.parsed), install.BOOTSTRAP_LIBRARY_VERSION,
     'the adoption script and the vendored package disagree about what is pinned');
 });
 

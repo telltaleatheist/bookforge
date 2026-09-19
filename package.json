@@ -5,8 +5,8 @@
   "description": "BookForge - Audiobook production pipeline",
   "main": "dist/electron/main.js",
   "private": true,
-  "//crucible-bootstrap": "Exact Crucible 1.0.1 release tarball, vendored for reproducible app installs. The service installer and SDK must name the same release; never replace with a directory dependency or repack these bytes.",
-  "//crucible-client": "Exact Crucible 1.0.1 release tarball, vendored for reproducible app installs. Connection and job contracts are tested against this coordinated core release.",
+  "//crucible-bootstrap": "Exact @crucible/bootstrap 1.0.1 LIBRARY tarball, vendored so a build is reproducible. It is the code that PERFORMS an install and never the release that GETS installed: which Crucible a machine should have is the release channel's answer, read at install time (crucible docs/INSTALL-UNINSTALL.md 6.5). Never replace with a directory dependency or repack these bytes.",
+  "//crucible-client": "Exact @crucible/client 1.0.1 library tarball, cut beside the bootstrapper as one library release and pinned with it. It is NOT a statement about which server this app can talk to: compatibility is the API version on X-Crucible-Api, so a client and a server at different builds of one api_version talk to each other (docs/INSTALL-UNINSTALL.md 6.5.5). Never repack these bytes.",
   "scripts": {
     "ng": "ng",
     "package:ios": "bash mobile/package-ios.sh",

@@ -4,7 +4,7 @@ import { spawnSync } from 'child_process';
 import * as path from 'path';
 import { CrucibleClient, PAIRING_FILE, parsePairing } from '@crucible/client';
 
-import { BOOTSTRAP_VERSION } from '@crucible/bootstrap';
+import { BOOTSTRAP_VERSION, RELEASE_REPO } from '@crucible/bootstrap';
 import type {
   HostEvent,
   InstallOptions,
@@ -20,6 +20,7 @@ import {
   processDiscoveryHost,
 } from './discovery';
 import { getWslDistro } from '../tool-paths';
+import { compare as compareVersions } from '../update/semver';
 import { readCruciblePairingFile } from './pairing-file';
 import { BOOKFORGE_MODULE } from './module-setup';
 import type {
@@ -37,29 +38,190 @@ import type {
 } from '../../shared/crucible/install-wire';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// The release this build's sequence installs
+// WHICH Crucible gets installed: the channel, and never an older one
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * The Crucible release this build installs — READ FROM THE BOOTSTRAPPER, not
- * typed here.
+ * The version of the `@crucible/bootstrap` LIBRARY this build carries.
  *
- * It was a literal until 2026-09-16, and that made it a second owner of a fact
- * `@crucible/bootstrap` already states about itself: the package ships AT the
- * server's version (crucible's `release.sh` refuses a cut where the two
- * disagree), so `BOOTSTRAP_VERSION` IS the release. A hand-typed copy beside a
- * vendored tarball is a number that can be forgotten on a re-vendor, which is
- * exactly what happened to the module manifests on the crucible side — they
- * shipped 0.6.3 still naming 0.6.2 because nothing compared them.
+ * It was called `CRUCIBLE_RELEASE` and it meant "the release this app installs",
+ * which is the defect crucible `docs/INSTALL-UNINSTALL.md` §6.5 is about: the
+ * vendored tarball was cut at 1.0.1 and this machine's server was already 1.0.2,
+ * so pressing Set up installed an OLDER Crucible over a newer one and said
+ * nothing. What the vendored bytes are is one fact; which release should be
+ * installed is a different fact and its owner is the release channel.
  *
- * Foundry has always derived it this way. One fact, one owner, and the owner is
- * the package. The keeper now checks the vendored TARBALL matches what the
- * package says it is, which is a question a literal could not be asked.
+ * So this number is the LIBRARY's, kept because
+ * `tools/test-crucible-install-seam.js` holds the pin, the tarball on disk and
+ * the version inside it to each other — a question a hand-typed literal could
+ * not be asked. It is not passed to `install()` any more.
  */
-export const CRUCIBLE_RELEASE: string = BOOTSTRAP_VERSION;
+export const BOOTSTRAP_LIBRARY_VERSION: string = BOOTSTRAP_VERSION;
 
 /** The package name, spelled once so every sentence about it agrees. */
 export const BOOTSTRAP_PACKAGE = '@crucible/bootstrap';
+
+/**
+ * THE RELEASE CHANNEL — GitHub's pointer at the PROMOTED release.
+ *
+ * crucible `docs/INSTALL-UNINSTALL.md` §6.5.1. Every Crucible is cut
+ * `--prerelease --latest=false` and becomes `releases/latest` only when
+ * `promote_release.py --publish` says so, after its packs and a fresh-install
+ * smoke have been verified — so this URL is the one place that answers "which
+ * Crucible should a machine have", and `releases?per_page=1` (the newest tag)
+ * would be an unverified candidate.
+ *
+ * ASSEMBLED FROM THE PACKAGE'S `RELEASE_REPO` rather than typed, because the
+ * repository slug already has an owner. The URL SHAPE is the one thing spelled
+ * twice today: crucible's `sdk/bootstrap/src/channel.ts` owns it as
+ * `LATEST_RELEASE_URL`, and this app cannot import it until a release carrying
+ * that module is cut and re-vendored. When it is, this constant becomes that
+ * import and this paragraph goes.
+ */
+export const CRUCIBLE_CHANNEL_URL = `https://api.github.com/repos/${RELEASE_REPO}/releases/latest`;
+
+/**
+ * The two facts the never-older gate compares, each read from its own source.
+ *
+ * An interface rather than two direct calls so a keeper can put a channel at
+ * 1.0.1 in front of a `/v1/info` at 1.0.2 and watch nothing spawn. That is the
+ * whole of why it exists; there is no second implementation behind it.
+ */
+export interface CrucibleReleaseSources {
+  /** What the channel calls latest. Refuses `release_channel_unreadable`. */
+  latest(): Promise<string>;
+  /** The version of the engine answering on THIS machine, or null when there is none. */
+  running(): Promise<string | null>;
+}
+
+/**
+ * The channel's latest, read with this process's own `fetch`.
+ *
+ * NO CACHE AND NO FALLBACK (§6.5.2). A channel that will not answer is a
+ * refusal by name; installing the vendored library's version instead is exactly
+ * the silent downgrade being removed.
+ */
+export async function crucibleChannelLatest(fetchImpl: typeof globalThis.fetch = globalThis.fetch): Promise<string> {
+  let response: Response;
+  try {
+    response = await fetchImpl(CRUCIBLE_CHANNEL_URL, { headers: { accept: 'application/vnd.github+json' } });
+  } catch (err) {
+    throw new CrucibleInstallError(
+      'release_channel_unreadable',
+      `could not read the release channel at ${CRUCIBLE_CHANNEL_URL}: ${(err as Error).message}`,
+    );
+  }
+  const body = await response.text();
+  if (!response.ok) {
+    throw new CrucibleInstallError(
+      'release_channel_unreadable',
+      `could not read the release channel at ${CRUCIBLE_CHANNEL_URL}: HTTP ${response.status}`,
+      { detail: body.trim().slice(0, 200) },
+    );
+  }
+  let tag: unknown;
+  try {
+    tag = (JSON.parse(body) as Record<string, unknown>)['tag_name'];
+  } catch (err) {
+    throw new CrucibleInstallError(
+      'release_channel_unreadable',
+      `could not read the release channel at ${CRUCIBLE_CHANNEL_URL}: it is not JSON (${(err as Error).message})`,
+      { detail: body.trim().slice(0, 200) },
+    );
+  }
+  if (typeof tag !== 'string' || !/^v?\d+\.\d+\.\d+/.test(tag)) {
+    throw new CrucibleInstallError(
+      'release_channel_unreadable',
+      `could not read the release channel at ${CRUCIBLE_CHANNEL_URL}: its tag_name is `
+      + `${JSON.stringify(tag)}, which is not a Crucible version`,
+    );
+  }
+  return tag.replace(/^v/, '');
+}
+
+/**
+ * WHAT IS RUNNING ON THIS MACHINE, asked of the engine itself.
+ *
+ * `GET /v1/info`'s `server.version` — the call this app already made to REPORT
+ * a finished install (§6.5.3 is about making the same call before one). The
+ * connection comes from `discoverCrucible`, which reads the connect code
+ * Crucible left here; a machine with no Crucible has no connect code, and
+ * `no_local_config` is that state rather than a failure, so it answers null.
+ *
+ * An engine that IS configured here and will not answer is NOT null: it is the
+ * error, raised. "There is no server" and "the server would not say what it is"
+ * are different facts, and installing over the second one blind is the thing
+ * this gate exists to stop.
+ */
+export async function runningCrucibleVersion(): Promise<string | null> {
+  let discovered: ReturnType<typeof discoverCrucible>;
+  try {
+    discovered = discoverCrucible(processDiscoveryHost(getWslDistro()));
+  } catch (err) {
+    if (err instanceof CrucibleDiscoveryError && err.code === 'no_local_config') return null;
+    throw err;
+  }
+  const info = await new CrucibleClient({
+    url: discovered.url, token: discovered.token, clientName: 'bookforge-installer',
+  }).info();
+  return info.server.version;
+}
+
+/** The real pair. Injected in keepers; nothing else switches on it. */
+export function processReleaseSources(): CrucibleReleaseSources {
+  return { latest: () => crucibleChannelLatest(), running: () => runningCrucibleVersion() };
+}
+
+/**
+ * Order two Crucible versions. Negative when `a` is older.
+ *
+ * `electron/update/semver.ts` already owns this arithmetic for the component
+ * updater, so it is imported rather than written again — the numbers are the
+ * same three numbers and a second comparator would be a second answer to
+ * "which of these is newer".
+ */
+function olderThan(a: string, b: string): boolean {
+  return compareVersions(a, b) < 0;
+}
+
+/**
+ * WHICH RELEASE TO INSTALL, or the refusal that says not to.
+ *
+ * crucible `docs/INSTALL-UNINSTALL.md` §6.5.3, and it runs BEFORE anything is
+ * spawned. Three answers and no fourth:
+ *
+ *   nothing running          → the channel's latest
+ *   channel newer            → the channel's latest
+ *   channel the same         → `crucible_already_latest`
+ *   channel older            → `install_older_than_running`
+ *
+ * There is no `--force`. A machine whose engine is newer than the channel is a
+ * machine somebody installed something onto deliberately, and the way back is
+ * the bootstrapper's own exact-version rollback, never a button in an app.
+ */
+export async function releaseToInstall(
+  sources: CrucibleReleaseSources = processReleaseSources(),
+): Promise<string> {
+  const latest = await sources.latest();
+  const running = await sources.running();
+  if (running === null) return latest;
+  if (olderThan(latest, running)) {
+    throw new CrucibleInstallError(
+      'install_older_than_running',
+      `the release channel's latest is ${latest} and crucible ${running} is running on this computer; `
+      + 'refusing to install an older engine over it. There is one Crucible per machine, and nothing '
+      + 'here is allowed to take another app\'s engine backwards.',
+    );
+  }
+  if (!olderThan(running, latest)) {
+    throw new CrucibleInstallError(
+      'crucible_already_latest',
+      `crucible ${running} is running on this computer and the release channel's latest is ${latest} — `
+      + 'there is nothing to install.',
+    );
+  }
+  return latest;
+}
 
 /** Crucible's own README — the argument behind the sequence. */
 export const CRUCIBLE_README = 'https://github.com/telltaleatheist/crucible';
@@ -232,11 +394,26 @@ export async function loadBootstrap(): Promise<BootstrapModule> {
 export async function driveCrucibleInstall(
   options: BootstrapInstallOptions,
   runner?: Runner,
+  sources: CrucibleReleaseSources = processReleaseSources(),
 ): Promise<BootstrapInstallResult> {
+  /*
+   * THE GATE IS THE FIRST THING, AND THAT IS THE POINT (§6.5.3).
+   *
+   * Before the package is even imported: the channel says which release, the
+   * engine on this machine says which release it already is, and a channel
+   * older than the engine refuses by name. Every process this function would
+   * otherwise start is downstream of this line, so a refused install is one
+   * where nothing was spawned rather than one that is unwound.
+   *
+   * `options.release` is OVERWRITTEN rather than respected. The options this app
+   * composes no longer name a release (`bookforgeInstallOptions`), and a caller
+   * that put one there would be a second answer to a question the channel owns.
+   */
+  const release = await releaseToInstall(sources);
   const bootstrap = await import('@crucible/bootstrap');
   const host = runner ?? bootstrap.processRunner();
   if (host.platform !== 'win32') {
-    const installed = await bootstrap.install(options, host);
+    const installed = await bootstrap.install({ ...options, release }, host);
     // Service registration can return before launchd/systemd has a healthy
     // engine. Let its owner wait for authenticated readiness before adoption.
     const step: InstallStep = { name: 'local-readiness', argv: [], status: 'running', detail: 'Waiting for Crucible to start' };
@@ -255,7 +432,7 @@ export async function driveCrucibleInstall(
   options.onStep?.(step);
   const result = await host.stream([
     'powershell.exe', '-NoProfile', '-NonInteractive', '-Command',
-    "$ErrorActionPreference = 'Stop'; " + bootstrap.hostInstallCommand(options.release ?? CRUCIBLE_RELEASE),
+    "$ErrorActionPreference = 'Stop'; " + bootstrap.hostInstallCommand(release),
   ], { timeoutMs: 3_600_000, onLine: (line, stream) => options.onLine?.(line, stream, step.name) });
   if (result.failure !== null || result.code !== 0) {
     throw new CrucibleInstallError('install_failed', result.failure ?? `Crucible installer exited ${result.code}: ${result.stderr.trim()}`);
@@ -361,9 +538,14 @@ export function bookforgeJobTypes(): BootstrapJobTypeRequest[] {
  * interpreter. What is left is what an app genuinely says: which job types it
  * needs, which release, and where to send the output.
  *
- * `release` is passed rather than defaulted so the install, the client pin and
- * the plan all name ONE Crucible. The package would default to its own
- * version, which is the same number today and is not the same FACT.
+ * `release` IS NOT HERE ANY MORE, and its absence is the fix (crucible
+ * `docs/INSTALL-UNINSTALL.md` §6.5). It used to be `CRUCIBLE_RELEASE`, which is
+ * the version of the VENDORED LIBRARY — 1.0.1 against a machine already running
+ * 1.0.2 — so composing it here made this build's tarball the answer to "which
+ * Crucible should this computer have". That question has one owner and it is
+ * the release channel, read at install time by `driveCrucibleInstall`, which
+ * fills the field from `releaseToInstall()` after the never-older gate has
+ * passed. An options object that named one would be a second answer.
  */
 export function bookforgeInstallOptions(
   onLine: BootstrapInstallOptions['onLine'],
@@ -375,7 +557,6 @@ export function bookforgeInstallOptions(
   return {
     // A bare service first; app modules prepare runtimes/models after AI choices.
     jobTypes: ['echo'],
-    release: CRUCIBLE_RELEASE,
     onLine,
     ...(handlers.onStep === undefined ? {} : { onStep: handlers.onStep }),
     ...(handlers.onHostEvent === undefined ? {} : { onHostEvent: handlers.onHostEvent }),
