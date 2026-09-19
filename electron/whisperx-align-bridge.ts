@@ -49,7 +49,8 @@ import { periodTerminatorGuard } from '../shared/text/sentence-abbreviations';
 export const WHISPERX_ENV_ID = 'whisperx-env';
 
 /**
- * Live align children, keyed by jobId, so a queue cancel can actually REACH them.
+ * Live aligns, keyed by jobId, so a queue cancel can actually REACH them —
+ * whichever machine the alignment is running on.
  *
  * BUG (2026-07-24): the align child was spawned into a local variable with no
  * registry and no kill path. generate-sentences' cancel is COOPERATIVE — it sets a
@@ -57,18 +58,45 @@ export const WHISPERX_ENV_ID = 'whisperx-env';
  * checks it, so cancelling mid-align left WhisperX running to completion, holding
  * the GPU. Owen hit this: two orphaned align_audiobook.py trees survived the queue
  * X and had to be taskkill'd by hand.
+ *
+ * THE SAME BUG WITH THE SAME SHAPE, ON THE OTHER MACHINE (2026-09-18): the
+ * Crucible arm below took no cancel at all. `runLongformAlign` accepts a
+ * `signal` and this bridge passed none, so the ✕ on the one job in the app that
+ * runs for hours reached nothing, and the alignment carried on holding that
+ * server's exclusive lane. Both arms are in ONE map on purpose: "what is
+ * running for this job" is one fact, and a second registry is a door somebody
+ * forgets to open.
  */
-const activeAlignChildren = new Map<string, ChildProcess>();
+type LiveAlign =
+  /** The local spawn: `align_audiobook.py` and its multiprocessing workers. */
+  | { readonly where: 'here'; readonly child: ChildProcess }
+  /** An `align-longform` job on a Crucible; aborting DELETEs it (crucible/job.ts). */
+  | { readonly where: 'crucible'; readonly stop: AbortController };
+const activeAligns = new Map<string, LiveAlign>();
 
 /**
- * Kill the align child for a job, whole tree. WhisperX spawns multiprocessing
+ * Cancel the alignment for a job.
+ *
+ * LOCALLY that means the child, WHOLE TREE: WhisperX spawns multiprocessing
  * workers, so signalling only the parent orphans them (measured: the forked
  * children kept the GPU after the parent died) — Windows needs taskkill /T.
- * Safe to call for an unknown//already-finished jobId.
+ * ON A CRUCIBLE it means aborting the job's signal, which the generic job door
+ * turns into `DELETE /v1/jobs/{id}` and then reads the `cancelled` frame off
+ * the stream it is already following — a cancel, not a hang-up, because
+ * hanging up leaves the job running on somebody else's card.
+ *
+ * Safe to call for an unknown/already-finished jobId.
  */
 export function cancelEpubAlign(jobId: string): void {
-  const child = activeAlignChildren.get(jobId);
-  if (!child) return;
+  const live = activeAligns.get(jobId);
+  if (!live) return;
+  activeAligns.delete(jobId);
+  if (live.where === 'crucible') {
+    glog(`[epub-align] cancel requested job=${jobId} on crucible`);
+    live.stop.abort();
+    return;
+  }
+  const child = live.child;
   const pid = child.pid;
   glog(`[epub-align] cancel requested job=${jobId} pid=${pid ?? 'none'}`);
   try {
@@ -81,9 +109,8 @@ export function cancelEpubAlign(jobId: string): void {
       child.kill('SIGKILL');
     }
   } catch {
-    /* already exited — the close handler clears the registry */
+    /* already exited — its entry came off the registry above either way */
   }
-  activeAlignChildren.delete(jobId);
 }
 
 /**
@@ -655,21 +682,40 @@ export async function runEpubAlignOnFiles(
     const { runLongformAlign } = await import('./crucible/align-longform.js');
     glog(`[epub-align] on crucible "${opts.crucibleServer}": `
       + `${sentences.length} sentence(s), ${path.basename(audioPath)}`);
-    const outcome = await runLongformAlign({
-      server: opts.crucibleServer,
-      audioPath,
-      sentences: sentences.map((sentence, index) => ({
-        index, text: sentence.text, kind: sentence.kind,
-      })),
-      language: language && language !== 'auto' ? language : 'en',
-      outputDir: path.dirname(reportPath ?? audioPath),
-      onProgress: (p) => sendProgress(
-        win, jobId,
-        Math.round(p.fraction * 100),
-        p.message || stageMessage(p.stage ?? ''),
-      ),
-      onLog: (line) => glog(`[epub-align/crucible] ${line}`),
-    });
+    /*
+     * AND THE ✕ REACHES IT, through the same door the local child is killed
+     * through. `cancelEpubAlign(jobId)` is what `cancelGenerateSentences` calls
+     * unconditionally and first, because this stage is the long one and the
+     * cooperative flag is only read between stages. Registered BEFORE the
+     * upload, which on a 16 h book is itself minutes of an hours-long job that
+     * the operator must be able to stop.
+     */
+    const stop = new AbortController();
+    activeAligns.set(jobId, { where: 'crucible', stop });
+    let outcome: Awaited<ReturnType<typeof runLongformAlign>>;
+    try {
+      outcome = await runLongformAlign({
+        server: opts.crucibleServer,
+        audioPath,
+        sentences: sentences.map((sentence, index) => ({
+          index, text: sentence.text, kind: sentence.kind,
+        })),
+        language: language && language !== 'auto' ? language : 'en',
+        outputDir: path.dirname(reportPath ?? audioPath),
+        signal: stop.signal,
+        onProgress: (p) => sendProgress(
+          win, jobId,
+          Math.round(p.fraction * 100),
+          p.message || stageMessage(p.stage ?? ''),
+        ),
+        onLog: (line) => glog(`[epub-align/crucible] ${line}`),
+      });
+    } finally {
+      // This job is over, however it ended. Left behind, the entry would make a
+      // later cancel abort a controller nothing is listening to and — worse —
+      // answer "yes, something was running" for a job that was not.
+      activeAligns.delete(jobId);
+    }
     /*
      * THE COUNT IS THE SERVER'S OWN, out of `align-report.json`'s `placed`, and
      * not re-derived by parsing the VTT here. The server counted what it wrote;
@@ -939,14 +985,14 @@ export async function runEpubAlignOnFiles(
       });
 
       // Register BEFORE any await point so a cancel arriving mid-align can reach it.
-      activeAlignChildren.set(jobId, child);
+      activeAligns.set(jobId, { where: 'here', child });
 
       child.on('error', (err) => {
-        activeAlignChildren.delete(jobId);
+        activeAligns.delete(jobId);
         reject(err instanceof Error ? err : new Error(String(err)));
       });
       child.on('close', (code) => {
-        activeAlignChildren.delete(jobId);
+        activeAligns.delete(jobId);
         if (buf.trim()) handleLine(buf);
         if (code === 0 && result && result.ok === true && result.vtt) {
           stages.completeAll();
