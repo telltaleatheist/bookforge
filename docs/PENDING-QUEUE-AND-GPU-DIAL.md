@@ -78,6 +78,36 @@ The `409 server_busy` path stays as the backstop it is, and when it fires it
 row is free to take a different machine. A 409 that left the venue standing was the
 bug that pinned a book to the server that had refused it.
 
+**Three things the order does not say, and each is load-bearing** (built 2026-09-19,
+`electron/queue-engine.ts` — `reserveBeforeLaunch`, `settleReserve`; keeper
+`tools/test-queue-admission.js`):
+
+- **Only work that LEASES A MODEL has a lease to reserve.** A render takes a job on
+  the lane, not a lease (`electron/crucible/lease.ts`, *WHO LEASES, AND WHO MUST NOT*),
+  so for a narration step 1 and 2 are the whole of admission and the `409` is still the
+  door. A step reserves when its module says both `leasesModel` and `crucibleClass` —
+  the act's name has to come from somewhere, and the module is the one place that
+  knows it. An upstream-routed class reserves nothing either: nothing is resident, so
+  Crucible refuses a lease naming it (`lease_not_needed`).
+- **The model the lease is on is the SERVER's answer**, `GET /v1/capability`'s
+  `selected` for the class, which is why `StepModule.leasedModel` answers null for
+  every module and why the reserve is async and takes a round trip.
+- **A refused reserve cools off, and the two refusals cool off differently.** A held
+  card is keyed by SERVER (`busyHolds`) — every book bound for that machine is waiting
+  on the same holder. A refusal that names a MISCONFIGURATION is keyed by STEP: it is
+  not about the machine being occupied, and parking every other row behind it would
+  name the wrong cause. Without either the pump re-reserves the instant the refusal
+  lands and the queue spins against a server it cannot use.
+
+**A reserve in flight holds that machine's card**, though nothing is running on it: the
+step is still `queued`, so the slot count cannot see it, and a second row bound for the
+same server would otherwise reserve against the lease the first one is taking — and a
+server holds ONE, so the second is refused `409 leased`, by us, naming us.
+
+**Prepare is its own CPU step** (Owen, 2026-09-19): it starts *"the moment a free CPU
+slot is open and an item enters the active (and unpaused) queue"* — it does not wait
+for a server. The lease and the GPU slot are asked for only once the chunks exist.
+
 ## A narration is THREE rows — prepare → narrate → align
 
 Owen, **2026-09-19**. Shipped the same evening; the plan is

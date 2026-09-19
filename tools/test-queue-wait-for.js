@@ -419,6 +419,22 @@ test('a busy server holds the row with the holder\'s line, and does not fail it'
     'Waiting for mac: GPU busy: foundry, tts 62% done. It takes one job at a time; this book '
     + 'goes on as soon as that one is done.');
   assert.strictEqual(gpu.runs.length, 1, 'and it did not immediately re-submit into the same 409');
+  /*
+   * THE ASSIGNMENT IS GIVEN BACK — bug hunt 2026-09-19, A1, and the assertion
+   * that was missing from this very test while the defect shipped.
+   *
+   * `assignRunVenue` wrote the venue when the step launched and the busy park
+   * left it standing, so `decideWaitFor`'s rung 1 took the RESOLVED machine on
+   * every later pass: an `any` book waited hours on a busy card with an idle
+   * one beside it, and its picker was read-only, saying it *"was taken by a
+   * GPU"* — which was false. Nothing of the attempt stands, so nothing is
+   * assigned. The INSTRUCTION is untouched: this row still says `mac` and still
+   * waits for `mac`. The two-server `any` story is in
+   * `tools/test-queue-admission.js`, with the rest of the admission order.
+   */
+  assert.strictEqual(jobOf(job.id).waitForResolved, undefined,
+    'a 409 never took the card, so the book is not pinned to the machine that refused it');
+  assert.strictEqual(jobOf(job.id).waitFor, 'mac', 'and the operator\'s own answer is untouched');
 });
 
 test('the busy hold expires and the queue tries again on its own tick', async () => {

@@ -2388,8 +2388,35 @@ export interface CrucibleRoutingHost {
    * Removed 2026-09-19 with the dial itself (Owen: *"that works for me"*); see
    * `shared/queue/wait-for.ts` for what replaced it and why.
    */
-  /** One unauthenticated reachability check. Never admission — the door decides. */
-  reach(server: string): Promise<{ reachable: true } | { reachable: false; detail: string }>;
+  /**
+   * DOES THIS MACHINE ANSWER, AND IS SOMETHING ALREADY ON ITS CARD.
+   *
+   * ── Why it reads activity and not only the ping (Owen, 2026-09-19) ────────
+   *
+   * *"Poll the server to see if it's available. If it isn't, it just waits in
+   * the queue until it's available."* Until this date the scheduler's only way
+   * of learning that a machine was occupied was a `409 server_busy` — which
+   * arrives AFTER a full prep and a submit, and which the row then paid for
+   * again on every cool-off expiry (bug hunt 2026-09-19, A2). Crucible
+   * publishes the holder on `GET /v1/activity`, so the answer exists before
+   * anything is sent, and this seam is where it enters the scheduler.
+   *
+   * `busy` is the holder's own line in the ONE spelling
+   * ({@link busyLineFor}), so a row's sentence does not change wording between
+   * the polled wait and the refused one. `null` means *nothing is on the
+   * card that this read can see*: the lane is accepting work, or the server is
+   * too old to publish activity at all (the route arrived in Crucible 0.5.0).
+   * The second case is not a guess dressed as an answer — it is the case the
+   * `409` backstop exists for, and the backstop is still wired.
+   *
+   * The PROGRESS is inside the line and is deliberately not a second field: it
+   * belongs to somebody else's job, and a number handed to the scheduler beside
+   * our row would be drawn on our row's bar.
+   */
+  reach(server: string): Promise<
+    { reachable: true; busy: { line: string } | null }
+    | { reachable: false; detail: string }
+  >;
 }
 
 /**
@@ -2409,6 +2436,32 @@ export interface CrucibleRoutingHost {
 export interface CrucibleLeaseHost {
   /** Run one step inside its run's lease scope. */
   withRowScope<T>(row: string, fn: () => Promise<T>): Promise<T>;
+  /**
+   * TAKE THIS RUN'S LEASE BEFORE THE SLOT IS TAKEN — admission's own door.
+   *
+   * Owen, 2026-09-19: *"It reserves the lease, THEN it takes the slot and
+   * starts real work."* Until this date the lease was taken INSIDE the step,
+   * minutes into a prep, by whichever bridge the act reached — so the card was
+   * "taken" by a row that had not asked for it yet, and a row refused `409
+   * leased` had already written its venue and spent its prep (A1, A2).
+   *
+   * So the scheduler asks first. It resolves the model the `act` runs on at
+   * `server` — the server's own answer, `GET /v1/capability`, which is why this
+   * is async and injected — takes the lease, and parks it on the ROW, where the
+   * step's own `withCrucibleLease` finds it and reuses it rather than taking a
+   * second one.
+   *
+   * Refusals PROPAGATE and are not translated here: a `409 leased` throws
+   * carrying `busyLine` (the one rule, `busyLineOf`), which the pump reads as a
+   * WAIT; anything else is a sentence naming the misconfiguration, and the row
+   * holds on it rather than failing.
+   *
+   * OPTIONAL, and absence is a real state rather than a missing fact: a build or
+   * a keeper that wired a seam without it gets the behaviour that came before —
+   * the step takes its own lease when it runs. Nothing is masked, because
+   * nothing was reserved.
+   */
+  reserveRow?(row: string, where: { server: string; act: string }): Promise<void>;
   /** Give back the lease this run was holding, if any. Never throws. */
   closeRow(row: string): Promise<void>;
   /**
@@ -2481,10 +2534,13 @@ export function setCrucibleRoutingHost(host: CrucibleRoutingHost | null): void {
   if (host === null) stopReachSweep();
 }
 
+/** What one `reach` came back with — the host's own shape, kept verbatim. */
+type ReachAnswer = Awaited<ReturnType<CrucibleRoutingHost['reach']>>;
+
 interface ReachEntry {
   at: number;
   /** `null` while the probe is in flight — asked, not yet answered. */
-  answer: { reachable: true } | { reachable: false; detail: string } | null;
+  answer: ReachAnswer | null;
 }
 
 /**
@@ -2525,15 +2581,34 @@ function serverState(name: string): ServerState {
   // difference matters only to `askReach`, which will not ask twice.
   if (entry.answer === null) return { kind: 'unknown' };
   if (Date.now() - entry.at > reachTtlMs()) return { kind: 'unknown' };
-  return entry.answer.reachable
-    ? { kind: 'ready' }
-    : { kind: 'unreachable', detail: entry.answer.detail };
+  if (!entry.answer.reachable) return { kind: 'unreachable', detail: entry.answer.detail };
+  /*
+   * THE POLLED BUSY, and it is the same state as the refused one.
+   *
+   * `decideWaitFor` already knows what to do with `busy`: an `any` row skips
+   * that machine and takes the next enabled one, a row that NAMES it holds with
+   * the holder's line, and neither launches. All that changed on 2026-09-19 is
+   * WHEN the scheduler learns it — on the 15 s reach sweep rather than from a
+   * `409` the row paid a full prep and a submit for (A2). The rule is untouched;
+   * this is the same fact arriving earlier.
+   *
+   * A busy answer is re-asked on the sweep's own cadence exactly as a ready one
+   * is, because it expires the same way: the holder finishing is the thing the
+   * row is waiting for, and nothing else would notice it.
+   */
+  const held = entry.answer.busy ?? null;
+  return held === null ? { kind: 'ready' } : { kind: 'busy', line: held.line };
 }
 
 /** The same observation, or a different one? Compares the ANSWER, not its age. */
 function sameReachAnswer(a: ReachEntry['answer'], b: ReachEntry['answer']): boolean {
   if (a === null || b === null) return a === b;
-  if (a.reachable) return b.reachable;
+  if (a.reachable) {
+    // A machine that became busy, or stopped being, is a CHANGE the page must
+    // hear about — it is the difference between a row that is about to start
+    // and one that is waiting on somebody else's book.
+    return b.reachable && (a.busy?.line ?? null) === (b.busy?.line ?? null);
+  }
   return !b.reachable && a.detail === b.detail;
 }
 
@@ -2677,6 +2752,20 @@ function sweepReach(): void {
 function holdServerBusy(job: QueueJob, busyLine: string): void {
   const server = job.waitForResolved ?? job.waitFor;
   if (server === undefined || server === WAIT_FOR_ANY) return;
+  holdServerBusyAt(server, busyLine);
+}
+
+/**
+ * The same cool-off, for the door that KNOWS which machine refused it.
+ *
+ * Admission's reserve does (2026-09-19): it asks one named server for the
+ * lease, so an `any` row refused there holds off THAT machine and is free to
+ * take the next enabled one on the very next pass. {@link holdServerBusy}
+ * cannot do that — it derives the machine from the row, and an `any` row that
+ * has not been assigned one names none — and guessing would have held off every
+ * server at once.
+ */
+function holdServerBusyAt(server: string, busyLine: string): void {
   busyHolds.set(server, { line: busyLine, until: Date.now() + admissionRecheckMs });
 }
 
@@ -2816,6 +2905,227 @@ function gpuAdmission(): { ok: true } | { ok: false; reason: string } {
     };
   }
   return { ok: true };
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// RESERVING THE LEASE — the last thing admission does before the slot is taken
+// ────────────────────────────────────────────────────────────────────────────
+//
+// Owen, 2026-09-19: *"It reserves the lease, THEN it takes the slot and starts
+// real work."* The order below is the whole of the ruling and nothing in it may
+// be swapped:
+//
+//   the server is free (polled)  →  the LOCAL gates  →  the lease  →  the slot
+//
+// The local gates — the venue's own slot, this machine's one-card rule, the
+// external training lock and the GPU arbiter — are asked BEFORE the reserve so
+// that a lease is never taken for a row something here was going to stop
+// anyway; a reserved lease held while a training chain finishes is somebody
+// else's card taken for nothing.
+//
+// A reserve is a round trip, and `pump()` is synchronous by contract. So the
+// step STAYS `queued` with a sentence saying what is happening, the reserve
+// runs on its own, and the answer arrives back through `pump()` — exactly the
+// shape `askReach` already uses for the reachability probe.
+
+/**
+ * The steps whose lease is being reserved right now, by step id.
+ *
+ * TWO JOBS IT DOES. It is the in-flight guard — one reserve per step, never two
+ * — and it is what makes the venue's slot look TAKEN to the rest of the pass:
+ * the step is not running, so `gpuSlotHolder` cannot see it, and without this a
+ * second queued row bound for the same machine would sail through the slot gate
+ * in the same tick and reserve against the lease we are already taking. A
+ * server holds ONE lease, so the second would be refused `409 leased` — by us,
+ * naming us.
+ */
+const reservingSteps = new Map<string, { jobId: string; server: string }>();
+
+/**
+ * ONE STEP, HELD OFF FOR ONE ADMISSION TICK after its reserve was refused for a
+ * REASON rather than by a holder.
+ *
+ * `busyHolds` is the cool-off for a held card, and it is keyed by SERVER because
+ * every book waiting on that machine is waiting on the same job. A refusal that
+ * names a misconfiguration — a capability class never probed, a model that is
+ * not resident — is not about the machine being occupied and must not park
+ * every other row bound for it. It is about THIS act on THAT machine, and the
+ * step is the thing that carries both.
+ *
+ * Without it the pump re-reserves the instant the refusal lands, the refusal
+ * lands again, and the queue spins in a tight loop against a server it cannot
+ * use — measured while building this, 2026-09-19.
+ */
+const reserveHolds = new Map<string, number>();
+
+/**
+ * What {@link reserveBeforeLaunch} told the pump to do.
+ *
+ * `waiting` and `recheck` both leave the row in the queue and differ in WHO
+ * wakes it: a reserve in flight pumps when it answers, and a cool-off needs the
+ * admission tick, which is what `admissionBlocked` arms.
+ */
+type ReserveVerdict = 'go' | 'waiting' | 'recheck';
+
+/** Is another step already reserving this machine's card? */
+function reservingElsewhereAt(server: string, exceptStepId: string): boolean {
+  for (const [stepId, entry] of reservingSteps) {
+    if (stepId !== exceptStepId && entry.server === server) return true;
+  }
+  return false;
+}
+
+/**
+ * Say what admission is DOING — not why it refused.
+ *
+ * Deliberately not `holdStep`: `admissionHold` means *the scheduler will not
+ * start this step*, and a reserve in flight is the opposite of that. A surface
+ * reading the hold field would draw a blocked row over a row that is starting.
+ */
+function sayOnStep(step: QueueStep, message: string): void {
+  clearAdmissionHold(step);
+  if (step.progress.message === message) return;
+  step.progress = { ...step.progress, message };
+  touchProgress();
+}
+
+/**
+ * WHICH CRUCIBLE ACT THIS STEP'S LEASE WOULD BE FOR, or null when there is
+ * none to reserve.
+ *
+ * Both halves are the module's own answers and neither is guessed here:
+ * `leasesModel` says this step's work holds a lease at all (a translation
+ * against Claude does not), and `crucibleClass` names the capability class the
+ * lease is taken under. A step that leases but cannot name its class — none
+ * today — reserves nothing and takes its own lease when it runs, which is the
+ * behaviour that came before this existed.
+ */
+function leaseActOf(step: QueueStep): string | null {
+  const mod = modules.get(step.type);
+  const config = step.config ?? {};
+  if (mod?.leasesModel?.(config) !== true) return null;
+  return mod.crucibleClass?.(config) ?? null;
+}
+
+/**
+ * Take this run's lease before it takes the card. `go` = launch now.
+ *
+ * Anything else leaves the row IN THE QUEUE: a reserve is in flight, or one has
+ * come back refused and the row is parked on its sentence. Nothing is assigned
+ * in either case — `waitForResolved` is written only after the lease is held,
+ * because that is the moment the card is actually taken
+ * (docs/PENDING-QUEUE-AND-GPU-DIAL.md, "Mutability").
+ */
+function reserveBeforeLaunch(job: QueueJob, step: QueueStep, server: string): ReserveVerdict {
+  const host = crucibleLeaseHost;
+  if (host === null || host.reserveRow === undefined) return 'go';
+  if (step.travels !== true) return 'go';
+  const act = leaseActOf(step);
+  if (act === null) return 'go';
+  /*
+   * THE RUN ALREADY HOLDS ONE. `leaseWantedAfter` kept it across the step that
+   * just finished precisely because this act wants the same model, so asking
+   * for it again would be this app taking a second lease against itself.
+   */
+  if (host.leaseSubject(job.id) !== null) return 'go';
+  if (reservingSteps.has(step.id)) return 'waiting';
+  const until = reserveHolds.get(step.id);
+  if (until !== undefined) {
+    if (until > Date.now()) return 'recheck';
+    reserveHolds.delete(step.id);
+  }
+
+  reservingSteps.set(step.id, { jobId: job.id, server });
+  sayOnStep(step, `Reserving ${server} for this book's ${act}…`);
+  void host.reserveRow(job.id, { server, act })
+    .then(() => { settleReserve(job.id, step.id, server, { ok: true }); })
+    .catch((err: unknown) => { settleReserve(job.id, step.id, server, { ok: false, err }); });
+  return 'waiting';
+}
+
+/**
+ * The reserve has answered. Launch, park, or give the card straight back.
+ *
+ * Every way out of here either LAUNCHES the step or releases the lease. A
+ * reserved lease with nothing about to use it is the unbounded hold on a 9–27
+ * GB model that `closeCrucibleRowLease` exists to prevent, and the heartbeat
+ * means the ttl will never reclaim it.
+ */
+function settleReserve(
+  jobId: string,
+  stepId: string,
+  server: string,
+  /*
+   * THE OUTCOME IS A SHAPE, not a nullable error. A promise may reject with
+   * `undefined` — nothing forbids it — and a `null` sentinel would read that as
+   * a SUCCESS, launching a step whose lease was never granted.
+   */
+  outcome: { ok: true } | { ok: false; err: unknown },
+): void {
+  reservingSteps.delete(stepId);
+  // A fresh answer supersedes any cool-off this step was carrying, and a step
+  // that has since been removed leaves nothing behind in the map.
+  reserveHolds.delete(stepId);
+  const found = findStep(stepId);
+  const give = (): void => {
+    if (crucibleLeaseHost !== null) void crucibleLeaseHost.closeRow(jobId);
+  };
+
+  if (!outcome.ok) {
+    if (found === null || found.job.id !== jobId) { give(); pump(); return; }
+    const { step } = found;
+    const busyLine = busyLineOf(outcome.err);
+    if (busyLine !== undefined) {
+      /*
+       * `409 leased` / `409 server_busy` ON THE RESERVE — the same wait a
+       * submit's 409 is, learnt one round trip earlier and without a prep
+       * behind it. The row keeps its place, the door is remembered as shut for
+       * one admission tick, and NOTHING is assigned: an `any` row is free to
+       * take the next enabled server on the very next pass, which is the whole
+       * of A1's fix arriving before the submit rather than after it.
+       *
+       * Keyed by the machine that ACTUALLY refused (`holdServerBusyAt`) rather
+       * than by the row's answer, because an `any` row has no answer to derive
+       * it from and every other book bound for that card is waiting on the same
+       * holder.
+       */
+      holdServerBusyAt(server, busyLine);
+      holdStep(step, holdBusy(server, busyLine));
+    } else {
+      // Not a wait: something about this machine or this act is wrong, and the
+      // refusal already names it and carries its own repair. Held rather than
+      // failed — the act has not run, nothing of the book is lost, and the
+      // operator fixes the named thing and the row goes on. The cool-off is
+      // per STEP: this is not a busy card, so no other row is held off it.
+      reserveHolds.set(step.id, Date.now() + admissionRecheckMs);
+      holdStep(step, `Waiting for ${server}: `
+        + `${(outcome.err as Error)?.message || String(outcome.err)}`);
+    }
+    pump();
+    return;
+  }
+
+  /*
+   * THE LEASE IS HELD. Every reason not to use it now is a reason to give it
+   * straight back, because nothing else will: the step is gone, it is no longer
+   * the step that was queued, or the queue stopped claiming work while the
+   * reserve was in the air (Owen: *"if the queue isn't active then it just sits
+   * in the active queue doing nothing"*).
+   */
+  if (found === null || found.job.id !== jobId || found.step.status !== 'queued') {
+    give();
+    pump();
+    return;
+  }
+  if (!running) {
+    give();
+    holdStep(found.step, `Waiting for ${server}: the queue is paused. It starts on Resume.`);
+    pump();
+    return;
+  }
+  assignRunVenue(found.job, found.step, server);
+  clearAdmissionHold(found.step);
+  void launch(found.job, found.step);
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -3217,6 +3527,11 @@ export function pump(): void {
          * the non-travelling branch above checks a set: a full pool IS the
          * row's reason, and the bench derives the sentence from the venue just
          * written, so no hold is recorded here.
+         *
+         * NO LEASE IS RESERVED FOR ONE EITHER, and for the same sentence: an
+         * upstream model is never resident, so there is nothing on a card to
+         * hold and Crucible refuses a lease naming one (`lease_not_needed`,
+         * PHASE15 §3.4). The reserve below is for work that takes a card.
          */
         if (isCloudLane(venue)) {
           if (slotsInUse(venue, step.resource) >= slotsOf(sets, venue, step.resource)) {
@@ -3249,6 +3564,22 @@ export function pump(): void {
         }
 
         /*
+         * A RESERVE IN FLIGHT HOLDS THAT MACHINE'S CARD, though nothing is
+         * running on it yet (2026-09-19).
+         *
+         * `gpuSlotHolder` counts RUNNING steps, and a step whose lease is being
+         * reserved is still `queued` — so without this a second row bound for
+         * the same server would pass the slot gate in the same tick and reserve
+         * against the lease the first one is taking. A server holds ONE lease:
+         * the second take is refused `409 leased`, by us, naming us.
+         *
+         * No sentence is written, for the full-pool branch's reason: the row is
+         * behind work this app is already starting there, and the wait is a
+         * tick long.
+         */
+        if (reservingElsewhereAt(routed.venue, step.id)) continue;
+
+        /*
          * THIS MACHINE HAS ONE CARD AND MORE THAN ONE VENUE OVER IT — the
          * in-app long-form aligner, and any Crucible that answers on this
          * machine's loopback. Separate sets, so nothing above would stop both
@@ -3271,6 +3602,22 @@ export function pump(): void {
         }
 
         if (!routed.onThisMachine) {
+          /*
+           * THE LEASE, AND THEN THE CARD. Anything but `go` leaves the row in
+           * the queue — a reserve is in flight, or one came back refused and
+           * the row is parked on its sentence. See `reserveBeforeLaunch`.
+           *
+           * ASKED BEFORE THE HOLD IS CLEARED, and the order is load-bearing:
+           * a reserve refused for a REASON writes its sentence onto
+           * `admissionHold`, and clearing first would wipe it on the very next
+           * pass — leaving a row parked with nothing on it saying why, which
+           * is the one thing every sentence in this file exists to prevent.
+           */
+          const reserved = reserveBeforeLaunch(job, step, routed.venue);
+          if (reserved !== 'go') {
+            if (reserved === 'recheck') admissionBlocked = true;
+            continue;
+          }
           clearAdmissionHold(step);
           assignRunVenue(job, step, routed.venue);
           void launch(job, step);
@@ -3294,6 +3641,15 @@ export function pump(): void {
             };
             touchProgress();
           }
+          continue;
+        }
+        // THE LOCAL GATES HAVE ALL PASSED, so the lease is worth taking: a
+        // reserve fired before them could be held while a training chain
+        // finishes on this card, which is somebody else's machine claimed for
+        // nothing. See `reserveBeforeLaunch`.
+        const reservedHere = reserveBeforeLaunch(job, step, routed.venue);
+        if (reservedHere !== 'go') {
+          if (reservedHere === 'recheck') admissionBlocked = true;
           continue;
         }
         // Admission passed and a slot is free, so this step launches on the next
@@ -3652,7 +4008,31 @@ function settleStep(job: QueueJob, step: QueueStep, outcome: StepOutcome): void 
     step.finishedAt = undefined;
     step.startedAt = undefined;
     step.error = undefined;
+    /*
+     * THE SENTENCE IS COMPOSED BEFORE THE VENUE IS GIVEN BACK, because it names
+     * the machine that refused and `releaseVenueIfNothingStands` is about to
+     * erase it.
+     */
     const reason = holdBusy(job.waitForResolved ?? job.waitFor ?? 'that server', busyLine);
+    /*
+     * A 409 PINNED THE BOOK TO THE MACHINE THAT REFUSED IT — bug hunt
+     * 2026-09-19, A1, and the reason this line exists.
+     *
+     * `assignRunVenue` wrote `waitForResolved` when the step launched, and a
+     * busy park left it standing. `decideWaitFor`'s rung 1 then took the
+     * resolved venue on every later pass and called `forOneServer` on it
+     * FOREVER: an `any` book waited hours on a busy machine while an idle one
+     * sat beside it, and its picker was read-only, saying it *"was taken by a
+     * GPU"* — which was false, nothing was taken. Nothing of this attempt
+     * stands: it never started, so §4.3 has nothing to protect here.
+     *
+     * Released, never re-pointed: the question goes back to the two controls
+     * that own it. Because `busyHolds` is keyed by SERVER, the next pass over
+     * an `any` row skips the busy one and takes the next enabled, ready
+     * machine, while a row that NAMES it waits for it — which is the
+     * instruction (docs/PENDING-QUEUE-AND-GPU-DIAL.md, "Admission").
+     */
+    releaseVenueIfNothingStands(job);
     step.progress = { ...step.progress, percent: undefined, message: reason, admissionHold: reason };
     changed();
     pump();
@@ -3874,6 +4254,11 @@ export async function configure(options: ConfigureOptions): Promise<void> {
   // unreachable now.
   reachCache.clear();
   busyHolds.clear();
+  // A reserve belongs to a pass of the scheduler that no longer exists. The
+  // LEASE, if one landed, is given back by the row's own doors and by
+  // `before-quit`; this map is only the in-flight guard.
+  reservingSteps.clear();
+  reserveHolds.clear();
   // ...so the sweep starts again from nothing, on whatever cadence this
   // configuration asked for. THE ONE PLACE IT IS ARMED, and it re-arms rather
   // than adds, for the same reason the record watcher does: a second
