@@ -368,8 +368,35 @@ export function thisMachineSetId(
    * the call site is where it belongs, and the builder below only emits the row
    * when this function has nothing to say.
    */
+  /*
+   * AND NEVER A SET THE OPERATOR HAS SWITCHED OFF (2026-09-19).
+   *
+   * The switch's own heading on the bench is *"Switch one off to keep new work
+   * away from it"*, and this function was the one door that did not honour it:
+   * it matched on `onThisMachine && gpu > 0` alone, so a non-travelling GPU step
+   * was filed on a disabled engine's lane and CHARGED ITS SLOT. Owen watched a
+   * read occupy the only GPU slot of a local engine whose box was unchecked,
+   * while the work itself ran on another machine entirely — the disabled row was
+   * the one thing on screen that could not possibly have been doing it.
+   *
+   * `retiring` is NOT excluded here, and the difference is the whole point of
+   * carrying two flags: a retiring set is finishing work it already holds (§4.3,
+   * a job finishes on the machine it started on), so a step belonging to it must
+   * still resolve to it or its occupant vanishes off the bench mid-run. Disabled
+   * is a switch about NEW work, which is exactly what this answer is for.
+   *
+   * NULL when the only card here is switched off, and that is a real answer: the
+   * `??` at every call site sends the step to {@link LONGFORM_ALIGN_SET}, which
+   * is this machine under the name the fallback row draws. The step still runs —
+   * a switch governs where work is SENT, and this work was never going anywhere
+   * — but it stops being drawn in, and charged to, a lane the operator has told
+   * the queue to leave alone.
+   */
   return snapshot.slotSets.find(
-    (set) => set.onThisMachine === true && set.gpu > 0 && set.id !== LONGFORM_ALIGN_SET,
+    (set) => set.onThisMachine === true
+      && set.gpu > 0
+      && set.disabled !== true
+      && set.id !== LONGFORM_ALIGN_SET,
   )?.id ?? null;
 }
 

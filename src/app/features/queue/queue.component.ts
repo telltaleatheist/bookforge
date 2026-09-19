@@ -45,6 +45,7 @@ import { benchRows, prepFraction, prepLabel } from '@shared/queue/bench';
 import type { BookPlan, FinishedRun } from '@shared/queue/bench';
 import { LOCAL_WORK_SET, LONGFORM_ALIGN_SET } from '@shared/queue/slot-sets';
 import { ToolbarComponent, ToolbarItem } from '../../creamsicle-desktop';
+import { DialogService } from '../../creamsicle-desktop/services/dialog.service';
 import { ElectronService } from '../../core/services/electron.service';
 import { ToastService } from '../../core/services/toast.service';
 import { JobDetailsComponent } from './components/job-details/job-details.component';
@@ -541,13 +542,37 @@ import type { BenchSectionView, BookPlanView, LaneView } from './services/queue-
                   @if (plan.allHeld) {
                     <button type="button" class="btn go" (click)="startPlan(plan)">▶ Start this book</button>
                   }
+                  <!--
+                    TWO ACTS, AND THEY ARE NOT THE SAME ONE WORDED TWICE.
+
+                    Cancel puts a travelling book BACK IN PENDING — stopped, its
+                    settings kept, its server a question again (Owen: "if i hit
+                    cancel book while its in queue, it drops back to pending").
+                    Delete takes it out altogether. A single button could only
+                    have been one of them, and the one it was — delete — is the
+                    unrecoverable one.
+
+                    A book that travels nowhere has no Pending band to fall back
+                    to, so it shows Delete alone rather than a Cancel that would
+                    be refused by name on press.
+                  -->
+                  @if (plan.travels) {
+                    <button
+                      type="button"
+                      class="btn stop"
+                      (click)="cancelBook(plan)"
+                      [title]="'Stop this book and send it back to Pending — ' + plan.steps.length
+                        + ' step' + (plan.steps.length === 1 ? '' : 's')
+                        + '. It keeps its settings and you can change its server again there.'"
+                    >✕ Cancel this book</button>
+                  }
                   <button
                     type="button"
                     class="btn stop"
                     (click)="cancelPlan(plan)"
-                    [title]="'Take this book out of the queue — ' + plan.steps.length
+                    [title]="'Take this book out of the queue altogether — ' + plan.steps.length
                       + ' step' + (plan.steps.length === 1 ? '' : 's') + '. Nothing already rendered is deleted.'"
-                  >✕ Cancel this book</button>
+                  >🗑 Delete</button>
                 </div>
               </div>
 
@@ -1505,6 +1530,7 @@ export class QueueComponent {
   private readonly electronService = inject(ElectronService);
   private readonly eta = inject(JobEtaService);
   private readonly toasts = inject(ToastService);
+  private readonly dialog = inject(DialogService);
 
   constructor() {
     // The server list is settings state, not queue state, so it is read once
@@ -1949,9 +1975,62 @@ export class QueueComponent {
     this.report(this.tray.removeRun(stepId));
   }
 
-  /** Take every run in a book's plan out of the queue. */
+  /**
+   * Take every run in a book's plan out of the queue — the PENDING band's
+   * Discard, where nothing has been rendered and there is nowhere further back
+   * to go.
+   */
   cancelPlan(plan: BookPlan): void {
     this.report(this.tray.cancelPlan(plan));
+  }
+
+  /**
+   * CANCEL A BOOK THAT IS IN THE QUEUE — which drops it back to Pending rather
+   * than deleting it.
+   *
+   * Owen, 2026-09-18: *"i should be able to stop it from running and move it
+   * back to the pending queue if i want … let me change the server again if i
+   * want once it re-enters the queue. or delete it if i want. if i hit cancel
+   * book while its in queue, it drops back to pending."*
+   *
+   * A book that TRAVELS goes back to the staging band with its settings intact
+   * and its server answerable again. One that does not travel has no staging
+   * band to return to — `returnToPending` refuses it by name — so for those this
+   * stays what Cancel has always been: out of the queue. Deciding that here
+   * rather than letting the engine refuse keeps the button from being one that
+   * works on some cards and errors on others.
+   *
+   * ASKED FIRST when the return would leave banked work behind. A read's pages
+   * live in Foundry and this side cannot discard them, so "start over" would
+   * quietly mean "resume from page 214" — and that is a thing to learn before
+   * pressing, not after.
+   */
+  async cancelBook(plan: BookPlan): Promise<void> {
+    if (!plan.travels) {
+      this.report(this.tray.cancelPlan(plan));
+      return;
+    }
+    let warning: string | null = null;
+    try {
+      warning = await this.tray.returnPlanWarning(plan);
+    } catch {
+      // The warning is a courtesy and its absence must not block the act: a
+      // refusal here would leave the user unable to cancel a book because the
+      // page could not look up a caveat about it.
+      warning = null;
+    }
+    if (warning !== null) {
+      const go = await this.dialog.confirm({
+        title: 'Send this book back to Pending?',
+        message: `${plan.title} stops and returns to Pending, where you can change its server or `
+          + 'delete it.',
+        detail: warning,
+        confirmLabel: 'Back to Pending',
+        type: 'warning',
+      });
+      if (!go) return;
+    }
+    this.report(this.tray.returnPlanToPending(plan));
   }
 
   clearFinished(): void {

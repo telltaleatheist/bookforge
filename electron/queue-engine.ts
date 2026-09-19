@@ -1522,6 +1522,20 @@ export function isRunning(): boolean {
 export async function cancel(
   target: { jobId?: string; stepId?: string },
   reason = 'Stopped by the user.',
+  /**
+   * THIS PRESS PROMISES A RESUME — pass `true` from a Stop, never from a remove.
+   *
+   * STATED BY THE CALLER, not derived from `stopIsResumable`. This door serves
+   * TWO gestures: the Stop button, which promises the work already done is kept,
+   * and `removeJob`'s branch for one step of a multi-step run, which is a
+   * removal. Reading the module's flag would have answered "resumable" for both
+   * — and a removal that quietly preserved a half-read bank is the same class of
+   * mistake in the other direction.
+   *
+   * Defaults to FALSE for the reason stated on {@link setResumableStopReason}:
+   * absent means cancel, on both sides of the seam.
+   */
+  opts?: { resumable?: boolean },
 ): Promise<void> {
   const targets: Array<{ job: QueueJob; step: QueueStep }> = [];
   if (target.stepId) {
@@ -1548,7 +1562,11 @@ export async function cancel(
         } catch (err) {
           console.error(`[QUEUE-ENGINE] ${step.label} did not stop cleanly:`, err);
         }
-        live.abort.abort();
+        // The ONE abort in this file that may be anything but bare — see
+        // `setResumableStopReason`. A run stopped here can be started again, so
+        // a hosted engine is told to keep what it has; everything else this
+        // engine cancels is on its way out of the queue.
+        live.abort.abort(opts?.resumable === true ? resumableStopReason : undefined);
       }
       // The finish path (settleStep) writes the terminal state when run() returns.
       continue;
@@ -1894,6 +1912,142 @@ export function sendToQueue(jobId: string): void {
 }
 
 /**
+ * PUT A RUN BACK IN PENDING — the reverse of {@link sendToQueue}, and the only
+ * thing that makes "immutable once a GPU takes it" livable.
+ *
+ * Owen, 2026-09-18: *"i should be able to stop it from running and move it back
+ * to the pending queue if i want … just move it back to the queue to start over
+ * with exact same settings, and let me change the server again if i want once it
+ * re-enters the queue. or delete it if i want. if i hit cancel book while its in
+ * queue, it drops back to pending."*
+ *
+ * ── WHY THIS IS NOT `cancel()` AND NOT `retry()` ────────────────────────────
+ *
+ * `cancel` settles the steps TERMINALLY — and for a module with
+ * `stopIsResumable` it deliberately lands them `held` and interrupted, so the
+ * next press resumes rather than restarts. `retry` resets steps but leaves the
+ * run in the live queue, still bound to the machine it was assigned. Neither can
+ * answer *start this book over somewhere else*, because neither releases
+ * {@link QueueJob.waitForResolved} — and while that field is set, `setWaitFor`
+ * refuses by name ("a book finishes on the machine it started on").
+ *
+ * So THE ASSIGNMENT IS WHAT THIS DOOR RETIRES. §4.3 is not weakened by it: that
+ * rule says a job that STARTED on a machine finishes there, and this run is no
+ * longer going to finish — it has been taken out of the queue entirely and put
+ * back in the staging band, where nothing is committed and the server is a
+ * question again. A run that is merely stopped keeps its venue, as it always
+ * did.
+ *
+ * ── WHAT IT DOES NOT DO: DELETE ANOTHER APPLICATION'S FILES ─────────────────
+ *
+ * Owen asked for *"dont keep any progress or anything if i fully cancel it"*,
+ * and for a HOSTED FOUNDRY READ this side cannot honour that yet — which is
+ * said out loud here rather than quietly half-done. A read's banked pages live
+ * in Foundry's project, at a path recorded on that read step's own ledger
+ * payload; composing it from the project key is a defect Foundry has already
+ * fixed once (`readingBank`, their projects.ts — a re-read with a different page
+ * range BRANCHES, so a project can hold two banks). And a cancelled read never
+ * LANDS a step, so `deleteLedgerStep` — the one door that sweeps a bank — has no
+ * row to act on. Reaching into `readings/` from here to guess the difference is
+ * the same class of mistake as composing the path.
+ *
+ * Until Foundry ships a discard door (asked 2026-09-19, foundry-mac-1), a
+ * re-run of a returned read RESUMES from its bank, and the caller is told so by
+ * {@link returnToPendingKeepsBank} rather than discovering it on the invoice.
+ * Everything a run keeps on OUR side — output, metrics, notes, progress — is
+ * cleared here, so nothing of the stopped attempt is read as this one's.
+ */
+export async function returnToPending(jobId: string): Promise<void> {
+  const job = requireJob(jobId);
+  if (isPending(job)) {
+    throw new QueueRoutingRefusal(
+      'not_pending',
+      `${job.title} is already in Pending. Nothing here has been altered.`,
+    );
+  }
+  if (!jobIsStageable(job)) {
+    /*
+     * REFUSED RATHER THAN STAGED ANYWAY. Pending is a band a run can be SENT
+     * from, and `sendToQueue` is the only way out of it; putting a run there
+     * that `jobIsStageable` says never belonged would strand it behind a picker
+     * with nothing to pick and a button its own guard refuses.
+     */
+    throw new QueueRoutingRefusal(
+      'not_travelling',
+      `${job.title} has no step that chooses a machine, so there is no staging band for it to go `
+      + 'back to. Stop it, or remove it from the queue.',
+    );
+  }
+
+  // Stop whatever is live FIRST, and by the module's own door — the same order
+  // `remove` uses. A step still writing while its status is rewritten underneath
+  // it is how a settle lands on top of the reset and undoes it.
+  for (const step of job.steps) {
+    if (step.status !== 'running') continue;
+    const live = runningSteps.get(step.id);
+    if (!live) continue;
+    live.stopRequested = true;
+    try {
+      await moduleFor(step.type).cancel(step.id, step);
+    } catch (err) {
+      console.error(`[QUEUE-ENGINE] ${step.label} did not stop cleanly on return to Pending:`, err);
+    }
+    live.abort.abort();
+    runningSteps.delete(step.id);
+  }
+
+  for (const step of job.steps) {
+    step.status = 'held';
+    step.error = undefined;
+    step.progress = {};
+    step.metrics = {};
+    step.output = undefined;
+    step.outputPath = undefined;
+    step.completionNotes = undefined;
+    step.startedAt = undefined;
+    step.finishedAt = undefined;
+    // The machine this step was PENCILLED IN for, which is now a decision the
+    // operator is about to make again. Left standing it would have the bench
+    // naming a server the book is no longer going to.
+    step.venue = undefined;
+  }
+  job.finishedAt = undefined;
+  job.waitForResolved = undefined;
+  job.pending = true;
+
+  /*
+   * THE CARD GOES BACK. A staged run holds nothing — that is what "nothing is
+   * committed" means — so the row's lease is closed outright rather than through
+   * `closeRowLeaseIfUnwanted`, whose question ("is a step of this run still
+   * next?") would answer yes about steps that are now merely held.
+   */
+  if (crucibleLeaseHost !== null) void crucibleLeaseHost.closeRow(jobId);
+  changed();
+  pump();
+}
+
+/**
+ * WHAT A RETURN TO PENDING CANNOT THROW AWAY, for the dialog that asks first.
+ *
+ * Null when there is nothing to warn about. A sentence when the run holds work
+ * banked in another application, because "start over" and "resume from page 214"
+ * are different enough that a person must not find out afterwards.
+ *
+ * Pure, and asked of the run rather than the disk: whether a bank EXISTS is
+ * Foundry's to answer, and this is only the honest caveat on a door that does
+ * not delete one.
+ */
+export function returnToPendingKeepsBank(jobId: string): string | null {
+  const job = requireJob(jobId);
+  const read = job.steps.find((step) => step.type === 'foundry-job'
+    && (step.config as { request?: { kind?: string } } | undefined)?.request?.kind === 'read');
+  if (read === undefined) return null;
+  return 'The pages already read stay banked in Foundry, so starting this again resumes from '
+    + 'where it stopped rather than from page one. BookForge cannot discard another '
+    + "application's bank; Foundry is adding a door for that.";
+}
+
+/**
  * HOW MANY QUEUED BOOKS NAME EACH SERVER — the count §4.2.1a asks for.
  *
  * *"12 rows are waiting for this PC, which is now disabled."* Disabling a
@@ -2233,6 +2387,39 @@ export function setCrucibleLeaseHost(host: CrucibleLeaseHost | null): void {
 let crucibleHost: CrucibleRoutingHost | null = null;
 
 /** main wires this once, in `startQueueEngine`. The keeper passes a fake. */
+/**
+ * THE ABORT REASON THAT MEANS *STOPPED, NOT CANCELLED* — Foundry's
+ * `RESUMABLE_STOP`, handed in by main because this module imports no Electron
+ * and no vendored subtree.
+ *
+ * ── Why a reason on the abort and not a flag on the run ────────────────────
+ *
+ * Foundry's argument, and it is the right one: `RunOptions` is handed over once,
+ * at `runJob`, before the engine has spawned — and WHICH BUTTON somebody presses
+ * four minutes later is not a fact that exists at that moment. `abort(reason)`
+ * carries a value at the instant of the gesture, which is the only moment the
+ * two gestures are still distinguishable.
+ *
+ * ── ABSENT MEANS CANCEL, on both sides of the seam ─────────────────────────
+ *
+ * Their `isResumableStop` reads anything else — a bare abort, a DOMException, a
+ * lookalike string — as a CANCEL, which destroys a reading's bank. So the
+ * gentler behaviour is the one that must be asked for by name, and this engine
+ * keeps that rule rather than inverting it locally: every abort below is bare
+ * unless its door means *you can press Start again*. A call site that forgets
+ * therefore discards, which is a user-visible "it started over" rather than a
+ * silent promise this side cannot keep.
+ *
+ * UNSET IN A BUILD THAT NEVER MOUNTED FOUNDRY, which is every keeper and every
+ * run with no hosted window. `undefined` is then passed as the reason, which is
+ * a bare abort — the same thing that happened before this existed.
+ */
+let resumableStopReason: unknown;
+
+export function setResumableStopReason(reason: unknown): void {
+  resumableStopReason = reason;
+}
+
 export function setCrucibleRoutingHost(host: CrucibleRoutingHost | null): void {
   crucibleHost = host;
   reachCache.clear();

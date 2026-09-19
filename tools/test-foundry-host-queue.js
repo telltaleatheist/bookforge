@@ -1220,7 +1220,46 @@ test('with no runJob the row FAILS WITH A SENTENCE — it does not fall back to 
   host.setFoundrySeam({ runJob: null, setQueueRows: null, drained: null });
   engine.start();
 
+  /*
+   * A ROUTING HOST AND A REGISTRY, because A READ NOW TRAVELS (2026-09-19).
+   *
+   * This check is about ONE thing — a row with nothing to run it must fail by
+   * name — and since a read learned to travel it has to get PAST placement to
+   * reach that. Without these two it failed on the placement refusal instead,
+   * wearing whichever server name a previous test happened to leave in the
+   * module-level registry snapshot. That is a true refusal about the wrong
+   * subject, which is the most misleading kind of green-adjacent red.
+   *
+   * `hostq` is the same one-server machine `fresh()` scripts; this test does its
+   * own setup rather than calling it, so it says so itself.
+   */
+  engine.setCrucibleRoutingHost({
+    routing: () => ({ ranked: [{ name: 'hostq', enabled: true }], serversOnThisMachine: [] }),
+    defaultWaitFor: () => 'hostq',
+    dial: () => 'any',
+    reach: async () => ({ reachable: true }),
+  });
+  registry.refreshHostCrucibleRegistry({
+    routing: () => ({
+      ranked: [{ name: 'hostq', enabled: true }],
+      newJobsWaitFor: 'top-ranked',
+      unknown: [],
+      legacyLocalRender: false,
+    }),
+    server: (name) => ({
+      name, url: 'http://127.0.0.1:7100', token: 'crux_test_aaaa', source: 'registry',
+    }),
+  });
+
   const row = host.foundryHostQueue.enqueue(readRequest('norunner'), null, PROJ);
+  /*
+   * And `Send to queue` is what commits a staged read — a targeted Start on one
+   * refuses `still_pending`, and pressing it here would test that refusal
+   * instead of the missing seam. Same two lines the hosted-clean check uses.
+   */
+  const staged = engine.snapshot().jobs.find((j) => j.steps.some((s) => s.id === row.id));
+  assert.strictEqual(staged.pending, true, 'a hosted read stages so its card can be chosen');
+  engine.sendToQueue(staged.id);
   engine.start({ stepId: row.id });
   await settle(40);
 

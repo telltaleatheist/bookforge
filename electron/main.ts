@@ -13496,6 +13496,17 @@ app.whenReady().then(async () => {
       ? () => foundryMount.hostQueueDrained!()
       : null,
   });
+  /*
+   * AND THE WORD FOR "STOPPED, NOT CANCELLED" — foundry `47ae0d4`.
+   *
+   * Taken from the MOUNT rather than retyped, which is the whole point of them
+   * re-exporting it there: `isResumableStop` is the one comparison, and a
+   * literal copied into this file is a second answer waiting to drift from it.
+   * A vendored copy too old to export it leaves this undefined, and the engine
+   * then aborts bare — which is exactly the behaviour that build already had.
+   */
+  queueEngine.setResumableStopReason(
+    (foundryMount as { RESUMABLE_STOP?: unknown }).RESUMABLE_STOP);
   watchFoundryQueue();
   if (typeof foundryMount.runJob !== 'function') {
     // Said once, at startup, where it is actionable — not per row, and not

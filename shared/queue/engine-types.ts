@@ -171,14 +171,24 @@ export const PASS_JOB_TYPES: ReadonlySet<JobType> = new Set<JobType>([
  *
  * `jobIsStageable` requires `travels === true` as well as membership here, and
  * for a `foundry-job` that is decided by kind (`machines()`,
- * electron/queue-steps/foundry-job.ts): the TEXT ACTS travel — clean, translate,
- * simplify — and a READ and a RENDERING do not. So a read still goes straight
- * into the queue, and it should: it is the VLM door and still spawns a local
- * python env, so there is no venue to pick and a Send-to-queue press over an
- * empty picker is a press for nothing. Making a read travel is a Foundry-side
- * change (crucible `docs/PHASE7-LANES.md` §8.1); the moment it is one, it
- * stages here with no further edit, because the two facts are already asked
- * separately.
+ * electron/queue-steps/foundry-job.ts): every GPU act travels — clean,
+ * translate, simplify AND **read** — while a RENDERING does not, because it
+ * asks no model at all.
+ *
+ * A READ STAGES SINCE 2026-09-19, and the note that used to stand here is the
+ * reason it did not before: *"it is the VLM door and still spawns a local python
+ * env, so there is no venue to pick … Making a read travel is a Foundry-side
+ * change (crucible `docs/PHASE7-LANES.md` §8.1); the moment it is one, it stages
+ * here with no further edit, because the two facts are already asked
+ * separately."*
+ *
+ * That moment came, and the prediction held exactly: the vendored Foundry maps
+ * `capabilityClassOf('read') → 'pages'` and places a read on a Crucible slot, so
+ * the picker is no longer empty — and this list needed no edit, only `machines()`
+ * did. What the old note could not foresee is what the gap COST while it stood:
+ * with no venue picked here, the read went out with `waitFor` absent and
+ * Foundry's own `newJobsWaitFor` chose the machine, so the bench drew a read on
+ * a switched-off Mac while it ran on the PC.
  *
  * A CHAINED REQUEST IS NOT STAGED EITHER, and that is `enqueue`'s doing rather
  * than this list's: a request naming `after` is appended onto the run that owns

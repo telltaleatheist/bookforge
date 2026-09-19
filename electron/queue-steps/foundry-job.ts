@@ -125,20 +125,40 @@ export const foundryJobStep: StepModule = {
   produces: 'none',
   resource: resourceFor,
   /**
-   * THE TEXT ACTS TRAVEL; A READ AND A RENDERING DO NOT.
+   * A GPU ACT TRAVELS. A CPU ACT DOES NOT. `resourceFor` IS THE ONE ANSWER.
    *
-   * A text act is a chat conversation with a model, and a Crucible serves that
-   * door (`/v1/openai`, crucible `docs/PHASE2-LLM.md` §5) — so the queue asks
-   * this row's `waitFor` before it starts one and writes the answer onto the
-   * run, exactly as it does for a narration. `run` reads it back as the
-   * caller-named venue, which is the one answer nothing second-guesses.
+   * Asked of the same function that answers `resource`, on purpose: a step that
+   * contends for a card and CANNOT travel is, by construction, charged to this
+   * machine's card — `slotSetForStep` files a non-travelling step on
+   * `thisMachineSetId` — so the two facts cannot disagree without the bench
+   * drawing work on a machine that is not doing it. Deriving one from the other
+   * is what makes that unsayable rather than merely untrue today.
    *
-   * A READ IS THE VLM DOOR and still spawns a WSL python env here
-   * (`electron/vlm-page-server.ts`); crucible `docs/PHASE7-LANES.md` §8.1 says
-   * making it travel is a Foundry-side change and should not be started until
-   * `/v1/activity` and the machine model exist. A RENDERING asks no model at
-   * all — arithmetic over a bank already on disk. Both keep the default
-   * `local`, because a step that has not been taught to travel does not travel.
+   * ── WHY THIS CHANGED, 2026-09-19 ────────────────────────────────────────
+   *
+   * A READ USED TO BE `local` here, on this reasoning: *"a read is the VLM door
+   * and still spawns a WSL python env here (electron/vlm-page-server.ts);
+   * crucible docs/PHASE7-LANES.md §8.1 says making it travel is a Foundry-side
+   * change."* That Foundry-side change has SHIPPED and is in the vendored
+   * subtree: `foundry-app/electron/crucible-dispatch.ts` maps
+   * `capabilityClassOf('read') → 'pages'`, so a hosted read goes through
+   * `placeJob` → `placeOnCrucible`, which walks the slots, claims the model
+   * lease and loads dots-ocr on a server. The comment outlived the fact.
+   *
+   * WHAT THE STALE ANSWER COST, live on 2026-09-18: Owen queued a read, the
+   * bench drew it in the GPU slot of a local engine he had SWITCHED OFF — while
+   * that same card's progress line read "Loading dots-ocr on" the OTHER
+   * registered engine. Both were true. Because the step said `local`, this
+   * side named no machine, sent `waitFor: null`, and the mount translated that
+   * into an absent key — at which point Foundry answered with its OWN
+   * `newJobsWaitFor` (default `'top'`, `foundry-app/electron/app-settings.ts`).
+   * A machine chosen on nobody's screen, which is the precise hole
+   * `FoundryRunJobOptions.waitFor` was added to close, reopened for every kind
+   * this side called local.
+   *
+   * A RENDERING STILL DOES NOT TRAVEL, and now it says so for a reason the code
+   * can check rather than a sentence in a comment: `resourceFor` calls it `cpu`,
+   * because it asks no model at all — arithmetic over a bank already on disk.
    *
    * RULING OWED (crucible `docs/PHASE7-LANES.md` §4.4, one book = one GPU): a
    * book whose narration and whose text pass are separate queue RUNS can name
@@ -148,10 +168,8 @@ export const foundryJobStep: StepModule = {
    * must land on the machine its render did is Owen's to rule; this build does
    * not invent the rule, and the venue each run used is on its own row.
    */
-  machines: (config: Record<string, unknown>): 'local' | 'any' => {
-    const kind = (config as unknown as FoundryJobStepConfig).request?.kind;
-    return kind === 'clean' || kind === 'translate' || kind === 'simplify' ? 'any' : 'local';
-  },
+  machines: (config: Record<string, unknown>): 'local' | 'any' =>
+    (resourceFor(config) === 'gpu' ? 'any' : 'local'),
   /*
    * NO `leasesModel` HERE, AND ITS ABSENCE IS THE STATEMENT.
    *
@@ -314,10 +332,31 @@ export const foundryJobStep: StepModule = {
      * reporting success, is the failure the whole campaign removed. A text act
      * that cannot be placed is REFUSED, by name.
      */
+    /*
+     * ── AND A READ IS PLACED HERE TOO, BY THE PAGES DECIDER ──────────────────
+     *
+     * `act` is the three LANGUAGE acts and stays that way; a read asks the
+     * VISION model, which is a different capability class over there
+     * (`capabilityClassOf('read') → 'pages'`) and a different decider here.
+     * `placed` is the union — every act this side names a machine for — so the
+     * offered/enabled check, the refusal and the log line below are written
+     * ONCE for all four rather than copied into a second arm that would drift.
+     *
+     * WHY THE PAGES DECIDER AND NOT THE TEXT ONE: they read the same routing
+     * record but they are not the same question. `decideWherePagesRun` is what
+     * BookForge's OWN conversion door already asks (`queue-steps/vlm-convert.ts`,
+     * which has declared `machines(): 'any'` all along), and a hosted read and a
+     * local one must not be able to land on different machines for the same
+     * book. One record, one decision, two doors into it.
+     */
     let waitFor: string | null = null;
-    if (act !== null) {
+    const placed: 'clean' | 'translate' | 'simplify' | 'read' | null =
+      act ?? (kind === 'read' ? 'read' : null);
+    if (placed !== null) {
       const { decideWhereTextActRuns, processTextVenueHost } =
         await import('../crucible/text-venue.js');
+      const { decideWherePagesRun, processPagesVenueHost } =
+        await import('../crucible/pages.js');
       const { runVenueOfRow } = await import('../crucible/step-venue.js');
       const { hostCrucibleServers } = await import('../crucible/host-registry.js');
       /*
@@ -329,7 +368,15 @@ export const foundryJobStep: StepModule = {
        * name, instead of silently re-deciding where a half-done book runs.
        */
       const assigned = runVenueOfRow(ctx.job.waitForResolved);
-      const venue = await decideWhereTextActRuns(assigned?.server, processTextVenueHost());
+      /*
+       * THE RUN'S VENUE IS PASSED TO BOTH, which is what keeps §4.3's "one
+       * book, one GPU" true across a chain that reads and then cleans: the
+       * second act follows the machine the first was assigned, and only a run
+       * with no assignment decides from the ranked record.
+       */
+      const venue = placed === 'read'
+        ? await decideWherePagesRun(processPagesVenueHost(), undefined, assigned)
+        : await decideWhereTextActRuns(assigned?.server, processTextVenueHost());
       /*
        * ── THE ONE CHECK THIS SIDE MAKES, AND WHY IT IS NOT A SECOND REGISTRY ──
        *
@@ -373,7 +420,7 @@ export const foundryJobStep: StepModule = {
       const row = offered.find((entry) => entry.name.trim() === venue.server);
       if (row === undefined) {
         throw new Error(hostedCrucibleServerNotOffered(
-          act, venue.server, offered.map((entry) => entry.name),
+          placed, venue.server, offered.map((entry) => entry.name),
           'this machine\'s Crucible registry has no entry by that name.',
         ));
       }
@@ -382,12 +429,12 @@ export const foundryJobStep: StepModule = {
         // so "switched off" and "not registered" are the same park over there
         // and must be the same refusal here — with the true reason on it.
         throw new Error(hostedCrucibleServerNotOffered(
-          act, venue.server, offered.filter((entry) => entry.enabled).map((entry) => entry.name),
+          placed, venue.server, offered.filter((entry) => entry.enabled).map((entry) => entry.name),
           'that server is switched off, and a disabled entry is not a slot in that window.',
         ));
       }
       waitFor = row.name.trim();
-      const line = `[foundry-job] ${act} goes to crucible "${waitFor}" (${venue.because}); the `
+      const line = `[foundry-job] ${placed} goes to crucible "${waitFor}" (${venue.because}); the `
         + 'hosted Foundry window composes the endpoint, model, credential and lease';
       console.log(line);
       ctx.report({ message: line, detail: line });
@@ -419,11 +466,45 @@ export const foundryJobStep: StepModule = {
       /*
        * THE MACHINE, AND THE ONLY THING THIS SIDE DECIDES ABOUT THE ACT.
        *
-       * `null` for a `read` and a `render` — and it is STATED rather than
-       * omitted, because "this kind does not travel" is a fact about the kind
-       * (`machines()` says `local` for both) and not an absence. The mount
-       * translates it into leaving their optional `waitFor` off, which is what
-       * makes their own `waitForOfNewJob()` decide, exactly as it does today.
+       * `null` ONLY for a RENDERING now — and it is STATED rather than omitted,
+       * because "this kind does not travel" is a fact about the kind
+       * (`machines()`, via `resourceFor`: a rendering is `cpu`) and not an
+       * absence. The mount translates it into leaving their optional `waitFor`
+       * off, which lets their own `waitForOfNewJob()` decide.
+       *
+       * ── AND THAT FALLBACK IS WHY A READ MAY NEVER SEND `null` AGAIN ────────
+       *
+       * Their `placedBy` (foundry-app/electron/job-queue.ts) argues this side's
+       * case against itself. When the host DID name a machine its docblock says:
+       * *"Hosted, the person picked a machine on the HOST's row, and this app's
+       * default is not an answer to that question — it is an answer to a
+       * question nobody asked."* Four lines on, with nothing named, it calls
+       * `waitForOfNewJob()` and does exactly that. On 2026-09-18 that put a read
+       * on one registered engine while this queue drew it on another — one the
+       * operator had switched off.
+       *
+       * A rendering is safe in that hole because it places on no slot over there
+       * (no capability class, no lease) — the fallback resolves a name nothing
+       * then uses. A read is not, which is what the arm above now closes.
+       *
+       * ── AND THE HOLE ITSELF IS CLOSED ON THEIR SIDE TOO (foundry `5fe3e0f`) ─
+       *
+       * I asked them to make a hosted silence a REFUSAL. Owen ruled otherwise,
+       * and his reading is better than mine was: *"the server is chosen when
+       * it's in the queue. if it isnt chosen or cant be for some reason, it
+       * should be 'any'."* A refusal would make the host's silence an ERROR, and
+       * it is not one — it is the absence of a choice, and `any` is the word
+       * that already means exactly that. So `placedBy` answers `ANY_SLOT` when a
+       * host is registered and named nothing; the run goes wherever is free and
+       * `ranOn` records where, which fixes the whole of the original defect (a
+       * board claiming a machine the run is not on) without anything failing.
+       *
+       * What that buys THIS side is a floor, not a licence: a read reaching the
+       * mount with no name — a path not covered here, a race, a gesture that
+       * skips the Pending band — now lands as `any` rather than being filed
+       * silently on the vendored window's own `newJobsWaitFor`. The arm above
+       * still names a machine for every read it can, because `any` is a worse
+       * answer than the operator's, only never a wrong one.
        */
       waitFor,
       /*

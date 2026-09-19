@@ -101,7 +101,8 @@ interface QueueBridge {
   release(target?: { jobId?: string; stepId?: string }): Promise<{ success: boolean; error?: string }>;
   start(target?: { jobId?: string; stepId?: string }): Promise<{ success: boolean; error?: string }>;
   pause(): Promise<{ success: boolean; error?: string }>;
-  cancel(target: { jobId?: string; stepId?: string }, reason?: string): Promise<{ success: boolean; error?: string }>;
+  cancel(target: { jobId?: string; stepId?: string }, reason?: string,
+    opts?: { resumable?: boolean }): Promise<{ success: boolean; error?: string }>;
   retry(target: { jobId?: string; stepId?: string }): Promise<{ success: boolean; error?: string }>;
   remove(jobId: string): Promise<{ success: boolean; error?: string }>;
   reorder(jobId: string, beforeJobId: string | null): Promise<{ success: boolean; error?: string }>;
@@ -113,6 +114,12 @@ interface QueueBridge {
   setGpuDial(value: string): Promise<{ success: boolean; data?: { dial: string }; error?: string }>;
   /** Move a staged book into the live queue. */
   sendToQueue(jobId: string): Promise<{ success: boolean; error?: string }>;
+  /** Take a book back out of the queue and into Pending, stopping it first. */
+  returnToPending(jobId: string): Promise<{ success: boolean; error?: string }>;
+  /** What that return would NOT throw away — a sentence, or null. */
+  returnToPendingWarning(jobId: string): Promise<{
+    success: boolean; data?: { warning: string | null }; error?: string;
+  }>;
   onChanged(cb: (snapshot: QueueSnapshot) => void): () => void;
   onStepFinished(cb: (event: StepFinishedEvent) => void): () => void;
   /** News about a run that never became one — see `QueueNotice`. */
@@ -736,9 +743,22 @@ export class QueueService {
     QueueService.settle(await this.requireBridge().start({ stepId: jobId }), 'Resuming this job');
   }
 
+  /**
+   * STOP — and the press promises a resume, which is why `resumable` is set here
+   * and nowhere else in this file.
+   *
+   * A hosted Foundry read banks its pages as they land, and since foundry
+   * `47ae0d4` a bare cancel DESTROYS that bank (Owen's ruling: a full cancel
+   * keeps nothing). Stop's own tooltip promises the opposite — "It keeps
+   * everything it has already rendered, and Start picks it up from there" — so
+   * this is the flag that makes the button tell the truth. `removeJob` below
+   * reaches the SAME engine door and deliberately does not set it.
+   */
   async cancelJob(jobId: string): Promise<boolean> {
     const target = this.targetFor(jobId);
-    QueueService.settle(await this.requireBridge().cancel(target), 'Stopping this job');
+    QueueService.settle(
+      await this.requireBridge().cancel(target, undefined, { resumable: true }),
+      'Stopping this job');
     return true;
   }
 
@@ -817,6 +837,32 @@ export class QueueService {
       await this.requireBridge().sendToQueue(jobId),
       'Sending this book to the queue',
     );
+  }
+
+  /**
+   * Take a book back out of the live queue and into Pending — Owen's *"if i hit
+   * cancel book while its in queue, it drops back to pending"*.
+   *
+   * Stops it first if it is running, keeps its settings verbatim, and releases
+   * the machine it was assigned so the picker is answerable again. Main's
+   * refusal is thrown rather than swallowed, for the same reason the dial's is:
+   * a book that did not move must never look as though it did.
+   */
+  async returnToPending(jobId: string): Promise<void> {
+    QueueService.settle(
+      await this.requireBridge().returnToPending(jobId),
+      'Returning this book to Pending',
+    );
+  }
+
+  /**
+   * ASKED BEFORE THE PRESS, so the dialog can say what the return will not undo.
+   * Null means there is nothing to warn about.
+   */
+  async returnToPendingWarning(jobId: string): Promise<string | null> {
+    const result = await this.requireBridge().returnToPendingWarning(jobId);
+    QueueService.settle(result, 'Asking what returning this book would keep');
+    return result.data?.warning ?? null;
   }
 
   async clearCompleted(): Promise<void> {

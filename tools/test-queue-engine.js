@@ -1385,12 +1385,22 @@ test('a source step with nothing to read is refused when it is composed', async 
 // right into the queue. it should add it to pending so i can configure the gpu
 // it should go to."
 
-// The real module's own rule, copied rather than approximated: the text acts
-// travel and a read does not (electron/queue-steps/foundry-job.ts, `machines`).
-const foundryMachines = (config) => {
-  const kind = config && config.request ? config.request.kind : undefined;
-  return kind === 'clean' || kind === 'translate' || kind === 'simplify' ? 'any' : 'local';
-};
+/*
+ * THE REAL MODULE'S OWN `machines`, IMPORTED — never a copy.
+ *
+ * It WAS a copy ("the real module's own rule, copied rather than approximated"),
+ * and on 2026-09-19 that copy was the reason this suite reported 47 green while
+ * the behaviour it describes had changed underneath it: a read learned to
+ * travel, `test-foundry-host-queue` — which registers the real module — failed
+ * on the first press, and the check below named "a Foundry READ does not stage"
+ * went on passing against a rule that no longer existed anywhere but here.
+ *
+ * A keeper that restates the code it guards guards the restatement. So this
+ * takes the function itself; the fake module keeps everything else fake, which
+ * is the part that makes the suite fast and hermetic.
+ */
+const foundryMachines = (config) =>
+  require(path.join(DIST, 'queue-steps', 'foundry-job.js')).foundryJobStep.machines(config);
 
 const foundryJobSpec = (kind, title) => ({
   title,
@@ -1433,22 +1443,63 @@ test('a hosted Foundry TEXT ACT stages into Pending, held, with a machine still 
   assert.strictEqual(stepsOf(job.id)[0].travels, true, 'there was a machine to choose');
 });
 
-test('a Foundry READ does not stage — there is no venue to pick, so there is nothing to ask', async () => {
+test('a Foundry READ stages too — it is a GPU act, so the machine is a question', async () => {
+  /*
+   * THE REVERSE OF WHAT THIS CHECK USED TO ASSERT, and the old sentence is kept
+   * here because it explains the defect: *"a read is the local VLM door: no card
+   * to choose"*. That stopped being true when the vendored Foundry started
+   * placing a read on a Crucible slot (`capabilityClassOf('read') → 'pages'`).
+   * While it stood, BookForge named no machine, sent `waitFor` absent, and
+   * Foundry's own default chose one — the bench drew a read on a switched-off
+   * Mac while it ran on the PC (2026-09-18).
+   */
   const foundry = fakeModule('foundry-job', { produces: 'none', machines: foundryMachines });
-  await fresh('foundry-read-unstaged', [foundry]);
+  await fresh('foundry-read-staged', [foundry]);
 
   const job = engine.enqueue(foundryJobSpec('read', 'Read (156 pages)'));
   await settle();
 
-  // Not staged, and held only by the ordinary three-way rule — an idle queue
-  // waits for Start whatever composed the row.
-  assert.strictEqual(job.pending, undefined, 'a read is the local VLM door: no card to choose');
+  assert.strictEqual(job.pending, true, 'a read asks a card: it stages like every other GPU act');
   assert.strictEqual(stepsOf(job.id)[0].status, 'held');
+  // Start does not reach a staged book; Send to queue is the press that commits it.
+  engine.start();
+  await settle();
+  assert.strictEqual(foundry.runs.length, 0, 'a staged read is not in the queue Start runs');
+
+  engine.sendToQueue(job.id);
+  await settle();
+  assert.strictEqual(engine.snapshot().jobs.find((j) => j.id === job.id).pending, undefined,
+    'and Send to queue is what takes it out of Pending');
+  assert.strictEqual(stepsOf(job.id)[0].status, 'queued', 'releasing its steps');
+  assert.strictEqual(stepsOf(job.id)[0].travels, true, 'there was a machine to choose');
+  /*
+   * NOT `running`, for the same reason the text act above is not: this row
+   * travels and no server is scripted in this harness, so it waits in the live
+   * queue for one. That wait is the point — before this change a read did not
+   * wait for anything here, because it never asked.
+   */
+  assert.strictEqual(foundry.runs.length, 0);
+});
+
+test('a Foundry RENDERING still does not stage — it asks no model at all', async () => {
+  /*
+   * The other half of the same rule, and the one that keeps "every GPU act
+   * travels" from quietly becoming "everything travels": a rendering is
+   * arithmetic over a bank already on disk, `resourceFor` calls it `cpu`, and a
+   * Send-to-queue gate on a two-second job would be a press for nothing.
+   */
+  const foundry = fakeModule('foundry-job', { produces: 'none', machines: foundryMachines });
+  await fresh('foundry-render-unstaged', [foundry]);
+
+  const job = engine.enqueue(foundryJobSpec('epub', 'Render — Pokemon'));
+  await settle();
+
+  assert.strictEqual(job.pending, undefined, 'a rendering picks no card, so it asks for none');
   assert.throws(() => engine.sendToQueue(job.id), /is not in Pending/);
 
   engine.start();
   await settle();
-  assert.strictEqual(foundry.runs.length, 1, 'Start is the whole of what a read waits for');
+  assert.strictEqual(foundry.runs.length, 1, 'Start is the whole of what a rendering waits for');
 });
 
 test('the two facts are asked SEPARATELY: membership alone does not stage a step that cannot travel', async () => {
@@ -1492,6 +1543,95 @@ test('a CHAINED Foundry request joins its parent run and is not staged a second 
   assert.strictEqual(runs.length, 1, 'still one staged book, not two');
   assert.strictEqual(stepsOf(job.id).length, 2);
   assert.ok(chained.id, 'the chained row exists under the row it follows');
+});
+
+/*
+ * ── WHICH BUTTON DESTROYS A HOSTED READING'S PAGES ──────────────────────────
+ *
+ * Since foundry `47ae0d4` the abort's REASON decides whether a hosted read keeps
+ * the pages it has already banked: `RESUMABLE_STOP` keeps them, and ANYTHING
+ * else — a bare abort, a DOMException, a lookalike string — destroys them
+ * (Owen's ruling: a full cancel keeps nothing). That is a real, irreversible
+ * consequence of pressing the wrong one, on the other side of a seam this suite
+ * cannot spawn.
+ *
+ * So these three press each of BookForge's buttons and assert the reason that
+ * reaches the running step's signal — the last thing this side owns before the
+ * decision leaves it. The trap they exist for is the one Foundry named: `cancel`
+ * serves BOTH the Stop button and `removeJob`'s branch for one step of a
+ * multi-step run, so a single helper that forgot the flag would give Stop's
+ * promise away silently and nothing else in the suite would notice.
+ *
+ * The constant is spelled literally HERE and only here, because this keeper's
+ * whole job is to fail when the two sides stop agreeing about it; importing the
+ * value under test would make it agree with itself by construction.
+ */
+const RESUMABLE_STOP = 'foundry:resumable-stop';
+
+/** Run one step, hold it open, and hand back the reason its abort carried. */
+async function reasonAfter(name, press) {
+  // `machines` is the real module's, so a read travels — which is what lets
+  // `returnToPending` accept it. Its refusal for a non-travelling run is the
+  // subject of its own check, not of these three.
+  const mod = fakeModule('foundry-job',
+    { produces: 'none', stopIsResumable: true, machines: foundryMachines });
+  await fresh(name, [mod]);
+  engine.setResumableStopReason(RESUMABLE_STOP);
+  /*
+   * ONE SERVER, so the staged read can be ADMITTED and actually reach `running`
+   * — an abort has nothing to reach otherwise. The venue DECISION is not this
+   * keeper's subject; which reason the abort carries is.
+   */
+  engine.setCrucibleRoutingHost({
+    routing: () => ({ ranked: [{ name: 'hostq', enabled: true }], serversOnThisMachine: [] }),
+    defaultWaitFor: () => 'hostq',
+    dial: () => 'any',
+    reach: async () => ({ reachable: true }),
+  });
+  const job = engine.enqueue({
+    title: 'Read (156 pages)',
+    steps: [{
+      type: 'foundry-job', label: 'Read the pages', sourceRef: { kind: 'none' },
+      config: { request: { kind: 'read' } },
+    }],
+  });
+  // A read stages, so Send to queue is what commits it; and the run needs a
+  // machine or admission parks it short of `running`.
+  engine.sendToQueue(job.id);
+  engine.start();
+  await settle();
+  const step = stepsOf(job.id)[0];
+  assert.strictEqual(step.status, 'running', 'the step has to be RUNNING for an abort to reach it');
+  const signal = mod.runs[0].ctx.signal;
+  await press(job.id, step.id);
+  assert.strictEqual(signal.aborted, true, 'every one of these doors aborts the run');
+  return signal.reason;
+}
+
+test('STOP tells a hosted engine to keep the pages already banked', async () => {
+  const reason = await reasonAfter('abort-stop', (_jobId, stepId) =>
+    engine.cancel({ stepId }, 'Stopped by the user.', { resumable: true }));
+  assert.strictEqual(reason, RESUMABLE_STOP,
+    'Stop promises "Start picks it up from there" — without this the bank is destroyed');
+});
+
+test('CANCEL THIS BOOK destroys them — it is a start-over, and says so', async () => {
+  const reason = await reasonAfter('abort-return', (jobId) => engine.returnToPending(jobId));
+  assert.notStrictEqual(reason, RESUMABLE_STOP,
+    'returning to Pending is Owen\'s full cancel: it must not ask for a resume');
+});
+
+test('REMOVING one step is not a stop, though it goes through the same door', async () => {
+  /*
+   * THE TRAP, pinned. `queue.service.removeJob` calls `cancel` for one step of a
+   * multi-step run — the same function the Stop button calls. Inferring the flag
+   * from the module's `stopIsResumable` (true here, as it is for every Foundry
+   * job) would have answered "keep the pages" for a removal.
+   */
+  const reason = await reasonAfter('abort-remove-step', (_jobId, stepId) =>
+    engine.cancel({ stepId }, 'Removed from the queue.'));
+  assert.notStrictEqual(reason, RESUMABLE_STOP,
+    'a removal defaults to cancel, exactly as an absent reason does across the seam');
 });
 
 (async () => {

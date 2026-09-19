@@ -1746,7 +1746,8 @@ export interface ElectronAPI {
     release: (target?: QueueTarget) => Promise<{ success: boolean; error?: string }>;
     start: (target?: QueueTarget) => Promise<{ success: boolean; error?: string }>;
     pause: () => Promise<{ success: boolean; error?: string }>;
-    cancel: (target: QueueTarget, reason?: string) => Promise<{ success: boolean; error?: string }>;
+    cancel: (target: QueueTarget, reason?: string,
+      opts?: { resumable?: boolean }) => Promise<{ success: boolean; error?: string }>;
     retry: (target: QueueTarget) => Promise<{ success: boolean; error?: string }>;
     remove: (jobId: string) => Promise<{ success: boolean; error?: string }>;
     reorder: (jobId: string, beforeJobId: string | null) => Promise<{ success: boolean; error?: string }>;
@@ -1798,6 +1799,17 @@ export interface ElectronAPI {
      * for a run that is already in the queue.
      */
     sendToQueue: (jobId: string) => Promise<{ success: boolean; error?: string }>;
+    /**
+     * The reverse press: take a book back out of the queue and into Pending,
+     * stopping it first if it is running. Its settings are kept exactly and its
+     * server is a question again. Refused by name for a run already in Pending,
+     * and for one that chooses no machine.
+     */
+    returnToPending: (jobId: string) => Promise<{ success: boolean; error?: string }>;
+    /** What that return would NOT throw away — a sentence, or null. Read-only. */
+    returnToPendingWarning: (jobId: string) => Promise<{
+      success: boolean; data?: { warning: string | null }; error?: string;
+    }>;
     onChanged: (callback: (snapshot: QueueSnapshot) => void) => () => void;
     onStepFinished: (callback: (event: QueueStepFinished) => void) => () => void;
     /**
@@ -3159,8 +3171,8 @@ const electronAPI: ElectronAPI = {
     release: (target?: QueueTarget) => ipcRenderer.invoke('jobs:release', target),
     start: (target?: QueueTarget) => ipcRenderer.invoke('jobs:start', target),
     pause: () => ipcRenderer.invoke('jobs:pause'),
-    cancel: (target: QueueTarget, reason?: string) =>
-      ipcRenderer.invoke('jobs:cancel', target, reason),
+    cancel: (target: QueueTarget, reason?: string, opts?: { resumable?: boolean }) =>
+      ipcRenderer.invoke('jobs:cancel', target, reason, opts),
     retry: (target: QueueTarget) => ipcRenderer.invoke('jobs:retry', target),
     remove: (jobId: string) => ipcRenderer.invoke('jobs:remove', jobId),
     reorder: (jobId: string, beforeJobId: string | null) =>
@@ -3175,6 +3187,9 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('jobs:bulk-wait-for', from, to),
     setGpuDial: (value: string) => ipcRenderer.invoke('jobs:set-gpu-dial', value),
     sendToQueue: (jobId: string) => ipcRenderer.invoke('jobs:send-to-queue', jobId),
+    returnToPending: (jobId: string) => ipcRenderer.invoke('jobs:return-to-pending', jobId),
+    returnToPendingWarning: (jobId: string) =>
+      ipcRenderer.invoke('jobs:return-to-pending-warning', jobId),
     onChanged: (callback: (snapshot: QueueSnapshot) => void) => {
       const listener = (_event: Electron.IpcRendererEvent, snapshot: QueueSnapshot) => callback(snapshot);
       ipcRenderer.on('jobs:changed', listener);

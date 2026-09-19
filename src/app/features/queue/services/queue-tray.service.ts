@@ -512,6 +512,35 @@ export class QueueTrayService {
   }
 
   /**
+   * Put a book back in Pending — Owen's *"if i hit cancel book while its in
+   * queue, it drops back to pending"*.
+   *
+   * Every run of the plan, sequentially and NOT wrapped in a catch, for
+   * `cancelPlan`'s reason: a refusal on the second run is said out loud while
+   * the first has genuinely moved, rather than the page claiming a whole book
+   * was returned when half of it is still in the queue.
+   */
+  async returnPlanToPending(plan: BookPlan): Promise<void> {
+    for (const jobId of plan.jobIds) await this.queue.returnToPending(jobId);
+  }
+
+  /**
+   * WHAT RETURNING THIS BOOK WOULD NOT THROW AWAY — the first run that has
+   * something to say, or null when none do.
+   *
+   * Asked of every run rather than the first, because a book's chain can hold
+   * the read in its second run; stopping at `jobIds[0]` would show no warning
+   * for exactly the shape that most needs one.
+   */
+  async returnPlanWarning(plan: BookPlan): Promise<string | null> {
+    for (const jobId of plan.jobIds) {
+      const warning = await this.queue.returnToPendingWarning(jobId);
+      if (warning !== null) return warning;
+    }
+    return null;
+  }
+
+  /**
    * Move a book's plan to a new place in "Up next" — the drop half of the page's
    * drag and drop.
    *

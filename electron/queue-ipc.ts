@@ -238,11 +238,18 @@ export function registerQueueIpc(): void {
     return { success: true };
   });
 
+  /**
+   * `opts.resumable` says THE PRESS PROMISES A RESUME — the Stop button, and
+   * nothing else. Carried across the wire rather than decided here, because
+   * this door serves both Stop and the removal of one step of a multi-step run
+   * and only the renderer knows which button was pressed.
+   */
   ipcMain.handle('jobs:cancel', async (
     _event, target: { jobId?: string; stepId?: string }, reason?: string,
+    opts?: { resumable?: boolean },
   ) => {
     try {
-      await engine.cancel(target, reason);
+      await engine.cancel(target, reason, opts);
       return { success: true };
     } catch (err) { return refused(err); }
   });
@@ -341,6 +348,29 @@ export function registerQueueIpc(): void {
     try {
       engine.sendToQueue(jobId);
       return { success: true };
+    } catch (err) { return refused(err); }
+  });
+
+  /**
+   * Take a book back OUT of the live queue and into Pending — stopping it first
+   * if it is running. Its settings are kept verbatim and its server becomes a
+   * question again. Refused by name for a run that is already staged, and for
+   * one that chooses no machine and so has no staging band to return to.
+   */
+  ipcMain.handle('jobs:return-to-pending', async (_event, jobId: string) => {
+    try {
+      await engine.returnToPending(jobId);
+      return { success: true };
+    } catch (err) { return refused(err); }
+  });
+
+  /**
+   * WHAT A RETURN WOULD NOT THROW AWAY, asked BEFORE the press so the dialog can
+   * say it. Read-only; a null means there is nothing to warn about.
+   */
+  ipcMain.handle('jobs:return-to-pending-warning', (_event, jobId: string) => {
+    try {
+      return { success: true, data: { warning: engine.returnToPendingKeepsBank(jobId) } };
     } catch (err) { return refused(err); }
   });
 }
