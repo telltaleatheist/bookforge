@@ -102,10 +102,6 @@ function fakeHost(initial) {
     ranked: initial.ranked ?? [],
     serversOnThisMachine: initial.serversOnThisMachine === undefined ? ['local'] : initial.serversOnThisMachine,
     defaultWaitFor: initial.defaultWaitFor === undefined ? null : initial.defaultWaitFor,
-    // THE QUEUE'S GPU DIAL (docs/PENDING-QUEUE-AND-GPU-DIAL.md). `any` unless a
-    // test turns it, because `any` is the position in which the dial changes
-    // nothing — every pre-dial expectation in this file is an `any` expectation.
-    dial: initial.dial === undefined ? 'any' : initial.dial,
     reach: initial.reach ?? {},
     asked: [],
   };
@@ -115,7 +111,6 @@ function fakeHost(initial) {
       serversOnThisMachine: state.serversOnThisMachine,
     }),
     defaultWaitFor: () => state.defaultWaitFor,
-    dial: () => state.dial,
     async reach(name) {
       state.asked.push(name);
       const answer = state.reach[name];
@@ -779,7 +774,7 @@ test('decideWaitFor asks before it answers, and asks only what it needs', () => 
   const unknown = () => ({ kind: 'unknown' });
   assert.deepStrictEqual(
     waitFor.decideWaitFor({
-      waitFor: 'any', resolved: undefined, ranked, dial: 'any', state: unknown,
+      waitFor: 'any', resolved: undefined, ranked, state: unknown,
       gpuSlotTaken: () => null,
     }),
     { kind: 'ask', server: 'local', sentence: 'Checking whether local is reachable…' },
@@ -788,182 +783,215 @@ test('decideWaitFor asks before it answers, and asks only what it needs', () => 
 });
 
 // ────────────────────────────────────────────────────────────────────────────
-// THE GPU DIAL — docs/PENDING-QUEUE-AND-GPU-DIAL.md
+// THE RUNGS THAT SURVIVED THE DIAL
 // ────────────────────────────────────────────────────────────────────────────
 //
-// "The dial defers, it never overrides." Every row of Owen's precedence table is
-// driven here, on the pure function, because that table IS the feature: a dial
-// that quietly moved a book onto a different card would be the one outcome the
-// whole document rules out.
+// There was a queue-wide GPU dial here, and the block that drove every row of
+// its precedence table went with it (Owen, 2026-09-19: *"that works for me"* —
+// docs/QUEUE-CRUCIBLE-BUG-HUNT-2026-09-19.md, A4). What is left is the two
+// rules the dial deferred TO, and they are the ones worth pinning: a named
+// server is an instruction, and `any` is a choice among the enabled.
 
-/** The five facts `decideWaitFor` takes, with the boring ones filled in. */
+/** The four facts `decideWaitFor` takes, with the boring ones filled in. */
 function facts(over) {
   return {
     waitFor: undefined,
     resolved: undefined,
     ranked: [{ name: '3090 Ti', enabled: true }, { name: 'M1 Ultra', enabled: true }],
-    dial: 'any',
     state: () => ({ kind: 'ready' }),
     gpuSlotTaken: () => null,
     ...over,
   };
 }
 
-test('PRECEDENCE: a named server + dial `any` runs on the NAMED one', () => {
+test('a NAMED server runs there, and the other card is never considered', () => {
   assert.deepStrictEqual(
-    waitFor.decideWaitFor(facts({ waitFor: '3090 Ti', dial: 'any' })),
+    waitFor.decideWaitFor(facts({ waitFor: '3090 Ti' })),
     { kind: 'run', server: '3090 Ti' },
     'an explicit instruction is never second-guessed',
   );
 });
 
-test('PRECEDENCE: `any` + a dial that names a server takes the DIAL\'s server', () => {
+test('`any` takes the first enabled server in rank order', () => {
   assert.deepStrictEqual(
-    waitFor.decideWaitFor(facts({ waitFor: 'any', dial: 'M1 Ultra' })),
-    { kind: 'run', server: 'M1 Ultra' },
-  );
-});
-
-test('PRECEDENCE: the same server on both runs there', () => {
-  assert.deepStrictEqual(
-    waitFor.decideWaitFor(facts({ waitFor: 'M1 Ultra', dial: 'M1 Ultra' })),
-    { kind: 'run', server: 'M1 Ultra' },
-  );
-});
-
-test('PRECEDENCE: a DIFFERENT server on each SITS — not failed, not re-routed', () => {
-  const verdict = waitFor.decideWaitFor(facts({ waitFor: '3090 Ti', dial: 'M1 Ultra' }));
-  assert.strictEqual(verdict.kind, 'hold', 'it waits; it is never sent to the other card');
-  // Owen's first parked sentence, verbatim in its first clause.
-  assert.ok(verdict.sentence.startsWith('Waiting for 3090 Ti — the queue is set to M1 Ultra.'),
-    `the sentence must name BOTH machines: ${verdict.sentence}`);
-  assert.match(verdict.sentence, /may be completely idle/,
-    'and say that the card it names may be doing nothing — the fix is a dial turn');
-  assert.ok(!/to become free/.test(verdict.sentence),
-    'it must NOT read as "the server is occupied" — that is a different cause');
-});
-
-test('PRECEDENCE: `any` on both is today\'s behaviour — the first that will take it', () => {
-  assert.deepStrictEqual(
-    waitFor.decideWaitFor(facts({ waitFor: 'any', dial: 'any' })),
+    waitFor.decideWaitFor(facts({ waitFor: 'any' })),
     { kind: 'run', server: '3090 Ti' },
   );
 });
 
-test('the dial NEVER shops: `any` + a busy dialled server waits on THAT machine', () => {
-  // The `any` loop would happily take the next server in rank order. With the
-  // dial set, there is no loop: the operator chose, and a choice that silently
-  // slid onto another card would not be a choice.
-  const verdict = waitFor.decideWaitFor(facts({
-    waitFor: 'any',
-    dial: 'M1 Ultra',
-    state: (name) => (name === 'M1 Ultra'
-      ? { kind: 'busy', line: 'Foundry is reading Mistborn.' }
-      : { kind: 'ready' }),
-  }));
-  assert.strictEqual(verdict.kind, 'hold');
-  assert.match(verdict.sentence, /M1 Ultra/);
-  assert.ok(!/3090 Ti/.test(verdict.sentence), 'the other card is not even considered');
-});
-
-test('THE THREE PARKED SENTENCES NAME THREE DIFFERENT CAUSES', () => {
-  const dialElsewhere = waitFor.decideWaitFor(
-    facts({ waitFor: '3090 Ti', dial: 'M1 Ultra' })).sentence;
+test('THE PARKED SENTENCES NAME DIFFERENT CAUSES, and never each other\'s', () => {
   const disabled = waitFor.decideWaitFor(facts({
     waitFor: '3090 Ti',
-    dial: 'any',
     ranked: [{ name: '3090 Ti', enabled: false }, { name: 'M1 Ultra', enabled: true }],
   })).sentence;
   const unreachable = waitFor.decideWaitFor(facts({
     waitFor: '3090 Ti',
     state: () => ({ kind: 'unreachable', detail: 'Nothing answered at 3090 Ti.' }),
   })).sentence;
+  const busy = waitFor.decideWaitFor(facts({
+    waitFor: '3090 Ti',
+    state: () => ({ kind: 'busy', line: 'Foundry is reading Mistborn.' }),
+  })).sentence;
 
-  assert.match(dialElsewhere, /the queue is set to M1 Ultra/);
   assert.match(disabled, /disabled/);
   assert.match(unreachable, /unreachable/);
-  const all = [dialElsewhere, disabled, unreachable];
-  assert.strictEqual(new Set(all).size, 3, 'three causes, three sentences, never collapsed');
+  assert.match(busy, /Foundry is reading Mistborn\./);
+  assert.strictEqual(new Set([disabled, unreachable, busy]).size, 3,
+    'three causes, three sentences, never collapsed');
   // Collapsing these would name the wrong cause, which is the failure shape this
   // whole feature exists to close.
-  assert.ok(!/disabled/.test(dialElsewhere));
-  assert.ok(!/the queue is set to/.test(disabled));
-  assert.ok(!/the queue is set to/.test(unreachable));
+  assert.ok(!/disabled/.test(unreachable));
+  assert.ok(!/unreachable/.test(disabled));
 });
 
-test('a dial-chosen hold says to turn the DIAL, not to re-answer a book already on Any', () => {
+test('THE DIAL IS GONE: a `dial` fact on the call changes nothing', () => {
+  /*
+   * The dial's record, its IPC door and its rungs are deleted. A caller from
+   * outside TypeScript — a keeper, the CLI — that still passes the field must
+   * not be able to steer a book with it, and must not be REFUSED for it either:
+   * the old code threw when `dial` was missing, and this is the mirror of that
+   * check for the world after.
+   */
+  const withDial = waitFor.decideWaitFor(facts({ waitFor: 'any', dial: 'M1 Ultra' }));
+  assert.deepStrictEqual(withDial, { kind: 'run', server: '3090 Ti' },
+    'a stray `dial` is inert — rank order decides, as it does with no dial at all');
+  assert.strictEqual(waitFor.GPU_DIAL_ANY, undefined,
+    'and the constant that spelled it is gone from the module');
+  assert.strictEqual(waitFor.gpuDialLabel, undefined);
+  assert.strictEqual(waitFor.holdDialElsewhere, undefined);
+});
+
+// ── A RESOLVED ROW'S HOLD NAMES A CONTROL THAT WILL ANSWER (A6) ────────────
+//
+// docs/QUEUE-CRUCIBLE-BUG-HUNT-2026-09-19.md, A6: the hold on an ASSIGNED row
+// used to end "…or set this book to Any", and `setWaitFor` refuses every edit
+// to a resolved row by name (`venue_fixed_at_admission`). The sentence sent the
+// operator to a control that would turn them away.
+
+test('a RESOLVED row held on a disabled server is told to cancel, not to re-point', () => {
   const verdict = waitFor.decideWaitFor(facts({
     waitFor: 'any',
-    dial: 'M1 Ultra',
-    ranked: [{ name: '3090 Ti', enabled: true }, { name: 'M1 Ultra', enabled: false }],
+    resolved: '3090 Ti',
+    ranked: [{ name: '3090 Ti', enabled: false }, { name: 'M1 Ultra', enabled: true }],
+  }));
+  assert.strictEqual(verdict.kind, 'hold', 'and it is never moved to the other card (§4.3)');
+  assert.match(verdict.sentence,
+    /Cancel this book to send it back to Pending, and choose again there\./,
+    `a resolved row's way out is the one act that works: ${verdict.sentence}`);
+  assert.ok(!/set this book to Any/.test(verdict.sentence),
+    'setWaitFor refuses a resolved row, so naming its picker names a control that will refuse');
+});
+
+test('…and an UNRESOLVED row naming the same server still says "set this book to Any"', () => {
+  const verdict = waitFor.decideWaitFor(facts({
+    waitFor: '3090 Ti',
+    ranked: [{ name: '3090 Ti', enabled: false }, { name: 'M1 Ultra', enabled: true }],
   }));
   assert.strictEqual(verdict.kind, 'hold');
-  assert.match(verdict.sentence, /turn the queue's GPU dial to Any/);
-  assert.ok(!/set this book to Any/.test(verdict.sentence),
-    'the book IS on Any — telling its operator to set it to Any is the wrong fix');
+  assert.match(verdict.sentence, /, or set this book to Any\./,
+    'its picker is live, so one press is the honest way out');
+  assert.ok(!/Cancel this book/.test(verdict.sentence));
 });
 
-test('A RUNNING JOB IGNORES THE DIAL — an assigned row never re-reads it', () => {
-  assert.deepStrictEqual(
-    waitFor.decideWaitFor(facts({ waitFor: 'any', resolved: '3090 Ti', dial: 'M1 Ultra' })),
-    { kind: 'run', server: '3090 Ti' },
-    'a job that started somewhere finishes there — turning the dial governs new runs only',
-  );
+test('the resolved way out is on EVERY named hold, not just the disabled one', () => {
+  const unreachable = waitFor.decideWaitFor(facts({
+    resolved: '3090 Ti',
+    state: () => ({ kind: 'unreachable', detail: 'Nothing answered at 3090 Ti.' }),
+  })).sentence;
+  const unknownServer = waitFor.decideWaitFor(facts({
+    resolved: 'Retired box',
+    ranked: [{ name: '3090 Ti', enabled: true }],
+  })).sentence;
+  for (const sentence of [unreachable, unknownServer]) {
+    assert.match(sentence, /Cancel this book to send it back to Pending/, sentence);
+    assert.ok(!/set this book to Any/.test(sentence), sentence);
+  }
 });
 
-test('a caller that supplies NO dial is refused by name, never defaulted', () => {
-  const bare = facts({ waitFor: 'any' });
-  delete bare.dial;
-  assert.throws(() => waitFor.decideWaitFor(bare), /`dial` was not supplied/);
+// ── AN `any` ROW FINISHES THE LIST BEFORE IT WAITS (A7) ────────────────────
+//
+// docs/QUEUE-CRUCIBLE-BUG-HUNT-2026-09-19.md, A7: the loop returned `ask` at
+// the FIRST `unknown` server. Every answer ages out on `reachTtlMs` (15 s), so
+// the top server is `unknown` on a cadence and an `any` row arriving in that
+// window waited a round trip — or a connect timeout, if that machine is asleep
+// — with a `ready` card sitting idle further down.
+
+test('`any` takes a READY rank-2 rather than waiting on an UNKNOWN rank-1', () => {
+  const verdict = waitFor.decideWaitFor(facts({
+    waitFor: 'any',
+    state: (name) => (name === '3090 Ti' ? { kind: 'unknown' } : { kind: 'ready' }),
+  }));
+  assert.deepStrictEqual(verdict, { kind: 'run', server: 'M1 Ultra' },
+    'an answer beats the absence of one; rank order decides among ANSWERS');
 });
 
-test('THE DIAL PARKS A ROW IN THE LIVE QUEUE, and either control frees it', async () => {
+test('…but with nothing ready it still ASKS, and asks the FIRST unasked in rank order', () => {
+  const verdict = waitFor.decideWaitFor(facts({
+    waitFor: 'any',
+    state: () => ({ kind: 'unknown' }),
+  }));
+  assert.deepStrictEqual(verdict,
+    { kind: 'ask', server: '3090 Ti', sentence: 'Checking whether 3090 Ti is reachable…' });
+});
+
+test('an unreachable rank-1 and an unknown rank-2 ASKS rank-2 — it is not a hold yet', () => {
+  const verdict = waitFor.decideWaitFor(facts({
+    waitFor: 'any',
+    state: (name) => (name === '3090 Ti'
+      ? { kind: 'unreachable', detail: 'Nothing answered at 3090 Ti.' }
+      : { kind: 'unknown' }),
+  }));
+  assert.deepStrictEqual(verdict,
+    { kind: 'ask', server: 'M1 Ultra', sentence: 'Checking whether M1 Ultra is reachable…' },
+    'holding on "none is reachable" while one machine has never been asked would be a lie');
+});
+
+test('only when EVERY enabled server has answered no does it hold, naming each', () => {
+  const verdict = waitFor.decideWaitFor(facts({
+    waitFor: 'any',
+    state: (name) => (name === '3090 Ti'
+      ? { kind: 'busy', line: 'Foundry is reading Mistborn.' }
+      : { kind: 'unreachable', detail: 'Nothing answered at M1 Ultra.' }),
+  }));
+  assert.strictEqual(verdict.kind, 'hold');
+  assert.match(verdict.sentence, /3090 Ti: Foundry is reading Mistborn\./);
+  assert.match(verdict.sentence, /M1 Ultra: Nothing answered at M1 Ultra\./);
+});
+
+test('THE ENGINE TAKES THE AWAKE CARD while the top one is still being asked', async () => {
+  /*
+   * A7 through the whole scheduler, not just the pure function. `local` (rank 1)
+   * is ASLEEP: its probe never answers, so it stays `unknown` for the length of
+   * the test — which is the connect timeout A7 is about. `mac` answers, and the
+   * book must go there rather than sit behind a machine nobody can reach.
+   *
+   * The sweep is ON for this one test (every other case here asserts WHICH
+   * servers a routing decision asked about, which a sweep would drown). It is
+   * on in production, and it is what gets `mac` asked at all while admission's
+   * one question per pass is stuck on the sleeping machine.
+   */
   const gpu = fakeModule('tts-conversion', { travels: true });
   const host = fakeHost({
     ranked: TWO_SERVERS,
-    defaultWaitFor: 'mac',
-    dial: 'local',
-    reach: { local: { reachable: true }, mac: { reachable: true } },
+    defaultWaitFor: 'any',
+    reach: { mac: { reachable: true } },
   });
-  await fresh('dial-park', [gpu], host);
+  // The promise is simply left pending — the machine is asleep, nothing answers.
+  host.host.reach = (name) => {
+    host.asked.push(name);
+    if (name === 'local') return new Promise(() => {});
+    const answer = host.reach[name];
+    return Promise.resolve(
+      answer === undefined ? { reachable: false, detail: `Nothing answered at ${name}.` } : answer);
+  };
+  await fresh('any-unknown-first', [gpu], host, { reachSweepMs: 20 });
 
-  const job = enqueueSent(narrate('Steered'));
+  const job = enqueueSent(narrate('Awake'));
   engine.start();
-  await settle();
-  assert.strictEqual(gpu.runs.length, 0, 'it is not sent to the dial\'s machine');
-  assert.strictEqual(jobOf(job.id).waitForResolved, undefined,
-    'and nothing is assigned, so both controls are still live');
-  assert.match(firstStep(job.id).progress.admissionHold,
-    /Waiting for mac — the queue is set to local\./);
-
-  // Way out #1: move the BOOK. Same row, no cancel, no re-add.
-  engine.setWaitFor(job.id, 'local');
-  await settle();
-  assert.strictEqual(gpu.runs.length, 1, 'it starts the moment the two agree');
-  assert.strictEqual(jobOf(job.id).waitForResolved, 'local');
-});
-
-test('…or the DIAL moves, and the parked row starts where IT asked to', async () => {
-  const gpu = fakeModule('tts-conversion', { travels: true });
-  const host = fakeHost({
-    ranked: TWO_SERVERS,
-    defaultWaitFor: 'mac',
-    dial: 'local',
-    reach: { local: { reachable: true }, mac: { reachable: true } },
-  });
-  await fresh('dial-turn', [gpu], host);
-
-  const job = enqueueSent(narrate('Steered too'));
-  engine.start();
-  await settle();
-  assert.strictEqual(gpu.runs.length, 0);
-
-  host.dial = 'any';
-  engine.pump();
-  await settle();
-  assert.strictEqual(gpu.runs.length, 1);
-  assert.strictEqual(jobOf(job.id).waitForResolved, 'mac',
-    'the dial deferred: the book went where IT named, not where the dial had been');
+  await wait(80);
+  await settle(60);
+  assert.strictEqual(gpu.runs.length, 1, 'the awake machine took it rather than the row stalling');
+  assert.strictEqual(jobOf(job.id).waitForResolved, 'mac');
 });
 
 // ────────────────────────────────────────────────────────────────────────────

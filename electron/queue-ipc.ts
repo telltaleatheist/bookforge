@@ -32,10 +32,8 @@ import { registerAllStepModules } from './queue-steps';
 import type { AppendStepSpec, JobSpec } from './queue-engine';
 import { serversOnThisMachine } from './crucible/servers';
 import { readRouting } from './crucible/routing';
-import { readGpuDial, setGpuDial } from './crucible/gpu-dial';
 import { pingServer } from './crucible/probe';
 import { crucibleLeaseSeam } from './crucible/lease';
-import { onCrucibleRecordChanged } from './crucible/routes';
 import { WAIT_FOR_ANY, type WaitForServer } from '../shared/queue/wait-for';
 
 let registered = false;
@@ -47,85 +45,45 @@ let registered = false;
 // `queue-engine.ts` imports no Electron and no registry, so the record and the
 // prober are handed to it from here (see `CrucibleRoutingHost`).
 
-/**
- * The routing view, MEMOISED FOR A FEW SECONDS.
+/*
+ * THE ROUTING VIEW IS READ FRESH, EVERY TIME. There is no memo here any more.
  *
- * `readRouting()` and `serversOnThisMachine()` are each a synchronous read of a
- * file under `<userData>`, and the scheduler asks the routing question on every
- * pump pass over a queued narration. Two file reads per pass on the main thread
- * for an answer that changes when a person presses something is work nobody
- * asked for.
+ * ── What was here ───────────────────────────────────────────────────────────
  *
- * (Until 2026-09-15 this was not an optimisation at all but a necessity:
- * `readRouting()` resolved the reserved name `local` through a SYNCHRONOUS
- * `wsl.exe` spawn of a few hundred milliseconds. That name is gone and so is
- * the spawn; the memo is kept on its own smaller merits.)
+ * A ten-second memo over `readRouting()` + `serversOnThisMachine()`, and a
+ * second one over the GPU dial. Until 2026-09-15 the first was not an
+ * optimisation at all but a necessity: `readRouting()` resolved the reserved
+ * name `local` through a SYNCHRONOUS `wsl.exe` spawn of a few hundred
+ * milliseconds. That name is gone and so is the spawn. What was left was a
+ * memo over two small synchronous reads of files under `<userData>`.
  *
- * THE STALENESS IS BOUNDED, AND THE ENABLE SWITCH IS NOT ALLOWED TO PAY IT.
+ * ── Why it had to go ────────────────────────────────────────────────────────
  *
- * A few seconds of an old rank order costs nothing. A few seconds of an old
- * ENABLE list is a different thing, because that switch is the one way to say
- * "not that machine, right now" (Owen, 2026-09-14) — and this memo made the
- * bench and the scheduler disagree about it for up to ten seconds: `slotSets`
- * greyed the card the instant it was flipped, while admission went on placing
- * work from the list it had. Owen, 2026-09-19: *"i enabled the mac gpu slot,
- * disabled wsl slot. it went to wsl anyway."* A press that pumps — Retry, Start,
- * Send to queue — lands inside that window easily.
+ * Because the list it held is the list of MACHINES THAT EXIST, and a stale copy
+ * of that is not a slow answer but a WRONG one. Only `setServerEnabled`
+ * announced; `addServer`, `removeServer`, `setRoutingOrder` and
+ * `forgetRoutingName` did not. So for up to ten seconds after a removal,
+ * admission could still place an `any` book on a machine the registry no longer
+ * has — the submit then fails against a missing entry and the row FAILS, which
+ * is an error where a hold belongs — and a machine just added was invisible to
+ * both the bench and admission (docs/QUEUE-CRUCIBLE-BUG-HUNT-2026-09-19.md, A3
+ * and C1; the hosted Foundry snapshot IS refreshed on add/remove, so the two
+ * lists disagreed inside that window and `hostedCrucibleServerNotOffered`
+ * failed the row).
  *
- * So the record ANNOUNCES (`setServerEnabled` → `announceCrucibleRecordChanged`)
- * and this memo is dropped on the announcement, below. Not in the IPC handler
- * that flips the switch: the Settings panel and the bench both call the same
- * record door, and a memo is invalidated where it lives, not at each of the
- * places that might make it stale.
+ * Owen, 2026-09-19: *"it can be a BookForge and Foundry-side change instantly.
+ * Nothing gets sent to the other server from the queue."* Instant is two file
+ * reads. The announcement stayed and grew — every registry and rank write calls
+ * `announceCrucibleRecordChanged` now, which is what republishes the bench —
+ * but nothing depends on it for FRESHNESS any more, which is the point: a memo
+ * nobody remembered to invalidate is the defect, and the way to not forget is
+ * to have nothing to remember.
  */
-const ROUTING_CACHE_MS = 10_000;
-let routingCache: { at: number; view: ReturnType<typeof readRouting> } | null = null;
-
-function cachedRouting(): ReturnType<typeof readRouting> {
-  const now = Date.now();
-  if (routingCache !== null && now - routingCache.at < ROUTING_CACHE_MS) return routingCache.view;
-  const view = readRouting();
-  routingCache = { at: now, view };
-  return view;
-}
-
-function forgetRoutingCache(): void {
-  routingCache = null;
-}
-
-/**
- * THE GPU DIAL, memoised on the same cadence and for the same reason.
- *
- * `readGpuDial()` is a synchronous read of a two-line file under `<userData>`,
- * and the scheduler asks for it once per travelling row on every pump pass. The
- * staleness is bounded the same way: admission re-asks on its own 15 s tick, and
- * the door below that TURNS the dial drops the memo immediately, so a knob
- * turned on the queue page is in force on the very next pump rather than up to
- * ten seconds later.
- *
- * Kept separate from `routingCache` because they are separate records with
- * separate lifetimes (`electron/crucible/gpu-dial.ts` says why), and one memo
- * over two files would make turning the dial re-read the rank order.
- */
-const DIAL_CACHE_MS = 10_000;
-let dialCache: { at: number; dial: string } | null = null;
-
-function cachedGpuDial(): string {
-  const now = Date.now();
-  if (dialCache !== null && now - dialCache.at < DIAL_CACHE_MS) return dialCache.dial;
-  const dial = readGpuDial();
-  dialCache = { at: now, dial };
-  return dial;
-}
-
-function forgetDialCache(): void {
-  dialCache = null;
-}
 
 function crucibleRoutingHost(): engine.CrucibleRoutingHost {
   return {
     routing() {
-      const view = cachedRouting();
+      const view = readRouting();
       const ranked: WaitForServer[] = view.ranked.map((row) => ({
         name: row.name,
         enabled: row.enabled,
@@ -142,16 +100,13 @@ function crucibleRoutingHost(): engine.CrucibleRoutingHost {
       };
     },
     defaultWaitFor() {
-      const view = cachedRouting();
+      const view = readRouting();
       if (view.newJobsWaitFor === WAIT_FOR_ANY) return WAIT_FOR_ANY;
       const top = view.ranked.find((row) => row.enabled);
       // Null, not a name and not `any`: there is nothing to name, and both of
       // the alternatives would be a routing decision nobody made. See
       // `CrucibleRoutingHost.defaultWaitFor`.
       return top === undefined ? null : top.name;
-    },
-    dial() {
-      return cachedGpuDial();
     },
     async reach(server: string) {
       const pong = await pingServer(server);
@@ -218,13 +173,6 @@ function refused(err: unknown): { success: false; error: string } {
 export function registerQueueIpc(): void {
   if (registered) return;
   registered = true;
-
-  /*
-   * THE ROUTING RECORD CHANGED, SO THE MEMO OVER IT IS GONE — see
-   * `cachedRouting`. Registered once, for the life of the process: this module's
-   * IPC handlers are too, and there is nothing to unsubscribe from.
-   */
-  onCrucibleRecordChanged(() => { forgetRoutingCache(); });
 
   ipcMain.handle('jobs:list', () => ({ success: true, data: engine.snapshot() }));
 
@@ -315,7 +263,6 @@ export function registerQueueIpc(): void {
   /** Point one book at a server, or at `any`. Refused by name — see setWaitFor. */
   ipcMain.handle('jobs:set-wait-for', (_event, jobId: string, value: string) => {
     try {
-      forgetRoutingCache();
       engine.setWaitFor(jobId, value);
       return { success: true };
     } catch (err) { return refused(err); }
@@ -334,35 +281,15 @@ export function registerQueueIpc(): void {
   /** The one-click bulk change beside that count. `from: null` = the unanswered. */
   ipcMain.handle('jobs:bulk-wait-for', (_event, from: string | null, to: string) => {
     try {
-      forgetRoutingCache();
       return { success: true, data: { moved: engine.bulkWaitFor(from, to) } };
     } catch (err) { return refused(err); }
   });
 
-  // ── Pending, and the GPU dial (docs/PENDING-QUEUE-AND-GPU-DIAL.md) ─────────
-
-  /**
-   * TURN THE QUEUE'S GPU DIAL — `any`, or one registered server's name.
-   *
-   * The memo is dropped BEFORE the write and the pump, so the very next
-   * admission pass reads the new value rather than a cached old one. Refused by
-   * name for a server this machine does not have.
-   *
-   * A pump follows because turning the dial can UNPARK a row — a book naming
-   * the machine the dial has just been turned to starts now, not on the 15 s
-   * admission tick. Nothing is ever taken off a card by it: a running job
-   * ignores the dial.
-   */
-  ipcMain.handle('jobs:set-gpu-dial', (_event, value: string) => {
-    try {
-      forgetDialCache();
-      const dial = setGpuDial(value);
-      forgetDialCache();
-      engine.pump();
-      engine.publishSnapshot();
-      return { success: true, data: { dial } };
-    } catch (err) { return refused(err); }
-  });
+  // ── Pending ───────────────────────────────────────────────────────────────
+  //
+  // A `jobs:set-gpu-dial` door was here. The queue-wide GPU dial is gone (Owen,
+  // 2026-09-19: *"that works for me"*) — the per-slot enable switches replaced
+  // its control and nothing turned it any more. See `shared/queue/wait-for.ts`.
 
   /** Move a staged book into the live queue. Refused by name for one that is not staged. */
   ipcMain.handle('jobs:send-to-queue', (_event, jobId: string) => {

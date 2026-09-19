@@ -442,9 +442,19 @@ export function readRouting(): RoutingView {
   return store().view(knownServers());
 }
 
-/** Re-rank. See {@link Routing.setOrder}. */
+/**
+ * Re-rank. See {@link Routing.setOrder}.
+ *
+ * AND THE BENCH AND THE SCHEDULER ARE TOLD, for {@link setServerEnabled}'s
+ * reason. Rank is what `any` means — "the first enabled server, in rank order,
+ * that will take it" — so a re-rank nobody announced is a book sent to the
+ * machine the operator has just demoted
+ * (docs/QUEUE-CRUCIBLE-BUG-HUNT-2026-09-19.md, A3).
+ */
 export function setRoutingOrder(next: readonly string[]): RoutingView {
-  return store().setOrder(next, knownServers());
+  const view = store().setOrder(next, knownServers());
+  announceCrucibleRecordChanged();
+  return view;
 }
 
 /**
@@ -456,8 +466,11 @@ export function setRoutingOrder(next: readonly string[]): RoutingView {
  * change caused a publish. `announceCrucibleRecordChanged` is the same door the
  * routing RECORD uses when it learns, for the same reason.
  *
- * Here rather than in the IPC handler, so every caller gets it: the rank
- * reorder below wants it too the day the bench draws rank.
+ * Here rather than in the IPC handler, so every caller gets it. Every other
+ * write to this record and to the registry does the same since 2026-09-19 —
+ * {@link setRoutingOrder}, {@link forgetRoutingName}, `servers.addServer` and
+ * `servers.removeServer` — because the memo that used to absorb the difference
+ * is gone (see `electron/queue-ipc.ts`).
  */
 export function setServerEnabled(name: string, enabled: boolean): RoutingView {
   const view = store().setEnabled(name, enabled, knownServers());
@@ -470,9 +483,16 @@ export function setNewJobsWaitFor(value: WaitForDefault): RoutingView {
   return store().setNewJobsWaitFor(value, knownServers());
 }
 
-/** Forget a name no server answers to. See {@link Routing.forget}. */
+/**
+ * Forget a name no server answers to. See {@link Routing.forget}.
+ *
+ * Announced like every other write to this record: it changes the ranked list
+ * the bench draws and the scheduler walks.
+ */
 export function forgetRoutingName(name: string): RoutingView {
-  return store().forget(name, knownServers());
+  const view = store().forget(name, knownServers());
+  announceCrucibleRecordChanged();
+  return view;
 }
 
 /**

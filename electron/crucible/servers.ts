@@ -73,7 +73,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { CrucibleClient } from '@crucible/client';
 import { isLoopbackUrl } from './discovery';
-import { forgetCrucibleRoutes } from './routes';
+import { announceCrucibleRecordChanged, forgetCrucibleRoutes } from './routes';
 import { engineClientFor, forgetResolvedEngine } from './engine-resolve';
 import { LOCAL_WORK_SET, LONGFORM_ALIGN_SET } from '../../shared/queue/slot-sets';
 import { RETIRED_LOCAL_NARRATOR_VENUE, WAIT_FOR_ANY } from '../../shared/queue/wait-for';
@@ -560,9 +560,24 @@ export function getServer(name: string): ResolvedServer {
   return defaultRegistry().get(name);
 }
 
-/** Record a server. See {@link ServerRegistry.add}. */
+/**
+ * Record a server. See {@link ServerRegistry.add}.
+ *
+ * AND EVERYTHING THAT READS THE SERVER LIST IS TOLD, on the same line the entry
+ * is written. The bench draws a lane per registered server and the scheduler
+ * decides `any` from the same list, so a machine nobody announced is a machine
+ * neither of them can use until something unrelated happens to publish.
+ *
+ * Owen, 2026-09-19: *"it can be a BookForge and Foundry-side change
+ * instantly."* Here rather than in the IPC handler, for `setServerEnabled`'s
+ * reason: the Settings panel, the pairing flow and auto-connect all call this
+ * door, and a record announces where it is written rather than at each of the
+ * places that might change it (docs/QUEUE-CRUCIBLE-BUG-HUNT-2026-09-19.md, A3).
+ */
 export function addServer(server: { name: string; url: string; token: string }): CrucibleServerListing {
-  return defaultRegistry().add(server);
+  const added = defaultRegistry().add(server);
+  announceCrucibleRecordChanged();
+  return added;
 }
 
 /** Forget a server. See {@link ServerRegistry.remove}. */
@@ -595,6 +610,18 @@ export function removeServer(name: string): CrucibleServerListing {
    * forgetting them would make re-enabling it a wait rather than a resume.
    */
   forgetCrucibleRoutes(name);
+  /*
+   * …AND EVERYTHING THAT READS THE SERVER LIST IS TOLD. Last, because the two
+   * forgets above are what make the answer it announces true.
+   *
+   * This is the dangerous direction: a scheduler still holding the old list can
+   * place an `any` book on a machine the registry no longer has, the submit
+   * fails against a missing entry, and the row FAILS where a hold belongs
+   * (docs/QUEUE-CRUCIBLE-BUG-HUNT-2026-09-19.md, A3). A row that NAMES the
+   * removed server holds with `holdUnknownServer`, which is the right answer
+   * and names the machine.
+   */
+  announceCrucibleRecordChanged();
   return after;
 }
 

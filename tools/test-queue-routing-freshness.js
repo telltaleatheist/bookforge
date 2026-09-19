@@ -1,38 +1,48 @@
 #!/usr/bin/env node
 /**
- * THE ENABLE SWITCH TAKES EFFECT NOW — the scheduler's routing memo and the one
- * thing that must drop it.
+ * EVERY CHANGE TO THE SERVER LIST TAKES EFFECT NOW — the scheduler's view of
+ * which machines exist, and who is allowed to make it stale.
  *
  *   npx tsc -p tsconfig.electron.json && node tools/test-queue-routing-freshness.js
  *
- * ── What went wrong ─────────────────────────────────────────────────────────
+ * ── What went wrong, twice ──────────────────────────────────────────────────
  *
- * `queue-ipc.ts` memoises the routing view for ten seconds, because the pump
+ * `queue-ipc.ts` memoised the routing view for ten seconds, because the pump
  * asks the routing question on every pass over every queued row and the record
- * is a synchronous file read. That is a fair trade for a RANK ORDER. It is not a
- * fair trade for the ENABLE LIST, because that switch is the one way to say "not
- * that machine, right now" (Owen, 2026-09-14) — and the memo made the bench and
- * the scheduler disagree about it: `slotSets` greyed the card the instant it was
- * flipped, while admission went on placing work from the list it was holding.
+ * is a synchronous file read.
  *
+ * The FIRST defect was the ENABLE switch, which is the one way to say "not that
+ * machine, right now" (Owen, 2026-09-14) — the memo made the bench and the
+ * scheduler disagree about it: `slotSets` greyed the card the instant it was
+ * flipped, while admission went on placing work from the list it was holding.
  * Owen, 2026-09-19: a render refused by a busy Crucible, Retry step pressed,
- * *"i enabled the mac gpu slot, disabled wsl slot. it went to wsl anyway."* Every
- * press that pumps — Retry, Start, Send to queue — lands inside that window.
+ * *"i enabled the mac gpu slot, disabled wsl slot. it went to wsl anyway."*
+ * Every press that pumps — Retry, Start, Send to queue — lands inside that
+ * window. That was fixed by making `setServerEnabled` announce.
+ *
+ * The SECOND was every OTHER write. `addServer`, `removeServer`,
+ * `setRoutingOrder` and `forgetRoutingName` did not announce, so for up to ten
+ * seconds after a removal admission could still place an `any` book on a machine
+ * the registry no longer has — the submit then fails against a missing entry and
+ * the row FAILS, where a hold belongs — and a machine just added was invisible
+ * to both the bench and admission
+ * (docs/QUEUE-CRUCIBLE-BUG-HUNT-2026-09-19.md, A3 and C1).
+ *
+ * Owen's ruling, 2026-09-19: *"it can be a BookForge and Foundry-side change
+ * instantly. Nothing gets sent to the other server from the queue."* So the memo
+ * is GONE — two small synchronous file reads per pump is the price of never
+ * having to remember to invalidate one — and every registry and rank write
+ * announces anyway, because the bench and everything else subscribed have to
+ * REPUBLISH even when nothing was stale.
  *
  * ── Why it is tested through the whole stack ────────────────────────────────
  *
- * The memo, the subscription and the invalidation are all private to
- * `queue-ipc.ts`, and the defect was not in any one of them: it was that NOTHING
- * CONNECTED THE RECORD TO THE MEMO. A unit test of a private helper cannot see
- * an absent wire. So this brings the real engine up against a real record in a
- * temporary `userData`, flips the switch through the same door the Settings
- * panel and the bench switch both call, and reads the answer off
- * `QueueSnapshot.servers` — which is `crucibleAdmission`'s own view of the world,
- * the thing that was wrong.
- *
- * The last check keeps the memo honest in the other direction: deleting the
- * cache would also pass the first two, and would put two file reads per row per
- * pump back on the main thread with nothing to notice.
+ * The defect was never in one function: it was that NOTHING CONNECTED THE
+ * RECORD TO THE MEMO. A unit test of a private helper cannot see an absent
+ * wire. So this brings the real engine up against real records in a temporary
+ * `userData`, writes through the same doors the Settings panel and the bench
+ * call, and reads the answer off `QueueSnapshot.servers` and `slotSets` — which
+ * is `crucibleAdmission`'s own view of the world, the thing that was wrong.
  */
 'use strict';
 const assert = require('assert');
@@ -75,10 +85,16 @@ function asTheSchedulerSeesIt(engine) {
     .map((s) => `${s.name}:${s.enabled ? 'on' : 'off'}`).join(' ');
 }
 
+/** …and what the BENCH draws from the same snapshot: one lane set per server. */
+function asTheBenchDrawsIt(engine) {
+  return engine.snapshot().slotSets.filter((set) => set.gpu > 0).map((set) => set.id).join(' ');
+}
+
 async function main() {
   const engine = require(path.join(DIST, 'queue-engine.js'));
   const { registerQueueIpc, startQueueEngine } = require(path.join(DIST, 'queue-ipc.js'));
-  const { setServerEnabled } = require(path.join(DIST, 'crucible', 'routing.js'));
+  const { setRoutingOrder, setServerEnabled } = require(path.join(DIST, 'crucible', 'routing.js'));
+  const { addServer, removeServer } = require(path.join(DIST, 'crucible', 'servers.js'));
 
   registerQueueIpc();
   await startQueueEngine();
@@ -98,25 +114,56 @@ async function main() {
     assert.strictEqual(asTheSchedulerSeesIt(engine), 'pc:off mac:on');
   });
 
-  check('a change made to the FILE without announcing is still memoised — this is a cache', () => {
+  // ── The registry itself (A3) ────────────────────────────────────────────
+
+  check('REMOVING a server takes it off the scheduler\'s list at once', () => {
     /*
-     * The other half of the contract, and the reason the fix is a subscription
-     * rather than "stop caching". An edit nobody announced is exactly what the
-     * memo is for; it ages out on its own (ten seconds) and admission re-asks on
-     * its own tick. If this check ever fails, the memo has been deleted and the
-     * pump is back to two synchronous file reads per row per pass.
+     * The dangerous direction. Inside the old ten-second window, admission could
+     * still place an `any` book on `pc` — and the submit then fails against a
+     * registry entry that is not there, which FAILS the row rather than holding
+     * it.
      */
-    fs.writeFileSync(ROUTING_FILE, JSON.stringify({
-      order: ['pc', 'mac'], disabled: ['pc', 'mac'], newJobsWaitFor: 'any',
-    }));
-    assert.strictEqual(asTheSchedulerSeesIt(engine), 'pc:off mac:on',
-      'an unannounced edit should NOT be visible yet');
+    removeServer('pc');
+    assert.strictEqual(asTheSchedulerSeesIt(engine), 'mac:on',
+      'a machine the operator has taken away must not be a candidate for one more pass');
+    assert.ok(!asTheBenchDrawsIt(engine).includes('pc'),
+      'and the bench republished without its card');
   });
 
-  check('…and announcing it makes it visible', () => {
-    const { announceCrucibleRecordChanged } = require(path.join(DIST, 'crucible', 'routes.js'));
-    announceCrucibleRecordChanged();
-    assert.strictEqual(asTheSchedulerSeesIt(engine), 'pc:off mac:off');
+  check('ADDING one puts it on the list at once, for the bench and for admission', () => {
+    addServer({ name: 'studio', url: 'http://studio.invalid:7100', token: 't' });
+    assert.strictEqual(asTheSchedulerSeesIt(engine), 'mac:on studio:on',
+      'a machine just registered is usable now, not in ten seconds');
+    assert.ok(asTheBenchDrawsIt(engine).includes('studio'),
+      'and it has a lane to be drawn on');
+  });
+
+  check('RE-RANKING is immediate too — rank is what `any` means', () => {
+    // "`any` takes the first enabled server in rank order" (wait-for.ts), so a
+    // stale order is a book sent to the machine the operator just demoted.
+    setRoutingOrder(['studio', 'mac']);
+    assert.strictEqual(asTheSchedulerSeesIt(engine), 'studio:on mac:on',
+      'the snapshot lists servers in RANK order, so this is the order admission walks');
+  });
+
+  // ── And the file is not a door (the memo is gone, not merely announced) ──
+
+  check('A CHANGE MADE TO THE FILE is visible on the next read — there is no memo', () => {
+    /*
+     * The other half of the ruling. Until 2026-09-19 an unannounced edit was
+     * deliberately invisible for ten seconds, and the fix for the enable switch
+     * was a subscription rather than "stop caching". That trade is off: the memo
+     * held the list of MACHINES THAT EXIST, and a stale copy of that is not a
+     * slow answer but a wrong one. Two synchronous reads of small files under
+     * `<userData>` is the price of never having to remember to invalidate one.
+     *
+     * If this check ever fails, a memo has come back and every write door has to
+     * be audited again.
+     */
+    fs.writeFileSync(ROUTING_FILE, JSON.stringify({
+      order: ['studio', 'mac'], disabled: ['studio', 'mac'], newJobsWaitFor: 'any',
+    }));
+    assert.strictEqual(asTheSchedulerSeesIt(engine), 'studio:off mac:off');
   });
 
   console.log(`\nqueue routing freshness: ${ran - failures.length}/${ran} passed`);

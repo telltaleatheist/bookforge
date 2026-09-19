@@ -783,7 +783,6 @@ function fakeHost(initial) {
     legacyLocalRender: initial.legacyLocalRender === true,
     serversOnThisMachine: initial.serversOnThisMachine === undefined ? ['local'] : initial.serversOnThisMachine,
     defaultWaitFor: initial.defaultWaitFor === undefined ? null : initial.defaultWaitFor,
-    dial: initial.dial === undefined ? 'any' : initial.dial,
     reach: initial.reach ?? {},
   };
   state.host = {
@@ -793,10 +792,6 @@ function fakeHost(initial) {
       serversOnThisMachine: state.serversOnThisMachine,
     }),
     defaultWaitFor: () => state.defaultWaitFor,
-    // The queue's GPU dial. `any` here throughout: this suite is about CAPACITY
-    // — which machine has which slots and who is holding them — and the dial
-    // decides ROUTING, which test-queue-wait-for.js drives every row of.
-    dial: () => state.dial,
     async reach(name) {
       const answer = state.reach[name];
       if (answer === undefined) return { reachable: false, detail: `Nothing answered at ${name}.` };

@@ -650,16 +650,13 @@ const SUITES = [
   // one 3090 Ti start together, which looks like a working queue until both
   // runs OOM.
   'test-queue-slot-sets',
-  // THE QUEUE'S GPU DIAL AND THE PENDING BAND
-  // (`docs/PENDING-QUEUE-AND-GPU-DIAL.md`). Where the dial's value lives — its
-  // own record, refused rather than replaced when corrupt — plus the bench's
-  // grouping and the fact that Pending and the live queue partition the runs
-  // exactly. The defects it defends are silent: a dial reset to `any` by a
-  // rename starts sending books to a card the operator steered away from, and a
-  // staged book that leaked into the live queue would commit a GPU nobody had
-  // pressed Send on. The PRECEDENCE table itself is driven in
-  // `test-queue-wait-for`, beside the routing it defers to.
-  'test-queue-gpu-dial',
+  // THE BENCH'S GROUPING AND THE PENDING BAND. Sections in a fixed order, an
+  // empty one never drawn, the aligner filed by its resource — plus the fact
+  // that Pending and the live queue partition the runs exactly. The defect it
+  // defends is silent: a staged book that leaked into the live queue would
+  // commit a GPU nobody had pressed Send on. (This was `test-queue-gpu-dial`
+  // until 2026-09-19; the dial's third of it went with the dial.)
+  'test-queue-bench-sections',
   // WHICH MACHINES CAN SPEAK WHICH VOICE, and the two different authorities that
   // answer it. The picker used to ask THIS machine's disk — a box that, in
   // orchestrator mode, renders nothing — so it greyed out voices the engine could

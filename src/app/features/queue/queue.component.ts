@@ -1691,21 +1691,6 @@ export class QueueComponent {
     }
   }
 
-  /**
-   * TURN THE QUEUE'S GPU DIAL.
-   *
-   * Refusals are said, not swallowed — the only one main can give is a server
-   * this machine does not have, which would mean the picker and the registry
-   * had come apart, and that is worth seeing rather than hiding.
-   */
-  async chooseGpuDial(value: string): Promise<void> {
-    try {
-      await this.tray.setGpuDial(value);
-    } catch (err) {
-      this.toasts.problem((err as Error)?.message || 'The GPU dial could not be turned.');
-    }
-  }
-
   /** The section's lanes, cut into Owen's rows. The arithmetic lives in `bench`. */
   rowsOf(lanes: readonly LaneView[]): LaneView[][] {
     return benchRows(lanes);

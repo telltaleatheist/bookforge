@@ -684,31 +684,6 @@ function currentSlotSets(): SlotSet[] {
 }
 
 /**
- * THE QUEUE'S GPU DIAL, for the snapshot.
- *
- * Asked on every snapshot rather than cached, for `currentSlotSets`'s reason: a
- * dial turned a second ago — in this window or another one — must be on the page
- * before the next pump.
- *
- * A build that wired no routing host, or a record that will not parse, answers
- * `any`. That is NOT a fallback hiding a bug: this value is DECORATION here (the
- * position the control draws), and the decision it belongs to is made in
- * `crucibleAdmission`, which refuses BY NAME in both cases and puts the record's
- * own repair sentence on every travelling row. Throwing here would take the
- * whole snapshot — and with it the bench, the plans and the history — down over
- * a knob.
- */
-function currentGpuDial(): string {
-  const host = crucibleHost;
-  if (host === null) return WAIT_FOR_ANY;
-  try {
-    return host.dial();
-  } catch {
-    return WAIT_FOR_ANY;
-  }
-}
-
-/**
  * EVERY REGISTERED SERVER AND WHETHER IT IS ANSWERING, for the snapshot.
  *
  * The scheduler has always known this — `serverState` is what `decideWaitFor`
@@ -722,11 +697,12 @@ function currentGpuDial(): string {
  * the one admission is acting on, and the two would disagree exactly when it
  * mattered.
  *
- * `[]` when no routing host is wired, or when the record will not parse —
- * `currentGpuDial`'s reasoning applies unchanged: this is what a surface DRAWS,
- * the decision it belongs to is made in `crucibleAdmission`, which refuses by
- * name in both cases, and throwing here would take the whole snapshot down over
- * a list of machines.
+ * `[]` when no routing host is wired, or when the record will not parse. That
+ * is not a fallback hiding a bug: this is what a surface DRAWS, the decision it
+ * belongs to is made in `crucibleAdmission`, which refuses BY NAME in both
+ * cases and puts the record's own repair sentence on every travelling row, and
+ * throwing here would take the whole snapshot — and with it the bench, the
+ * plans and the history — down over a list of machines.
  */
 function currentServerReach(): ServerReach[] {
   const host = crucibleHost;
@@ -762,7 +738,6 @@ export function snapshot(): QueueSnapshot {
   return {
     running,
     slotSets: currentSlotSets(),
-    gpuDial: currentGpuDial(),
     servers: currentServerReach(),
     ...(gpuThermal === null ? {} : { gpuThermal: { ...gpuThermal } }),
     jobs: jobs.map((job) => ({
@@ -851,12 +826,13 @@ function watchCrucibleRecord(): void {
  * PUSH THE SNAPSHOT WITHOUT CHANGING THE QUEUE — for a fact the queue carries
  * but does not own.
  *
- * The GPU dial is the one such fact today: it lives in its own record
- * (`electron/crucible/gpu-dial.ts`), it rides on the snapshot so the page can
- * draw the control, and turning it alters nothing in `jobs[]`. `changed()` would
- * be wrong — it PERSISTS, and writing `queue-engine.json` because somebody moved
- * a knob that is not in it is a file write for nothing, on the same main thread
- * a render is reporting progress to.
+ * The registry and the rank record are those facts: they live in their own
+ * files (`electron/crucible/{servers,routing}.ts`), they ride on the snapshot
+ * as `slotSets` and `servers` so the bench can draw them, and adding, removing,
+ * re-ranking or switching a machine alters nothing in `jobs[]`. `changed()`
+ * would be wrong — it PERSISTS, and writing `queue-engine.json` because
+ * somebody registered a server that is not in it is a file write for nothing,
+ * on the same main thread a render is reporting progress to.
  *
  * Same reason `watchCrucibleRecord` publishes rather than `changed()`s when the
  * capability record learns something.
@@ -2195,8 +2171,9 @@ export function clearFinished(): void {
  * going to.
  *
  * It does NOT choose a new machine. Releasing the assignment hands the question
- * back to the two controls that own it — the row's own `waitFor` and the dial —
- * so a retry restores the QUESTION rather than answering it differently.
+ * back to the two controls that own it — the row's own `waitFor` and the
+ * per-server enable switch — so a retry restores the QUESTION rather than
+ * answering it differently.
  */
 function releaseVenueIfNothingStands(job: QueueJob): void {
   if (job.waitForResolved === undefined) return;
@@ -2412,23 +2389,11 @@ export interface CrucibleRoutingHost {
    * prevent, and writing `any` would be a silent default.
    */
   defaultWaitFor(): string | null;
-  /**
-   * THE QUEUE'S GPU DIAL — `any`, or one registered server's name.
-   *
-   * A live lever the operator turns while work is moving, read on every
-   * admission pass rather than cached here, so a dial turned a second ago is in
-   * force on the next pump. It DEFERS and never overrides: the whole precedence
-   * table is on `GPU_DIAL_ANY` in `shared/queue/wait-for.ts`, and
-   * `decideWaitFor` is the one thing that applies it.
-   *
-   * Injected like the rest of this host, for the property this file keeps: no
-   * Electron, no registry, no file. `electron/crucible/gpu-dial.ts` is the
-   * record; `queue-ipc.ts` binds the two.
-   *
-   * It never answers `null`. A dial nobody has turned is `any`, which is a real
-   * setting and the one in which the dial changes nothing.
+  /*
+   * A `dial()` WAS HERE — the queue-wide GPU dial, read on every admission pass.
+   * Removed 2026-09-19 with the dial itself (Owen: *"that works for me"*); see
+   * `shared/queue/wait-for.ts` for what replaced it and why.
    */
-  dial(): string;
   /** One unauthenticated reachability check. Never admission — the door decides. */
   reach(server: string): Promise<{ reachable: true } | { reachable: false; detail: string }>;
 }
@@ -2791,32 +2756,10 @@ function crucibleAdmission(job: QueueJob): CrucibleAdmission {
     return { ok: false, reason: `Waiting: ${(err as Error)?.message || String(err)}` };
   }
 
-  /*
-   * THE DIAL, READ ON EVERY PASS AND NEVER CACHED HERE.
-   *
-   * It is a lever the operator turns while work is moving, so a value held from
-   * an earlier pump would mean a turn took effect whenever the queue next
-   * happened to change for some other reason. The record behind it is a small
-   * synchronous file read, memoised by the host for a few seconds
-   * (`queue-ipc.ts`), which is the same arrangement the routing view has.
-   *
-   * A HOST THAT CANNOT SAY IS REFUSED, not defaulted: assuming `any` would
-   * silently ignore a dial somebody set, and there is no honest second guess.
-   */
-  let dial: string;
-  try {
-    dial = host.dial();
-  } catch (err) {
-    // A corrupt dial record is refused by `crucible/gpu-dial.ts` in its own
-    // words, and those words carry the repair. Shown, never replaced.
-    return { ok: false, reason: `Waiting: ${(err as Error)?.message || String(err)}` };
-  }
-
   const verdict = decideWaitFor({
     waitFor: job.waitFor,
     resolved: job.waitForResolved,
     ranked: record.ranked,
-    dial,
     state: serverState,
     // OUR OWN bookkeeping, never the server's state: how many GPU steps
     // BookForge already has in flight there (crucible
@@ -2999,9 +2942,9 @@ function serversOnThisMachine(): readonly string[] {
  *
  * §4.3 is unchanged and enforced here rather than merely described: the field is
  * written ONCE and a second call over an already-assigned run is a no-op, so a
- * later step of the same run cannot move the book even if the record, the dial
- * or the operator has changed underneath it. A resume after a restart reads the
- * same value off disk and goes back to the same machine.
+ * later step of the same run cannot move the book even if the record or the
+ * operator has changed underneath it. A resume after a restart reads the same
+ * value off disk and goes back to the same machine.
  *
  * `server` is the SERVER, never a cloud lane: the lane is where one STEP was
  * charged (`step.venue`), and the run was placed on the engine. They are two
@@ -3106,10 +3049,10 @@ export function pump(): void {
      * A STAGED RUN IS SKIPPED WHOLE, and this is where "nothing about a pending
      * item is committed" is actually enforced. No venue is decided for it, no
      * slot is counted against it and no admission sentence is written on it, so
-     * turning the dial or re-pointing the book costs exactly nothing right up to
-     * the press that sends it. Its steps are `held` as well — belt and braces,
-     * because either one alone would be a rule somebody could delete without a
-     * test noticing.
+     * re-pointing the book, or switching a machine off, costs exactly nothing
+     * right up to the press that sends it. Its steps are `held` as well — belt
+     * and braces, because either one alone would be a rule somebody could
+     * delete without a test noticing.
      */
     if (isPending(job)) continue;
     for (const step of job.steps) {

@@ -45,36 +45,24 @@
 /** The row's answer when it does not mind which machine, and would rather start. */
 export const WAIT_FOR_ANY = 'any';
 
-/**
- * THE QUEUE'S GPU DIAL, and the one rule that makes it safe: IT DEFERS.
+/*
+ * THERE WAS A QUEUE-WIDE GPU DIAL HERE, AND IT IS GONE (Owen, 2026-09-19:
+ * *"that works for me"*).
  *
- * Owen, 2026-09-15 (`docs/PENDING-QUEUE-AND-GPU-DIAL.md`): the live queue carries
- * a dial — `any`, or one named server — and it is *"a dial, not a router. A named
- * machine is an instruction; the answer to 'I cannot honour that right now' is to
- * WAIT, never to quietly use a different card."*
+ * It was a second routing input — `any`, or one named server — read on every
+ * admission pass and able to park a book that named a machine. What killed it
+ * is that the control it belonged to was REPLACED by the per-slot enable
+ * switches on the bench (Owen, 2026-09-15: *"lets have a big checkbox above
+ * each gpu slot"*), and nothing on the queue page turned it any more. A dial
+ * file left by an older build steered every `any` book at one server and parked
+ * every named book with a sentence telling the operator to turn a control that
+ * was not on screen: a scheduler input with no owner on screen
+ * (docs/QUEUE-CRUCIBLE-BUG-HUNT-2026-09-19.md, A4).
  *
- * The whole table, which {@link decideWaitFor} enforces and nothing else may:
- *
- *   | item          | dial            | result                                  |
- *   |---------------|-----------------|-----------------------------------------|
- *   | names S       | `any`           | S. An instruction is never second-guessed|
- *   | `any`         | names D         | D. The dial chooses for a row that won't |
- *   | names S       | names S         | S                                        |
- *   | names S       | names D (≠ S)   | HOLD — {@link holdDialElsewhere}         |
- *   | `any`         | `any`           | the first enabled server that answers    |
- *
- * The dial is spelled in the SAME vocabulary as a row's answer — `any` or a
- * registered server's name — deliberately: they are compared to each other on
- * every pass, and two spellings of one word is the shape this project spent
- * 2026-09-15 removing. {@link WAIT_FOR_ANY} is therefore the dial's `any` too,
- * and there is no second constant.
- *
- * WHERE THE VALUE LIVES is not here. This module performs no I/O; the dial is
- * passed IN as {@link WaitForFacts.dial}, exactly as the ranked list and the
- * server states are, so a keeper drives every row of that table with no engine,
- * no registry and no network. The record is `electron/crucible/gpu-dial.ts`.
+ * The two controls that survive are the per-server ENABLE switch (availability)
+ * and the per-book PICKER (the instruction). {@link decideWaitFor} keeps rungs
+ * 1, 2 and 5; rungs 3 and 4 were the dial's and went with it.
  */
-export const GPU_DIAL_ANY = WAIT_FOR_ANY;
 
 /**
  * THE VENUE THAT NO LONGER EXISTS — recognised, never honoured.
@@ -147,20 +135,6 @@ export interface WaitForFacts {
    * waits on the slot here rather than being submitted and 409'd there.
    */
   readonly gpuSlotTaken: (server: string) => string | null;
-  /**
-   * THE QUEUE'S GPU DIAL — `any`, or one registered server's name. See
-   * {@link GPU_DIAL_ANY} for the whole precedence table and why it defers.
-   *
-   * Passed IN rather than read, like every other fact here: this module performs
-   * no I/O, which is what lets a keeper drive every row of that table with no
-   * engine. `electron/crucible/gpu-dial.ts` is the record it comes from and
-   * `queue-ipc.ts` is what hands it over (`CrucibleRoutingHost.dial`).
-   *
-   * There is no `undefined`. A caller that has not got a dial has not read one,
-   * and both guesses available here are routing decisions nobody made — so it is
-   * refused by name in {@link decideWaitFor} rather than defaulted to `any`.
-   */
-  readonly dial: string;
 }
 
 export type WaitForVerdict =
@@ -174,31 +148,46 @@ export type WaitForVerdict =
 const SETTINGS_ROW = 'Settings → Crucible Servers';
 
 /**
- * WHICH OF THE TWO CONTROLS PUT THIS BOOK ON THIS MACHINE — and therefore which
- * one the operator has to turn to get it off again.
+ * WHICH CONTROL PUT THIS BOOK ON THIS MACHINE — and therefore which one the
+ * operator has to work to get it off again.
  *
- * `row` — the book itself names the server. The way out is to re-point the book.
- * `dial` — the book said `any` and the QUEUE'S DIAL chose. Telling that operator
- * to "set this book to Any" would be telling them to do what they have already
- * done, which is the wrong-cause failure this whole feature exists to avoid
- * (`docs/PENDING-QUEUE-AND-GPU-DIAL.md`, "three different sentences").
+ * `row` — the book itself names the server, and the book is still editable.
+ *   The way out is one press on its own picker.
+ * `resolved` — the book has been ASSIGNED (`waitForResolved`), which is the
+ *   moment §4.3 makes the choice final. Its picker is read-only from then on:
+ *   `setWaitFor` refuses every edit to a resolved row by name
+ *   (`venue_fixed_at_admission`). So "set this book to Any" is a sentence that
+ *   names a control which will refuse — the wrong-cause failure this module
+ *   exists to avoid — and the way out is the one act that works: send it back
+ *   to Pending, where the choice is a question again
+ *   (docs/QUEUE-CRUCIBLE-BUG-HUNT-2026-09-19.md, A6).
+ *
+ * There was a third, `dial`, for the queue-wide GPU dial. The dial is gone
+ * (Owen, 2026-09-19) and so is its sentence.
  */
-type VenueSource = 'row' | 'dial';
+type VenueSource = 'row' | 'resolved';
 
-/** "…, or set this book to Any." — the one-click way out of every named hold. */
-function orAny(source: VenueSource): string {
-  return source === 'dial'
-    ? "or turn the queue's GPU dial to Any."
-    : 'or set this book to Any.';
+/**
+ * HOW THIS OPERATOR GETS THIS BOOK OFF THIS MACHINE — the tail of every named
+ * hold, and it must name a control that will actually answer.
+ *
+ * Returned WITH its leading punctuation, because the two ways out are different
+ * shapes: an editable row's is a clause on the end of the repair sentence, and a
+ * resolved row's is a sentence of its own.
+ */
+function wayOut(source: VenueSource): string {
+  return source === 'resolved'
+    ? '. Cancel this book to send it back to Pending, and choose again there.'
+    : ', or set this book to Any.';
 }
 
 function holdDisabled(server: string, source: VenueSource): string {
   return `Waiting for ${server}: disabled. A named server is an instruction, so this book is not `
-    + `sent anywhere else — enable it in ${SETTINGS_ROW}, ${orAny(source)}`;
+    + `sent anywhere else — enable it in ${SETTINGS_ROW}${wayOut(source)}`;
 }
 
 function holdUnreachable(server: string, detail: string, source: VenueSource): string {
-  return `Waiting for ${server}: unreachable — ${detail} Start it, ${orAny(source)}`;
+  return `Waiting for ${server}: unreachable — ${detail} Start it${wayOut(source)}`;
 }
 
 function holdUnknownServer(
@@ -206,45 +195,26 @@ function holdUnknownServer(
 ): string {
   return `Waiting for ${server}: it is not one of this machine's Crucible servers `
     + `(${ranked.length === 0 ? 'there are none' : ranked.map((r) => r.name).join(', ')}). `
-    + `Add it in ${SETTINGS_ROW}, ${orAny(source)}`;
-}
-
-/**
- * THE FIRST OF THE THREE PARKED SENTENCES: the dial points somewhere else.
- *
- * Owen's exemplar, verbatim as the first clause: *"Waiting for 3090 Ti — the
- * queue is set to M1 Ultra."* The card named may be COMPLETELY IDLE, which is
- * exactly why this may not be collapsed into "waiting for the 3090 Ti to become
- * free": that sentence would send a person to look at a machine that is doing
- * nothing, and naming the wrong cause is the failure shape that cost this project
- * 2026-09-15.
- *
- * The row is NOT failed and NOT re-routed. It sits in the live queue until one of
- * the two controls moves (the book to Any or to the dial's server, or the dial to
- * Any or to this book's server), and the sentence names both ways out because
- * either is legitimate and only the operator knows which they meant.
- */
-export function holdDialElsewhere(server: string, dial: string): string {
-  return `Waiting for ${server} — the queue is set to ${dial}. The card may be completely idle: a `
-    + 'named server is an instruction, so nothing sends this book somewhere else. Turn the '
-    + `queue's GPU dial to ${server} or to Any, or set this book to Any.`;
+    + `Add it in ${SETTINGS_ROW}${wayOut(source)}`;
 }
 
 /*
- * THE SECOND PARKED SENTENCE — "the server is occupied" — IS NOT HERE, and that
- * is deliberate.
+ * "THE SERVER IS OCCUPIED" IS NOT HERE, and that is deliberate.
  *
- * `docs/PENDING-QUEUE-AND-GPU-DIAL.md` asks for three sentences that name three
- * different causes, and this module owns two of them: the dial pointing
- * elsewhere ({@link holdDialElsewhere}) and the server being disabled or
- * unreachable ({@link holdDisabled}, {@link holdUnreachable}). The third is
- * about a SLOT, and the slot already has an owner: `stillReason`'s `no-slot`
- * branch in `shared/queue/bench.ts`, which reads the venue the pump pencilled
- * onto the step and names what is on the card. Owen's wording lives there.
+ * Every parked row must name its OWN cause, and this module owns two of them:
+ * the server being disabled and the server being unreachable
+ * ({@link holdDisabled}, {@link holdUnreachable}). The third is about a SLOT,
+ * and the slot already has an owner: `stillReason`'s `no-slot` branch in
+ * `shared/queue/bench.ts`, which reads the venue the pump pencilled onto the
+ * step and names what is on the card. Owen's wording lives there.
  *
  * Writing it here as well would be two sentences for one fact, and the bench's
  * would win — it is tested before the recorded admission hold — so this one
  * would sit on the row unread. crucible `docs/ARCHITECTURE.md` R1.
+ *
+ * (A fourth used to live here, `holdDialElsewhere`: "the queue is set to M1
+ * Ultra". The queue-wide GPU dial it described is gone, Owen 2026-09-19, and a
+ * sentence about a control nobody can turn is worse than no sentence.)
  *
  * {@link holdBusy} below is a DIFFERENT fact that reads similarly: the SERVER
  * refused a submit `409 server_busy`, which is somebody else holding that
@@ -321,8 +291,11 @@ function asking(server: string): string {
 /**
  * WHERE THIS BOOK'S GPU WORK GOES, or why it is not going yet.
  *
- * The order the questions are asked in is the contract's, and each rung is a
- * different fact:
+ * THREE RUNGS, and the numbering is the contract's own (crucible
+ * `docs/PHASE7-LANES.md` §4.2–§4.3). Rungs 3 and 4 were the queue-wide GPU
+ * dial's; the dial is gone (Owen, 2026-09-19) and the gap in the numbers is
+ * left standing so that a reader of the contract and a reader of this file are
+ * talking about the same rungs.
  *
  *  1. **This book is already assigned.** §4.3 — a job that started on a machine
  *     finishes on that machine. That outranks the record, because the record can
@@ -332,87 +305,51 @@ function asking(server: string): string {
  *     and otherwise HOLDS AND SAYS WHICH. It is never re-routed: a named server
  *     is an instruction, and the queue-level enable switch is about availability
  *     rather than about overriding what a person asked for (§4.2.2).
- *  3. **The row names a server and the DIAL names a DIFFERENT one.** It HOLDS,
- *     in the live queue, saying both names ({@link holdDialElsewhere}). Not
- *     failed, not re-routed: the dial defers to an instruction, and either
- *     control unblocks it. Asked BEFORE the server's own state, because the dial
- *     is the reason and "3090 Ti is unreachable" would be a true sentence about
- *     a machine this book is not going to be sent to anyway.
- *  4. **The row says `any` and the dial names a server.** It takes the DIAL's
- *     server, and holds on that one's own state if it must — never falling
- *     through to another machine, because the dial chose and a choice that
- *     silently moves is not a choice.
- *  5. **Both say `any`.** The first enabled server, in rank order, that will
+ *  5. **The row says `any`.** The first enabled server, in rank order, that will
  *     take it. Disabled, unreachable and busy servers are simply not candidates;
  *     when none is left the hold NAMES that, rather than sitting silent.
- *
- * A RESOLVED ROW NEVER CONSULTS THE DIAL, which is rung 1 doing its job rather
- * than a special case: *"a running job ignores the dial"* (Owen, 2026-09-15).
- * The venue was settled when a GPU took the row, and turning a knob afterwards
- * governs the ADMISSION of new runs only.
  */
 export function decideWaitFor(facts: WaitForFacts): WaitForVerdict {
-  /*
-   * A CALLER THAT SAID NOTHING ABOUT THE DIAL IS REFUSED, not defaulted. The
-   * type says the field is required, which settles it for every TypeScript
-   * caller; this is for the ones the compiler does not see — the keepers, the
-   * CLI, anything driving the pure module from plain JS. The two guesses
-   * available are "assume `any`", which silently ignores a dial the operator
-   * turned, and "assume the row's own answer", which makes the dial do nothing
-   * at all. Neither is a thing to decide on somebody's behalf.
-   */
-  if (typeof facts.dial !== 'string' || facts.dial === '') {
-    throw new Error(
-      'decideWaitFor: `dial` was not supplied. The queue\'s GPU dial is `any` or a registered '
-        + "server's name, and it decides where a book that says `any` goes and whether a book "
-        + 'that names a machine may start — so neither guess is a thing to make on a caller\'s '
-        + 'behalf. Read it from `electron/crucible/gpu-dial.ts`.',
-    );
-  }
-  const dial = facts.dial;
-
   const { resolved } = facts;
   if (resolved !== undefined) {
     if (resolved === RETIRED_LOCAL_NARRATOR_VENUE) {
       return { kind: 'hold', sentence: holdRetiredVenue() };
     }
-    // A book that a GPU has taken finishes where it started (§4.3), so the dial
-    // is not asked. `row` is the honest source: the way out of a hold here is
-    // to cancel and re-add, which is about the book and not about the dial.
-    return forOneServer(resolved, facts, 'row');
+    /*
+     * `resolved` IS THE SOURCE, not `row`. A book a GPU has taken finishes
+     * where it started (§4.3) and its picker is read-only from that instant —
+     * `setWaitFor` refuses by name — so a hold here that told the operator to
+     * "set this book to Any" would name a control that will refuse them
+     * (docs/QUEUE-CRUCIBLE-BUG-HUNT-2026-09-19.md, A6). See {@link VenueSource}.
+     */
+    return forOneServer(resolved, facts, 'resolved');
   }
 
   const waitFor = facts.waitFor;
   if (waitFor === undefined || waitFor === '') return { kind: 'hold', sentence: holdNoAnswer() };
-  if (waitFor !== WAIT_FOR_ANY) {
-    /*
-     * THE DIAL DEFERS — and this is the whole of that rule, in one branch.
-     *
-     * The book names a machine and the dial names a different one. It SITS in
-     * the live queue until one of the two moves. It is not failed (nothing is
-     * wrong), not re-routed (the name is an instruction) and not silently
-     * started on the dial's machine (which is the one outcome Owen ruled out by
-     * name).
-     */
-    if (dial !== WAIT_FOR_ANY && dial !== waitFor) {
-      return { kind: 'hold', sentence: holdDialElsewhere(waitFor, dial) };
-    }
-    return forOneServer(waitFor, facts, 'row');
-  }
-
-  /*
-   * THE BOOK DOES NOT MIND. THE DIAL DOES — so the dial's server is where it
-   * goes, and it waits on THAT machine rather than shopping down the rank list.
-   * "Use this card, right now" is the sentence the dial exists to say
-   * (`docs/PENDING-QUEUE-AND-GPU-DIAL.md`), and a dial whose choice quietly
-   * slid onto the next machine would not be saying it.
-   */
-  if (dial !== WAIT_FOR_ANY) return forOneServer(dial, facts, 'dial');
+  if (waitFor !== WAIT_FOR_ANY) return forOneServer(waitFor, facts, 'row');
 
   const enabled = facts.ranked.filter((row) => row.enabled);
   if (enabled.length === 0) return { kind: 'hold', sentence: holdAnyNoneEnabled(facts.ranked) };
 
   const tried: string[] = [];
+  /*
+   * AN `unknown` SERVER DOES NOT STOP THE LOOP — it is remembered and the loop
+   * goes on (docs/QUEUE-CRUCIBLE-BUG-HUNT-2026-09-19.md, A7).
+   *
+   * Returning `ask` at the first `unknown` made an `any` row wait a round trip
+   * — or one connect timeout, if that machine is asleep — while a `ready`
+   * server sat further down the list doing nothing. And `unknown` is not a rare
+   * state: every answer ages out on `reachTtlMs` (15 s), so the top server is
+   * `unknown` again on a cadence and every `any` row arriving in that window
+   * paid for it.
+   *
+   * A `ready` server is an ANSWER and `unknown` is the absence of one, so the
+   * answer wins. Rank order still decides among answers — the first `ready` in
+   * rank order runs — and among non-answers: if nothing is ready, the FIRST
+   * server nobody has asked is the one asked now.
+   */
+  let firstUnknown: string | null = null;
   for (const row of enabled) {
     // §2.4: "a book set to `any` takes the first server whose GPU slot is free,
     // in rank order". Ours is the slot we can be certain about, so it is asked
@@ -423,13 +360,17 @@ export function decideWaitFor(facts: WaitForFacts): WaitForVerdict {
       continue;
     }
     const state = facts.state(row.name);
-    if (state.kind === 'unknown') {
-      return { kind: 'ask', server: row.name, sentence: asking(row.name) };
-    }
     if (state.kind === 'ready') return { kind: 'run', server: row.name };
+    if (state.kind === 'unknown') {
+      if (firstUnknown === null) firstUnknown = row.name;
+      continue;
+    }
     tried.push(state.kind === 'busy'
       ? `${row.name}: ${state.line}`
       : `${row.name}: ${state.detail}`);
+  }
+  if (firstUnknown !== null) {
+    return { kind: 'ask', server: firstUnknown, sentence: asking(firstUnknown) };
   }
   return { kind: 'hold', sentence: holdAnyNoneReachable(tried) };
 }
@@ -477,17 +418,4 @@ export function waitForLabel(value: string | undefined): string {
   if (value === WAIT_FOR_ANY) return 'Any — the first that will take it';
   if (value === RETIRED_LOCAL_NARRATOR_VENUE) return 'The local narrator (retired)';
   return value;
-}
-
-/**
- * How the DIAL reads in its own control — a different sentence from
- * {@link waitForLabel}'s, because it is a different question.
- *
- * A row's `any` means *"I do not mind which, and I would rather start than
- * wait"*. The dial's `any` means *"I am not steering — let each book's own
- * answer decide"*, which is a statement about the QUEUE and not about one book.
- * One label for both would make the queue-wide control read as a per-book one.
- */
-export function gpuDialLabel(value: string): string {
-  return value === GPU_DIAL_ANY ? 'Any — let each book decide' : value;
 }

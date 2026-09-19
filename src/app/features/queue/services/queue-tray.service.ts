@@ -222,20 +222,10 @@ export class QueueTrayService {
   }
 
   /**
-   * THE QUEUE'S GPU DIAL, as main last published it.
-   *
-   * Read off the snapshot rather than held here: main owns the record, another
-   * window can turn the same dial, and a renderer with its own idea of where
-   * work is being steered is the duplicated fact this queue was rebuilt to
-   * remove.
-   */
-  readonly gpuDial = computed(() => this.queue.snapshot().gpuDial);
-
-  /**
    * EVERY REGISTERED CRUCIBLE SERVER, best first, disabled ones included.
    *
-   * The same reasoning as {@link gpuDial}, and the same source: main owns the
-   * routing record and the reach cache, and publishes both on every snapshot.
+   * Read off the snapshot rather than held here: main owns the routing record
+   * and the reach cache, and publishes both on every snapshot.
    * A surface that fetched its own list would go stale the moment somebody
    * flipped a switch — which is exactly what the per-book server picker did
    * before this existed (see `QueueComponent.waitForChoices`).
@@ -509,11 +499,6 @@ export class QueueTrayService {
    */
   async sendPlanToQueue(plan: BookPlan): Promise<void> {
     for (const jobId of plan.jobIds) await this.queue.sendToQueue(jobId);
-  }
-
-  /** Turn the queue's GPU dial. See `QueueService.setGpuDial`. */
-  async setGpuDial(value: string): Promise<void> {
-    await this.queue.setGpuDial(value);
   }
 
   /**

@@ -445,7 +445,6 @@ test('a chained narration reads the copy the PASS named, through the real queue'
   queueEngine.setCrucibleRoutingHost({
     routing: () => ({ ranked: [{ name: 'twofam', enabled: true }], serversOnThisMachine: [] }),
     defaultWaitFor: () => 'twofam',
-    dial: () => 'any',
     reach: async () => ({ reachable: true }),
   });
   /*
@@ -566,7 +565,6 @@ test('a follow-on carrying a STALE sourceRef still reads the pass\'s artifact', 
   queueEngine.setCrucibleRoutingHost({
     routing: () => ({ ranked: [{ name: 'twofam', enabled: true }], serversOnThisMachine: [] }),
     defaultWaitFor: () => 'twofam',
-    dial: () => 'any',
     reach: async () => ({ reachable: true }),
   });
   /*

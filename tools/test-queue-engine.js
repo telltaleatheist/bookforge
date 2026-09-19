@@ -1293,7 +1293,6 @@ async function failedOnAServer(name, extraSteps = []) {
   engine.setCrucibleRoutingHost({
     routing: () => ({ ranked: [{ name: 'pc', enabled: true }], serversOnThisMachine: [] }),
     defaultWaitFor: () => 'pc',
-    dial: () => 'any',
     reach: async () => ({ reachable: true }),
   });
   const job = engine.enqueue({
@@ -1852,7 +1851,6 @@ async function reasonAfter(name, press) {
   engine.setCrucibleRoutingHost({
     routing: () => ({ ranked: [{ name: 'hostq', enabled: true }], serversOnThisMachine: [] }),
     defaultWaitFor: () => 'hostq',
-    dial: () => 'any',
     reach: async () => ({ reachable: true }),
   });
   const job = engine.enqueue({

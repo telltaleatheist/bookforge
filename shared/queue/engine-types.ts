@@ -863,20 +863,14 @@ export interface QueueSnapshot {
    * has its lane before the next pump.
    */
   slotSets: SlotSet[];
-  /**
-   * THE QUEUE'S GPU DIAL — `any`, or one registered server's name.
-   *
-   * On the snapshot for the reason `slotSets` is: it comes from a record only
-   * main can read (`electron/crucible/gpu-dial.ts`), and the page draws the
-   * control that turns it. Composed on every snapshot rather than cached, so a
-   * dial turned in another window is on this one before the next pump.
-   *
-   * REQUIRED, and `any` when the record has never been written — that is the
-   * state of a dial nobody has turned, not a missing fact. What it MEANS is in
-   * `GPU_DIAL_ANY` (`shared/queue/wait-for.ts`), which is the only place the
-   * precedence table lives.
+  /*
+   * A `gpuDial` RODE HERE and it is gone (Owen, 2026-09-19: *"that works for
+   * me"*). It was the queue-wide GPU dial's value, drawn by a control the
+   * per-slot enable switches had already replaced — a scheduler input with no
+   * owner on screen (docs/QUEUE-CRUCIBLE-BUG-HUNT-2026-09-19.md, A4). Which
+   * machines may be used is `slotSets` + the enable switch; which machine a
+   * book wants is `QueueJob.waitFor`.
    */
-  gpuDial: string;
   /**
    * EVERY REGISTERED CRUCIBLE SERVER AND WHETHER IT IS ANSWERING — see
    * {@link ServerReach}.
