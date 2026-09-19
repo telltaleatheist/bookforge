@@ -1489,10 +1489,12 @@ The guard was `/^[A-Za-z]:[\/]/` — a character class holding an escaped
 so bash preserved it exactly, and narrator would have refused it as a directory
 that does not exist — **potentially after the 297 s cold start had been paid.**
 
-One `toGuestPath` helper now serves argv **and every environment value**. They
+One helper now serves argv **and every environment value**. They
 used to be translated by different code, one correct and one not, which is
 exactly how the argv bug stayed invisible in a log that showed a correct-looking
-`NARRATOR_HIGGS_VOICES`.
+`NARRATOR_HIGGS_VOICES`. That helper was `narrator-spawn`'s `toGuestPath` until
+2026-09-18; it is now `narrator-paths.windowsToWslPath`, THE Windows-to-guest
+converter, which the three copies of the rule were folded into.
 
 ### Why it does NOT go through `spawnWithWslSupport`
 

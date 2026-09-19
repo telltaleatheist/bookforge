@@ -209,7 +209,7 @@ function check(name, fn) {
 
 // `narrator-spawn.js` is loaded directly for the pure-function checks below.
 // `electron` is not require-able here and narrator-spawn pulls it in for
-// `app.getAppPath()`; one stub, and only `toGuestPath` (which touches neither) is
+// `app.getAppPath()`; one stub, and only `windowsToWslPath` (which touches neither) is
 // called from it.
 const Module = require('module');
 const originalResolve = Module._resolveFilename;
@@ -222,6 +222,7 @@ require.cache['electron-stub'] = {
   exports: { app: { getAppPath: () => REPO, getPath: () => REPO, isPackaged: false }, BrowserWindow: class {} },
 };
 const spawnMod = require(path.join(REPO, 'dist', 'electron', 'narrator-spawn.js'));
+const narratorPaths = require(path.join(REPO, 'dist', 'electron', 'narrator-paths.js'));
 
 const base = JSON.parse(fs.readFileSync(BASE, 'utf-8'));
 // STDERR IS KEPT. It used to be 'ignore', which threw away the one diagnostic that
@@ -426,7 +427,7 @@ for (const arm of ARMS) {
     // TRANSLATED REPO PATH out of the capture, which is the one thing canon() has
     // to normalise away (the repo lives somewhere different on every machine, and
     // on a Mac host there is no drive letter to translate). The translation itself
-    // is asserted below, on `toGuestPath` directly — pure string logic, same answer
+    // is asserted below, on `windowsToWslPath` directly — pure string logic, same answer
     // on any host.
   });
 
@@ -478,24 +479,24 @@ check('the extractor forces the platform per fixture arm', () => {
 });
 
 console.log('the host->guest translation itself');
-check('toGuestPath maps every shape a Windows host can name a file by', () => {
+check('windowsToWslPath maps every shape a Windows host can name a file by', () => {
   // Asserted on the FUNCTION rather than inferred from a capture, so it holds on a
   // macOS host too — where the repo has no drive letter and the capture could not
   // show a translation even if one happened.
   const B = String.fromCharCode(92);
-  assert.strictEqual(spawnMod.toGuestPath('C:' + B + 'lib' + B + 'python'), '/mnt/c/lib/python');
-  assert.strictEqual(spawnMod.toGuestPath('C:/lib/python'), '/mnt/c/lib/python');
-  assert.strictEqual(spawnMod.toGuestPath('E:' + B + 'training'), '/mnt/e/training');
+  assert.strictEqual(narratorPaths.windowsToWslPath('C:' + B + 'lib' + B + 'python'), '/mnt/c/lib/python');
+  assert.strictEqual(narratorPaths.windowsToWslPath('C:/lib/python'), '/mnt/c/lib/python');
+  assert.strictEqual(narratorPaths.windowsToWslPath('E:' + B + 'training'), '/mnt/e/training');
   // The UNC form of a guest-resident path: tool-paths documents it for
   // orpheusModelsDir on a Windows+WSL machine.
   assert.strictEqual(
-    spawnMod.toGuestPath(B + B + 'wsl$' + B + 'Ubuntu' + B + 'home' + B + 't' + B + 'm'),
+    narratorPaths.windowsToWslPath(B + B + 'wsl$' + B + 'Ubuntu' + B + 'home' + B + 't' + B + 'm'),
     '/home/t/m');
   // Already guest-form, and non-paths, pass through untouched — which is what
   // makes it safe to apply to every argv element and every env value.
-  assert.strictEqual(spawnMod.toGuestPath('/home/t/m'), '/home/t/m');
-  assert.strictEqual(spawnMod.toGuestPath('--session_dir'), '--session_dir');
-  assert.strictEqual(spawnMod.toGuestPath('higgs-v3'), 'higgs-v3');
+  assert.strictEqual(narratorPaths.windowsToWslPath('/home/t/m'), '/home/t/m');
+  assert.strictEqual(narratorPaths.windowsToWslPath('--session_dir'), '--session_dir');
+  assert.strictEqual(narratorPaths.windowsToWslPath('higgs-v3'), 'higgs-v3');
 });
 
 check('wsl: argv paths AND env values are both translated for the guest', () => {

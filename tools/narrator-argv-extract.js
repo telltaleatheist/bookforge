@@ -297,7 +297,7 @@ if (require.main === module) {
    * So all three forms collapse to `<REPO>` and every backslash becomes a forward
    * slash. What that gives up is the ability to SEE the host->guest translation of
    * the repo path in the snapshot; that property is asserted directly instead, as a
-   * unit check on `toGuestPath`, which is pure and host-independent. The fixture's
+   * unit check on `windowsToWslPath`, which is pure and host-independent. The fixture's
    * own argv paths (`C:\lib\tmp\ebook-abc`) are still translated to `/mnt/c/...`
    * in the capture on either host, because that translation is string logic.
    */

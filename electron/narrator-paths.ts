@@ -469,61 +469,138 @@ export function shellEscapeArgs(args: string[]): string[] {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// WSL Path Conversion (Windows only)
+// WSL Path Conversion — ONE converter each way, and both live here
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Convert a Windows path to WSL path format
- * C:\Users\foo\book.epub -> /mnt/c/Users/foo/book.epub
+ * THE WINDOWS→GUEST CONVERTER — a path as the host names it, in the form the
+ * WSL guest can open. There is one, and it is the inverse of
+ * `wslToWindowsPath` below.
  *
- * @param winPath - Windows path (e.g., "C:\Users\foo\file.txt")
- * @returns WSL-compatible path (e.g., "/mnt/c/Users/foo/file.txt")
+ *   C:\Users\foo\book.epub   -> /mnt/c/Users/foo/book.epub
+ *   C:/Users/foo/book.epub   -> /mnt/c/Users/foo/book.epub
+ *   \\wsl$\Ubuntu\home\x     -> /home/x
+ *   \\wsl.localhost\Ubuntu\… -> /home/x
+ *   /home/x  /  /mnt/c/x     -> unchanged, already guest form
+ *   --session_dir  /  ''     -> unchanged, not a path at all
+ *   \\TITAN\iO\bookforge\x   -> REFUSED by name
+ *   C:stages\x.epub          -> REFUSED by name
+ *
+ * WHY IT IS ONE FUNCTION. It was three — this one, a second `windowsToWslPath`
+ * in `tool-paths.ts`, and `narrator-spawn`'s `toGuestPath` — and three owners of
+ * one rule is how the rule comes to differ. Only `toGuestPath` knew the `\\wsl$`
+ * UNC form, which is not hypothetical: `tool-paths.ts` documents exactly that
+ * spelling for `orpheusModelsDir` on a Windows+WSL machine, so a models
+ * directory living on ext4 is NAMED on the Windows side as
+ * `\\wsl$\<distro>\...`. Through either of the other two copies it crossed into
+ * the guest verbatim, as a string with no meaning there.
+ *
+ * A VALUE WITH NO PATH SHAPE CROSSES VERBATIM, and that is what makes this safe
+ * to apply to a whole argv list and a whole environment map — which is what
+ * `narrator-spawn`'s WSL branch does, without knowing which entries are paths.
+ * The asymmetry with `wslToWindowsPath`, which refuses an empty string, is
+ * deliberate: that one is only ever handed a path.
+ *
+ * A NETWORK SHARE IS REFUSED BY NAME. WSL auto-mounts FIXED drives only and a
+ * UNC path names no drive letter to mount at all (memory
+ * `wsl-cannot-see-network-drives`; `wsl-mounts.ts` states the same law). Passing
+ * it through unchanged is how the guest comes to answer `Session directory not
+ * found: \\TITAN\...` — an error naming a path nobody chose. So is a
+ * drive-RELATIVE path (`C:stages\x`): it resolves against a per-drive current
+ * directory the guest does not have, so there is no guest form of it to return.
+ *
+ * A MAPPED DRIVE LETTER IS NOT REFUSED. Nothing in a path's spelling says which
+ * letters are network mappings, and the question has an owner: `wsl-mounts.ts`
+ * asks Windows (`uncBehindDrive`) and MOUNTS the share at `/mnt/<letter>` before
+ * the guest is handed a path on it, which is what makes this function's output
+ * correct rather than something to second-guess here.
  */
-export function windowsToWslPath(winPath: string): string {
-  if (!winPath) return winPath;
-
-  // Normalize to forward slashes first
-  const normalized = winPath.replace(/\\/g, '/');
-
-  // Match drive letter pattern (C:, D:, etc.)
-  const match = normalized.match(/^([A-Za-z]):(.*)/);
-  if (match) {
-    const driveLetter = match[1].toLowerCase();
-    const restOfPath = match[2];
-    return `/mnt/${driveLetter}${restOfPath}`;
+export function windowsToWslPath(hostPath: string): string {
+  if (typeof hostPath !== 'string') {
+    throw new Error(`windowsToWslPath: given ${typeof hostPath}, not a path`);
   }
 
-  // Not a Windows path, return as-is
-  return winPath;
+  const normalized = hostPath.replace(/\\/g, '/');
+
+  if (normalized.startsWith('//')) {
+    const share = normalized.match(/^\/\/wsl[$.](?:localhost)?\/[^/]+(\/.*)?$/i);
+    if (share) return share[1] || '/';
+    throw new Error(
+      `windowsToWslPath: "${hostPath}" is a network share. WSL auto-mounts fixed drives `
+      + 'only and a UNC path names no drive letter to mount at, so the guest has no name '
+      + 'for it. Map it to a drive letter (wsl-mounts.ts can mount that) or keep the work '
+      + 'on a local drive.');
+  }
+
+  const drive = normalized.match(/^([A-Za-z]):(\/.*)?$/);
+  if (drive) return `/mnt/${drive[1].toLowerCase()}${drive[2] || ''}`;
+  if (/^[A-Za-z]:/.test(normalized)) {
+    throw new Error(
+      `windowsToWslPath: "${hostPath}" is relative to a drive's current directory, which `
+      + 'the guest does not have. Name it absolutely.');
+  }
+
+  // Already guest form, or not a path at all — a flag, a model id, an env value.
+  return hostPath;
 }
 
 /**
- * Convert a WSL path to Windows path format
- * /mnt/c/Users/foo/book.epub -> C:\Users\foo\book.epub
+ * THE WSL→WINDOWS CONVERTER — a path as the guest sees it, in the form Windows
+ * can open. There is one, and the `/mnt/` decision is INSIDE it.
  *
- * @param wslPath - WSL path (e.g., "/mnt/c/Users/foo/file.txt")
- * @returns Windows path (e.g., "C:\Users\foo\file.txt")
+ *   /mnt/c/Users/foo/book.epub     -> C:\Users\foo\book.epub
+ *   /home/telltale/staged-x.epub   -> \\wsl$\Ubuntu\home\telltale\staged-x.epub
+ *   C:\Users\foo\book.epub         -> unchanged (already Windows)
+ *   \\wsl$\Ubuntu\home\…           -> unchanged (already Windows)
+ *
+ * WHY THE DECISION MOVED IN HERE. It used to be re-composed by the caller —
+ * `if (p.startsWith('/mnt/')) p = wslToWindowsPath(p)` — and a caller that
+ * knew only that form silently did nothing with the other one. A WSL prep
+ * stages the ebook at a GUEST-NATIVE path (`<guest sessions root>/staged-<uuid>.epub`,
+ * which is what all three golden fixtures carry), so `reassembly-bridge`'s
+ * metadata lookup ran `path.dirname` on a Linux string, found no `project.json`
+ * at a path Windows cannot even hold, and took the no-metadata branch without
+ * a word: the reassembled m4b lost its title, author, year, series and cover.
+ *
+ * The `\\wsl$` prefix itself is `tool-paths.wslPathToWindows`'s to own — this
+ * function owns only the choice between the two roads.
+ *
+ * NOT ON WINDOWS THERE IS NO GUEST. On macOS and Linux an absolute POSIX path
+ * IS the host's own path; rewriting it into a `\\wsl$` share would invent a
+ * machine. `toReadablePath` in parallel-tts-bridge used to state that rule a
+ * second time and now simply calls this.
+ *
+ * A path that is neither guest-absolute nor Windows — a relative path, an
+ * empty string — is REFUSED BY NAME. There is no third form to guess at, and
+ * returning it unchanged is how the silent branch above happened.
  */
-export function wslToWindowsPath(wslPath: string): string {
-  if (!wslPath) return wslPath;
-
-  // Match WSL mount pattern (/mnt/c/...)
-  const match = wslPath.match(/^\/mnt\/([a-z])(\/.*)?$/i);
-  if (match) {
-    const driveLetter = match[1].toUpperCase();
-    const restOfPath = (match[2] || '').replace(/\//g, '\\');
-    return `${driveLetter}:${restOfPath}`;
+export function wslToWindowsPath(guestPath: string): string {
+  if (typeof guestPath !== 'string' || guestPath.trim() === '') {
+    throw new Error('wslToWindowsPath: no path given');
   }
+  // Already Windows: a drive letter, or any UNC share (\\wsl$ among them).
+  if (/^[A-Za-z]:/.test(guestPath) || guestPath.startsWith('\\\\')) return guestPath;
+  if (!guestPath.startsWith('/')) {
+    throw new Error(`wslToWindowsPath: "${guestPath}" is neither a guest path nor a Windows path`);
+  }
+  if (process.platform !== 'win32') return guestPath;
 
-  // Not a WSL mounted path, return as-is
-  return wslPath;
+  const mounted = guestPath.match(/^\/mnt\/([a-z])(\/.*)?$/i);
+  if (mounted) {
+    return `${mounted[1].toUpperCase()}:${(mounted[2] || '/').replace(/\//g, '\\')}`;
+  }
+  return wslPathToWindows(guestPath);
 }
 
 /**
  * Check if the current configuration should use WSL for TTS
  * Re-exported for convenience
+ *
+ * `wslPathToWindows` is NOT re-exported: it is the `\\wsl$` prefix builder that
+ * `wslToWindowsPath` above is built on, not a second converter to choose
+ * between. Callers outside tool-paths ask `wslToWindowsPath`.
  */
-export { shouldUseWsl2ForOrpheus, shouldUseWsl2ForHiggs, getWslDistro, getWslCondaPath, getWslSessionsRoot, getWslOrpheusCondaEnv, getWslHiggsCondaEnv, wslPathToWindows };
+export { shouldUseWsl2ForOrpheus, shouldUseWsl2ForHiggs, getWslDistro, getWslCondaPath, getWslSessionsRoot, getWslOrpheusCondaEnv, getWslHiggsCondaEnv };
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Safe env builder for tools spawns
@@ -610,7 +687,6 @@ export const narratorPaths = {
   // WSL path conversion
   windowsToWslPath,
   wslToWindowsPath,
-  wslPathToWindows,
   // WSL config (re-exported from tool-paths)
   shouldUseWsl2ForOrpheus,
   shouldUseWsl2ForHiggs,

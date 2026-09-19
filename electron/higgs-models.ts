@@ -1607,7 +1607,7 @@ function refuseMisshapedCheckpointPath(model: HiggsModel, arm: HiggsCheckpointAr
     // GUEST-RESIDENT, in either form Windows can spell it. `/home/telltale/…` is
     // the guest's own name for the directory, and `\\wsl$\<distro>\home\…` is the
     // UNC form the Windows side uses for the same ext4 directory (tool-paths.ts
-    // documents it for `orpheusModelsDir`); `toGuestPath` folds the second onto
+    // documents it for `orpheusModelsDir`); `windowsToWslPath` folds the second onto
     // the first at document-write time.
     //
     // A DRIVE PATH IS NOT AN ALTERNATIVE SPELLING — it is a different directory,
@@ -2280,7 +2280,7 @@ function requirePositiveInt(field: string, value: number, voiceId: string): numb
  * an empty clone the same object.
  *
  * `translatePath` turns a HOST-NATIVE catalog path into one the SPAWN's
- * filesystem can open. It is a parameter rather than a call to `toGuestPath`
+ * filesystem can open. It is a parameter rather than a call to `windowsToWslPath`
  * here because this module has no business knowing which arm the caller is
  * about to spawn on: identity on macOS/Linux, guest translation under WSL.
  *
