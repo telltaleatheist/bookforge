@@ -21,10 +21,27 @@
  *   On the bench — the three slots, always all three. The GPU card is the
  *                  largest object on the page because the card is the resource
  *                  the user schedules their day around.
+ *   Pending      — staged books, nothing committed, waiting for Send to queue.
  *   Up next      — grouped by BOOK, each group drawing its chain with real
  *                  lineage, every still step saying why it is still.
  *   Finished     — today's work as history: what it produced and how long it
  *                  took, in a table, not as more rows that look live.
+ *
+ * ── Pending and Up next are ONE card in two states ──────────────────────────
+ *
+ * They were two loops drawing two nearly-identical cards, and they drifted:
+ * different action sets, different pickers, different words for the same fact.
+ * The body of both is now a single `#bookCard` template with a `staged` flag,
+ * and each band supplies its own wrapper — Up next's because only IT is a drop
+ * list and `cdkDrag` has to be a real child of the band that owns the drag.
+ *
+ * The card is two columns: the BOOK on the left (grip, cover, title, one-line
+ * summary) and the DECISION on the right (which machine, then what to do about
+ * it). Owen, 2026-09-19: *"we have like 6 red cancel buttons listed, and
+ * they're all the way on the other side of the screen from the name of the
+ * job/book."* The actions now sit a hand's width from the title, there is one
+ * primary per card, and the destructive pair lives in a `⋯` menu whose entries
+ * say what each one KEEPS. Red survives only inside that menu.
  *
  * ── Detail expands in place ─────────────────────────────────────────────────
  *
@@ -36,8 +53,9 @@
  * two.
  */
 
-import { Component, computed, inject, signal } from '@angular/core';
-import { DatePipe, DecimalPipe } from '@angular/common';
+import { Component, HostListener, computed, inject, signal } from '@angular/core';
+import { DatePipe, DecimalPipe, NgTemplateOutlet } from '@angular/common';
+import { FormsModule } from '@angular/forms';
 import { CdkDrag, CdkDragHandle, CdkDropList, moveItemInArray } from '@angular/cdk/drag-drop';
 import type { CdkDragDrop } from '@angular/cdk/drag-drop';
 
@@ -45,7 +63,8 @@ import { benchRows, prepFraction, prepLabel } from '@shared/queue/bench';
 import type { BookPlan, FinishedRun } from '@shared/queue/bench';
 import type { ServerReach } from '@shared/queue/engine-types';
 import { LOCAL_WORK_SET, LONGFORM_ALIGN_SET } from '@shared/queue/slot-sets';
-import { ToolbarComponent, ToolbarItem } from '../../creamsicle-desktop';
+import { DesktopSelectComponent, ToolbarComponent, ToolbarItem } from '../../creamsicle-desktop';
+import type { DesktopSelectItems } from '../../creamsicle-desktop';
 import { DialogService } from '../../creamsicle-desktop/services/dialog.service';
 import { ElectronService } from '../../core/services/electron.service';
 import { ToastService } from '../../core/services/toast.service';
@@ -61,7 +80,8 @@ import type { BenchSectionView, BookPlanView, LaneView } from './services/queue-
   selector: 'app-queue',
   standalone: true,
   imports: [
-    DatePipe, DecimalPipe, ToolbarComponent, JobStepComponent, JobDetailsComponent,
+    DatePipe, DecimalPipe, NgTemplateOutlet, FormsModule,
+    ToolbarComponent, DesktopSelectComponent, JobStepComponent, JobDetailsComponent,
     CdkDropList, CdkDrag, CdkDragHandle,
   ],
   template: `
@@ -384,78 +404,19 @@ import type { BenchSectionView, BookPlanView, LaneView } from './services/queue-
         <section class="band">
           <header class="band-head">
             <h2>Pending · {{ tray.pending().length }}</h2>
-            <span class="note">
+            <span class="note left">
               Staged, not queued — choose a machine, then send
             </span>
           </header>
 
           @for (plan of tray.pending(); track plan.key) {
+            <!-- The SAME body Up next draws, in its staged state: dashed, tagged,
+                 no grip (nothing here has a queue position to drag). -->
             <article class="card staged">
-              <div class="card-head">
-                @if (plan.cover) {
-                  <img class="cover" [src]="plan.cover" alt="" />
-                } @else {
-                  <span class="cover blank" aria-hidden="true"></span>
-                }
-                <div class="min">
-                  <h3>{{ plan.title }}</h3>
-                  <div class="sub">{{ pendingSummary(plan) }}</div>
-                </div>
-                <div class="acts">
-                  <!-- THE SERVER, chosen while nothing is committed. This is the
-                       whole reason Pending exists: the venue used to be decided
-                       at enqueue from a setting, with no moment to say otherwise. -->
-                  <label class="venue-pick">
-                    <span class="venue-word">Run on</span>
-                    <select
-                      [value]="waitForValue(plan)"
-                      (change)="chooseWaitFor(plan, $any($event.target).value)"
-                      title="Which Crucible server should this book render on? A named server is an instruction — it waits for that machine rather than being sent somewhere else."
-                    >
-                      @if (waitForValue(plan) === '') {
-                        <option value="">No server chosen</option>
-                      }
-                      @for (row of waitForChoices(); track row.name) {
-                        <option [value]="row.name" [disabled]="!row.enabled">
-                          {{ serverOptionLabel(row) }}
-                        </option>
-                      }
-                      <option value="any">Let the queue decide</option>
-                    </select>
-                  </label>
-                  <button
-                    type="button"
-                    class="btn go"
-                    (click)="sendPlan(plan)"
-                    title="Put this book in the live queue. It starts when a machine it will accept is free."
-                  >▶ Send to queue</button>
-                  <button
-                    type="button"
-                    class="btn stop"
-                    (click)="cancelPlan(plan)"
-                    title="Discard this staged book. Nothing has been rendered for it."
-                  >✕ Discard</button>
-                </div>
-              </div>
-
-              <!-- The chain it WILL run, so the press is not a leap of faith.
-                   No per-step controls: nothing here has a queue position, a
-                   slot or a reason to be still beyond "not sent yet". -->
-              <div class="chain">
-                @for (step of plan.steps; track step.stepId) {
-                  <div class="cstep staged-step">
-                    <span class="spine" aria-hidden="true"></span>
-                    <span class="sdot held" aria-hidden="true"></span>
-                    <span class="cname plain">{{ step.label }}</span>
-                    <span class="cmid">
-                      <span class="why">
-                        <span class="dot" aria-hidden="true"></span>{{ step.reason?.sentence }}
-                      </span>
-                    </span>
-                    <span class="cright"></span>
-                  </div>
-                }
-              </div>
+              <ng-container
+                [ngTemplateOutlet]="bookCard"
+                [ngTemplateOutletContext]="{ $implicit: plan, staged: true }"
+              />
             </article>
           }
         </section>
@@ -474,161 +435,331 @@ import type { BenchSectionView, BookPlanView, LaneView } from './services/queue-
           (cdkDropListDropped)="onPlanDrop($event)"
         >
           <header class="band-head">
-            <h2>Up next</h2>
-            <span class="note">{{ plannedSteps() }} steps across {{ visiblePlans().length }} books</span>
+            <h2>Up next · {{ visiblePlans().length }}</h2>
+            <span class="note left">{{ plannedSteps() }} steps across {{ visiblePlans().length }} books</span>
+
+            <!--
+              RUNNING OR PAUSED, said on the band it is about (Owen, 2026-09-19:
+              *"the active queue should have a running or paused option where it
+              accepts new entries or doesn't accept new entries — that's what the
+              pause button should handle probably"*).
+
+              PAUSED ACCEPTS ROWS. Send to queue still works and a book added
+              while paused sits here until Resume; the engine has always behaved
+              this way — the running latch gates its pump — so this is the WORD
+              for a state that existed with nothing on screen saying which one
+              we were in.
+
+              The toolbar's Pause/Resume pair is gone: it was this same latch,
+              two screens' width from the queue it governs. Halt stays there as
+              the destructive sibling — it stops the running work too.
+            -->
+            <div class="band-right">
+              <div class="seg" role="group" aria-label="Queue state">
+                <button
+                  type="button"
+                  class="seg-btn"
+                  [class.on]="tray.isRunning()"
+                  [attr.aria-pressed]="tray.isRunning()"
+                  (click)="setQueueRunning(true)"
+                  title="Steps start as slots free up. Pressing it while already running picks up anything that was stopped."
+                ><span class="seg-dot" aria-hidden="true"></span>Running</button>
+                <button
+                  type="button"
+                  class="seg-btn paused"
+                  [class.on]="!tray.isRunning()"
+                  [attr.aria-pressed]="!tray.isRunning()"
+                  (click)="setQueueRunning(false)"
+                  title="Books may still be added and reordered here; nothing new starts until Running. Work already on a slot finishes."
+                ><span class="seg-dot" aria-hidden="true"></span>Paused</button>
+              </div>
+            </div>
           </header>
 
           @for (plan of visiblePlans(); track plan.key) {
             <article class="card" cdkDrag [cdkDragData]="plan">
-              <div class="card-head">
-                <!-- HANDLE, not the whole card. The card body carries Cancel,
-                     Start this book and a step name per row that expands it;
-                     making the card itself draggable would arm a drag under
-                     every one of those presses. -->
+              <!-- HANDLE, not the whole card. The card body carries Stop this
+                   book, an overflow menu and a step name per row that expands
+                   it; making the card itself draggable would arm a drag under
+                   every one of those presses.
+
+                   It stays HERE rather than inside the shared body because
+                   cdkDrag finds its handle by content query, and a handle
+                   rendered from a template declared elsewhere is not in that
+                   scope — the card would silently become draggable everywhere.
+                   Absolutely placed, so both bands' titles line up whether or
+                   not the card has a grip. -->
+              <button
+                type="button"
+                class="grip"
+                cdkDragHandle
+                aria-label="Drag to change this book's place in the queue"
+                title="Drag to change this book's place in the queue"
+              >⠿</button>
+              <ng-container
+                [ngTemplateOutlet]="bookCard"
+                [ngTemplateOutletContext]="{ $implicit: plan, staged: false }"
+              />
+            </article>
+          }
+        </section>
+      }
+
+      <!-- ── The book card, both bands ──────────────────────────────────────
+           Declared once and rendered by Pending (staged: true) and Up next
+           (staged: false). The WRAPPER stays with each band because only Up
+           next is a drop list and cdkDrag must be its own child. -->
+      <ng-template #bookCard let-plan let-staged="staged">
+        <!-- TWO COLUMNS: the book on the left, the decision on the right.
+             The old card was one flex row with the actions pushed right by an
+             auto margin, so the name was flush left and its buttons flush right
+             across the whole page — the complaint this card exists to fix. -->
+        <div class="book-head">
+          <div class="who">
+            @if (plan.cover) {
+              <img class="cover" [src]="plan.cover" alt="" />
+            } @else {
+              <span class="cover blank" aria-hidden="true"></span>
+            }
+            <div class="min">
+              <div class="title-row">
+                <h3>{{ plan.title }}</h3>
+                @if (staged) { <span class="staged-tag">Staged</span> }
+              </div>
+              @if (staged) {
+                <!-- THE CHAIN AS ONE LINE, and the rows folded away behind it.
+                     A staged book's steps all say "Pending — not sent to the
+                     queue yet", four times over, which is the band's own
+                     heading repeated per row. The arrow line says the same
+                     thing in the space of a sentence and still answers the
+                     question the chain was there for: what will this run? -->
                 <button
                   type="button"
-                  class="grip"
-                  cdkDragHandle
-                  aria-label="Drag to change this book's place in the queue"
-                  title="Drag to change this book's place in the queue"
-                >⠿</button>
-                @if (plan.cover) {
-                  <img class="cover" [src]="plan.cover" alt="" />
-                } @else {
-                  <span class="cover blank" aria-hidden="true"></span>
-                }
-                <div class="min">
-                  <h3>{{ plan.title }}</h3>
-                  <div class="sub">{{ planSummary(plan) }}</div>
+                  class="sub chainline"
+                  [attr.aria-expanded]="expandedPlans().has(plan.key)"
+                  (click)="togglePlanChain(plan)"
+                  title="The chain this book will run. Click to see it step by step."
+                >{{ pendingSummary(plan) }}</button>
+              } @else {
+                <div class="sub">{{ planSummary(plan) }}</div>
+              }
+            </div>
+          </div>
+
+          <!--
+            THE DECISION COLUMN: which machine, then what to do about it.
+
+            WHICH SERVER THIS BOOK WAITS FOR (crucible docs/PHASE7-LANES.md
+            §4.2.1). One field, on the book, because one book is one GPU: every
+            step of it follows this answer. Read-only once the book has been
+            ASSIGNED — a job finishes on the machine it started on (§4.3) — and
+            then it is a CHIP in the same slot the picker occupied, so the eye
+            finds the machine in one place whether the book is chosen or fixed.
+          -->
+          <div class="decide">
+            @if (staged) {
+              <div class="venue-row">
+                <span class="venue-word">Run on</span>
+                <desktop-select
+                  class="pick"
+                  size="sm"
+                  placeholder="No server chosen"
+                  ariaLabel="Which machine this book renders on"
+                  [options]="stagedServerOptions()"
+                  [ngModel]="waitForValue(plan)"
+                  (ngModelChange)="chooseWaitFor(plan, $event)"
+                />
+              </div>
+            } @else if (plan.travels) {
+              @if (plan.waitForResolved.length > 0) {
+                <div class="venue-row">
+                  <span class="venue-word">Runs on</span>
+                  <span class="runs-on" title="A book finishes on the machine it started on.">
+                    <span class="dot" aria-hidden="true"></span>{{ plan.waitForResolved.join(' + ') }}
+                  </span>
                 </div>
-                <!-- ONE Cancel, whatever the book's shape. This looped over
-                     plan.jobIds and drew a button per run, so a book whose
-                     chain spans two runs showed two identical "Remove"s with
-                     nothing to tell them apart — which is most of why the
-                     controls here read as confusing. The act is the same for
-                     every run in the plan, so it is said once and applied to
-                     all of them (cancelPlan). -->
-                <div class="acts">
-                  <!--
-                    WHICH SERVER THIS BOOK WAITS FOR (crucible
-                    docs/PHASE7-LANES.md §4.2.1). One field, on the book, because
-                    one book is one GPU: every step of it follows this answer.
+              } @else {
+                <div class="venue-row">
+                  <span class="venue-word">Wait for</span>
+                  <desktop-select
+                    class="pick"
+                    size="sm"
+                    placeholder="No server chosen"
+                    ariaLabel="Which machine this book renders on"
+                    [options]="liveServerOptions()"
+                    [ngModel]="waitForValue(plan)"
+                    (ngModelChange)="chooseWaitFor(plan, $event)"
+                  />
+                </div>
+              }
+            }
 
-                    Read-only once the book has been ASSIGNED — a job finishes on
-                    the machine it started on (§4.3) — and shown as plain text
-                    then, rather than as a control that refuses when pressed.
-                  -->
-                  @if (plan.travels) {
-                    @if (plan.waitForResolved.length > 0) {
-                      <span class="venue" title="A book finishes on the machine it started on.">
-                        Runs on {{ plan.waitForResolved.join(' + ') }}
-                      </span>
-                    } @else {
-                      <label class="venue-pick">
-                        <span class="venue-word">Wait for</span>
-                        <select
-                          [value]="waitForValue(plan)"
-                          (change)="chooseWaitFor(plan, $any($event.target).value)"
-                          title="Which Crucible server should this book render on? A named server is an instruction — it waits for that machine rather than being sent somewhere else."
-                        >
-                          @if (waitForValue(plan) === '') {
-                            <option value="">No server chosen</option>
-                          }
-                          @for (row of waitForChoices(); track row.name) {
-                            <option [value]="row.name" [disabled]="!row.enabled">
-                              {{ serverOptionLabel(row) }}
-                            </option>
-                          }
-                          <option value="any">Any — the first that will take it</option>
-                        </select>
-                      </label>
-                    }
-                  }
-                  @if (plan.allHeld) {
-                    <button type="button" class="btn go" (click)="startPlan(plan)">▶ Start this book</button>
-                  }
-                  <!--
-                    TWO ACTS, AND THEY ARE NOT THE SAME ONE WORDED TWICE.
+            <!--
+              ONE PRIMARY, and it is whatever this card's state makes obvious:
+              send a staged book, stop a running one, start a held one, or move
+              a waiting one up the list. Every one of them is a call that
+              already existed; nothing new was taught to the engine here.
 
-                    Cancel puts a travelling book BACK IN PENDING — stopped, its
-                    settings kept, its server a question again (Owen: "if i hit
-                    cancel book while its in queue, it drops back to pending").
-                    Delete takes it out altogether. A single button could only
-                    have been one of them, and the one it was — delete — is the
-                    unrecoverable one.
-
-                    A book that travels nowhere has no Pending band to fall back
-                    to, so it shows Delete alone rather than a Cancel that would
-                    be refused by name on press.
-                  -->
-                  @if (plan.travels) {
-                    <button
-                      type="button"
-                      class="btn stop"
-                      (click)="cancelBook(plan)"
-                      [title]="'Stop this book and send it back to Pending — ' + plan.steps.length
-                        + ' step' + (plan.steps.length === 1 ? '' : 's')
-                        + '. It keeps its settings and you can change its server again there.'"
-                    >✕ Cancel this book</button>
-                  }
+              THE DESTRUCTIVE PAIR IS IN THE MENU, and they are not the same
+              act worded twice. Send back to Pending stops the book and keeps
+              it — settings, renders, and its server a question again (Owen:
+              "if i hit cancel book while its in queue, it drops back to
+              pending"). Remove takes it out altogether. The labels say what
+              each KEEPS, because that is the difference. A book that travels
+              nowhere has no Pending band to fall back to, so it is offered
+              Remove alone rather than an entry that refuses on press.
+            -->
+            <div class="acts">
+              @if (staged) {
+                <button
+                  type="button"
+                  class="btn go grow"
+                  (click)="sendPlan(plan)"
+                  [title]="tray.isRunning()
+                    ? 'Put this book in the live queue. It starts when a machine it will accept is free.'
+                    : 'Put this book in the live queue. The queue is paused, so it waits there until you set it Running.'"
+                >▶ Send to queue</button>
+                <button
+                  type="button"
+                  class="btn quiet"
+                  (click)="cancelPlan(plan)"
+                  title="Discard this staged book. Nothing has been rendered for it."
+                >Discard</button>
+              } @else {
+                @if (runningSteps(plan) > 0) {
                   <button
                     type="button"
-                    class="btn stop"
-                    (click)="cancelPlan(plan)"
-                    [title]="'Take this book out of the queue altogether — ' + plan.steps.length
-                      + ' step' + (plan.steps.length === 1 ? '' : 's') + '. Nothing already rendered is deleted.'"
-                  >🗑 Delete</button>
+                    class="btn grow"
+                    (click)="stopBook(plan)"
+                    title="Stop what this book is running and free its slots. It keeps everything it has rendered; Start picks it up from there. The rest of the queue carries on."
+                  >■ Stop this book</button>
+                } @else if (plan.allHeld) {
+                  <button
+                    type="button"
+                    class="btn go grow"
+                    (click)="startPlan(plan)"
+                    title="Release this book's steps. They claim a slot as one frees up."
+                  >▶ Start this book</button>
+                } @else {
+                  <button
+                    type="button"
+                    class="btn grow"
+                    [disabled]="!canMoveToTop(plan)"
+                    (click)="moveToTop(plan)"
+                    [title]="canMoveToTop(plan)
+                      ? 'Put this book at the front of Up next — the engine claims work from the top.'
+                      : 'This book is already at the front of the queue.'"
+                  >Move to top</button>
+                }
+
+                <div class="more-wrap">
+                  <button
+                    type="button"
+                    class="more"
+                    aria-haspopup="menu"
+                    [attr.aria-expanded]="menuFor() === plan.key"
+                    [attr.aria-label]="'More actions for ' + plan.title"
+                    (click)="toggleMenu(plan, $event)"
+                  >⋯</button>
+                  @if (menuFor() === plan.key) {
+                    <div class="menu" role="menu">
+                      @if (plan.travels) {
+                        <button type="button" class="menu-item" role="menuitem" (click)="menuReturnToPending(plan)">
+                          <span class="k">Send back to Pending</span>
+                          <span class="d">
+                            Stops it, keeps its settings and what it rendered; its
+                            server becomes a question again.
+                          </span>
+                        </button>
+                      }
+                      <button type="button" class="menu-item danger" role="menuitem" (click)="menuRemove(plan)">
+                        <span class="k">Remove from queue</span>
+                        <span class="d">
+                          Takes all {{ plan.steps.length }} step{{ plan.steps.length === 1 ? '' : 's' }}
+                          out; nothing already rendered is deleted.
+                        </span>
+                      </button>
+                    </div>
+                  }
                 </div>
-              </div>
+              }
+            </div>
+          </div>
+        </div>
 
-              <div class="chain">
-                @for (step of plan.steps; track step.stepId) {
-                  <div class="cstep" [class.on]="step.status === 'running'">
-                    <span class="spine" aria-hidden="true"></span>
-                    <span
-                      class="sdot"
-                      [class.run]="step.status === 'running'"
-                      [class.wait]="step.status === 'waiting' || step.status === 'queued'"
-                      [class.held]="step.status === 'held'"
-                      aria-hidden="true"
-                    ></span>
+        @if (!staged || expandedPlans().has(plan.key)) {
+          <div class="chain">
+            @for (step of plan.steps; track step.stepId) {
+              @if (staged) {
+                <!-- Names only. Nothing staged has a queue position, a slot, or
+                     a reason to be still beyond "not sent yet" — and the one it
+                     does have is on the line above, once. -->
+                <div class="cstep staged-step">
+                  <span class="spine" aria-hidden="true"></span>
+                  <span class="sdot held" aria-hidden="true"></span>
+                  <span class="cname plain">{{ step.label }}</span>
+                  <span class="cright"></span>
+                </div>
+              } @else {
+                <div class="cstep" [class.on]="step.status === 'running'">
+                  <span class="spine" aria-hidden="true"></span>
+                  <span
+                    class="sdot"
+                    [class.run]="step.status === 'running'"
+                    [class.wait]="step.status === 'waiting' || step.status === 'queued'"
+                    [class.held]="step.status === 'held'"
+                    aria-hidden="true"
+                  ></span>
 
-                    <button type="button" class="cname" (click)="toggleStep(step.stepId)">
-                      {{ step.label }}
-                    </button>
+                  <button type="button" class="cname" (click)="toggleStep(step.stepId)">
+                    {{ step.label }}
+                  </button>
 
-                    <span class="cmid">
-                      @if (step.reason; as reason) {
-                        <span class="why" [class.warn]="reason.kind === 'admission'">
-                          <span class="dot" aria-hidden="true"></span>{{ reason.sentence }}
-                        </span>
-                      } @else {
-                        <span class="why on-bench">
-                          <span class="dot" aria-hidden="true"></span>on the bench
-                        </span>
-                      }
-                    </span>
+                  <span class="cmid">
+                    @if (step.reason; as reason) {
+                      <span class="why" [class.warn]="reason.kind === 'admission'">
+                        <span class="dot" aria-hidden="true"></span>{{ reason.sentence }}
+                      </span>
+                    } @else {
+                      <span class="why on-bench">
+                        <span class="dot" aria-hidden="true"></span>on the bench
+                      </span>
+                    }
+                  </span>
 
-                    <span class="cright">
-                      @if (step.percent !== null) {
-                        {{ step.percent | number:'1.0-0' }}%
-                      } @else if (step.status !== 'running') {
-                        not timed on this book
-                      }
-                      <!--
-                        HOW LONG, beside HOW FAR. A percentage answers "how much
-                        is done" and nothing else, and this row is where a person
-                        looks to decide whether to wait — the lane card above
-                        carries the ETA, but it shows only the step that happens
-                        to hold a slot, and a book's chain is read here.
+                  <span class="cright">
+                    @if (step.percent !== null) {
+                      {{ step.percent | number:'1.0-0' }}%
+                    } @else if (step.status !== 'running') {
+                      not timed on this book
+                    }
+                    <!--
+                      HOW LONG, beside HOW FAR. A percentage answers "how much
+                      is done" and nothing else, and this row is where a person
+                      looks to decide whether to wait — the lane card above
+                      carries the ETA, but it shows only the step that happens
+                      to hold a slot, and a book's chain is read here.
 
-                        Running steps only: a waiting step's ETA would be a
-                        prediction about a run that has not started and has
-                        nothing measured about it.
-                      -->
-                      @if (step.status === 'running' && etaFor(step.stepId); as eta) {
-                        <span class="ceta">{{ eta }}</span>
-                      }
+                      Running steps only: a waiting step's ETA would be a
+                      prediction about a run that has not started and has
+                      nothing measured about it.
+                    -->
+                    @if (step.status === 'running' && etaFor(step.stepId); as eta) {
+                      <span class="ceta">{{ eta }}</span>
+                    }
+                    <!--
+                      THE PER-STEP CONTROLS APPEAR ON HOVER OR FOCUS. A book of
+                      four steps drew four red buttons in a stripe at the right
+                      edge, none of them near the thing they act on, and none of
+                      them the thing a reader came to this row for — which is
+                      the name, the reason and the percentage.
+
+                      Faded, not display:none, so the keyboard can still reach
+                      them: a button removed from the flow cannot be tabbed to,
+                      and :focus-within is what brings it back. Always drawn on
+                      a coarse pointer, which has no hover to give.
+                    -->
+                    <span class="ctl">
                       @if (step.startable) {
                         <button type="button" class="btn go xs" (click)="start(step.stepId)">
                           ▶ {{ step.reason?.kind === 'stopped' ? 'Resume' : 'Start' }}
@@ -637,8 +768,8 @@ import type { BenchSectionView, BookPlanView, LaneView } from './services/queue-
                       <!-- Every step in the chain can be dropped on its own, and
                            the word changes with what dropping it MEANS: a running
                            step is stopped (and keeps what it rendered), a waiting
-                           one is simply taken out. Same call either way — the
-                           engine settles a cancelled step held. -->
+                           one is skipped — taken out of the queue. Same call
+                           either way — the engine settles a cancelled step held. -->
                       @if (step.status === 'running') {
                         <button
                           type="button"
@@ -649,34 +780,34 @@ import type { BenchSectionView, BookPlanView, LaneView } from './services/queue-
                       } @else {
                         <button
                           type="button"
-                          class="btn stop xs"
+                          class="btn quiet xs"
                           (click)="cancelStep(step.stepId)"
                           title="Take this step out of the queue. Nothing already rendered is deleted."
-                        >✕ Cancel</button>
+                        >✕ Skip</button>
                       }
                     </span>
-                  </div>
+                  </span>
+                </div>
 
-                  @if (expanded().has(step.stepId)) {
-                    @if (rowFor(step.stepId); as row) {
-                      <div class="expand">
-                        <div class="expand-cols">
-                          <app-job-step [job]="row" [expanded]="true" />
-                          <app-job-details [job]="row" (showInFolder)="showInFolder($event)" />
-                        </div>
+                @if (expanded().has(step.stepId)) {
+                  @if (rowFor(step.stepId); as row) {
+                    <div class="expand">
+                      <div class="expand-cols">
+                        <app-job-step [job]="row" [expanded]="true" />
+                        <app-job-details [job]="row" (showInFolder)="showInFolder($event)" />
                       </div>
-                    } @else {
-                      <div class="expand">
-                        <p class="sub">This step has not reported anything yet.</p>
-                      </div>
-                    }
+                    </div>
+                  } @else {
+                    <div class="expand">
+                      <p class="sub">This step has not reported anything yet.</p>
+                    </div>
                   }
                 }
-              </div>
-            </article>
-          }
-        </section>
-      }
+              }
+            }
+          </div>
+        }
+      </ng-template>
 
       @if (visiblePlans().length === 0 && busyLanes() === 0 && tray.failures().length === 0
            && tray.pending().length === 0) {
@@ -696,10 +827,19 @@ import type { BenchSectionView, BookPlanView, LaneView } from './services/queue-
         <section class="band">
           <header class="band-head">
             <h2>Finished today · {{ finished().length }}</h2>
-            <span class="note">
-              {{ tray.finished().failed.length }} failed
-              <button type="button" class="btn" (click)="clearFinished()">Clear finished</button>
-            </span>
+            <span class="note left">{{ tray.finished().failed.length }} failed</span>
+            <!-- A BUTTON AT THE BAND'S EDGE, not a button inside the sentence
+                 beside it. It lived in the "N failed" note span, where it read
+                 as part of a status line rather than as the one act this band
+                 offers. -->
+            <div class="band-right">
+              <button
+                type="button"
+                class="btn"
+                (click)="clearFinished()"
+                title="Clear today's history. Nothing on disk is touched."
+              >Clear finished</button>
+            </div>
           </header>
 
           <table class="ftable">
@@ -761,11 +901,15 @@ import type { BenchSectionView, BookPlanView, LaneView } from './services/queue-
 
     .band { margin-top: 20px; }
 
+    /* CENTRED, not baseline: the band head now carries controls — the
+       Running/Paused switch and Clear finished — and a button's baseline is
+       nowhere near its heading's. */
     .band-head {
       display: flex;
-      align-items: baseline;
+      align-items: center;
       gap: 10px;
       margin-bottom: 10px;
+      min-height: 26px;
     }
 
     .band-head h2 {
@@ -788,14 +932,75 @@ import type { BenchSectionView, BookPlanView, LaneView } from './services/queue-
       gap: 10px;
     }
 
+    /* A note that BELONGS TO THE HEADING rather than holding the right edge.
+       The bench's "3 of 6 slots in use" is a readout and stays right; Pending,
+       Up next and Finished read as "<band> · <count> — <what that means>", and
+       their right edge is where the band's control goes. */
+    .band-head .note.left { margin-left: 0; }
+
+    .band-right {
+      margin-left: auto;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    /* ── Running / Paused ──────────────────────────────────────────────────
+       Two states of ONE fact (the engine's running latch), drawn as one
+       control so it cannot look like two independent buttons. Colour carries
+       the meaning: green is moving, amber is holding — never red, because
+       pausing throws nothing away. */
+    .seg {
+      display: inline-flex;
+      border: 1px solid var(--border-default);
+      border-radius: 7px;
+      overflow: hidden;
+      background: var(--bg-surface);
+    }
+
+    .seg-btn {
+      font-family: inherit;
+      font-size: 0.6875rem;
+      font-weight: 600;
+      padding: 4px 11px;
+      border: 0;
+      background: transparent;
+      color: var(--text-muted);
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      white-space: nowrap;
+    }
+
+    .seg-btn + .seg-btn { border-left: 1px solid var(--border-default); }
+    .seg-btn:hover { color: var(--text-primary); }
+    .seg-btn.on { background: var(--accent-subtle); color: var(--accent); }
+    .seg-btn.paused.on { background: var(--warning-bg); color: var(--warning-text); }
+
+    .seg-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: currentColor;
+      flex: none;
+      opacity: 0.35;
+    }
+
+    .seg-btn.on .seg-dot { opacity: 1; }
+
     /* ── Cards ─────────────────────────────────────────────────────────── */
 
+    /* NOT overflow:hidden any more: the overflow menu hangs below its
+       button and clipping it to the card would hide the one control the card
+       face no longer carries. Relative because the drag grip is placed against
+       this edge. */
     .card {
+      position: relative;
       background: var(--bg-surface);
       border: 1px solid var(--border-subtle);
       border-radius: 8px;
       margin-bottom: 10px;
-      overflow: hidden;
     }
 
     .card.failed {
@@ -803,6 +1008,8 @@ import type { BenchSectionView, BookPlanView, LaneView } from './services/queue-
       background: var(--bg-elevated);
     }
 
+    /* The Needs-you card, which is one line of facts and two buttons and wants
+       none of the two-column machinery below. */
     .card-head {
       display: flex;
       align-items: center;
@@ -810,31 +1017,206 @@ import type { BenchSectionView, BookPlanView, LaneView } from './services/queue-
       padding: 11px 14px;
     }
 
-    .card-head h3 {
+    .card-head h3,
+    .book-head h3 {
       margin: 0;
       font-size: 0.9375rem;
       font-weight: 600;
       color: var(--text-primary);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
 
     .sub { font-size: 0.6875rem; color: var(--text-tertiary); }
 
     /* The book card's own sub-line only. The lane cards use .sub as well, and
-       those were not the ones that were hard to read — scoping this under
-       .card-head is what keeps the GPU/CPU slots exactly as they were. */
-    .card-head .sub { font-size: 0.8125rem; }
+       those were not the ones that were hard to read — scoping this keeps the
+       GPU/CPU slots exactly as they were. */
+    .card-head .sub,
+    .book-head .sub { font-size: 0.8125rem; }
 
     .acts { margin-left: auto; display: flex; gap: 6px; flex: none; align-items: center; }
 
-    /* Which server the book waits for. Quiet: it is a standing answer, not an
-       action, and it must not compete with Start and Cancel beside it. */
-    .venue-pick { display: inline-flex; align-items: center; gap: 6px; }
-    .venue-word { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: .04em; }
-    .venue-pick select {
-      font: inherit; font-size: 12px; padding: 3px 6px; border-radius: 6px;
-      border: 1px solid var(--border-subtle); background: var(--bg-input); color: var(--text-primary);
+    /* ── The book card: two columns ────────────────────────────────────────
+       Left is fluid and holds the book; right is a fixed decision column —
+       which machine, then what to do about it. The width is fixed so every
+       card's actions land in the same place down the page, and minmax(0,1fr)
+       so a long title ellipsises instead of pushing the column off-screen. */
+    .book-head {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 300px;
+      gap: 14px;
+      align-items: start;
+      padding: 11px 14px 10px 30px;
     }
-    .venue { font-size: 12px; color: var(--text-muted); }
+
+    .who { display: flex; align-items: center; gap: 11px; min-width: 0; }
+
+    /* The tag is NOT inside the h3: the title ellipsises, and a tag inside it
+       would be the first thing a long title ate. */
+    .title-row { display: flex; align-items: center; min-width: 0; }
+
+    .staged-tag {
+      flex: none;
+      margin-left: 8px;
+      font-size: 0.5625rem;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--text-tertiary);
+      border: 1px solid var(--border-default);
+      border-radius: 4px;
+      padding: 1px 6px;
+    }
+
+    /* The staged summary is a DISCLOSURE, not a label: it says what the chain
+       is and opens the chain. Styled as the text it replaced. */
+    .chainline {
+      font-family: inherit;
+      display: block;
+      text-align: left;
+      padding: 0;
+      border: 0;
+      background: transparent;
+      color: var(--text-tertiary);
+      cursor: pointer;
+      max-width: 100%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .chainline:hover { color: var(--text-secondary); }
+
+    .decide { display: grid; gap: 7px; min-width: 0; }
+
+    /* Which machine the book waits for. Quiet: it is a standing answer, not an
+       action, and it must not compete with the button under it. */
+    .venue-row { display: flex; align-items: center; gap: 8px; }
+
+    .venue-word {
+      flex: none;
+      width: 52px;
+      font-size: 0.625rem;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: .05em;
+    }
+
+    .pick { flex: 1; min-width: 0; }
+
+    /* THE SAME SLOT THE PICKER OCCUPIED, once the answer is settled: a book
+       finishes on the machine it started on, so this is a fact, not a control
+       that would refuse on press. */
+    .runs-on {
+      flex: 1;
+      min-width: 0;
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      padding: 4px 9px;
+      border-radius: 6px;
+      background: var(--accent-subtle);
+      color: var(--accent);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .runs-on .dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: currentColor;
+      flex: none;
+    }
+
+    .btn.grow { flex: 1; text-align: center; }
+
+    /* ── The overflow menu ─────────────────────────────────────────────────
+       The two destructive acts, out of the card face. Red lives HERE and
+       nowhere else on the card: on the face it read as six alarms per book,
+       none of them near what they act on. */
+    .more-wrap { position: relative; flex: none; }
+
+    .more {
+      font-family: inherit;
+      width: 28px;
+      height: 26px;
+      border-radius: 5px;
+      border: 1px solid var(--border-default);
+      background: transparent;
+      color: var(--text-secondary);
+      cursor: pointer;
+      font-size: 0.875rem;
+      line-height: 1;
+    }
+
+    .more:hover { color: var(--text-primary); border-color: var(--border-strong); }
+
+    .menu {
+      position: absolute;
+      right: 0;
+      top: calc(100% + 5px);
+      z-index: 30;
+      min-width: 262px;
+      padding: 5px;
+      display: grid;
+      gap: 2px;
+      text-align: left;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-default);
+      border-radius: 8px;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
+    }
+
+    .menu-item {
+      font-family: inherit;
+      display: block;
+      width: 100%;
+      text-align: left;
+      padding: 7px 9px;
+      border: 0;
+      border-radius: 5px;
+      background: transparent;
+      cursor: pointer;
+    }
+
+    .menu-item:hover { background: var(--hover-bg); }
+
+    .menu-item .k {
+      display: block;
+      font-size: 0.75rem;
+      font-weight: 600;
+      color: var(--text-primary);
+    }
+
+    .menu-item .d {
+      display: block;
+      margin-top: 2px;
+      font-size: 0.6875rem;
+      line-height: 1.4;
+      color: var(--text-tertiary);
+      white-space: normal;
+    }
+
+    .menu-item.danger .k { color: var(--color-danger); }
+
+    /* The card holding an open menu comes forward. Cards are stacked in
+       document order, so without this the NEXT book's card paints over the
+       menu of the one above it. */
+    .card:has(.menu) { z-index: 5; }
+
+    /* NARROW: the decision column stops being a column. Three buttons and a
+       picker beside a title is a wrap waiting to happen; stacked, it is a
+       block under the book it is about. */
+    @media (max-width: 760px) {
+      .book-head { grid-template-columns: minmax(0, 1fr); }
+      .venue-word { width: auto; }
+    }
 
     /* ── The bench's sections ──────────────────────────────────────────────
        Owen, 2026-09-15: the slots "look kind of ugly clustered together
@@ -869,27 +1251,6 @@ import type { BenchSectionView, BookPlanView, LaneView } from './services/queue-
       font-variant-numeric: tabular-nums;
     }
 
-    /* The GPU dial. Louder than the per-book picker — it governs the whole
-       queue — but still quiet enough not to compete with the cards below it. */
-    .dial { display: inline-flex; align-items: center; gap: 6px; }
-
-    .dial-word {
-      font-size: 11px;
-      color: var(--text-muted);
-      text-transform: uppercase;
-      letter-spacing: .04em;
-    }
-
-    .dial select {
-      font: inherit;
-      font-size: 12px;
-      padding: 3px 8px;
-      border-radius: 6px;
-      border: 1px solid var(--border-default);
-      background: var(--bg-input);
-      color: var(--text-primary);
-    }
-
     /* ONE LANE NOW DOES STRETCH, reversing the cap that used to be here.
        It read: "a section with one lane must not stretch it across the whole
        page... alone it would be six times the width of the words in it", and
@@ -900,10 +1261,13 @@ import type { BenchSectionView, BookPlanView, LaneView } from './services/queue-
 
     /* ── Pending ───────────────────────────────────────────────────────────
        Dashed, because nothing about a staged book is committed: it is a plan on
-       the bench, not work in the queue. Same card shape as Up next, so the
-       press between them is the only difference a reader has to hold. */
+       the bench, not work in the queue. Otherwise the SAME card as Up next, so
+       the press between them is the only difference a reader has to hold. */
 
-    .card.staged { border-style: dashed; }
+    .card.staged {
+      border-style: dashed;
+      border-color: var(--border-default);
+    }
 
     .cstep.staged-step { grid-template-columns: 16px minmax(0, 260px) 1fr; }
 
@@ -912,10 +1276,17 @@ import type { BenchSectionView, BookPlanView, LaneView } from './services/queue-
     /* ── Reordering "Up next" ──────────────────────────────────────────────
        Styled after studio-list's list rows (the house precedent for CdkDrag):
        a handle that fades in on hover, a dimmed placeholder, a lifted preview.
-       Sizes and colours are this page's tokens, not that component's. */
+       Sizes and colours are this page's tokens, not that component's.
+
+       PLACED AGAINST THE CARD'S EDGE rather than in the row, so that the
+       staged card — which has no grip — still lines its title up with the live
+       one. Both cards reserve the same 30px of left padding. */
 
     .grip {
-      flex: none;
+      position: absolute;
+      left: 6px;
+      top: 15px;
+      z-index: 2;
       width: 18px;
       padding: 0;
       border: 0;
@@ -937,7 +1308,7 @@ import type { BenchSectionView, BookPlanView, LaneView } from './services/queue-
        dragged must not say it can — one book, or a drop still settling. */
     .band.cdk-drop-list-disabled .grip { cursor: default; }
 
-    .cdk-drag-preview .card-head { background: var(--bg-elevated); }
+    .cdk-drag-preview .book-head { background: var(--bg-elevated); }
 
     .cdk-drag-preview {
       background: var(--bg-surface);
@@ -1010,6 +1381,27 @@ import type { BenchSectionView, BookPlanView, LaneView } from './services/queue-
     }
 
     .btn.xs { padding: 2px 8px; font-size: 0.625rem; }
+
+    .btn:disabled {
+      opacity: 0.45;
+      cursor: default;
+    }
+
+    .btn:disabled:hover { color: var(--text-secondary); border-color: var(--border-default); }
+
+    /* The SECOND act on a card, and a second act must not look like the first.
+       Borderless: it is available, not offered. Skip and Discard wear it —
+       both were red, and neither throws anything away. */
+    .btn.quiet {
+      border-color: transparent;
+      background: transparent;
+      color: var(--text-tertiary);
+    }
+
+    .btn.quiet:hover {
+      color: var(--text-primary);
+      border-color: var(--border-default);
+    }
 
     /* Stopping running work is destructive-looking but not destructive — the
        step comes back held with everything it rendered. So: outlined in the
@@ -1322,7 +1714,13 @@ import type { BenchSectionView, BookPlanView, LaneView } from './services/queue-
       gap: 10px;
       padding: 7px 0;
       position: relative;
+      border-radius: 4px;
     }
+
+    /* The row lights up because its controls do: something appears on hover, and
+       a row that gains a button without otherwise reacting reads as a glitch. */
+    .cstep:not(.staged-step):hover,
+    .cstep:not(.staged-step):focus-within { background: var(--bg-hover); }
 
     .spine {
       position: absolute;
@@ -1435,6 +1833,29 @@ import type { BenchSectionView, BookPlanView, LaneView } from './services/queue-
       color: var(--text-secondary);
     }
 
+    /* ── The per-step controls ─────────────────────────────────────────────
+       Hidden until the row is hovered or something in it has focus. FADED,
+       never display:none — a button taken out of the flow cannot be tabbed
+       to, and :focus-within is exactly what brings these back for a keyboard.
+
+       The row keeps their width whether or not they are drawn, so nothing
+       jumps sideways under the pointer. */
+    .ctl {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      opacity: 0;
+      transition: opacity 0.12s;
+    }
+
+    .cstep:hover .ctl,
+    .cstep:focus-within .ctl { opacity: 1; }
+
+    /* A touch screen has no hover to give, so it gets them always. */
+    @media (hover: none) {
+      .ctl { opacity: 1; }
+    }
+
     .expand {
       margin: 2px 0 8px 26px;
       border-left: 2px solid var(--border-default);
@@ -1523,9 +1944,22 @@ import type { BenchSectionView, BookPlanView, LaneView } from './services/queue-
 
     .empty p { margin: 0 auto; max-width: 44ch; font-size: 0.8125rem; line-height: 1.55; }
 
+    /* ── Focus ─────────────────────────────────────────────────────────────
+       The controls this page grew have their own backgrounds, and a borderless
+       one shows no default ring against them. Said once, for all of them. */
+    .seg-btn:focus-visible,
+    .more:focus-visible,
+    .menu-item:focus-visible,
+    .chainline:focus-visible,
+    .btn:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }
+
     @media (prefers-reduced-motion: reduce) {
       .sdot.run::after { animation: none; opacity: 1; }
       .bar i { transition: none; }
+      .ctl, .grip { transition: none; }
     }
   `],
 })
@@ -1547,26 +1981,23 @@ export class QueueComponent {
     // this same control and the two must not disagree. See
     // QueueTrayService.anythingRunning for the rule and why.
     const isRunning = this.tray.anythingRunning();
-    // The engine's own latch, separately: movement with the latch OFF is the
-    // DRAINING state — a step finishing while nothing new may claim a slot.
-    const engineOn = this.tray.isRunning();
-    const idle = !this.tray.anythingToDo();
     return [
-      // TWO stopping gestures, not one (Owen, 2026-08-29): "pause after current"
-      // drains — the running slots FINISH their step and nothing new claims one —
-      // and "halt" takes the GPU back now. One button wearing the word Pause
-      // while doing the halt is how an hour of denoise got cancelled to prevent
-      // the NEXT hour of denoise. While draining, Resume cancels the drain and
-      // Halt is still offered for the step that is finishing.
-      ...(isRunning && engineOn ? [
-        {
-          id: 'pause-after',
-          type: 'button' as const,
-          icon: '⏸',
-          label: 'Pause after current',
-          tooltip: 'Let the running steps finish what they are doing, then stop — '
-            + 'nothing new claims a slot. Start resumes the queue.',
-        },
+      // ONE STOPPING GESTURE LEFT UP HERE, and it is the destructive one.
+      //
+      // The drain — "pause after current" — and its Resume twin were this
+      // toolbar's Start/Pause pair, and they were the engine's `running` latch
+      // said two screens' width from the queue they govern (Owen, 2026-09-19:
+      // *"the active queue should have a running or paused option"*). That
+      // latch is now the Running/Paused switch on the Up next band, which is
+      // the band it is about; drawing it in both places would be one fact with
+      // two owners, and they would disagree the moment one was pressed.
+      //
+      // Halt is NOT that latch and never was (Owen, 2026-08-29): it takes the
+      // card back NOW, cancelling what is running. One button wearing the word
+      // Pause while doing the halt is how an hour of denoise got cancelled to
+      // prevent the NEXT hour of denoise. Offered only while something is
+      // actually running, because there is nothing to halt otherwise.
+      ...(isRunning ? [
         {
           id: 'halt',
           type: 'button' as const,
@@ -1575,39 +2006,6 @@ export class QueueComponent {
           tooltip: 'Stop the queue AND everything it is running, now. Anything '
             + 'stopped resumes from what it has already rendered. To stop just '
             + 'one step, use the Stop button on its slot.',
-        },
-      ] : []),
-      ...(isRunning && !engineOn ? [
-        {
-          id: 'start',
-          type: 'button' as const,
-          icon: '▶',
-          label: 'Resume queue',
-          tooltip: 'The queue is finishing its running step and will pause after '
-            + 'it. Resume claiming new work instead.',
-        },
-        {
-          id: 'halt',
-          type: 'button' as const,
-          icon: '■',
-          label: 'Halt processing',
-          tooltip: 'Stop the step that is finishing, now. It resumes from what '
-            + 'it has already rendered.',
-        },
-      ] : []),
-      ...(!isRunning ? [
-        {
-          id: 'start',
-          type: 'button' as const,
-          icon: '▶',
-          label: 'Start',
-          // Grayed rather than hidden: the control should stay where the eye
-          // already looks for it, saying what it would do if there were
-          // anything to do.
-          disabled: idle,
-          tooltip: idle
-            ? 'Nothing is queued, so there is nothing to start.'
-            : 'Claim work as slots free up, and resume anything that was stopped.',
         },
       ] : []),
       {
@@ -1661,10 +2059,43 @@ export class QueueComponent {
   readonly waitForChoices = computed<readonly ServerReach[]>(
     () => this.tray.servers());
 
-  /** "mac — switched off", or just the name. Why an option cannot be picked. */
+  /** "mac (off)", or just the name. Why an option cannot be picked. */
   serverOptionLabel(row: ServerReach): string {
-    return row.enabled ? row.name : `${row.name} — switched off`;
+    return row.enabled ? row.name : `${row.name} (off)`;
   }
+
+  /**
+   * THE PICKER'S ROWS — `desktop-select` items, not `<option>` elements.
+   *
+   * House rule: never a native `<select>`. The two lists differ by ONE label,
+   * and that difference is deliberate: a staged book has not been sent
+   * anywhere, so *"let the queue decide"* is an instruction about the future;
+   * a live one is already waiting, so *"the first that will take it"* describes
+   * what is happening to it right now.
+   *
+   * Two computeds rather than one method, because a method in the template
+   * would mint a fresh array on every change-detection pass and the select's
+   * `options` setter would re-read its rows each tick of a running render.
+   */
+  private serverRows(anyLabel: string): DesktopSelectItems {
+    return [
+      ...this.waitForChoices().map((row) => ({
+        value: row.name,
+        label: this.serverOptionLabel(row),
+        disabled: !row.enabled,
+        title: row.enabled
+          ? undefined
+          : `${row.name} is switched off on the bench. Switch it back on to send work there.`,
+      })),
+      { value: 'any', label: anyLabel },
+    ];
+  }
+
+  readonly stagedServerOptions = computed<DesktopSelectItems>(
+    () => this.serverRows('Let the queue decide'));
+
+  readonly liveServerOptions = computed<DesktopSelectItems>(
+    () => this.serverRows('Any — the first that will take it'));
 
   /** What the select shows: the book's one answer, or '' for none/disagreeing. */
   waitForValue(plan: BookPlan): string {
@@ -1691,19 +2122,28 @@ export class QueueComponent {
     }
   }
 
-  /**
-   * TURN THE QUEUE'S GPU DIAL.
-   *
-   * Refusals are said, not swallowed — the only one main can give is a server
-   * this machine does not have, which would mean the picker and the registry
-   * had come apart, and that is worth seeing rather than hiding.
-   */
-  async chooseGpuDial(value: string): Promise<void> {
-    try {
-      await this.tray.setGpuDial(value);
-    } catch (err) {
-      this.toasts.problem((err as Error)?.message || 'The GPU dial could not be turned.');
-    }
+  // ── Running / Paused ─────────────────────────────────────────────────────
+  //
+  // ONE fact — the engine's `running` latch — and this is the only control on
+  // the page that writes it. Both halves go through the doors that already
+  // existed: Start is `startQueue` (which also releases anything stopped),
+  // Paused is `pauseQueue`, the DRAIN — the running steps finish what they are
+  // doing and nothing new claims a slot.
+  //
+  // PAUSED ACCEPTS ROWS (Owen, 2026-09-19, from the admission ruling: *"if the
+  // queue isn't active then it just sits in the active queue doing nothing"*).
+  // Send to queue is not refused while paused; a book added lands in Up next
+  // and waits there. That is why this needed no engine change at all: `pump()`
+  // has always been gated on the latch.
+
+  // PRESSING THE STATE IT IS ALREADY IN IS NOT A NO-OP, and the guard that
+  // made it one had to go: `startQueue` also RELEASES everything that was
+  // stopped, which was the toolbar Start button's second job. With the latch
+  // already on and a book sitting held, a Running press is the gesture that
+  // picks it back up — and both calls are idempotent, so nothing is spent on
+  // the press that changes nothing.
+  setQueueRunning(running: boolean): void {
+    this.report(running ? this.queueService.startQueue() : this.queueService.pauseQueue());
   }
 
   /** The section's lanes, cut into Owen's rows. The arithmetic lives in `bench`. */
@@ -1746,7 +2186,7 @@ export class QueueComponent {
    * goes: `decideWaitFor` has always held a named server that is off and has
    * always skipped one for `any`. This is the switch, not the rule.
    *
-   * It DEFERS, exactly as the dial it replaces did: a render already on that
+   * It DEFERS: a render already on that
    * card keeps it (§4.3 — a job finishes where it started), and the row says so
    * by staying `retiring` until its occupant lands. Switching a machine off can
    * never take work off it.
@@ -1776,10 +2216,113 @@ export class QueueComponent {
     this.report(this.tray.sendPlanToQueue(plan));
   }
 
-  /** "2 steps · waiting to be sent" — what a staged card says under its title. */
+  /**
+   * "4 steps · Narrate → Enhance (RVC) → Assemble M4B" — a staged card's line.
+   *
+   * The chain, not a count and a shrug. It replaced four chain rows each saying
+   * *"Pending — not sent to the queue yet"*, which is the band's own heading
+   * repeated once per step: the rows are still there, folded behind this line,
+   * for when the names matter more than the shape.
+   */
   pendingSummary(plan: BookPlan): string {
     const count = `${plan.steps.length} step${plan.steps.length === 1 ? '' : 's'}`;
-    return `${count} · nothing committed yet`;
+    const chain = plan.steps.map((step) => step.label).join(' → ');
+    return chain ? `${count} · ${chain}` : count;
+  }
+
+  /** Staged books whose chain the user has unfolded. Folded is the default. */
+  readonly expandedPlans = signal<ReadonlySet<string>>(new Set());
+
+  togglePlanChain(plan: BookPlan): void {
+    const next = new Set(this.expandedPlans());
+    if (next.has(plan.key)) next.delete(plan.key);
+    else next.add(plan.key);
+    this.expandedPlans.set(next);
+  }
+
+  // ── The overflow menu ────────────────────────────────────────────────────
+  //
+  // Small and inline rather than the house `desktop-context-menu`: that one is
+  // a right-click menu positioned at a page coordinate with one line per entry,
+  // and these two entries are a label AND a sentence saying what each KEEPS.
+  // The difference between them is the whole reason they are two.
+  //
+  // One open at a time, keyed by the plan. Escape closes it and a click
+  // anywhere else closes it — the toggle stops its own click from reaching the
+  // document listener, or the press that opens the menu would also close it.
+
+  readonly menuFor = signal<string | null>(null);
+
+  toggleMenu(plan: BookPlan, event: Event): void {
+    event.stopPropagation();
+    this.menuFor.update((open) => (open === plan.key ? null : plan.key));
+  }
+
+  closeMenu(): void {
+    this.menuFor.set(null);
+  }
+
+  @HostListener('document:click')
+  onDocumentClick(): void {
+    if (this.menuFor() !== null) this.closeMenu();
+  }
+
+  @HostListener('document:keydown.escape')
+  onEscape(): void {
+    if (this.menuFor() !== null) this.closeMenu();
+  }
+
+  /** Back to Pending, from the menu. The dialog and the rules live in `cancelBook`. */
+  menuReturnToPending(plan: BookPlan): void {
+    this.closeMenu();
+    void this.cancelBook(plan);
+  }
+
+  /** Out of the queue altogether, from the menu. */
+  menuRemove(plan: BookPlan): void {
+    this.closeMenu();
+    this.cancelPlan(plan);
+  }
+
+  // ── What a live card's ONE primary button is ─────────────────────────────
+
+  /** How many of this book's steps hold a slot right now. */
+  runningSteps(plan: BookPlan): number {
+    return plan.steps.filter((step) => step.status === 'running').length;
+  }
+
+  /**
+   * STOP WHAT THIS BOOK IS RUNNING, leaving the queue running — the same
+   * narrow act the slot's own Stop performs, applied to every step of the book
+   * at once rather than making the user find them on the bench.
+   */
+  stopBook(plan: BookPlan): void {
+    this.report(this.tray.stopPlan(plan));
+  }
+
+  /** False for the book already at the front, and for a queue of one. */
+  canMoveToTop(plan: BookPlan): boolean {
+    if (this.reordering()) return false;
+    const plans = this.visiblePlans();
+    return plans.length > 1 && plans[0]?.key !== plan.key;
+  }
+
+  /**
+   * PUT THIS BOOK AT THE FRONT — the drag, without the drag, because the
+   * engine claims work by walking `jobs[]` from the front and "run this one
+   * next" is the thing the order is for. It goes through the SAME
+   * `applyPlanOrder` a drop does, so the optimistic redraw, the refusal and
+   * the re-read are one path with one set of rules.
+   */
+  moveToTop(plan: BookPlan): void {
+    if (!this.canMoveToTop(plan)) return;
+    const plans = this.tray.plans();
+    const from = plans.findIndex((row) => row.key === plan.key);
+    if (from <= 0) return;
+    const optimistic = [...plans];
+    moveItemInArray(optimistic, from, 0);
+    this.droppedPlans.set(optimistic);
+    this.report(this.applyPlanOrder(plans, from, 0));
   }
 
   busyLanes(): number {
@@ -1950,10 +2493,9 @@ export class QueueComponent {
 
   onToolbarAction(item: ToolbarItem): void {
     switch (item.id) {
-      case 'start': this.report(this.queueService.startQueue()); break;
-      // The drain: engine latch off, running steps untouched (engine pause()).
-      case 'pause-after': this.report(this.queueService.pauseQueue()); break;
-      // The hard stop: latch off AND every running step cancelled.
+      // The hard stop: latch off AND every running step cancelled. The soft
+      // one — the latch by itself — is the Up next band's Running/Paused
+      // switch; see `setQueueRunning`.
       case 'halt': this.report(this.queueService.stopQueue()); break;
       // The server list is NOT refreshed here any more and needs no door of its
       // own: it rides the snapshot this call re-reads (`waitForChoices`).
@@ -1993,17 +2535,17 @@ export class QueueComponent {
   }
 
   /**
-   * Take every run in a book's plan out of the queue — the PENDING band's
-   * Discard, where nothing has been rendered and there is nowhere further back
-   * to go.
+   * Take every run in a book's plan out of the queue — Pending's Discard,
+   * where nothing has been rendered and there is nowhere further back to go,
+   * and the live card's *"Remove from queue"* overflow entry.
    */
   cancelPlan(plan: BookPlan): void {
     this.report(this.tray.cancelPlan(plan));
   }
 
   /**
-   * CANCEL A BOOK THAT IS IN THE QUEUE — which drops it back to Pending rather
-   * than deleting it.
+   * SEND A BOOK BACK TO PENDING — the first entry of the live card's overflow
+   * menu, which drops it back rather than deleting it.
    *
    * Owen, 2026-09-18: *"i should be able to stop it from running and move it
    * back to the pending queue if i want … let me change the server again if i
