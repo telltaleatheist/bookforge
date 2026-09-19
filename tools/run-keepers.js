@@ -489,6 +489,12 @@ const SUITES = [
   // only `/mnt/` paths — so every such session read its project.json from a
   // Linux string and silently lost its title, author, series and cover.
   'test-wsl-path-converter',
+  // And ONE Windows→guest converter, its inverse. That direction had three
+  // owners and only one of them knew the `\\wsl$` UNC form — the spelling
+  // tool-paths documents for a models directory living on ext4 — so through
+  // either of the other two it crossed into the guest as a string with no
+  // meaning there. A network share is now refused by name instead of handed over.
+  'test-forward-path-converter',
   // The copy-out road is chosen from the destination: the guest's own cp when
   // it has that drive mounted, Windows through \\wsl$ when it does not. The
   // scratch rescue took the guest road onto Z: (no /mnt/z, never any) and the

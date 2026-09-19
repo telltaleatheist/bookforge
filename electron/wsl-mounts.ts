@@ -52,7 +52,7 @@
 
 import { spawn } from 'child_process';
 import os from 'os';
-import { getWslDistro } from './narrator-paths';
+import { getWslDistro, windowsToWslPath } from './narrator-paths';
 
 /** Drive letters WSL mounts by itself. Anything else has to be asked for. */
 const AUTO_MOUNTED = new Set(['c', 'e']);
@@ -147,7 +147,11 @@ export async function ensureWslDrivesFor(paths: readonly (string | undefined)[])
   if (os.platform() !== 'win32') return;
   for (const letter of driveLettersOf(paths)) {
     if (AUTO_MOUNTED.has(letter)) continue;
-    const mnt = `/mnt/${letter}`;
+    // The mount POINT is asked for by THE converter, not spelled here. This
+    // module exists to make `windowsToWslPath`'s output correct, so the two have
+    // to agree by construction: a directory mounted anywhere else is a share that
+    // is up and a path that still does not resolve.
+    const mnt = windowsToWslPath(`${letter}:`);
 
     // Resolve on the WINDOWS side first, so the guest is entered exactly once.
     // The check and the mount belong in the SAME invocation: split across two,

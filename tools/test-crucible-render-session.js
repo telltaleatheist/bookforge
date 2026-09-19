@@ -393,7 +393,8 @@ function lift(name) {
     const src = fs.readFileSync(path.join(REPO, 'electron', 'parallel-tts-bridge.ts'), 'utf8');
     const at = src.indexOf('async function wslSeesDrive(');
     const body = src.slice(at, at + 2000);
-    assert.ok(/const probe = `mountpoint -q \/mnt\/\$\{driveLetter\.toLowerCase\(\)\}`;/.test(body), 'the probe is not mountpoint -q');
+    assert.ok(/const probe = `mountpoint -q \$\{windowsToWslPath\(/.test(body),
+      'the probe is not mountpoint -q asked about the one converter for its mount point');
     assert.ok(!/const probe = `test -d/.test(body), 'test -d is back');
   });
 

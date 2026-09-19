@@ -116,8 +116,13 @@ function probeFor(mounted) {
     const body = src.slice(at, at + 2000);
     // The probe STATEMENT, not the prose around it — the comment beside it
     // quotes `test -d /mnt/z` as the thing that went wrong.
-    assert.match(body, /const probe = `mountpoint -q \/mnt\//, 'the probe is not mountpoint -q');
+    assert.match(body, /const probe = `mountpoint -q /, 'the probe is not mountpoint -q');
     assert.ok(!/const probe = `test -d/.test(body), 'test -d is back');
+    // And the mount POINT is the converter's answer, not a second spelling of
+    // `/mnt/<letter>`: a probe of a directory nothing mounts at reads as a share
+    // that is down.
+    assert.match(body, /mountpoint -q \$\{windowsToWslPath\(/,
+      'the probe spells the mount point itself instead of asking the one converter');
   });
 
   await check('copyDirOutOfWsl asks the route chooser rather than deciding again', () => {

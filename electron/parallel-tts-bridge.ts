@@ -529,7 +529,11 @@ async function wslSeesDrive(driveLetter: string): Promise<boolean> {
   // `ls -ld` showed `drwxr-xr-x root root` dated three weeks earlier. A stale
   // mount point answered "mounted", the guest road was taken, and a non-root
   // `mkdir` inside a root-owned directory is exactly that error.
-  const probe = `mountpoint -q /mnt/${driveLetter.toLowerCase()}`;
+  // The mount point is asked for by THE converter rather than spelled here, so
+  // the directory this probes is the same one a path on that drive converts
+  // into. Two spellings of `/mnt/<letter>` is one fact with two owners, and the
+  // disagreement would read as a share that is down.
+  const probe = `mountpoint -q ${windowsToWslPath(`${driveLetter}:`)}`;
   const args = distro ? ['-d', distro, 'bash', '-c', probe] : ['bash', '-c', probe];
   return await new Promise<boolean>((resolve) => {
     const proc = spawn('wsl.exe', args, { shell: false });
@@ -2483,16 +2487,18 @@ function higgsPrepEnv(opts: {
 }
 
 /**
- * Convert a path to Windows-accessible format for reading files
- * Only converts WSL paths on Windows - Mac/Linux paths starting with / are normal Unix paths
+ * A session path as Node here can open it — THE converter, asked unconditionally.
+ *
+ * It used to re-compose the `/mnt/` test itself (`p.startsWith('/') &&
+ * !p.startsWith('/mnt/')`) and hand a `/mnt/c/…` string back untouched, which is
+ * a Linux path that `fs.readdir` on Windows cannot open. That decision moved
+ * INSIDE `wslToWindowsPath` in FIX-8 — it answers for both guest forms and
+ * passes an already-Windows path through — so a caller that repeats the test can
+ * only disagree with it. The Mac/Linux rule this used to state is stated there
+ * too: off win32 an absolute POSIX path IS the host's own path.
  */
 function toReadablePath(p: string): string {
-  // Only convert on Windows when it looks like a WSL path
-  if (process.platform === 'win32' && p && p.startsWith('/') && !p.startsWith('/mnt/')) {
-    // This is a native WSL path, convert to Windows UNC
-    return wslToWindowsPath(p);
-  }
-  return p;
+  return wslToWindowsPath(p);
 }
 
 /**
@@ -5281,8 +5287,13 @@ async function runAssembly(session: ConversionSession): Promise<string> {
       const outputMatch = output.match(/(?:output[^']*to|saved to|created|wrote)[:\s]+(['"]?)([\/~][^'":\n]+\.m4b)\1/i);
       if (outputMatch) {
         let detectedPath = outputMatch[2].trim();
-        // If running via WSL, convert WSL path (/mnt/c/...) back to Windows path
-        if (jobRunsInWsl(settings.ttsEngine) && detectedPath.startsWith('/mnt/')) {
+        // A guest job names its output as the GUEST sees it, so it is converted
+        // whichever guest form it came back as — the `/mnt/` half of that test
+        // lives inside the converter since FIX-8, and a caller that repeats it
+        // leaves the other half silently unconverted. What is left here is the
+        // converter's own precondition: the match above also admits a `~`-rooted
+        // string, which is neither guest-absolute nor Windows.
+        if (jobRunsInWsl(settings.ttsEngine) && detectedPath.startsWith('/')) {
           detectedPath = wslToWindowsPath(detectedPath);
           console.log('[PARALLEL-TTS] Converted WSL output path to Windows:', detectedPath);
         }
@@ -8203,29 +8214,31 @@ function readResumeRenderSettings(
 }
 
 /**
- * Normalize a file path to a canonical form for comparison.
- * Converts Windows paths, WSL /mnt/ paths, and UNC \\wsl$\ paths
- * all to lowercase forward-slash Windows-style (e.g. c:/users/...).
- * On Mac/Linux, just lowercases and normalizes slashes.
+ * ONE canonical spelling of a path, so the four ways a session-state can name a
+ * book compare equal: a Windows drive path, `/mnt/<letter>/…`, a guest-native
+ * path, and its `\\wsl$` UNC form.
+ *
+ * THE CANONICAL FORM IS THE GUEST ONE, because the forward converter is what
+ * folds every spelling onto it. This used to own the rule twice over — a
+ * `/^\/mnt\/([a-z])/` decomposition and a `\\wsl$` strip, both spelled here —
+ * which is the second owner FIX-8 removed from `reassembly-bridge`, and a second
+ * owner of a two-branch rule is how one branch comes to be updated and the other
+ * not. Folding the other way would not do: `wslToWindowsPath` builds one
+ * `\\wsl$\<distro>` spelling and passes the `\\wsl.localhost` one through, so
+ * two names for the same ext4 directory would compare unequal.
+ *
+ * A path that is NEITHER guest-absolute nor Windows — and a NETWORK SHARE, which
+ * the guest has no name for — is refused by name there. In this scan that
+ * surfaces as the state file being skipped, which is what the scan already does
+ * for a `session-state.json` it cannot parse. Nothing writes such a path into
+ * one: narrator names a book by its guest-native staged path or by the drive
+ * path it was handed.
  */
 function normalizePathForComparison(p: string): string {
   if (!p) return '';
-  let normalized = p.replace(/\\/g, '/').toLowerCase();
-
-  // WSL /mnt/c/... → c:/...
-  const mntMatch = normalized.match(/^\/mnt\/([a-z])(\/.*)?$/);
-  if (mntMatch) {
-    normalized = `${mntMatch[1]}:${mntMatch[2] || '/'}`;
-  }
-
-  // UNC \\wsl$\distro\... or //wsl$/distro/... → strip to WSL-native, then leave as-is
-  // These are WSL-internal paths, not Windows drive paths — just normalize slashes
-  const uncMatch = normalized.match(/^\/\/wsl[\$.](?:localhost)?\/[^/]+\/(.*)/);
-  if (uncMatch) {
-    normalized = `/${uncMatch[1]}`;
-  }
-
-  return normalized;
+  // The slash pass is a no-op on anything the converter converted — it is there
+  // for the value it hands back verbatim, which is any string with no path shape.
+  return windowsToWslPath(p).replace(/\\/g, '/').toLowerCase();
 }
 
 /*

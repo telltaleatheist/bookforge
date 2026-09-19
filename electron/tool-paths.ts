@@ -2207,21 +2207,16 @@ export function wslPathToWindows(wslPath: string, distro?: string): string {
   return windowsPath;
 }
 
-/**
- * Convert a Windows path to a WSL path
- * e.g., C:\Users\foo\file.txt -> /mnt/c/Users/foo/file.txt
+/*
+ * `windowsToWslPath` WAS HERE and is gone. It was the second of three copies of
+ * the Windows→guest rule, and the one that knew least: it answered only for a
+ * drive letter, so a models directory named on the Windows side as
+ * `\\wsl$\<distro>\...` — the spelling this very file documents for
+ * `orpheusModelsDir` — went to the guest verbatim. THE converter is
+ * `narrator-paths.windowsToWslPath`, the inverse of `wslToWindowsPath` beside
+ * it; `wslPathToWindows` above stays because it is the `\\wsl$` prefix builder
+ * that one is built on, not a converter to choose between.
  */
-export function windowsToWslPath(winPath: string): string {
-  if (!winPath || !/^[A-Za-z]:/.test(winPath)) {
-    return winPath; // Not a Windows path
-  }
-  const normalized = winPath.replace(/\\/g, '/');
-  const match = normalized.match(/^([A-Za-z]):(.*)/);
-  if (match) {
-    return `/mnt/${match[1].toLowerCase()}${match[2]}`;
-  }
-  return winPath;
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Exports
@@ -2249,5 +2244,4 @@ export const toolPaths = {
   getWslHiggsCondaEnv,
   getQwenAlignEnvSetting,
   wslPathToWindows,
-  windowsToWslPath,
 };

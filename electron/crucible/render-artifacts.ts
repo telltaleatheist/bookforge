@@ -116,7 +116,26 @@ export interface DownloadRenderArtifactsOptions {
    * authoritative artifact list.
    */
   readonly lastEventId?: number;
-  /** Aborts the stream. Does NOT cancel the job on the server. */
+  /**
+   * INERT UNTIL THE SDK CARRIES IT, and kept because the caller that passes one
+   * is already cancelling properly without it.
+   *
+   * It is forwarded to `writeArtifactsTo`, whose options are
+   * `WriteArtifactsOptions extends EventsOptions` — `lastEventId` and
+   * `concurrency`, no `signal` — and v1.0.1's body never reads the key. TypeScript
+   * does not catch it because the forwarded object is a variable rather than a
+   * literal, so there is no excess-property check to fail. So aborting this signal
+   * does NOT end the stream today.
+   *
+   * It is not deleted because `crucible/reroll.ts` passes one, and what makes a
+   * reroll cancellable is its own `abort` listener calling `client.cancel(jobId)`
+   * — a CANCEL, not a hang-up, so the job stops rather than running on holding
+   * the lane. The stream then ends on the server's `cancelled` frame. Keeping the
+   * field means the day the SDK's options carry a signal, that caller is already
+   * wired for it; what must not survive is this doc's old claim that it "aborts
+   * the stream", which is the kind of line a cancellation bug gets debugged
+   * against for an hour. It never cancelled the job on the server either.
+   */
   readonly signal?: AbortSignal;
   /** Each finished file, as it lands. */
   readonly onWritten?: (written: WrittenArtifact) => void;
@@ -185,6 +204,9 @@ export async function downloadRenderArtifacts(
 
   const client = options.client === undefined ? await crucibleClientFor(server, CLIENT_NAME) : options.client;
 
+  // `signal` rides along and the SDK drops it — see the field's own note. It is
+  // forwarded rather than held back so that nothing here has to change when the
+  // SDK's `WriteArtifactsOptions` grows one.
   const writeOptions: { lastEventId?: number; signal?: AbortSignal } = {};
   if (options.lastEventId !== undefined) writeOptions.lastEventId = options.lastEventId;
   if (options.signal !== undefined) writeOptions.signal = options.signal;

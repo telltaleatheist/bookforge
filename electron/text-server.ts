@@ -82,10 +82,12 @@ import {
   getWslCondaPath,
   getWslDistro,
   getWslHiggsCondaEnv,
-  windowsToWslPath,
   wslCondaEnvPrefix,
   wslScriptArgs,
 } from './tool-paths';
+// The Windows→guest converter has ONE owner and it is not tool-paths; see the
+// note where its copy used to be.
+import { windowsToWslPath } from './narrator-paths';
 import { acquireGpu, releaseGpu, warnProceedingWithoutGpu } from './gpu-arbiter';
 import {
   execWsl,

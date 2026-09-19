@@ -637,9 +637,9 @@ export function buildNarratorSpawn(req: NarratorSpawnRequest): NarratorSpawnPlan
       : (engine === 'higgs' ? getWslHiggsCondaEnv() : getWslOrpheusCondaEnv());
     const distro = getWslDistro();
 
-    const guestArgs = args.map(toGuestPath);
+    const guestArgs = args.map(windowsToWslPath);
     const exports = Object.entries({ ...baseEnv, PYTHONPATH: windowsToWslPath(pythonRoot) })
-      .map(([k, v]) => `${k}=${shellQuote(toGuestPath(v))}`)
+      .map(([k, v]) => `${k}=${shellQuote(windowsToWslPath(v))}`)
       .join(' ');
     const run =
       `${shellQuote(conda)} run --no-capture-output -n ${shellQuote(envName)} ` +
@@ -722,34 +722,15 @@ export function narratorNativePython(engine: NarratorEngineId | undefined): Pyth
   return getPythonInvocation(engine);
 }
 
-/**
- * A HOST-NATIVE path, as the WSL guest must see it. Anything else verbatim.
- *
- * THREE INPUT FORMS, because a Windows host has three ways of naming a file the
- * guest can open:
- *
- *   C:\x  /  C:/x            a drive path       -> /mnt/c/x
- *   \\wsl$\Ubuntu\home\x     the UNC form of a  -> /home/x
- *   \\wsl.localhost\...      guest-resident path
- *   /home/x  /  /mnt/c/x     already guest form -> unchanged
- *
- * The UNC form is not hypothetical: `tool-paths.ts` documents it for
- * `orpheusModelsDir` on a Windows+WSL machine, so a models directory that lives
- * on ext4 is NAMED on the Windows side as `\\wsl$\<distro>\...`. Handling only
- * drive letters would translate a session dir correctly and leave a models path
- * as a UNC string the guest cannot open.
- *
- * Passing an already-guest-form path through unchanged is what makes this safe to
- * apply to argv, to every environment value and to catalog paths without knowing
- * which of them were already translated.
+/*
+ * `toGuestPath` WAS HERE and is gone. It was the third copy of the Windows→guest
+ * rule and the only one that knew all of it — the drive form, both `\\wsl$` UNC
+ * forms, and passing a value with no path shape through verbatim. That knowledge
+ * moved INTO `narrator-paths.windowsToWslPath`, which is now THE converter and
+ * the inverse of `wslToWindowsPath`, so the argv list and the environment map in
+ * `buildNarratorSpawn` above are translated by the same function every other
+ * site asks.
  */
-export function toGuestPath(value: string): string {
-  if (/^[A-Za-z]:[\\/]/.test(value)) return windowsToWslPath(value);
-  const unc = value.replace(/\\/g, '/')
-    .match(/^\/\/wsl[$.](?:localhost)?\/[^/]+(\/.*)?$/i);
-  if (unc) return unc[1] || '/';
-  return value;
-}
 
 export function shellQuote(s: string): string {
   return `'${s.replace(/'/g, "'\\''")}'`;
