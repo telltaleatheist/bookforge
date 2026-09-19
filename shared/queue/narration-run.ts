@@ -215,7 +215,14 @@ export interface NarrationRunSettings {
   readonly ttsEngine: string;
   /** The voice. Empty is refused by name rather than defaulted. */
   readonly voice: string;
-  readonly device: 'auto' | 'gpu' | 'mps' | 'cpu';
+  /*
+   * `device` WAS HERE AND IS GONE (Owen, 2026-09-19: *"we don't need device as
+   * an option — that's decided by crucible configuration. we can just cut it.
+   * it will always be auto"*). A render happens on a Crucible server and that
+   * server owns its card; the field described this box's hardware for work
+   * happening somewhere else. See `settings.service.ts`'s PipelineDefaults for
+   * the whole account.
+   */
   readonly speed: number;
   readonly workers: number;
   /** The library's audiobooks folder — where the finished M4B is filed. */
@@ -317,7 +324,12 @@ export type NarrationTextCleanupChoice = 'required' | 'skipped';
 /** What e2a is told to do with the book. */
 export interface NarrationTtsConfig {
   readonly type: 'tts-conversion';
-  readonly device: 'auto' | 'gpu' | 'mps' | 'cpu';
+  /*
+   * NO `device` SINCE 2026-09-19 — see `NarrationRunSettings`. A queue.json
+   * restored from before that date still carries the key on its step configs
+   * and still loads: the step reads the fields it declares and an undeclared
+   * one is simply never looked at. A restored row is never failed over it.
+   */
   readonly language: string;
   readonly ttsEngine: string;
   /** The voice. `fine_tuned` on e2a's side, which is where the name comes from. */
@@ -659,7 +671,6 @@ export function narrationTtsStep(
     },
     config: {
       type: 'tts-conversion',
-      device: settings.device,
       language: settings.language,
       ttsEngine: settings.ttsEngine,
       fineTuned: settings.voice,

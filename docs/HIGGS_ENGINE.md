@@ -78,7 +78,7 @@ essentially every settings blob in existence now takes that path once.
 | where | what changed |
 |---|---|
 | `shared/tts/engine-caps.ts` | `SELECTABLE_ORDER` became `['orpheus','higgs']` here, from `['xtts','f5','orpheus','voxtral']` in the registry shim. **It is `['higgs']` as of 2026-09-14.** |
-| narration modal (`narration-modal.component.ts:323`) | reads `selectableEngines()` → the array above. **No template change was needed.** |
+| narration modal (`narration-modal.component.ts`) | reads the array above. **No template change was needed.** (Through `selectableEngines()` until 2026-09-19; it now reads `narrationEngineOrder()` directly and intersects it with the engines the Crucible servers report, because a LOCAL component install says nothing about a render happening on another machine.) |
 | Settings → Pipeline Defaults (`pipeline-defaults-panel.component.ts:63`) | same source, same story. |
 | `settings.service.ts:84` | `DEFAULT_PIPELINE_DEFAULTS.ttsEngine` `'xtts'` → `'orpheus'`; `ttsVoice` `'ScarlettJohansson'` → `'leah'` (an XTTS clip name against an Orpheus default is a pair that cannot render). **Moved again 2026-09-14 → `'higgs'` / `'default'`, the same rule a third time**: the migration only repairs a STORED value, so a stale *shipped* default reaches a fresh machine unrepaired. |
 | Settings → TTS Server → Voice Engine | the XTTS button is `[disabled]` and labelled `XTTS (retired)`. |
@@ -88,8 +88,10 @@ essentially every settings blob in existence now takes that path once.
 | Settings section `xtts` | retitled to *"XTTS (retired)"*; description says what still lives there. |
 | `job-details` / `job-step` `capitalizeEngine` | now `engineDisplayName`, so an old job's Engine row reads `XTTS (retired)`. |
 
-`selectableEngines` being the single source is the reason this list is short:
-**one array retired XTTS everywhere it was offered.**
+`SELECTABLE_ORDER` being the single source is the reason this list is short:
+**one array retired XTTS everywhere it was offered.** (It was reached through
+`selectableEngines` when this was written; that wrapper was deleted on
+2026-09-19 and the array is unchanged.)
 
 ### F5 and Voxtral
 

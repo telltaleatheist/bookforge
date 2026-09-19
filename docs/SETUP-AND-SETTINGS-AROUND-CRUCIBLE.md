@@ -397,8 +397,8 @@ whose kind is 'blocks-model']` (`settings.component.ts:2537-2548`).
 |---|---|---|---|---|---|
 | AI cleanup / AI simplify / Translation — provider select ×3 (Ollama · Claude · OpenAI · Bundled local) | seeds the per-book flow | localStorage `pipelineDefaults.*Provider` | renderer only; the narration modal turns them into an IPC payload (`narration-modal.component.ts:926`) | **KEEP-REWORD** | **the enum omits `crucible`** even though `AIProvider` has it (`ai-config.types.ts:19`), so a default can never name a Crucible. That is the same one-fact-two-spellings defect §2.3 fixed for Settings → AI |
 | model select ×3 | Ollama models live from `/api/tags`; Claude/OpenAI from the hardcoded lists | localStorage `pipelineDefaults.*Model` | renderer | **MOVE→FOUNDRY** (cloud) / **KEEP-REWORD** (Crucible) | the live-from-the-daemon pattern is right; the hardcoded cloud lists are not (§3.4) |
-| Engine (button per `selectableEngines()`) | the engine a new narration run starts on | localStorage `pipelineDefaults.ttsEngine` | renderer → job payload | **KEEP-REWORD** | gated on a LOCAL component being installed; after the cutover it must be gated on the venue's `/v1/voices` |
-| Processing device (Auto / CPU / GPU / MPS) | claims to choose the render device | localStorage `pipelineDefaults.ttsDevice` | renderer → job payload → the local spawn | **DELETE-AFTER-PASS** | a render's device is the SERVER's card; the venue is the only choice. GPU-IS-ONE-GLOBAL-CHOICE |
+| Engine (button strip) | the engine a new narration run starts on | localStorage `pipelineDefaults.ttsEngine` | renderer → job payload | **DONE 2026-09-19** | was gated on a LOCAL component being installed; it is now `narrationEngineOrder()` intersected with the engines the answering servers report (`VoicePickerDto.engines`, derived from each server's `/v1/voices` rows). `selectableEngines()` is deleted. With no server answering, the catalog's list is offered with a sentence saying it could not be confirmed |
+| ~~Processing device (Auto / CPU / GPU / MPS)~~ | **DELETED 2026-09-19** (Owen: *"we don't need device as an option — that's decided by crucible configuration. we can just cut it. it will always be auto"*) | — | — | **DONE** | a render's device is the SERVER's card; the venue is the only choice. It was wrong rather than merely redundant: `crucible/render.ts` never read it, and `resolveTtsDeviceArg` answered from THIS box's hardware — GPU on a Mac REFUSED a render a CUDA server would have run. Cut end to end (modal control, `pipelineDefaults.ttsDevice`, `NarrationRunSettings.device`, `TtsConfig.device`, `ParallelTtsSettings.device`, narrator's `prep --device`, the job-details and analytics readouts). Persisted settings, queue rows and analytics files carrying the key still load, unread |
 | Voice (select, engine-scoped) | default narration voice | localStorage `pipelineDefaults.ttsVoice` | `NarrationVoicesService` | **KEEP-REWORD** | should read the venue's voices |
 | Voice enhancement (toggle) + Enhancement voice (select) | default RVC pass | localStorage | `electron/rvc-job.ts` via the job payload | **KEEP** | a per-book recipe |
 | Speed (0.5–2.0) | narration speed | localStorage | job payload | **KEEP** | |
@@ -479,9 +479,9 @@ KEEP.
 **Not selectable anywhere.** One list: `shared/tts/engine-caps.ts`
 `SELECTABLE_ORDER`, which was `['orpheus','higgs']` when this was written and is
 `['higgs']` since 2026-09-14 (Orpheus retired as a choice — its code stays until the
-legacy e2a layer goes). Both pickers read it through `selectableEngines`
-(narration modal `:911`, pipeline-defaults panel `:197`), so no `@for` can emit an XTTS
-card. `main.ts:7926` asserts again at job creation; `parallel-tts-bridge.ts:2573` asserts
+legacy e2a layer goes). The narration modal reads it directly since 2026-09-19 —
+through `selectableEngines` until then, and the pipeline-defaults panel that was
+the other reader is deleted — so no `@for` can emit an XTTS card. `main.ts:7926` asserts again at job creation; `parallel-tts-bridge.ts:2573` asserts
 again at spawn.
 
 **CLAUDE.md is out of date on the assembly trick.** `--tts_engine xtts` is GONE from both

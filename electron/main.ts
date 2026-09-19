@@ -2193,6 +2193,41 @@ function publishFoundryHostOperations(): void {
 async function invokeFoundryNarrate(
   projectDir: string,
   nodeId: string,
+  settings: Record<string, unknown>,
+  context: FoundryHostInvokeContext,
+): Promise<void> {
+  /*
+   * EVERY REFUSAL FROM THIS DOOR IS SAID THREE WAYS — terminal, BookForge's
+   * toast stack, and the press that made it.
+   *
+   * It used to be only the target-resolution block, and the rest of the door
+   * threw bare: the `bf-node:` guard, an unreadable manifest, a cover the
+   * library has lost. Those reached Foundry's notice strip (its action menu
+   * catches the rejection and sets `notices.notice`) and nothing else — so a
+   * user who had already walked back to BookForge's window, which is where a
+   * narration is set up, saw nothing at all. `sayToUser` broadcasts
+   * `jobs:notice`, which only BOOKFORGE's renderer listens on; the throw
+   * travels back over the mount; the log line is for the terminal. One wrapper
+   * so a new refusal cannot be added to this door without getting all three.
+   *
+   * SAFE TO WRAP THE WHOLE BODY: every throw below happens BEFORE the narration
+   * dialog is raised (the `webContents.send` is the last statement), so nothing
+   * here can report a failure for a dialog the user is already looking at.
+   */
+  try {
+    await narrateFromFoundry(projectDir, nodeId, settings, context);
+  } catch (err) {
+    const message = (err as Error).message;
+    console.error(`[foundry-host] narrate on ${nodeId} was refused: ${message}`);
+    sayToUser('Nothing was queued', 'This step cannot be narrated yet', message);
+    throw err;
+  }
+}
+
+/** The narrate door's body — see {@link invokeFoundryNarrate} for the wrapper. */
+async function narrateFromFoundry(
+  projectDir: string,
+  nodeId: string,
   _noSettingsAreAsked: Record<string, unknown>,
   context: FoundryHostInvokeContext,
 ): Promise<void> {
@@ -2216,81 +2251,74 @@ async function invokeFoundryNarrate(
 
   let target: FoundryNarrationTarget;
   let pending: NarrateTarget['pending'] | undefined;
-  try {
-    const source = await pendingExportRowFor(projectDir, nodeId, context);
-    if (source !== null) {
-      const { row, impliedTo } = source;
-      /*
-       * THE EXPORT HAS NOT LANDED. A `foundry-export-landing` row goes under the
-       * export's row (one per export — a second press finds the first), the
-       * dialog opens on the file the export WILL be, and the run the dialog
-       * queues chains under that landing row. Nothing is read from disk here,
-       * because there is nothing on it yet; Foundry's `cleaned` is the answer
-       * for the position, and the dialog treats it as decisive.
-       */
-      const { key, bookDir } = await foundryBookDirFor(projectDir);
-      // An IMPLIED export is the one this press ORDERED, written to scratch and
-      // filed nowhere; the landing step then waits for the FILE rather than for a
-      // version record that never comes. Its name is the book's, not the row's —
-      // the row here is the text pass the export is made from.
-      const implied = impliedTo !== null;
-      const fileName = path.basename(impliedTo ?? row.outputPath);
-      const owner = queueEngine.snapshot().jobs.find((j) => j.steps.some((st) => st.id === row.id));
-      if (!owner) {
-        throw new Error(`The queue holds row ${row.id} in no run, which cannot happen.`);
-      }
-      const existing = owner.steps.find((st) => st.type === 'foundry-export-landing'
-        && st.parentStepId === row.id && !TERMINAL_STEP_STATUSES.has(st.status)
-        && (st.config as { fileName?: string }).fileName === fileName);
-      const landingStep = existing ?? queueEngine.appendStep(owner.id, {
-        type: 'foundry-export-landing',
-        label: implied ? `Book for narration — ${fileName}` : `Exported book — ${fileName}`,
-        parentStepId: row.id,
-        config: {
-          bookDir, projectKey: key, fileName,
-          ...(row.forStep === undefined ? {} : { forStep: row.forStep }),
-          /*
-           * WHAT IT WOULD TAKE TO ORDER THIS EXPORT AGAIN, written down at the
-           * press because this is the only moment both facts are in hand. The
-           * ledger step is `nodeId` — the step the person pressed Narrate on,
-           * and the one `exportEpubFromStep` was just called with — and NOT
-           * `row.forStep`, which belongs to the text-pass row this landing hangs
-           * under and is a different step whenever the two differ.
-           *
-           * A row persisted before this field existed simply has neither, and
-           * the step then refuses in the sentence it always did rather than
-           * guessing at a project directory.
-           */
-          ...(implied ? { unfiledPath: impliedTo, foundryProjectDir: projectDir,
-                          orderedFromStep: nodeId } : {}),
-        },
-      }, { deferPump: true });
-      // Filed under the parent chain: an implied export is no version, and a
-      // pending export the person asked for is not one YET — the run is queued
-      // now, so the version it can name now is the one the project was made from.
-      const variantId = await parentChainVariantId(bookDir);
-      target = { bookDir, variantId, variantPath: impliedTo ?? row.outputPath, exportNodeId: nodeId };
-      pending = { jobId: owner.id, stepId: landingStep.id, cleaned: context.cleaned };
-      console.log(
-        `[foundry-host] narrate on ${nodeId}: the export (${fileName}) is pending as row ${row.id}; `
-        + `the run will chain under landing step ${landingStep.id}. Foundry says the cleanup is `
-        + `${context.cleaned ? 'in effect' : 'NOT in effect'} at that position.`);
-    } else {
-      target = await foundryNarrationTarget(projectDir, nodeId);
-    }
-  } catch (err) {
-    const message = (err as Error).message;
+  /*
+   * NO try/catch HERE ANY MORE. This block carried the door's only
+   * reporting catch — console.error + `sayToUser` + re-throw — which meant
+   * the refusals BELOW it (an unreadable manifest, a cover the library has
+   * lost) reached BookForge's own window not at all. That reporting moved up
+   * to `invokeFoundryNarrate`, where it covers every refusal this door can
+   * raise rather than the three in this paragraph.
+   */
+  const source = await pendingExportRowFor(projectDir, nodeId, context);
+  if (source !== null) {
+    const { row, impliedTo } = source;
     /*
-     * SAID THREE WAYS, and the throw is the one that reaches the person.
-     * `sayToUser` broadcasts `jobs:notice`, which only BOOKFORGE's renderer
-     * listens on — so a refusal for an act pressed in the FOUNDRY window landed
-     * in a strip nobody was looking at, with nothing in the terminal either
-     * (Owen, 2026-09-08: "it just does nothing"). The throw travels back over
-     * the mount to the press that made it; the log line is for the terminal.
+     * THE EXPORT HAS NOT LANDED. A `foundry-export-landing` row goes under the
+     * export's row (one per export — a second press finds the first), the
+     * dialog opens on the file the export WILL be, and the run the dialog
+     * queues chains under that landing row. Nothing is read from disk here,
+     * because there is nothing on it yet; Foundry's `cleaned` is the answer
+     * for the position, and the dialog treats it as decisive.
      */
-    console.error(`[foundry-host] narrate on ${nodeId} was refused: ${message}`);
-    sayToUser('Nothing was queued', 'This step cannot be narrated yet', message);
-    throw err;
+    const { key, bookDir } = await foundryBookDirFor(projectDir);
+    // An IMPLIED export is the one this press ORDERED, written to scratch and
+    // filed nowhere; the landing step then waits for the FILE rather than for a
+    // version record that never comes. Its name is the book's, not the row's —
+    // the row here is the text pass the export is made from.
+    const implied = impliedTo !== null;
+    const fileName = path.basename(impliedTo ?? row.outputPath);
+    const owner = queueEngine.snapshot().jobs.find((j) => j.steps.some((st) => st.id === row.id));
+    if (!owner) {
+      throw new Error(`The queue holds row ${row.id} in no run, which cannot happen.`);
+    }
+    const existing = owner.steps.find((st) => st.type === 'foundry-export-landing'
+      && st.parentStepId === row.id && !TERMINAL_STEP_STATUSES.has(st.status)
+      && (st.config as { fileName?: string }).fileName === fileName);
+    const landingStep = existing ?? queueEngine.appendStep(owner.id, {
+      type: 'foundry-export-landing',
+      label: implied ? `Book for narration — ${fileName}` : `Exported book — ${fileName}`,
+      parentStepId: row.id,
+      config: {
+        bookDir, projectKey: key, fileName,
+        ...(row.forStep === undefined ? {} : { forStep: row.forStep }),
+        /*
+         * WHAT IT WOULD TAKE TO ORDER THIS EXPORT AGAIN, written down at the
+         * press because this is the only moment both facts are in hand. The
+         * ledger step is `nodeId` — the step the person pressed Narrate on,
+         * and the one `exportEpubFromStep` was just called with — and NOT
+         * `row.forStep`, which belongs to the text-pass row this landing hangs
+         * under and is a different step whenever the two differ.
+         *
+         * A row persisted before this field existed simply has neither, and
+         * the step then refuses in the sentence it always did rather than
+         * guessing at a project directory.
+         */
+        ...(implied ? { unfiledPath: impliedTo, foundryProjectDir: projectDir,
+                        orderedFromStep: nodeId } : {}),
+      },
+    }, { deferPump: true });
+    // Filed under the parent chain: an implied export is no version, and a
+    // pending export the person asked for is not one YET — the run is queued
+    // now, so the version it can name now is the one the project was made from.
+    const variantId = await parentChainVariantId(bookDir);
+    target = { bookDir, variantId, variantPath: impliedTo ?? row.outputPath, exportNodeId: nodeId };
+    pending = { jobId: owner.id, stepId: landingStep.id, cleaned: context.cleaned };
+    console.log(
+      `[foundry-host] narrate on ${nodeId}: the export (${fileName}) is pending as row ${row.id}; `
+      + `the run will chain under landing step ${landingStep.id}. Foundry says the cleanup is `
+      + `${context.cleaned ? 'in effect' : 'NOT in effect'} at that position.`);
+  } else {
+    target = await foundryNarrationTarget(projectDir, nodeId);
   }
 
   if (pending === undefined) {

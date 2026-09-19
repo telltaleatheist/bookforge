@@ -359,7 +359,6 @@ async function main() {
   // that used to sit beside them left the interface with XTTS on 2026-09-05. Env seams
   // (ORPHEUS_MEMORY_TIER, etc.) are read by the pipeline.
   const settings = {
-    device: 'auto',
     language: args.language || 'en',
     ttsEngine: engine,
     // Orpheus: the prompt token. Higgs: the catalog voice id — the same field

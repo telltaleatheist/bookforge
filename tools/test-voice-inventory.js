@@ -47,9 +47,19 @@ function check(name, fn) {
   ));
 }
 
-/** A voice row as a server would send it. */
-function voice(id, { display = id, loadable = true, reason = null, needsReference = false } = {}) {
-  return { id, display, loadable, reason, needsReference };
+/**
+ * A voice row as a server would send it.
+ *
+ * `narratorEngine` defaults to `higgs-v3` because every voice a Crucible serves
+ * declares exactly that (`crucible/voices/*.toml`, and `crucibleVoiceFor`
+ * refuses anything else by name). It is on the row because the narration
+ * modal's ENGINE strip is built from it — see `narratorEnginesServed`.
+ */
+function voice(id, {
+  display = id, loadable = true, reason = null, needsReference = false,
+  narratorEngine = 'higgs-v3',
+} = {}) {
+  return { id, display, loadable, reason, needsReference, narratorEngine };
 }
 
 /**
@@ -297,6 +307,41 @@ check('a missing clip with no reason is refused rather than shown blank', async 
   const inventory = await scripted({ '3090 Ti': [voice('zeroshot', { needsReference: true })] });
   const bad = [{ ...CARRIED[0], clipPresent: false, reason: null }];
   assert.throws(() => inv.placeCarriedVoices(inventory, bad), /no reason was given/);
+});
+
+// ── Which ENGINES the machines run ──────────────────────────────────────────
+//
+// Same rule as the voices, one level up: the narration modal's Engine strip was
+// built from whether the engine's component was installed on the box DRAWING
+// the dialog, while the render happens on a Crucible server. `narratorEngine`
+// on the row is the servers' own answer.
+
+check('an engine is served when an answering machine names it', async () => {
+  const inventory = await scripted({
+    '3090 Ti': [voice('deathstalker')],
+    'M1 Ultra': [voice('mistborn')],
+  });
+  assert.deepStrictEqual(inv.narratorEnginesServed(inventory), ['higgs-v3']);
+});
+
+check('a voice whose WEIGHTS are missing still proves the engine runs there', async () => {
+  // The refusal is about the artifact, not the arm. Demanding `loadable` would
+  // empty the engine strip on a fresh server that has the env and no downloads.
+  const inventory = await scripted({
+    '3090 Ti': [voice('deathstalker', { loadable: false, reason: 'weights not pulled' })],
+  });
+  assert.deepStrictEqual(inv.narratorEnginesServed(inventory), ['higgs-v3']);
+});
+
+check('a machine that did not answer contributes no engine', async () => {
+  // "The Mac is asleep" must never read as "the Mac cannot run Higgs" — the
+  // same rule that keeps a sleeping server out of a voice's lock set.
+  const inventory = await scripted({
+    '3090 Ti': unreachable('connect ECONNREFUSED'),
+    'M1 Ultra': 'disabled',
+  });
+  assert.deepStrictEqual(inv.narratorEnginesServed(inventory), [],
+    'silence was read as an answer');
 });
 
 Promise.all(pending).then(() => {

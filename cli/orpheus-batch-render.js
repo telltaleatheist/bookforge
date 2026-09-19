@@ -326,7 +326,6 @@ async function main() {
     );
   }
   const settings = {
-    device: 'auto',
     language: args.language || 'en',
     ttsEngine: engine,
     fineTuned: voice,

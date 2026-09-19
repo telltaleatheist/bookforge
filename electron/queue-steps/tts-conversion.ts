@@ -121,7 +121,13 @@ function mapProgress(p: Record<string, unknown>): StepReport {
 }
 
 interface TtsConfig {
-  device: 'auto' | 'gpu' | 'mps' | 'cpu';
+  /*
+   * NO `device` SINCE 2026-09-19 (Owen: *"we don't need device as an option —
+   * that's decided by crucible configuration. we can just cut it. it will
+   * always be auto"*). A restored queue.json whose rows still carry the key
+   * loads unchanged — this reads the fields it declares, and an undeclared one
+   * is never looked at, so no persisted row is failed over it.
+   */
   language: string;
   ttsEngine: string;
   fineTuned: string;
@@ -254,7 +260,6 @@ export const ttsConversionStep: StepModule = {
       outputDir: config.outputDir || '',
       parallelMode: config.parallelMode || 'sentences',
       settings: {
-        device: config.device,
         language: config.language,
         ttsEngine: config.ttsEngine,
         fineTuned: config.fineTuned,

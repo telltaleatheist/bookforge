@@ -131,9 +131,12 @@ type JobTypeKey = 'tts' | 'cleanup' | 'rvc' | 'translation' | 'reassembly' | 'vi
 
         <!-- WHICH MACHINE PRODUCED THE THROUGHPUT CARD ABOVE.
              Every rate in this panel is a property of the card as much as of the
-             book, and nothing else here says which card: Device reads "AUTO"
-             and TTS Engine reads the engine the STEP was configured with, so
-             two runs of one book on two machines drew identical rows.
+             book, and nothing else here said which card: the Device card read
+             "AUTO" and TTS Engine reads the engine the STEP was configured
+             with, so two runs of one book on two machines drew identical rows.
+             That Device card is gone with the control (2026-09-19) — it
+             described this box's hardware for work done on another. This row
+             is the answer it was pretending to be.
              A conditional and not a placeholder: a record without the field is
              one from before it existed, and drawing "unknown" (or worse, this
              machine's current server) would put a venue into a run that never
@@ -144,11 +147,6 @@ type JobTypeKey = 'tts' | 'cleanup' | 'rvc' | 'translation' | 'reassembly' | 'vi
             <div class="stat-value">{{ job.crucibleServer }}</div>
           </div>
         }
-
-        <div class="stat-card">
-          <div class="stat-label">Device</div>
-          <div class="stat-value">{{ job.settings.device.toUpperCase() }}</div>
-        </div>
 
         <div class="stat-card">
           <div class="stat-label">TTS Engine</div>

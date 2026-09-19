@@ -180,6 +180,33 @@
  * required the remainder of the align literal to compare byte-equal, required
  * every other door to compare byte-equal, and the three PLAN arms were not
  * regenerated (the fixture drives this phase with its own argv).
+ *
+ * 2026-09-19, THE PREP DOOR's `flags` literal — the Device control was cut
+ * (Owen: *"we don't need device as an option — that's decided by crucible
+ * configuration. we can just cut it. it will always be auto"*). One pair
+ * REMOVED and nothing put in its place:
+ *
+ *     '--device', deviceArg,   ->   (gone)
+ *
+ * Omitted rather than pinned to a constant, and that is the load-bearing
+ * choice: `narrator prep --device` is optional, its own help says *"recorded
+ * into the state; prep itself is CPU work"*, and `normalize_device(None)` is
+ * `'cpu'` — so an absent flag records what prep IS, where a constant would
+ * record a word this process invented about another machine's card. The value
+ * that was there came from `resolveTtsDeviceArg`, which answered from THIS
+ * box's hardware for a render happening on a Crucible server.
+ *
+ * THE TWO ASSEMBLY DOORS AND ALIGN KEEP THEIRS. `assembly-*` passes `'CPU'`
+ * deliberately (narrator's assembly reads no device; the flag is scaffolding
+ * and the file says so), and `align`'s is the ALIGNER's device — a real row
+ * choice since 2026-09-07. Neither is the render's.
+ *
+ * Checked, not assumed, exactly as every entry above: the re-baseline masked
+ * that one pair off the old prep literal and required it to compare byte-equal
+ * to the freshly extracted one, and required `assembly-render`,
+ * `assembly-reassembly` and `align` to compare byte-equal with no masking at
+ * all. The three PLAN arms were NOT regenerated and still pass — the fixture
+ * drives prep with its own argv, which never carried `--device`.
  */
 'use strict';
 const assert = require('assert');

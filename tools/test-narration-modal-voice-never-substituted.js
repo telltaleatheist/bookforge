@@ -38,8 +38,13 @@ check('an engine switch drops a voice that does not belong', () => {
   // has no engine to validate a voice against. The engine switch is now the
   // only thing that clears a voice, and it still refuses rather than
   // substitutes — which is what this file exists to protect.
-  assert.ok(/selectEngine\(id: TTSEngine\): void \{[\s\S]*?this\.dropVoiceUnlessItBelongs\(id\);/.test(src));
-  assert.ok(/private dropVoiceUnlessItBelongs\(engine: TTSEngine\): void \{[\s\S]*?this\.voice\.set\(''\);/.test(src));
+  //
+  // IT TAKES NO ENGINE SINCE 2026-09-19. `offer` is a computed over `engine()`,
+  // which `selectEngine` has already written, so the validator reads the list
+  // for the engine being moved TO — and it is the SAME list the dropdown draws,
+  // which is the one-source rule `test-narration-voice-choice.js` owns.
+  assert.ok(/selectEngine\(id: TTSEngine\): void \{[\s\S]*?this\.dropVoiceUnlessItBelongs\(\);/.test(src));
+  assert.ok(/private dropVoiceUnlessItBelongs\(\): void \{[\s\S]*?this\.voice\.set\(''\);/.test(src));
 });
 
 check('a preset sets the CONVERSION only — never the engine, voice, device or speed', () => {
@@ -52,8 +57,10 @@ check('a preset sets the CONVERSION only — never the engine, voice, device or 
   const end = body.indexOf('\n  }');
   assert.ok(end > 0, 'applyPreset body not found');
   const apply = body.slice(0, end);
+  // `this.device.set(` is not in this list any more because the signal is gone
+  // with the control (2026-09-19); a preset that wrote one would not compile.
   for (const forbidden of ['this.engine.set(', 'this.voice.set(',
-                           'this.device.set(', 'this.speed.set(']) {
+                           'this.speed.set(']) {
     assert.ok(!apply.includes(forbidden),
       `applyPreset writes ${forbidden} — a preset is conversion settings only`);
   }
@@ -78,8 +85,30 @@ check('a preset sets the CONVERSION only — never the engine, voice, device or 
 });
 
 check('the submit check refuses an empty voice and a foreign voice by name', () => {
-  assert.ok(src.includes('voice is chosen. Pick one on the Reading tab.'));
-  assert.ok(src.includes('is not a ${engineName} voice on this machine'));
+  /*
+   * THE SENTENCES MOVED, THE RULE DID NOT (2026-09-19). They were written out
+   * here against the flat local catalog while the dropdown drew the servers'
+   * picker — which is how "is not a Higgs voice on this machine" came to be
+   * said about a machine that was never going to render the book. Both
+   * refusals now live beside the OFFER they are about
+   * (`shared/tts/voice-choice.ts`), so they can be worded from whichever list
+   * answered. What this pins is that the modal still ASKS, and that both
+   * refusals still exist and still refuse rather than substitute.
+   */
+  assert.ok(/refuseVoiceChoice\(this\.offer\(\), this\.voice\(\)/.test(src),
+    'the modal no longer asks the shared validator about the chosen voice');
+  const choice = fs.readFileSync(path.join(__dirname, '..', 'shared', 'tts', 'voice-choice.ts'),
+    'utf-8');
+  assert.ok(choice.includes('voice is chosen. Pick one on the Reading tab.'),
+    'the empty-voice refusal is gone');
+  assert.ok(/is not a voice any Crucible server that answered can speak/.test(choice),
+    'the servers-answered refusal is gone');
+  assert.ok(/is not a \$\{engineName\} voice in this machine's catalog/.test(choice),
+    'the catalog refusal is gone');
+  assert.ok(!/this\.voice\.set\([^')]/.test(choice) && !/voice\.set\(/.test(choice),
+    'the validator writes a voice — it may only refuse');
+  assert.ok((choice.match(/never replaced with another voice/g) || []).length === 2,
+    'a refusal stopped saying the choice is never replaced');
 });
 
 check('the picker shows a placeholder rather than a substituted choice', () => {
