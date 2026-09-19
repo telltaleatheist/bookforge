@@ -505,7 +505,7 @@ async function venueDoor() {
     }
     await check('a routed server re-rolls on the Crucible, never the local spawn', () => {
       assert.strictEqual(localCalls, 0);
-      assert.deepStrictEqual(outcome.venue, { where: 'crucible', server, origin: 'decided here', because: 'the top-ranked server' });
+      assert.deepStrictEqual(outcome.venue, { where: 'crucible', server, origin: 'decided here', because: 'the first enabled server that answered' });
       assert.strictEqual(outcome.crucible.written, 2);
       assert.ok(fs.existsSync(path.join(targetDir, 'take0', '41.flac')));
     });

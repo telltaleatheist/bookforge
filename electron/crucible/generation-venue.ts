@@ -12,7 +12,15 @@
  * this machine that knows which servers the operator wants used and in what
  * order.
  *
- * ── The three answers, in the order they are asked ─────────────────────────
+ * ── The rule lives NEXT DOOR (2026-09-19) ──────────────────────────────────
+ *
+ * `venue-decision.ts` owns it, because `text-venue.ts` was carrying a second
+ * copy of the same body and two copies of a rule are two chances to disagree
+ * about it (bug hunt A8; crucible `docs/ARCHITECTURE.md` R1). What is left here
+ * is this door's TYPES, its error class, and the two sentences that are its own:
+ * what a render has instead of a local fallback.
+ *
+ * The two answers, in the order they are asked:
  *
  * 1. **The caller named a server.** `settings.crucible.server` wins, unchanged
  *    and unconditionally — it is the CLI's `--crucible-server`, a resumed
@@ -20,14 +28,11 @@
  *    name back onto the session's settings — the machine an in-flight book is
  *    already rendering on. An explicit instruction is
  *    never second-guessed by a record.
- * 2. **`newJobsWaitFor: 'top-ranked'`** — the top of the enabled list
- *    (crucible `docs/PHASE7-LANES.md` §4.2.1). Its reachability is NOT checked:
- *    naming a machine is an instruction, and a row that names one waits for it
- *    rather than being re-routed. The render fails against that server, by that
- *    server's name, which is the answer an operator can act on.
- * 3. **`newJobsWaitFor: 'any'`** — the first enabled server, in rank order,
- *    whose `ping` answers. §4.2.1: "the first server that will take it,
- *    preferring rank order; unreachable servers are simply not candidates".
+ * 2. **The first ENABLED server, in rank order, that ANSWERS.** Never a
+ *    disabled one, never one that does not answer — and `newJobsWaitFor` is not
+ *    consulted, because it is the default written onto a NEW QUEUE ROW and
+ *    nothing else (Owen, 2026-09-19; see `venue-decision.ts`'s header for the
+ *    ruling and the Listen case that forced it).
  *
  * ── What is NOT here ───────────────────────────────────────────────────────
  *
@@ -48,9 +53,15 @@
  * **No second toggle.** There is no per-render "not this one": the venue is the
  * caller's field or the record, and the record has one owner.
  */
-import type { RankedServerRow, RoutingView } from '../../shared/crucible/settings-wire';
-import { rankedServers, readRouting } from './routing';
+import type { RankedServerRow } from '../../shared/crucible/settings-wire';
+import { rankedServers } from './routing';
 import { pingServer, type CruciblePingResult } from './probe';
+import {
+  VenueDecisionRefusal,
+  decideVenueAmongEnabled,
+  type VenueBecause,
+  type VenueWords,
+} from './venue-decision';
 
 /**
  * Where one render's generation step runs, and why it is there.
@@ -65,16 +76,16 @@ export type GenerationVenue = {
   /** A registered server's name. Never a URL.  */
   server: string;
   /**
-   * Which of the three answers this was. Goes on the render's log, because
+   * Which of the two answers this was. Goes on the render's log, because
    * "why is this book on the Mac" must be answerable six weeks later.
    */
-  because: 'the caller named it' | 'the top-ranked server' | 'any: the first that answered';
+  because: VenueBecause;
 };
 
 export type CrucibleVenueErrorCode =
   /** `settings.crucible` is present and names no server. */
   | 'crucible_server_not_named'
-  /** `any`, and not one enabled server answered. Names each one tried. */
+  /** Not one enabled server answered. Names each one tried. */
   | 'no_reachable_server'
   /** A later step was named a server its run did not go to. See {@link venueForRunStep}. */
   | 'run_venue_disagrees'
@@ -101,22 +112,43 @@ export class CrucibleVenueError extends Error {
  * shape `discovery.ts`'s `DiscoveryHost` uses for the same reason.
  */
 export interface VenueHost {
-  /** The routing record resolved against the servers that exist. */
-  view(): RoutingView;
   /** Enabled servers, best first. Refuses `no_enabled_server` when there are none. */
   enabled(): RankedServerRow[];
   /** One unauthenticated reachability check. */
   ping(name: string): Promise<CruciblePingResult>;
 }
 
-/** The real one: the app's routing record and real HTTP. */
+/**
+ * The real one: the app's routing record and real HTTP.
+ *
+ * `view()` USED TO BE HERE and is gone (2026-09-19): the only thing that read
+ * it was the `top-ranked` rung of the decision, and that rung is gone with it.
+ * `newJobsWaitFor` is the queue's default for a NEW ROW and nothing else, so a
+ * venue decision that read it was reaching into a setting that is not about it.
+ */
 export function processVenueHost(): VenueHost {
-  return { view: readRouting, enabled: rankedServers, ping: pingServer };
+  return { enabled: rankedServers, ping: pingServer };
 }
 
 /**
- * Decide where this render's generation step runs. See the header for the three
- * answers and the order they are asked in.
+ * What a RENDER has instead of a local fallback — the half of the refusals that
+ * is this door's own. See `venue-decision.ts` for the half that is shared.
+ */
+const RENDER_WORDS: VenueWords = {
+  notNamed:
+    'settings.crucible is set but names no server. It takes the NAME of an entry in '
+    + '<userData>/crucible-servers.json (bookforge-tts --crucible-list); there is no default '
+    + 'and no fallback to this machine.',
+  noneAnswered:
+    'There is no local narrator to fall back to: BookForge renders on a Crucible server or '
+    + 'not at all.',
+};
+
+/**
+ * Decide where this render's generation step runs. The RULE is
+ * `venue-decision.ts`'s and is asked once; what happens here is the translation
+ * of its refusal into {@link CrucibleVenueError}, which is the class every
+ * render door's `catch` is written against.
  *
  * `settings` is narrowed to the one field this reads on purpose: the decision
  * is about a server name, and handing it the whole of `ParallelTtsSettings`
@@ -127,49 +159,15 @@ export async function decideWhereGenerationRuns(
   settings: { crucible?: { server: string } } | undefined,
   host: VenueHost,
 ): Promise<GenerationVenue> {
-  const named = settings?.crucible?.server;
-  if (named !== undefined) {
-    if (typeof named !== 'string' || named.trim() === '') {
-      // Present and empty is a caller that meant to name a server and did not.
-      // Rendering locally instead would be the silent downgrade this whole seam
-      // exists to refuse.
-      throw new CrucibleVenueError(
-        'crucible_server_not_named',
-        'settings.crucible is set but names no server. It takes the NAME of an entry in '
-          + '<userData>/crucible-servers.json (bookforge-tts --crucible-list), or the reserved '
-          + 'a registered server; there is no default and no fallback to this machine.',
-      );
+  try {
+    const decided = await decideVenueAmongEnabled(settings?.crucible?.server, host, RENDER_WORDS);
+    return { where: 'crucible', ...decided };
+  } catch (err) {
+    // routing's `no_enabled_server` passes through in its own words; only the
+    // decision's own two refusals are re-dressed.
+    if (err instanceof VenueDecisionRefusal) {
+      throw new CrucibleVenueError(err.code, err.message);
     }
-    return { where: 'crucible', server: named.trim(), because: 'the caller named it' };
+    throw err;
   }
-
-  const view = host.view();
-
-  // Throws CrucibleRoutingError `no_enabled_server` — in routing's own words,
-  // which already distinguish "you have none" from "you disabled them all" and
-  // name the settings page that fixes each.
-  const enabled = host.enabled();
-
-  if (view.newJobsWaitFor === 'top-ranked') {
-    return {
-      where: 'crucible',
-      server: (enabled[0] as RankedServerRow).name,
-      because: 'the top-ranked server',
-    };
-  }
-
-  const tried: string[] = [];
-  for (const row of enabled) {
-    const pong = await host.ping(row.name);
-    if (pong.outcome === 'ok') {
-      return { where: 'crucible', server: row.name, because: 'any: the first that answered' };
-    }
-    tried.push(`${row.name} (${pong.outcome}: ${pong.message})`);
-  }
-  throw new CrucibleVenueError(
-    'no_reachable_server',
-    'new jobs are set to wait for ANY server, and none of the enabled ones answered: '
-      + `${tried.join('; ')}. Start one, or add one in Settings → Crucible Servers. There is no `
-      + 'local narrator to fall back to: BookForge renders on a Crucible server or not at all.',
-  );
 }

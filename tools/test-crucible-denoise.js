@@ -335,7 +335,7 @@ async function venueDoor() {
     });
     await check('a routed server runs the remote arm with that server\'s name', () => {
       assert.strictEqual(named, 'mac');
-      assert.deepStrictEqual(outcome.venue, { where: 'crucible', server: 'mac', origin: 'decided here', because: 'the top-ranked server' });
+      assert.deepStrictEqual(outcome.venue, { where: 'crucible', server: 'mac', origin: 'decided here', because: 'the first enabled server that answered' });
       assert.deepStrictEqual(outcome.outcome, { dir: '/remote/set' });
     });
   }

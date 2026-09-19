@@ -438,7 +438,10 @@ async function main() {
     // (PAGE_CONCURRENCY_BY_BACKEND) and it changes nothing on the server.
     assert.deepStrictEqual(
       Object.keys(pages.processPagesVenueHost()).sort(),
-      ['backend', 'enabled', 'engineUrl', 'models', 'ping', 'server', 'view']);
+      // `view` left on 2026-09-19 with the `top-ranked` rung of the decision:
+      // `newJobsWaitFor` is the queue's new-row default and nothing else, so a
+      // venue host has no business offering it.
+      ['backend', 'enabled', 'engineUrl', 'models', 'ping', 'server']);
   });
 
   // ── 8. The venue: one record, no silent local run ─────────────────────────
@@ -486,32 +489,31 @@ async function main() {
       assert.ok(stale.because.length > 0, 'the venue arrived with no reason');
     });
 
-  await check('top-ranked is taken WITHOUT a ping — a named machine is an instruction', async () => {
-    let pinged = 0;
-    const where = await pages.decideWherePagesRun(scriptedHost({
-      ping: async () => { pinged += 1; return { outcome: 'unreachable', message: 'no' }; },
-    }));
-    assert.strictEqual(where.where, 'crucible');
-    assert.strictEqual(where.server, 'local');
-    assert.strictEqual(pinged, 0);
+  await check('the first enabled server that ANSWERS, whatever newJobsWaitFor says', async () => {
+    /*
+     * 2026-09-19 (bug hunt A8, Owen's ruling 4): the `top-ranked` rung — the
+     * top enabled server taken UNPINGED — is gone from the ONE decision
+     * (`crucible/venue-decision.ts`), which this door reaches through
+     * `venueForRunStep`. The setting is scripted BOTH ways here on purpose: the
+     * rule must not read it at all.
+     */
+    for (const waitFor of ['top-ranked', 'any']) {
+      const where = await pages.decideWherePagesRun(scriptedHost({
+        view: () => ({
+          ranked: [{ name: 'local', enabled: true }, { name: 'mac', enabled: true }],
+          newJobsWaitFor: waitFor,
+          unknown: [],
+        }),
+        ping: async (name) => (name === 'mac'
+          ? { outcome: 'ok', message: 'ok' }
+          : { outcome: 'unreachable', message: 'nothing answered' }),
+      }));
+      assert.strictEqual(where.where, 'crucible');
+      assert.strictEqual(where.server, 'mac', `newJobsWaitFor: ${waitFor}`);
+    }
   });
 
-  await check('"any" takes the first that answers, in rank order', async () => {
-    const where = await pages.decideWherePagesRun(scriptedHost({
-      view: () => ({
-        ranked: [{ name: 'local', enabled: true }, { name: 'mac', enabled: true }],
-        newJobsWaitFor: 'any',
-        unknown: [],
-      }),
-      ping: async (name) => (name === 'mac'
-        ? { outcome: 'ok', message: 'ok' }
-        : { outcome: 'unreachable', message: 'nothing answered' }),
-    }));
-    assert.strictEqual(where.where, 'crucible');
-    assert.strictEqual(where.server, 'mac');
-  });
-
-  await check('"any" with nothing reachable FAILS, naming each one tried', async () => {
+  await check('nothing reachable FAILS, naming each one tried', async () => {
     await assert.rejects(
       () => pages.decideWherePagesRun(scriptedHost({
         view: () => ({
@@ -583,10 +585,12 @@ async function main() {
 
   await check('with NO typed endpoint the record IS consulted, before the project is', async () => {
     let consulted = 0;
+    // `enabled()` is what the decision reads now — `view()` went with the
+    // `top-ranked` rung on 2026-09-19 — and it is still the routing record.
     const host = scriptedHost({
-      view: () => {
+      enabled: () => {
         consulted += 1;
-        return { ranked: [{ name: 'local', enabled: true }], newJobsWaitFor: 'top-ranked', unknown: [] };
+        return [{ name: 'local', enabled: true }];
       },
     });
     await assert.rejects(() => convert.planVlmConversion({

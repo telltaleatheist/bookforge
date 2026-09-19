@@ -338,10 +338,18 @@ check('a record that never had the key is unchanged by any of this', () => {
 
 // ── WHERE a render's generation step runs ────────────────────────────────────
 //
-// electron/crucible/generation-venue.ts, driven over a scripted host: no record
-// on disk, no registry, no network. Its four answers are PHASE7-LANES.md
-// §4.2.1's, and its two refusals are why nothing renders on this machine by
+// electron/crucible/generation-venue.ts over electron/crucible/venue-decision.ts,
+// driven by a scripted host: no record on disk, no registry, no network. Its two
+// answers and its two refusals are why nothing renders on this machine by
 // accident.
+//
+// THE RULE CHANGED ON 2026-09-19 (bug hunt A8, Owen's ruling 4): the
+// `newJobsWaitFor: 'top-ranked'` rung — the top enabled server taken UNPINGED —
+// is gone. An unassigned decision takes the first ENABLED server, in rank order,
+// that ANSWERS, whatever the setting says; `newJobsWaitFor` went back to being
+// the default written onto a NEW QUEUE ROW and nothing else. The case that
+// forced it: `top-ranked` on this machine with the Mac asleep made Listen fail
+// by name while the PC sat awake and idle.
 
 const RANKED = [{ name: 'local', enabled: true }, { name: 'mac', enabled: true }];
 
@@ -403,23 +411,9 @@ const decide = (settings, host) => venue.decideWhereGenerationRuns(settings, hos
     }
   });
 
-  await acheck('no caller, top-ranked: the top of the ENABLED list, unpinged', async () => {
-    let pinged = 0;
-    const host = venueHost({ ping: async () => { pinged += 1; return { outcome: 'unreachable', message: 'no' }; } });
-    assert.deepStrictEqual(await decide(undefined, host),
-      { where: 'crucible', server: 'local', because: 'the top-ranked server' });
-    assert.strictEqual(pinged, 0, 'naming a machine is an instruction: it is waited for, not probed');
-  });
-
-  await acheck('top-ranked skips a DISABLED server rather than sending work to it', async () => {
-    const host = venueHost({ view: { ranked: [{ name: 'local', enabled: false }, { name: 'mac', enabled: true }] } });
-    assert.strictEqual((await decide(undefined, host)).server, 'mac');
-  });
-
-  await acheck('any: the first enabled server whose ping answers, in RANK order', async () => {
+  await acheck('no caller: the first enabled server that ANSWERS, in RANK order', async () => {
     const tried = [];
     const host = venueHost({
-      view: { newJobsWaitFor: 'any' },
       ping: async (name) => {
         tried.push(name);
         return name === 'mac'
@@ -428,11 +422,43 @@ const decide = (settings, host) => venue.decideWhereGenerationRuns(settings, hos
       },
     });
     assert.deepStrictEqual(await decide(undefined, host),
-      { where: 'crucible', server: 'mac', because: 'any: the first that answered' });
+      { where: 'crucible', server: 'mac', because: 'the first enabled server that answered' });
     assert.deepStrictEqual(tried, ['local', 'mac'], 'rank order, and it stops at the first that answers');
   });
 
-  await acheck('any with nothing reachable REFUSES, naming every server it tried and what each said', async () => {
+  await acheck('rank 1 ENABLED but asleep, rank 2 enabled and awake → rank 2 (the Listen case)', async () => {
+    /*
+     * 2026-09-19, Owen's ruling 4. This is the exact shape that made pressing
+     * Play fail: `newJobsWaitFor: 'top-ranked'`, the preferred machine asleep,
+     * a second enabled machine awake. The setting is left at 'top-ranked' here
+     * ON PURPOSE — the decision must not read it at all.
+     */
+    for (const waitFor of ['top-ranked', 'any']) {
+      const host = venueHost({
+        view: { newJobsWaitFor: waitFor },
+        ping: async (name) => (name === 'mac'
+          ? { outcome: 'ok', serverName: 'm', apiVersion: 1 }
+          : { outcome: 'unreachable', message: 'asleep' }),
+      });
+      assert.deepStrictEqual(await decide(undefined, host),
+        { where: 'crucible', server: 'mac', because: 'the first enabled server that answered' },
+        `newJobsWaitFor: ${waitFor} must make no difference to an unassigned decision`);
+    }
+  });
+
+  await acheck('a DISABLED server is skipped even when it is the only one answering', async () => {
+    const asked = [];
+    const host = venueHost({
+      view: { ranked: [{ name: 'local', enabled: false }, { name: 'mac', enabled: true }] },
+      ping: async (name) => { asked.push(name); return { outcome: 'ok', serverName: 'x', apiVersion: 1 }; },
+    });
+    assert.strictEqual((await decide(undefined, host)).server, 'mac');
+    assert.deepStrictEqual(asked, ['mac'],
+      'a server switched off is not a candidate and is never even probed — the enable switch IS '
+      + 'the operator\'s control over "next available" (Owen, 2026-09-19)');
+  });
+
+  await acheck('nothing reachable REFUSES, naming every server it tried and what each said', async () => {
     const host = venueHost({
       view: { newJobsWaitFor: 'any' },
       ping: async (name) => ({ outcome: 'unreachable', message: `nothing answered at ${name}` }),

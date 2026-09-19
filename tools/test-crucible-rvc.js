@@ -378,7 +378,7 @@ async function venueDoor() {
     }
     await check('a routed server converts on the Crucible, never the local spawn, and records the venue', () => {
       assert.strictEqual(localCalls, 0);
-      assert.deepStrictEqual(outcome.venue, { where: 'crucible', server, origin: 'decided here', because: 'the top-ranked server' });
+      assert.deepStrictEqual(outcome.venue, { where: 'crucible', server, origin: 'decided here', because: 'the first enabled server that answered' });
       assert.strictEqual(outcome.crucible.model, 'mistborn-rvc-v1');
       assert.ok(fs.existsSync(path.join(out, '1.flac')));
     });

@@ -325,7 +325,7 @@ async function venueDoor() {
         `expected narrator's own refusal, got: ${result.error}`);
       // The card's work is a FILE, so a retry reads it rather than re-aligning.
       assert.strictEqual(result.alignmentPath, path.join(dir, 'alignment.json'));
-      assert.deepStrictEqual(result.venue, { where: 'crucible', server, origin: 'decided here', because: 'the top-ranked server' });
+      assert.deepStrictEqual(result.venue, { where: 'crucible', server, origin: 'decided here', because: 'the first enabled server that answered' });
       assert.strictEqual(result.busyLine, undefined);
     });
   }
@@ -348,9 +348,9 @@ async function venueDoor() {
       await mac.close();
       await local.close();
     }
-    await check('a run whose render resolved to "mac" aligns on "mac" — never on the top-ranked "local"', () => {
+    await check('a run whose render resolved to "mac" aligns on "mac" — never on the ranked "local"', () => {
       assert.strictEqual(mac.state.submitted.length, 1, 'the job went where the render went');
-      assert.strictEqual(local.state.submitted.length, 0, 'the top-ranked server was never asked');
+      assert.strictEqual(local.state.submitted.length, 0, 'the ranked server was never asked');
       assert.strictEqual(local.state.uploads.length, 0);
       assert.deepStrictEqual(result.venue,
         { where: 'crucible', server: macName, origin: 'the run', because: "the run's venue (session_state.json)" });
