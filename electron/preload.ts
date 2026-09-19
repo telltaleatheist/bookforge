@@ -526,7 +526,9 @@ export interface PlaySettings {
 }
 
 export interface TtsJobConfig {
-  device: 'gpu' | 'mps' | 'cpu';
+  /* NO `device` SINCE 2026-09-19 — the render's device is the Crucible
+     server's, and this process never had a say in it. See
+     `electron/parallel-tts-bridge.ts`, top of file. */
   language: string;
   ttsEngine: string;
   fineTuned: string;
@@ -558,7 +560,7 @@ export interface ParallelWorkerState {
 }
 
 export interface ParallelTtsSettings {
-  device: 'gpu' | 'mps' | 'cpu';
+  /* NO `device` SINCE 2026-09-19 — see TtsJobConfig above. */
   language: string;
   ttsEngine: string;
   fineTuned: string;

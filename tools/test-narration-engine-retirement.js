@@ -119,8 +119,16 @@ check('the one page that renders that list asks for it, and never hardcodes it',
    * the narrate modal is now the only place an engine is chosen — it remembers
    * what was used last, which is what that page was really for. So the list of
    * pages is derived from the FILES, not restated here: a new page that offers
-   * engines must ask `selectableEngines()` like this one, and a page that
+   * engines must ask `narrationEngineOrder()` like this one, and a page that
    * disappears must not leave a keeper reading a path that no longer exists.
+   *
+   * THE FUNCTION IT MUST ASK CHANGED ON 2026-09-19, and the rule did not.
+   * `selectableEngines(isInstalled)` was deleted: it gated the list on whether
+   * the engine's component was installed on THIS box, for a render that happens
+   * on a Crucible server. The modal now intersects `narrationEngineOrder()` —
+   * still THE array, still the one edit that retires an engine everywhere —
+   * with the engines the answering servers report. What this pins is unchanged:
+   * the page ASKS for the list and never spells one.
    */
   const PAGES = [
     ['narration modal', ['src', 'app', 'features', 'studio', 'components',
@@ -128,8 +136,8 @@ check('the one page that renders that list asks for it, and never hardcodes it',
   ];
   for (const [name, parts] of PAGES) {
     const src = read(...parts);
-    assert.ok(/selectableEngines\(/.test(src),
-      `the ${name} does not build its engine list from selectableEngines()`);
+    assert.ok(/narrationEngineOrder\(/.test(src),
+      `the ${name} does not build its engine list from narrationEngineOrder()`);
     assert.ok(!/['"`]Orpheus['"`]/.test(code(src)),
       `the ${name} spells the label "Orpheus" itself — a second engine list`);
   }

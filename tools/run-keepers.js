@@ -682,6 +682,15 @@ const SUITES = [
   // the LOCAL check is the right one for exactly those. Both are pinned here so a
   // later change cannot quietly merge two questions that have two answers.
   'test-voice-inventory',
+  // ONE LIST OFFERS AND THE SAME LIST ACCEPTS. The narration modal drew its
+  // dropdown from the servers' picker and validated the choice against the flat
+  // LOCAL catalog, so a voice a server serves and this box does not list was
+  // offered and then refused — "is not a Higgs voice on this machine", about a
+  // machine that was never going to render it — and a voice the picker marked
+  // unavailable was judged by the catalog's reason, which sends a person to the
+  // wrong host. `shared/tts/voice-choice.ts` is the one offer; this pins the
+  // property (offered => accepted) rather than the wording.
+  'test-narration-voice-choice',
   // WHAT `build:electron` COPIES, AND WHAT IT MUST. Eleven source paths in one
   // shell line, none of them checked — so a directory deleted in a refactor sits
   // there until somebody runs a full build and gets a bare "cp: no such file or

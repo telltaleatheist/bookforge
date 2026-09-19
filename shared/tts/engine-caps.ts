@@ -31,9 +31,11 @@
  * the dialog gates its sampling controls on exactly these flags.
  *
  * So the DATA and the accessors live here and the renderer's registry is now a
- * re-export plus the one function that genuinely belongs to the renderer
- * (`selectableEngines`, which gates on a component service this program has no
- * business knowing about). Its callers' imports did not change.
+ * PURE re-export. It kept one function of its own — `selectableEngines`, which
+ * gated the picker on whether an engine's component was installed on the box
+ * drawing it — until 2026-09-19, when that turned out to be a fact about the
+ * wrong computer: every render happens on a Crucible server, and the modal
+ * intersects this table's order with the engines those servers report.
  *
  * ── What the table is for ───────────────────────────────────────────────────
  *
@@ -383,9 +385,11 @@ export const TTS_ENGINES: Record<TTSEngine, TtsEngineCaps> = {
  *
  * THIS ARRAY IS THE REMOVAL. Everything that used to show XTTS — the narration
  * modal's engine strip, the pipeline-defaults panel, the wizard — reads its list
- * from `selectableEngines()`, which reads this. So one edit here removed XTTS
- * from every one of them, and adding `'higgs'` added it to every one of them,
- * with no per-page list to keep in step. That was already the design; it is only
+ * from here. So one edit removed XTTS from every one of them, and adding
+ * `'higgs'` added it to every one of them, with no per-page list to keep in
+ * step. (The modal read it through `selectableEngines()` until 2026-09-19 and
+ * reads it directly now, intersected with what the Crucible servers serve; the
+ * array is still the one place an engine is offered or withdrawn.) That was already the design; it is only
  * being recorded because the alternative (a hardcoded `@for` in each template)
  * is exactly how a "removed" engine survives in one forgotten page.
  *

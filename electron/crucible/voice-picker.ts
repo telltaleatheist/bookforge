@@ -56,11 +56,13 @@ import {
   placeVoices,
   placeCarriedVoices,
   sectionVoices,
+  narratorEnginesServed,
   type CarriedVoice,
   type VoiceInventory,
   type VoicePlacement,
   type VoiceSection,
 } from './voice-inventory';
+import { bookforgeEngineForNarrator } from '../narrator-spawn';
 
 /*
  * THE WIRE SHAPE IS `shared/tts/voice-picker-dto.ts` AND IS NOT RESTATED HERE.
@@ -188,5 +190,21 @@ export async function narrationVoicePicker(userDataDir: string): Promise<VoicePi
     }];
   });
 
-  return { sections, missing, complete: inventory.complete };
+  /*
+   * THE ENGINE STRIP'S LIST, from the machines rather than from this disk.
+   *
+   * An engine narrator names and BookForge has no word for is DROPPED rather
+   * than passed through under its server-side spelling: the modal's strip is
+   * keyed by BookForge's own engine ids and a row nothing can resolve would be
+   * a button that refuses itself when pressed. `bookforgeEngineForNarrator`
+   * reads the ONE table both directions, so `higgs-v3` cannot come to mean two
+   * things in two files.
+   */
+  const engines = [...new Set(
+    narratorEnginesServed(inventory)
+      .map((id) => bookforgeEngineForNarrator(id))
+      .filter((id): id is NonNullable<typeof id> => id !== null),
+  )];
+
+  return { sections, engines, missing, complete: inventory.complete, askedAt: new Date().toISOString() };
 }

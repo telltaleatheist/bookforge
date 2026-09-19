@@ -94,10 +94,11 @@ import { QueueService } from '../../services/queue.service';
                 <span class="info-label">Speed</span>
                 <span class="info-value">{{ selectedJob.config.speed }}x</span>
               </div>
-              <div class="info-row">
-                <span class="info-label">Device</span>
-                <span class="info-value">{{ selectedJob.config.device.toUpperCase() }}</span>
-              </div>
+              <!-- DEVICE WAS A ROW HERE AND IS GONE (2026-09-19). It read the
+                   choice the modal offered, which described THIS box's hardware
+                   for a render happening on a Crucible server — so it printed
+                   "AUTO" beside a book rendered on the 3090. The machine is the
+                   Server row; the device on it is that machine's own. -->
               @if (selectedJob.config.useParallel && selectedJob.config.parallelWorkers) {
                 <div class="info-row">
                   <span class="info-label">Workers</span>

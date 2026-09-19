@@ -279,6 +279,29 @@ export function narratorEngineEnvId(engine: NarratorEngineId): string {
 }
 
 /**
+ * THE SAME TABLE READ BACKWARDS — narrator's engine id as BOOKFORGE spells it.
+ *
+ * A Crucible's `/v1/voices` names `narratorEngine` on every row ("which of
+ * narrator's engines serves this voice, e.g. `higgs-v3`"), and that is the ONLY
+ * per-server statement of which engines a machine can actually run. The
+ * narration modal's engine strip is built from it (`voice-picker.ts`), so the
+ * list offered is the list the machines serve rather than a list of what
+ * happens to be installed on the box drawing the dialog.
+ *
+ * DERIVED FROM `NARRATOR_ENGINE_ENV`, never a second literal: a hand-written
+ * inverse is how `higgs`/`higgs-v3` comes to mean two different things in two
+ * files. An id narrator names and BookForge has no word for answers `null` —
+ * a new narrator engine is not silently read as one of ours.
+ */
+export function bookforgeEngineForNarrator(narratorEngine: string): NarratorEngineId | null {
+  const id = narratorEngine.trim();
+  for (const [ours, theirs] of Object.entries(NARRATOR_ENGINE_ENV) as [NarratorEngineId, string][]) {
+    if (theirs === id) return ours;
+  }
+  return null;
+}
+
+/**
  * The python module each phase invokes with `-m`.
  *
  * prep and the three tools phases are all `compat.app` doors, told apart by their

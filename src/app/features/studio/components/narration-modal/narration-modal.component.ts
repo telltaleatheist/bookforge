@@ -109,7 +109,6 @@ import {
 } from '../../../../core/services/settings.service';
 import { LibraryService } from '../../../../core/services/library.service';
 import { ComponentService } from '../../../../core/services/component.service';
-import { WorkerConfigService } from '../../../../core/services/worker-config.service';
 import { ElectronService } from '../../../../core/services/electron.service';
 import { QueueService } from '../../../queue/services/queue.service';
 import type { CreateJobRequest } from '../../../queue/models/queue.types';
@@ -124,10 +123,11 @@ import {
 import { narrationVideoStep, type VideoResolution } from '@shared/queue/narration-video';
 import { NARRATION_TEXT_FAILSAFE_NOTICE } from '@shared/processing/narration-text-notice';
 import {
-  engineCaps, selectableEngines, isRunnableTtsEngine, TTS_ENGINES, engineDisplayName,
+  narrationEngineOrder, isRunnableTtsEngine, TTS_ENGINES, engineDisplayName,
 } from '../../../../core/models/tts-engine-registry';
 import type { NarrationEntryContext } from '../../services/narration-dialog.service';
 import type { TTSEngine } from '@shared/tts/engine-caps';
+import { voiceOffer, refuseVoiceChoice, offerCarries } from '@shared/tts/voice-choice';
 import { DEFAULT_CHAPTER_GAP, MAX_CHAPTER_GAP } from '@shared/audio/chapter-gap';
 
 /**
@@ -333,6 +333,15 @@ function fileName(fullPath: string): string {
                             (click)="selectEngine(eng.id)">{{ eng.displayName }}</button>
                   }
                 </div>
+                <!--
+                  WHOSE LIST THAT IS. With the servers' answer in hand these are
+                  the engines the ANSWERING machines run; without it they are
+                  what this build can render, which is a different statement and
+                  is said as one. Never an empty strip with no sentence.
+                -->
+                @if (enginesUnconfirmed()) {
+                  <span class="nm-hint warn">{{ enginesUnconfirmedNote }}</span>
+                }
               </div>
 
               <div class="nm-field">
@@ -354,17 +363,24 @@ function fileName(fullPath: string): string {
                 @for (m of voiceServersMissing(); track m.server) {
                   <p class="nm-hint warn">{{ m.server }} — {{ m.why }}</p>
                 }
-              </div>
-
-              <div class="nm-field">
-                <label class="nm-label">Device</label>
-                <div class="nm-choices">
-                  @for (d of devices; track d.id) {
-                    <button type="button" class="nm-choice" [class.on]="device() === d.id"
-                            [disabled]="!narrate()"
-                            (click)="device.set(d.id)">{{ d.label }}</button>
-                  }
-                </div>
+                <!--
+                  AND THAT LIST IS A SNAPSHOT. The servers are asked once, when
+                  this dialog opens; a machine that wakes while it is up stays
+                  in the warning above until somebody asks again. Saying WHEN
+                  is what turns a stale list into a readable one — and the
+                  button is the way out, so the person is not told to close and
+                  re-open a dialog they have already filled in.
+                -->
+                @if (voiceAskedAt(); as asked) {
+                  <p class="nm-hint nm-asof">
+                    <span>Voices as of {{ asked }}</span>
+                    <button type="button" class="nm-recheck"
+                            [disabled]="voiceRechecking()"
+                            (click)="recheckVoiceServers()">
+                      {{ voiceRechecking() ? 'Asking…' : 'Re-check' }}
+                    </button>
+                  </p>
+                }
               </div>
 
               <div class="nm-field">
@@ -374,15 +390,19 @@ function fileName(fullPath: string): string {
                        [value]="speed()" (input)="speed.set(+$any($event.target).value)" />
               </div>
 
-              @if (maxWorkers() > 1) {
-                <div class="nm-field">
-                  <label class="nm-label">Workers: {{ workers() }}</label>
-                  <input type="range" class="nm-slider" min="1" [max]="maxWorkers()" step="1"
-                         [disabled]="!narrate()"
-                         [value]="workers()" (input)="workers.set(+$any($event.target).value)" />
-                  <span class="nm-hint">More workers render faster on CPU. A GPU run uses one.</span>
-                </div>
-              }
+              <!--
+                THE WORKERS SLIDER IS GONE, and the copy beside it is why it had
+                to be. "More workers render faster on CPU. A GPU run uses one"
+                described a render this app performed itself, on this box, with
+                a pool of local python workers. Every render now goes to a
+                Crucible server, and the width is the SERVER's — MLX_RENDER_WIDTH
+                on the Mac arm, HIGGS_MAX_NUM_SEQS on the CUDA one — decided by
+                the machine that owns the card out of its own memory. A slider
+                here could only have described somebody else's batch.
+
+                parallelWorkers stays 1 in the run description (see the
+                workers signal below), so nothing downstream changed with it.
+              -->
 
               <!-- The sampling trio was the ENGINE's, not the dialog's, and both
                    engines this build renders in fix theirs inside the engine
@@ -797,6 +817,16 @@ function fileName(fullPath: string): string {
     /* Start over deletes rendered audio, so it says so in a colour that
        is not the same grey as every other hint in the dialog. */
     .nm-hint.warn { color: var(--warning, #f59e0b); }
+    /* The voice list's timestamp and its way out. Quiet — it is a fact about
+       the list, not a warning about it — and on one line with the button, so
+       "as of 9:41" and "Re-check" read as one sentence rather than as a status
+       followed by an unrelated control. */
+    .nm-asof { display: flex; align-items: baseline; gap: 8px; margin-top: 4px; }
+    .nm-recheck {
+      background: none; border: none; padding: 0; cursor: pointer;
+      font: inherit; color: var(--accent, #f97316); text-decoration: underline;
+    }
+    .nm-recheck:disabled { cursor: default; opacity: 0.6; text-decoration: none; }
     .nm-resume {
       padding: 10px 12px; border: 1px solid var(--border-subtle, rgba(128,128,128,0.28));
       border-radius: 8px; background: rgba(128,128,128,0.06);
@@ -862,7 +892,8 @@ export class NarrationModalComponent {
   private readonly settings = inject(SettingsService);
   private readonly library = inject(LibraryService);
   private readonly components = inject(ComponentService);
-  private readonly workerCfg = inject(WorkerConfigService);
+  /* `workerCfg` went with the Workers slider (2026-09-19) — it answered
+     whether a LOCAL worker pool was enabled, and there is no local pool. */
   private readonly electron = inject(ElectronService);
   private readonly queue = inject(QueueService);
   private readonly voices = inject(NarrationVoicesService);
@@ -915,18 +946,45 @@ export class NarrationModalComponent {
     + 'sentences through another voice. Install it under Settings → Add-ons.';
 
   /**
-   * The engines that can be chosen right now — the registry's own gate, so an
-   * engine whose environment is not installed is not offered.
+   * The engines that can be chosen right now — WHAT THE MACHINES RUN.
+   *
+   * ── The defect this replaced ─────────────────────────────────────────────
+   *
+   * It was `selectableEngines((id) => this.components.isInstalled(id))`: an
+   * engine appeared only if ITS COMPONENT WAS INSTALLED ON THIS BOX. Every
+   * render goes to a Crucible server, so that was BookForge deciding from its
+   * own disk about another machine's card — the same shape as the Device
+   * control cut on 2026-09-19, and the same shape the voice list had before
+   * `voice-inventory.ts` (a catalog answering a question about a machine).
+   *
+   * So the list is the intersection of what this build can RENDER
+   * (`narrationEngineOrder()` — one array, the retirement is that array) with
+   * what the answering servers SERVE (`VoicePickerDto.engines`, derived from
+   * each server's `/v1/voices` rows). An engine no answering machine runs is
+   * not an option; an engine a machine runs that this build retired is not one
+   * either, and `assertRunnableTtsEngine` would refuse it anyway.
+   *
+   * ── When nobody answered ─────────────────────────────────────────────────
+   *
+   * The catalog's own list, with `enginesUnconfirmed` saying so beside it. An
+   * empty strip with no sentence would be the worst of the three: nothing to
+   * press and nothing explaining why. The servers' answer is also EMPTY until
+   * the tailnet round trip lands, which is a state this passes through on every
+   * open — so an empty `engines` is read the same way as an absent picker.
    */
-  readonly engines = computed(() =>
-    selectableEngines((id) => this.components.isInstalled(id)));
+  readonly engines = computed(() => {
+    const catalog = narrationEngineOrder().map((id) => TTS_ENGINES[id]);
+    const served = this.voices.voicePicker()?.engines ?? [];
+    if (served.length === 0) return catalog;
+    return catalog.filter((caps) => served.includes(caps.id));
+  });
 
-  readonly devices: ReadonlyArray<{ id: 'auto' | 'gpu' | 'mps' | 'cpu'; label: string }> = [
-    { id: 'auto', label: 'Auto' },
-    { id: 'gpu', label: 'GPU' },
-    { id: 'mps', label: 'Metal' },
-    { id: 'cpu', label: 'CPU' },
-  ];
+  /** True while the strip is the catalog's list rather than the machines'. */
+  readonly enginesUnconfirmed = computed(() => (this.voices.voicePicker()?.engines ?? []).length === 0);
+
+  readonly enginesUnconfirmedNote =
+    'No Crucible server has said which engines it runs, so this is what BookForge can render '
+    + 'rather than what the machines serve.';
 
   // ── Seeded from Pipeline Defaults ─────────────────────────────────────────
   //
@@ -989,8 +1047,21 @@ export class NarrationModalComponent {
 
   readonly engine = signal<TTSEngine>(this.defaults.ttsEngine);
   readonly voice = signal<string>(this.defaults.ttsVoice);
-  readonly device = signal<'auto' | 'gpu' | 'mps' | 'cpu'>(this.defaults.ttsDevice);
   readonly speed = signal(this.defaults.ttsSpeed);
+  /*
+   * ONE, ALWAYS, AND NO LONGER A CONTROL — see the Reading tab's comment where
+   * the slider was. The render's batch width belongs to the machine holding the
+   * card; this number only ever sized a local python pool. It is still STATED,
+   * because `NarrationTtsConfig.parallelWorkers` is a required field on the run
+   * description and a run that did not say would be a second answer to how many.
+   *
+   * THE DEVICE SIGNAL WENT WITH IT (Owen, 2026-09-19: *"we don't need device as
+   * an option — that's decided by crucible configuration. we can just cut it. it
+   * will always be auto"*). `crucible/render.ts` never read it; the bridge
+   * resolved it from THIS box's hardware for a render happening elsewhere, so
+   * choosing GPU on a machine without the local CUDA pack REFUSED a render that
+   * a CUDA server would have run.
+   */
   readonly workers = signal(1);
 
   /**
@@ -1297,14 +1368,31 @@ export class NarrationModalComponent {
   readonly narrateCheckNote = computed(() =>
     this.narrateLocked() ? this.narrateLockedNote : 'Read the book aloud in this run');
 
-  /** What each engine can do — worker ceiling, which sampling knobs are real. */
-  private readonly caps = computed(() => engineCaps(this.engine()));
+  /*
+   * `caps` AND `maxWorkers` WENT WITH THE WORKERS SLIDER (2026-09-19). The only
+   * thing this dialog ever asked the capability row was `maxWorkers`, to decide
+   * whether to draw a slider sizing a pool of LOCAL python workers — a render
+   * shape that no longer exists. The row is still the authority on what an
+   * engine can do; nothing on this screen is a question about it any more.
+   */
 
   readonly engineDisplayName = computed(() =>
     this.engines().find((e) => e.id === this.engine())?.displayName ?? this.engine());
 
-  readonly maxWorkers = computed(() =>
-    this.workerCfg.enabled() ? this.caps().maxWorkers : 1);
+  /**
+   * THE OFFER — the ONE list this dialog draws from and validates against.
+   *
+   * It was two: the dropdown drew the SERVERS' picker and `stageRefusal` /
+   * `dropVoiceUnlessItBelongs` checked the flat LOCAL catalog. A voice a server
+   * serves and this box's catalog does not list was offered and then refused
+   * ("is not a Higgs voice on this machine", about a machine that was never
+   * going to render it); a voice the picker marked unavailable was judged by the
+   * catalog's reason instead of the server's, sending a person to the wrong
+   * machine. `shared/tts/voice-choice.ts` holds both halves and the wording of
+   * every refusal; this is the only place either is built.
+   */
+  private readonly offer = computed(() =>
+    voiceOffer(this.voices.voicePicker(), this.voices.voicesFor(this.engine())));
 
   /**
    * The voices this engine can be asked for.
@@ -1317,36 +1405,31 @@ export class NarrationModalComponent {
    */
   readonly voiceOptions = computed<DesktopSelectItems>(() => {
     /*
-     * THE MACHINES' ANSWER WHEN THERE IS ONE, the shipped catalog until then.
+     * DRAWN FROM `offer` — the SAME object `stageRefusal` and
+     * `dropVoiceUnlessItBelongs` read, which is the whole point of that
+     * computed. Until 2026-09-19 this built the grouped list and they built a
+     * different flat one.
      *
      * Owen's ruling, 2026-09-15: voices are grouped by the SET of Crucible
      * servers that can render them, and a voice only one server serves LOCKS
-     * the venue to it. The grouped list is therefore the truthful one — the flat
-     * list below cannot see a server at all — but it arrives over a tailnet, so
-     * the catalog holds the dropdown open until it does.
-     *
-     * The fallback is NOT a fallback in the banned sense: it is a real, shipped
-     * roster, and the modal says separately (`voiceServersMissing`) when the
-     * list it is showing could not be confirmed with a machine. What it must
-     * never do is present the catalog's answer AS the machines' answer.
+     * the venue to it. The catalog has no sections and no servers, so it
+     * answers one unlabelled group — which is why an empty label is drawn as a
+     * flat list rather than a group with no heading.
      */
-    const picker = this.voices.voicePicker();
-    if (picker !== null) {
-      return picker.sections.map((section) => ({
-        // The lock is stated in the heading, where it is read BEFORE the choice
-        // is made. A tooltip on the option would arrive after.
-        label: section.locks ? `${section.label} — only this server` : section.label,
-        options: section.voices.map((v) => ({
-          value: v.value,
-          label: v.label,
-          ...(v.unavailable ? { disabled: true, title: v.unavailable } : {}),
-        })),
-      }));
-    }
-    return this.voices.voicesFor(this.engine()).map((v) => ({
+    const offer = this.offer();
+    const asOption = (v: { value: string; label: string; unavailable: string | null }) => ({
       value: v.value,
       label: v.label,
       ...(v.unavailable ? { disabled: true, title: v.unavailable } : {}),
+    });
+    if (offer.sections.length === 1 && offer.sections[0]!.label === '') {
+      return offer.sections[0]!.voices.map(asOption);
+    }
+    return offer.sections.map((section) => ({
+      // The lock is stated in the heading, where it is read BEFORE the choice
+      // is made. A tooltip on the option would arrive after.
+      label: section.locks ? `${section.label} — only this server` : section.label,
+      options: section.voices.map(asOption),
     }));
   });
 
@@ -1360,6 +1443,47 @@ export class NarrationModalComponent {
    * machine is missing from it.
    */
   readonly voiceServersMissing = computed(() => this.voices.voicePicker()?.missing ?? []);
+
+  /**
+   * WHEN THE MACHINES WERE ASKED — the snapshot line, '' until they answered.
+   *
+   * `loadVoicePicker()` runs once, at open. A server that wakes while this
+   * dialog is up stays in `voiceServersMissing` until somebody asks again, and
+   * before this line nothing on screen said the list had a time attached — so a
+   * warning about a machine that had since come back read as a standing fact
+   * about that machine. Local time, no date: the snapshot is minutes old by
+   * construction, and a date would be noise on every one of them.
+   */
+  readonly voiceAskedAt = computed(() => {
+    const at = this.voices.voicePicker()?.askedAt;
+    if (at === undefined) return '';
+    const when = new Date(at);
+    return Number.isNaN(when.getTime())
+      ? ''
+      : when.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+  });
+
+  /** True while a Re-check is in flight, so the button cannot be double-pressed. */
+  readonly voiceRechecking = signal(false);
+
+  /**
+   * ASK THE SERVERS AGAIN, from the dialog the person is already filling in.
+   *
+   * The alternative was "close this and open it again", which throws away every
+   * other choice on three tabs to re-read one list. The chosen VOICE is left
+   * alone on purpose: a re-check that cleared it would punish the person for
+   * pressing the button, and `stageRefusal` names the mismatch if the new
+   * answer no longer carries it.
+   */
+  async recheckVoiceServers(): Promise<void> {
+    if (this.voiceRechecking()) return;
+    this.voiceRechecking.set(true);
+    try {
+      await this.voices.loadVoicePicker();
+    } finally {
+      this.voiceRechecking.set(false);
+    }
+  }
 
   readonly rvcInstalled = computed(() => this.components.isInstalled('rvc-env'));
   readonly rvcVoiceOptions = computed<DesktopSelectItems>(() =>
@@ -1490,7 +1614,7 @@ export class NarrationModalComponent {
     // the training agent: ECAPA cosine 0.17 against deathstalker vs 0.89 for
     // the PC renders. Owen's rule: a voice that does not belong is REFUSED by
     // name, never replaced. The choice is cleared and `stageRefusal` says so.
-    this.dropVoiceUnlessItBelongs(id);
+    this.dropVoiceUnlessItBelongs();
   }
 
   /**
@@ -1498,11 +1622,23 @@ export class NarrationModalComponent {
    * its placeholder and `stageRefusal` names the gap; no engine's first entry
    * is ever chosen on the user's behalf (see `selectEngine`).
    */
-  private dropVoiceUnlessItBelongs(engine: TTSEngine): void {
-    const available = this.voices.voicesFor(engine);
-    if (!available.some((v) => v.value === this.voice())) {
-      this.voice.set('');
-    }
+  private dropVoiceUnlessItBelongs(): void {
+    /*
+     * THE OFFER, NOT THE CATALOG, AND IT TAKES NO ENGINE. `offer` is a computed
+     * over `engine()`, which `selectEngine` has just written, so it already
+     * describes the engine being moved TO — and it is the SAME list the
+     * dropdown draws, so a voice visibly on screen can never be cleared out
+     * from under the person who just picked it. It read the flat local catalog
+     * until 2026-09-19, which cleared voices the servers were offering at that
+     * very moment.
+     *
+     * AN EMPTY OFFER CLEARS NOTHING. The servers are still being asked when
+     * this fires on the first engine press; treating "no answer yet" as "not
+     * this engine's voice" would blank the picker on every open.
+     */
+    const offer = this.offer();
+    if (offer.sections.every((s) => s.voices.length === 0)) return;
+    if (!offerCarries(offer, this.voice())) this.voice.set('');
   }
 
   // ── What this run will do, and what stops it ──────────────────────────────
@@ -1576,17 +1712,21 @@ export class NarrationModalComponent {
      * would be a second opinion about somebody else's card, and it would refuse a
      * perfectly good Mac render because THIS box has no WSL.
      *
-     * What did NOT move is the VOICE check below: which voices exist is this
-     * machine's catalog, and it is still answerable here.
+     * What did NOT move is the VOICE check below — but WHO ANSWERS IT did, on
+     * 2026-09-19. It used to read this machine's flat catalog while the
+     * dropdown above drew the servers' picker: a voice a server serves and this
+     * box does not list was offered and then refused *"…is not a Higgs voice on
+     * this machine"*, about a machine that was never going to render it. One
+     * list answers both now (`offer`), and `refuseVoiceChoice` words the
+     * refusal from whichever list it is.
      */
-    // NO VOICE, OR A VOICE THAT DOES NOT BELONG TO THIS ENGINE. The first is
-    // what `selectEngine` leaves behind on purpose; the second is a saved
-    // default or preset from another engine that the picker never touched.
-    // Both are refused by name — never resolved to the engine's first entry
-    // (the base speaker), which is how a Higgs book was narrated in the wrong
-    // voice on 2026-09-06. The list may still be loading when the dialog
-    // opens; an empty list is not evidence either way, so only a non-empty
-    // list that lacks the voice refuses.
+    // NO VOICE, OR A VOICE THE OFFER DOES NOT CARRY, OR ONE IT CARRIES AND
+    // CANNOT RENDER. The first is what `selectEngine` leaves behind on purpose;
+    // the second and third are a saved default or preset the picker never
+    // touched. All three are refused by name — never resolved to a list's first
+    // entry (the base speaker), which is how a Higgs book was narrated in the
+    // wrong voice on 2026-09-06. The offer may still be loading when the dialog
+    // opens; an empty offer is not evidence either way, and the helper says so.
     if (this.narrate()) {
       // `engineDisplayName`, not a ternary. It read
       // `this.engine() === 'higgs' ? 'Higgs' : 'Orpheus'` until 2026-09-14, which
@@ -1594,25 +1734,8 @@ export class NarrationModalComponent {
       // "Orpheus" for every id that was not Higgs, so after Orpheus was retired a
       // stored `xtts` or `f5` would have been refused with a sentence naming the
       // wrong engine. The shared function knows the retirement and says so.
-      const engineName = engineDisplayName(this.engine());
-      if (!this.voice()) {
-        return `No ${engineName} voice is chosen. Pick one on the Reading tab.`;
-      }
-      const listed = this.voices.voicesFor(this.engine());
-      if (listed.length > 0 && !listed.some((v) => v.value === this.voice())) {
-        return `"${this.voice()}" is not a ${engineName} voice on this machine. Pick one on the `
-          + 'Reading tab — the choice is never replaced with another voice.';
-      }
-    }
-    // A voice the catalog lists but cannot render — an artifact that has not
-    // landed. The picker disables it, so reaching here means it arrived from a
-    // saved preset or from pipeline defaults, which the picker never touched.
-    if (this.narrate()) {
-      const chosen = this.voices.voicesFor(this.engine()).find((v) => v.value === this.voice());
-      if (chosen?.unavailable) {
-        return `The voice "${chosen.label.replace(/ — not installed yet$/, '')}" cannot render yet: `
-          + `${chosen.unavailable.split('.')[0]}. Pick another voice on the Reading tab.`;
-      }
+      const why = refuseVoiceChoice(this.offer(), this.voice(), engineDisplayName(this.engine()));
+      if (why !== null) return why;
     }
     return null;
   });
@@ -1763,7 +1886,6 @@ export class NarrationModalComponent {
     this.settings.updatePipelineDefaults({
       ttsEngine: this.engine(),
       ttsVoice: this.voice(),
-      ttsDevice: this.device(),
       ttsSpeed: this.speed(),
       rvcEnhancementEnabled: this.rvcEnabled(),
       rvcEnhancementVoiceId: this.rvcVoiceId(),
@@ -1889,9 +2011,9 @@ export class NarrationModalComponent {
         language: RUN_LANGUAGE,
         ttsEngine: this.engine(),
         voice: this.voice(),
-        device: this.device(),
         speed: this.speed(),
-        workers: this.maxWorkers() > 1 ? this.workers() : 1,
+        // ONE, ALWAYS — the slider that set it went on 2026-09-19 (see `workers`).
+        workers: this.workers(),
         // Non-null by `refusal()`, which `submitDisabled` gates on: a run with
         // nowhere to file the audiobook is refused on screen rather than queued
         // with an empty output folder.

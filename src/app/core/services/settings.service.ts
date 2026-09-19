@@ -40,12 +40,23 @@ export interface PipelineDefaults {
    * names it.
    */
   ttsEngine: TTSEngine;
-  /**
-   * Processing device. 'auto' (the default) runs on the best device present —
-   * CUDA when the GPU pack is installed, Metal (MPS) on Apple Silicon, else CPU.
-   * An explicit choice is honored exactly (pick CPU and it runs on CPU).
+  /*
+   * `ttsDevice` WAS HERE AND IS GONE (Owen, 2026-09-19: *"we don't need device
+   * as an option — that's decided by crucible configuration. we can just cut
+   * it. it will always be auto"*).
+   *
+   * It was never a fact about the run this app performs any more: a render
+   * happens on a Crucible server, `crucible/render.ts` never read the field,
+   * and the bridge resolved it from THIS box's hardware — so picking GPU on a
+   * machine without the local CUDA pack REFUSED a render a CUDA server would
+   * have run, and Auto answered about the wrong computer. Its only downstream
+   * reader was narrator's `prep --device`, whose own help says "recorded into
+   * the state; prep itself is CPU work".
+   *
+   * A SETTINGS BLOB THAT STILL CARRIES THE KEY LOADS UNCHANGED:
+   * `getPipelineDefaults` spreads what is stored over the defaults, so a value
+   * nothing declares simply rides along unread. Nothing fails on it.
    */
-  ttsDevice: 'auto' | 'cpu' | 'mps' | 'gpu';
   ttsVoice: string;
   ttsSpeed: number;
   /** Assembly output: false = audiobook (M4B), true = video. */
@@ -118,7 +129,6 @@ export const DEFAULT_PIPELINE_DEFAULTS: PipelineDefaults = {
   // no downloaded checkpoint, so it is the one voice a machine that has installed
   // nothing can actually render.
   ttsEngine: 'higgs',
-  ttsDevice: 'auto',
   ttsVoice: 'default',
   ttsSpeed: 1.0,
   generateVideo: false,
@@ -181,9 +191,15 @@ export interface PipelinePreset {
    * said `orpheus`, so applying one moved a Higgs run onto Orpheus with nothing
    * on screen to show it, because both engines ship a voice named
    * `deathstalker`.
+   *
+   * `ttsDevice?` STOOD BESIDE THEM UNTIL 2026-09-19 and is gone with the
+   * control it named (see {@link PipelineDefaults}). The same "a stored preset
+   * must still parse" argument does not keep it: these are plain interfaces
+   * with no runtime validation, so a saved preset carrying the key is read
+   * exactly as before — the key is simply not declared and nothing reads it.
+   * There is no longer a type it could be declared AS.
    */
   ttsEngine?: PipelineDefaults['ttsEngine'];
-  ttsDevice?: PipelineDefaults['ttsDevice'];
   ttsVoice?: string;
   ttsSpeed?: number;
   rvcEnhancementEnabled: boolean;

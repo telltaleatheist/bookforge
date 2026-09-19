@@ -56,8 +56,39 @@ export interface VoicePickerSection {
 export interface VoicePickerDto {
   /** Widest set first, so the options that cost no routing freedom come first. */
   sections: VoicePickerSection[];
+  /**
+   * THE ENGINES THE ANSWERING MACHINES RUN, as BOOKFORGE spells them (`higgs`).
+   *
+   * Carried for the same reason the voices are, and it is the same defect one
+   * level up: the narration modal's Engine strip was built from
+   * `selectableEngines(isInstalled)` — whether the engine's component was
+   * installed on the box DRAWING the dialog — while the render happens on a
+   * Crucible server. BookForge deciding from its own disk about another
+   * machine's card, exactly as the voice list did before `voice-inventory.ts`.
+   *
+   * Derived from each server's `/v1/voices` rows (`narratorEngine`, re-keyed
+   * through `bookforgeEngineForNarrator`), so a machine that serves a Higgs
+   * voice is a machine that runs Higgs. A server that did not answer
+   * contributes nothing — read it beside {@link VoicePickerDto.missing}, never
+   * as "that machine cannot".
+   *
+   * EMPTY IS A REAL STATE and is not "no engines exist": it means no server
+   * that answered named one. The modal offers the catalog's engines then, with
+   * the missing-server warning beside them — never an empty strip with no
+   * sentence.
+   */
+  engines: string[];
   /** Registered servers whose voices are UNKNOWN, and why. Drawn, never hidden. */
   missing: Array<{ server: string; why: string }>;
   /** False when any registered server did not answer. */
   complete: boolean;
+  /**
+   * WHEN THE MACHINES WERE ASKED — ISO 8601, minted by the builder.
+   *
+   * The picker is a SNAPSHOT: it is taken once when the modal opens and a
+   * server that wakes while the dialog is up stays in `missing` until somebody
+   * asks again. The modal draws this as "as of <time>" beside a Re-check
+   * button, so the list is read as a moment rather than as a standing fact.
+   */
+  askedAt: string;
 }

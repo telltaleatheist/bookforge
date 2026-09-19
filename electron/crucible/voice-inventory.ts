@@ -68,6 +68,16 @@ export interface InventoryVoice {
   /** The server's own sentence when `loadable` is false; `null` when it is true. */
   readonly reason: string | null;
   /**
+   * WHICH OF NARRATOR'S ENGINES SERVES IT, in narrator's spelling (`higgs-v3`).
+   *
+   * Carried because it is the only per-server statement of which ENGINES a
+   * machine runs, and the narration modal's engine strip used to be built from
+   * what was installed on the box DRAWING the dialog — a fact about the wrong
+   * computer, exactly as the voice list was before this module existed. See
+   * `enginesServed` in `voice-picker.ts`.
+   */
+  readonly narratorEngine: string;
+  /**
    * The server expects the JOB to carry the reference clip — Crucible's
    * `clips = "from-request"`. See {@link placeCarriedVoices}: this is the one
    * row for which the local disk is the right authority after all.
@@ -192,6 +202,7 @@ export async function readVoiceInventory(
         display: v.display,
         loadable: v.loadable,
         reason: v.reason,
+        narratorEngine: v.narratorEngine,
         needsReference: v.needsReference,
       })),
     };
@@ -383,6 +394,31 @@ export function placeCarriedVoices(
  * no routing freedom come first and the ones that pin a venue come last, where
  * the label warns them.
  */
+/**
+ * WHICH ENGINES THE ANSWERING MACHINES RUN, in narrator's spelling.
+ *
+ * The same discipline as the voice list and for the same reason: a server that
+ * did not answer contributes nothing here either. "The Mac is asleep" must not
+ * read as "the Mac cannot run Higgs" — the caller is told which machines are
+ * missing ({@link VoiceInventory.complete}) and words its offer from that.
+ *
+ * A LOADABLE ROW IS NOT REQUIRED. A voice whose weights have not been pulled is
+ * still evidence that the machine RUNS that engine — the refusal is about the
+ * artifact, not the arm — and demanding `loadable` would empty the engine strip
+ * on a fresh server that has everything installed and nothing downloaded yet.
+ */
+export function narratorEnginesServed(inventory: VoiceInventory): string[] {
+  const seen = new Set<string>();
+  for (const entry of inventory.servers) {
+    if (entry.state !== 'answered') continue;
+    for (const voice of entry.voices) {
+      const id = voice.narratorEngine.trim();
+      if (id !== '') seen.add(id);
+    }
+  }
+  return [...seen].sort();
+}
+
 export interface VoiceSection {
   /** The set of servers, in routing order. Empty = served by nothing that answered. */
   readonly servers: readonly string[];

@@ -137,7 +137,14 @@ export interface TTSJobAnalytics {
 
   // Settings used
   settings: {
-    device: string;
+    /*
+     * NO `device` SINCE 2026-09-19. It recorded the modal's Auto/GPU/Metal/CPU
+     * choice — a statement about THIS box's hardware for a render that happened
+     * on a Crucible server, which is why every row read "AUTO" no matter which
+     * machine did the work. `crucibleServer` above is the fact it was standing
+     * in for. An analytics file written before that date still carries the key
+     * and still parses; nothing reads it.
+     */
     language: string;
     ttsEngine: string;
     fineTuned?: string;

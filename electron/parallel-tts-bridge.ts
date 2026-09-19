@@ -88,57 +88,39 @@ function writeWorkerLog(line: string): void {
 import { applyMetadata, AudiobookMetadata, embedAndVerifyVtt, deleteSidecarsForM4b } from './metadata-tools';
 import { regenerateBoundSidecars } from './sidecar-migration';
 import * as manifestService from './manifest-service';
-import { isCudaTtsInstalled } from './components/cuda-tts';
 import { enhanceSentences, rvcEnhancementReady } from './rvc-bridge';
 import { denoiseSentences, finalDenoiseReady } from './denoise-bridge';
 import { getRvcVoiceById, resolveRvcIndexRate } from './rvc-models';
 
 import { ActiveBatchProgress, ActiveBatchState, toActiveBatchProgress } from './mlx-batch-progress';
 
-/**
- * Map a UI device ('auto'|'gpu'|'mps'|'cpu') to e2a's CLI device (CUDA/MPS/CPU).
+/*
+ * ── THE DEVICE CHOICE IS GONE, AND IT WAS ANSWERING ABOUT THE WRONG MACHINE ──
  *
- * 'auto' is the explicit default and resolves TRANSPARENTLY to the best device
- * present — CUDA when the GPU pack (cuda-tts) is installed, Metal (MPS) on Apple
- * Silicon, otherwise CPU. This is a stated "auto" choice the UI surfaces, NOT a
- * hidden upgrade. An explicit 'cpu' / 'gpu' / 'mps' choice is honored EXACTLY as
- * set — no silent override (a user who picks CPU gets CPU). When an explicit
- * 'gpu' can't actually run (no GPU pack), the job fails loudly with guidance via
- * {@link assertDeviceUsable} rather than quietly downgrading.
+ * `resolveTtsDeviceArg` and `assertDeviceUsable` stood here until 2026-09-19.
+ * They mapped the modal's Auto/GPU/Metal/CPU onto narrator's `--device` and
+ * refused an explicit GPU on a box with no CUDA pack.
+ *
+ * Owen: *"we don't need device as an option — that's decided by crucible
+ * configuration. we can just cut it. it will always be auto"*. The evidence
+ * that it was wrong rather than merely redundant:
+ *
+ *   - `crucible/render.ts` never read `settings.device` — the server decides
+ *     its own device, out of its own memory and its own arm;
+ *   - both functions answered from THIS box's hardware (is the CUDA pack
+ *     installed here, is this an arm64 Mac) for a render happening on another
+ *     machine. Choosing GPU on a Mac REFUSED a render a CUDA server would have
+ *     run; Auto resolved Metal for work going to the 3090;
+ *   - the only thing downstream ever did with the value was write it into
+ *     session-state.json. narrator's own help: *"recorded into the state; prep
+ *     itself is CPU work"*, and `compat/FLAGS.md` files `--device` under
+ *     ACCEPT-and-ignore ("the worker ignores it").
+ *
+ * THE PREP FLAG IS NOT PASSED AT ALL RATHER THAN PINNED TO A CONSTANT.
+ * `narrator prep --device` is optional and `normalize_device(None)` is `'cpu'`
+ * — which is what prep actually is — so omitting it records the truth instead
+ * of a word this process made up about somebody else's card.
  */
-function resolveTtsDeviceArg(uiDevice: string, engine?: string): string {
-  if (uiDevice === 'auto') {
-    // Orpheus brings its OWN CUDA runtime (WSL's orpheus_tts conda env on Windows),
-    // independent of the native "Faster Voice Narration" pack that isCudaTtsInstalled()
-    // tracks. So Orpheus-via-WSL runs on the GPU even when that native pack is absent.
-    // Resolve to CUDA in that case so the GPU arbiter LOCKS + VRAM-sizes the job (see
-    // acquireGpuForJob) instead of treating it as CPU — the CPU misclassification is
-    // what skipped computeSafeGpuUtil and let vLLM reserve 0.70×total and OOM-crash.
-    if (engine === 'orpheus' && process.platform === 'win32' && shouldUseWsl2ForOrpheus()) return 'CUDA';
-    if (isCudaTtsInstalled()) return 'CUDA';
-    if (process.platform === 'darwin' && process.arch === 'arm64') return 'MPS';
-    return 'CPU';
-  }
-  return ({ gpu: 'CUDA', mps: 'MPS', cpu: 'CPU' } as Record<string, string>)[uiDevice]
-    || uiDevice.toUpperCase();
-}
-
-/**
- * Guard against an unrunnable device choice BEFORE spawning workers, so the user
- * gets a clear reason instead of a deep torch/CUDA crash or a silent CPU
- * downgrade. Only an EXPLICIT 'gpu' without the GPU pack is unrunnable — 'auto'
- * already resolves to CPU when no pack is present, and 'mps'/'cpu' are always
- * available on their platforms.
- */
-function assertDeviceUsable(uiDevice: string, resolved: string): void {
-  if (uiDevice === 'gpu' && resolved === 'CUDA' && !isCudaTtsInstalled()) {
-    throw new Error(
-      'GPU (CUDA) is selected but the "Faster Voice Narration" GPU pack is not installed, ' +
-      'so PyTorch has no CUDA support. Install it in Settings → Add-ons, or switch the ' +
-      'processing device to CPU (or Auto) in Settings → Pipeline Defaults.'
-    );
-  }
-}
 import { resolveOrpheusSentenceGap, resolveOrpheusMinChunkGap, DEFAULT_SENTENCE_GAP } from './orpheus-assembly-tuning';
 import { startChapterCloser, stopChapterCloser } from './chapter-closer';
 
@@ -2147,7 +2129,7 @@ export interface ParallelConversionConfig {
 }
 
 export interface ParallelTtsSettings {
-  device: 'auto' | 'gpu' | 'mps' | 'cpu';
+  /* NO `device` SINCE 2026-09-19 — see the block at the top of this file. */
   language: string;
   ttsEngine: string;
   fineTuned: string;
@@ -3564,14 +3546,6 @@ export async function prepareSession(
     );
   }
 
-  // Map UI device names to e2a CLI device names (app.py expects uppercase).
-  // 'auto' → best present device; explicit cpu/gpu/mps honored exactly. Guard an
-  // unrunnable explicit 'gpu' (no GPU pack) here so the user gets a clear reason
-  // up front instead of a deep CUDA crash mid-conversion.
-  const deviceArg = resolveTtsDeviceArg(settings.device);
-  assertDeviceUsable(settings.device, deviceArg);
-  console.log(`[PARALLEL-TTS] Device: requested='${settings.device}' → running on ${deviceArg}`);
-
   // narrator's prep flags. One array for every engine — the Higgs branch below
   // only substitutes the voice flag, because `--fine_tuned` carries an Orpheus
   // prompt TOKEN and `--higgs_voice` a CATALOG ID and neither stands in for the
@@ -3592,7 +3566,6 @@ export async function prepareSession(
     '--session_dir', sessionDir,
     '--language', settings.language,
     '--tts_engine', narratorEngineId(narratorEngineFor(settings)),
-    '--device', deviceArg,
     '--prep_only'
   ];
 
@@ -6551,16 +6524,18 @@ function emitGpuWaitProgress(session: ConversionSession, message: string): void 
  */
 async function acquireGpuForJob(session: ConversionSession): Promise<void> {
   const jobId = session.jobId;
-  const deviceArg = resolveTtsDeviceArg(
-    session.config.settings.device, session.config.settings.ttsEngine);
-  if (deviceArg === 'CPU') return;
-
   /*
    * ── A RENDER ON ANOTHER MACHINE HOLDS NO CARD HERE ────────────────────────
    *
-   * `resolveTtsDeviceArg` above answers from THIS box's hardware — is CUDA
-   * installed here, is this an arm64 Mac — and knows nothing about where the
-   * render is going. Every render goes to a Crucible server now
+   * THE VENUE IS THE ONLY GATE NOW. A `resolveTtsDeviceArg(...) === 'CPU'`
+   * early return stood in front of this until 2026-09-19 and was the SAME
+   * mistake one line up: it answered from THIS box's hardware — is CUDA
+   * installed here, is this an arm64 Mac — and knew nothing about where the
+   * render was going, so a Mac-bound book skipped the lease on a CPU-only
+   * orchestrator and took it on a CUDA one. The question that matters is which
+   * machine, and that is what the test below asks.
+   *
+   * Every render goes to a Crucible server now
    * (`GenerationVenue` has one member), and that server may be the Mac. So on a
    * machine with CUDA present, a Mac-bound book resolved to `CUDA`, took this
    * card's lease for the whole render, and evicted the resident Ollama models to
@@ -6735,7 +6710,6 @@ function emitComplete(
     // WHICH MACHINE produced every figure above. See renderVenueName.
     crucibleServer: renderVenueName(session),
     settings: {
-      device: session.config.settings.device,
       language: session.config.settings.language,
       ttsEngine: session.config.settings.ttsEngine,
       fineTuned: session.config.settings.fineTuned || undefined
@@ -7350,7 +7324,6 @@ export async function startParallelConversion(
     outputDir: config.outputDir,
     ttsEngine: config.settings.ttsEngine,
     voice: config.settings.fineTuned,
-    device: config.settings.device,
     title: config.metadata?.title
   });
 
@@ -7369,8 +7342,7 @@ export async function startParallelConversion(
     workerCount: config.workerCount,
     parallelMode: config.parallelMode,
     ttsEngine: config.settings.ttsEngine,
-    voice: config.settings.fineTuned,
-    device: config.settings.device
+    voice: config.settings.fineTuned
   });
 
   // WHICH CLEANUP STORY THIS RUN IS, refused rather than guessed. Everything
@@ -8207,7 +8179,6 @@ function emitCancelledAnalytics(session: ConversionSession): void {
     // work on a real card, so its venue is as load-bearing as a finished one's.
     crucibleServer: renderVenueName(session),
     settings: {
-      device: session.config.settings.device,
       language: session.config.settings.language,
       ttsEngine: session.config.settings.ttsEngine,
       fineTuned: session.config.settings.fineTuned || undefined
@@ -8354,12 +8325,13 @@ export function listActiveSessions(): Array<{
 
 // The original render settings the partial session was produced with, read back from
 // BookForge's session_state.json so a Continue can pre-fill the wizard with exactly
-// what the user ran before (engine, voice, sampling, device). All optional — sessions
+// what the user ran before (engine, voice, sampling). All optional — sessions
 // created before settings-persistence, or e2a-only sessions, won't have them.
 export interface ResumeRenderSettings {
   ttsEngine?: string;
   fineTuned?: string;          // e2a's term for the voice
-  device?: string;
+  // `device?` went with the control on 2026-09-19. An older session's state
+  // file still carries it; nothing reads it, so nothing declares it.
   language?: string;
   speed?: number;
   enableTextSplitting?: boolean;
@@ -8414,7 +8386,6 @@ function readResumeRenderSettings(
       ? {
           ttsEngine: s.ttsEngine || undefined,
           fineTuned: s.fineTuned || undefined,
-          device: s.device || undefined,
           language: s.language || undefined,
           speed: s.speed,
           enableTextSplitting: s.enableTextSplitting,

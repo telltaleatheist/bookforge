@@ -344,10 +344,15 @@ export interface DeletedBlockExample {
 // TTS Conversion job configuration
 export interface TtsConversionConfig {
   type: 'tts-conversion';
-  // 'auto' (default) resolves in the main process to the best device present —
-  // CUDA when the GPU pack is installed, MPS on Apple Silicon, else CPU. Explicit
-  // choices are honored exactly.
-  device: 'auto' | 'gpu' | 'mps' | 'cpu';
+  /*
+   * NO `device` SINCE 2026-09-19 (Owen: *"we don't need device as an option —
+   * that's decided by crucible configuration. we can just cut it. it will
+   * always be auto"*). A render happens on a Crucible server and that server
+   * owns its card. A queue.json restored from before that date still carries
+   * the key on its tts-conversion rows and still loads: this is a plain
+   * interface with no runtime validation, so an undeclared key rides along
+   * unread and NO restored row is ever failed over it.
+   */
   language: string;
   ttsEngine: string;        // e.g., 'xtts'
   fineTuned: string;        // voice model e.g., 'ScarlettJohansson'
@@ -764,7 +769,8 @@ export interface ChapterSentenceRange {
 export interface ResumeRenderSettings {
   ttsEngine?: string;
   fineTuned?: string;          // e2a's term for the voice
-  device?: string;
+  // `device?` went with the control on 2026-09-19. An older session's state
+  // file still has it; nothing reads it, so nothing declares it.
   language?: string;
   speed?: number;
   enableTextSplitting?: boolean;
