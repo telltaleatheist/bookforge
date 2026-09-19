@@ -22,6 +22,8 @@ import { whisperModelDir, getWhisperModelDef, isWhisperModelPresent, downloadWhi
 import { isWhisperEnvInstalled, WHISPER_ENV_ID } from './components/whisper-env.js';
 import { componentManager } from './components/component-manager.js';
 import { getMainLogger } from './rolling-logger.js';
+// The ONE rule for "did this refusal name a holder" — see queue-steps/runtime.ts.
+import { busyLineOf } from './queue-steps/runtime';
 import * as manifestService from './manifest-service.js';
 import { embedAndVerifyVtt, deleteSidecarsForM4b } from './metadata-tools.js';
 import { regenerateBoundSidecars } from './sidecar-migration.js';
@@ -489,10 +491,9 @@ export async function startGenerateSentences(
     }
     // A 409 `server_busy` is a WAIT, not a failure (crucible ARCHITECTURE.md §3):
     // the SDK's own holder line rides on the completion so the queue step can
-    // hold the row on it (`noteStepBusy`) rather than fail the book.
-    const busyLine = err instanceof Error && typeof (err as { busyLine?: unknown }).busyLine === 'string'
-      ? (err as unknown as { busyLine: string }).busyLine
-      : undefined;
+    // hold the row on it (`stepFailure`) rather than fail the book.
+    // Read through the ONE rule every door in the app reads it by.
+    const busyLine = busyLineOf(err);
     sendComplete(mainWindow, jobId, false, undefined, message, undefined, undefined, busyLine);
   } finally {
     if (workingVttPath) {

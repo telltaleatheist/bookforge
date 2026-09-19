@@ -643,6 +643,15 @@ const SUITES = [
   // made, and a 409 read as a failure — each of which looks like a working
   // queue right up until the audio is in the wrong voice or the night is gone.
   'test-queue-wait-for',
+  // EVERY STEP MODULE PARKS ON A HELD CARD, and none of them has to remember
+  // how. A `409 server_busy` / `409 leased` is a WAIT (crucible
+  // `docs/ARCHITECTURE.md` §3); it used to reach the scheduler by a side call
+  // that four modules made and five forgot, so a translation, an analysis, an
+  // RVC pass, a denoise or a page read against a busy server ended RED in
+  // *Needs you* while a simplify against the SAME server waited (bug hunt
+  // 2026-09-19, A5). Silent in the worst way: the row looks broken, and the
+  // remedy — a Retry press hours later — looks like the queue working.
+  'test-queue-step-parks',
   // HOW MANY BOOKS ARE IN FLIGHT, AND WHERE. One slot set per machine
   // (crucible `docs/PHASE7-LANES.md` §2.4). The defects are silent in both
   // directions: too few slots and a second registered server is never used at

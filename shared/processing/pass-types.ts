@@ -223,7 +223,7 @@ export interface PassJobResult {
    * words.
    *
    * Carried up from `cleanupEpub` for ONE consumer: the queue step
-   * (`electron/queue-steps/pass.ts`) hands it to `noteStepBusy`, which puts the
+   * (`electron/queue-steps/pass.ts`) hands it to `stepFailure`, which puts the
    * row back to `queued` with that line on it and lets the admission tick try
    * again — the same road `server_busy` already travels for a render and an
    * align. A caller with no queue behind it ignores it and reads `error`.

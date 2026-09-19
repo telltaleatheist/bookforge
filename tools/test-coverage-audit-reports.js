@@ -150,8 +150,15 @@ check('the align row fails only when the RUN could not happen', () => {
 
 check('the align queue step succeeds on a report full of failures', () => {
   const source = read('electron/queue-steps/align.ts');
-  // The only throw on the result is the run-did-not-happen one.
-  const throws = source.match(/throw new Error\(result\.error/g) || [];
+  /*
+   * The only throw on the result is the run-did-not-happen one — and since
+   * 2026-09-19 (A5) it is minted by `stepFailure`, which turns that same
+   * refusal into a PARK when the server named a holder (`busyLine`) and leaves
+   * it an ordinary failure otherwise. One refusal either way; what changed is
+   * that the row waits instead of reddening when the card is merely held.
+   */
+  const throws = (source.match(/throw new Error\(result\.error/g) || [])
+    .concat(source.match(/throw stepFailure\(/g) || []);
   assert.strictEqual(throws.length, 1, 'exactly one refusal, and it is !result.success');
   assert.ok(/retakeIndices/.test(source),
     'the row must carry the retake list into its artifact detail');

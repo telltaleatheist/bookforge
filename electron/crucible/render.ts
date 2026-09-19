@@ -156,7 +156,7 @@ export class CrucibleRenderRefused extends Error {
    * that can WAIT needs a different sentence from the one below: the queue
    * holds the row and retries, and telling its operator to "queue it again
    * when that one is done" would be advice about a thing the queue is already
-   * doing (`queue-engine.noteStepBusy`, crucible `docs/ARCHITECTURE.md` §3 —
+   * doing (the queue's `busyLineOf` seam, crucible `docs/ARCHITECTURE.md` §3 —
    * a 409 is a wait, not a failure). Added for that consumer, 2026-09-13.
    */
   readonly busyLine?: string;
@@ -393,7 +393,8 @@ export function describeCrucibleRefusal(err: unknown, server: string): CrucibleR
    *
    * It is the same question `server_busy` asks with a longer clock — a lane
    * frees in minutes, a lease may hold for an hour — so it takes the same road
-   * (`leasedLine` → `noteStepBusy` → `settleStep`). What it is NOT is a retry
+   * (`leasedLine` → `busyLine` → the step's throw → `settleStep`). What it is
+   * NOT is a retry
    * here: the queue holds the row and the ordinary admission tick asks again.
    */
   if (err instanceof CrucibleLeased) {

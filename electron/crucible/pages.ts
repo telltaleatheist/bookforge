@@ -298,7 +298,7 @@ export type CruciblePagesErrorCode =
    * resident model, so nothing may move it off the card — including this read's
    * own lease. A WAIT with the holder's name, act and since, never a retry loop,
    * carried to the queue the way `server_busy` is ({@link CruciblePagesError.busyLine}
-   * → `noteStepBusy`).
+   * → `busyLineOf` → `settleStep`).
    *
    * The SERVER's code is `leased` and not `model_leased` — since crucible
    * 5e04e5f a lease names the resident thing of any kind, so a code naming one
@@ -311,8 +311,8 @@ export type CruciblePagesErrorCode =
 export class CruciblePagesError extends Error {
   readonly code: CruciblePagesErrorCode;
   /**
-   * The holder's line — "leased: foundry, translate since …" — for the queue's
-   * `noteStepBusy`.
+   * The holder's line — "leased: foundry, translate since …" — which the queue
+   * reads off the throw (`queue-steps/runtime.ts busyLineOf`).
    *
    * Present exactly on `crucible_pages_model_leased`. Without it a leased page
    * read is indistinguishable from a conversion that failed, so `settleStep`

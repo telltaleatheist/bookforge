@@ -175,6 +175,17 @@ export const vlmConvertStep: StepModule = {
           : { runVenue: ctx.job.waitForResolved }),
       } as never);
 
+      /*
+       * A HELD CARD ARRIVES AS ITSELF, AND THAT IS THE WHOLE HANDLING (A5,
+       * 2026-09-19).
+       *
+       * `crucible/pages.ts` refuses `crucible_pages_model_leased` with the
+       * holder's line on it (`CruciblePagesError.busyLine`) and nothing
+       * between here and there rewraps it, so letting it propagate IS parking
+       * the row: `launch` reads the line off the throw with `busyLineOf` and
+       * `settleStep` puts this step back to `queued` with that sentence on it.
+       * Catching it to re-announce would be a second owner of one fact.
+       */
       const epubPath = (result as { epubPath?: string })?.epubPath;
       if (!epubPath) {
         throw new Error(`Converting ${config.sourceLabel} produced no book, and said no reason.`);

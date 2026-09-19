@@ -20,6 +20,8 @@ import {
   clearDiffCache
 } from './diff-cache.js';
 import { escapeXml, extractChapterAsText, replaceXhtmlBody } from './epub-processor.js';
+// The ONE rule for "did this refusal name a holder" — see queue-steps/runtime.ts.
+import { busyLineOf } from './queue-steps/runtime';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -50,6 +52,25 @@ export interface TranslationResult {
   success: boolean;
   outputPath?: string;
   error?: string;
+  /**
+   * THE RUN DID NOT HAPPEN AND NOTHING IS WRONG — the one line that turns this
+   * failure into a WAIT.
+   *
+   * Present exactly when a Crucible refused because something else holds that
+   * card: `409 leased` (another client is mid-run on the model) or
+   * `409 server_busy` (its lane is held). It carries the holder, the act and
+   * the expiry, in the SDK's own words.
+   *
+   * It exists so the QUEUE can park the row: `queue-steps/translation.ts`
+   * hands it to `stepFailure` and `settleStep` puts the step back to `queued`
+   * with that line on it. Without it this came back as an ordinary failure and
+   * the row went red — which is what happened until 2026-09-19, while a
+   * simplify against the SAME card parked (bug hunt, A5).
+   *
+   * Absent on every other failure, and absent is a real state: a book the
+   * model mangled is not waiting for anything.
+   */
+  busyLine?: string;
   chaptersProcessed?: number;
   // Failed-chunk accounting (ports AI cleanup's skipped-chunk discipline).
   // failedChunkCount > 0 means that many chunks kept their ORIGINAL (untranslated)
@@ -605,6 +626,19 @@ export async function translateEpub(
         } catch (error) {
           const errorMessage = error instanceof Error ? error.message : String(error);
 
+          /*
+           * A HELD CARD IS NOT A DECLINED PASSAGE (A5, 2026-09-19).
+           *
+           * `409 leased` / `409 server_busy` says the server would not take
+           * this act at all, so EVERY chunk will meet the same wall — keeping
+           * the original text and carrying on would burn ten chunks' worth of
+           * the book into an untranslated fallback and then abort with a
+           * threshold message that has lost the holder's name. The refusal is
+           * re-thrown whole so the line reaches the result, and the row waits
+           * instead of failing.
+           */
+          if (busyLineOf(error) !== undefined) throw error;
+
           // Check for unrecoverable errors
           const isUnrecoverable = errorMessage.includes('credit') ||
             errorMessage.includes('quota') ||
@@ -777,11 +811,16 @@ export async function translateEpub(
       error: isCancelled ? 'Cancelled by user' : message
     });
 
+    // THE HOLDER'S LINE IS CARRIED, NOT FLATTENED AWAY. Read through the one
+    // rule (`busyLineOf`), because the refusal reaches here as whatever the
+    // door threw — the queue parks the row on it; see `TranslationResult`.
+    const busyLine = busyLineOf(error);
     return {
       success: false,
       error: isCancelled ? 'Cancelled by user' : message,
       failedChunkCount,
-      skippedChunksPath: errorSkippedChunksPath
+      skippedChunksPath: errorSkippedChunksPath,
+      ...(busyLine === undefined ? {} : { busyLine }),
     };
   }
 }

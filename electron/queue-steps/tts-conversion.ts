@@ -45,7 +45,7 @@ import {
 import { getTTSLogger } from '../rolling-logger';
 import type { StepModule, StepRunContext, StepReport } from '../queue-engine';
 import type { ArtifactRef } from '../../shared/queue/engine-types';
-import { projectDirForStep, queueMainWindow } from './runtime';
+import { projectDirForStep, queueMainWindow, stepFailure } from './runtime';
 
 /** The bridge's AggregatedProgress, as it arrives on the bus. */
 interface TtsProgressEvent {
@@ -58,6 +58,15 @@ interface TtsCompleteEvent {
   success: boolean;
   outputPath?: string;
   error?: string;
+  /**
+   * THE SERVER WOULD NOT TAKE THE RENDER, and said who holds the card.
+   *
+   * Present exactly on a `409 server_busy` / `409 leased` (crucible
+   * `docs/ARCHITECTURE.md` §3), carried from the refusal by the bridge
+   * (`ConversionSession.crucibleBusyLine`). Handed to the seam below, it makes
+   * the row WAIT with that sentence on it rather than fail.
+   */
+  busyLine?: string;
   analytics?: unknown;
   rvcAnalytics?: unknown;
   wasStopped?: boolean;
@@ -437,7 +446,10 @@ export const ttsConversionStep: StepModule = {
         throw new Error('Stopped by the user.');
       }
       if (!result.success) {
-        throw new Error(result.error || 'Narration failed and gave no reason.');
+        // A 409 is a WAIT: `stepFailure` mints the refusal that parks this row
+        // when the server named a holder, and an ordinary failure when it did
+        // not. One road, and the module remembers no side call (A5, 2026-09-19).
+        throw stepFailure(result.error || 'Narration failed and gave no reason.', result.busyLine);
       }
 
       /*

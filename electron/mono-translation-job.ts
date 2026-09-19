@@ -201,8 +201,8 @@ export interface TranslationJobResult {
    *
    * The SDK's holder line — "leased: foundry, translate since …" — as
    * {@link CrucibleTextActError} carries it. A queue row parks against a server
-   * only when the failure it settles on has one (`queue-engine.ts`,
-   * `noteStepBusy`); with no line the row reddens as though the book were
+   * only when the failure it settles on has one (`queue-steps/runtime.ts`,
+   * `busyLineOf`); with no line the row reddens as though the book were
    * broken, and the operator is told to fix something that is merely busy.
    *
    * This result object is the translate path's only channel for it, because

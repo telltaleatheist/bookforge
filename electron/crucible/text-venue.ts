@@ -128,14 +128,14 @@ export type CrucibleTextActErrorCode =
    * 409 `leased`: another client has said it is mid-run on that model, so
    * nothing may move it off the card — including this act's own lease. A WAIT
    * with the holder's name, act and since, carried the same way `server_busy` is
-   * (`busyLine` → the queue's `noteStepBusy`), because it is the same question
+   * (`busyLine` → the queue's `busyLineOf`), because it is the same question
    * with a longer clock: a lane frees in minutes, a lease may hold for an hour.
    */
   | 'crucible_model_leased';
 
 export class CrucibleTextActError extends Error {
   readonly code: CrucibleTextActErrorCode;
-  /** The SDK's "GPU busy: foundry, tts 62% done", for `noteStepBusy`. */
+  /** The SDK's "GPU busy: foundry, tts 62% done", read by the queue's `busyLineOf`. */
   readonly busyLine?: string;
 
   /**

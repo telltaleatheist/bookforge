@@ -577,13 +577,21 @@ const { check, summary } = makeChecker();
       assert.match(passes, /busyLine: result\.busyLine/,
         'runSimplifyPass drops the wait line on the floor, so the step never sees it');
 
+      /*
+       * THE LAST LINK MOVED ONTO THE THROW (A5, 2026-09-19). It used to be a
+       * side call — `noteStepBusy(ctx.stepId, result.busyLine)` before the
+       * throw — which four modules made and five forgot. The line now rides on
+       * the refusal the module throws (`stepFailure`), `launch` reads it with
+       * `busyLineOf`, and `settleStep` parks the row. So what is pinned here is
+       * that the pass hands the bridge's line to the seam at all, and that it
+       * does not throw a bare Error past it.
+       */
       const step = read('electron', 'queue-steps', 'pass.ts');
-      const busy = step.indexOf('noteStepBusy(ctx.stepId, result.busyLine)');
-      const thrown = step.indexOf('throw new Error(result.error');
-      assert.ok(busy > 0, 'the pass step no longer holds the row on a leased card');
-      assert.ok(busy < thrown,
-        'the hold must be recorded BEFORE the throw: settleStep reads the line off the running '
-        + 'step, and the throw is what settles it');
+      assert.match(step, /throw stepFailure\([\s\S]*?result\.busyLine\)/,
+        'the pass step no longer hands the leased card\'s holder line to the seam, so the row '
+        + 'reddens instead of waiting');
+      assert.ok(!/throw new Error\(result\.error/.test(step),
+        'a bare Error past `stepFailure` is a row that fails on a refusal it could have waited out');
     });
 
   // ───────────────────────────────────────────────────────────────────────────

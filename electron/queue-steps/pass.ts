@@ -22,7 +22,7 @@ import type { PassJobConfig } from '../../shared/processing/pass-types';
 import type { JobType } from '../../shared/queue/engine-types';
 import type { StepModule, StepRunContext } from '../queue-engine';
 import type { ArtifactRef, StepResource } from '../../shared/queue/engine-types';
-import { queueMainWindow, resourceForProvider } from './runtime';
+import { queueMainWindow, resourceForProvider, stepFailure } from './runtime';
 import { machinesForAiStep, type AiJobConfig } from './ai-provider';
 
 /**
@@ -258,26 +258,27 @@ function passModule(type: JobType): StepModule {
         const result = await runProcessingPass(
           ctx.stepId, config, queueMainWindow(), ctx.job.waitForResolved);
         if (!result.success) {
-          if (result.busyLine !== undefined) {
-            /*
-             * A CRUCIBLE REFUSED THIS PASS BECAUSE SOMEBODY IS MID-RUN ON THAT
-             * CARD — `409 leased`. Nothing about this book is wrong and none
-             * of its work is lost, because it never started, so the row goes
-             * back to `queued` carrying the holder's own line and the
-             * admission tick tries again. The same hold a render and an align
-             * already ask for (`crucible/align.ts`, `parallel-tts-bridge.ts`),
-             * and the same road `server_busy` travels — with a longer clock, a
-             * lane frees in minutes and a lease may hold for an hour.
-             *
-             * Failing instead is what BookForge did until 2026-09-18: a red
-             * row nobody did anything wrong on, and `retry()` — which resets
-             * failures — as the only way back. Foundry, on the identical
-             * refusal, parked and came back.
-             */
-            const { noteStepBusy } = await import('../queue-engine.js');
-            noteStepBusy(ctx.stepId, result.busyLine);
-          }
-          throw new Error(result.error || `${ctx.step.label} failed and gave no reason.`);
+          /*
+           * A CRUCIBLE REFUSED THIS PASS BECAUSE SOMEBODY IS MID-RUN ON THAT
+           * CARD — `409 leased`. Nothing about this book is wrong and none of
+           * its work is lost, because it never started, so the row goes back
+           * to `queued` carrying the holder's own line and the admission tick
+           * tries again. The same road `server_busy` travels — with a longer
+           * clock, a lane frees in minutes and a lease may hold for an hour.
+           *
+           * Failing instead is what BookForge did until 2026-09-18: a red row
+           * nobody did anything wrong on, and `retry()` — which resets
+           * failures — as the only way back. Foundry, on the identical
+           * refusal, parked and came back.
+           *
+           * `stepFailure` is the whole of it since 2026-09-19 (A5): a park
+           * when the bridge named a holder, an ordinary failure when it did
+           * not. The side call into the engine this module used to make is
+           * gone, and with it the thing four modules remembered and five
+           * forgot.
+           */
+          throw stepFailure(
+            result.error || `${ctx.step.label} failed and gave no reason.`, result.busyLine);
         }
         // What the pass has to SAY carries onto the row, not just whether it
         // worked. A pass that could record no ledger row succeeded and still

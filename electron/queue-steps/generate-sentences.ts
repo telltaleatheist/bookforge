@@ -11,7 +11,7 @@ import { onBridgeEvent, waitForBridgeEvent } from '../bridge-events';
 import { cancelGenerateSentences, startGenerateSentences } from '../generate-sentences-bridge';
 import type { StepModule, StepRunContext } from '../queue-engine';
 import type { ArtifactRef } from '../../shared/queue/engine-types';
-import { queueMainWindow } from './runtime';
+import { queueMainWindow, stepFailure } from './runtime';
 import { runVenueOfRow } from '../crucible/step-venue';
 
 interface GsProgressEvent {
@@ -137,14 +137,13 @@ export const generateSentencesStep: StepModule = {
 
       const result = await finished;
       if (!result.success || !result.outputPath) {
-        if (result.busyLine !== undefined) {
-          // The server is running somebody else's job: the row goes back to
-          // `queued` carrying the holder's own line and is tried again on the
-          // admission tick — the same hold the render seam asks for.
-          const { noteStepBusy } = await import('../queue-engine.js');
-          noteStepBusy(ctx.stepId, result.busyLine);
-        }
-        throw new Error(result.error || 'Transcription failed and gave no reason.');
+        // The server is running somebody else's job, or another client holds
+        // the model: the row goes back to `queued` carrying the holder's own
+        // line and is tried again on the admission tick. `stepFailure` is the
+        // one road that fact travels since 2026-09-19 (A5) — no side call into
+        // the engine, and an ordinary failure when no holder was named.
+        throw stepFailure(
+          result.error || 'Transcription failed and gave no reason.', result.busyLine);
       }
       if (result.warning) ctx.step.completionNotes = [result.warning];
       return {

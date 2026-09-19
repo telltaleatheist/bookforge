@@ -641,9 +641,10 @@ async function busyChecks() {
 // name and comes back on its own — so Foundry waited out BookForge's narrations
 // while BookForge died on Foundry's translations.
 //
-// `busyLine` is what the park is made of: `parallel-tts-bridge.ts` calls
-// `noteStepBusy(jobId, err.busyLine)` and `settleStep` puts the row back to
-// `queued` carrying that line. Absent, the row FAILS.
+// `busyLine` is what the park is made of: `parallel-tts-bridge.ts` keeps it on
+// the session (`crucibleBusyLine`), it rides out on `parallel-tts:complete`,
+// the narration step throws it through `stepFailure`, and `settleStep` puts the
+// row back to `queued` carrying that line. Absent, the row FAILS.
 
 async function leasedChecks() {
   const fake = await startFakeCrucible('leased');
@@ -669,7 +670,7 @@ async function leasedChecks() {
     assert.ok(thrown, 'a leased card must not produce a render');
     assert.strictEqual(thrown.code, 'leased');
     assert.strictEqual(thrown.busyLine, 'leased: foundry, translate, until 2026-09-18T01:02:00+00:00',
-      'without a busyLine `noteStepBusy` is never called and the row FAILS instead of holding');
+      'without a busyLine nothing carries the wait to the seam and the row FAILS instead of holding');
     assert.ok(/foundry/.test(thrown.message), `the holder must be named; got: ${thrown.message}`);
     assert.ok(/translate/.test(thrown.message),
       'and what they are doing, so a person can judge the wait');
