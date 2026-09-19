@@ -393,35 +393,6 @@ import type { BenchSectionView, BookPlanView, LaneView } from './services/queue-
         }
       </section>
 
-      <!-- ── Pending ───────────────────────────────────────────────────────
-           Adding a book stages it here: nothing about it is committed, its
-           server is chosen while that is still free, and Send to queue is the
-           press that commits it (docs/PENDING-QUEUE-AND-GPU-DIAL.md §1-§3).
-
-           Between the bench and Up next deliberately: it is what FEEDS the live
-           queue, and it reads down the page in the order the work moves. -->
-      @if (tray.pending().length > 0) {
-        <section class="band">
-          <header class="band-head">
-            <h2>Pending · {{ tray.pending().length }}</h2>
-            <span class="note left">
-              Staged, not queued — choose a machine, then send
-            </span>
-          </header>
-
-          @for (plan of tray.pending(); track plan.key) {
-            <!-- The SAME body Up next draws, in its staged state: dashed, tagged,
-                 no grip (nothing here has a queue position to drag). -->
-            <article class="card staged">
-              <ng-container
-                [ngTemplateOutlet]="bookCard"
-                [ngTemplateOutletContext]="{ $implicit: plan, staged: true }"
-              />
-            </article>
-          }
-        </section>
-      }
-
       <!-- ── Up next ───────────────────────────────────────────────────── -->
       <!-- The band IS the drop list, header included — a wide target, and no
            wrapper between the section and its cards. Only THIS band: order is a
@@ -808,6 +779,37 @@ import type { BenchSectionView, BookPlanView, LaneView } from './services/queue-
           </div>
         }
       </ng-template>
+
+      <!-- ── Pending ───────────────────────────────────────────────────────
+           Adding a book stages it here: nothing about it is committed, its
+           server is chosen while that is still free, and Send to queue is the
+           press that commits it (docs/PENDING-QUEUE-AND-GPU-DIAL.md §1-§3).
+
+           BELOW Up next, not above it (Owen, 2026-09-19: *"put pending at the
+           bottom and active items/up next above it"*). The live queue is what a
+           person watches; a staged book is parked until they come back for it,
+           so it reads last. -->
+      @if (tray.pending().length > 0) {
+        <section class="band">
+          <header class="band-head">
+            <h2>Pending · {{ tray.pending().length }}</h2>
+            <span class="note left">
+              Staged, not queued — choose a machine, then send
+            </span>
+          </header>
+
+          @for (plan of tray.pending(); track plan.key) {
+            <!-- The SAME body Up next draws, in its staged state: dashed, tagged,
+                 no grip (nothing here has a queue position to drag). -->
+            <article class="card staged">
+              <ng-container
+                [ngTemplateOutlet]="bookCard"
+                [ngTemplateOutletContext]="{ $implicit: plan, staged: true }"
+              />
+            </article>
+          }
+        </section>
+      }
 
       @if (visiblePlans().length === 0 && busyLanes() === 0 && tray.failures().length === 0
            && tray.pending().length === 0) {
