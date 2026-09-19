@@ -1,8 +1,10 @@
 /** Crucible owns installation. Windows installs its native engine first;
  * the operator may later choose the WSL upgrade through its authenticated task API. */
 import { spawnSync } from 'child_process';
-import * as path from 'path';
-import { CrucibleClient, PAIRING_FILE, parsePairing } from '@crucible/client';
+// `path` and the pairing reader went with the bespoke win32 sequence (PHASE19):
+// the package's own install() reads the guest's config path out of its `done`
+// event, and nothing here joins a Windows path any more.
+import { CrucibleClient } from '@crucible/client';
 
 import { BOOTSTRAP_VERSION, RELEASE_REPO } from '@crucible/bootstrap';
 import type {
@@ -428,33 +430,43 @@ export async function driveCrucibleInstall(
     return { ...installed, steps: [...installed.steps, done] };
   }
 
-  const step: InstallStep = { name: 'native-install', argv: [], status: 'running', detail: 'Installing Crucible on Windows' };
-  options.onStep?.(step);
-  const result = await host.stream([
-    'powershell.exe', '-NoProfile', '-NonInteractive', '-Command',
-    "$ErrorActionPreference = 'Stop'; " + bootstrap.hostInstallCommand(release),
-  ], { timeoutMs: 3_600_000, onLine: (line, stream) => options.onLine?.(line, stream, step.name) });
-  if (result.failure !== null || result.code !== 0) {
-    throw new CrucibleInstallError('install_failed', result.failure ?? `Crucible installer exited ${result.code}: ${result.stderr.trim()}`);
-  }
-  const status = await bootstrap.startLocal({}, host);
-  if (status.state !== 'running') throw new CrucibleInstallError('install_failed', status.detail);
-  const installed = bootstrap.readLocalInstallation({}, host);
-  if (installed === null) throw new CrucibleInstallError('install_failed', 'Crucible did not publish its installation record.');
-  const configPath = path.win32.join(installed.home, PAIRING_FILE);
-  const pairing = parsePairing(host.readFile(configPath).trim());
-  if (pairing.name !== status.name) throw new CrucibleInstallError('install_failed', 'The local pairing and running engine identities differ.');
-  const info = await new CrucibleClient({ url: status.url, token: pairing.token, clientName: 'bookforge-installer' }).info();
-  if (info.server.name !== status.name) throw new CrucibleInstallError('install_failed', 'The responding engine identity changed during verification.');
-  const backend = info.host.backend;
+  /*
+   * ── WINDOWS IS THE PACKAGE'S OWN SEQUENCE NOW (PHASE19 §2.3, §2.6) ────────
+   *
+   * This used to be twenty lines of its own: spawn `install.ps1` through
+   * PowerShell, `startLocal`, `readLocalInstallation`, read the pairing file,
+   * `GET /v1/info`, compare three identities. Every one of those was about the
+   * NATIVE Windows engine, because that was the whole of what a Windows
+   * install produced.
+   *
+   * It is not any more. `install()` on win32 runs `install.ps1` when the host
+   * pack is absent and then `watchInstall()`s the move the TRAY has already
+   * started — it never posts one (§2.3: the tray is the process that is there
+   * at login and the only one that can resume across the reboot
+   * `wsl --install` demands) — and it follows that move until the outcome is
+   * terminal. So the sequence this app would otherwise write is the sequence
+   * the package now performs, and a second copy of it here would be two owners
+   * of an install.
+   *
+   * WHAT THE FOUR NON-`done` ENDINGS DO. The package raises the OUTCOME's own
+   * code and sentence as a refusal — `virtualization_disabled`,
+   * `reboot-pending`, `declined`, a task failure code — which is exactly what
+   * `installRefusalOf` carries verbatim to the screen, and what the progress
+   * list then draws beside **Restart now** or **Try again**. Nothing is
+   * renamed and nothing is flattened into "the install failed".
+   *
+   * WHAT IS LOST, AND WHERE IT WENT. The identity check against `/v1/info` is
+   * not gone: `autoConnectLocal` makes the same one, on the engine that is
+   * actually left standing, and refuses when the name it answers with is not
+   * the one in its pairing file. Making it here as well would be this app
+   * asking a machine mid-handover which engine it is.
+   */
+  const installed = await bootstrap.install({ ...options, release }, host);
+  const backend = installed.backend;
   if (backend !== 'llama-windows' && backend !== 'cuda-linux' && backend !== 'mlx-darwin') {
     throw new CrucibleInstallError('install_failed', `The installed engine reported an unsupported backend: ${backend}`);
   }
-  const done: InstallStep = { ...step, status: 'ok', detail: 'Crucible is running' };
-  options.onStep?.(done);
-  return { steps: [done], server: { name: status.name, url: status.url, configPath },
-    release: info.server.version, backend, crucible: installed.control.command };
-
+  return installed;
 }
 
 /**

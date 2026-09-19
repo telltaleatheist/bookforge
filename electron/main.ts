@@ -72,12 +72,11 @@ import type { CrucibleSubjectKind } from '../shared/crucible/catalog-wire';
 // One event of a running install, pushed on `crucible:install-progress`. Same
 // rule as the line above: a `shared/` shape, a relative path, types only.
 import type { CrucibleHostRefusal, CrucibleInstallProgress } from '../shared/crucible/install-wire';
-// The orchestrator's install door, behind its one interface (PHASE19 §2.6).
-// `PreSdkInstallDoor` is the LABELLED STOPGAP that stands in until the new
-// bootstrap pack's `installStatus()`/`watchInstall()` are pinned — see
-// `electron/crucible/install-door.ts`, which says exactly what it cannot know.
-import { PreSdkInstallDoor } from './crucible/install-door';
-import { installOutcomeIsTerminal } from '../shared/crucible/install-door-wire';
+// The orchestrator's install door, behind its one interface (PHASE19 §2.6),
+// over the SDK's `installStatus()` / `watchInstall()` / `requestHostInstall()`.
+// `installOutcomeIsTerminal` reads the SDK's own `TERMINAL_OUTCOME_STATES`,
+// which is why it is imported from here and not from the renderer-side wire.
+import { HostInstallDoor, installOutcomeIsTerminal } from './crucible/install-door';
 // The listing-shaped half of the family rules: one chain is an answer, anything
 // else is null, and it never throws. Everything that ACTS on a book goes through
 // `manifestService.requireFamily` instead and gets the refusal sentence.
@@ -7717,20 +7716,18 @@ function setupIpcHandlers(): void {
   /**
    * THE ORCHESTRATOR'S INSTALL DOOR, BEHIND ITS ONE INTERFACE (PHASE19 §2.6).
    *
-   * `electron/crucible/install-door.ts` says what this is and, in as many
-   * words, that {@link PreSdkInstallDoor} is a LABELLED STOPGAP: the bootstrap
-   * SDK pinned today has no `installStatus()`/`watchInstall()`, so until that
-   * pack lands the door is implemented over the only install this app can see
-   * — the one it runs itself. Everything that asks about a move asks THIS,
-   * which is what makes the swap a one-file change.
+   * `electron/crucible/install-door.ts` is the whole of it: `installStatus()`,
+   * `watchInstall()` and `requestHostInstall()` behind three verbs, so
+   * everything that asks about a move asks THIS. The move itself is the TRAY's
+   * — it decides at every start whether this machine should be moving and
+   * starts it at login — and nothing here ever posts one except **Try again**.
    *
-   * Its runner is the same `runCrucibleInstall` the Install button ends in, so
-   * **Try again** and **Install Crucible** are one act with one in-flight flag
-   * rather than two walks over the same distro.
+   * ONE LINE IS WHAT THE SWAP COST. The day before this it was
+   * `new PreSdkInstallDoor({ run: … })`, a stopgap fed by this app's own
+   * install events; the interface is what let it become this without a
+   * renderer, an IPC channel or a component changing.
    */
-  const crucibleInstallDoor = new PreSdkInstallDoor({
-    run: async () => { await runCrucibleInstall(() => {}); },
-  });
+  const crucibleInstallDoor = new HostInstallDoor();
   /*
    * ONE SUBSCRIPTION, BROADCAST. An install started from the wizard and a
    * settings panel opened halfway through are the same install — there is one
@@ -8466,8 +8463,11 @@ function setupIpcHandlers(): void {
    * are the same act — there is one install per machine — so they share this
    * body, its in-flight flag and its named refusal for a second press.
    *
-   * `report` is the window-scoped push the presser sees; every event ALSO goes
-   * to the door, which is what every other surface watches.
+   * `report` is the window-scoped push the PRESSER sees, on the older
+   * `crucible:install-progress` channel. It is not the door: the door reports
+   * the machine's move, which the tray may have started before this app was
+   * opened, and every setup surface watches THAT (`crucible:install-event`).
+   * The two are different facts and the split is deliberate.
    */
   const runCrucibleInstall = async (
     report: (progress: CrucibleInstallProgress) => void,
@@ -8489,11 +8489,7 @@ function setupIpcHandlers(): void {
       };
     }
     crucibleInstallInFlight = true;
-    crucibleInstallDoor.began();
-    const send = (progress: CrucibleInstallProgress): void => {
-      crucibleInstallDoor.record(progress);
-      report(progress);
-    };
+    const send = report;
     try {
       const { bookforgeInstallOptions, driveCrucibleInstall } = await import('./crucible/install.js');
       const options = bookforgeInstallOptions(
@@ -8573,7 +8569,6 @@ function setupIpcHandlers(): void {
       return { success: false, error: refusal.message, refusal };
     } finally {
       crucibleInstallInFlight = false;
-      crucibleInstallDoor.ended();
     }
   };
 

@@ -66,12 +66,30 @@ export function findManifest() {
       'run this from the root of BookForge or Foundry');
 }
 
-/** The version a `file:vendor/crucible-client-X.tgz` specifier names. */
+/**
+ * The version a `file:vendor/crucible-client-X.tgz` specifier names.
+ *
+ * ── THE `-<label>` SUFFIX, AND WHY IT IS READ RATHER THAN REFUSED ──────────
+ *
+ * A pack built from a crucible BRANCH carries the same version string as the
+ * release it was cut beside — `npm pack` reads `package.json`, which the branch
+ * has not bumped — so the two tarballs cannot share a file name and one of them
+ * is `crucible-bootstrap-1.0.5-phase19.tgz`. PHASE19 is the first time BookForge
+ * has pinned one (package.json's `//crucible-bootstrap` says which branch and
+ * which sha, and that it is replaced by the release).
+ *
+ * This READS the version out of such a name and never WRITES one: `download()`
+ * below composes `crucible-<name>-<version>.tgz` from a release tag, so
+ * adopting a release is what replaces a pre-release pin and the label
+ * disappears with it. Refusing the name instead — which is what this did until
+ * 2026-09-19 — took the whole install-seam suite down with it, because `die`
+ * exits the process and the suite imports this module.
+ */
 export function pinnedVersion(parsed) {
   const found = new Set();
   for (const name of PACKAGES) {
     const specifier = parsed.dependencies[name];
-    const match = /crucible-(?:client|bootstrap)-(\d+\.\d+\.\d+)\.tgz$/.exec(specifier);
+    const match = /crucible-(?:client|bootstrap)-(\d+\.\d+\.\d+)(?:-[0-9A-Za-z.-]+)?\.tgz$/.exec(specifier);
     if (!match) die(`${name} is pinned as ${specifier}, which is not a vendored release tarball`);
     found.add(match[1]);
   }

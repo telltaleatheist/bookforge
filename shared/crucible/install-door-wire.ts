@@ -51,6 +51,12 @@ export type CrucibleInstallOutcomeState =
  * owner's own words otherwise. Nothing in this app composes that sentence: it
  * is the state table's, written where the probe lives, and an app that
  * rewrote it would be the second owner of a verdict about somebody's machine.
+ *
+ * IT IS THE SDK'S `WslOutcome`, FIELD FOR FIELD, and written out a second time
+ * only because this file is compiled into the renderer and cannot import
+ * `@crucible/bootstrap`. What holds the two together is not care: it is the
+ * identity function `asAppOutcome` in `electron/crucible/install-door.ts`,
+ * which stops compiling the moment they differ.
  */
 export interface CrucibleInstallOutcome {
   state: CrucibleInstallOutcomeState;
@@ -60,26 +66,25 @@ export interface CrucibleInstallOutcome {
   sentence: string | null;
   /** ISO-8601, when this outcome was written. */
   at: string;
-  /** Which Crucible release the move was for, or null when none was reached. */
-  release: string | null;
+  /** Which Crucible release the move was for. */
+  release: string;
   /** How many times the move has been attempted. A second `failed` waits. */
   attempts: number;
 }
 
-/**
- * IS THERE ANYTHING LEFT TO WAIT FOR?
+/*
+ * `installOutcomeIsTerminal` IS NOT HERE ANY MORE (2026-09-19).
  *
- * §2.8: the app coordinates with the TERMINAL engine only. Coordinate-on-
- * connect installs job environments and pulls weights — gigabytes — and run
- * against the native engine on a machine that is mid-move they land on Windows
- * and are thrown away by migrate-weights minutes later. Every one of the five
- * states IS terminal for the tray, which is the point: the non-terminal case is
- * `outcome === null` with a move running, and that is a `null` rather than a
- * sixth state, so no caller can read "nothing has happened yet" as a verdict.
+ * It lived here for a day and said `outcome !== null`, which is WRONG about
+ * one of the five: `failed` is not terminal, because the tray retries a
+ * failure once, and an app that coordinated after the first attempt would
+ * install gigabytes onto an engine the second attempt is about to replace. The
+ * partition is the SDK's `TERMINAL_OUTCOME_STATES`, and this file cannot
+ * import it — it is compiled into the RENDERER, which has no Node and no
+ * installer. So the function moved to `electron/crucible/install-door.ts`,
+ * where the SDK's list is the one it reads, and nothing on the renderer side
+ * makes that judgement at all.
  */
-export function installOutcomeIsTerminal(outcome: CrucibleInstallOutcome | null): boolean {
-  return outcome !== null;
-}
 
 /**
  * ONE ndjson EVENT off `GET /install/events` (§2.6, §2.12).
