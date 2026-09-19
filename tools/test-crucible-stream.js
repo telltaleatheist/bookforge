@@ -486,7 +486,12 @@ function localStub() {
   };
 }
 
-function venueHost({ staleLegacyKey = false, waitFor = 'top-ranked', enabled = ['fake1'], noEnabled = false } = {}) {
+function venueHost({
+  staleLegacyKey = false, waitFor = 'top-ranked', enabled = ['fake1'], noEnabled = false,
+  // Names that answer the ping with "asleep". An ENABLED server that does not
+  // answer is not a candidate (2026-09-19) — the Listen case below.
+  asleep = [],
+} = {}) {
   const calls = { view: 0, enabled: 0, ping: [] };
   return {
     calls,
@@ -509,7 +514,11 @@ function venueHost({ staleLegacyKey = false, waitFor = 'top-ranked', enabled = [
       }
       return enabled.map((name, rank) => ({ name, rank, enabled: true, source: 'registry' }));
     },
-    async ping(name) { calls.ping.push(name); return { outcome: 'ok', serverName: name, apiVersion: 1 }; },
+    async ping(name) {
+      calls.ping.push(name);
+      if (asleep.includes(name)) return { outcome: 'unreachable', message: `${name} is asleep` };
+      return { outcome: 'ok', serverName: name, apiVersion: 1 };
+    },
   };
 }
 
@@ -560,13 +569,47 @@ async function noLocalArmChecks() {
           'the local pool must never be started — there is no arm that could');
         assert.strictEqual(fake.state.voicesAsked, 1,
           'the Crucible was asked for its catalog — the work went there, not here');
-        assert.strictEqual(venue.calls.view, 1, 'the decision reads the routing record once');
+        // The decision does not read the routing VIEW at all any more
+        // (2026-09-19): `newJobsWaitFor` is the queue's new-row default and
+        // nothing else, so a stale key on the view cannot reach Listen even in
+        // principle. It reads the ENABLED list and pings it.
+        assert.strictEqual(venue.calls.view, 0, 'the venue decision no longer reads the record view');
+        assert.strictEqual(venue.calls.enabled, 1, 'it asks which servers are switched on, once');
+        assert.deepStrictEqual(venue.calls.ping, ['fake1'], 'and it probes them in rank order');
         assert.ok(logLines.some((l) => /\[StreamVenue\] Listen goes to crucible "fake1"/.test(l)),
           `the log must name the SERVER; got: ${logLines.join(' | ')}`);
         assert.ok(!logLines.some((l) => /legacy/i.test(l)),
           `nothing may still speak of a legacy venue; got: ${logLines.join(' | ')}`);
         await facade.endSession();
       });
+    await checkQuiet('the preferred server is ASLEEP: Listen takes the next ENABLED one that answers',
+      async () => {
+        /*
+         * THE CASE OWEN NAMED, 2026-09-19: *"WSL is always preferred for me, but
+         * I often stream on it… the user just needs control over which one is
+         * used and when, but should be able to feed into the next available at
+         * will."* Until this date the decision honoured `newJobsWaitFor:
+         * 'top-ranked'` — this machine's setting — by taking the rank-1 server
+         * UNPINGED, so pressing Play with that machine asleep failed by name
+         * while a second enabled machine sat awake and idle.
+         *
+         * `waitFor` is left at 'top-ranked' ON PURPOSE: the rule must not read
+         * it. The enable switches are the operator's awareness, and a server
+         * that is switched off (below) is still never a candidate.
+         */
+        const { facade, local, venue } = facadeFor(fake, { enabled: ['sleepy', 'fake1'], asleep: ['sleepy'] });
+        logLines.length = 0;
+        const result = await facade.startSession();
+        assert.strictEqual(result.success, true, result.error);
+        assert.deepStrictEqual(venue.calls.ping, ['sleepy', 'fake1'],
+          'rank order, and it does not stop at the first one that fails to answer');
+        assert.ok(logLines.some(
+          (l) => /\[StreamVenue\] Listen goes to crucible "fake1" \(the first enabled server that answered\)/.test(l)),
+        `Listen must land on the awake server and say why; got: ${logLines.join(' | ')}`);
+        assert.strictEqual(local.calls.startSession, 0);
+        await facade.endSession();
+      });
+
     await checkQuiet('before anything starts, the pickers see the CRUCIBLE catalog and nothing else',
       () => {
         for (const staleLegacyKey of [false, true]) {
@@ -606,7 +649,7 @@ async function happyPathChecks() {
       assert.deepStrictEqual(facade.getAvailableVoices(), ['deathstalker', 'mistborn']);
       assert.strictEqual(facade.getEngineState(), 'warming', 'a server is up and no session is open');
       assert.strictEqual(facade.isSessionActive(), false);
-      assert.ok(logLines.some((l) => /\[StreamVenue\] Listen goes to crucible "fake1" \(the top-ranked server\)/.test(l)),
+      assert.ok(logLines.some((l) => /\[StreamVenue\] Listen goes to crucible "fake1" \(the first enabled server that answered\)/.test(l)),
         `the log must name the venue and why; got: ${logLines.join(' | ')}`);
     });
 

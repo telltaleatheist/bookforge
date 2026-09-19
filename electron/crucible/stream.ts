@@ -25,12 +25,20 @@
  *
  * ── How the venue is chosen ────────────────────────────────────────────────
  *
- * `decideWhereGenerationRuns` (`generation-venue.ts`) — the same decision the
- * audiobook render makes, reused rather than re-implemented: the caller's name
- * wins (Listen has no caller-named server today, so this arm is never taken
- * here), else the routing record's top-ranked / first-that-answers server. There
- * is no local narrator to fall back to: a Listen that cannot be placed FAILS by
- * name.
+ * `decideWhereGenerationRuns` (`generation-venue.ts` → `venue-decision.ts`) —
+ * the same decision the audiobook render makes, reused rather than
+ * re-implemented: the caller's name wins (Listen has no caller-named server
+ * today, so this arm is never taken here), else **the first ENABLED server, in
+ * rank order, that ANSWERS**. There is no local narrator to fall back to: a
+ * Listen that cannot be placed FAILS by name.
+ *
+ * IT USED TO HONOUR `newJobsWaitFor` (2026-09-19). With `top-ranked` — this
+ * machine's setting — Listen took the top enabled server UNPINGED, so pressing
+ * Play with the Mac asleep failed by name while the PC sat awake and idle. That
+ * rung is gone from the decision entirely; Owen's ruling and the reasoning are
+ * in `venue-decision.ts`'s header. The enable switches are the control: a
+ * server switched off is never streamed to, and rank order is a preference
+ * among the ones that are on, not a wall.
  *
  * The decision is taken when the backend is COLD — at `startSession()` with
  * nothing running — and sticks until `endSession()`, the way the engine

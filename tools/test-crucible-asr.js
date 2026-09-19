@@ -375,7 +375,7 @@ async function venueDoor() {
     }
     await check('a routed server routes to the Crucible, never the local spawn, and records the venue', () => {
       assert.strictEqual(localCalls, 0);
-      assert.deepStrictEqual(outcome.venue, { where: 'crucible', server, origin: 'decided here', because: 'the top-ranked server' });
+      assert.deepStrictEqual(outcome.venue, { where: 'crucible', server, origin: 'decided here', because: 'the first enabled server that answered' });
       assert.strictEqual(outcome.crucible.jobId, 'job-1');
       assert.ok(fs.existsSync(outVtt));
     });

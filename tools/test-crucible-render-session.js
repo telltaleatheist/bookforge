@@ -107,7 +107,7 @@ const ON_WINDOWS = process.platform === 'win32';
 const GUEST_ROOT = '/home/keeper/bookforge-sessions';
 
 const CRUCIBLE = { where: 'crucible', server: 'mac', because: 'the caller named it' };
-const LOCAL = { where: 'crucible', server: 'local', because: 'the top-ranked server' };
+const LOCAL = { where: 'crucible', server: 'local', because: 'the first enabled server that answered' };
 
 let passed = 0;
 const failures = [];

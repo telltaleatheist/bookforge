@@ -599,36 +599,53 @@ async function main() {
         enabled: () => [{ name: 'local', enabled: true }],
       }));
       assert.deepStrictEqual(stale,
-        { where: 'crucible', server: 'local', because: 'the top-ranked server' },
+        { where: 'crucible', server: 'local', because: 'the first enabled server that answered' },
         'a leftover legacyLocalRender changes nothing — it is not read');
     });
 
-  await check('top-ranked is taken WITHOUT a ping — a named machine is an instruction', async () => {
-    let pinged = 0;
-    const where = await venue.decideWhereTextActRuns(undefined, scriptedHost({
-      ping: async () => { pinged += 1; return { outcome: 'unreachable', message: 'no' }; },
-    }));
-    assert.deepStrictEqual(where,
-      { where: 'crucible', server: 'local', because: 'the top-ranked server' });
-    assert.strictEqual(pinged, 0);
-  });
+  await check('unassigned: the first ENABLED server that ANSWERS, whatever newJobsWaitFor says',
+    async () => {
+      /*
+       * 2026-09-19 (bug hunt A8, Owen's ruling 4): the `top-ranked` rung — the
+       * top enabled server taken UNPINGED — is gone from the decision. The
+       * setting is left at its default 'top-ranked' here ON PURPOSE: the rule
+       * must not read it at all. `newJobsWaitFor` is now the default written
+       * onto a NEW QUEUE ROW and nothing else.
+       */
+      for (const waitFor of ['top-ranked', 'any']) {
+        const where = await venue.decideWhereTextActRuns(undefined, scriptedHost({
+          view: () => ({
+            ranked: [{ name: 'local', enabled: true }, { name: 'mac', enabled: true }],
+            newJobsWaitFor: waitFor,
+            unknown: [],
+          }),
+          ping: async (name) => (name === 'mac'
+            ? { outcome: 'ok', message: 'ok' }
+            : { outcome: 'unreachable', message: 'nothing answered' }),
+        }));
+        assert.deepStrictEqual(where,
+          { where: 'crucible', server: 'mac', because: 'the first enabled server that answered' },
+          `newJobsWaitFor: ${waitFor} must make no difference here`);
+      }
+    });
 
-  await check('"any" takes the first that answers, in rank order', async () => {
+  await check('a DISABLED server is never a candidate and is never even probed', async () => {
+    const asked = [];
     const where = await venue.decideWhereTextActRuns(undefined, scriptedHost({
       view: () => ({
-        ranked: [{ name: 'local', enabled: true }, { name: 'mac', enabled: true }],
+        ranked: [{ name: 'local', enabled: false }, { name: 'mac', enabled: true }],
         newJobsWaitFor: 'any',
         unknown: [],
       }),
-      ping: async (name) => (name === 'mac'
-        ? { outcome: 'ok', message: 'ok' }
-        : { outcome: 'unreachable', message: 'nothing answered' }),
+      enabled: () => [{ name: 'mac', enabled: true }],
+      ping: async (name) => { asked.push(name); return { outcome: 'ok', message: 'ok' }; },
     }));
-    assert.deepStrictEqual(where,
-      { where: 'crucible', server: 'mac', because: 'any: the first that answered' });
+    assert.strictEqual(where.server, 'mac');
+    assert.deepStrictEqual(asked, ['mac'],
+      'the enable switch IS the operator\'s control over "next available" (Owen, 2026-09-19)');
   });
 
-  await check('"any" with nothing reachable FAILS, naming each one tried', async () => {
+  await check('nothing reachable FAILS, naming each one tried', async () => {
     await assert.rejects(
       () => venue.decideWhereTextActRuns(undefined, scriptedHost({
         view: () => ({

@@ -102,7 +102,7 @@
  */
 
 import type { ModelInfo } from '@crucible/client';
-import type { RankedServerRow, RoutingView } from '../../shared/crucible/settings-wire';
+import type { RankedServerRow } from '../../shared/crucible/settings-wire';
 import { processVenueHost, type VenueHost } from './generation-venue';
 import type { CruciblePingResult } from './probe';
 import { crucibleClientFor, getServer, CRUCIBLE_CLIENT_NAME, type ResolvedServer } from './servers';
@@ -396,7 +396,7 @@ export const PAGE_CONCURRENCY_BY_BACKEND: Readonly<Record<string, number>> = {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * `VenueHost`'s three doors plus the two a page read needs, so a keeper drives
+ * `VenueHost`'s two doors plus the four a page read needs, so a keeper drives
  * every branch with no registry, no record on disk and no network — the shape
  * `generation-venue.ts` and `text-venue.ts` both use, for the same reason.
  */
@@ -421,7 +421,6 @@ export interface PagesVenueHost extends VenueHost {
 export function processPagesVenueHost(): PagesVenueHost {
   const venue = processVenueHost();
   return {
-    view: (): RoutingView => venue.view(),
     enabled: (): RankedServerRow[] => venue.enabled(),
     ping: (name: string): Promise<CruciblePingResult> => venue.ping(name),
     server: getServer,

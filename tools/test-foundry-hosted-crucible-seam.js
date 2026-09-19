@@ -335,16 +335,22 @@ async function main() {
     assert.strictEqual(typeof hostQueue.FOUNDRY_VERSION_FOR_CLEAN_TEXT_EPUB, 'string');
   });
 
-  await checkAsync('the hosted step asks a Crucible server NOTHING — the window does the asking', async () => {
+  await checkAsync('the hosted step reads no CREDENTIAL, no models, no capability — the window does', async () => {
     /*
      * The old check here proved a hosted act was refused before any network.
      * The property that replaced it is stronger and is the same shape: this
-     * side still makes no call to a Crucible for a hosted act — not because it
-     * is refused, but because the whole placement is the vendored window's. The
-     * only network in the path is `decideWhereTextActRuns`'s ping, and only on
-     * `newJobsWaitFor: 'any'`.
+     * side asks a Crucible nothing ABOUT THE WORK for a hosted act — not
+     * because it is refused, but because the whole placement is the vendored
+     * window's.
+     *
+     * The unauthenticated PING is the exception, and since 2026-09-19 it is
+     * always taken: the venue decision picks the first ENABLED server that
+     * ANSWERS, whatever `newJobsWaitFor` says (bug hunt A8, Owen's ruling 4).
+     * A ping is reachability and carries no token, so it is counted separately
+     * from the three reads that are the window's.
      */
     let asked = false;
+    let pinged = 0;
     const host = {
       view: () => ({
         ranked: [{ name: 'mac', enabled: true }],
@@ -353,7 +359,7 @@ async function main() {
         legacyLocalRender: false,
       }),
       enabled: () => [{ name: 'mac', enabled: true }],
-      ping: async () => { asked = true; return { outcome: 'ok', message: 'ok' }; },
+      ping: async () => { pinged += 1; return { outcome: 'ok', message: 'ok' }; },
       server: () => { throw new Error('the hosted path must not read a credential'); },
       models: async () => { asked = true; return []; },
       loadModel: async () => { throw new Error('the hosted path must never load a model'); },
@@ -364,9 +370,13 @@ async function main() {
       { where: decided.where, server: decided.server },
       { where: 'crucible', server: 'mac' });
     assert.strictEqual(asked, false,
-      'deciding WHICH MACHINE asked a server something. On `top-ranked` naming a machine is an '
-      + 'instruction, and the capability, the models and the credential are the vendored '
-      + 'window\'s to read.');
+      'deciding WHICH MACHINE read a credential, a model list or a capability from a server. '
+      + 'All three are the vendored window\'s to read, and a token composed on this side would '
+      + 'be a second composer of one credential.');
+    assert.strictEqual(pinged, 1,
+      'the decision must PROBE the enabled servers — an enabled machine that does not answer is '
+      + 'not a candidate (2026-09-19). A decision that skipped the ping would hand the hosted '
+      + 'window the name of a machine that is asleep.');
   });
 
   // ── 5. The registry BookForge hands the hosted window ────────────────────

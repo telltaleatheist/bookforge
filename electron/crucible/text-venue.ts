@@ -2,19 +2,22 @@
  * WHERE A TEXT ACT RUNS, and what the engine is handed when the answer is a
  * Crucible server.
  *
- * ── One routing record ─────────────────────────────────────────────────────
+ * ── One routing record, and now ONE RULE BODY ──────────────────────────────
  *
- * `generation-venue.ts` answers this question for a RENDER. This answers it for
- * the four text acts, out of the SAME record, in the same order, with the same
- * refusals — because "which machine does this machine's work go to" is one
- * question and two answers to it would drift (crucible `docs/ARCHITECTURE.md`
- * R1). The three answers, unchanged:
+ * `generation-venue.ts` answers this question for a RENDER; this answers it for
+ * the four text acts. They used to say so and then each carry its own copy of
+ * the body — which is the drift crucible `docs/ARCHITECTURE.md` R1 forbids, and
+ * the bug hunt (`docs/QUEUE-CRUCIBLE-BUG-HUNT-2026-09-19.md` A8) found them
+ * already diverging in their wording. The rule moved to `venue-decision.ts` on
+ * 2026-09-19; what is left here is this door's error class and the sentence
+ * that is its own. The two answers:
  *
  *   1. The caller named a server — the queue row's resolved venue, the CLI's
- *      `--crucible-server`. An explicit instruction is never second-guessed.
- *   2. `newJobsWaitFor: 'top-ranked'` — the top of the enabled list, NOT pinged,
- *      because naming a machine is an instruction.
- *   3. `newJobsWaitFor: 'any'` — the first enabled server whose `ping` answers.
+ *      `--crucible-server`. An explicit instruction is never second-guessed,
+ *      and never pinged.
+ *   2. The first ENABLED server, in rank order, whose `ping` answers. Never a
+ *      disabled one; `newJobsWaitFor` is not consulted (Owen, 2026-09-19 — it
+ *      is the default written onto a NEW QUEUE ROW and nothing else).
  *
  * **There is no fallback to the local engines, and no switch that would make
  * one.** `legacyLocalRender` and the local text-engine arm behind it are DELETED
@@ -61,11 +64,17 @@
  * now stated by there being no way to ask.
  */
 import type {
-  CrucibleCapabilityView, RankedServerRow, RoutingView,
+  CrucibleCapabilityView, RankedServerRow,
 } from '../../shared/crucible/settings-wire';
 import type { CapabilityRecord, ModelInfo } from '@crucible/client';
-import { rankedServers, readRouting } from './routing';
+import { rankedServers } from './routing';
 import { pingServer, type CruciblePingResult } from './probe';
+import {
+  VenueDecisionRefusal,
+  decideVenueAmongEnabled,
+  type VenueBecause,
+  type VenueWords,
+} from './venue-decision';
 import { crucibleCapabilityWithRoutes } from './engine-settings';
 import { crucibleClientFor, getServer, CRUCIBLE_CLIENT_NAME, type ResolvedServer } from './servers';
 import { resolveEngine } from './engine-resolve';
@@ -88,7 +97,7 @@ export type TextActVenue = {
   where: 'crucible';
   /** A registered server's name. Never a URL. */
   server: string;
-  because: 'the caller named it' | 'the top-ranked server' | 'any: the first that answered';
+  because: VenueBecause;
 };
 
 export type CrucibleTextActErrorCode =
@@ -107,7 +116,7 @@ export type CrucibleTextActErrorCode =
   | 'crucible_upstream_not_loadable'
   /** A caller named `crucible` and no server. */
   | 'crucible_server_not_named'
-  /** `any`, and not one enabled server answered. Names each one tried. */
+  /** Not one enabled server answered. Names each one tried. */
   | 'no_reachable_server'
   /** The chosen server has no manifest for this act's model id. */
   | 'crucible_unknown_model'
@@ -150,8 +159,6 @@ export class CrucibleTextActError extends Error {
  * branch with no registry, no record on disk and no network.
  */
 export interface TextVenueHost {
-  /** The routing record resolved against the servers that exist. */
-  view(): RoutingView;
   /** Enabled servers, best first. Refuses `no_enabled_server` when there are none. */
   enabled(): RankedServerRow[];
   /** One unauthenticated reachability check. */
@@ -215,7 +222,6 @@ export interface TextVenueHost {
 /** The real one: the app's records, the real registry and real HTTP. */
 export function processTextVenueHost(): TextVenueHost {
   return {
-    view: readRouting,
     enabled: rankedServers,
     ping: pingServer,
     server: getServer,
@@ -345,8 +351,25 @@ export async function crucibleActModel(
 }
 
 /**
- * Decide where this text act runs. See the header for the three answers and the
- * order they are asked in.
+ * What a TEXT ACT has instead of a local fallback — the half of the refusals
+ * that is this door's own. See `venue-decision.ts` for the half that is shared.
+ */
+const TEXT_ACT_WORDS: VenueWords = {
+  notNamed:
+    'a Crucible server was asked for and none was named. It takes the NAME of an entry in '
+    + '<userData>/crucible-servers.json (bookforge-tts --crucible-list); there is no default '
+    + 'and no fallback to this machine.',
+  noneAnswered:
+    'There are no local text engines to fall back to: a text act runs on a Crucible server '
+    + 'or not at all.',
+};
+
+/**
+ * Decide where this text act runs. The RULE is `venue-decision.ts`'s and is
+ * asked once; what happens here is the translation of its refusal into
+ * {@link CrucibleTextActError}, which is the class every text door's `catch` is
+ * written against — and which prefixes the code onto the sentence, because a
+ * CLI and a queue row show `err.message` and nothing else.
  *
  * `named` is the caller's instruction — the queue row's resolved venue, the
  * CLI's `--crucible-server` — and `undefined` means the caller did not say.
@@ -357,46 +380,17 @@ export async function decideWhereTextActRuns(
   named: string | undefined,
   host: TextVenueHost,
 ): Promise<TextActVenue> {
-  if (named !== undefined) {
-    if (typeof named !== 'string' || named.trim() === '') {
-      throw new CrucibleTextActError(
-        'crucible_server_not_named',
-        'a Crucible server was asked for and none was named. It takes the NAME of an entry in '
-          + '<userData>/crucible-servers.json (bookforge-tts --crucible-list), or the reserved '
-          + 'a registered server; there is no default and no fallback to this machine.',
-      );
+  try {
+    const decided = await decideVenueAmongEnabled(named, host, TEXT_ACT_WORDS);
+    return { where: 'crucible', ...decided };
+  } catch (err) {
+    // routing's `no_enabled_server` passes through in its own words; only the
+    // decision's own two refusals are re-dressed.
+    if (err instanceof VenueDecisionRefusal) {
+      throw new CrucibleTextActError(err.code, err.message);
     }
-    return { where: 'crucible', server: named.trim(), because: 'the caller named it' };
+    throw err;
   }
-
-  const view = host.view();
-
-  // Throws CrucibleRoutingError `no_enabled_server` in routing's own words,
-  // which already tell "you have none" from "you disabled them all".
-  const enabled = host.enabled();
-
-  if (view.newJobsWaitFor === 'top-ranked') {
-    return {
-      where: 'crucible',
-      server: (enabled[0] as RankedServerRow).name,
-      because: 'the top-ranked server',
-    };
-  }
-
-  const tried: string[] = [];
-  for (const row of enabled) {
-    const pong = await host.ping(row.name);
-    if (pong.outcome === 'ok') {
-      return { where: 'crucible', server: row.name, because: 'any: the first that answered' };
-    }
-    tried.push(`${row.name} (${pong.outcome}: ${pong.message})`);
-  }
-  throw new CrucibleTextActError(
-    'no_reachable_server',
-    'new jobs are set to wait for ANY Crucible server, and none of the enabled ones answered: '
-      + `${tried.join('; ')}. Start one, or add one in Settings → Crucible Servers. There are no `
-      + 'local text engines to fall back to: a text act runs on a Crucible server or not at all.',
-  );
 }
 
 /**
