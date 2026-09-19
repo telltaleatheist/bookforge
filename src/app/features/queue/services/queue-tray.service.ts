@@ -21,7 +21,7 @@
 
 import { Injectable, computed, inject, signal } from '@angular/core';
 
-import type { QueueJob as EngineJob, StepStatus } from '@shared/queue/engine-types';
+import type { QueueJob as EngineJob, ServerReach, StepStatus } from '@shared/queue/engine-types';
 import { jobStatus } from '@shared/queue/engine-types';
 import {
   benchLanes,
@@ -230,6 +230,22 @@ export class QueueTrayService {
    * remove.
    */
   readonly gpuDial = computed(() => this.queue.snapshot().gpuDial);
+
+  /**
+   * EVERY REGISTERED CRUCIBLE SERVER, best first, disabled ones included.
+   *
+   * The same reasoning as {@link gpuDial}, and the same source: main owns the
+   * routing record and the reach cache, and publishes both on every snapshot.
+   * A surface that fetched its own list would go stale the moment somebody
+   * flipped a switch — which is exactly what the per-book server picker did
+   * before this existed (see `QueueComponent.waitForChoices`).
+   *
+   * `enabled` is the operator's switch and `reach` is the machine's answer, kept
+   * apart here as they are on the wire: a surface that folded "asleep" into
+   * "off" would be disabling hardware nobody chose to disable.
+   */
+  readonly servers = computed<readonly ServerReach[]>(
+    () => this.queue.snapshot().servers);
 
   /**
    * BOOKS THAT HAVE BEEN ADDED BUT NOT SENT — the Pending band.

@@ -112,7 +112,27 @@ export class CrucibleRoutingError extends Error {
   }
 }
 
-const DEFAULT_WAIT_FOR: WaitForDefault = 'top-ranked';
+/*
+ * WHAT A NEW ROW WAITS FOR WHEN NOBODY HAS SAID — `any`, since Owen's ruling of
+ * 2026-09-19: *"the default should be 'any' for the queue items. if i want
+ * everything to go through one, ill disable one of the servers with the
+ * checkbox"*.
+ *
+ * It used to be `top-ranked`, and the two are not near-misses of each other.
+ * `top-ranked` writes A MACHINE'S NAME onto every book, which is an
+ * INSTRUCTION — `decideWaitFor` holds a named server rather than sending the
+ * book elsewhere — so a queue full of rows nobody routed by hand was a queue
+ * pinned to one card by a default. `any` is the absence of an instruction, and
+ * it is the setting in which the enable switches mean what they look like they
+ * mean: the book goes to the first ENABLED server that answers, so switching one
+ * off routes the queue rather than leaving it stuck on a name.
+ *
+ * This is the record's default, not a migration. A record already on disk keeps
+ * what it says (it carries this key explicitly), for the reason nothing else
+ * here rewrites one: the file is the operator's. The radio in Settings →
+ * Crucible Servers is the one click that moves an existing record over.
+ */
+const DEFAULT_WAIT_FOR: WaitForDefault = 'any';
 
 /**
  * THE RETIRED SWITCH: stripped on read, said ONCE, never honoured.

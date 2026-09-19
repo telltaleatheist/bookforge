@@ -43,6 +43,7 @@ import type { CdkDragDrop } from '@angular/cdk/drag-drop';
 
 import { benchRows, prepFraction, prepLabel } from '@shared/queue/bench';
 import type { BookPlan, FinishedRun } from '@shared/queue/bench';
+import type { ServerReach } from '@shared/queue/engine-types';
 import { LOCAL_WORK_SET, LONGFORM_ALIGN_SET } from '@shared/queue/slot-sets';
 import { ToolbarComponent, ToolbarItem } from '../../creamsicle-desktop';
 import { DialogService } from '../../creamsicle-desktop/services/dialog.service';
@@ -414,8 +415,10 @@ import type { BenchSectionView, BookPlanView, LaneView } from './services/queue-
                       @if (waitForValue(plan) === '') {
                         <option value="">No server chosen</option>
                       }
-                      @for (name of waitForChoices(); track name) {
-                        <option [value]="name">{{ name }}</option>
+                      @for (row of waitForChoices(); track row.name) {
+                        <option [value]="row.name" [disabled]="!row.enabled">
+                          {{ serverOptionLabel(row) }}
+                        </option>
                       }
                       <option value="any">Let the queue decide</option>
                     </select>
@@ -531,8 +534,10 @@ import type { BenchSectionView, BookPlanView, LaneView } from './services/queue-
                           @if (waitForValue(plan) === '') {
                             <option value="">No server chosen</option>
                           }
-                          @for (name of waitForChoices(); track name) {
-                            <option [value]="name">{{ name }}</option>
+                          @for (row of waitForChoices(); track row.name) {
+                            <option [value]="row.name" [disabled]="!row.enabled">
+                              {{ serverOptionLabel(row) }}
+                            </option>
                           }
                           <option value="any">Any — the first that will take it</option>
                         </select>
@@ -1532,13 +1537,6 @@ export class QueueComponent {
   private readonly toasts = inject(ToastService);
   private readonly dialog = inject(DialogService);
 
-  constructor() {
-    // The server list is settings state, not queue state, so it is read once
-    // here and again on Refresh rather than watched: it changes when somebody
-    // is in Settings, not while a book renders.
-    void this.loadWaitForChoices();
-  }
-
   /** Steps whose full readout the user has opened. Closed is the default. */
   readonly expanded = signal<ReadonlySet<string>>(new Set());
 
@@ -1627,25 +1625,45 @@ export class QueueComponent {
   // ── Which server a book waits for ────────────────────────────────────────
   //
   // crucible docs/PHASE7-LANES.md §4.2.1. The picker is per BOOK, not per step
-  // (§4.4: one book = one GPU), and it offers the ENABLED servers in rank order
-  // plus Any. Disabled servers are deliberately absent: the enable switch is
-  // standing state about hardware, and offering a machine the queue may not use
-  // would be offering a row that can only hold.
+  // (§4.4: one book = one GPU), and it offers EVERY registered server in rank
+  // order plus Any — a switched-off one greyed rather than gone.
+  //
+  // ── Why every server, and why off the snapshot ─────────────────────────────
+  //
+  // This list used to be the ENABLED servers, fetched once through
+  // `crucible.servers()` when the page opened, and it was wrong in both halves
+  // at once (Owen, 2026-09-19: *"if one of the crucible servers is disabled with
+  // an unchecked checkbox, that crucible server doesnt appear as an option in
+  // the queue dropdown. if i re-check it, it still doesnt appear"*).
+  //
+  //  - FILTERED: a machine you can see on the bench, with its own switch on its
+  //    own card, simply was not in the list beside it. The two controls are
+  //    about the same hardware and disagreed about whether it exists. Drawn and
+  //    DISABLED is the same answer the bench already gives a switched-off lane
+  //    (`BenchLane.disabled`): *a card you own and turned off must never look
+  //    like one BookForge cannot find.*
+  //
+  //  - READ ONCE: flipping the switch made the list stale with nothing to
+  //    refresh it, so re-enabling a server left it missing until the page was
+  //    rebuilt. The cure is not a second fetch on the toggle — it is to stop
+  //    holding a copy. `QueueSnapshot.servers` is this same list, ranked,
+  //    disabled ones included, recomputed on every publication from the reach
+  //    cache admission itself reads. One fact, one owner (crucible
+  //    docs/ARCHITECTURE.md R1): a picker that polled on its own could show a
+  //    machine as available in the exact moment the scheduler was holding a book
+  //    off it.
+  //
+  // Offering a disabled server is not offering a trap: the option cannot be
+  // chosen, and a book that already names one keeps showing that name rather
+  // than appearing to have no answer.
 
-  /** The enabled servers, best first. Read once when the page opens. */
-  readonly waitForChoices = signal<string[]>([]);
+  /** Every registered server, best first, each with the operator's switch. */
+  readonly waitForChoices = computed<readonly ServerReach[]>(
+    () => this.tray.servers());
 
-  private async loadWaitForChoices(): Promise<void> {
-    const res = await this.electronService.crucible.servers();
-    if (!res.success || res.data === undefined) {
-      // Not a refusal worth a toast: a machine with no Crucible has no picker
-      // to draw, and the rows say so themselves when the queue tries them.
-      this.waitForChoices.set([]);
-      return;
-    }
-    this.waitForChoices.set(
-      res.data.routing.ranked.filter((row) => row.enabled).map((row) => row.name),
-    );
+  /** "mac — switched off", or just the name. Why an option cannot be picked. */
+  serverOptionLabel(row: ServerReach): string {
+    return row.enabled ? row.name : `${row.name} — switched off`;
   }
 
   /** What the select shows: the book's one answer, or '' for none/disagreeing. */
@@ -1937,10 +1955,9 @@ export class QueueComponent {
       case 'pause-after': this.report(this.queueService.pauseQueue()); break;
       // The hard stop: latch off AND every running step cancelled.
       case 'halt': this.report(this.queueService.stopQueue()); break;
-      case 'refresh':
-        this.report(this.queueService.refreshFromBackend());
-        this.report(this.loadWaitForChoices());
-        break;
+      // The server list is NOT refreshed here any more and needs no door of its
+      // own: it rides the snapshot this call re-reads (`waitForChoices`).
+      case 'refresh': this.report(this.queueService.refreshFromBackend()); break;
     }
   }
 

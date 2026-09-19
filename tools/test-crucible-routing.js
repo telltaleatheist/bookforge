@@ -75,7 +75,11 @@ check('no file yet is the DEFAULT record, not a refusal: every server ranked in 
   const view = store.view(KNOWN);
   assert.deepStrictEqual(names(view), KNOWN);
   assert.deepStrictEqual(enabled(view), KNOWN);
-  assert.strictEqual(view.newJobsWaitFor, 'top-ranked');
+  // `any` since 2026-09-19, and the keeper says WHICH of the two it is on
+  // purpose: `top-ranked` writes a machine's NAME on every new book, which is an
+  // instruction the queue then holds to, so the default decided the routing for
+  // anyone who never touched the radio. See DEFAULT_WAIT_FOR.
+  assert.strictEqual(view.newJobsWaitFor, 'any');
   assert.deepStrictEqual(view.unknown, []);
   assert.strictEqual(fs.existsSync(file), false, 'reading must not write a record nobody asked for');
 });
@@ -83,7 +87,7 @@ check('no file yet is the DEFAULT record, not a refusal: every server ranked in 
 check('with no servers at all the view is empty and says so by having nothing, not by inventing one', () => {
   const { store } = fresh();
   assert.deepStrictEqual(store.view([]), {
-    ranked: [], newJobsWaitFor: 'top-ranked', unknown: [],
+    ranked: [], newJobsWaitFor: 'any', unknown: [],
   });
 });
 
@@ -161,6 +165,11 @@ check('New jobs wait for: top-ranked | any — one setting, two values, and noth
 
 check('the default follows the drag: re-rank, and a new row waits for the new top', () => {
   const { store } = fresh();
+  // SAID OUT LOUD rather than leaned on: this is the `top-ranked` mode's rule,
+  // and the record's default is `any` (DEFAULT_WAIT_FOR), where there is no top
+  // to follow. A check that got its mode from the default would have been
+  // silently testing something else the day that default moved.
+  store.setNewJobsWaitFor('top-ranked', KNOWN);
   assert.strictEqual(store.waitForNewJob(KNOWN), 'local');
   store.setOrder(['mac', 'droplet', 'local'], KNOWN);
   assert.strictEqual(store.waitForNewJob(KNOWN), 'mac');
