@@ -9,7 +9,7 @@
  * A render that lived on ext4 has to come out of the guest. The fast road is
  * the guest's own `cp` from ext4 to `/mnt/<letter>`; it exists only when the
  * guest actually HAS that drive mounted. WSL2 auto-mounts fixed drives only,
- * so the library's Z: (titan, over SMB) has no `/mnt/z` at all, and the guest's
+ * so the library's Z: (the NAS, over SMB) has no `/mnt/z` at all, and the guest's
  * `mkdir -p /mnt/z/bookforge` answers "Permission denied" — which is how the
  * scratch rescue lost 2,728 rendered sentences across four events: the copy
  * failed, the sweep that followed deleted the only copy of the work.
@@ -80,7 +80,7 @@ function probeFor(mounted) {
   await check('a drive the guest has mounted goes in-guest', async () => {
     const probe = probeFor(['c']);
     assert.strictEqual(
-      await bridge.copyOutRouteFor('C:\\Users\\tellt\\library\\tmp\\.tmp-ebook-1', probe),
+      await bridge.copyOutRouteFor('C:\\Users\\<user>\\library\\tmp\\.tmp-ebook-1', probe),
       'in-guest');
     assert.deepStrictEqual(probe.asked, ['C']);
   });
@@ -88,7 +88,7 @@ function probeFor(mounted) {
   await check('a mapped network drive the guest cannot see goes through \\\\wsl$', async () => {
     const probe = probeFor(['c', 'e']);
     assert.strictEqual(
-      await bridge.copyOutRouteFor('Z:\\bookforge\\projects\\Mutineer\\stages\\03-tts', probe),
+      await bridge.copyOutRouteFor('Z:\\<library>\\projects\\Mutineer\\stages\\03-tts', probe),
       'through-wsl-share');
     assert.deepStrictEqual(probe.asked, ['Z'], 'the guest was asked about something other than Z');
   });
@@ -96,7 +96,7 @@ function probeFor(mounted) {
   await check('a UNC destination has no drive to mount, and the guest is never asked', async () => {
     const probe = probeFor(['c']);
     assert.strictEqual(
-      await bridge.copyOutRouteFor('\\\\titan\\bookforge\\projects\\x', probe),
+      await bridge.copyOutRouteFor('\\\\NAS\\bookforge\\projects\\x', probe),
       'through-wsl-share');
     assert.deepStrictEqual(probe.asked, [],
       'a UNC path with no drive letter still went out to the guest to ask about one');

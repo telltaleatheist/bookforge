@@ -6,7 +6,7 @@
  *
  * ── What is being defended ──────────────────────────────────────────────────
  *
- * The library lives on titan and both machines' BookForge instances write it
+ * The library lives on the NAS and both machines' BookForge instances write it
  * (ruling 2026-08-17). `{projectDir}/job-analytics.json` was read, modified and
  * written back with no lock at all: an atomic write prevents a TORN file, not a
  * LOST UPDATE. Two machines finishing a job on the same book inside the same

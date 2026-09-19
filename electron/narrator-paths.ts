@@ -483,7 +483,7 @@ export function shellEscapeArgs(args: string[]): string[] {
  *   \\wsl.localhost\Ubuntu\… -> /home/x
  *   /home/x  /  /mnt/c/x     -> unchanged, already guest form
  *   --session_dir  /  ''     -> unchanged, not a path at all
- *   \\TITAN\iO\bookforge\x   -> REFUSED by name
+ *   \\NAS\iO\bookforge\x     -> REFUSED by name
  *   C:stages\x.epub          -> REFUSED by name
  *
  * WHY IT IS ONE FUNCTION. It was three — this one, a second `windowsToWslPath`
@@ -505,7 +505,7 @@ export function shellEscapeArgs(args: string[]): string[] {
  * UNC path names no drive letter to mount at all (memory
  * `wsl-cannot-see-network-drives`; `wsl-mounts.ts` states the same law). Passing
  * it through unchanged is how the guest comes to answer `Session directory not
- * found: \\TITAN\...` — an error naming a path nobody chose. So is a
+ * found: \\NAS\...` — an error naming a path nobody chose. So is a
  * drive-RELATIVE path (`C:stages\x`): it resolves against a per-drive current
  * directory the guest does not have, so there is no guest form of it to return.
  *
@@ -549,7 +549,7 @@ export function windowsToWslPath(hostPath: string): string {
  * can open. There is one, and the `/mnt/` decision is INSIDE it.
  *
  *   /mnt/c/Users/foo/book.epub     -> C:\Users\foo\book.epub
- *   /home/telltale/staged-x.epub   -> \\wsl$\Ubuntu\home\telltale\staged-x.epub
+ *   /home/<user>/staged-x.epub     -> \\wsl$\Ubuntu\home\<user>\staged-x.epub
  *   C:\Users\foo\book.epub         -> unchanged (already Windows)
  *   \\wsl$\Ubuntu\home\…           -> unchanged (already Windows)
  *

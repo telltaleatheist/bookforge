@@ -560,7 +560,7 @@ export type CopyOutRoute = 'in-guest' | 'through-wsl-share';
  * This is a ROUTING DECISION on a probed fact, not a fallback — the wrong road
  * fails loudly (the guest's mkdir cannot create /mnt/z), it never substitutes.
  * Taking it blind cost 2,728 rendered sentences across four scratch rescues
- * onto the titan library at Z:, which the guest has never had a /mnt entry for.
+ * onto the NAS library at Z:, which the guest has never had a /mnt entry for.
  *
  * The probe is a parameter so the rule can be driven without a guest
  * (`tools/test-wsl-copy-out-route.js`); production passes `wslSeesDrive`.

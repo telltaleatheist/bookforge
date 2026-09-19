@@ -112,7 +112,7 @@ function killingAmericaEpub() {
     return {
       reason: `${why} — this suite needs the Killing America EPUB, which lives on the shared `
         + `library at <library>/projects/${KA_PROJECT_ID}/archive/${KA_FILENAME} (Windows `
-        + 'Z:\\bookforge\\…, Mac /Volumes/iO/bookforge/…). Point BOOKFORGE_KA_EPUB at it, or set '
+        + 'Z:\\<library>\\…, Mac /Volumes/<share>/bookforge/…). Point BOOKFORGE_KA_EPUB at it, or set '
         + 'the library root in the app.',
     };
   }

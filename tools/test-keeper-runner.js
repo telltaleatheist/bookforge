@@ -230,7 +230,7 @@ check('the contract shape is read as a skip, carrying its reason', () => {
 check('a SECOND spelling of the same sentence is a FAIL row, never ok', () => {
   // Verbatim what test-foundry-clean-text-vendor printed until this commit.
   const old = 'SKIP test-foundry-clean-text-vendor — no Foundry checkout on this machine. '
-    + 'Tried: C:\\Users\\tellt\\Projects\\foundry. Set FOUNDRY_REPO to point at one.';
+    + 'Tried: C:\\Users\\<user>\\Projects\\foundry. Set FOUNDRY_REPO to point at one.';
   const read = runner.readSkip(old);
   assert.ok(read !== null, 'the runner did not notice a line that plainly announces a skip');
   assert.strictEqual(read.why, undefined, 'a spelling the contract does not define is not a reason');

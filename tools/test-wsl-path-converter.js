@@ -98,23 +98,23 @@ async function check(name, fn) {
       // There is no guest to come out of on macOS/Linux: an absolute POSIX
       // path there IS the host's own path and must not be rewritten.
       assert.strictEqual(
-        narratorPaths.wslToWindowsPath('/home/telltale/bookforge-sessions/staged-abc.epub'),
-        '/home/telltale/bookforge-sessions/staged-abc.epub');
+        narratorPaths.wslToWindowsPath('/home/<user>/bookforge-sessions/staged-abc.epub'),
+        '/home/<user>/bookforge-sessions/staged-abc.epub');
       return;
     }
-    const out = narratorPaths.wslToWindowsPath('/home/telltale/bookforge-sessions/staged-abc.epub');
+    const out = narratorPaths.wslToWindowsPath('/home/<user>/bookforge-sessions/staged-abc.epub');
     assert.match(out, /^\\\\wsl[$.]/, `guest-native path was not converted: ${out}`);
-    assert.ok(out.endsWith('\\home\\telltale\\bookforge-sessions\\staged-abc.epub'),
+    assert.ok(out.endsWith('\\home\\<user>\\bookforge-sessions\\staged-abc.epub'),
       `converted path lost its tail: ${out}`);
     // And `path.dirname` on the answer is a directory Windows can open.
-    assert.ok(path.dirname(out).endsWith('\\home\\telltale\\bookforge-sessions'));
+    assert.ok(path.dirname(out).endsWith('\\home\\<user>\\bookforge-sessions'));
   });
 
   await check('an already-Windows path is passed through, drive or UNC', () => {
     assert.strictEqual(narratorPaths.wslToWindowsPath('C:\\Users\\x\\a.epub'), 'C:\\Users\\x\\a.epub');
-    assert.strictEqual(narratorPaths.wslToWindowsPath('Z:/bookforge/projects/x'), 'Z:/bookforge/projects/x');
+    assert.strictEqual(narratorPaths.wslToWindowsPath('Z:/<library>/projects/x'), 'Z:/<library>/projects/x');
     assert.strictEqual(narratorPaths.wslToWindowsPath('\\\\wsl$\\Ubuntu\\home\\x'), '\\\\wsl$\\Ubuntu\\home\\x');
-    assert.strictEqual(narratorPaths.wslToWindowsPath('\\\\titan\\bookforge\\x'), '\\\\titan\\bookforge\\x');
+    assert.strictEqual(narratorPaths.wslToWindowsPath('\\\\NAS\\bookforge\\x'), '\\\\NAS\\bookforge\\x');
   });
 
   await check('anything that is neither is refused by name, never returned as-is', () => {

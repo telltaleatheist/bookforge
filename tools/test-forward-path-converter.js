@@ -113,8 +113,8 @@ check('both \\\\wsl$ UNC forms become the guest-native path', () => {
 });
 
 check('a path already in guest form is unchanged', () => {
-  assert.strictEqual(toGuest('/home/telltale/bookforge-sessions/staged-abc.epub'),
-    '/home/telltale/bookforge-sessions/staged-abc.epub');
+  assert.strictEqual(toGuest('/home/<user>/bookforge-sessions/staged-abc.epub'),
+    '/home/<user>/bookforge-sessions/staged-abc.epub');
   assert.strictEqual(toGuest('/mnt/c/Users/x/a.epub'), '/mnt/c/Users/x/a.epub');
 });
 
@@ -132,7 +132,7 @@ check('it round-trips with wslToWindowsPath for all three forms', () => {
   assert.strictEqual(toHost(toGuest(drive)), drive);
 
   if (!WINDOWS) return; // there is no guest to come out of on macOS/Linux
-  const guest = '/home/telltale/bookforge-sessions/staged-abc.epub';
+  const guest = '/home/<user>/bookforge-sessions/staged-abc.epub';
   assert.strictEqual(toGuest(toHost(guest)), guest,
     'a guest-native path did not survive the trip through the \\\\wsl$ share');
   const unc = toHost(guest);
@@ -141,9 +141,9 @@ check('it round-trips with wslToWindowsPath for all three forms', () => {
 });
 
 check('a network share is refused by name, never handed to the guest', () => {
-  assert.throws(() => toGuest(B + B + 'TITAN' + B + 'iO' + B + 'bookforge' + B + 'x.epub'),
-    /TITAN/, 'a UNC share was not refused by name');
-  assert.throws(() => toGuest(B + B + 'TITAN' + B + 'iO' + B + 'bookforge' + B + 'x.epub'),
+  assert.throws(() => toGuest(B + B + 'NAS' + B + 'iO' + B + 'bookforge' + B + 'x.epub'),
+    /NAS/, 'a UNC share was not refused by name');
+  assert.throws(() => toGuest(B + B + 'NAS' + B + 'iO' + B + 'bookforge' + B + 'x.epub'),
     /windowsToWslPath/);
 });
 
@@ -153,7 +153,7 @@ check('a drive-relative path is refused by name — there is no guest form of it
 
 check('a MAPPED drive letter is converted, not refused', () => {
   // DELIBERATE DEPARTURE FROM THE BRIEF, which asked for `Z:\` to be refused
-  // beside `\\titan\`. It must not be. `electron/wsl-mounts.ts` (commit
+  // beside `\\NAS\`. It must not be. `electron/wsl-mounts.ts` (commit
   // e9e70ade, 2026-08-24) exists precisely to MOUNT the share behind a mapped
   // letter at `/mnt/<letter>` before the guest is handed a path on it, so that
   // this converter's output is simply correct — Owen chose the mount over
