@@ -235,6 +235,28 @@ export function crucibleVoiceFor(ttsEngine: string | undefined, voiceId: string 
 }
 
 /**
+ * The fields of one `GET /v1/voices` row the doors in this module read.
+ *
+ * Structural rather than the SDK's `VoiceInfo`, for `voice-band.ts`'s reason:
+ * a keeper can build one without importing the SDK, and a consumer can take it
+ * without one either. Every field here is required on the wire — `takes`
+ * included, which the SDK reads with `num(entry, 'takes')` and refuses the whole
+ * document without — so nothing below ever has a shape to default.
+ */
+export interface CrucibleVoiceRow {
+  readonly id: string;
+  readonly installed: boolean;
+  readonly loadable: boolean;
+  readonly reason: string | null;
+  /**
+   * How many rungs this voice's take ladder has: the valid `take` values are
+   * `0 .. takes - 1`, and the SDK's own words are "ask before you submit" —
+   * a take past the end is refused `unknown_take` and NEVER clamped.
+   */
+  readonly takes: number;
+}
+
+/**
  * The CHECK half of the table above: does this server actually serve that id,
  * and can it load it?
  *
@@ -254,13 +276,21 @@ export function crucibleVoiceFor(ttsEngine: string | undefined, voiceId: string 
  * cap (`voice-band.ts`), so it reads the row once and asserts both halves off it.
  * This entry point stays for the callers that only ask the question — the retake
  * door (`reroll.ts`) and the keepers.
+ *
+ * **It HANDS BACK the row it judged**, for the same reason `crucibleVoiceBand`
+ * does: the row carries more than the two booleans checked here, and the retake
+ * door needs one of them — `takes`, the length of this voice's take ladder,
+ * which is what a caller spreading N candidates across the rungs must know
+ * before it submits. One `GET /v1/voices` answers both questions. A second call
+ * to ask how long the ladder is would be a second copy of one fact, which is
+ * the shape crucible's `docs/ARCHITECTURE.md` R1 is about.
  */
 export async function assertCrucibleVoiceAvailable(
-  client: { voices(): Promise<readonly { id: string; installed: boolean; loadable: boolean; reason: string | null }[]> },
+  client: { voices(): Promise<readonly CrucibleVoiceRow[]> },
   server: string,
   voice: string,
-): Promise<void> {
-  let rows: readonly { id: string; installed: boolean; loadable: boolean; reason: string | null }[];
+): Promise<CrucibleVoiceRow> {
+  let rows: readonly CrucibleVoiceRow[];
   try {
     rows = await client.voices();
   } catch (err) {
@@ -277,6 +307,7 @@ export async function assertCrucibleVoiceAvailable(
     );
   }
   assertVoiceRowLoadable(row, server, voice);
+  return row;
 }
 
 /**
