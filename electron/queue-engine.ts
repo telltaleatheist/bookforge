@@ -189,6 +189,48 @@ export interface StepRunContext {
   readonly input: ArtifactRef;
   readonly signal: AbortSignal;
   report(update: StepReport): void;
+  /**
+   * THE CARD IS FREE AND THIS STEP IS NOT DONE — give the GPU slot back now.
+   *
+   * ── The defect (measured on the Mac, 2026-09-19) ─────────────────────────
+   *
+   * A narration run is already two rows — the render on the GPU, the assembly
+   * on the CPU — and the hand-off between them works: `reassembly` claimed its
+   * CPU slot 1 ms after the narration settled. What did not work is the END of
+   * the render row. Crucible unloaded the voice at 12:57:49, the post-render
+   * alignment failed at 12:58:03 (`tts.log`), and the row held the GPU slot
+   * until 13:05:42 — seven minutes and thirty-eight seconds in which the only
+   * thing happening was `cacheSessionToProject` copying the rendered sentences
+   * onto the library volume. Owen: *"it just sits in the gpu slot for another
+   * 10 minutes after alignment fails. a timeout? it takes up the slot."* It was
+   * not a timeout. The card was free and the next book could not have it.
+   *
+   * ── Why this is not a second owner of the resource ──────────────────────
+   *
+   * {@link StepModule.resource} answers *what does this step contend for, given
+   * its config*, and it is asked once, before the step runs. That single answer
+   * is a LIE for a step whose card work ends before the step does, and no
+   * config can fix it: the same narration row is GPU work for its render and
+   * local file work for its publish. This is the same owner — the module —
+   * answering the same question at the one moment the answer changes. The
+   * engine still owns the accounting; nothing else may write `step.resource`.
+   *
+   * ONE DIRECTION ONLY. A step may give the card back; it may never take it
+   * again, because nothing re-admits a running step and a step that re-claimed
+   * would be a second render on a card the pump has already given away.
+   *
+   * WHAT IT DOES: the step is recharged to this machine's CPU pool (its
+   * `venue` is cleared with its `resource` — see {@link QueueStep.venue}) and
+   * the pump runs, so a queued render claims the freed slot in the same tick.
+   * The step keeps running and settles exactly as it would have. It is
+   * RECORDED into the CPU pool rather than admitted to it: the work is already
+   * happening, and the count is what stops the pump starting a third CPU job on
+   * top of it.
+   *
+   * `reason` is said in the log and is the step's own words for why the card is
+   * free — "the render and the alignment have settled".
+   */
+  releaseGpu(reason: string): void;
 }
 
 export interface StepModule {
@@ -3345,6 +3387,53 @@ function resolveInput(step: QueueStep): ArtifactRef {
   return parent.output;
 }
 
+/**
+ * GIVE THE GPU SLOT BACK WHILE THE STEP RUNS ON — the one writer of that move.
+ *
+ * See {@link StepRunContext.releaseGpu} for the measurement this exists for. The
+ * pair written here is the pair admission writes (`step.venue`, `step.resource`)
+ * and for the same reason: the step has stopped being work on the machine that
+ * rendered it, so charging that engine's pool for the copy that follows would
+ * name a lane nothing of this row is on any more.
+ *
+ * IT NEVER THROWS. Every call is bookkeeping about work that is already in
+ * flight, and failing a nine-hour render over an accounting call would be the
+ * worse of the two bugs. Every refusal is LOUD, and there is no silent arm: a
+ * call that finds nothing to hand over says which step and what it found.
+ */
+function handOverGpuSlot(job: QueueJob, step: QueueStep, reason: string): void {
+  if (step.status !== 'running') {
+    console.error(
+      `[queue] ${step.label} asked to give the GPU slot back while it is "${step.status}", `
+      + 'which holds no slot. Nothing was changed.');
+    return;
+  }
+  if (step.resource !== 'gpu') {
+    // Idempotent on a second call, and named rather than swallowed: a module
+    // that hands over twice is telling the truth twice, and a module that hands
+    // over a step that never held the card is a bug worth reading in the log.
+    console.error(
+      `[queue] ${step.label} asked to give the GPU slot back, but it is charged to the `
+      + `"${step.resource}" pool — it holds no GPU slot. Nothing was changed.`);
+    return;
+  }
+  step.resource = 'cpu';
+  step.venue = undefined;
+  const live = runningSteps.get(step.id);
+  if (live === undefined) {
+    console.error(
+      `[queue] ${step.label} is running but has no live entry, so the sampler will keep `
+      + 'reading it as GPU work. The row itself has been recharged.');
+  } else {
+    live.resource = 'cpu';
+  }
+  console.log(
+    `[queue] ${job.title} — ${step.label}: ${reason}. The GPU slot is free; the rest of this `
+    + 'step is charged to the CPU pool.');
+  changed();
+  pump();
+}
+
 async function launch(job: QueueJob, step: QueueStep): Promise<void> {
   const mod = moduleFor(step.type);
   const abort = new AbortController();
@@ -3389,6 +3478,7 @@ async function launch(job: QueueJob, step: QueueStep): Promise<void> {
     input,
     signal: abort.signal,
     report: (update) => applyReport(step, update),
+    releaseGpu: (reason) => handOverGpuSlot(job, step, reason),
   };
 
   try {
@@ -3545,8 +3635,14 @@ function settleStep(job: QueueJob, step: QueueStep, outcome: StepOutcome): void 
   // A run that was stopped BECAUSE the machine was cooking is exactly the one
   // whose thermal story matters. Analytics flow verbatim to the project ledger,
   // so this is how a slow week becomes attributable after the fact.
+  //
+  // ASKED OF THE SAMPLES, NOT OF THE RESOURCE. `recordGpuThermal` accumulates
+  // against GPU steps and no others, so a non-null summary already means this
+  // step was on the card — and re-asking `step.resource` here threw the render's
+  // whole thermal story away the moment a step handed the GPU slot back before
+  // settling (`handOverGpuSlot`), which is every narration.
   const thermal = takeThermalSummary(step.id);
-  if (thermal !== null && step.resource === 'gpu') {
+  if (thermal !== null) {
     const analytics = (step.analytics ?? {}) as Record<string, unknown>;
     analytics['gpuThermal'] = thermal;
     step.analytics = analytics;

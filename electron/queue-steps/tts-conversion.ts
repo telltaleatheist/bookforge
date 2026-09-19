@@ -40,6 +40,7 @@ import {
   cacheSessionToProject,
   detectRecommendedWorkerCount,
   setMainWindow,
+  TTS_GPU_PHASE_OVER,
 } from '../parallel-tts-bridge';
 import { getTTSLogger } from '../rolling-logger';
 import type { StepModule, StepRunContext, StepReport } from '../queue-engine';
@@ -385,6 +386,27 @@ export const ttsConversionStep: StepModule = {
       if (event.jobId !== ctx.stepId) return;
       ctx.report(mapProgress(event.progress));
     });
+    /*
+     * THE GPU SLOT GOES BACK MID-STEP — see `StepRunContext.releaseGpu` for the
+     * 7 m 38 s Owen measured on 2026-09-19.
+     *
+     * This row is a GPU row because the RENDER is, and the render is over well
+     * before the row is: the bridge still has a session to publish into the
+     * project, which is minutes of file copy and no card at all. The bridge is
+     * the only thing that knows when its last GPU act settled, so it says so and
+     * this listens — the queue is told by the work, never by a guess about how
+     * long a tail lasts.
+     *
+     * The reason is passed through verbatim rather than restated here: two
+     * sentences for one fact is the shape that drifts.
+     */
+    const unsubscribeGpu = onBridgeEvent<{ jobId: string; reason: string }>(
+      TTS_GPU_PHASE_OVER,
+      (event) => {
+        if (event.jobId !== ctx.stepId) return;
+        ctx.releaseGpu(event.reason);
+      },
+    );
     // Subscribed BEFORE the bridge is called: `startParallelConversion` can fail
     // and emit its completion before it returns, and a listener attached after
     // that would wait forever for a message already sent.
@@ -475,6 +497,7 @@ export const ttsConversionStep: StepModule = {
       };
     } finally {
       unsubscribe();
+      unsubscribeGpu();
     }
   },
 

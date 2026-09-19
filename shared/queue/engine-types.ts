@@ -565,8 +565,19 @@ export interface QueueStep {
    * WHERE THIS STEP'S WORK ACTUALLY WENT — a registered server's name, a cloud
    * lane, or `local-longform-align` for the one GPU act that cannot travel.
    *
-   * Written ONCE, by the pump, at the moment the step is admitted, and never
-   * changed afterwards. It is the SLOT SET the step occupies while it runs
+   * Written by the pump at the moment the step is admitted, and changed
+   * afterwards by exactly ONE act: the GPU HAND-OFF, which clears it back to
+   * this machine's local work (`StepRunContext.releaseGpu`,
+   * electron/queue-engine.ts). A step that has given the card back is no longer
+   * work on that machine — the rest of it is a file copy here — and leaving the
+   * server's name standing would charge that engine's pool for it and draw the
+   * row on its lane. The pair is written together there for the same reason
+   * admission writes it together: venue and resource are one fact about where a
+   * step's work is happening, and they cannot be allowed to disagree.
+   * {@link QueueJob.waitForResolved} is NOT touched by the hand-off — §4.3 still
+   * rules that the run stays assigned to the machine it started on.
+   *
+   * It is the SLOT SET the step occupies while it runs
    * (`shared/queue/slot-sets.ts`), which is why it has to be on the step rather
    * than only on the run: a run can hold two GPU steps whose venues differ
    * while the migration is half done — a render already sent to the Mac and an
