@@ -25,6 +25,10 @@ import type {
   CrucibleInstallProgress,
 } from '@shared/crucible/install-wire';
 import type {
+  CrucibleInstallDoorEvent,
+  CrucibleInstallDoorStatus,
+} from '@shared/crucible/install-door-wire';
+import type {
   CrucibleUninstallPlan,
   CrucibleUninstallRefusalCode,
 } from '@shared/crucible/uninstall-wire';
@@ -4008,12 +4012,13 @@ export class ElectronService {
 
     /**
      * The SAME add, for the Crucible `servers().discovered` found on this
-     * computer: only the NAME crosses, because the token may not. Not a second
+     * computer. NOTHING crosses: the token may not, and the NAME is the
+     * engine's own, read from `/v1/info` in main (PHASE19 §4). Not a second
      * kind of server — a registry row like any other.
      */
-    addDiscovered: (name: string): Promise<{ success: boolean; data?: CrucibleServerRow; error?: string }> =>
+    addDiscovered: (): Promise<{ success: boolean; data?: CrucibleServerRow; error?: string }> =>
       this.isElectron
-        ? (window as any).electron.crucible.addDiscovered(name)
+        ? (window as any).electron.crucible.addDiscovered()
         : Promise.resolve({ success: false, error: 'Not running in Electron' }),
 
     remove: (name: string): Promise<{ success: boolean; data?: CrucibleServerRow; error?: string }> =>
@@ -4249,6 +4254,39 @@ export class ElectronService {
         ? (window as any).electron.crucible.onInstallProgress(callback)
         : () => { /* no Electron, no installs */ }),
 
+    /*
+     * ── THE INSTALL DOOR (crucible PHASE19-AUTOMATIC-WSL.md §2.6) ──────────
+     *
+     * The move to the Linux engine belongs to the orchestrator: on any Windows
+     * machine that can host WSL2 the tray starts it at login, without anybody
+     * choosing it. So the app's setup surface WATCHES, and the only two things
+     * it can press are the two a person genuinely decides.
+     */
+
+    /** `GET /install` — is a move running, and what did the last one come to? */
+    installStatus: (): Promise<{ success: boolean; data?: CrucibleInstallDoorStatus; error?: string }> =>
+      this.isElectron
+        ? (window as any).electron.crucible.installStatus()
+        : Promise.resolve({ success: false, error: 'Not running in Electron' }),
+
+    /** Every event of a running move, whoever started it. Returns the unsubscribe. */
+    onInstallEvent: (callback: (event: CrucibleInstallDoorEvent) => void): (() => void) =>
+      (this.isElectron
+        ? (window as any).electron.crucible.onInstallEvent(callback)
+        : () => { /* no Electron, no installs */ }),
+
+    /** `POST /install` — **Try again**. Drawn only on `cannot` or `failed`. */
+    installRetry: (): Promise<{ success: boolean; error?: string }> =>
+      this.isElectron
+        ? (window as any).electron.crucible.installRetry()
+        : Promise.resolve({ success: false, error: 'Not running in Electron' }),
+
+    /** **Restart now** — `shutdown.exe /r /t 5`, only when somebody presses it. */
+    restartWindows: (): Promise<{ success: boolean; error?: string }> =>
+      this.isElectron
+        ? (window as any).electron.crucible.restartWindows()
+        : Promise.resolve({ success: false, error: 'Not running in Electron' }),
+
     /**
      * WHAT UNINSTALLING WOULD DO — the dry run, which touches nothing. LOCAL
      * ONLY: anything but this machine's own engine is `uninstall_not_local`.
@@ -4329,7 +4367,7 @@ export class ElectronService {
      * Coordinate with one server now. Joins a run already in flight rather
      * than starting a second, so calling it on arrival at a screen is safe.
      */
-    coordinate: (name: string): Promise<{ success: boolean; data?: CrucibleCoordinationState; deferred?: boolean; error?: string }> =>
+    coordinate: (name: string): Promise<{ success: boolean; data?: CrucibleCoordinationState; deferred?: 'first-run' | 'install'; error?: string }> =>
       this.isElectron
         ? (window as any).electron.crucible.coordinate(name)
         : Promise.resolve({ success: false, error: 'Not running in Electron' }),

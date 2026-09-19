@@ -70,7 +70,7 @@
  * it is one import.
  */
 import {
-  ChangeDetectionStrategy, Component, computed, DestroyRef, inject, signal,
+  ChangeDetectionStrategy, Component, computed, signal,
 } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 
@@ -288,16 +288,19 @@ interface JobRow {
 
         <!-- ── What the engine is, under everything it was asked to do ──── -->
         <p class="small">{{ backendLine(settings) }}</p>
-        @if (settings.backendKind === 'llama-windows') {
-          <p class="small">
-            Optional: use WSL acceleration for additional model support. The engine on
-            {{ chosen() }} manages setup, downloads and any Windows restart requirement.
-          </p>
-          <button class="primary" [disabled]="working()" (click)="upgradeWindows()">
-            Set up WSL acceleration
-          </button>
-        }
-        @if (upgradeMessage(); as message) { <p class="small">{{ message }}</p> }
+        <!--
+          ── THE WSL OFFER IS GONE FROM THIS PAGE (crucible PHASE19 section 0) ──
+
+          It offered to set WSL acceleration up beside the backend line, which is
+          the button Owen ruled out on 2026-09-18: the Linux engine arrives by
+          itself now, as the last step of the install, and nobody is asked. What
+          replaces it is a READOUT of the outcome, and it lives on the Servers
+          card (Settings, Servers) rather than here -- this page is about which
+          model answers which class, and a restart prompt among the routes would
+          be a second screen about the machine underneath them.
+
+          (NO BACKTICKS ANYWHERE IN THIS TEMPLATE, not even in a comment.)
+        -->
 
         <p class="small">
           The sizes above are the engine's estimate of the WEIGHTS only — they do not include the
@@ -430,7 +433,6 @@ export class AiPaneComponent {
   protected readonly capability = signal<CapabilityRecord | null>(null);
   protected readonly working = signal(false);
   protected readonly problem = signal<string | null>(null);
-  protected readonly upgradeMessage = signal<string | null>(null);
 
   /** Pulls in flight or just finished, by subject id. Cleared on a fresh read. */
   private readonly pulls = signal<Record<string, CruciblePullProgress>>({});
@@ -642,12 +644,7 @@ export class AiPaneComponent {
   }
 
   constructor() {
-    const destroyRef = inject(DestroyRef);
     if (!api) return;
-
-    destroyRef.onDestroy(api.crucible.onEngineUpgrade((progress) => {
-      if (progress.server === this.chosen()) this.upgradeMessage.set(progress.message);
-    }));
 
     /*
      * EVERY FRAME OF EVERY PULL, filtered to the engine this page is looking
@@ -730,7 +727,6 @@ export class AiPaneComponent {
     this.capability.set(null);
     this.pulls.set({});
     this.custom.set(null);
-    this.upgradeMessage.set(null);
     void this.load();
   }
 
@@ -893,20 +889,6 @@ export class AiPaneComponent {
       this.problem.set(null);
     } catch (err) {
       this.problem.set(err instanceof Error ? err.message : String(err));
-    }
-  }
-
-  protected async upgradeWindows(): Promise<void> {
-    if (!api) return;
-    this.working.set(true);
-    this.problem.set(null);
-    try {
-      await api.crucible.upgradeWindowsEngine(this.chosen());
-      await this.read();
-    } catch (error) {
-      this.problem.set(error instanceof Error ? error.message : String(error));
-    } finally {
-      this.working.set(false);
     }
   }
 

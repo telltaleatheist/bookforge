@@ -1,8 +1,10 @@
 /** Crucible owns installation. Windows installs its native engine first;
  * the operator may later choose the WSL upgrade through its authenticated task API. */
 import { spawnSync } from 'child_process';
-import * as path from 'path';
-import { CrucibleClient, PAIRING_FILE, parsePairing } from '@crucible/client';
+// `path` and the pairing reader went with the bespoke win32 sequence (PHASE19):
+// the package's own install() reads the guest's config path out of its `done`
+// event, and nothing here joins a Windows path any more.
+import { CrucibleClient } from '@crucible/client';
 
 import { BOOTSTRAP_VERSION, RELEASE_REPO } from '@crucible/bootstrap';
 import type {
@@ -428,33 +430,43 @@ export async function driveCrucibleInstall(
     return { ...installed, steps: [...installed.steps, done] };
   }
 
-  const step: InstallStep = { name: 'native-install', argv: [], status: 'running', detail: 'Installing Crucible on Windows' };
-  options.onStep?.(step);
-  const result = await host.stream([
-    'powershell.exe', '-NoProfile', '-NonInteractive', '-Command',
-    "$ErrorActionPreference = 'Stop'; " + bootstrap.hostInstallCommand(release),
-  ], { timeoutMs: 3_600_000, onLine: (line, stream) => options.onLine?.(line, stream, step.name) });
-  if (result.failure !== null || result.code !== 0) {
-    throw new CrucibleInstallError('install_failed', result.failure ?? `Crucible installer exited ${result.code}: ${result.stderr.trim()}`);
-  }
-  const status = await bootstrap.startLocal({}, host);
-  if (status.state !== 'running') throw new CrucibleInstallError('install_failed', status.detail);
-  const installed = bootstrap.readLocalInstallation({}, host);
-  if (installed === null) throw new CrucibleInstallError('install_failed', 'Crucible did not publish its installation record.');
-  const configPath = path.win32.join(installed.home, PAIRING_FILE);
-  const pairing = parsePairing(host.readFile(configPath).trim());
-  if (pairing.name !== status.name) throw new CrucibleInstallError('install_failed', 'The local pairing and running engine identities differ.');
-  const info = await new CrucibleClient({ url: status.url, token: pairing.token, clientName: 'bookforge-installer' }).info();
-  if (info.server.name !== status.name) throw new CrucibleInstallError('install_failed', 'The responding engine identity changed during verification.');
-  const backend = info.host.backend;
+  /*
+   * ── WINDOWS IS THE PACKAGE'S OWN SEQUENCE NOW (PHASE19 §2.3, §2.6) ────────
+   *
+   * This used to be twenty lines of its own: spawn `install.ps1` through
+   * PowerShell, `startLocal`, `readLocalInstallation`, read the pairing file,
+   * `GET /v1/info`, compare three identities. Every one of those was about the
+   * NATIVE Windows engine, because that was the whole of what a Windows
+   * install produced.
+   *
+   * It is not any more. `install()` on win32 runs `install.ps1` when the host
+   * pack is absent and then `watchInstall()`s the move the TRAY has already
+   * started — it never posts one (§2.3: the tray is the process that is there
+   * at login and the only one that can resume across the reboot
+   * `wsl --install` demands) — and it follows that move until the outcome is
+   * terminal. So the sequence this app would otherwise write is the sequence
+   * the package now performs, and a second copy of it here would be two owners
+   * of an install.
+   *
+   * WHAT THE FOUR NON-`done` ENDINGS DO. The package raises the OUTCOME's own
+   * code and sentence as a refusal — `virtualization_disabled`,
+   * `reboot-pending`, `declined`, a task failure code — which is exactly what
+   * `installRefusalOf` carries verbatim to the screen, and what the progress
+   * list then draws beside **Restart now** or **Try again**. Nothing is
+   * renamed and nothing is flattened into "the install failed".
+   *
+   * WHAT IS LOST, AND WHERE IT WENT. The identity check against `/v1/info` is
+   * not gone: `autoConnectLocal` makes the same one, on the engine that is
+   * actually left standing, and refuses when the name it answers with is not
+   * the one in its pairing file. Making it here as well would be this app
+   * asking a machine mid-handover which engine it is.
+   */
+  const installed = await bootstrap.install({ ...options, release }, host);
+  const backend = installed.backend;
   if (backend !== 'llama-windows' && backend !== 'cuda-linux' && backend !== 'mlx-darwin') {
     throw new CrucibleInstallError('install_failed', `The installed engine reported an unsupported backend: ${backend}`);
   }
-  const done: InstallStep = { ...step, status: 'ok', detail: 'Crucible is running' };
-  options.onStep?.(done);
-  return { steps: [done], server: { name: status.name, url: status.url, configPath },
-    release: info.server.version, backend, crucible: installed.control.command };
-
+  return installed;
 }
 
 /**
@@ -871,7 +883,6 @@ export async function crucibleInstallPlan(
     hostable: verdict.hostable,
     hostableWhy: verdict.why,
     steps: await stepsFor(facts),
-    elevated: await elevatedFor(facts),
     readme: CRUCIBLE_README,
     driven,
     drivenWhy: driven ? null : drivenInstallUnavailableWhy(host.platform),
@@ -907,7 +918,22 @@ export function hostabilityOf(
   }
 
   if (facts.platform === 'win32') {
-    return { hostable: 'yes', why: 'Crucible runs natively on Windows. BookForge can add optional WSL acceleration after installation; WSL is not required to install or connect.' };
+    /*
+     * THE VERDICT SENTENCE, REWRITTEN FOR PHASE19 (§3.1, §4).
+     *
+     * It used to end *"BookForge can add optional WSL acceleration after
+     * installation"*, which described a BUTTON that no longer exists and a
+     * choice nobody is asked to make. On every Windows machine that can host
+     * WSL2 the Linux engine now arrives by itself, as the last part of the
+     * same install (§0), and a machine that cannot says so in one sentence
+     * from the state table when it gets there. So this says what WILL happen,
+     * not what could be opted into.
+     */
+    return {
+      hostable: 'yes',
+      why: 'Windows: the engine starts here within seconds, and the faster Linux engine is set up '
+        + 'straight afterwards on its own. Windows may ask for permission, and once for a restart.',
+    };
   }
   if (facts.gpu !== null) {
     return { hostable: 'yes', why: `${facts.gpu.name}, ${(facts.gpu.vramBytes / 1024 ** 3).toFixed(1)} GB, visible to this machine.` };
@@ -955,12 +981,37 @@ async function stepsFor(facts: CrucibleHostFacts): Promise<CrucibleInstallStep[]
   const bootstrap = await import('@crucible/bootstrap');
 
   if (facts.platform === 'win32') {
-    return [{ title: 'Install Crucible on Windows',
-      detail: 'Install the native Windows engine, desktop controls and login startup through Crucible’s installer. No WSL setup is required.',
-      commands: [], done: false },
-    { title: 'Verify and connect',
-      detail: 'Verify the running service and connect it to BookForge automatically. Optional WSL acceleration is available afterward in BookForge Settings.',
-      commands: [], done: false }];
+    /*
+     * THE WINDOWS STEPS ARE §3.1's LIST, IN ITS ORDER.
+     *
+     * They used to be two rows ending *"Optional WSL acceleration is available
+     * afterward in BookForge Settings"*, which was true of a build where WSL
+     * was a button. PHASE19 makes the Linux engine part of the same install on
+     * any machine that can host it, so the sequence a person is promised is
+     * the sequence the progress list then shows them happening — one owner for
+     * "what does this do", read by the list and by this plan.
+     */
+    return [
+      { title: 'Installing Crucible',
+        detail: 'The engine, its desktop controls and its login startup. Windows raises its own '
+          + 'permission prompt; nothing here asks for one on your behalf.',
+        commands: [], done: false },
+      { title: 'Starting the Windows engine',
+        detail: 'It answers within seconds, and BookForge connects to it. Everything below happens '
+          + 'behind it.',
+        commands: [], done: false },
+      { title: 'Setting up the Linux engine',
+        detail: 'The faster engine, set up automatically. Windows may ask once for a restart; '
+          + 'a computer that cannot run it says so in one sentence and stays on the Windows engine.',
+        commands: [], done: false },
+      { title: 'Installing what BookForge needs',
+        detail: 'Narration, transcription, alignment and text — one environment each, on whichever '
+          + 'engine is left standing.',
+        commands: [], done: false },
+      { title: 'Downloading models',
+        detail: 'Several gigabytes on a first setup. It keeps going while you work.',
+        commands: [], done: false },
+    ];
   }
 
   const plan = bootstrap.planJobTypes(bookforgeJobTypes());
@@ -984,20 +1035,19 @@ async function stepsFor(facts: CrucibleHostFacts): Promise<CrucibleInstallStep[]
   }));
 }
 
-/** Linux linger requires the operator's privilege; native desktop installation does not. */
-async function elevatedFor(facts: CrucibleHostFacts): Promise<CrucibleInstallStep[]> {
-  if (facts.platform === 'linux') {
-    return [{
-      title: 'To keep the server up when you are logged out',
-      detail:
-        'systemd stops a user service at the end of the last session unless lingering is on. '
-        + 'Without it the Crucible is up only while a shell is open — which is fine for a desktop '
-        + 'and wrong for a machine other people render on.',
-      commands: ['sudo loginctl enable-linger "$USER"'],
-      done: false,
-    }];
-  }
-  // macOS needs none: its service is a launchd agent, which starts at login
-  // and needs no privilege to install.
-  return [];
-}
+/*
+ * ── `elevatedFor` IS DELETED (PHASE19 §3, §4, 2026-09-19) ───────────────────
+ *
+ * It returned one row on Linux — "To keep the server up when you are logged
+ * out", with `sudo loginctl enable-linger "$USER"` under it — which the doors
+ * component drew under the heading "Commands BookForge cannot run for you".
+ * Owen, 2026-09-18: *"we should assume the user doesn't know how to do it and
+ * it should do it automatically."* **Nobody is ever shown a command.** A
+ * command a person could run is a step the app should be running, and linger
+ * is one the installer takes itself (memory `wsl-distro-idles-out-kills-
+ * crucible`: `loginctl enable-linger` as root, landed in Crucible 2026-09-14).
+ *
+ * The plan's `elevated` field went with it rather than being left as an
+ * always-empty array: a field nothing writes and nothing draws is a place for
+ * a future list to reappear without anybody deciding to add one.
+ */

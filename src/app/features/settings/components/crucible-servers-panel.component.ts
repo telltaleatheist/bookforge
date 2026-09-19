@@ -1,6 +1,8 @@
 import { ChangeDetectionStrategy, Component, DestroyRef, computed, inject, signal } from '@angular/core';
 import { CommonModule } from '@angular/common';
-import { FormsModule } from '@angular/forms';
+// `FormsModule` went with the manual-add form (PHASE19 §4): with the paste box
+// and the Name / Address / Access key triple gone there is no `ngModel` left on
+// this panel at all.
 
 import { DesktopButtonComponent } from '../../../creamsicle-desktop';
 import { ElectronService } from '../../../core/services/electron.service';
@@ -68,7 +70,7 @@ import { coordinationWords } from './crucible-words';
 @Component({
   selector: 'app-crucible-servers-panel',
   standalone: true,
-  imports: [CommonModule, FormsModule, DesktopButtonComponent, CrucibleDoorsComponent, CrucibleEngineControlsComponent],
+  imports: [CommonModule, DesktopButtonComponent, CrucibleDoorsComponent, CrucibleEngineControlsComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="cru">
@@ -145,7 +147,9 @@ import { coordinationWords } from './crucible-words';
                 * install a job type - BookForge posts its module to every
                   engine it connects to (PHASE14-ENVPACKS.md section 4a); the
                   row below says where that got to.
-                * read the token - "Copy connect code" is two controls along.
+                * read the token - NOBODY reads a token any more (PHASE19 §0).
+                  The "Copy connect code" button that used to be two controls
+                  along is deleted with the rest of them.
 
               The page still EXISTS and is still served by the engine at its own
               address; what is gone is BookForge opening it. A person who wants
@@ -159,26 +163,17 @@ import { coordinationWords } from './crucible-words';
               to press. What is drawn is the coordination state for this row.
             -->
             <!--
-              COPY CONNECT CODE, which three surfaces have been telling people
-              to find somewhere else.
+              "COPY CONNECT CODE" IS GONE (PHASE19 §3, 2026-09-19).
 
-              The extension says "copy a connect code from that server's
-              operator page, or from BookForge's Settings -> Crucible"; the hint
-              below this list says "open its console and copy its connect code".
-              The console does have that button - behind the token. It asks for
-              the token before it will show you the token, so the only way in is
-              'crucible token --url' in a terminal ON that machine, which is
-              where Owen ran aground on a Mac that has no 'crucible' on PATH.
-
-              This app is already talking to every server in this list. The
-              name, the address and the token are ones it holds and sends on
-              every request, so the line costs nothing to emit and breaks the
-              circle. The token does NOT cross this seam: main builds the line,
-              writes the clipboard, and answers with it masked.
+              It put a "crucible://name@host:port/#token" line on the
+              clipboard, which is a TOKEN, and Owen ruled the whole shape away
+              on 2026-09-18: *"we removed tokens. this system is supposed to
+              work like ollama, which doesn't require a token request/approval
+              to connect. its protection is the system firewall."* Pairing is
+              open, so another app on the network connects by ADDRESS in two
+              seconds and has no use for a line copied out of here. Nothing is
+              shown a token and nothing offers to hand one over.
             -->
-            <desktop-button variant="ghost" size="sm" [disabled]="busy()[row.name] === true" (click)="copyCode(row.name)">
-              {{ copied()[row.name] ? 'Copied' : 'Copy connect code' }}
-            </desktop-button>
             <desktop-button variant="ghost" size="sm" [disabled]="busy()[row.name] === true" (click)="test(row.name)">
               {{ busy()[row.name] ? 'Testing…' : 'Test' }}
             </desktop-button>
@@ -429,58 +424,20 @@ import { coordinationWords } from './crucible-words';
       <h4 class="cru-group">Get an engine</h4>
       <app-crucible-doors (changed)="recheck()"></app-crucible-doors>
 
-      <!-- ── Add (the quick form, for a server whose details are to hand) ── -->
-      <details>
-      <summary>Advanced manual connection</summary>
-      <p class="cru-sub">
-        Use an existing connect code or access key. The Connect door above can pair by address
-        without copying an access key.
-      </p>
       <!--
-        PHASE13-OPERATOR.md §5.1. The line is parsed in MAIN by the SDK's
-        parsePairing, the tested inverse of crucible's own producer; a line it
-        does not recognise is refused invalid_pairing with that sentence
-        VERBATIM and nothing is filled.
+        "ADVANCED MANUAL CONNECTION" IS GONE (PHASE19 §3, §4, 2026-09-19).
+
+        It was a disclosure holding a "crucible://name@host:port/#token" paste
+        box and a Name / Address / Access key triple with Test and Add — the
+        operator's door, kept on the argument that somebody repairing an entry
+        works from an address and a token they already have. Owen removed the
+        premise on 2026-09-18: there are no tokens to have. *"we removed
+        tokens. this system is supposed to work like ollama, which doesn't
+        require a token request/approval to connect. its protection is the
+        system firewall."* So the Connect door above — one field, the address —
+        is the whole of how an engine elsewhere is reached, and there is
+        nothing an "advanced" form could do that it cannot.
       -->
-      <div class="cru-add">
-        <input
-          class="cru-input wide"
-          type="text"
-          placeholder="Paste a connect code: crucible://name@host:port/#token"
-          [(ngModel)]="draftPaste"
-          (paste)="onPaste()"
-          (keyup.enter)="readPairing()" />
-        <desktop-button variant="ghost" size="sm" [disabled]="addBusy()" (click)="readPairing()">
-          Read it
-        </desktop-button>
-      </div>
-      @if (pairingRefusal(); as r) {
-        <p class="cru-refusal"><span class="cru-badge bad">{{ r.code }}</span> {{ r.detail }}</p>
-      }
-      <div class="cru-add">
-        <input class="cru-input" type="text" placeholder="Name (e.g. mac)" [(ngModel)]="draftName" />
-        <input class="cru-input wide" type="text" placeholder="http://host:7100" [(ngModel)]="draftUrl" />
-        <input class="cru-input" type="password" autocomplete="off" placeholder="Access key" [(ngModel)]="draftToken" />
-        <desktop-button variant="ghost" size="sm" [disabled]="addBusy()" (click)="testAddress()">
-          {{ addBusy() ? 'Testing…' : 'Test' }}
-        </desktop-button>
-        <desktop-button variant="primary" size="sm" [disabled]="addBusy()" (click)="add()">Add</desktop-button>
-      </div>
-      @if (addProbe(); as p) {
-        @if (p.outcome === 'ok') {
-          <p class="cru-facts">
-            OK — <strong>{{ p.facts.serverName }}</strong> v{{ p.facts.version }} · {{ p.facts.backend }} ·
-            {{ p.facts.gpu.name }} ({{ gb(p.facts.gpu.vramBytes) }}) · job types {{ p.facts.jobTypes.join(', ') }} ·
-            @if (p.facts.residentModels.length > 0) { resident: {{ p.facts.residentModels.join(', ') }} } @else { nothing resident }
-          </p>
-        } @else {
-          <p class="cru-refusal"><span class="cru-badge bad">{{ p.outcome }}</span> {{ p.message }}</p>
-        }
-      }
-      @if (addError(); as err) {
-        <p class="cru-refusal">{{ err }}</p>
-      }
-      </details>
     </div>
   `,
   styles: [`
@@ -568,20 +525,9 @@ export class CrucibleServersPanelComponent {
   readonly rowError = signal<Record<string, string>>({});
   readonly rowNote = signal<Record<string, string>>({});
   readonly busy = signal<Record<string, boolean>>({});
-  /** Which rows have just been copied, so the button can say so for a moment. */
-  readonly copied = signal<Record<string, boolean>>({});
 
   readonly confirmRemove = signal<string | null>(null);
   readonly confirmOp = signal<string | null>(null);
-
-  draftPaste = '';
-  draftName = '';
-  draftUrl = '';
-  draftToken = '';
-  readonly addBusy = signal(false);
-  readonly addProbe = signal<CrucibleProbeResult | null>(null);
-  readonly addError = signal<string | null>(null);
-  readonly pairingRefusal = signal<{ code: string; detail: string } | null>(null);
 
   /**
    * WHERE COORDINATION STANDS, PER SERVER (crucible PHASE14 §4a).
@@ -683,31 +629,14 @@ export class CrucibleServersPanelComponent {
     await this.refreshModels(name);
   }
 
-  /**
-   * PUT THIS SERVER'S CONNECT CODE ON THE CLIPBOARD.
-   *
-   * The line is built and copied in MAIN (`crucible/connect-code.ts`) because
-   * this layer never holds a token; what comes back is that line with its token
-   * masked, which is enough to confirm what was copied and useless to anyone
-   * reading over a shoulder.
-   *
-   * A refusal is SHOWN on the row. The only way to reach one is a panel and a
-   * registry that have come apart, and a Copy button that silently did nothing
-   * is the worst possible way to learn that.
+  /*
+   * `copyCode` IS DELETED (PHASE19 §3, 2026-09-19), with the button that
+   * called it. It put a "crucible://name@host:port/#token" line on the
+   * clipboard; there are no tokens to put anywhere now, and an app that
+   * offered one would be teaching a door that no longer exists. Main's
+   * `crucible:copy-connect-code` channel is left where it is: `connect-code.ts`
+   * is the CLI's too, and deleting a main-process door is not this phase's.
    */
-  async copyCode(name: string): Promise<void> {
-    const res = await this.electron.crucible.copyConnectCode(name);
-    if (!res.success) {
-      this.setRowError(name, res.error
-        ?? 'Copying that connect code failed and said nothing about why.');
-      return;
-    }
-    this.copied.update((map) => ({ ...map, [name]: true }));
-    window.setTimeout(
-      () => this.copied.update((map) => ({ ...map, [name]: false })),
-      1600,
-    );
-  }
 
   async refreshActivity(name: string): Promise<void> {
     const res = await this.electron.crucible.activity(name);
@@ -858,104 +787,16 @@ export class CrucibleServersPanelComponent {
     this.applyRouting(res.data);
   }
 
-  // ── Add / remove ───────────────────────────────────────────────────────
-
-  async testAddress(): Promise<void> {
-    this.addBusy.set(true);
-    this.addError.set(null);
-    try {
-      const res = await this.electron.crucible.testAddress(this.draftUrl, this.draftToken);
-      if (!res.success || !res.data) {
-        this.addError.set(res.error ?? 'The test failed and said nothing about why.');
-        return;
-      }
-      this.addProbe.set(res.data);
-    } finally {
-      this.addBusy.set(false);
-    }
-  }
-
-  /**
-   * Record the remote. The registry's refusals are shown verbatim — the reserved
-   * name, a loopback URL (that is this machine, read from its own config), a
-   * duplicate name, a URL carrying `/v1`, an empty token. None of those rules is
-   * re-implemented here, so none of them can drift.
-   */
-  async add(): Promise<void> {
-    this.addBusy.set(true);
-    this.addError.set(null);
-    try {
-      const res = await this.electron.crucible.add({
-        name: this.draftName,
-        url: this.draftUrl,
-        token: this.draftToken,
-      });
-      if (!res.success) {
-        this.addError.set(res.error ?? 'The server could not be added, and nothing said why.');
-        return;
-      }
-      // The token is never echoed back into the field: it is in the registry now
-      // and this page can only ever show it masked.
-      this.draftName = '';
-      this.draftUrl = '';
-      this.draftToken = '';
-      this.draftPaste = '';
-      this.addProbe.set(null);
-      this.pairingRefusal.set(null);
-      await this.reload();
-    } finally {
-      this.addBusy.set(false);
-    }
-  }
-
-  // ── One pasted line becomes the three fields (PHASE13 §5.1) ────────────
-
-  /**
-   * A paste reads the line immediately, on the next tick.
+  /*
+   * ── THE MANUAL ADD IS DELETED (PHASE19 §3, §4, 2026-09-19) ───────────
    *
-   * The `paste` event fires BEFORE ngModel has the new value, so reading it
-   * synchronously would parse whatever was in the field a moment ago — usually
-   * the empty string.
+   * `testAddress`, `add`, `onPaste` and `readPairing` went with the
+   * "Advanced manual connection" disclosure they served — the paste box for a
+   * `crucible://` line and the Name / Address / Access key triple. There are
+   * no tokens to paste any more (Owen, 2026-09-18), so connecting to an engine
+   * elsewhere is its address and nothing else, through the Connect door in
+   * `app-crucible-doors` above. Nothing else in this panel called them.
    */
-  onPaste(): void {
-    setTimeout(() => { void this.readPairing(); }, 0);
-  }
-
-  /**
-   * `crucible://name@host:port/#token` → Name / Address / Token, or a named
-   * refusal with NOTHING filled.
-   *
-   * Parsed in MAIN by the SDK's `parsePairing`, which is the tested inverse of
-   * `crucible/pairing.py` — the two are held together by the same literal line
-   * appearing in both repos' tests. A second parser here, written from the
-   * format doc, would be exactly the two-owners defect the format's percent
-   * encoding exists to prevent.
-   */
-  async readPairing(): Promise<void> {
-    const line = this.draftPaste.trim();
-    if (line === '') return;
-    this.addBusy.set(true);
-    this.pairingRefusal.set(null);
-    this.addError.set(null);
-    try {
-      const res = await this.electron.crucible.parsePairing(line);
-      if (!res.success || !res.data) {
-        this.addError.set(res.error ?? 'The line could not be read, and nothing said why.');
-        return;
-      }
-      if (!res.data.ok) {
-        this.pairingRefusal.set(res.data.refusal);
-        return;
-      }
-      this.draftName = res.data.fields.name;
-      this.draftUrl = res.data.fields.url;
-      this.draftToken = res.data.fields.token;
-      this.draftPaste = '';
-      this.addProbe.set(null);
-    } finally {
-      this.addBusy.set(false);
-    }
-  }
 
   // ── The operator door: Open, and what coordination is doing ───────────
 

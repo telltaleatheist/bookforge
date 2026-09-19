@@ -10,7 +10,7 @@ import type {
   CrucibleDiscoveryVia, CrucibleProbeResult, CrucibleServersView,
 } from '@shared/crucible/settings-wire';
 import type { CrucibleCoordinationState } from '@shared/crucible/coordinate-wire';
-import { bytesWords, coordinationWords, sizeWords } from './crucible-words';
+import { coordinationWords, sizeWords } from './crucible-words';
 import type {
   CrucibleHostRefusal,
   CrucibleInstallPlan,
@@ -18,6 +18,7 @@ import type {
 import type { CrucibleUninstallPlan } from '@shared/crucible/uninstall-wire';
 import type { CruciblePairingPrompt } from '@shared/crucible/connect-wire';
 import { CrucibleEngineControlsComponent } from './crucible-engine-controls.component';
+import { CrucibleInstallProgressComponent } from './crucible-install-progress.component';
 
 /**
  * HOW A PERSON GETS A CRUCIBLE — and, since PHASE13, how little of that is
@@ -32,9 +33,20 @@ import { CrucibleEngineControlsComponent } from './crucible-engine-controls.comp
  * and the pull list, which was BookForge restating six weight ids the crucible
  * manifests own. What it leaves is two doors and one button:
  *
- *   1. **Connect** — name, address, token, or ONE pasted `crucible://` line.
+ *   1. **Connect** — ONE field, the address (PHASE19 §3).
  *   2. **Get one on this machine** — the pre-server minute, the chicken-and-egg
- *      a page cannot do for itself, after which the door is **Open Crucible**.
+ *      a page cannot do for itself.
+ *
+ * ── AND SINCE PHASE19, NO TOKEN AND NO COMMAND ANYWHERE ON IT ─────────────
+ *
+ * Owen, 2026-09-18: *"we removed tokens. this system is supposed to work like
+ * ollama, which doesn't require a token request/approval to connect. its
+ * protection is the system firewall."* Deleted with that ruling: the
+ * `crucible://` paste box, the Name / Address / Access key triple, Test and
+ * Add, and — with *"we should assume they have no idea how to do it and it
+ * should do it automatically"* — the "Show what it does" step list and the
+ * "Commands BookForge cannot run for you" list beneath it. **Nobody is ever
+ * shown a command**, and the steps are the progress list now.
  *
  * ── ONE KIND OF SERVER (Owen's ruling, 2026-09-15) ──────────────────────
  *
@@ -84,7 +96,10 @@ import { CrucibleEngineControlsComponent } from './crucible-engine-controls.comp
 @Component({
   selector: 'app-crucible-doors',
   standalone: true,
-  imports: [CommonModule, FormsModule, DesktopButtonComponent, CrucibleEngineControlsComponent],
+  imports: [
+    CommonModule, FormsModule, DesktopButtonComponent,
+    CrucibleEngineControlsComponent, CrucibleInstallProgressComponent,
+  ],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     @if (mode() === 'probing') {
@@ -99,8 +114,11 @@ import { CrucibleEngineControlsComponent } from './crucible-engine-controls.comp
                 <strong>{{ serverNames() }}</strong>
               </p>
               <p class="hint">
-                @if (coordinationDeferred()) {
+                @if (coordinationDeferred() === 'first-run') {
                   Choose your AI routes on the next step. Models are prepared when you finish setup.
+                } @else if (coordinationDeferred() === 'install') {
+                  This computer is still setting up its faster Linux engine. What BookForge needs is
+                  installed onto whichever engine is left standing, not onto the one being replaced.
                 } @else {
                 BookForge is checking and preparing these engines for your projects.
                 Progress appears below. Which one a book goes to is the order in
@@ -125,8 +143,8 @@ import { CrucibleEngineControlsComponent } from './crucible-engine-controls.comp
                 <div class="panel">
                   <p class="ok"><strong>{{ d.serverName }}</strong> at {{ d.url }}</p>
                   <p class="hint">
-                    {{ discoveredSourceWords(d.via) }} <code>{{ d.configPath }}</code>. Give it a name
-                    — its card is the usual one — and BookForge will use it like any other engine.
+                    {{ discoveredSourceWords(d.via) }} <code>{{ d.configPath }}</code>. Add it and
+                    BookForge will use it like any other engine.
                   </p>
                   <ng-container [ngTemplateOutlet]="adoptForm" />
                 </div>
@@ -163,8 +181,13 @@ import { CrucibleEngineControlsComponent } from './crucible-engine-controls.comp
                 @if (r.command) { <pre class="cmd">{{ r.command }}</pre> }
                 @if (r.detail) { <p class="detail">{{ r.detail }}</p> }
               }
+              <!--
+                ONE LIST, NOT TWO (PHASE19 §2.8). The coordination state is an
+                INPUT to the progress list rather than a second block beneath
+                it: "installing what BookForge needs" and "downloading models"
+                are the last rows of the same sequence.
+              -->
               <ng-container [ngTemplateOutlet]="installProgress" />
-              <ng-container [ngTemplateOutlet]="coordinationState" />
               <ng-container [ngTemplateOutlet]="connectForm" />
             </div>
           } @else {
@@ -414,130 +437,55 @@ import { CrucibleEngineControlsComponent } from './crucible-engine-controls.comp
           <desktop-button variant="ghost" size="sm" (click)="cancelPairing()">Cancel</desktop-button>
         }
       </div>
+      <!--
+        THE PAIRING COPY IS FOUNDRY'S (PHASE19 §4, §5).
+
+        It used to say "Match this code … Waiting for approval…", which was the
+        shape of a system that had tokens and approvals. Owen, 2026-09-18: *"we
+        removed tokens. this system is supposed to work like ollama, which
+        doesn't require a token request/approval to connect. its protection is
+        the system firewall."* Pairing is OPEN, so the ordinary case is
+        connected in two seconds and no code is ever seen. The code line stays
+        for the one case that earns it — an operator who set
+        "open_pairing = false" on that engine — and it is theirs to have chosen.
+      -->
       @if (pairPrompt(); as request) {
-        <p class="ok">Match this code: <strong>{{ request.userCode }}</strong></p>
-        <p class="hint">On <strong>{{ request.name }}</strong>, open BookForge or Foundry Settings,
-          choose Connection requests for this engine, and approve only if the code matches.
-          Crucible's maintenance console can also approve it. Waiting for approval…</p>
-      }
-      <details>
-        <summary>Use an existing connect code or access key</summary>
-      <!--
-        PHASE13 §5.1. The PASTED LINE IS FIRST because it is the path that
-        cannot be mistyped: "crucible token --url" on the other machine prints
-        it, and its operator page has a copy button beside it.
-      -->
-      <label class="field">
-        <span class="flabel">Paste a connect code</span>
-        <input
-          type="text"
-          placeholder="crucible://name@host:port/#token"
-          [(ngModel)]="draftPaste"
-          name="cruDoorPaste"
-          (paste)="onPaste()"
-          (keyup.enter)="readPairing()" />
-      </label>
-      <div class="actions">
-        <desktop-button variant="ghost" size="sm" [disabled]="busy() !== null" (click)="readPairing()">
-          {{ busy() === 'paste' ? 'Reading…' : 'Read it' }}
-        </desktop-button>
-        <span class="hint">{{ pasteHintWords() }}</span>
-      </div>
-      @if (pairingRefusal(); as r) {
-        <p class="bad"><span class="code">{{ r.code }}</span> {{ r.detail }}</p>
-      }
-
-      <!--
-        THE TYPED TRIPLE IS THE OPERATOR'S DOOR, AND ONLY THAT.
-
-        crucible docs/PHASE15-HOST.md section 5.1 gives connecting exactly
-        three ways, and none of them is a person transcribing a 43-character
-        secret: the pairing file on this machine, a PASTED connect code for one
-        elsewhere, or "get one on this machine". So the SETUP STEP offers the
-        paste box and nothing else - a wizard that puts an "Access key" field
-        in front of somebody meeting the app for the first time has asked them
-        for a thing they have no way to know.
-
-        In SETTINGS the three fields stay, and that is not an inconsistency:
-        somebody there is an operator repairing an entry, working from an
-        address and a token they already have, possibly for a server whose
-        page they cannot reach to copy a line from. The audit's section 3.13
-        row keeps them fillable by hand for exactly that reason.
-      -->
-      @if (mode() === 'doors') {
-        <label class="field">
-          <span class="flabel">Name</span>
-          <input type="text" placeholder="mac" [(ngModel)]="draftName" name="cruDoorName" />
-        </label>
-        <label class="field">
-          <span class="flabel">Address</span>
-          <input type="text" placeholder="http://192.0.2.20:7100" [(ngModel)]="draftUrl" name="cruDoorUrl" />
-        </label>
-        <label class="field">
-          <span class="flabel">Access key</span>
-          <input type="password" autocomplete="off" placeholder="Access key" [(ngModel)]="draftToken" name="cruDoorToken" />
-        </label>
-      } @else if (draftUrl && draftName) {
-        <!--
-          WHAT THE CODE SAID, so Add is not blind. The fields are not drawn on
-          this step, so without this a person would be pressing Add on
-          something they never saw - and a connect code carries a NAME, which
-          is how this machine will refer to that engine for ever after.
-        -->
-        <p class="hint">
-          That code is for <strong>{{ draftName }}</strong> at <code>{{ draftUrl }}</code>.
-        </p>
-      }
-      <div class="actions">
-        <desktop-button variant="ghost" size="sm" [disabled]="busy() !== null" (click)="test()">
-          {{ busy() === 'test' ? 'Testing…' : 'Test' }}
-        </desktop-button>
-        <desktop-button variant="primary" size="sm" [disabled]="busy() !== null" (click)="add()">
-          {{ busy() === 'add' ? 'Adding…' : 'Add' }}
-        </desktop-button>
-        <span class="hint">Test writes nothing, so a wrong address leaves nothing behind. Once it
-          is added, BookForge makes sure that engine has what it needs — there is nothing else to
-          press.</span>
-      </div>
-      @if (probe(); as p) {
-        @if (p.outcome === 'ok') {
-          <p class="ok">
-            OK — <strong>{{ p.facts.serverName }}</strong> v{{ p.facts.version }} ·
-            {{ p.facts.backend }} · {{ p.facts.gpu.name }} · job types
-            {{ p.facts.jobTypes.join(', ') }}
-          </p>
+        @if (pairStatus() === 'pending') {
+          <p class="ok">Connecting to {{ request.name }}…
+            If that computer asks anyone to approve this, the code is
+            <strong>{{ request.userCode }}</strong>.</p>
+        } @else if (pairStatus() === 'approved') {
+          <p class="ok">Connected to {{ request.name }}.</p>
         } @else {
-          <p class="bad"><span class="code">{{ p.outcome }}</span> {{ p.message }}</p>
+          <p class="bad">Pairing {{ pairStatus() }}. Connect again to request a new code.</p>
         }
       }
-      </details>
       @if (error(); as e) { <p class="bad">{{ e }}</p> }
     </ng-template>
 
     <!--
-      THE SAME ADD, WITH THE TWO FIELDS NOBODY SHOULD HAVE TO TYPE.
+      THE SAME ADD, WITH NOTHING TO TYPE AT ALL.
 
-      One control: a name. The address and the key came off this computer
-      already, and the key never reaches this component at all — main reads it
-      and hands it to addServer, the same function the form above ends in,
-      with the same refusals. The suggested name is what the ENGINE calls
-      itself, offered rather than imposed: Owen names machines after their
-      cards, and the name a row is filed under is the operator's.
+      THE NAME FIELD IS GONE (PHASE19 §4). It used to be one control — "Call
+      it" — prefilled from discovery, and that made three things claim to name
+      one engine: the pairing file, whatever was in the box, and "/v1/info"'s
+      "server.name", which is the only one the engine itself answers with and
+      the one "auto-connect.ts" already verifies against. So the name is READ
+      FROM THE ENGINE, in main, over the connection this button is about to
+      save, and this door is one button. The address and the key came off this
+      computer already and the key never reaches this component at all.
     -->
     <ng-template #adoptForm>
-      <label class="field">
-        <span>Call it</span>
-        <input type="text" [(ngModel)]="draftAdoptName" name="adoptName" placeholder="3090 Ti" />
-      </label>
       <p class="hint">
-        Anything you like, as long as it is not already taken — its card, usually. This is the
-        name you will see on the bench and on every book waiting for it.
+        It is added under the name it calls itself, which is what every other computer on your
+        network will see it as. Rank it, switch it off or remove it in the list above, like any
+        other engine.
       </p>
       <div class="actions">
         <desktop-button
           variant="primary"
           size="sm"
-          [disabled]="busy() !== null || draftAdoptName.trim() === ''"
+          [disabled]="busy() !== null"
           (click)="adopt()"
         >
           {{ busy() === 'adopt' ? 'Adding…' : 'Add it' }}
@@ -578,109 +526,41 @@ import { CrucibleEngineControlsComponent } from './crucible-engine-controls.comp
         @if (r.detail) { <p class="detail">{{ r.detail }}</p> }
       }
       <ng-container [ngTemplateOutlet]="installProgress" />
-      <ng-container [ngTemplateOutlet]="coordinationState" />
-
       <!--
-        THE PRINTED SEQUENCE IS FOLDED AWAY (the brief §4). It is deleted from
-        the WIZARD outright and kept here, in Settings, behind one disclosure:
-        a terminal person setting a machine up by hand needs every line of it,
-        and everybody else needs to not be shown eight shell commands as the
-        answer to “where should the work happen”.
-      -->
-      <button class="door manual" type="button" (click)="manual.set(!manual())">
-        <span class="door-name">{{ manual() ? 'Hide what it does' : 'Show what it does' }}</span>
-        <span class="door-note">
-          Every step the button above walks, in order, before you press it.
-        </span>
-      </button>
-      @if (manual()) {
-      <h5 class="group">What the button will do, in order</h5>
-      <!--
-        THESE ARE NOT LINES TO TYPE ANY MORE, and the copy changed with the
-        code. This list used to be eight shell commands — conda, a wheel,
-        crucible init — which was a SECOND description of an install
-        @crucible/bootstrap already owns, and the two had drifted: the wheel
-        became an env pack and conda stopped being involved at all. The steps
-        below are read from the installer's own step list.
-      -->
-      <p class="hint">
-        {{ p.platform === 'win32'
-          ? 'Install Crucible runs its Windows installer, which sets up the native engine and desktop controls. You can enable optional WSL acceleration here afterward.'
-          : 'Each step runs on this machine. The server arrives as one pack with its own interpreter inside it; nothing is built from source and there is no conda to find.' }}
-        Nothing that an engine RUNS is here: BookForge installs what it needs the moment it
-        connects to one.
-      </p>
-      <ol class="steps">
-        @for (s of p.steps; track s.title) {
-          <li class="step" [class.done]="s.done">
-            <div class="step-head">
-              <span class="step-title">{{ s.title }}</span>
-              @if (s.done) { <span class="tick">&#10003; already here</span> }
-            </div>
-            <p class="detail">{{ s.detail }}</p>
-            @for (c of s.commands; track c) {
-              <pre class="cmd">{{ c }}</pre>
-            }
-          </li>
-        }
-      </ol>
+        "SHOW WHAT IT DOES" IS GONE, WITH THE STEP LIST AND THE ELEVATED LIST
+        BEHIND IT (PHASE19 §3, §4).
 
-      @if (p.elevated.length > 0) {
-        <h5 class="group">Commands BookForge cannot run for you</h5>
-        <p class="hint">
-          Each needs a privilege this app does not have and must not ask for silently —
-          elevation, a reboot, a sudo password. The installer draws the same line: it refuses
-          by name and hands the command over rather than attempting it.
-        </p>
-        @for (s of p.elevated; track s.title) {
-          <div class="step" [class.done]="s.done">
-            <div class="step-head">
-              <span class="step-title">{{ s.title }}</span>
-              @if (s.done) { <span class="tick">&#10003; already here</span> }
-            </div>
-            <p class="detail">{{ s.detail }}</p>
-            @for (c of s.commands; track c) { <pre class="cmd">{{ c }}</pre> }
-          </div>
-        }
-      }
+        It was a disclosure that unfolded into "What the button will do, in
+        order" and, under it, "Commands BookForge cannot run for you" with a
+        "sudo loginctl" line in it. Owen, 2026-09-18: *"we should assume the
+        user doesn't know how to do it and it should do it automatically."*
+        **Nobody is ever shown a command.** A command a person could run is a
+        step the app should be running, and where the app truly cannot the
+        sentence says what to change and where — which is the "cannot"
+        verdict's job, above, not a printed list's.
 
-      <p class="hint">The argument behind all of it: <code>{{ p.readme }}</code></p>
-      }
+        The steps are the PROGRESS LIST now: "installProgress" is them as they
+        happen, which is what a person actually wanted when they opened this.
+      -->
     </ng-template>
 
     <!--
-      A RUNNING INSTALL, AS IT HAPPENS (crucible PHASE15-HOST.md §4.3).
-      
-      THREE ROWS AND NOT ONE, because the three facts are different kinds of
-      thing and a screen that flattened them would be a log. state is the WSL
-      table's answer for THIS machine — wsl_missing, virtualization_disabled,
-      wsl1_only — shown BY NAME with the sentence its owner wrote, because a
-      machine that needs its firmware changed must not be told "installing…".
-      step is where in the sequence it is. line is the last thing a process
-      printed, and only the last: a scrolling console in a settings panel is a
-      thing people watch instead of a thing they read.
+      GETTING A CRUCIBLE, AS ONE LIST (crucible PHASE19 §3.1).
+
+      It used to be three loose rows this component kept — the WSL state, the
+      step, the last line — which was the right shape for an install THIS APP
+      drove and the wrong one for a move the orchestrator starts by itself at
+      login. "app-crucible-install-progress" reads the install DOOR, so it
+      shows a move that began before this window existed, and it carries the
+      two controls a person can genuinely press.
+
+      The coordination state goes IN, rather than being drawn after: §2.8 makes
+      "installing what BookForge needs" and "downloading models" the LAST TWO
+      ROWS of the same list, because they are where the gigabytes are and a
+      list that said "done" before them would be lying about what is left.
     -->
     <ng-template #installProgress>
-      @if (installState(); as st) {
-        <div class="module">
-          <p class="hint"><span class="code">{{ st.code }}</span> {{ st.sentence }}</p>
-          @if (st.action === 'run-elevated') {
-            <p class="detail">
-              This one needs Administrator. The Crucible host raises that prompt itself — BookForge
-              cannot obtain elevation on anybody's behalf and does not try.
-            </p>
-          } @else if (st.action === 'instruct') {
-            <p class="detail">Only a person can do this one. Nothing is waiting on the app.</p>
-          }
-        </div>
-      }
-      @if (installStep(); as st) {
-        <p class="hint">
-          <strong>{{ st.step }}</strong>{{ st.index !== null && st.total !== null ? ' — step ' + st.index + ' of ' + st.total : '' }}
-          @if (installBytes(); as b) { <span> · {{ b }}</span> }
-        </p>
-      }
-      @if (installLine(); as l) { <pre class="cmd">{{ l }}</pre> }
+      <app-crucible-install-progress [coordination]="coordination()" />
     </ng-template>
 
     <!--
@@ -794,53 +674,26 @@ export class CrucibleDoorsComponent {
 
   readonly open = signal<'connect' | 'here' | 'install' | 'uninstall' | null>(null);
   readonly busy = signal<
-    'test' | 'add' | 'adopt' | 'here' | 'install' | 'paste' | 'pair' | 'uninstall-plan' | 'uninstall' | null
+    'adopt' | 'here' | 'install' | 'pair' | 'uninstall-plan' | 'uninstall' | null
   >(null);
   readonly error = signal<string | null>(null);
-  /**
-   * Is the printed command sequence unfolded? Settings only, and folded by
-   * default (the brief §4): it is the terminal person's document, and the
-   * wizard does not carry it at all.
-   */
-  readonly manual = signal(false);
 
-  draftPaste = '';
   draftAddress = '';
   readonly pairPrompt = signal<CruciblePairingPrompt | null>(null);
+  /**
+   * WHERE THAT CONNECTION GOT TO, which is a different fact from whether one
+   * is in flight (Foundry's wording, PHASE19 §5). It survives the end of the
+   * poll on purpose: "Connected to mac." is the sentence a person wants after
+   * pressing Connect, and clearing the prompt to say it would leave the space
+   * blank at the one moment it has news.
+   */
+  readonly pairStatus = signal<'pending' | 'approved' | 'denied' | 'expired'>('pending');
   private pairTimer: ReturnType<typeof setTimeout> | null = null;
   private pairGeneration = 0;
-  draftName = '';
-  /** What the engine on this computer would be called. Prefilled, never imposed. */
-  draftAdoptName = '';
-  draftUrl = '';
-  draftToken = '';
-  readonly pairingRefusal = signal<{ code: string; detail: string } | null>(null);
-  readonly probe = signal<CrucibleProbeResult | null>(null);
   readonly hereProbe = signal<CrucibleProbeResult | null>(null);
 
   readonly plan = signal<CrucibleInstallPlan | null>(null);
   readonly installRefusal = signal<CrucibleHostRefusal | null>(null);
-
-  /*
-   * ── A RUNNING INSTALL, IN THREE SIGNALS AND NOT A TRANSCRIPT ────────────
-   *
-   * The install streams every step, every line, every byte count and every
-   * WSL state. What is KEPT is the latest of each, because that is what a
-   * person reads: a machine sitting on `virtualization_disabled` needs that
-   * sentence on screen, not scrolled past. The full transcript goes to main's
-   * console, which is where a bug report gets it from.
-   *
-   * They are cleared when a run STARTS rather than when it ends: a failed
-   * install's last state is the most useful thing on the screen, and wiping it
-   * on the way out would leave a refusal with no context beside it.
-   */
-  readonly installState = signal<
-    { code: string; sentence: string; action: 'run' | 'run-elevated' | 'instruct' | 'link' } | null
-  >(null);
-  readonly installStep = signal<{ step: string; index: number | null; total: number | null } | null>(null);
-  readonly installLine = signal<string | null>(null);
-  /** The current download, as `3.4 of 6.1 GB`, or null when nothing is downloading. */
-  readonly installBytes = signal<string | null>(null);
 
   /**
    * WHERE COORDINATION WITH THE ENGINE ON THIS COMPUTER STANDS.
@@ -851,7 +704,16 @@ export class CrucibleDoorsComponent {
    * state belongs to its row in the servers panel.
    */
   readonly coordination = signal<CrucibleCoordinationState | null>(null);
-  readonly coordinationDeferred = signal(false);
+  /**
+   * WHY coordination has not happened yet, or null when nothing is holding it.
+   *
+   * TWO DEFERRALS, NOT ONE FLAG (PHASE19 §2.8). First-run holds it because the
+   * AI routes are not chosen; an install holds it because this machine is
+   * still moving to the Linux engine and the gigabytes would land on the
+   * engine about to be replaced. They are different sentences, and a boolean
+   * made the first-run one the answer to both.
+   */
+  readonly coordinationDeferred = signal<'first-run' | 'install' | null>(null);
   /** A stop that refused. Its own line, because it is about the STOP. */
   readonly setupError = signal<string | null>(null);
   /** Has the connected face already asked? One ask per mount, not one per paint. */
@@ -946,37 +808,20 @@ export class CrucibleDoorsComponent {
     void this.readCoordination();
     const stop = this.electron.crucible.onCoordination((state) => {
       if (state.server === this.registeredHere()) {
-        this.coordinationDeferred.set(false);
+        this.coordinationDeferred.set(null);
         this.coordination.set(state);
       }
     });
     this.destroyRef.onDestroy(stop);
 
     /*
-     * SUBSCRIBED FOR THE WHOLE MOUNT, not just while the button is pressed.
-     * An install started from the wizard and a settings panel opened halfway
-     * through are the same install — there is one per machine — and a panel
-     * that only listened while IT was the presser would show nothing.
+     * THE INSTALL SUBSCRIPTION MOVED (PHASE19 §2.6). It used to live here and
+     * keep three signals off `crucible:install-progress` — the state, the step
+     * and the last line — which could only ever report an install THIS window
+     * started. The move to the Linux engine is the orchestrator's and starts
+     * at login, so watching it belongs to the thing that draws it:
+     * `app-crucible-install-progress` reads the install DOOR.
      */
-    const stopInstall = this.electron.crucible.onInstallProgress((progress) => {
-      if (progress.kind === 'state') {
-        this.installState.set({
-          code: progress.code, sentence: progress.sentence, action: progress.action,
-        });
-      } else if (progress.kind === 'step') {
-        this.installStep.set({ step: progress.step, index: progress.index, total: progress.total });
-        // A new step is not the old step's download.
-        this.installBytes.set(null);
-      } else if (progress.kind === 'progress') {
-        this.installBytes.set(bytesWords(progress.done, progress.total));
-      } else if (progress.kind === 'line') {
-        this.installLine.set(progress.text);
-      } else if (progress.kind === 'done' || progress.kind === 'failed') {
-        this.installBytes.set(null);
-        this.installLine.set(null);
-      }
-    });
-    this.destroyRef.onDestroy(stopInstall);
 
     const stopUninstall = this.electron.crucible.onUninstallProgress((line) => {
       this.uninstallLine.set(line.text);
@@ -1020,6 +865,7 @@ export class CrucibleDoorsComponent {
       const result = await this.electron.crucible.pairStart(this.draftAddress.trim());
       if (generation !== this.pairGeneration) return;
       if (!result.success || !result.data) throw new Error(result.error ?? 'Crucible did not return a connection request.');
+      this.pairStatus.set('pending');
       this.pairPrompt.set(result.data);
       this.schedulePairPoll(generation, result.data);
     } catch (error) {
@@ -1029,12 +875,20 @@ export class CrucibleDoorsComponent {
     }
   }
 
-  cancelPairing(): void {
+  /**
+   * STOP ASKING, AND KEEP WHAT WAS SAID. The prompt stays so the sentence
+   * about it has a name in it; only the polling and the busy flag end.
+   */
+  private stopPolling(): void {
     ++this.pairGeneration;
     if (this.pairTimer !== null) clearTimeout(this.pairTimer);
     this.pairTimer = null;
-    this.pairPrompt.set(null);
     if (this.busy() === 'pair') this.busy.set(null);
+  }
+
+  cancelPairing(): void {
+    this.stopPolling();
+    this.pairPrompt.set(null);
     void this.electron.crucible.pairCancel();
   }
 
@@ -1046,15 +900,19 @@ export class CrucibleDoorsComponent {
         if (generation !== this.pairGeneration) return;
         if (!result.success || !result.data) throw new Error(result.error ?? 'The connection check failed.');
         if (result.data.status === 'pending') { this.schedulePairPoll(generation, request); return; }
-        this.cancelPairing();
+        /*
+         * THE OUTCOME IS SAID WHERE THE ATTEMPT WAS (Foundry's wording,
+         * PHASE19 §4). `stopPolling` rather than `cancelPairing`: cancelling
+         * clears the prompt, and "Connected to mac." needs the name that was
+         * in it. The door does NOT close itself on success any more either —
+         * a panel that vanished the moment it worked would take its own good
+         * news with it.
+         */
+        this.stopPolling();
+        this.pairStatus.set(result.data.status);
         if (result.data.status === 'approved') {
           await this.loadServers();
-          this.open.set(null);
           this.changed.emit();
-        } else {
-          this.error.set(result.data.status === 'denied'
-            ? 'The connection was declined on the other computer.'
-            : 'The connection code expired. Press Connect for a new code.');
         }
       } catch (error) {
         if (generation !== this.pairGeneration) return;
@@ -1075,105 +933,20 @@ export class CrucibleDoorsComponent {
     this.plan.set(res.data);
   }
 
-  // ── Door 1 ───────────────────────────────────────────────────────────────
-
-  /**
-   * A paste into the line field reads it immediately.
+  /*
+   * ── DOOR 1 IS ONE FIELD AND ONE BUTTON NOW (PHASE19 §3, §4) ──────────────
    *
-   * On the next tick, because the `paste` event fires BEFORE ngModel has the
-   * new value — reading it here without waiting would parse whatever was in the
-   * field a moment ago, which is usually the empty string.
-   */
-  onPaste(): void {
-    setTimeout(() => { void this.readPairing(); }, 0);
-  }
-
-  /**
-   * One `crucible://` line becomes the three fields, or is refused BY NAME with
-   * nothing filled.
+   * `onPaste`, `readPairing`, `test` and `add` are DELETED with the controls
+   * they served: the `crucible://` paste box, the Name/Address/Access key
+   * triple, and Test/Add. Owen, 2026-09-18: *"we removed tokens. this system
+   * is supposed to work like ollama, which doesn't require a token
+   * request/approval to connect. its protection is the system firewall."*
+   * Pairing is OPEN, so an address is the whole of what a person can be
+   * expected to know, and `connectAddress()` above is the door.
    *
-   * The parsing happens in MAIN, through the SDK's `parsePairing`, which is the
-   * tested inverse of crucible's own producer — a second parser here, written
-   * from the format doc, would be the two-owners defect in the one place the
-   * format exists to prevent it (PHASE13 §2.1).
+   * Nothing here parsed a pairing line by hand — that was main's, through the
+   * SDK — so nothing is left orphaned by their going.
    */
-  async readPairing(): Promise<void> {
-    const line = this.draftPaste.trim();
-    if (line === '') return;
-    this.busy.set('paste');
-    this.pairingRefusal.set(null);
-    this.error.set(null);
-    try {
-      const res = await this.electron.crucible.parsePairing(line);
-      if (!res.success || !res.data) {
-        this.error.set(res.error ?? 'The line could not be read, and nothing said why.');
-        return;
-      }
-      if (!res.data.ok) {
-        // VERBATIM, and NOTHING filled. A half-filled form from a line nobody
-        // can read is worse than an empty one.
-        this.pairingRefusal.set(res.data.refusal);
-        return;
-      }
-      this.draftName = res.data.fields.name;
-      this.draftUrl = res.data.fields.url;
-      this.draftToken = res.data.fields.token;
-      this.draftPaste = '';
-      this.probe.set(null);
-    } finally {
-      this.busy.set(null);
-    }
-  }
-
-  /** Ping then info, against an address that is NOT saved. Writes nothing. */
-  async test(): Promise<void> {
-    this.busy.set('test');
-    this.error.set(null);
-    try {
-      const res = await this.electron.crucible.testAddress(this.draftUrl, this.draftToken);
-      if (!res.success || !res.data) {
-        this.error.set(res.error ?? 'The test failed and said nothing about why.');
-        return;
-      }
-      this.probe.set(res.data);
-    } finally {
-      this.busy.set(null);
-    }
-  }
-
-  /**
-   * Record the remote. The registry's own refusals are shown verbatim — the
-   * reserved name, a loopback URL (that is this machine, read from its config),
-   * a duplicate name, a URL carrying `/v1`, an empty token. None of those rules
-   * is re-implemented here, so none of them can drift.
-   */
-  async add(): Promise<void> {
-    this.busy.set('add');
-    this.error.set(null);
-    try {
-      const res = await this.electron.crucible.add({
-        name: this.draftName,
-        url: this.draftUrl,
-        token: this.draftToken,
-      });
-      if (!res.success) {
-        this.error.set(res.error ?? 'The server could not be added, and nothing said why.');
-        return;
-      }
-      // The token is never echoed back into the field: it is in the registry
-      // now, and every surface can only ever show it masked.
-      this.draftName = '';
-      this.draftUrl = '';
-      this.draftToken = '';
-      this.draftPaste = '';
-      this.probe.set(null);
-      this.pairingRefusal.set(null);
-      this.open.set(null);
-      this.changed.emit();
-    } finally {
-      this.busy.set(null);
-    }
-  }
 
   // ── Door 2, and the operator door beside it ──────────────────────────────
 
@@ -1187,26 +960,21 @@ export class CrucibleDoorsComponent {
       return;
     }
     this.servers.set(res.data);
-    const found = res.data.discovered;
-    if (found.present && found.registeredAs === null && this.draftAdoptName === '') {
-      // The engine's OWN name, as a suggestion. Overwritten by anything typed,
-      // and never re-imposed once somebody has touched the field.
-      this.draftAdoptName = found.serverName;
-    }
   }
 
   /**
-   * ADD THE ENGINE ON THIS COMPUTER, under the name in the field.
+   * ADD THE ENGINE ON THIS COMPUTER, UNDER THE NAME IT CALLS ITSELF.
    *
-   * Ends in the same `addServer` the connect form does, with the same refusals
-   * shown the same way: only the NAME crosses the seam, because the key may
-   * not (`shared/crucible/settings-wire.ts`).
+   * Ends in the same `addServer` the connect door does, with the same refusals
+   * shown the same way. NOTHING crosses the seam now: the key may not
+   * (`shared/crucible/settings-wire.ts`) and the name is read from `/v1/info`
+   * in main, which is the one owner of what an engine is called (PHASE19 §4).
    */
   async adopt(): Promise<void> {
     this.busy.set('adopt');
     this.error.set(null);
     try {
-      const res = await this.electron.crucible.addDiscovered(this.draftAdoptName.trim());
+      const res = await this.electron.crucible.addDiscovered();
       if (!res.success || !res.data) {
         this.error.set(res.error ?? 'It could not be added, and nothing said why.');
         return;
@@ -1255,19 +1023,6 @@ export class CrucibleDoorsComponent {
     return 'Read from';
   }
 
-  /**
-   * What "Read it" promises, which differs by where this component is mounted.
-   *
-   * On the setup step the three fields are not drawn at all (see the template),
-   * so promising that a code "fills all three below" would name controls that
-   * are not there.
-   */
-  pasteHintWords(): string {
-    return this.mode() === 'doors'
-      ? 'One connect code from that engine console fills all three below. Nothing is saved until you press Add.'
-      : 'Open the engine console on that machine and copy its connect code. Nothing is saved until you press Add.';
-  }
-
   words(state: CrucibleCoordinationState): string {
     return coordinationWords(state);
   }
@@ -1291,7 +1046,9 @@ export class CrucibleDoorsComponent {
    */
   private async coordinateHere(name: string): Promise<void> {
     const res = await this.electron.crucible.coordinate(name);
-    this.coordinationDeferred.set(res.deferred === true);
+    // Spelled out rather than `?? null`: an ABSENT field means "nothing is
+    // holding it", which is a fact, and a coalesce reads like a default.
+    this.coordinationDeferred.set(res.deferred === undefined ? null : res.deferred);
     if (!res.success) {
       this.setupError.set(res.error
         ?? 'BookForge could not tell this machine\u2019s engine what it needs, and nothing said why.');
@@ -1327,10 +1084,6 @@ export class CrucibleDoorsComponent {
     this.busy.set('install');
     this.error.set(null);
     this.installRefusal.set(null);
-    this.installState.set(null);
-    this.installStep.set(null);
-    this.installLine.set(null);
-    this.installBytes.set(null);
     try {
       const res = await this.electron.crucible.install();
       if (res.success) {

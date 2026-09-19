@@ -202,13 +202,17 @@ export interface CrucibleInstallPlan {
   hostableWhy: string;
   /** The sequence, in order. */
   steps: CrucibleInstallStep[];
-  /**
-   * The commands that need a privilege this app does not have — elevation, a
-   * reboot, sudo. Listed APART from the sequence because `@crucible/bootstrap`
-   * draws the same line: it refuses by name and hands the command over rather
-   * than attempting it. Empty on macOS, which needs neither.
+  /*
+   * `elevated` IS GONE FROM THIS SHAPE (PHASE19 §3, §4, 2026-09-19).
+   *
+   * It carried "the commands that need a privilege this app does not have",
+   * and the renderer drew them under "Commands BookForge cannot run for you".
+   * **Nobody is ever shown a command** (§0): a command a person could run is a
+   * step the app should be running, and where the app truly cannot, the state
+   * table's sentence says what to change and where — which is the `cannot`
+   * outcome's job, not a printed list's. The field is removed rather than left
+   * empty so that a list cannot reappear in it without somebody deciding to.
    */
-  elevated: CrucibleInstallStep[];
   /** Crucible's own README — the argument behind the sequence. */
   readme: string;
   /*

@@ -7,6 +7,7 @@ const { autoConnectLocal } = require('../dist/electron/crucible/auto-connect');
 const { CrucibleConnections } = require('../dist/electron/crucible/connect');
 const { upgradeWsl } = require('../dist/electron/crucible/engine-upgrade');
 const { FirstRunModels } = require('../dist/electron/crucible/first-run-models');
+const { HostInstallDoor, installOutcomeIsTerminal } = require('../dist/electron/crucible/install-door');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -14,6 +15,26 @@ const { check, summary } = makeChecker();
 const pairing = { name: 'desk', url: 'http://127.0.0.1:7100', token: 'private-token' };
 const request = { ...pairing, id: 'server-request', userCode: 'CODE-1234', deviceCode: 'private-device', expiresIn: 60, interval: 1 };
 const defer = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
+
+/*
+ * A SCRIPTED INSTALL DOOR (crucible PHASE19 §2.2, §2.6).
+ *
+ * `HostInstallDoor` takes its world as an `InstallDoorHost`, which exists for
+ * this: the live door is on 127.0.0.1:7101 and on this PC that is a real
+ * Crucible with a real engine behind it.
+ */
+const doorHost = (over = {}) => ({
+  runner: () => ({ platform: 'win32' }),
+  installed: () => true,
+  status: async () => ({ running: false, outcome: null, presence: {} }),
+  watch: async () => ({ running: false, outcome: null, presence: {} }),
+  post: async () => {},
+  ...over,
+});
+/** `wsl-outcome.json`, with the six fields §2.2 gives it. */
+const anOutcome = (state, over = {}) => ({
+  state, code: null, sentence: null, at: '2026-09-19T12:00:00Z', release: '1.0.5', attempts: 1, ...over,
+});
 
 function wizardProbe(names) {
   const ts = require('typescript');
@@ -94,18 +115,57 @@ async function main() {
     }
     visit(source);
     assert.equal(entrypoints.length, 2);
+    /*
+     * THE SECOND GATE IS PHASE19 §2.8's. Coordination installs job
+     * environments and pulls weights — gigabytes — and run against the NATIVE
+     * Windows engine on a machine that is still moving to the Linux one they
+     * land on Windows and migrate-weights pays for them twice. So a move with
+     * no outcome yet holds the LOCAL engine's coordination and nothing else:
+     * an engine on another machine is not affected by this machine's move.
+     */
+    const install = (running, state) => ({
+      status: async () => ({ running, outcome: state === null ? null : anOutcome(state) }),
+    });
+    const cases = [
+      // [first-run pending, install door, is the named row this machine's engine, expected runs]
+      [true, install(false, null), false, 0],
+      [false, install(false, null), false, 1],
+      [false, install(true, null), true, 0],
+      [false, install(true, null), false, 1],
+      // A terminal outcome is what lets it through, even while the run is
+      // still winding up: the install's own "it was installed" is the first
+      // caller through this gate.
+      [false, install(true, 'done'), true, 1],
+      [false, install(true, 'cannot'), true, 1],
+      [false, install(true, 'reboot-pending'), true, 1],
+      // `failed` IS NOT TERMINAL — the tray retries it once, and coordinating
+      // between the two attempts installs gigabytes onto an engine the second
+      // one is about to replace. The rule is the SDK's list, not a null check.
+      [false, install(true, 'failed'), true, 0],
+      // A machine that never moved at all is not held for ever.
+      [false, install(false, 'declined'), true, 1],
+    ];
     for (const entrypoint of entrypoints) {
-      for (const pending of [true, false]) {
+      for (const [pending, door, local, expected] of cases) {
         let requests = 0;
         const code = ts.transpileModule(`(${entrypoint.getText(source)})('desk', 'connected')`, {
           compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
         }).outputText;
         await vm.runInNewContext(code, {
           firstRunModels: { pending },
+          crucibleInstallDoor: door,
+          // THE REAL RULE, imported: the gate is only right if `failed` is not
+          // terminal, and a stub that said `outcome !== null` would pass a main.ts
+          // that had the wrong one.
+          installOutcomeIsTerminal,
+          isTheEngineOnThisComputer: async () => local,
           require: () => ({ coordinateServer: async () => { requests++; return { phase: 'stocked' }; } }),
           getMainLogger: () => ({ info() {}, warn() {} }),
         });
-        assert.equal(requests, pending ? 0 : 1);
+        assert.equal(
+          requests, expected,
+          `pending=${pending} running=${door !== null} local=${local}: expected ${expected} run(s)`,
+        );
       }
     }
   });
@@ -209,7 +269,13 @@ async function main() {
     assert.equal(await autoConnectLocal(false, { registryExists: () => false, pairing: () => null }), null);
   });
   await check('explicit install must connect and cannot claim success without a pairing', async () => {
-    await assert.rejects(autoConnectLocal(true, { registryExists: () => true, pairing: () => null }), /did not write/);
+    // The sentence names what to press IN BOOKFORGE (PHASE19 §4). It used to
+    // say "Open Crucible and try connecting again", which was a door this app
+    // stopped having on 2026-09-17.
+    await assert.rejects(
+      autoConnectLocal(true, { registryExists: () => true, pairing: () => null }),
+      /did not publish how to reach it.*Settings → Crucible Servers/s,
+    );
   });
   await check('failed identity verification never writes registry', async () => {
     await assert.rejects(autoConnectLocal(false, { registryExists: () => false, pairing: () => pairing,
@@ -298,6 +364,213 @@ async function main() {
     const client = { info: async () => ({ host: { backend: 'mlx-darwin' } }), submitTask: () => { throw Error('must not submit'); } };
     await assert.rejects(upgradeWsl('mac', () => {}, { client: async () => client }), /native Windows engine only/);
   });
+
+  /*
+   * ───────────────────────────────────────────────────────────────────────────
+   * THE ORCHESTRATOR'S INSTALL DOOR (crucible PHASE19 §2.5, §2.6, §2.8)
+   * ───────────────────────────────────────────────────────────────────────────
+   *
+   * `HostInstallDoor` is the one thing in this app that asks how this machine's
+   * move to the Linux engine is going. Driven here over a scripted
+   * `InstallDoorHost` — the interface exists for exactly this — so nothing
+   * reaches the live door on 7101, which on this PC is a real Crucible.
+   */
+  await check('the terminal partition is the SDK\'s, and `failed` is not in it', () => {
+    const bootstrap = require('@crucible/bootstrap');
+    assert.deepEqual([...bootstrap.TERMINAL_OUTCOME_STATES].sort(),
+      ['cannot', 'declined', 'done', 'reboot-pending']);
+    /*
+     * `failed` IS DELIBERATELY ABSENT. The tray retries a failure once, so an
+     * app that treated the first one as the end would coordinate — install job
+     * environments, pull weights — onto an engine the second attempt is about
+     * to replace. BookForge held a hand-written `outcome !== null` for a day
+     * and it was wrong in exactly this case.
+     */
+    assert.equal(installOutcomeIsTerminal(anOutcome('failed')), false);
+    assert.equal(installOutcomeIsTerminal(anOutcome('done')), true);
+    assert.equal(installOutcomeIsTerminal(anOutcome('cannot')), true);
+    assert.equal(installOutcomeIsTerminal(anOutcome('reboot-pending')), true);
+    assert.equal(installOutcomeIsTerminal(anOutcome('declined')), true);
+    assert.equal(installOutcomeIsTerminal(null), false);
+  });
+
+  await check('a machine with no host pack has had no move, and its door is never dialled', async () => {
+    let asked = 0;
+    const door = new HostInstallDoor(doorHost({
+      installed: () => false,
+      status: async () => { asked += 1; throw Error('the door must not be asked'); },
+    }));
+    assert.deepEqual(await door.status(), { running: false, outcome: null });
+    assert.equal(asked, 0);
+    // And off Windows there is no WSL move to have an outcome about at all.
+    const mac = new HostInstallDoor(doorHost({
+      runner: () => ({ platform: 'darwin' }),
+      status: async () => { throw Error('a Mac has no host door'); },
+    }));
+    assert.deepEqual(await mac.status(), { running: false, outcome: null });
+  });
+
+  await check('the outcome the door reports is the outcome the app carries', async () => {
+    for (const state of ['done', 'reboot-pending', 'cannot', 'failed', 'declined']) {
+      const recorded = anOutcome(state, { code: 'x_code', sentence: 'A sentence its owner wrote.' });
+      const door = new HostInstallDoor(doorHost({
+        status: async () => ({ running: false, outcome: recorded, presence: {} }),
+      }));
+      const status = await door.status();
+      assert.deepEqual(status.outcome, recorded, `${state} did not cross whole`);
+    }
+  });
+
+  await check('a move\'s events reach every watcher, and its ENDING comes from the outcome', async () => {
+    const recorded = anOutcome('cannot', { code: 'virtualization_disabled', sentence: 'It is off in the firmware.' });
+    const door = new HostInstallDoor(doorHost({
+      status: async () => ({ running: true, outcome: null, presence: {} }),
+      watch: async (sinks) => {
+        // A TICK FIRST, as a real door does: `watchInstall` polls `GET /install`
+        // and then attaches over HTTP, so every window open when the move is
+        // running is subscribed before a frame arrives. A watcher that joins
+        // mid-stream sees it from where it joined — that is the door's ring,
+        // not this seam's business.
+        await new Promise(r => setTimeout(r, 0));
+        sinks.onEvent({ id: 1, event: 'step', data: { name: 'image', index: 1, total: 4 } });
+        sinks.onEvent({ id: 2, event: 'line', data: { text: 'fetching', stream: 'stdout' } });
+        sinks.onEvent({ id: 3, event: 'progress', data: { bytes_done: 1, bytes_total: 2, file: 'ubuntu' } });
+        // A `failed` FRAME is one step's news; the outcome is the machine's.
+        sinks.onEvent({ id: 4, event: 'failed', data: { code: 'virtualization_disabled', message: 'off' } });
+        return { running: false, outcome: recorded, presence: {} };
+      },
+    }));
+    const one = []; const two = [];
+    const stop = door.watch(e => one.push(e));
+    door.watch(e => two.push(e));
+    await new Promise(r => setTimeout(r, 20));
+    assert.deepEqual(one.map(e => e.event), ['step', 'line', 'progress', 'error']);
+    assert.deepEqual(two.map(e => e.event), one.map(e => e.event), 'a second window saw a different move');
+    // A line belongs to the last step the door named — the SDK's own rule.
+    assert.equal(one.find(e => e.event === 'line').step, 'image');
+    assert.deepEqual(one.at(-1).outcome, recorded);
+    stop();
+  });
+
+  await check('subscribing waits for nothing; Try again waits for the tray to decide', async () => {
+    /*
+     * `watchInstall`'s default wait is 195 s — the SDK's own citation of the
+     * tray's presence-settle ceiling — which is right for a caller that has
+     * just asked for a move and wrong for a settings panel merely opening:
+     * that would be three minutes of polling a door four times a second on a
+     * machine where nothing is happening.
+     */
+    const waits = [];
+    const door = new HostInstallDoor(doorHost({
+      status: async () => ({ running: false, outcome: anOutcome('cannot', { code: 'c', sentence: 's' }), presence: {} }),
+      watch: async (sinks) => { waits.push(sinks.decisionWaitMs); return { running: false, outcome: null, presence: {} }; },
+    }));
+    door.watch(() => {});
+    await new Promise(r => setTimeout(r, 20));
+    assert.deepEqual(waits, [0], 'opening a panel asked the door to wait for a move nobody requested');
+    await door.start();
+    await new Promise(r => setTimeout(r, 20));
+    assert.deepEqual(waits, [0, undefined], 'Try again did not wait for the tray to pick its POST up');
+  });
+
+  await check('Try again POSTs the move the machine already attempted, and 409 is not an error', async () => {
+    const posted = [];
+    const door = new HostInstallDoor(doorHost({
+      status: async () => ({ running: false, outcome: anOutcome('cannot', { code: 'c', sentence: 's' }), presence: {} }),
+      post: async (release) => { posted.push(release); },
+    }));
+    await door.start();
+    assert.deepEqual(posted, ['1.0.5'],
+      'Try again asked for a different release; it retries the move, it does not upgrade');
+
+    // 409 host_install_running is the door saying "it is already happening",
+    // which is what the person pressing Try again wanted.
+    const busy = new HostInstallDoor(doorHost({
+      status: async () => ({ running: false, outcome: anOutcome('failed', { code: 'c', sentence: 's' }), presence: {} }),
+      post: async () => { throw Object.assign(Error('already'), { code: 'host_install_running' }); },
+    }));
+    await busy.start();
+
+    // Anything else is still an error, by its own name.
+    const broken = new HostInstallDoor(doorHost({
+      status: async () => ({ running: false, outcome: anOutcome('failed', { code: 'c', sentence: 's' }), presence: {} }),
+      post: async () => { throw Object.assign(Error('refused'), { code: 'host_unauthorized' }); },
+    }));
+    await assert.rejects(broken.start(), /refused/);
+
+    // And a machine with nothing recorded has nothing to try again.
+    const fresh = new HostInstallDoor(doorHost({
+      post: async () => { throw Error('must not post'); },
+    }));
+    await assert.rejects(fresh.start(), /no_install_outcome/);
+  });
+
+  /*
+   * WHAT EACH OUTCOME PUTS ON THE SCREEN (§3.1, §2.5).
+   *
+   * Read out of the two components' TEMPLATES, because that is where the rule
+   * actually lives and a test that re-stated it in JavaScript would be a second
+   * copy of the thing it is checking. The five states and the two controls are
+   * few enough that the whole table is asserted rather than a sample.
+   */
+  const branchOf = (template, state) => {
+    const open = template.indexOf(`result.state === '${state}'`);
+    if (open < 0) return null;
+    const next = [...template.matchAll(/result\.state === '([a-z-]+)'/g)]
+      .map(m => m.index).find(index => index > open);
+    return template.slice(open, next === undefined ? template.length : next);
+  };
+  const templateOf = (file) => {
+    const source = fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
+    const start = source.indexOf('template: `');
+    const end = source.indexOf('\n  `,', start);
+    assert.ok(start > 0 && end > start, `no template found in ${file}`);
+    return source.slice(start, end);
+  };
+
+  await check('the progress list draws exactly one control per outcome, and none on done', () => {
+    const template = templateOf('src/app/features/settings/components/crucible-install-progress.component.ts');
+    const cannot = branchOf(template, 'cannot');
+    assert.ok(cannot, 'the progress list has no `cannot` branch');
+    assert.match(cannot, /result\.sentence/, 'a cannot machine is not shown the state table\'s sentence');
+    assert.match(cannot, /tryAgain\(\)/, 'a cannot machine is not offered Try again (PHASE19 2.5)');
+    assert.ok(!/restartNow\(\)/.test(cannot), 'a cannot machine is offered a restart it does not need');
+
+    const reboot = branchOf(template, 'reboot-pending');
+    assert.ok(reboot, 'the progress list has no `reboot-pending` branch');
+    assert.match(reboot, /restartNow\(\)/, 'a machine owed a restart is not offered Restart now');
+    assert.ok(!/tryAgain\(\)/.test(reboot), 'a machine owed a restart is offered Try again instead');
+
+    const failed = branchOf(template, 'failed');
+    assert.ok(failed, 'the progress list has no `failed` branch');
+    assert.match(failed, /result\.sentence/);
+    assert.match(failed, /tryAgain\(\)/);
+
+    // `done` HAS NO BRANCH AT ALL, and that is the assertion: §2.5 says on a
+    // finished machine there is no control, so the absence is the contract.
+    assert.equal(branchOf(template, 'done'), null,
+      'the progress list grew a control for a finished machine; §2.5 says there is none');
+    // The finished machine's one line is the last ROW, not a button.
+    assert.match(
+      fs.readFileSync(path.join(__dirname, '..',
+        'src/app/features/settings/components/crucible-install-progress.component.ts'), 'utf8'),
+      /Done — running on the Linux engine/,
+    );
+  });
+
+  await check('the engine-controls readout offers the same two controls, and nothing on done', () => {
+    const template = templateOf('src/app/features/settings/components/crucible-engine-controls.component.ts');
+    assert.ok(!/Enable WSL acceleration/.test(template),
+      'the WSL opt-in button is back; PHASE19 makes the move automatic');
+    const cannot = branchOf(template, 'cannot');
+    assert.match(cannot, /result\.sentence/);
+    assert.match(cannot, /tryAgain\(\)/);
+    const reboot = branchOf(template, 'reboot-pending');
+    assert.match(reboot, /restartNow\(\)/);
+    assert.ok(!/tryAgain\(\)/.test(reboot));
+    assert.equal(branchOf(template, 'done'), null, 'a finished machine has a control on its row');
+  });
+
   summary('Crucible first launch and connections');
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

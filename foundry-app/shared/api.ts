@@ -9,9 +9,9 @@
  */
 import type { CustomAnalysisCategory } from './analysis-categories';
 import type { IncomingPairingRequest, RemotePairingProgress } from './remote-pairing';
-import type { EngineUpgradeProgress } from './engine-upgrade';
 import type { BookOutcome } from './book';
 import type { CrucibleCoordinationMap, CrucibleCoordinationState } from './coordinate-wire';
+import type { CrucibleInstallEvent, CrucibleInstallStatus } from './crucible-install-wire';
 import type { HostMintMeta, HostNodeAction, HostOffers, HostStatus } from './host-ops';
 import type { ReadAsk } from './ledger';
 import type {
@@ -1472,8 +1472,14 @@ export interface FoundryApi {
     cancelRemotePairing(): Promise<void>;
     incomingPairingRequests(server: string): Promise<IncomingPairingRequest[]>;
     decidePairing(server: string, id: string, userCode: string, allow: boolean): Promise<void>;
-    upgradeWindowsEngine(server: string): Promise<void>;
-    onEngineUpgrade(listener: (progress: EngineUpgradeProgress) => void): () => void;
+    /*
+     * `upgradeWindowsEngine` and `onEngineUpgrade` WENT WITH THEIR BUTTON —
+     * crucible PHASE19 §0. There is no app-side way to ask for the Linux
+     * engine any more, because nobody is asked: the tray decides at every
+     * start whether this machine should be moving and does it (§2.3). What a
+     * window may do is READ the outcome and, on a refusal, press Try again —
+     * `installStatus` / `onInstallEvent` / `installRetry` below.
+     */
     /** Answered with what was stored. Empty is a real answer and means unset. */
     setWslDistro(distro: string): Promise<string>;
     /** What a new row's `waitFor` starts as. Answered with what was stored. */
@@ -1520,8 +1526,32 @@ export interface FoundryApi {
     installPlan(): Promise<CrucibleInstallPlan>;
     /** Install through Crucible, verify readiness, and register its published connection. */
     install(): Promise<void>;
-    /** Installer progress from the operation started by this window. */
-    onInstallLine(listener: (line: string) => void): () => void;
+    /**
+     * WHERE THE INSTALL GOT TO — crucible PHASE19 §2.6's `GET /install`.
+     *
+     * Asked on arrival by every screen that draws the install, because the
+     * move outlives the window that started it: the tray runs it, Windows may
+     * take a restart in the middle, and the app that comes back has to be able
+     * to ASK rather than only to have been listening. `outcome` null means
+     * nothing has said yet — never "it is fine".
+     */
+    installStatus(): Promise<CrucibleInstallStatus>;
+    /**
+     * Every event of the install in flight, BROADCAST to every window: one
+     * machine is being set up, not one window's install.
+     */
+    onInstallEvent(listener: (event: CrucibleInstallEvent) => void): () => void;
+    /**
+     * §2.5's **Try again** — `POST /install`. Offered only on an outcome of
+     * `cannot` or `failed`, because a person may have changed the BIOS setting
+     * the sentence named.
+     */
+    installRetry(): Promise<void>;
+    /**
+     * §2.3's **Restart now** — `shutdown.exe /r /t 5`, as the interactive
+     * user, and ONLY when a person presses it. Refuses off win32 by name.
+     */
+    restartWindows(): Promise<void>;
     /**
      * MAY THE UNINSTALL DOOR BE DRAWN AT ALL — crucible
      * `docs/INSTALL-UNINSTALL.md` §6.1, and Owen's ruling with it: *the door

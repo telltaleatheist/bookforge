@@ -54,6 +54,14 @@
  * shape like this, where a stale copy would be indistinguishable from a fresh
  * one.
  */
+/*
+ * THE ONE IMPORT IN THIS FILE, and it is a type. `CrucibleInstallRowId` is the
+ * install door's row vocabulary and it has ONE owner — the wire file below —
+ * because both the skeleton composed here and the events that fill it in must
+ * name the same five rows. Re-spelling the union in this file is exactly the
+ * two-owner shape ARCHITECTURE.md R1 names.
+ */
+import type { CrucibleInstallRowId } from './crucible-install-wire';
 
 /**
  * The value of a row's `waitFor` that means "the first slot that will take it".
@@ -790,20 +798,26 @@ export type CloudProbe =
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * One numbered step of the hand sequence, or one of the elevated commands beside
- * it.
+ * One row of the install's PROGRESS LIST (crucible PHASE19 §3.1), or one of the
+ * elevated commands beside it.
  *
- * `command` IS NULL FOR A STEP WITH NOTHING TO TYPE — "come back here and press
- * the button" is a step, and giving it an empty command string would draw an
- * empty code box under it. `done` is only ever true for a step this app can
- * actually CHECK, which today is exactly one: whether a WSL2 distribution
- * exists. Every other step is something only the machine it runs on knows the
- * outcome of, and a checkbox that guessed would be worse than no checkbox.
+ * `command` IS ALWAYS NULL on a progress row and PHASE19 §0 is why: *"Nobody is
+ * ever shown a command."* The field survives because `elevated` shares this
+ * shape, and `elevated` is empty on every platform — see
+ * `electron/crucible-install.ts`, which no longer composes one either.
+ *
+ * `id` is what an event names when it says a row began; the LABEL is never
+ * matched, so the wording can change without moving the wire
+ * (shared/crucible-install-wire.ts). `done` is only ever true for a step this
+ * app can actually CHECK, and the live state of a row during a run is the
+ * reducer's, not this field's.
  */
 export interface CrucibleInstallStep {
+  /** Which row of shared/crucible-install-wire.ts's list this is. */
+  id: CrucibleInstallRowId;
   title: string;
   detail: string;
-  /** The exact line to run, complete and copyable, or null. */
+  /** Null on every progress row. Kept for `elevated`, which is empty. */
   command: string | null;
   /** True only when this app has verified it. See the note above. */
   done: boolean;

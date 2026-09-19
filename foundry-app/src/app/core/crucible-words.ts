@@ -117,7 +117,7 @@ function classWords(cls: string): string {
   return CLASS_WORDS[cls] ?? `the ${cls} model`;
 }
 
-function jobTypeWords(jobType: string): string {
+export function jobTypeWords(jobType: string): string {
   const known = JOB_TYPE_WORDS[jobType];
   // A job type this build has no words for is NAMED rather than hidden.
   // Reaching it means the server offered something newer than this app, and a

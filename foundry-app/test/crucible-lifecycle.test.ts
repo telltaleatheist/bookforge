@@ -23,6 +23,21 @@ const installer = await import('../electron/crucible-install');
 const uninstall = await import('../electron/crucible-uninstall');
 afterEach(() => mock.restore());
 
+
+/**
+ * A RUN THAT NARRATES INTO NOTHING.
+ *
+ * `driveCrucibleInstall` reports into three sinks now (PHASE19 §3.1's rows,
+ * the orchestrator's own event stream, and the one-shot that finishes the
+ * Windows engine row). None of these tests is about what it SAYS, so all three
+ * are drains — and they are spelled out rather than cast, so adding a fourth
+ * sink breaks here loudly instead of arriving as `undefined is not a function`
+ * halfway through a run.
+ */
+const silent = (): import('../electron/crucible-install').InstallNarration => ({
+  event: () => {}, hostEvent: () => {}, windowsEngineUp: () => {},
+});
+
 const status = (state: bootstrap.LocalStatus['state']): bootstrap.LocalStatus => ({
   schema_version: 1, state, name: 'local', url: 'http://127.0.0.1:9191', detail: `status: ${state}`,
 });
@@ -70,7 +85,19 @@ test('hosted Foundry never controls the local service', async () => {
 test('Windows installation uses the native installer and refuses a second concurrent request', async () => {
   spyOn(host, 'hosted').mockReturnValue(false);
   spyOn(bootstrap, 'startLocal').mockResolvedValue(status('running'));
-  const posixInstall = spyOn(bootstrap, 'install');
+  /*
+   * ── THIS SPY CHANGED SIDES ON PHASE19 §2.6 ─────────────────────────────
+   *
+   * It used to assert `install()` was NOT called on win32: the SDK refused to
+   * run a Windows installer of its own accord, so this app spawned PowerShell
+   * with `hostInstallCommand()` itself and the library's walk was for POSIX
+   * only. §2.6 gave `install()` the whole win32 sequence — `install.ps1` when
+   * the host pack is absent, then `watchInstall()` of the move the TRAY
+   * started — so the fact worth holding is the opposite one: it IS called,
+   * exactly once, for the release the channel named, and this app spawns
+   * nothing of its own.
+   */
+  const sdkInstall = spyOn(bootstrap, 'install');
   spyOn(registry, 'addLocalCrucible').mockResolvedValue({ outcome: 'added', servers: [],
     serverName: 'local', url: 'http://127.0.0.1:9191', configPath: 'published-pairing' });
   let finish!: () => void;
@@ -79,6 +106,7 @@ test('Windows installation uses the native installer and refuses a second concur
     await pending;
     return { code: 0, stdout: '', stderr: '', failure: null };
   });
+  sdkInstall.mockImplementation(async () => { await pending; return {} as never; });
   const runner = { platform: 'win32', stream } as unknown as bootstrap.Runner;
   /*
    * THE RELEASE CHANNEL AND THE RUNNING ENGINE ARE SCRIPTED, and they have to
@@ -88,17 +116,29 @@ test('Windows installation uses the native installer and refuses a second concur
    * `crucible-install-latest.test.ts` is where the gate itself is held.
    */
   const channel = { latest: async () => '9.9.9', running: async () => null };
-  const first = installer.driveCrucibleInstall(() => {}, runner, channel);
-  await expect(installer.driveCrucibleInstall(() => {}, runner, channel)).rejects.toThrow('already running');
+  const first = installer.driveCrucibleInstall(silent(), runner, channel);
+  await expect(installer.driveCrucibleInstall(silent(), runner, channel)).rejects.toThrow('already running');
   finish();
   await first;
-  expect(posixInstall).not.toHaveBeenCalled();
-  const argv = stream.mock.calls[0]![0] as unknown as string[];
-  expect(argv[0]).toBe('powershell.exe');
+  expect(sdkInstall).toHaveBeenCalledTimes(1);
+  const asked = sdkInstall.mock.calls[0]![0] as { release: string };
   // The CHANNEL's release, not the vendored library's: that swap is the fix.
-  expect(argv.at(-1)).toContain(bootstrap.hostInstallCommand('9.9.9'));
-  expect(argv.join(' ')).not.toContain('wsl.exe');
-  expect(installer.installationSteps('win32')[0]!.detail).toContain('native Windows');
+  expect(asked.release).toBe('9.9.9');
+  // AND NOTHING WAS SPAWNED HERE. The installer is the SDK's to run now; a
+  // process started from this file would be the second owner of it.
+  expect(stream).not.toHaveBeenCalled();
+  /*
+   * AND THE ROWS IT NARRATES. This line used to assert the first step's detail
+   * said "native Windows", which was true of a step list that DESCRIBED the
+   * install to a reader. PHASE19 §3.1 makes the list the install's own
+   * progress, so the fact worth pinning is that Windows has the two engine
+   * rows — the native one answering first (§2.8) and the move behind it — and
+   * that the run above narrates them rather than printing prose.
+   */
+  expect(installer.installationSteps('win32').map((step) => step.id))
+    .toContain('windows-engine');
+  expect(installer.installationSteps('win32').map((step) => step.id))
+    .toContain('linux-engine');
 });
 
 test('published local pairing refreshes a token without moving the preferred server', async () => {
@@ -254,7 +294,7 @@ test('POSIX initial installation prepares only the lightweight core before model
   spyOn(registry, 'addLocalCrucible').mockResolvedValue({ outcome: 'added', servers: [],
     serverName: 'local', url: 'http://127.0.0.1:7100', configPath: 'pairing' });
   const install = spyOn(bootstrap, 'install').mockResolvedValue({} as never);
-  await installer.driveCrucibleInstall(() => {}, { platform: 'darwin' } as bootstrap.Runner,
+  await installer.driveCrucibleInstall(silent(), { platform: 'darwin' } as bootstrap.Runner,
     { latest: async () => '9.9.9', running: async () => null });
   expect(install.mock.calls[0]![0].jobTypes).toEqual(['echo']);
   expect(install.mock.calls[0]![0].release).toBe('9.9.9');

@@ -1,5 +1,34 @@
 # Foundry's IPC channels — the whole list, for the collision audit
 
+## The install door can be watched, not only driven (2026-09-19, crucible PHASE19)
+
+**COUNTED BY SCRIPT OVER `app/electron/ipc.ts` IN THIS WORKTREE: 130
+`ipcMain.handle` call sites, 130 distinct channel names, zero `ipcMain.on`.**
+The figure before this change measured **128**. Three doors arrived, one left,
+and 128 − 1 + 3 = 130, which is the whole of the arithmetic. The distinct-vs-total
+equality is the part worth re-running and it holds, so nothing in Foundry
+collides with itself.
+
+| Channel | Request/result |
+| --- | --- |
+| `crucible:install-status` | → `{running, outcome}` — crucible `docs/PHASE19-AUTOMATIC-WSL.md` §2.6's `GET /install`. `outcome` null means nothing has said yet, never "it is fine". A READ. |
+| `crucible:install-event` | Push, BROADCAST to every window: one machine is being set up, not one window's install. The camelCase reading of `@crucible/bootstrap`'s `HostEvent` (`step`, `progress`, `state`, `line`, `done`, `failed`), shaped in `app/shared/crucible-install-wire.ts`. |
+| `crucible:install-retry` | §2.5's **Try again** — the same run `crucible:install` performs, offered only on an outcome of `cannot` or `failed`. |
+| `crucible:restart-windows` | §2.3's **Restart now** — `shutdown.exe /r /t 5`, as the interactive user, no elevation, and ONLY when a person presses it. Refuses off win32 by name. |
+
+**REMOVED — `foundry:crucible-wsl-upgrade` and its push
+`foundry:crucible-wsl-progress`.** They were the two halves of one button,
+"Set up WSL acceleration", which submitted an `engine/wsl` task to a native
+Windows engine and followed it. PHASE19 §0 deletes the offer on a ruling rather
+than a refactor — Owen, 2026-09-18: *"we should assume the user doesn't know how
+to do it, and we shouldn't offer to let them do it themselves … it should do it
+automatically."* The move is Crucible's tray's now, decided at every start from
+facts on disk (§2.3); an app that could also ask for it would be the second
+owner of that decision. `app/electron/crucible-engine-upgrade.ts`,
+`app/shared/engine-upgrade.ts` and the `upgradeWindowsEngine` / `onEngineUpgrade`
+entries on `FoundryApi` went with them. **FOR BOOKFORGE:** a vendored bridge
+entry for either name should be removed; the successor is the four doors above.
+
 ## Approved remote connection (2026-09-16)
 
 | Channel | Request/result |
@@ -9,8 +38,6 @@
 | `foundry:crucible-pair-cancel` | Cancels this window's pending local exchange state. Server requests expire independently. |
 | `foundry:crucible-pair-requests` | Registered server name → pending approval codes, client names/addresses and expirations, through its authenticated front-door client, where pairing was requested. |
 | `foundry:crucible-pair-decide` | Registered server, request ID, matching code, allow/deny → approval decision. Credentials remain in main. |
-| `foundry:crucible-wsl-upgrade` | Registered native Windows engine → controller-owned `engine/wsl` task. Re-resolves and verifies an authenticated CUDA Linux engine before completion. |
-| `foundry:crucible-wsl-progress` | Progress push to the requesting window: engine name, state and message. Foundry does not execute WSL commands locally. |
 
 The private device code and approved bearer token never cross the preload into
 the renderer. Closing a window, cancelling or replacing a request prevents a

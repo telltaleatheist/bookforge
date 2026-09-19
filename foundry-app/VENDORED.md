@@ -10,10 +10,169 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\<user>\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **7863c73** — *A machine's name belongs to its config, not to source a stranger reads* |
+| Source sha | **806d44b** — *adopt 1.0.6 — the phase19 pre-release pack is retired* |
 | Engine | **NOT VENDORED AND NOT KNOWABLE FROM THIS FILE** — it is a spawned CLI resolved at RUNTIME (`FOUNDRY_BIN`, else `resolveFoundryPath`, `electron/main.ts`), so which build executes is a property of the machine and not of this copy. On a developer's Mac that resolves to Foundry's own checkout at `/Volumes/Callisto/Projects/foundry/dist/foundry-darwin-arm64`, which is whatever was last built there — `foundry 2.0.2 (1c1eaa3)` as of 2026-09-18. **Ask the binary: `$FOUNDRY_BIN --version`.** See *The engine this file named was not the engine that ran* below. |
-| Copied on | 2026-09-19 |
-| Copied by | Mechanical source sync, verified against Foundry `7863c73:app/`; details below |
+| Copied on | 2026-09-19 (three times: 3738c01, 3436fc5, 806d44b) |
+| Copied by | Mechanical source sync, verified against Foundry `806d44b:app/`; details below |
+
+## The `3436fc5 → 806d44b` re-vendor — the pre-release pack is retired on both sides (2026-09-19, late)
+
+Two commits, and no source file changed: `522fac4` is Foundry merging its
+PHASE19 branch to its own `main` (the work this file's previous entry already
+describes, arriving on the mainline rather than a branch), and `806d44b` is the
+1.0.6 adoption. So the whole diff is four tarballs and two package files, which
+is what a re-vendor looks like when the only thing that moved is a pin.
+
+### Crucible 1.0.6 is cut, and the label goes with it
+
+`app/vendor/crucible-bootstrap-1.0.5-phase19.tgz` is DELETED, `_cruciblePhase19Pack`
+is deleted with it, and both packages are pinned to the released
+`crucible-bootstrap-1.0.6.tgz` and `crucible-client-1.0.6.tgz`. 1.0.6 carries
+what the pre-release was vendored for — §2.6's `installStatus()`,
+`watchInstall()`, `GET /install` and `/install/events`, the `WslOutcome` states
+and `TERMINAL_OUTCOME_STATES` — so there is nothing the label was buying any
+more. Foundry's `crucible-pin.test.ts` passes with NO labelled pack present,
+which is the shape it was given for exactly this: *a pre-release pin that
+nobody remembers to undo is the thing it refuses.*
+
+BookForge adopted the same release on this branch one commit earlier, and the
+BYTES are the same on both sides — bootstrap md5 `42b3afaef3d61fcb7dc1a1a3ee9de60d`,
+client `250247e3efc44547ef38190f4d448bd0`, this repo's `vendor/` and
+`foundry-app/vendor/` measured against each other rather than assumed equal
+because the version strings match. The two repos' vendor policies, which
+differed while the pre-release was live — Foundry holding nothing unpinned,
+BookForge keeping the released tarball beside the labelled one — have converged
+again now that there is one release and one pin.
+
+### Both adoption scripts learned the same two things
+
+Foundry's `tools/adopt-crucible-release.mjs` and BookForge's are separate
+copies of one idea, and retiring a labelled pack found the same two defects in
+each: the pin being REPLACED has to be matched with the label OPTIONAL (a pack
+cut from a crucible branch carries the version string of the release it will
+become, so the filename is the only thing telling them apart), and the prune
+has to remove every tarball of the release being left, labelled or not. The
+replacement written is never labelled: adopting a real release is exactly the
+moment a pre-release stops being what an app is built against. Both were fixed
+in their own repos, neither by editing the other's.
+
+### IPC
+
+`IPC-CHANNELS.md` is unchanged from the previous entry — still 130 = 130 and
+zero `ipcMain.on`. BookForge's three renamed channels (`crucible:host-install-status`,
+`-install-event`, `-restart-windows`, moved out of Foundry's way when
+3436fc5 landed) stay where they are; nothing in this range touches a channel
+name.
+
+## The `3738c01 → 3436fc5` re-vendor — the WSL button goes, and a seam replaces it (2026-09-19, evening)
+
+Three commits since the sha this file *recorded*, two since the sha it actually
+held. Both of those two are PHASE19, and between them they delete every command
+and every "Enable WSL acceleration" button from Foundry's setup screens — which
+is the last thing standing between BookForge's own
+`tools/test-crucible-setup-surface.js` and a clean scan of every renderer this
+repo ships.
+
+### First, a correction: the table was one commit behind the copy
+
+The previous entry's table said **7863c73** and the commit that wrote it says
+*"Re-vendor Foundry to 3738c01"*. 3738c01 is 7863c73's CHILD (*Adopt Crucible
+1.0.5*), and the copy on disk carried the 1.0.5 tarballs and a package.json
+pinning them — so the bytes were 3738c01's and the recorded sha named its
+parent. It is a one-commit error and it cost nothing this time, because the
+intervening commit touched only `vendor/` and `package*.json` and both were
+plainly visible in the directory. It is recorded because the next reader
+deserves to know the range this entry starts from is `3738c01`, not `7863c73`,
+and because a sha in this table is the only thing anybody can check the copy
+against.
+
+### `6497c5e` — the install door shows where it got to, and never a command
+
+crucible `docs/PHASE19-AUTOMATIC-WSL.md` §0, §3.1, §5. Deleted from Foundry's
+screens: the Windows copy naming `install.ps1` and printing the channel's `irm`
+line, the Mac copy naming `install.sh`, the subtitle *"The steps, in order.
+Nothing is installed without you."*, the elevated-commands list — which had
+drawn an empty array for as long as it had existed — and the **"Set up WSL
+acceleration"** button on the wizard's engine card and on Settings → AI.
+`CRUCIBLE_LATEST_PS1` went with them: the line it built still exists inside the
+SDK as something the app RUNS, never as a string a screen reads.
+
+In their place, §3.1's progress list — *Installing Crucible* → *Starting the
+Windows engine* → *Setting up the Linux engine* → *Installing what Foundry
+needs* (one row per job type, pip's own lines under it and no bar, because pip
+has no total) → *Downloading models* → a last line naming the engine that
+answered. The terminal fork is §2.2's OUTCOME rather than the rows': *Restart
+Windows to finish* with **Restart now**, or the state table's own sentence with
+**Try again**, and the same readout stands alone on the wizard's engine card and
+the Servers card, still conditioned on `llama-windows`.
+
+`foundry:crucible-wsl-upgrade`, its progress push,
+`electron/crucible-engine-upgrade.ts` and `shared/engine-upgrade.ts` are
+DELETED — they were the mechanism of the button the ruling removes, and the
+move belongs to Crucible's tray now. **Restart now** is a new door running
+`shutdown.exe /r /t 5` as the interactive user, only when pressed. Three doors
+added, one removed; `IPC-CHANNELS.md` arrives with a freshly measured
+**130 = 130** and zero `ipcMain.on`, which is what BookForge's
+`tools/test-ipc-collision.js` reads.
+
+### `3436fc5` — the outcome stops being null
+
+§2.2, §2.5, §2.6, §2.8. The seam `6497c5e` put in `electron/` —
+`crucible-install-door.ts`, three verbs, one labelled pre-SDK implementation
+that could answer nothing — is swapped for the real thing, and **nothing in
+`src/` moved**, which is what the seam was for. `crucibleInstallDoor()` is
+`installStatus()` for status, the SDK's event stream folded into rows for
+watch, and `POST /install` for retry, with a 409 ATTACHING to the move already
+running rather than failing. `rowForHostStep` folds the eleven steps
+`crucible/host/installer.py` names into §3.1's six rows, and an unknown step
+moves no row rather than putting `switch-pairing` in front of a person. Try
+again asks for the release the OUTCOME records, never the channel's latest: a
+retry is the same move again, not an upgrade nobody pressed a button for.
+
+`driveCrucibleInstall` on win32 is `install()` now — the SDK runs `install.ps1`
+when the host pack is absent and then `watchInstall()`s the move the tray
+started — so that file spawns nothing and narrates instead. A terminal outcome
+that is not `done` is caught and is NOT a failed install: `cannot`,
+`reboot-pending` and `declined` are readouts and the sequence carries on to
+start and register the engine that IS there. `failed` is not terminal (the tray
+retries once) and is raised.
+
+One defect found and fixed while building it, worth reading because BookForge's
+half has the same shape: the recovery above asked the tray for an outcome after
+`install.ps1` had exited 9 — on a machine that therefore had no tray and no
+token — and `installStatus`'s own `host_no_token` replaced `host_not_installed`,
+deleting the only sentence that said what had actually gone wrong. Two guards:
+ask only when `hostInstalled()`, and let nothing the recovery does become the
+error it is recovering from.
+
+### The pre-release pack, carried through byte for byte
+
+`foundry-app/vendor/crucible-bootstrap-1.0.5-phase19.tgz` — cut from crucible
+`feat/phase19-automatic-wsl` at `c687f95`, carrying §2.6's `installStatus()`,
+`watchInstall()`, `GET /install` and `/install/events` and the `WslOutcome`
+states. It calls itself **@crucible/bootstrap 1.0.5**, the same version string
+as the released tarball, so the FILENAME is what tells them apart and
+`package.json` carries `_cruciblePhase19Pack` saying where it came from and what
+ends it. Foundry's `crucible-pin.test.ts` now REFUSES a labelled pack that no
+such note names.
+
+Foundry DELETES the released `crucible-bootstrap-1.0.5.tgz` rather than keeping
+it beside the pre-release, because that keeper's rule is that `vendor/` holds
+nothing unpinned. **BookForge's own `vendor/` keeps both**, because its
+`tools/test-crucible-install-seam.js` asks a different question — the pin, the
+tarball on disk and the version inside it held to each other — and the two
+policies are allowed to differ since each is enforced by the repo that states
+it. The BYTES are identical in both repos and in this branch's own
+`vendor/crucible-bootstrap-1.0.5-phase19.tgz`: md5 `77ffe4f5077f2c668f87dfb57f3bf9f2`,
+all three, measured rather than assumed.
+
+### What this unblocked here
+
+PHASE19 §6 says *"Foundry lands in BookForge only by re-vendor"* and that
+BookForge's setup-surface keeper cannot come up clean until Foundry's own branch
+has been vendored, because `foundry-app/`'s `crucible-install.ts` carried the
+`irm … | iex` constant and editing it here is the thing this file forbids. That
+is now done, and the keeper passes over a renderer built from these sources.
 
 ## The `1c1eaa3 → 7863c73` re-vendor — a leased card, a destroyed bank, and the word that tells two gestures apart (2026-09-19)
 

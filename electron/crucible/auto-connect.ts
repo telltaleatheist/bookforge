@@ -18,7 +18,15 @@ const defaults: AutoConnectDeps = {
   verify: async (pairing) => {
     const info = await new CrucibleClient({ ...pairing, clientName: 'BookForge' }).info();
     if (info.server.name !== pairing.name || info.server.apiVersion !== 1) {
-      throw new Error('The local Crucible identity does not match its connect code. Open Crucible to repair the connection.');
+      /*
+       * "OPEN CRUCIBLE" IS NOT A THING TO DO FROM HERE (ruled 2026-09-17,
+       * restated PHASE19 §4). BookForge stopped opening the engine's page on
+       * 2026-09-17 — Owen: *"no more opening a crucible page in bookforge
+       * settings"* — so an error telling somebody to open it was naming a door
+       * this app does not have. It says what to press IN BOOKFORGE instead.
+       */
+      throw new Error('The engine on this computer does not match the connection saved for it. '
+        + 'In Settings → Crucible Servers, remove that engine and add it again.');
     }
   },
   add: addServer,
@@ -32,7 +40,10 @@ export async function autoConnectLocal(
   if (!afterInstall && deps.registryExists()) return null;
   const pairing = deps.pairing();
   if (pairing === null) {
-    if (afterInstall) throw new Error('Crucible installed but did not write its connect code. Open Crucible and try connecting again.');
+    if (afterInstall) {
+      throw new Error('The engine installed but did not publish how to reach it. '
+        + 'In Settings → Crucible Servers, press Re-check.');
+    }
     return null;
   }
   const sameAddress = deps.list().find((row) => new URL(row.url).origin === new URL(pairing.url).origin);

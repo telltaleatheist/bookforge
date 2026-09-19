@@ -10,6 +10,7 @@ import { contextBridge, ipcRenderer, webUtils } from 'electron';
 
 import type { FoundryApi, MenuAction } from '../shared/api';
 import type { CrucibleCoordinationState } from '../shared/coordinate-wire';
+import type { CrucibleInstallEvent } from '../shared/crucible-install-wire';
 import type { HostOffers, HostStatus } from '../shared/host-ops';
 import type { CruciblePullProgress } from '../shared/model-wire';
 import type {
@@ -258,8 +259,6 @@ const api: FoundryApi = {
     cancelRemotePairing: () => ipcRenderer.invoke('foundry:crucible-pair-cancel'),
     incomingPairingRequests: (server) => ipcRenderer.invoke('foundry:crucible-pair-requests', server),
     decidePairing: (server, id, code, allow) => ipcRenderer.invoke('foundry:crucible-pair-decide', server, id, code, allow),
-    upgradeWindowsEngine: (server) => ipcRenderer.invoke('foundry:crucible-wsl-upgrade', server),
-    onEngineUpgrade: (listener) => subscribe('foundry:crucible-wsl-progress', listener),
     setWslDistro: (distro) => ipcRenderer.invoke('crucible:set-wsl-distro', distro),
     open: (name) => ipcRenderer.invoke('crucible:open', name),
     setNewJobsWaitFor: (choice) => ipcRenderer.invoke('crucible:set-new-jobs-wait-for', choice),
@@ -284,7 +283,10 @@ const api: FoundryApi = {
       subscribe<CruciblePullProgress>('crucible:pull-progress', listener),
     installPlan: () => ipcRenderer.invoke('crucible:install-plan'),
     install: () => ipcRenderer.invoke('crucible:install'),
-    onInstallLine: (listener) => subscribe<string>('crucible:install-line', listener),
+    installStatus: () => ipcRenderer.invoke('crucible:install-status'),
+    onInstallEvent: (listener) => subscribe<CrucibleInstallEvent>('crucible:install-event', listener),
+    installRetry: () => ipcRenderer.invoke('crucible:install-retry'),
+    restartWindows: () => ipcRenderer.invoke('crucible:restart-windows'),
     /*
      * The uninstall door's three. The FIRST one is what decides whether the
      * other two are ever drawn — crucible docs/INSTALL-UNINSTALL.md §6.1: the

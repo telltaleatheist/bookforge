@@ -38,6 +38,21 @@ const sources = (latest: string, running: string | null) => ({
 });
 
 /**
+ * A RUN THAT NARRATES INTO NOTHING.
+ *
+ * `driveCrucibleInstall` reports into three sinks now (PHASE19 §3.1's rows,
+ * the orchestrator's own event stream, and the one-shot that finishes the
+ * Windows engine row). None of these tests is about what it SAYS, so all three
+ * are drains — and they are spelled out rather than cast, so adding a fourth
+ * sink breaks here loudly instead of arriving as `undefined is not a function`
+ * halfway through a run.
+ */
+const silent = (): import('../electron/crucible-install').InstallNarration => ({
+  event: () => {}, hostEvent: () => {}, windowsEngineUp: () => {},
+});
+
+
+/**
  * A runner that FAILS THE TEST IF IT IS ASKED TO DO ANYTHING.
  *
  * The gate's value is that it happens before a machine is touched, so a refusal
@@ -45,7 +60,15 @@ const sources = (latest: string, running: string | null) => ({
  */
 const refusingRunner = (): bootstrap.Runner => ({
   platform: 'win32',
-  env: {},
+  /*
+   * LOCALAPPDATA IS SET BECAUSE THE SDK NOW ASKS (PHASE19 §2.6). `install()`
+   * on win32 tests for the host pack under `%LOCALAPPDATA%\\Crucible` before it
+   * does anything else, and a runner with no environment refuses
+   * `host_unresponsive` there — which would pass this test for the wrong
+   * reason, since the point is that the CHANNEL gate refuses BEFORE any of
+   * that.
+   */
+  env: { LOCALAPPDATA: 'C:\\Users\\t\\AppData\\Local' },
   homedir: 'C:\\Users\\t',
   run: async (argv) => { throw new Error(`nothing must be run: ${JSON.stringify(argv)}`); },
   stream: async (argv) => { throw new Error(`nothing must be spawned: ${JSON.stringify(argv)}`); },
@@ -63,7 +86,7 @@ test('the channel pointer is the PROMOTED release, built from the package\'s own
 });
 
 test('a channel older than the running engine refuses by name and spawns nothing', async () => {
-  const refused = installer.driveCrucibleInstall(() => {}, refusingRunner(), sources('1.0.1', '1.0.2'));
+  const refused = installer.driveCrucibleInstall(silent(), refusingRunner(), sources('1.0.1', '1.0.2'));
   await expect(refused).rejects.toThrow(/install_older_than_running/);
   await refused.catch((err: { code?: string; message: string }) => {
     expect(err.code).toBe('install_older_than_running');
@@ -73,34 +96,46 @@ test('a channel older than the running engine refuses by name and spawns nothing
 });
 
 test('a channel equal to the running engine says there is nothing to install, by name', async () => {
-  const refused = installer.driveCrucibleInstall(() => {}, refusingRunner(), sources('1.0.2', '1.0.2'));
+  const refused = installer.driveCrucibleInstall(silent(), refusingRunner(), sources('1.0.2', '1.0.2'));
   await expect(refused).rejects.toThrow(/crucible_already_latest/);
   await refused.catch((err: { code?: string }) => expect(err.code).toBe('crucible_already_latest'));
 });
 
-test('a channel newer than the running engine installs the CHANNEL\'s release, not the vendored one', async () => {
+/**
+ * A WINDOWS MACHINE WITH NO HOST PACK, whose installer exits non-zero.
+ *
+ * `install()` on win32 fetches and runs `install.ps1` when the pack is absent
+ * (PHASE19 §2.6) and refuses `host_not_installed` when it fails — so stopping
+ * the installer is how these two tests read the release WITHOUT letting the
+ * run go on to watch a move that does not exist. The script the SDK composes
+ * carries the release twice: in the asset URL it downloads and in the
+ * `-Release` switch it passes.
+ */
+const stoppedInstaller = (): { runner: bootstrap.Runner; asked: string[] } => {
   const asked: string[] = [];
   const runner = { ...refusingRunner(),
+    fileExists: () => false,
     stream: async (argv: readonly string[]) => {
       asked.push(String(argv.at(-1)));
       return { code: 9, failure: null, stdout: '', stderr: 'stopped here on purpose' };
     } } as unknown as bootstrap.Runner;
-  await expect(installer.driveCrucibleInstall(() => {}, runner, sources('1.0.3', '1.0.2')))
-    .rejects.toThrow(/stopped here on purpose/);
+  return { runner, asked };
+};
+
+test('a channel newer than the running engine installs the CHANNEL\'s release, not the vendored one', async () => {
+  const { runner, asked } = stoppedInstaller();
+  await expect(installer.driveCrucibleInstall(silent(), runner, sources('1.0.3', '1.0.2')))
+    .rejects.toMatchObject({ code: 'host_not_installed' });
   expect(asked).toHaveLength(1);
   expect(asked[0]).toContain('v1.0.3');
+  // THE VENDORED LIBRARY'S OWN NUMBER IS NOT WHAT A MACHINE GETS (§6.5.2).
   expect(asked[0]).not.toContain(`v${bootstrap.BOOTSTRAP_VERSION}`);
 });
 
 test('a machine with no Crucible installs the channel\'s latest', async () => {
-  const asked: string[] = [];
-  const runner = { ...refusingRunner(),
-    stream: async (argv: readonly string[]) => {
-      asked.push(String(argv.at(-1)));
-      return { code: 9, failure: null, stdout: '', stderr: 'stopped here on purpose' };
-    } } as unknown as bootstrap.Runner;
-  await expect(installer.driveCrucibleInstall(() => {}, runner, sources('1.0.3', null)))
-    .rejects.toThrow(/stopped here on purpose/);
+  const { runner, asked } = stoppedInstaller();
+  await expect(installer.driveCrucibleInstall(silent(), runner, sources('1.0.3', null)))
+    .rejects.toMatchObject({ code: 'host_not_installed' });
   expect(asked[0]).toContain('v1.0.3');
 });
 
@@ -125,11 +160,45 @@ test('releases order by their three numbers, so 1.0.10 is newer than 1.0.2', () 
   expect(() => installer.compareCrucibleVersions('nightly', '1.0.2')).toThrow(/release_channel_unreadable/);
 });
 
-test('the step a person is shown names the channel, and no version at all', () => {
-  const [first] = installer.installationSteps('win32');
-  expect(first?.command).toContain('releases/latest/download/install.ps1');
-  // A baked version in the line somebody copies is the same defect one layer
-  // out: the copy would still be right on the day it was written and wrong
-  // every day after.
-  expect(first?.command).not.toContain(bootstrap.BOOTSTRAP_VERSION);
+/*
+ * ── THIS ASSERTION WAS INVERTED BY PHASE19 §0, ON PURPOSE ─────────────────
+ *
+ * It used to read `expect(first?.command).toContain('releases/latest/download/
+ * install.ps1')` — the channel's line, with no version baked into it, which
+ * was the right shape for a door that printed a command to copy. There is no
+ * such door: *"Nobody is ever shown a command … A command a person could run
+ * is a step the app should be running."* So the same fact is now checked from
+ * the other side, and the version clause it carried is checked where the
+ * version is actually used — `hostInstallCommand(release)` in the run below,
+ * which `crucible-lifecycle.test.ts` pins against the CHANNEL's release.
+ */
+test('no step a person is shown carries a command, on any platform', () => {
+  for (const platform of ['win32', 'darwin', 'linux'] as const) {
+    const steps = installer.installationSteps(platform);
+    expect(steps.length).toBeGreaterThan(0);
+    for (const step of steps) {
+      expect(step.command).toBeNull();
+      // And no step NAMES an installer either: the door is a progress list of
+      // what is happening, not a manual for Crucible's own front door.
+      expect(`${step.title} ${step.detail}`).not.toContain('install.ps1');
+      expect(`${step.title} ${step.detail}`).not.toContain('install.sh');
+    }
+  }
+  // The copyable constant is gone from the module, not merely unreferenced.
+  expect(Object.keys(installer)).not.toContain('CRUCIBLE_LATEST_PS1');
+  expect(JSON.stringify(installer.installationSteps('win32')))
+    .not.toContain(bootstrap.BOOTSTRAP_VERSION);
+});
+
+/*
+ * §3.1's ROWS, IN ITS ORDER, and the platform decides which exist. The reducer
+ * matches `id` and never a label, so this is the one place the two lists are
+ * compared — a row added to the wire with no label here would draw nothing.
+ */
+test('the progress list is PHASE19 3.1, and Windows is the only platform with a move', () => {
+  expect(installer.installationSteps('win32').map((step) => step.id))
+    .toEqual(['install', 'windows-engine', 'linux-engine', 'job-types', 'models']);
+  expect(installer.installationSteps('darwin').map((step) => step.id))
+    .toEqual(['install', 'job-types', 'models']);
+  expect(installer.installationSteps('other')).toEqual([]);
 });
