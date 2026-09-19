@@ -527,3 +527,52 @@ Ruled 2026-09-19, later the same evening:
   step; old rows without an Align step keep inline alignment until they finish.
 - **P3** is confirmed: delete the dial.
 - **P7** takes E1 as "Paused accepts rows"; no engine change for Send to queue.
+
+---
+
+## H. Landed 2026-09-19 (night) — and what the fixes left owed
+
+All eight packets are on `main` (merged through `integration/queue-hunt`).
+Electron compile, the touched keepers, `ng build`, the hosted-Foundry seam and
+the quire suites are green; the nine failing keeper suites are the known
+environmental ones (Windows path converters on darwin, `extension/node_modules`,
+the foundry dev binary present where a refusal is expected, one darwin
+path-shape check in `test-crucible-render-session`).
+
+What the fixers found on the way, and what is still owed:
+
+- **A render has no lease to reserve.** Narration takes a job on the lane, not a
+  lease, so for Narrate the admission is poll → slot and the `409` is still the
+  door (which now releases the venue). Text acts reserve first as ruled.
+- **`/v1/activity` arrived in Crucible 0.5.0.** An older server answers 404; the
+  poll returns null, the row is admitted and the 409 backstop takes over — logged
+  once per machine per app run.
+- **Prepare packs to a SERVER's voice band** (`max_chars`, pace) and refuses by
+  name when no enabled server states one. A busy server still answers `/v1/voices`
+  in milliseconds, so this is not waiting for a free card — but with every server
+  off or asleep, Prepare FAILS rather than parks. Owen may want it to hold.
+- **A Prepare row cannot be cancelled** — `prepareSession` registers no handle;
+  `prepare.cancel()` is deliberately empty and says so. Owed: a handle by job id
+  the way the render keeps `crucibleCancel`.
+- **`TTS_GPU_PHASE_OVER` stayed.** `cacheSessionToProject` measured 458 s on
+  *Letter to the American Church*, all after the card went quiet, so the render
+  step hands its slot back the moment the last chunk lands and caches on the CPU
+  pool.
+- **Latent, pre-existing:** `rowLeaseStillWanted` compares `leasedModel(config)`
+  to the held subject and every module answers `null` since phase 15 — so
+  `pause()` closes the row lease of a step that is still running. Same before and
+  after; worth its own fix.
+- `busyLineOf`'s docstring says `CrucibleLeased` carries `busyLine`; it carries
+  `leasedLine` (the reserve path translates it; other readers should not trust the
+  docstring).
+- **Running / Paused** lives on the Up next band header, so it is absent on an
+  empty queue; a toolbar twin if Owen wants to pre-arm Paused.
+- `cli/coverage-align.js` passes `device: 'cpu'`, which the Crucible align route
+  refuses by name — pre-existing, a different door.
+- `src/app/features/studio/models/tts.types.ts` `TTSSettings.device` is a dead
+  type (no readers since 2026-09-14); the manifest's `TTSSettings.device` stays
+  because records must keep parsing.
+- The CLI `--tts` door keeps inline prep and aligns nothing; `cli/README.md` says
+  so beside the queue's three-row shape.
+- Owen's running `electron:dev` needs a restart to take the main-process changes;
+  the renderer reloads on its own.
