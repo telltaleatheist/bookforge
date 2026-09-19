@@ -878,6 +878,8 @@ const SUITES = [
   'test-epub-provenance',
   'test-exploded-working-copy',
   'test-document-binding',
+  // When the sidecar protocol's anti-spillover proof is paid, and when it is not owed.
+  'test-sidecar-delivery',
   // The library's write paths: moving an artifact into place, deleting, resetting.
   'test-artifact-movement',
   'test-deletion-write-path',

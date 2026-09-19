@@ -38,7 +38,7 @@ import type { ReaderStreamBridge } from './reader-stream-bridge';
 import type { RenderStatus } from '../shared/audio/render-status';
 import type { EpubChapter } from './epub-writer';
 import { verifyAudiobookAnalysis } from './audiobook-analysis-protocol';
-import { readBinding, resolveSidecars, sidecarPathsFor } from './sidecar-binding';
+import { readBinding, resolveSidecars, sidecarPathsFor, type SidecarAssetKind } from './sidecar-binding';
 import { regenerateBoundSidecars } from './sidecar-migration';
 import {
   BookRecord, BookPosition, BookHeard, BookmarkOp,
@@ -1333,7 +1333,7 @@ export class BookshelfServer {
       // to be this audio's transcript: the sidecar by its m4bSha256 binding, the
       // embedded track by living inside the file. A mono m4b with neither has no text.
       if (variantPath && this.isPathWithinLibrary(variantPath) && fsSync.existsSync(variantPath)) {
-        const bound = await this.boundSidecars(variantPath);
+        const bound = await this.boundSidecars(variantPath, ['vtt']);
         if (bound.vtt) {
           res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
           this.pipeFileToResponse(res, fsSync.createReadStream(bound.vtt), `transcript ${bound.vtt}`);
@@ -1553,12 +1553,21 @@ export class BookshelfServer {
    *  returned when its recorded m4bSha256 matches the m4b actually being served, so a
    *  cover/transcript can never spill onto the wrong audiobook. Delivery-tier: the m4b
    *  hash is cached by (path,size,mtime), so this is a cheap file read on the hot path,
-   *  not a per-request ffmpeg spawn. Returns absolute sidecar paths (or nulls). */
-  private async boundSidecars(m4bAbsPath: string): Promise<{ vtt: string | null; cover: string | null }> {
+   *  not a per-request ffmpeg spawn. Returns absolute sidecar paths (or nulls).
+   *
+   *  `kinds` is the caller's own appetite, and it is passed on rather than
+   *  filtered here afterwards: `resolveSidecars` reads the audiobook only when an
+   *  asset it was ASKED for is actually there to serve, so a route that wants a
+   *  transcript must not ask about covers it will throw away. See that function
+   *  for what that saves and why it takes nothing away. */
+  private async boundSidecars(
+    m4bAbsPath: string,
+    kinds: readonly SidecarAssetKind[],
+  ): Promise<{ vtt: string | null; cover: string | null }> {
     try {
       const binding = await readBinding(sidecarPathsFor(m4bAbsPath).binding);
       if (!binding) return { vtt: null, cover: null };
-      const r = await resolveSidecars(binding, m4bAbsPath, path.dirname(m4bAbsPath));
+      const r = await resolveSidecars(binding, m4bAbsPath, path.dirname(m4bAbsPath), { kinds });
       return { vtt: r.vtt, cover: r.cover };
     } catch {
       return { vtt: null, cover: null };
@@ -3038,7 +3047,7 @@ export class BookshelfServer {
     // Hash-bound cover sidecar for this exact m4b — a validated plain-file read,
     // below the user-editable manifest cover but above cracking the m4b per request.
     if (!cover && downloadPath && this.isPathWithinLibrary(downloadPath) && fsSync.existsSync(downloadPath)) {
-      const bound = await this.boundSidecars(downloadPath);
+      const bound = await this.boundSidecars(downloadPath, ['cover']);
       if (bound.cover) cover = await this.describeCoverFile(bound.cover);
     }
 

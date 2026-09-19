@@ -934,6 +934,23 @@ export class PlayerComponent implements OnInit, OnDestroy {
     "The world's richest cat, Blackie, inherited £7 million in 1988.",
     'Cats spend up to half their waking hours grooming.',
     "A cat's brain is about 90% structurally similar to a human's.",
+    "A cat's collarbone floats free of its skeleton, so it fits anywhere its head does.",
+    'Cats hear up to about 64 kHz — more than an octave above what a dog can hear.',
+    'Kittens are born both deaf and blind; the ear canals open at around two weeks.',
+    'A cat has roughly 230 bones to a human\'s 206, and about a tenth of them are in the tail.',
+    'Cats sweat only through the pads of their paws.',
+    'A slow blink is a cat telling you it feels safe. Blinking back is a real reply.',
+    "The barbs on a cat's tongue are hollow, and wick saliva down to the skin.",
+    'Cats have a Jacobson\'s organ in the roof of the mouth: the open-mouthed grimace is a cat TASTING a smell.',
+    'Ginger cats are overwhelmingly male — the gene for that coat rides on the X chromosome.',
+    'The righting reflex that lands a cat on its feet is fully developed by about seven weeks old.',
+    'A cat can jump roughly six times its own body length from standing.',
+    'Ship\'s cats hunted rodents in cargo for thousands of years, which is how cats reached nearly every island on Earth.',
+    'A female cat is a queen and a male is a tom; a hairball, properly, is a bezoar.',
+    'Cats cannot see the spot directly under their own nose — hence losing a treat placed right in front of them.',
+    'Cats rub their faces on things to mark them: the scent glands are in the cheeks and chin.',
+    'Herodotus reports that Egyptian households shaved their eyebrows in mourning when the family cat died.',
+    'Cats dream. They show the same REM sleep, whiskers and paws twitching, that we do.',
   ];
   readonly catFact = signal(PlayerComponent.CAT_FACTS[Math.floor(Math.random() * PlayerComponent.CAT_FACTS.length)]);
   private catFactTimer: ReturnType<typeof setInterval> | null = null;
