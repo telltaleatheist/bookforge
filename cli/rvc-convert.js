@@ -63,6 +63,9 @@ async function main() {
     indexRate: numOr(args['index-rate'], 0.0),
     protectRate: numOr(args['protect-rate'], 0.2),
     f0Method: args['f0-method'] || 'rmvpe',
+    // Pitch shift. The bridge has always forwarded this; this wrapper never read it, so every
+    // caller through here converted at source pitch. Default 0 keeps existing callers identical.
+    nSemitones: numOr(args['n-semitones'], 0),
     chunkSeconds: numOr(args['chunk-seconds'], 600),
     batchSize: numOr(args['batch-size'], 4),
     signal: ac.signal,
