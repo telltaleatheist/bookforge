@@ -40,6 +40,7 @@
  */
 'use strict';
 const assert = require('assert');
+const { skipLine } = require('./keeper-skip.js');
 const fs = require('fs');
 const path = require('path');
 
@@ -49,8 +50,8 @@ const {
 
 const LADDER = path.join(REPO, 'dist', 'electron', 'crucible', 'voice-ladder.js');
 if (!fs.existsSync(LADDER)) {
-  console.log('SKIP: dist/electron/crucible/voice-ladder.js is not built — run '
-    + 'npx tsc -p tsconfig.electron.json');
+  console.log(skipLine('dist/electron/crucible/voice-ladder.js is not built — run '
+    + 'npx tsc -p tsconfig.electron.json'));
   process.exit(0);
 }
 

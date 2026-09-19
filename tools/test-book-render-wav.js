@@ -33,6 +33,7 @@
  */
 'use strict';
 const assert = require('assert');
+const { skipLine } = require('./keeper-skip.js');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -40,7 +41,7 @@ const path = require('path');
 const REPO = path.resolve(__dirname, '..');
 const DIST = path.join(REPO, 'dist', 'electron');
 if (!fs.existsSync(path.join(DIST, 'book-render-service.js'))) {
-  console.log('SKIP: dist/electron is not built — run `npx tsc -p tsconfig.electron.json`');
+  console.log(skipLine('dist/electron is not built — run `npx tsc -p tsconfig.electron.json`'));
   return;
 }
 

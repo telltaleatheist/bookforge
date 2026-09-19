@@ -35,6 +35,7 @@
  */
 'use strict';
 const assert = require('assert');
+const { skipLine } = require('./keeper-skip.js');
 const fs = require('fs');
 const path = require('path');
 const {
@@ -44,12 +45,12 @@ const {
 const DIST = path.join(REPO, 'dist', 'electron');
 for (const built of ['crucible/render.js', 'parallel-tts-bridge.js', 'whisperx-align-bridge.js']) {
   if (!fs.existsSync(path.join(DIST, built))) {
-    console.log(`SKIP: dist/electron/${built} is not built — run npx tsc -p tsconfig.electron.json`);
+    console.log(skipLine(`dist/electron/${built} is not built — run npx tsc -p tsconfig.electron.json`));
     process.exit(0);
   }
 }
 if (!fs.existsSync(path.join(DIST, 'data', 'rvc-voice-assets.json'))) {
-  console.log('SKIP: dist/electron/data is not staged — run npm run build:electron');
+  console.log(skipLine('dist/electron/data is not staged — run npm run build:electron'));
   process.exit(0);
 }
 

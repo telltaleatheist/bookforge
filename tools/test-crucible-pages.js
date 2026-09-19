@@ -678,7 +678,11 @@ async function main() {
       assert.strictEqual(caught.code, 'crucible_pages_model_leased');
       assert.strictEqual(
         caught.busyLine,
-        `leased: foundry, translate since ${HELD.since}`,
+        // The SDK's own line (`CrucibleLeased.leasedLine`: "leased: <who>, <act>, until
+        // <expires>"). This used to spell the DELETED duplicate class's wording
+        // ("... since <since>"); `fix/lease-park` made the SDK's class the one owner,
+        // so the keeper pins the SDK's sentence rather than a second spelling of it.
+        `leased: foundry, translate, until ${HELD.expiresAt}`,
         'the holder\'s line did not reach the error, so a queue row would redden rather than park');
       assert.ok(caught.message.includes('foundry'), 'the sentence must still name the holder');
     } finally {

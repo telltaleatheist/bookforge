@@ -91,8 +91,12 @@ check('an unreachable server is NOT read as a server without the voice', async (
     'and THIS is what stops the caller reading that one-server set as a lock');
   const mac = inventory.servers.find((s) => s.server === 'M1 Ultra');
   assert.strictEqual(mac.state, 'unreachable');
-  assert.match(mac.reason, /M1 Ultra/,
-    'the sentence names the server, so the picker says what the render would have said');
+  // The reason does NOT open with the server's name: its one reader draws
+  // `{{ m.server }} — {{ m.why }}`, so a name in the reason prints twice
+  // (voice-inventory.ts, "IT DOES NOT SAY THE NAME", b398c253). The name is
+  // the row's own `server` field — this check used to assert the opposite.
+  assert.ok(!/M1 Ultra/.test(mac.reason),
+    'the reason must not repeat the name the modal already draws beside it: ' + mac.reason);
 });
 
 check('a down server is described by the INVENTORY, never in the render\'s words', async () => {
@@ -117,7 +121,8 @@ check('a down server is described by the INVENTORY, never in the render\'s words
     'the render\'s sentence must not be read out by a picker: ' + mac.reason);
   assert.ok(!/queue the book again/.test(mac.reason),
     'nor its instruction, which is about a book that has not been queued yet: ' + mac.reason);
-  assert.match(mac.reason, /M1 Ultra/, 'it still names the machine');
+  assert.strictEqual(mac.server, 'M1 Ultra', 'the row names the machine; the reason does not repeat it');
+  assert.ok(!/M1 Ultra/.test(mac.reason), 'the reason must not repeat the name (see the check above)');
   assert.match(mac.reason, /ECONNREFUSED 192\.0\.2\.79:7100/,
     "and still carries the transport's own detail, which is the only actionable half");
   assert.match(mac.reason, /not answering/, 'and says what is actually true of it');
