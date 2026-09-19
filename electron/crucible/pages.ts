@@ -294,14 +294,32 @@ export type CruciblePagesErrorCode =
   /** Nothing is serving it. The operator's job, never a page read's. */
   | 'crucible_pages_model_not_resident'
   /**
-   * 409 `model_leased`: another client has said it is mid-run on that server's
+   * 409 `leased`: another client has said it is mid-run on that server's
    * resident model, so nothing may move it off the card — including this read's
-   * own lease. A WAIT with the holder's name, act and since, never a retry loop.
+   * own lease. A WAIT with the holder's name, act and since, never a retry loop,
+   * carried to the queue the way `server_busy` is ({@link CruciblePagesError.busyLine}
+   * → `noteStepBusy`).
+   *
+   * The SERVER's code is `leased` and not `model_leased` — since crucible
+   * 5e04e5f a lease names the resident thing of any kind, so a code naming one
+   * kind would be false whenever narrator or the aligner holds the card
+   * (`@crucible/client`'s own `LEASED` constant). This door's own name keeps
+   * `pages` in it, the way `text-venue.ts`'s keeps its act.
    */
   | 'crucible_pages_model_leased';
 
 export class CruciblePagesError extends Error {
   readonly code: CruciblePagesErrorCode;
+  /**
+   * The holder's line — "leased: foundry, translate since …" — for the queue's
+   * `noteStepBusy`.
+   *
+   * Present exactly on `crucible_pages_model_leased`. Without it a leased page
+   * read is indistinguishable from a conversion that failed, so `settleStep`
+   * reddens the row instead of parking it against that server; the render and
+   * job readers already carry the same field for the same reason.
+   */
+  readonly busyLine?: string;
 
   /**
    * The code is PREFIXED onto the message, not merely carried beside it — the
@@ -309,10 +327,11 @@ export class CruciblePagesError extends Error {
    * and nothing else, so "refused by name" is only true where the name is in
    * the sentence.
    */
-  constructor(code: CruciblePagesErrorCode, message: string) {
+  constructor(code: CruciblePagesErrorCode, message: string, busyLine?: string) {
     super(`${code}: ${message}`);
     this.name = 'CruciblePagesError';
     this.code = code;
+    if (busyLine !== undefined) this.busyLine = busyLine;
   }
 }
 
@@ -627,9 +646,12 @@ export async function resolveCruciblePageReader(
  * `X-Crucible-Act`: one name from one field, so a bench beside the card cannot
  * be told one thing while the requests say another.
  *
- * `409 model_leased` on the take is a WAIT rendered with the holder's line, and
+ * `409 leased` on the take is a WAIT rendered with the holder's line, and
  * nothing here waits it out — that decision belongs to whoever pressed the
- * button, never to a sleep loop in a library (ARCHITECTURE.md R5).
+ * button, never to a sleep loop in a library (ARCHITECTURE.md R5). The line is
+ * carried on the refusal as `busyLine`, which is what lets a queue row PARK
+ * against that server rather than redden: a refusal with no `busyLine` reads to
+ * `settleStep` as "the conversion failed".
  */
 export async function withCruciblePagesLease<T>(
   reader: CruciblePageReader,
@@ -657,6 +679,9 @@ export async function withCruciblePagesLease<T>(
         + 'client saying it intends more work on this model; nothing here waits it out, loads a '
         + 'model, or quietly reads the pages on this machine instead. Try again when that run is '
         + 'done, or pick another server.',
+        // The SDK's own holder line, so a queue row parks against this server
+        // instead of reddening — see this function's header.
+        err.leasedLine,
       );
     }
     throw err;

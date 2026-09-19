@@ -394,6 +394,164 @@ async function run() {
       'a paragraph merged across a container boundary');
   });
 
+  // ── THE BOOK'S OWN `$1` IS NOT A GROUP REFERENCE ────────────────────────
+  //
+  // Every site below hands book text to `String.prototype.replace` and, until
+  // this section existed, handed it as the replacement STRING. Most of them are
+  // markup writers, which is why they are in this suite; the last is the analysis
+  // PROMPT builder, whose output is not markup at all — the hazard is the
+  // replacement layer and not the destination, so it is pinned in one place.
+  //
+  // In a replacement string `$1`, `$2`, `$&`, `` $` `` and `$'` are pattern
+  // references: a sentence reading `It cost $1,000.` comes out as `It cost <the
+  // first capture group>,000.` and `$&` splices the whole original match — a
+  // book silently rewritten, never an error. `escapeXml` does not touch `$`, so the escaping
+  // that already runs is no defence. The fix at every site is a replacer
+  // FUNCTION, whose return value is inserted verbatim.
+  //
+  // `$&` is the sharper probe of the two: with the `<body…>[\s\S]*</body>` sites
+  // it splices the WHOLE ORIGINAL BODY back in, so a failure is unmistakable.
+
+  /** Prose a book can plausibly contain, carrying every dollar form at once. */
+  const DOLLARS = 'It cost $1,000 and $2 more, or $& if you prefer, plus $` and $\'.';
+
+  await check('the chapter writer keeps a $1 in the book out of the pattern', async () => {
+    const book = await attributedBook('dollars-chapter-in.epub');
+    const out = path.join(ROOT, 'dollars-chapter-out.epub');
+    const { parseEpub, updateChapterText, saveModifiedEpub, closeEpub } =
+      require(path.join(DIST, 'electron', 'epub-processor.js'));
+    const structure = await parseEpub(book);
+    const chapter = structure.chapters.find((c) => c.href.endsWith('c0001.xhtml'));
+    assert.ok(chapter, 'the fixture chapter was not found');
+    await updateChapterText(chapter.id, `A Heading\n\n${DOLLARS}`);
+    await saveModifiedEpub(out);
+    closeEpub();
+    const after = await documentText(out, 'OEBPS/c0001.xhtml');
+    assert.ok(after.includes('It cost $1,000 and $2 more'),
+      `replaceXhtmlBody read the book's dollars as group references:\n${after}`);
+    assert.ok(after.includes('or $&amp; if you prefer'),
+      `replaceXhtmlBody spliced the original match back in for $&:\n${after}`);
+    assert.ok(!after.includes('The court rose at four'),
+      `the original body was re-inserted by a $& in the new text:\n${after}`);
+  });
+
+  await check('the OPF writer keeps a $& in the title out of the pattern', async () => {
+    const book = await attributedBook('dollars-opf-in.epub');
+    const { updateEpubMetadataStandalone } = require(path.join(DIST, 'electron', 'epub-processor.js'));
+    // The title is a metadata field a person types, and `$&` in it splices the
+    // whole `<dc:title>…</dc:title>` element back inside itself.
+    await updateEpubMetadataStandalone(book, { title: 'Cost: $1,000 & $& Rising', author: 'A. $2 Author' });
+    const opf = await documentText(book, 'OEBPS/content.opf');
+    assert.ok(opf.includes('<dc:title>Cost: $1,000 &amp; $&amp; Rising</dc:title>'),
+      `updateOpfMetadata read the title's dollars as group references:\n${opf}`);
+    assert.ok(opf.includes('$2 Author'),
+      `updateOpfMetadata read the author's $2 as a group reference:\n${opf}`);
+  });
+
+  await check('editEpubText keeps a $1 in the replacement text out of the pattern', async () => {
+    const book = await attributedBook('dollars-edit-in.epub');
+    const { editEpubText } = require(path.join(DIST, 'electron', 'epub-processor.js'));
+    const result = await editEpubText(
+      book, 'c0000',
+      'Hitler came to power in a country that had been governed by decree for three years.',
+      DOLLARS);
+    assert.ok(result.success, `the edit did not land: ${result.error}`);
+    const after = await documentText(book, 'OEBPS/c0000.xhtml');
+    assert.ok(after.includes('It cost $1,000 and $2 more'),
+      `editEpubText read the new text's dollars as group references:\n${after}`);
+    assert.ok(after.includes('or $&amp; if you prefer'),
+      `editEpubText spliced the matched sentence back in for $&:\n${after}`);
+    assert.ok(!after.includes('Hitler came to power'),
+      `the sentence being replaced came back through a $& in its replacement:\n${after}`);
+  });
+
+  await check('replaceTextInEpub keeps a $1 in the replacement text out of the pattern', async () => {
+    const book = await attributedBook('dollars-replace-in.epub');
+    const { replaceTextInEpub } = require(path.join(DIST, 'electron', 'epub-processor.js'));
+    const result = await replaceTextInEpub(
+      book,
+      'Twenty-one men sat in two rows, and none of them looked at each other.',
+      DOLLARS);
+    assert.ok(result.success, `the replacement did not land: ${result.error}`);
+    const after = await documentText(book, 'OEBPS/c0001.xhtml');
+    assert.ok(after.includes('It cost $1,000 and $2 more'),
+      `replaceTextInEpub read the new text's dollars as group references:\n${after}`);
+    assert.ok(after.includes('or $&amp; if you prefer'),
+      `replaceTextInEpub spliced the matched sentence back in for $&:\n${after}`);
+    assert.ok(!after.includes('Twenty-one men sat in two rows'),
+      `the sentence being replaced came back through a $& in its replacement:\n${after}`);
+  });
+
+  // The translation writer rewrites a chapter body exactly as the cleanup
+  // writer does, and used to do it with its OWN copy of `replaceXhtmlBody` and
+  // `escapeXml`. That is why the `$1` hazard had to be fixed twice in one
+  // night, and why the next change to either rule would have landed in one copy
+  // only. There is now one owner — epub-processor exports both — so the four
+  // behavioural checks above answer for the translation path too, and what is
+  // left to pin is that the second copy does not come back.
+  await check('the translation writer declares no second body rewriter', async () => {
+    const source = fs.readFileSync(path.join(REPO, 'electron', 'translation-bridge.ts'), 'utf8');
+    const declared = source.match(/^\s*(?:export\s+)?function\s+(?:replaceXhtmlBody|escapeXml)\b/gm) || [];
+    assert.deepStrictEqual(declared, [],
+      'translation-bridge.ts declares its own copy of a rule epub-processor owns, so a fix to '
+      + `one is not a fix to the other:\n  ${declared.map((d) => d.trim()).join('\n  ')}`);
+    assert.ok(/from '\.\/epub-processor\.js'/.test(source)
+      && /\breplaceXhtmlBody\b/.test(source) && /\bescapeXml\b/.test(source),
+      'translation-bridge.ts does not take the body rewriter from its owner');
+  });
+
+  // The shared door itself, driven with the book's dollars in it. Until the
+  // dedup this function was not exported and was reachable only through
+  // `translateEpub` or `saveModifiedEpub`, one of which needs an AI provider.
+  await check('the shared body rewriter keeps a $1 and a $& in the model output verbatim', () => {
+    const { replaceXhtmlBody } = require(path.join(DIST, 'electron', 'epub-processor.js'));
+    assert.strictEqual(typeof replaceXhtmlBody, 'function',
+      'epub-processor does not export the body rewriter, so translation-bridge cannot take it');
+    const xhtml = '<html><body class="c1"><h2 id="t">The Old Title</h2>'
+      + '<p>The court rose at four.</p></body></html>';
+    const after = replaceXhtmlBody(xhtml, `A Heading\n\n${DOLLARS}`);
+    assert.ok(after.includes('It cost $1,000 and $2 more'),
+      `the shared rewriter read the dollars as group references:\n${after}`);
+    assert.ok(after.includes('or $&amp; if you prefer'),
+      `the shared rewriter spliced the original match back in for $&:\n${after}`);
+    assert.ok(!after.includes('The court rose at four'),
+      `the original body was re-inserted by a $& in the new text:\n${after}`);
+    assert.ok(after.includes('<body class="c1">'),
+      `the body's own attributes did not survive the rewrite:\n${after}`);
+    assert.ok(after.includes('<h2 id="t">A Heading.</h2>'),
+      `the heading tag and its attributes did not survive the rewrite:\n${after}`);
+  });
+
+  // ── AND THE PROMPT THE ANALYSIS MODEL READS ─────────────────────────────
+  //
+  // `buildPromptForChunk` fills the shipped template's `{categories}` and
+  // `{text}` slots, and `{text}` is a whole chapter of the book. A string
+  // pattern has no capture group, so `$1` survives it — but `$&` IS the matched
+  // text, i.e. the placeholder, so a `$&` in the prose splices the literal
+  // `{text}` into the sentence and the model reads, and flags, a chapter the
+  // book does not contain.
+  await check('the analysis prompt carries the chapter verbatim, dollars and all', () => {
+    const { buildPromptForChunk } = require(path.join(DIST, 'electron', 'book-analysis.js'));
+    // The SHIPPED template, not an invented one — the slots are its own.
+    const template = fs.readFileSync(
+      path.join(REPO, 'electron', 'prompts', 'book-analysis.txt'), 'utf8').trim();
+    assert.ok(template.includes('{text}') && template.includes('{categories}'),
+      'the shipped analysis template no longer has the slots this fills');
+    const prompt = buildPromptForChunk(
+      template,
+      [{ id: 'violence', name: 'Violence $& Gore', description: 'Costs over $1,000', enabled: true },
+        { id: 'off', name: 'Disabled', description: 'never asked for', enabled: false }],
+      DOLLARS);
+    assert.ok(prompt.includes(DOLLARS),
+      `the chapter did not reach the model as the book wrote it:\n${prompt}`);
+    assert.ok(!prompt.includes('{text}'),
+      `a $& in the prose spliced the '{text}' placeholder back into the chapter:\n${prompt}`);
+    assert.ok(prompt.includes('- violence: "Violence $& Gore" — Costs over $1,000'),
+      `the category block did not reach the model as it was typed:\n${prompt}`);
+    assert.ok(!prompt.includes('Disabled'),
+      'a disabled category was offered to the model');
+  });
+
   for (const [status, name, detail] of results) {
     console.log(`${status === 'ok' ? 'ok  ' : 'FAIL'}  ${name}${detail ? `\n      ${detail}` : ''}`);
   }

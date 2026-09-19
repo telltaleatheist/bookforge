@@ -19,7 +19,7 @@ import {
   finalizeDiffCache,
   clearDiffCache
 } from './diff-cache.js';
-import { extractChapterAsText } from './epub-processor.js';
+import { escapeXml, extractChapterAsText, replaceXhtmlBody } from './epub-processor.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -829,54 +829,6 @@ async function saveTranslatedEpub(
   }
 
   await zipWriter.write(outputPath);
-}
-
-/**
- * Replace body content in XHTML while preserving heading structure.
- * First block from AI goes into the original heading tag (h1-h6).
- * Heading text always ends with a period for TTS pause.
- */
-function replaceXhtmlBody(xhtml: string, newText: string): string {
-  const bodyMatch = xhtml.match(/<body[^>]*>([\s\S]*)<\/body>/i);
-  if (!bodyMatch) return xhtml;
-
-  const bodyContent = bodyMatch[1];
-  const blocks = newText.split(/\n\n+/).filter(p => p.trim());
-  if (blocks.length === 0) return xhtml;
-
-  // Detect heading in original XHTML
-  const headingMatch = bodyContent.match(/<(h[1-6])([^>]*)>([\s\S]*?)<\/\1>/i);
-
-  if (!headingMatch) {
-    const htmlContent = blocks.map(p => `<p>${escapeXml(p.trim())}</p>`).join('\n');
-    return xhtml.replace(/<body([^>]*)>[\s\S]*<\/body>/i, `<body$1>\n${htmlContent}\n</body>`);
-  }
-
-  const tag = headingMatch[1].toLowerCase();
-  const attrs = headingMatch[2];
-
-  // First block is the (translated) chapter title
-  let titleText = blocks[0].replace(/\s+/g, ' ').trim();
-  if (titleText && !/[.!?]$/.test(titleText)) titleText += '.';
-  const headingHtml = `<${tag}${attrs}>${escapeXml(titleText)}</${tag}>`;
-  const bodyBlocks = blocks.slice(1);
-
-  const bodyHtml = bodyBlocks.map(p => `<p>${escapeXml(p.trim())}</p>`).join('\n');
-  const htmlContent = bodyHtml ? `${headingHtml}\n${bodyHtml}` : headingHtml;
-
-  return xhtml.replace(/<body([^>]*)>[\s\S]*<\/body>/i, `<body$1>\n${htmlContent}\n</body>`);
-}
-
-/**
- * Escape text for XML
- */
-function escapeXml(text: string): string {
-  return text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&apos;');
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

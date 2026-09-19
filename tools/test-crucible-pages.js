@@ -643,6 +643,60 @@ async function main() {
     assert.strictEqual(seen[0].headers['x-crucible-act'], 'pages');
   });
 
+  // ── 13. A LEASED SERVER IS A WAIT, AND A WAIT HAS TO REACH THE QUEUE ─────
+  //
+  // `withCruciblePagesLease` already refuses `409 leased` by name. What it did
+  // NOT do was carry `busyLine`, and that is the whole difference between a
+  // parked row and a red one: `settleStep` reads `busyLine` off the error to
+  // hold the row against that server (`queue-engine.ts`, `noteStepBusy`), and a
+  // refusal without one is indistinguishable from "the conversion failed". Every
+  // other Crucible reader carries it — `CrucibleRenderRefused`,
+  // `CrucibleJobRefused`, `CrucibleTextActError` — from the SDK's own
+  // `leasedLine`, and this one now does too.
+  await check('a leased server parks the page read instead of reddening it', async () => {
+    const { leaseRoutes, modelLeasedRefusal, startFakeCrucible, fakeNamer } =
+      require('./fake-crucible.js');
+    const servers = require(path.join(REPO, 'dist', 'electron', 'crucible', 'servers.js'));
+    const nameFake = fakeNamer(servers);
+    const HELD = {
+      leaseId: 'lease-held', client: 'foundry', act: 'translate', model: 'dots-ocr',
+      since: '2026-09-14T01:00:00+00:00', expiresAt: '2026-09-14T01:02:00+00:00',
+    };
+    const routes = leaseRoutes({ refuseLease: () => modelLeasedRefusal(HELD) });
+    const fake = await startFakeCrucible(routes.handler);
+    const server = nameFake(fake.url);
+    try {
+      let caught = null;
+      try {
+        await pages.withCruciblePagesLease(
+          { server, model: 'dots-ocr', act: pages.CRUCIBLE_PAGES_ACT },
+          async () => { throw new Error('the conversion must never start'); },
+        );
+      } catch (err) { caught = err; }
+      assert.ok(caught instanceof pages.CruciblePagesError,
+        `a leased server did not come back as this door's own refusal: ${caught && caught.message}`);
+      assert.strictEqual(caught.code, 'crucible_pages_model_leased');
+      assert.strictEqual(
+        caught.busyLine,
+        `leased: foundry, translate since ${HELD.since}`,
+        'the holder\'s line did not reach the error, so a queue row would redden rather than park');
+      assert.ok(caught.message.includes('foundry'), 'the sentence must still name the holder');
+    } finally {
+      await fake.close();
+    }
+  });
+
+  // The header used to call the server's code `model_leased`. Crucible renamed
+  // it `leased` on 2026-09-14 (a lease names the resident thing of any kind),
+  // and a header that states the wrong code sends the next reader to grep for a
+  // string no server sends.
+  await check('the pages door states the code Crucible actually sends', () => {
+    const source = fs.readFileSync(path.join(REPO, 'electron', 'crucible', 'pages.ts'), 'utf8');
+    assert.ok(!/409 `?model_leased/.test(source),
+      'electron/crucible/pages.ts still calls the server\'s 409 `model_leased`; the SDK\'s own '
+      + 'constant is LEASED = \'leased\' (node_modules/@crucible/client/src/errors.ts)');
+  });
+
   console.log(`\n${passed} checks passed${failures.length ? `, ${failures.length} FAILED` : ''}`);
   if (failures.length) {
     console.error(`FAILED: ${failures.join(', ')}`);
