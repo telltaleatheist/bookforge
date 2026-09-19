@@ -58,6 +58,7 @@
 const fs = require('fs');
 const path = require('path');
 const assert = require('assert');
+const { skipLine } = require('./keeper-skip.js');
 
 const REPO = path.resolve(__dirname, '..');
 const DIST = path.join(REPO, 'dist');
@@ -80,11 +81,11 @@ async function main() {
   console.log('the player realizes the gap narrator classified');
 
   if (!fs.existsSync(path.join(DIST, 'shared', 'listen-client', 'crucible-rows.js'))) {
-    console.log('SKIP: dist is not built — run `npx tsc -p tsconfig.electron.json`');
+    console.log(skipLine('dist is not built — run `npx tsc -p tsconfig.electron.json`'));
     return;
   }
   if (!fs.existsSync(path.join(EXT, 'node_modules', 'esbuild'))) {
-    console.log('SKIP: extension/node_modules is missing — run `npm install --prefix extension`');
+    console.log(skipLine('extension/node_modules is missing — run `npm install --prefix extension`'));
     return;
   }
 
