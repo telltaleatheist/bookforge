@@ -7735,7 +7735,7 @@ function setupIpcHandlers(): void {
    * that pressed.
    */
   crucibleInstallDoor.watch((installEvent) => {
-    broadcastToAllWindows('crucible:install-event', installEvent);
+    broadcastToAllWindows('crucible:host-install-event', installEvent);
   });
 
   /**
@@ -8582,7 +8582,7 @@ function setupIpcHandlers(): void {
    * did not press is the ordinary case now: the tray starts the move by itself
    * on a machine that can host WSL2.
    */
-  ipcMain.handle('crucible:install-status', async () => {
+  ipcMain.handle('crucible:host-install-status', async () => {
     try {
       return { success: true, data: await crucibleInstallDoor.status() };
     } catch (err) {
@@ -8596,7 +8596,7 @@ function setupIpcHandlers(): void {
    * `failed`, because on a `done` machine there is nothing to press and on one
    * that is mid-move a second press is the refusal above.
    */
-  ipcMain.handle('crucible:install-start', async () => {
+  ipcMain.handle('crucible:host-install-start', async () => {
     try {
       await crucibleInstallDoor.start();
       return { success: true };
@@ -8618,7 +8618,7 @@ function setupIpcHandlers(): void {
    * restart, and an app that offered to reboot a Mac because a code path was
    * shared would be doing something nobody asked for.
    */
-  ipcMain.handle('crucible:restart-windows', async () => {
+  ipcMain.handle('crucible:host-restart-windows', async () => {
     if (process.platform !== 'win32') {
       return {
         success: false,

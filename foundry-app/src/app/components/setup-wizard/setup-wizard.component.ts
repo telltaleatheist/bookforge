@@ -84,6 +84,7 @@ import {
   type CapabilityRow,
 } from '@shared/engine-settings';
 import { CrucibleDoorsComponent } from '../crucible-doors/crucible-doors.component';
+import { CrucibleInstallOutcomeComponent } from '../crucible-doors/install-outcome.component';
 import {
   FOUNDRY_ACTS,
   actWords,
@@ -203,7 +204,7 @@ const STEPS: readonly StepDef[] = [
 
 @Component({
   selector: 'app-setup-wizard',
-  imports: [CrucibleDoorsComponent],
+  imports: [CrucibleDoorsComponent, CrucibleInstallOutcomeComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     @if (up()) {
@@ -319,49 +320,28 @@ const STEPS: readonly StepDef[] = [
               }
 
               <!--
-                ── WSL ACCELERATION: AN UPGRADE, NEVER A GATE ─────────────────
+                ── THE OFFER BECAME A READOUT (crucible PHASE19 section 0) ────
 
-                Owen, 2026-09-17: *"if theres no local crucible server, help the
-                user set up the local windows one and then the wsl engine."* Two
-                stages, and this is the second — but the shape matters more than
-                the order, and BookForge's hostabilityOf is explicit about it:
-                "Crucible runs natively on Windows. WSL is not required to
-                install or connect."
+                What stood here was a button offering to set WSL acceleration up, with a
+                paragraph explaining vLLM to somebody who has not asked. Owen
+                ruled it out on 2026-09-18 -- "we should assume the user doesn't
+                know how to do it, and we shouldn't offer to let them do it
+                themselves ... it should do it automatically". So the Linux
+                engine now arrives by itself as the last step of the install,
+                decided by Crucible's own tray at every start (section 2.3), and
+                this card's job is to say what came of it.
 
-                So stage one IS the whole install, and this is offered
-                afterwards, on an engine that is already working. A wizard that
-                required WSL to finish would strand a machine with virtualisation
-                switched off in its BIOS — a machine that could have had a
-                working llama-windows engine a minute after pressing Install.
+                THE CONDITION IS UNCHANGED AND STILL RIGHT. An outcome is about
+                a machine that has a native Windows engine and could have a
+                Linux one; on a Mac, or on a machine already serving through the
+                guest, there is nothing here to report. Section 2.5: on a done
+                machine there is no control at all.
 
-                IT HANDS OFF RATHER THAN DRIVING. upgradeWindowsEngine submits
-                the work as a TASK to that engine's own controller and follows
-                it; the engine owns WSL, and this app owns none of it. That is
-                the same shape BookForge's upgradeWsl takes, and deliberately
-                NOT the shape of the install above it — at install time there is
-                no engine to ask, and once one exists everything goes through it.
-
-                A DROPPED STREAM IS NOT A FAILURE, which BookForge learned the
-                hard way: the upgrade replaces the process serving the progress
-                stream, so the last frame can simply never arrive. The sentence
-                below says the work continues, and the Servers card is where its
-                result shows up.
+                (NO BACKTICKS ANYWHERE IN THIS TEMPLATE, not even in a comment.)
               -->
               @if (engine.backend === 'llama-windows') {
                 <div class="wsl">
-                  <p class="line">
-                    This engine runs natively on Windows and works now — everything below is
-                    already running on it. WSL acceleration is the speed upgrade: it lets the
-                    engine serve through vLLM, which is faster and can hold models the native
-                    build cannot. The engine sets it up itself; Foundry only asks.
-                  </p>
-                  <div class="actions">
-                    <button class="primary" type="button" [disabled]="wslBusy()"
-                            (click)="upgradeWsl(engine.serverName)">
-                      {{ wslBusy() ? 'Setting up…' : 'Set up WSL acceleration' }}
-                    </button>
-                  </div>
-                  @if (wslSaid(); as said) { <p class="small">{{ said }}</p> }
+                  <app-crucible-install-outcome />
                 </div>
               }
 
@@ -710,9 +690,6 @@ export class SetupWizardComponent {
    */
   protected readonly engineProbe = signal<Extract<CrucibleProbe, { outcome: 'ok' }> | null>(null);
 
-  /** A WSL upgrade in flight, and the last thing the engine's task said. */
-  protected readonly wslBusy = signal(false);
-  protected readonly wslSaid = signal<string | null>(null);
   protected readonly engineCap = signal<CapabilityRecord | null>(null);
   protected readonly engineAsking = signal(false);
   /**
@@ -840,16 +817,6 @@ export class SetupWizardComponent {
     destroyRef.onDestroy(api.acts.onChanged(() => { void this.loadCrucible(); }));
 
     /*
-     * THE ENGINE'S OWN WORDS WHILE IT BUILDS A WSL BACKEND. Filtered to the
-     * server being upgraded, because main broadcasts to every window and names
-     * the server on each frame.
-     */
-    destroyRef.onDestroy(api.crucible.onEngineUpgrade((progress) => {
-      if (!this.wslBusy()) return;
-      this.wslSaid.set(progress.message);
-    }));
-
-    /*
      * COORDINATION IS NOT SOMETHING THIS SCREEN STARTS, so it is only heard.
      * The sweep runs at app start on every enabled server (crucible
      * docs/PHASE14-ENVPACKS.md §4a), and somebody standing on this step while a
@@ -966,39 +933,22 @@ export class SetupWizardComponent {
    * says nothing more, on the standing rule that main's answer is the truth and
    * a component holding its own copy of a list is the copy that goes stale.
    */
-  /**
-   * ASK THE ENGINE TO GROW A WSL BACKEND, and follow what it says.
+  /*
+   * ── `upgradeWsl` IS GONE, AND SO IS EVERYTHING IT DROVE ──────────────────
    *
-   * Nothing here runs a command. `upgradeWindowsEngine` submits a task to that
-   * engine's controller and this listens — the engine owns WSL, including the
-   * distro, the guest install and any restart it needs, and an app that drove
-   * it would be a second owner of somebody else's machine.
+   * It submitted an `engine/wsl` task to a native Windows engine's controller
+   * and narrated the result into `wslSaid`. crucible PHASE19 §0 deletes the
+   * offer entirely — the tray decides at every start whether this machine is
+   * moving to the Linux engine and does it (§2.3), so an app that could also
+   * ask would be the second owner of that decision. `app-crucible-install-
+   * outcome` on the engine card is what replaced it: a readout of §2.2's
+   * outcome, with §2.5's Try again on a refusal and nothing at all on a
+   * machine that is done.
    *
-   * THE PROMISE RESOLVING IS NOT THE ANSWER, and neither is it failing. The
-   * upgrade replaces the process serving the progress stream, so the stream can
-   * die before its final frame — BookForge hit exactly this and now polls
-   * readiness afterwards rather than believing the drop. Foundry does the
-   * cheaper honest thing: it stops saying "setting up", re-reads the engine, and
-   * if the re-read has not caught up it says the work continues rather than
-   * claiming either outcome.
+   * The main-process half went with it in the same commit —
+   * `foundry:crucible-wsl-upgrade`, its progress push, and
+   * `electron/crucible-engine-upgrade.ts`.
    */
-  protected async upgradeWsl(server: string): Promise<void> {
-    if (!api || this.wslBusy()) return;
-    this.wslBusy.set(true);
-    this.wslSaid.set('Asking the engine to set up WSL. This can take several minutes.');
-    try {
-      await api.crucible.upgradeWindowsEngine(server);
-      await this.loadCrucible();
-      this.wslSaid.set(this.engineProbe()?.backend === 'cuda-linux'
-        ? 'WSL acceleration is set up. The engine is serving through it now.'
-        : 'The engine is still working on it. It continues whether this window is open or '
-          + 'not, and Settings › Crucible Servers shows where it got to.');
-    } catch (err) {
-      this.wslSaid.set(err instanceof Error ? err.message : String(err));
-    } finally {
-      this.wslBusy.set(false);
-    }
-  }
 
   protected async loadCrucible(): Promise<void> {
     if (!api) return;

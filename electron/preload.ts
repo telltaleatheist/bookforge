@@ -3023,15 +3023,26 @@ const electronAPI: ElectronAPI = {
     },
     // The install DOOR. Watched by every setup surface, because the move it
     // reports is one the tray may have started before this app was opened.
-    installStatus: () => ipcRenderer.invoke('crucible:install-status'),
+    //
+    // `crucible:host-*` FOR THE SAME REASON AS THE FOUR ABOVE, and this time
+    // the collision was real rather than anticipated: these were
+    // `crucible:install-status`, `crucible:install-event` and
+    // `crucible:restart-windows` until the Foundry re-vendor to 3436fc5, whose
+    // own PHASE19 work claims all three of those names. Both apps share one
+    // main process, so `test-ipc-collision.js` caught it as three duplicate
+    // registrations — which is BookForge failing to start with the Foundry
+    // window mounted. The vendored subtree is sealed, so ours moved.
+    // Foundry's retry is `crucible:install-retry`; ours is `-start`, and it
+    // never collided.
+    installStatus: () => ipcRenderer.invoke('crucible:host-install-status'),
     onInstallEvent: (callback: (event: CrucibleInstallDoorEvent) => void) => {
       const listener = (_event: Electron.IpcRendererEvent, doorEvent: CrucibleInstallDoorEvent) =>
         callback(doorEvent);
-      ipcRenderer.on('crucible:install-event', listener);
-      return () => { ipcRenderer.removeListener('crucible:install-event', listener); };
+      ipcRenderer.on('crucible:host-install-event', listener);
+      return () => { ipcRenderer.removeListener('crucible:host-install-event', listener); };
     },
-    installRetry: () => ipcRenderer.invoke('crucible:install-start'),
-    restartWindows: () => ipcRenderer.invoke('crucible:restart-windows'),
+    installRetry: () => ipcRenderer.invoke('crucible:host-install-start'),
+    restartWindows: () => ipcRenderer.invoke('crucible:host-restart-windows'),
     // Taking it off again. The dry run touches nothing; the real one deletes a
     // service, a home directory and — only with `purgeWeights` — the weights.
     // Both refuse `uninstall_not_local` for anything but this machine's engine.

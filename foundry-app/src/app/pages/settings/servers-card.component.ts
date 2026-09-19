@@ -71,6 +71,7 @@ import {
 import { FormsModule } from '@angular/forms';
 
 import { CrucibleDoorsComponent } from '../../components/crucible-doors/crucible-doors.component';
+import { CrucibleInstallOutcomeComponent } from '../../components/crucible-doors/install-outcome.component';
 import { NoticeService } from '../../core/notice.service';
 import { cardWords, coordinationWords } from '../../core/crucible-words';
 import type { CrucibleCoordinationMap } from '@shared/coordinate-wire';
@@ -102,7 +103,7 @@ interface EditableServer extends CrucibleServerView {
 
 @Component({
   selector: 'app-servers-card',
-  imports: [FormsModule, CrucibleDoorsComponent],
+  imports: [FormsModule, CrucibleDoorsComponent, CrucibleInstallOutcomeComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="card">
@@ -301,6 +302,25 @@ interface EditableServer extends CrucibleServerView {
           PROVE is this machine's, and never for a registry row.
         -->
         <app-crucible-doors [canUninstall]="true" (changed)="load()" />
+
+        <!--
+          ── WHAT CAME OF THE LINUX ENGINE ON THIS MACHINE ────────────────────
+
+          crucible PHASE19 section 2.2. This is the readout that replaced
+          Settings, AI's button offering to set WSL acceleration up: the move happens by
+          itself as the last step of the install (section 2.3) and nobody is
+          asked for it, so what is left to show is the outcome -- nothing at all
+          on a machine that is done or that was kept native on purpose, the
+          state table's own sentence and Try again on one that cannot, and
+          Restart now while Windows is waiting for one.
+
+          IT IS ON THIS CARD BECAUSE THIS CARD IS ABOUT MACHINES. Settings, AI
+          is about which model answers which class; a restart prompt among the
+          routes would be a second screen about the computer underneath them.
+
+          (NO BACKTICKS ANYWHERE IN THIS TEMPLATE, not even in a comment.)
+        -->
+        <app-crucible-install-outcome />
 
         <!--
           WHAT A NEW ROW STARTS AS. It is resolved to a slot NAME at the press,

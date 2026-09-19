@@ -106,12 +106,19 @@ import { ChangeDetectionStrategy, Component, computed, DestroyRef, inject, input
 import { FormsModule } from '@angular/forms';
 
 import type { CrucibleInstallPlan, CrucibleProbe } from '@shared/slots';
+import { applyInstallEvent, initialInstallRows } from '@shared/crucible-install-wire';
+import type {
+  CrucibleInstallChildRow,
+  CrucibleInstallOutcome,
+  CrucibleInstallRow,
+  CrucibleInstallStatus,
+} from '@shared/crucible-install-wire';
 import type { RemotePairingProgress } from '@shared/remote-pairing';
 import type {
   CrucibleUninstallAvailability,
   CrucibleUninstallPlan,
 } from '@shared/uninstall-wire';
-import { cardWords, diskWords, sizeWords } from '../../core/crucible-words';
+import { cardWords, diskWords, jobTypeWords, sizeWords } from '../../core/crucible-words';
 import { api } from '../../core/foundry';
 
 /** Which door is open. `null` is all three closed, which is how it starts. */
@@ -242,30 +249,26 @@ type DoorId = 'connect' | 'local' | 'install' | 'uninstall';
       <!-- ── 3. Install ────────────────────────────────────────────────── -->
       <button class="door" type="button" (click)="toggle('install')">
         <span class="door-name">Install Crucible here</span>
-        <span class="door-note">The steps, in order. Nothing is installed without you.</span>
+        <span class="door-note">One button. It sets itself up and says where it has got to.</span>
       </button>
       @if (open() === 'install') {
         <div class="panel">
           <!--
-            WHAT PHASE15 SECTION 4.3 SAYS, AND ONLY THAT. The sequence below is
-            still main's plan, unchanged; this is the sentence above it, and it
-            names the installers as NAMES rather than printing a command to
-            paste, because the installer is Crucible's own front door and this
-            app is not its manual.
+            ── THE STEPS WERE A DOCUMENT AND ARE NOW A PROGRESS LIST ────────
+
+            What stood here named Crucible's two installer scripts and printed the
+            channel's irm line for somebody to paste. Crucible PHASE19 section
+            0, and Owen on 2026-09-18: "we should assume they have no idea how
+            to do it and it should do it automatically", and "nobody is ever
+            shown a command. A command a person could run is a step the app
+            should be running."
+
+            So the same rows are still here and they mean something different:
+            they are not instructions, they are where the install is. Section
+            3.1's list, in its order, each filling in as the door says so.
+
+            (NO BACKTICKS ANYWHERE IN THIS TEMPLATE, not even in a comment.)
           -->
-          @if (isWindows) {
-            <p class="small">
-              On Windows the engine is installed by Crucible's own installer, install.ps1 from
-              the release. It installs a native engine and publishes a connection on this machine, and Foundry
-              finds the engine through that — there is nothing to paste afterwards.
-            </p>
-          } @else {
-            <p class="small">
-              On a Mac the engine is installed by Crucible's own installer, install.sh from the
-              release. It leaves a connect code on this machine, and Foundry finds the engine
-              through that — there is nothing to paste afterwards.
-            </p>
-          }
           @if (plan(); as it) {
             <p class="small">{{ it.machine }}</p>
             @if (it.platform === 'other') {
@@ -275,33 +278,62 @@ type DoorId = 'connect' | 'local' | 'install' | 'uninstall';
                 elsewhere instead.
               </p>
             } @else {
+              <p class="small">
+                A first install downloads several gigabytes and can take a while. It keeps
+                going if you close this.
+              </p>
               <ol class="steps">
-                @for (step of it.steps; track step.title) {
-                  <li>
-                    <span class="step-head">
-                      <span class="step-name">{{ step.title }}</span>
-                      @if (step.done) { <span class="badge held">already here</span> }
-                    </span>
-                    <span class="small">{{ step.detail }}</span>
-                    @if (step.command) { <code class="cmd">{{ step.command }}</code> }
-                  </li>
+                @for (row of rows(); track row.id) {
+                  @if (row.state !== 'skipped') {
+                    <li [attr.data-state]="row.state">
+                      <span class="step-head">
+                        <span class="step-name">{{ row.label }}</span>
+                        @if (row.state === 'running') { <span class="badge">now</span> }
+                        @if (row.state === 'done') { <span class="badge held">done</span> }
+                        @if (row.state === 'failed') { <span class="badge stopped">stopped</span> }
+                      </span>
+                      @if (row.detail) { <span class="small">{{ row.detail }}</span> }
+                      @if (bytesWords(row); as bytes) { <span class="small">{{ bytes }}</span> }
+                      @for (child of row.children; track child.jobType) {
+                        @if (child.state !== 'skipped') {
+                          <span class="child">
+                            {{ childWords(child) }}
+                            @if (child.detail) { <span class="small">{{ child.detail }}</span> }
+                          </span>
+                        }
+                      }
+                    </li>
+                  }
                 }
               </ol>
 
-              @if (it.elevated.length > 0) {
-                <p class="small">
-                  These need a privilege Foundry does not have, so they are yours to run:
-                </p>
-                <ol class="steps">
-                  @for (step of it.elevated; track step.title) {
-                    <li>
-                      <span class="step-name">{{ step.title }}</span>
-                      <span class="small">{{ step.detail }}</span>
-                      @if (step.command) { <code class="cmd">{{ step.command }}</code> }
-                    </li>
-                  }
-                </ol>
+              <!--
+                ── THE TERMINAL FORK, AND IT IS THE OUTCOME'S, NOT THE ROWS' ──
+
+                Section 2.2: the outcome file is the one owner of what happened
+                to the move on this machine, and it is written by the tray,
+                which survives the restart Windows may ask for. So the last
+                word here is read rather than inferred from which rows ran.
+                Null means nothing has said, and nothing is drawn.
+              -->
+              @if (status()?.outcome; as outcome) {
+                @if (outcome.state === 'reboot-pending') {
+                  <p class="small">Restart Windows to finish.</p>
+                  <div class="actions">
+                    <button class="primary" type="button" [disabled]="busy() !== null"
+                            (click)="restartNow()">Restart now</button>
+                  </div>
+                } @else if (outcome.state === 'cannot' || outcome.state === 'failed') {
+                  <p class="small warn">{{ cannotWords(outcome) }}</p>
+                  <div class="actions">
+                    <button class="primary" type="button" [disabled]="busy() !== null"
+                            (click)="tryAgain()">
+                      {{ busy() === 'install' ? 'Trying…' : 'Try again' }}
+                    </button>
+                  </div>
+                }
               }
+              @if (doneWords(); as done) { <p class="small ok">{{ done }}</p> }
 
               <div class="actions">
                 <button class="primary" type="button" [disabled]="!it.driven || busy() !== null" (click)="drive()">
@@ -487,6 +519,15 @@ type DoorId = 'connect' | 'local' | 'install' | 'uninstall';
       color: var(--accent); background: var(--accent-soft); border-radius: 999px; padding: 2px 8px;
     }
     .badge.held { color: var(--ok); background: var(--ok-soft); }
+    .badge.stopped { color: var(--warn); background: transparent; border: 1px solid var(--warn); }
+
+    /* A job type under "Installing what Foundry needs" — indented, never a row. */
+    .child {
+      display: flex; flex-direction: column; gap: 2px;
+      padding-left: 12px; font-size: 11px; color: var(--text-secondary);
+    }
+    /* A row nobody has reached yet is present and plainly not started. */
+    .steps li[data-state="waiting"] { opacity: 0.45; }
 
     .primary, .ghost {
       display: inline-flex; align-items: center; justify-content: center;
@@ -551,9 +592,20 @@ export class CrucibleDoorsComponent {
   /** The words file's, exposed because a template cannot call a bare import. */
   protected readonly cardWords = cardWords;
 
-  protected readonly isWindows = api?.platform === 'win32';
   protected readonly open = signal<DoorId | null>(null);
   protected readonly plan = signal<CrucibleInstallPlan | null>(null);
+  /**
+   * §3.1's ROWS, seeded from the plan's skeleton and filled in by the door.
+   *
+   * The skeleton is main's because the platform decides which rows exist; the
+   * STATE of each is the reducer's, in shared/crucible-install-wire.ts, so the
+   * same translation runs whichever door is behind the preload.
+   */
+  protected readonly rows = signal<CrucibleInstallRow[]>([]);
+  /** §2.6's `GET /install`. Null outcome means nothing has said — not "fine". */
+  protected readonly status = signal<CrucibleInstallStatus | null>(null);
+  /** The backend the last `done` event named, for §3.1's closing sentence. */
+  protected readonly finishedOn = signal<string | null | undefined>(undefined);
   protected readonly localNote = signal<string | null>(null);
   protected readonly localFailed = signal(false);
   protected readonly installSaid = signal<string | null>(null);
@@ -711,9 +763,113 @@ export class CrucibleDoorsComponent {
     this.uninstallRefusal.set(null);
   }
 
+  /**
+   * The plan, the rows it seeds, and where the install already got to.
+   *
+   * ASKED TOGETHER, because they are one picture: a window opened halfway
+   * through a move must not draw an empty list under a status that says a move
+   * is running. §2.6 exists precisely so the second question has an answer.
+   */
   private async loadPlan(): Promise<void> {
     if (!api) return;
-    this.plan.set(await api.crucible.installPlan());
+    const plan = await api.crucible.installPlan();
+    this.plan.set(plan);
+    /*
+     * THE SKELETON IS SEEDED ONCE AND NOT AGAIN. This is also called at the END
+     * of a run, to re-read the outcome, and re-seeding there would wipe the
+     * finished list the person is looking at and replace it with five waiting
+     * rows under the word "Done".
+     */
+    if (this.rows().length === 0) {
+      this.rows.set(initialInstallRows(plan.steps.map((step) => ({ id: step.id, label: step.title }))));
+    }
+    /*
+     * A DOOR THAT WILL NOT ANSWER IS SAID, NOT SWALLOWED.
+     *
+     * `installStatus` reaches the tray on `:7101`, and a host that is
+     * installed and not running refuses `host_unreachable` by name. That is a
+     * real fact about this machine and it belongs on screen — but it must not
+     * blank the install door, which is exactly where somebody goes to fix it.
+     * So the plan above is already drawn and this adds the sentence beside it.
+     */
+    try {
+      this.status.set(await api.crucible.installStatus());
+    } catch (err) {
+      this.status.set(null);
+      this.installSaid.set(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  // ── §3.1's words. Composed HERE, because the screen owns the wording ──────
+
+  /** "1.2 GB of 4.0 GB", or nothing at all when the step cannot count. */
+  protected bytesWords(row: CrucibleInstallRow): string | null {
+    if (row.bytesDone === null) return null;
+    return row.bytesTotal === null
+      ? diskWords(row.bytesDone)
+      : `${diskWords(row.bytesDone)} of ${diskWords(row.bytesTotal)}`;
+  }
+
+  /**
+   * One job type, in a person's words — never the wire's name.
+   *
+   * crucible-words.ts rule 4: *"Job types, subjects, tasks and modules never
+   * appear."* So `llm` is "the text engine" here, and a type this build has no
+   * words for is still named rather than left as a gap.
+   */
+  protected childWords(child: CrucibleInstallChildRow): string {
+    return child.state === 'done'
+      ? `Installed ${jobTypeWords(child.jobType)}.`
+      : `Installing ${jobTypeWords(child.jobType)}…`;
+  }
+
+  /**
+   * §3.1's refusal line. The SENTENCE IS THE OUTCOME'S, verbatim — §2.2 says
+   * so, and a sentence this app rewrote would be a second opinion about a
+   * machine only the state table looked at.
+   */
+  protected cannotWords(outcome: CrucibleInstallOutcome): string {
+    const said = outcome.sentence ?? 'Crucible did not say why.';
+    return outcome.state === 'cannot'
+      ? `This computer can't run the Linux engine: ${said}`
+      : said;
+  }
+
+  /**
+   * "Done — running on the Linux engine", and it is MEASURED.
+   *
+   * The backend comes off the `done` event, which main read from the engine
+   * that answered (`verifyInstalled`). `undefined` is "no run has finished in
+   * this window"; `null` is "a run finished and nothing measured which engine",
+   * which happens on the already-registered arm and is said plainly rather than
+   * guessed from the platform.
+   */
+  protected doneWords(): string | null {
+    const backend = this.finishedOn();
+    if (backend === undefined) return null;
+    if (backend === null) return 'Done — Crucible is running and connected.';
+    if (backend === 'cuda-linux') return 'Done — running on the Linux engine.';
+    if (backend === 'llama-windows') return 'Done — running on the Windows engine.';
+    return `Done — running on ${backend}.`;
+  }
+
+  /** §2.5's Try again: the same run, through the door that owns it. */
+  protected tryAgain(): Promise<void> {
+    return this.runInstall(() => api!.crucible.installRetry());
+  }
+
+  /**
+   * §2.3's Restart now. Nothing is saved first and nothing needs to be: the
+   * move's own progress lives in Crucible's outcome file, and this app's state
+   * is on disk before any of this is drawn.
+   */
+  protected async restartNow(): Promise<void> {
+    if (!api) return;
+    try {
+      await api.crucible.restartWindows();
+    } catch (err) {
+      this.installSaid.set(err instanceof Error ? err.message : String(err));
+    }
   }
 
   /*
@@ -788,18 +944,37 @@ export class CrucibleDoorsComponent {
    *
    * Main's refusal — or `BootstrapStepFailed`, which names the step that did not
    * finish — is printed where the person pressed, exactly as every other
-   * Crucible sentence in this app is. The line subscription is what makes the
-   * wait legible: an installer that fetches a release, unpacks an env pack and
-   * starts a service is minutes of silence otherwise.
+   * Crucible sentence in this app is.
    */
-  protected async drive(): Promise<void> {
+  protected drive(): Promise<void> {
+    return this.runInstall(() => api!.crucible.install());
+  }
+
+  /**
+   * ONE RUN, TWO BUTTONS — Install and §2.5's Try again.
+   *
+   * ── Why the events are subscribed around the call and not at start ────────
+   *
+   * Because attaching is what makes the wait legible and detaching is what
+   * stops a closed door accumulating rows nobody is looking at. A move that
+   * outlives this window is not lost by detaching: §2.6's `GET /install` is
+   * asked again the next time the door opens, which is the whole reason it
+   * exists.
+   *
+   * The reducer is shared/crucible-install-wire.ts's, so main, this door and
+   * any keeper read one stream the same way.
+   */
+  private async runInstall(call: () => Promise<void>): Promise<void> {
     if (!api) return;
     this.busy.set('install');
     this.installSaid.set(null);
-    const unsubscribe = api.crucible.onInstallLine((line) => this.installSaid.set(line));
+    this.finishedOn.set(undefined);
+    const unsubscribe = api.crucible.onInstallEvent((event) => {
+      this.rows.update((rows) => applyInstallEvent(rows, event));
+      if (event.event === 'done') this.finishedOn.set(event.backend);
+    });
     try {
-      await api.crucible.install();
-      this.installSaid.set('Crucible is running and connected.');
+      await call();
       await this.loadPlan();
       this.changed.emit();
     } catch (err) {
