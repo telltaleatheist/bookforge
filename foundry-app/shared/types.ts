@@ -337,6 +337,60 @@ export interface ReadRequest {
 }
 
 /**
+ * A HOST'S STOP, TOLD APART FROM A HOST'S CANCEL — the abort's own reason.
+ *
+ * ── The defect this closes, measured before it shipped ──────────────────────
+ *
+ * BookForge has two gestures that end a run and they promise opposite things.
+ * *"Stop this step"* keeps the pages already read — its tooltip says so: *"It
+ * keeps everything it has already rendered, and Start picks it up from there."*
+ * *"Cancel this book"* returns the row to Pending, and Owen ruled that one keeps
+ * nothing (`discardCancelledReading`, electron/job-queue.ts).
+ *
+ * BOTH REACH FOUNDRY THROUGH ONE DOOR. The host's cancel is a no-op that aborts
+ * `RunOptions.signal`; the listener calls the same `cancelHere` the ✕ calls; the
+ * engine resolves `code: -1` for any cancel (`electron/engine.ts`). So by the
+ * time the discard has to decide, the two gestures are one value, and a Stop
+ * would destroy the bank its own button promises to keep — with the user finding
+ * out by pressing Start and watching page one go past.
+ *
+ * ── WHY THIS IS THE ABORT'S REASON AND NOT A FIELD ON `RunOptions` ──────────
+ *
+ * Because of WHEN it is known. `RunOptions` is handed over once, at `runJob`,
+ * before the engine has spawned — and which button a person will press minutes
+ * later is not a fact that exists yet. A flag there could only ever describe the
+ * host's intent at the wrong moment. `AbortController.abort(reason)` carries a
+ * value at the instant of the gesture, which is exactly when the gesture happens,
+ * and `signal.reason` is where the platform already puts it.
+ *
+ * ── AND THE DEFAULT IS TO DISCARD ───────────────────────────────────────────
+ *
+ * An abort with no reason, or any other reason, means CANCEL. That keeps Owen's
+ * ruling as the default, leaves the un-hosted ✕ exactly as it was, and makes the
+ * resumable case the one that has to be asked for by name. A host that says
+ * nothing gets the destructive answer, which is the right way round for a flag
+ * about somebody's afternoon: the gentler behaviour is opt-in and explicit, and
+ * nothing silently starts keeping banks nobody asked it to keep.
+ *
+ * Pass it as the abort's reason from a stop that promises a resume:
+ *
+ *     controller.abort(RESUMABLE_STOP)   // Stop — the bank is kept
+ *     controller.abort()                 // Cancel — the bank goes
+ */
+export const RESUMABLE_STOP = 'foundry:resumable-stop';
+
+/**
+ * Was this abort a stop that promises a resume? See {@link RESUMABLE_STOP}.
+ *
+ * ONE READER FOR ONE SPELLING. The comparison is here rather than at the branch
+ * that acts on it so that a host importing the constant and this app testing for
+ * it cannot come to two answers about what the reason has to be.
+ */
+export function isResumableStop(reason: unknown): boolean {
+  return reason === RESUMABLE_STOP;
+}
+
+/**
  * RENDER THE BOOK. `foundry vlm-convert --reuse-readings --format <kind>`.
  *
  * OFFLINE, AGAINST A BANK THAT IS ALREADY COMPLETE. No model, no server, no GPU

@@ -91,6 +91,62 @@ test('release racing lease replacement releases both receipts and serializes hea
   expect(client.release).toHaveBeenCalledTimes(2);
 });
 
+/**
+ * THE HEARTBEAT GIVES UP ONCE — the regression test for the 10-hour loop
+ * measured on 2026-09-18: 264 × (404 `unknown_lease` heartbeat → 409 re-lease
+ * refused) at a flat 40.0 s cadence, on a run that had ended long before.
+ *
+ * `unknown_lease` used to be read as "the server restarted", and a restart is
+ * the one reading under which re-leasing can work. It is also not what happened:
+ * the lease had been RELEASED, and a re-lease of a model nothing is holding can
+ * only ever be refused. So the assertion is that a refusal of the RE-LEASE ends
+ * the timer rather than arming the next identical attempt — and that it says so
+ * once, because a run left unprotected in silence is what made this invisible in
+ * the first place.
+ */
+test('a heartbeat whose re-lease is refused stops beating and says the run is unprotected', async () => {
+  let beat!: () => void;
+  spyOn(globalThis, 'setInterval').mockImplementation(((callback: () => void) => {
+    beat = callback;
+    return { unref() {} };
+  }) as typeof setInterval);
+  const cleared = spyOn(globalThis, 'clearInterval').mockImplementation(() => {});
+  let acquisitions = 0;
+  const client = {
+    lease: mock(async () => {
+      if (++acquisitions === 1) return { leaseId: 'the-one-it-forgot' };
+      throw new CrucibleRefused(409, 'not_resident', 'dots-ocr is not resident here', null);
+    }),
+    heartbeat: mock(async () => {
+      throw new CrucibleRefused(404, 'unknown_lease', 'this server has no lease the-one-it-forgot', null);
+    }),
+    release: mock(async (_id: string) => {}),
+  };
+  spyOn(registry, 'clientFor').mockReturnValue(client as never);
+  const said: string[] = [];
+  spyOn(console, 'error').mockImplementation((...parts: unknown[]) => { said.push(parts.join(' ')); });
+  await dispatch.takeLease({
+    name: 'test', url: 'http://127.0.0.1:1', token: 'test', enabled: true,
+  }, 'dots-ocr', 'pages');
+  beat();
+  await flush();
+  expect(client.heartbeat).toHaveBeenCalledTimes(1);
+  expect(client.lease).toHaveBeenCalledTimes(2);
+  expect(cleared).toHaveBeenCalled();
+  // AND THE CALLBACK ITSELF IS DEAD, which is the half `clearInterval` cannot
+  // prove here: this suite hands the timer out as a function, so the loop that
+  // was measured would run again on the next tick whatever the clock was told.
+  beat();
+  await flush();
+  expect(client.heartbeat).toHaveBeenCalledTimes(1);
+  expect(client.lease).toHaveBeenCalledTimes(2);
+  // ONE LINE, and it names the server's own refusal and what the run has lost.
+  expect(said).toHaveLength(1);
+  expect(said[0]).toContain('not_resident');
+  expect(said[0]).toContain('dots-ocr is not resident here');
+  expect(said[0]).toContain('UNPROTECTED');
+});
+
 test('cancelling during a Crucible model load cancels that server job and takes no lease', async () => {
   const entered = deferred<void>();
   const cancelled = deferred<void>();

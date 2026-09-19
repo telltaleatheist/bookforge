@@ -199,6 +199,18 @@ export { setHostOperations } from './host-ops';
 export { deleteLedgerStep } from './ipc';
 export type { HostNode, HostNodeProgress, HostNodeState, HostOperationKind, NodeOutput } from '../shared/types';
 /*
+ * HOW A HOST SAYS ITS STOP IS NOT ITS CANCEL — re-exported here because this file
+ * IS the host-facing surface, and a constant a host has to reach past the mount to
+ * import is a constant it will retype instead. Pass it as the abort's reason:
+ *
+ *     controller.abort(RESUMABLE_STOP)   // Stop — the reading's pages are kept
+ *     controller.abort()                 // Cancel — the reading keeps nothing
+ *
+ * The whole argument, including why it rides on the abort rather than on
+ * `RunOptions`, is on the constant itself in shared/types.ts.
+ */
+export { RESUMABLE_STOP } from '../shared/types';
+/*
  * ── AND THE QUEUE SOCKET: ONE MACHINE'S GPU HAS ONE OWNER ───────────────────
  *
  * Owen ruled it (docs/PLAN.md, Wave 16): *"we need to centralize the queue in

@@ -247,6 +247,18 @@ function startFake(options) {
         chat: { in_flight: 0, rows: [] }, lease: null,
         slots: { accelerated: { busy: 0, of: 1, queue_depth: 0, accepts_work: seen.activity >= opts.acceptsWorkAfter } },
         running: [], queued: [],
+        /*
+         * REQUIRED SINCE CRUCIBLE 1.0.5 — `activity has no field "stopping"`,
+         * and it must be an object or null (a boolean is refused by name).
+         *
+         * A fake that omits it does not merely fail a shape check: `client
+         * .activity()` THROWS, `waitForSettle` catches and returns true, and
+         * the caller POSTs again immediately. That is how this keeper read 90
+         * posts where it expects 1 — a protocol disagreement wearing the
+         * costume of a tight poll, which is the exact behaviour the module
+         * under test exists to prevent.
+         */
+        stopping: null,
       });
       return true;
     }

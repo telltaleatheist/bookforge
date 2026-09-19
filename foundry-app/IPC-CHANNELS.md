@@ -1216,6 +1216,6 @@ nothing was added or renamed in this pass.
 Added so a run dialog can DEFAULT to an engine that can do the work, and so a
 refusal can name the engine that can rather than telling somebody to go and
 find it. Owen opened an OCR on an engine that cannot read pages and was told
-*"crucible@example-mac cannot read pages — choose another engine."*
+*"crucible@example-mac-studio cannot read pages — choose another engine."*
 
 **139 → 140, counted by script, 140 distinct, zero `ipcMain.on`.**

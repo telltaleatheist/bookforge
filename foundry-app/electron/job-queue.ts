@@ -178,6 +178,7 @@ import { foundryHost, type FoundryHostQueue, hostMintMeta } from './host';
 import {
   bookAtPosition,
   generatedRoleFor,
+  completionMarkerFor,
   imagesDirFor,
   ledgerOf,
   metadataForProduct,
@@ -220,6 +221,7 @@ import type {
   AnalyzeRequest, ConversionKind, DeferredPlan, EnvInstallRequest, ExportLanding, ExportMintMetadata,
   FoundryJobRow, Job, JobKind, JobRequest, SimplifyRequest, TextPassRequest, TranslateRequest,
 } from '../shared/types';
+import { isResumableStop } from '../shared/types';
 /*
  * WHERE A JOB'S COMPUTE GOES, and the two modules that answer it (docs/SLOTS.md
  * §6, Package C). A one-way edge exactly like the plans above: neither has ever
@@ -508,6 +510,35 @@ function placedBy(kind: JobKind, chosen?: string): Pick<Job, 'waitFor'> {
     return {};
   }
   if (chosen !== undefined) return { waitFor: chosen };
+  /*
+   * ── HOSTED, A SILENCE IS `any` AND NEVER THIS APP'S SETTING ───────────────
+   *
+   * Owen, 2026-09-19: *"the server is chosen when it's in the queue. if it isnt
+   * chosen or cant be for some reason, it should be 'any'."*
+   *
+   * THE DEFECT HE HIT. A hosted read arrived with no machine named, fell through
+   * to `waitForOfNewJob`, and was answered by `newJobsWaitFor` — which clamps to
+   * `top`, so the row was stamped with the NAME of the top-ranked slot. BookForge
+   * drew it in the Mac Studio's lane, an engine he had switched off, while the
+   * card's own progress line read `crucible@example-pc-wsl` and the PC slot said
+   * "Free · Nothing queued wants this slot". Both screens were telling the truth:
+   * the row was filed on one machine and the work ran on another.
+   *
+   * THIS IS THE OTHER HALF OF THE SENTENCE FOUR LINES UP. A host that registers
+   * `hostQueue` does the DECIDING (electron/mount.ts; docs/PLAN.md Wave 16: *"we
+   * need to centralize the queue in bookforge"*), and that argument does not stop
+   * applying because the host happened to say nothing — a setting on a screen
+   * nobody opened is no more an answer to the host's question when the host is
+   * silent than when it is not. `any` is the reserved word that means *"decide
+   * later"*, which is the truth: nobody has chosen, the walk will, and `ranOn`
+   * will say where it went. A NAME here is the only answer that can be WRONG.
+   *
+   * AND UN-HOSTED IS UNTOUCHED, because there the setting is not a stray default
+   * — it is the person's own answer, given on the Servers card, to exactly this
+   * question. `waitForOfNewJob` carries the rest of that argument, including why
+   * `top` becomes a name at the press rather than travelling as the word.
+   */
+  if (hostQueue() !== null) return { waitFor: ANY_SLOT };
   const waitFor = waitForOfNewJob();
   return waitFor === undefined ? {} : { waitFor };
 }
@@ -871,6 +902,49 @@ const slots = new Map<string, Slot>();
  * holds while it lives, its ✕ reaches it, and `shutdown` stops it.
  */
 const detachedRuns = new Map<string, () => void>();
+
+/**
+ * Rows whose ending was a host's RESUMABLE STOP rather than a cancel.
+ *
+ * Recorded at the abort, because that is the only moment the gesture exists
+ * (`RESUMABLE_STOP`, shared/types.ts): `RunOptions` is handed over before the
+ * engine spawns and cannot know which button a person will press. Read once, at
+ * the one branch that destroys anything, and cleared by `settled` — the one
+ * ending every path in this file reaches — so a row id cannot carry a stale
+ * promise into whatever runs next.
+ *
+ * ABSENT MEANS CANCEL, which is the default the whole feature turns on: the ✕,
+ * an internal cancel and a host that says nothing all keep today's behaviour.
+ */
+const resumableStops = new Set<string>();
+/**
+ * THE RUNS THAT ARE LANDING — the window in which a row's ending is the RUN's to
+ * say and nobody else's, by row id.
+ *
+ * ── The one thing it decides ────────────────────────────────────────────────
+ *
+ * `cancelHere` settles a `running` row that has no live child of its own, and it
+ * has to: a job waiting for the reading server is `running` for minutes before
+ * there is anything to kill, and a ✕ that did nothing there would leave the
+ * button dead for all of them. But there is a SECOND way a running row has no
+ * child, and it is the opposite case — the child has already exited, the product
+ * is on disk, and `carry` is between `wires.release()` and the line that writes
+ * the row's outcome, removing the intermediate and the derived book. Two real
+ * disk operations, both awaits.
+ *
+ * A cancel landing in there settled the row `cancelled`, swept the derived book
+ * out from under the landing and told every listener — and then the landing
+ * wrote `done` over it and settled it again. TWO ENDINGS FOR ONE RUN, which is
+ * exactly what `onJobSettled` promises never happens (`exportEpubFromStep`
+ * resolves on the first and rejects on the second), plus a cascade that cancels
+ * the chain behind a job whose product had just landed.
+ *
+ * So this is the ordering, said out loud: the run owns the ending from the
+ * moment its engine is gone, and a ✕ that arrives after that is a gesture about
+ * work that is already done. Entered beside `wires.release()` and left in
+ * `executeJob`'s `finally`, so it cannot outlive the run that made it.
+ */
+const landings = new Set<string>();
 let notify: (jobs: Job[]) => void = () => { /* set by main */ };
 
 /** Where the queue publishes. Called on every mutation, with the whole list. */
@@ -1065,6 +1139,12 @@ function settled(
     leases.delete(job.id);
     void lease.release();
   }
+  /*
+   * AND THE GESTURE THAT ENDED IT IS FORGOTTEN HERE, for the lease's own reason
+   * one line up: this is the one ending every path in this file reaches, and a
+   * row id left in that set would hand its promise to whatever is minted next.
+   */
+  resumableStops.delete(job.id);
   const row = copyOf(job);
   for (const listener of [...settleListeners]) {
     try {
@@ -2622,6 +2702,21 @@ export function settleMint(id: string, outcome: { file: string } | { error: stri
 export function cancelHere(id: string): void {
   const job = jobs.find((j) => j.id === id);
   if (!job) return;
+  if (landings.has(id)) {
+    /*
+     * THE RUN IS LANDING, SO THE ENDING IS ALREADY ITS OWN — `landings` carries
+     * the whole argument. There is nothing to stop: the engine has exited, the
+     * product is where the row says it will be, and the row is a moment away
+     * from settling with what actually happened. Said out loud rather than
+     * silently, because a person who pressed ✕ and got a finished job is owed an
+     * account of why somewhere.
+     */
+    console.log(
+      `[queue] the ✕ on ${path.basename(job.outputPath)} arrived after the engine had finished; `
+      + 'the run is filing what it made and will settle with that.',
+    );
+    return;
+  }
   if (job.state === 'running') {
     const stop = slots.get(id)?.cancel ?? detachedRuns.get(id);
     if (stop !== undefined) {
@@ -2644,6 +2739,105 @@ export function cancelHere(id: string): void {
     // A cancel can be the thing that empties the queue, and the drain signal
     // lives in pump()'s nothing-to-do branch — which nothing else would visit.
     void pump();
+  }
+}
+
+/**
+ * A CANCELLED READING KEEPS NOTHING — the pages go with the press.
+ *
+ * ── Owen's ruling, 2026-09-18 ───────────────────────────────────────────────
+ *
+ * *"when i fully cancel a read, i want nothing kept — back to Pending, same
+ * settings, start over from page one."* Put to him with the cost stated plainly
+ * (a stop on page 140 of 156 re-buys the whole book, and there is no undo) and
+ * reaffirmed. So this is the ending that destroys, and it is the only one in this
+ * file that does.
+ *
+ * A FAILURE IS NOT A CANCEL AND IS NOT TOUCHED. `--fresh` aside, the whole bank
+ * lifecycle exists so that a run that DIED leaves its pages resumable
+ * (docs/BANK-LIFECYCLE.md §2: *"a dead run leaves the old bank untouched and the
+ * pending file as resumable debris. That is the entire point."*). A crashed read
+ * that threw away three hours because the engine segfaulted would be the same
+ * defect this feature is meant to fix, pointed the other way. Only `cancelled`
+ * reaches here, which is a person's press and nothing else.
+ *
+ * ── THE TWO GUARDS, AND WHY THEY ARE NOT PARANOIA ───────────────────────────
+ *
+ * A re-read with the same params does NOT write a new bank — `bankForReading`
+ * aims it at the existing step's payload and the engine protects the finished
+ * answers by writing a PENDING bank beside them and swapping on success
+ * (docs/BANK-LIFECYCLE.md §2.2). So at the moment a re-read is cancelled there
+ * are two banks on disk and exactly one of them is this run's. Deleting by the
+ * name on the request would destroy a COMPLETED reading somebody already paid
+ * hours for, to satisfy a gesture about the run that had not finished.
+ *
+ * So: A PENDING FILE MEANS THE REAL BANK IS SOMEBODY ELSE'S FINISHED WORK. Only
+ * the pending pair goes, and the completed reading is left exactly as it was —
+ * which is also precisely what "start over from page one" means in that case,
+ * because the next re-read opens a fresh pending.
+ *
+ * AND A COMPLETION MARKER WITH NO PENDING IS A FINISHED BANK THIS RUN WAS NOT
+ * WRITING. That pair should be unreachable — §2.2 sends every re-read of a
+ * completed bank down the pending path — so it is a state this file does not
+ * understand, and the answer to not understanding the disk is to touch none of
+ * it and say so. The cost of being wrong in the other direction is somebody's
+ * book.
+ *
+ * ── THE PATH IS THE REQUEST'S AND IS NEVER COMPOSED ─────────────────────────
+ *
+ * `request.readingsPath`, resolved at the plan by `bankForReading`. Composing
+ * `readings/<key>.jsonl` here is the exact defect `readingBank` exists to fix —
+ * a project holds two banks the moment a re-read branches — and composing it in
+ * order to DELETE it is that bug with the consequence turned up.
+ *
+ * Best effort and never a throw: the row has already settled as cancelled, and a
+ * file that will not unlink must not turn a person's stop into a failure.
+ */
+async function discardCancelledReading(request: EngineRequest | undefined): Promise<void> {
+  if (request === undefined || request.kind !== 'read') return;
+  const bank = request.readingsPath;
+  /*
+   * `<bank>.jsonl.pending` and its sidecar — the ENGINE's spelling
+   * (`pendingPath`/`pendingRequestPath`, src/vlm/readings.ts), mirrored here on
+   * `shared/records.ts`' grow-together rule because the app never imports the
+   * engine. Suffixed rather than renamed so a pending file can never be mistaken
+   * for a bank; if that spelling moves, it moves in the same commit as this.
+   */
+  const pending = `${bank}.pending`;
+  const pendingRequest = `${pending}.request`;
+
+  try {
+    if (existsSync(pending) || existsSync(pendingRequest)) {
+      await fsp.rm(pending, { force: true });
+      await fsp.rm(pendingRequest, { force: true });
+      console.log(
+        `[queue] the cancelled re-reading's pending pages were discarded; the finished reading at `
+        + `${path.basename(bank)} is untouched, because that one is not what was cancelled.`,
+      );
+      return;
+    }
+    if (existsSync(completionMarkerFor(bank))) {
+      console.error(
+        `[queue] ${path.basename(bank)} carries a completion marker and has no pending beside it, `
+        + 'so a finished reading is sitting where this cancelled run was supposed to be writing. '
+        + 'Nothing was discarded — that state is one this build does not understand, and the '
+        + 'cautious answer is the only safe one.',
+      );
+      return;
+    }
+    await fsp.rm(bank, { force: true });
+    await fsp.rm(completionMarkerFor(bank), { force: true });
+    await fsp.rm(imagesDirFor(bank), { force: true, recursive: true });
+    console.log(
+      `[queue] the cancelled reading kept nothing: ${path.basename(bank)}, its marker and its page `
+      + 'crops are gone, and the next read starts at page one (Owen, 2026-09-18).',
+    );
+  } catch (err) {
+    console.error(
+      `[queue] the cancelled reading's pages could not all be discarded `
+      + `(${err instanceof Error ? err.message : String(err)}). A re-read will resume from `
+      + 'whatever survived rather than starting over.',
+    );
   }
 }
 
@@ -4292,6 +4486,13 @@ async function placeRun(
   next: Job,
   request: EngineRequest,
   wires: RunWires,
+  /**
+   * THE RUN'S ONE ENDING, borrowed from the boundary — `executeJob`, which owns
+   * the counting. A refusal here is an ending like any other, and it is counted
+   * with the rest for the same reason: there is one `settled` per run, and the
+   * catch one function out has to know whether it has already happened.
+   */
+  settle: () => void,
 ): Promise<Placement | null> {
   const held = slots.get(next.id) ?? null;
   /*
@@ -4410,7 +4611,7 @@ async function placeRun(
       next.error = outcome.reason;
       next.finishedAt = Date.now();
       changed();
-      settled(next);
+      settle();
       return null;
     }
     const delay = parkDelay(next.id);
@@ -4466,8 +4667,123 @@ async function placeRun(
  * off it afterwards. Nothing is thrown from here — an engine that refuses is a
  * `failed` row with the engine's own words on it, which is what every reader of
  * this queue already understands.
+ *
+ * ── AND THAT LAST SENTENCE IS ENFORCED NOW, RATHER THAN ASSERTED ───────────
+ *
+ * It was a promise this function made about itself and nothing kept. Every
+ * landing in `carry` below is an unguarded await AFTER `placeRun` has recorded a
+ * lease — `recordReading`, `landReadProducts`, `recordAnalysis`, `recordFinal`
+ * and the rest — and so is `runEngine` itself, whose `engineCommand()` throws by
+ * design when Foundry is hosted with no `FOUNDRY_BIN`, which is Foundry's
+ * deployment inside BookForge. Neither caller catches: `runInSlot`'s `finally`
+ * frees the slot and pumps, `runDetached`'s drops the abort listener, and both
+ * let the rejection past. So a throw left the row `running` for ever, and
+ * because the only `clearInterval` on the lease heartbeat lives inside
+ * `release()` — which only `settled` calls — the beat went on renewing a
+ * two-minute claim on somebody's card for the life of this process. A card
+ * nothing can load onto, on behalf of a run that ended. `exportEpubFromStep`
+ * (electron/mount.ts), which awaits the ending, never resolved either.
+ *
+ * THE BOUNDARY IS HERE AND NOT IN THE CALLERS, for the reason this function is
+ * one function at all: there are two schedulers and there must not be two
+ * answers to "what happens when a run blows up". A catch in `runInSlot` would
+ * have to be written again in `runDetached`, and the next door onto this
+ * function would be the third place to forget it.
+ *
+ * IT IS NOT A SWALLOW. The console gets the whole error — object and all, so a
+ * stack survives — and the row gets the error's own message, which is the shape
+ * every deliberate failure arm in `carry` already uses.
  */
 async function executeJob(next: Job, request: EngineRequest, wires: RunWires): Promise<void> {
+  /*
+   * ── THE ONE ENDING, SAID ONCE, WHOEVER SAYS IT ────────────────────────────
+   *
+   * `carry` reaches `settled` down ten different arms and the catch below is an
+   * eleventh, so the idempotence cannot live at any one of them. It lives here,
+   * in the closure both sides call: the first caller wins and every caller after
+   * it is a no-op. That matters for exactly one reachable case — `settled` itself
+   * runs `cascadeFrom`, which is somebody else's code and can throw after the
+   * listeners have already been told — and the wrong answer there is a second
+   * ending for a job that has already had one.
+   *
+   * `over` IS READ BY THE CATCH TOO, and not only through this function: a row
+   * that has already settled `done` must not be rewritten to `failed` behind the
+   * back of the listeners that were handed it.
+   */
+  let over = false;
+  const settle = (): void => {
+    if (over) return;
+    over = true;
+    settled(next);
+  };
+  try {
+    await carry(next, request, wires, settle);
+  } catch (err) {
+    const said = err instanceof Error ? err.message : String(err);
+    /*
+     * WHOLE, AND WITH THE ERROR OBJECT BESIDE IT. A throw out of here is a
+     * defect rather than an engine's refusal, so the stack is the useful half
+     * and a message-only line would throw it away. The terminal is where
+     * somebody is already looking — the same argument the engine-failed line
+     * below in `carry` makes for printing stderr in full.
+     */
+    console.error(
+      `\n[job] ${next.kind} THREW — ${path.basename(next.inputPath)} — ${said}\n`,
+      err,
+    );
+    /*
+     * THE ROW IS ONLY REWRITTEN IF NOTHING HAS ENDED IT, and there are two ways
+     * something already has.
+     *
+     * `over` is this run's own ending, said down one of `carry`'s arms; reaching
+     * here with it set means the throw came out of `settled` itself, after every
+     * listener had been handed a row, and turning that row into a `failed` one
+     * now would make the shelf and the waiters disagree about what happened.
+     *
+     * A `cancelled` ROW IS THE OTHER, AND IT IS SOMEBODY ELSE'S. `cancelHere`
+     * settles a row that has no live child of its own, which is every moment
+     * BEFORE the spawn — the minutes a job spends waiting for the reading
+     * server, and the file preparation after it — so the ending is already out
+     * and it is not this one. (While the child is alive the ✕ kills it and the
+     * close handler says what happened; from the moment it exits the row is
+     * landing and the ✕ is refused — `landings`, which is what makes this
+     * sentence true rather than hopeful.) A cancel is a person taking their GPU
+     * back, and filing it as a failure is how a host's retry restarts work they
+     * just stopped (`runJob`, which argues the three states).
+     */
+    if (!over && next.state !== 'cancelled') {
+      next.state = 'failed';
+      next.error = said;
+      next.finishedAt = Date.now();
+      changed();
+      settle();
+    }
+  } finally {
+    /*
+     * AND THE LANDING MARK GOES, ON EVERY WAY OUT — the rotation's `finally` one
+     * function down, for its reason: a mark left behind is a row whose ✕ is dead
+     * for ever, and the alternative is clearing it at each of the arms that end
+     * a run plus whichever is added next. `carry` enters it beside
+     * `wires.release()`; this is the one place it can be left from.
+     */
+    landings.delete(next.id);
+  }
+}
+
+/**
+ * WHAT A JOB DOES, from the placement to the landing — `executeJob`'s body, and
+ * the only reason it is a second function is that a boundary cannot catch what
+ * it is inside of.
+ *
+ * `settle` IS THE CALLER'S, and every ending below goes through it rather than
+ * through `settled` directly: see `executeJob`, which owns the counting.
+ */
+async function carry(
+  next: Job,
+  request: EngineRequest,
+  wires: RunWires,
+  settle: () => void,
+): Promise<void> {
   if (next.state === 'cancelled') return;
   /*
    * ── THE JOB THAT LANDS IN THE TRAY INSTEAD OF THE WORKSHOP ────────────────
@@ -4583,7 +4899,7 @@ async function executeJob(next: Job, request: EngineRequest, wires: RunWires): P
    * NULL MEANS THE ROW IS NO LONGER THIS CALL'S — parked back in the queue, or
    * failed with the reason on it. `placeRun` has already said so and published.
    */
-  const placement = await placeRun(next, request, wires);
+  const placement = await placeRun(next, request, wires, settle);
   if (placement === null) return;
 
   /*
@@ -4612,7 +4928,7 @@ async function executeJob(next: Job, request: EngineRequest, wires: RunWires): P
       + 'Crucible Servers still serves page reading.';
     next.finishedAt = Date.now();
     changed();
-    settled(next);
+    settle();
     return;
   }
 
@@ -4711,7 +5027,7 @@ async function executeJob(next: Job, request: EngineRequest, wires: RunWires): P
       next.error = `The temporary folder for this job could not be made: ${(err as Error).message}`;
       next.finishedAt = Date.now();
       changed();
-      settled(next);
+      settle();
       return;
     }
   }
@@ -4730,10 +5046,21 @@ async function executeJob(next: Job, request: EngineRequest, wires: RunWires): P
    * forever.
    *
    * Here, the engine is the next thing that happens. The window between this
-   * rename and the first byte written is one spawn — and even that window is
-   * covered, because a settle that is not a success puts the rotation back
-   * (`restoreRotation`), so the invariant is flat: A RUN THAT PRODUCES NOTHING
-   * LEAVES THE CATALOGUE EXACTLY AS IT WAS.
+   * rename and the first byte written is one spawn — and that window is covered
+   * by the `finally` this rotation sits inside, which puts the rotation back
+   * unless a product was filed, so the invariant is flat: A RUN THAT PRODUCES
+   * NOTHING LEAVES THE CATALOGUE EXACTLY AS IT WAS.
+   *
+   * IT IS ENFORCED BY STRUCTURE NOW, AND IT USED TO BE ENFORCED BY REMEMBERING.
+   * The put-back was written by hand on two arms — the cancel and the engine's
+   * non-zero exit — and every other way out of this function left the book in
+   * `generated/archived-<stamp>/` with nothing live at all: the refusals that
+   * settle and return, and above all a THROW, which `engineCommand()` raises by
+   * design when Foundry is hosted with no `FOUNDRY_BIN` one statement below this
+   * one. That throw reaches `executeJob`'s boundary, which fails the row
+   * correctly and cannot see these three locals at all. So the restore is one
+   * `finally` at the bottom of this function rather than a call an arm can be
+   * added without.
    *
    * NEITHER OF THE TWO JOBS THAT WRITE INTO `readings/` ROTATES, and that is now
    * one rule rather than a reading's exception. A reading fills its BANK and a
@@ -4768,869 +5095,1006 @@ async function executeJob(next: Job, request: EngineRequest, wires: RunWires): P
   let rotation: Rotation | null = null;
   let filedRotation: FinalRotation | null = null;
   let rotatedIn: string | null = null;
-  if (request.kind !== 'read' && !isTextPassRequest(request)) {
-    const projectDir = projectDirOf(request.outputPath);
-    if (projectDir !== null) {
-      rotatedIn = projectDir;
-      try {
-        if (exporting) {
-          filedRotation = await rotateFinal(projectDir, path.basename(request.outputPath));
-        } else {
-          rotation = await rotateGenerated(projectDir, path.basename(request.outputPath));
-        }
-      } catch (err) {
-        next.state = 'failed';
-        next.error = err instanceof Error ? err.message : String(err);
-        next.finishedAt = Date.now();
-        changed();
-        settled(next);
-        return;
-      }
-    }
-  }
-
-  /*
-   * ── A BRANCH'S RECORDS START AS A COPY OF ITS PARENT'S ────────────────────
+  /**
+   * DID THIS RUN PUT A PRODUCT WHERE THE ROTATION MADE ROOM — the one question
+   * the restore below turns on, and the reason it is not simply unconditional.
    *
-   * Here, and not at plan time, because this is the first moment the job is a
-   * commitment rather than a row somebody can still remove: a held translation
-   * that is deleted from the shelf must leave `readings/` exactly as it found it,
-   * and a file seeded at the plan would sit there named by no step, invisible to
-   * the sweep, forever.
+   * Said at the engine's zero exit, which is the moment the file exists at
+   * `outputPath` and therefore the moment the rotation was FOR something. Every
+   * landing arm is under it and none of them may put back: the old copy dragged
+   * home over a new one is the destruction `restoreRotation` refuses to perform
+   * (it checks the live slot itself), and asking it to is how a guard somebody
+   * relaxes later becomes a lost book.
    *
-   * WHY A BRANCH WANTS ITS PARENT'S ANSWERS AT ALL: translating from a save made
-   * under a translation branches, and a branch owns its own file — but an EMPTY
-   * one would make that first run a full re-translation of a book that is already
-   * translated. The rows are keyed by the blocks' own text, so the parent's
-   * answers are exactly as true in the branch as they were at home: the stricken
-   * blocks are never looked up, and only text somebody edited since is re-asked.
-   *
-   * AN EXISTING FILE IS NEVER OVERWRITTEN. A retried job has its own answers in
-   * there by now and they are newer than the seed; a replace of a row that already
-   * has records carries no seed at all.
-   *
-   * IT COVERS EVERY TRANSLATION, WHICH IS THE FIX. This copy used to sit inside
-   * the stage loop of a two-stage Generate, so it ran for a branch ordered by
-   * standing on a save and pressing Generate and NEVER for one ordered from the
-   * Translate dialog — which set no seed in the first place. A dialog-ordered
-   * branch therefore started empty and paid full model price for a book whose
-   * translation was one row up. One rule, one spawn, both doors.
+   * IT IS NOT THE ROW'S STATE. A landing that throws afterwards — a catalogue
+   * write that fails, a listener with a bug in it — ends `failed`, and its
+   * product is on disk all the same; a run that produced something is not a run
+   * that produced nothing, whatever the shelf ends up saying about it.
    */
-  if (isTextPassRequest(request)
-    && request.seedRecords !== undefined
-    && !existsSync(request.recordsPath)
-    && existsSync(request.seedRecords)) {
-    try {
-      await fsp.mkdir(path.dirname(request.recordsPath), { recursive: true });
-      copyFileSync(request.seedRecords, request.recordsPath);
-    } catch (err) {
-      console.error(`[job] could not seed ${request.recordsPath} from ${request.seedRecords}:`, err);
-    }
-  }
-
-  /*
-   * ── THE ANALYSIS CHECKLIST, WRITTEN AT THE SPAWN ──────────────────────────
-   *
-   * `--categories` takes a PATH to a JSON list, so the checklist cannot ride the
-   * command line as a value; it has to be a file, and this is the moment to make
-   * one. The seed copy above is here for the same reason and it is the same rule:
-   * a plan is not a commitment, and a held job somebody removes must leave the
-   * project exactly as it found it. A checklist written at plan time would sit in
-   * the analysis folder named by no step, invisible to every sweep, forever.
-   *
-   * BESIDE THE REPORT AND NAMED FROM IT (`categoriesFileFor`), so a person
-   * looking at a run in a terminal can see what it was asked for — and so the
-   * settle can remove it without composing a second opinion about where it went.
-   *
-   * THE WHOLE SET IS WRITTEN, unticked entries and all, which is the spelling
-   * `buildPlan` documents itself as accepting from this app: a list composed by
-   * DROPPING names is indistinguishable from a list of the only categories this
-   * build has heard of, and the day the engine grows an eleventh the two readings
-   * diverge in silence.
-   *
-   * A FAILURE HERE IS NOT SWALLOWED AND IS NOT A THROW. Without the file the
-   * engine refuses the run by name, which is the honest outcome and lands in the
-   * row's error where somebody will read it; a console line says which write
-   * failed so the cause is not a mystery.
-   *
-   * THE ENTRY IS REBUILT FIELD BY FIELD rather than spread, and that is the one
-   * detail this write cannot get wrong. `parseCategoriesJson` (src/analyze/plan.ts)
-   * REFUSES an entry carrying a field it does not read — deliberately, because a
-   * typo accepted in silence is a hand-written hypothesis that never reached the
-   * model and an hour spent looking fine — so anything this app grows on its own
-   * request shape would end the run the day it was added. Three fields are
-   * spelled here because three are the ones over there: `name`, `enabled`, and
-   * `description` where the category has one (a user's own; a built-in never
-   * does, and an empty one is omitted rather than written as "").
-   */
-  if (request.kind === 'analysis' && request.categories.length > 0) {
-    const where = categoriesFileFor(request);
-    const asked = request.categories.map((one) => {
-      const description = (one.description ?? '').trim();
-      const label = (one.label ?? '').trim();
-      return {
-        name: one.name,
-        enabled: one.enabled,
-        ...(description.length > 0 ? { description } : {}),
-        // The words the person reads for this category, carried so the report's
-        // `names` header shows every device the label the desktop shows —
-        // including a custom category exactly as its author typed it.
-        ...(label.length > 0 ? { label } : {}),
-      };
-    });
-    try {
-      await fsp.mkdir(path.dirname(where), { recursive: true });
-      await fsp.writeFile(where, `${JSON.stringify(asked, null, 2)}\n`, 'utf8');
-    } catch (err) {
-      console.error(`[job] the analysis checklist could not be written to ${where}:`, err);
-    }
-  }
-
-  /*
-   * ── THE ONE RUN THIS JOB IS ───────────────────────────────────────────────
-   *
-   * It was one for everything this app queued except a Generate standing under a
-   * translation, which was two: `vlm-convert` into a temp EPUB, then `translate`
-   * out of it. A translated book is cast by the first of those alone now, so the
-   * stage list, the loop that walked it and the `handle` reassigned between its
-   * spawns are gone with it.
-   *
-   * AIMED AT THE INTERMEDIATE WHEN A RECORD IS GOING ON AFTER IT. `unstamped` is
-   * non-null only for an export whose ancestry recorded metadata (see it, above,
-   * for the whole argument), and both metadata commands refuse to write over their
-   * own input. Everything else about this spawn is the request as it was stored —
-   * the stored one is what the row, the rotation and the landing are about, and
-   * only the child process sees this substitution.
-   *
-   * The `read` and `translate` arms are unreachable — neither is ever an export
-   * and neither has a record to carry — and they are written out because the
-   * alternative is a cast asserting that to the compiler, which is a promise
-   * rather than a fact.
-   */
-  const spawned: EngineRequest = unstamped === null
-    || request.kind === 'read'
-    || isTextPassRequest(request)
-    ? request
-    : { ...request, outputPath: unstamped };
-
-  /*
-   * ── THE LAST RUN: THE RECORD THE PERSON TYPED, PUT ON WHAT WAS MADE ───────
-   *
-   * `foundry epub-meta` or `foundry pdf-meta` over the finished product, into the
-   * file the row is about. It is the same command the metadata dialog writes
-   * with — the same refusals, in the same words, about the same fields — applied
-   * to a book that has just been assembled out of a bank that never knew the
-   * title had been corrected.
-   *
-   * SPELLED HERE RATHER THAN MADE A REQUEST SHAPE: the three shapes are what this
-   * app QUEUES, each with a row, a landing and a settle, and this is a step inside
-   * one job rather than a job. A fourth would have to be threaded through the
-   * plans, the shelf and every settle path to be used in one place. The flags are
-   * `metaFlagsFor`'s, which is one line and refuses to put an empty value on a
-   * command line.
-   *
-   * NULL FOR EVERY JOB THAT IS NOT AN EXPORT WITH SOMETHING TO SAY, which is
-   * nearly all of them.
-   */
-  const stamping: string[] | null = unstamped === null || record === null
-    ? null
-    : record.kind === 'pdf'
-      ? ['pdf-meta', '--pdf', unstamped, '--out', next.outputPath, ...record.flags]
-      : ['epub-meta', '--epub', unstamped, '--out', next.outputPath, ...record.flags];
-
-  const watch = (line: string): void => {
-    next.message = line;
-    /*
-     * WHAT THE RUN SPENT, off the same stderr the counts come off.
-     *
-     * The engine prints one usage line at the very end of a text act
-     * (`usageLine`, src/translate/transport.ts) and only when the server it
-     * talked to counted — so this fires once per run at most, and never on a
-     * local Ollama, which reports nothing. Read BEFORE the progress parse and
-     * kept out of it, because it is not progress: see `parseUsageLine`.
-     *
-     * IT DOES NOT CLEAR THE NOTE AND IS NOT SWALLOWED. The line stays the
-     * message and becomes the note like any other non-count line, because it is
-     * a real thing the engine said and a person reading the row's last line
-     * should see it. What this adds is the STRUCTURED copy, which is what the
-     * finished row and the bench card draw from.
-     */
-    const spent = parseUsageLine(line);
-    if (spent !== null) next.usage = spent;
-    const progress = parseProgressLine(line);
-    /*
-     * A count clears the note; anything else becomes it. So `note` reads as
-     * "what the engine has said SINCE the last count", which is empty on a run
-     * that is simply progressing and full of exactly the right sentence on one
-     * that is retrying, falling back, or naming a block it could not do.
-     */
-    next.note = progress ? null : line;
-    if (progress) {
-      // The rasterising pass finishes the instant reading starts: foundry draws
-      // the whole book before it posts the first page, but a book with pages
-      // skipped never reaches its own page count, so the render bar would stop
-      // short of work it had actually finished.
-      if (progress.phase === 'read' && next.progress?.phase === 'render') {
-        next.progress = { ...next.progress, page: next.progress.total };
-      }
-      next.progress = progress;
-    }
-    changed();
-    /*
-     * AND OUT TO WHOEVER ASKED TO HEAR IT, after the row has been updated and
-     * published. A caller watching from outside (`runJob`'s `onProgress`) is
-     * reading the same lines the shelf is drawing, so it must not see one the
-     * mirror has not been told about — and its throw is not this run's problem,
-     * on `settled`'s rule: one listener's bug is not another's engine.
-     */
-    if (wires.watch !== undefined) {
-      try {
-        wires.watch(line);
-      } catch (err) {
-        console.error(
-          `[queue] a progress listener threw for ${next.outputPath}: `
-          + `${err instanceof Error ? err.message : String(err)}`,
-        );
-      }
-    }
-  };
-
-  /*
-   * The command, once, before it runs.
-   *
-   * A failure that names a flag is only useful beside the flags it was given —
-   * "--out and --format contradict each other" means nothing without the pair,
-   * and the paths this app composes are exactly the ones nobody typed and
-   * therefore nobody can check. One line, at the start, in the terminal that is
-   * already open — and one PER RUN, because a job that is a spawn followed by a
-   * metadata stamp is exactly the case where a single line would leave somebody
-   * reading the wrong command.
-   */
-  /*
-   * A COMMAND THAT CANNOT BE SPELLED IS A FAILED ROW WITH THE REASON ON IT, and
-   * not a rejected promise nobody catches. `argsFor` refuses exactly one thing —
-   * a text pass whose book was never materialised, which is a promise that reached
-   * the spawn without its parent (`bookOf`) — and this is the arm that turns that
-   * into the ending every other unmakeable job in this file gets: the row settles,
-   * the shelf shows main's sentence, and anybody awaiting it hears.
-   */
-  let args: string[];
+  let landed = false;
   try {
-    args = argsFor(spawned, merged, placement);
-  } catch (err) {
-    next.state = 'failed';
-    next.error = err instanceof Error ? err.message : String(err);
-    next.finishedAt = Date.now();
-    changed();
-    settled(next);
-    return;
-  }
-  /*
-   * THE LINE IS SAFE TO PRINT AND THAT IS A PROPERTY OF THE DESIGN, not luck. A
-   * Crucible's token is in `placement.env` and never in argv, so the command
-   * this prints is the whole command and carries no credential — which is what
-   * makes it something a person can paste into a terminal and into a bug report.
-   * Anything that ever puts a secret on this line has broken the contract
-   * `Placement.env` states.
-   *
-   * ── THE TWO FLAGS THE LOCAL PAGE READER ADDS, AND WHY NOT IN `argsFor` ─────
-   *
-   * `argsFor` is a pure function of the REQUEST: the same request spells the
-   * same command line whenever it is asked, which is what lets the shelf, the
-   * log line and a re-run all agree. Neither of these is a property of the
-   * request. Both are properties of the server that answered a moment ago —
-   * which model it says it holds, and whether it is one this app started — and
-   * a pure function cannot know either without probing a socket.
-   *
-   * A zero concurrency means "say nothing", which is how an ADOPTED server keeps
-   * the engine's own measured default of twelve.
-   */
-  // File preparation above also awaits. Cancelling before the child exists
-  // must never turn into a late spawn after the cancellation was acknowledged.
-  if (jobs.find((job) => job.id === next.id)?.state === 'cancelled') return;
-  console.log(`[job] ${next.kind} ${args.join(' ')}`);
-  let handle = runEngine(args, watch, placement.env);
-  /*
-   * THE CANCEL FOLLOWS THE LIVE CHILD. `handle` is reassigned before the metadata
-   * stamp and the closure reads it, so the ✕ kills whichever engine is actually
-   * running rather than a child that has already exited — and whoever is holding
-   * this run holds it across the gap between them, so no second `pump()` can slip
-   * a job in beside this one and put two engines on one GPU.
-   *
-   * HANDED OUT RATHER THAN STORED, because the two schedulers hold it in two
-   * places: the pump's serial slot, or `detachedRuns` for a run the host's queue
-   * chose. See `RunWires`.
-   */
-  wires.claim(() => handle.cancel());
-
-  let result = await handle.done;
-  /*
-   * ── AND THE RECORD, WHICH IS NOW THE LAST THING THAT HAPPENS ──────────────
-   *
-   * Only for an export whose ancestry recorded metadata, only when the run before
-   * it succeeded, and it is what actually writes the file the row is about — the
-   * engine wrote into the temp directory. `handle` is reassigned, so the ✕ still
-   * kills the child that is running.
-   *
-   * A FAILURE HERE FAILS THE JOB, in the engine's own words, and that is the
-   * conservative answer rather than the harsh one. The alternative is filing a
-   * book in the tray and reporting success while the corrections the person made
-   * are missing from it — which is the exact silence this whole unit exists to
-   * end, reintroduced one stage later.
-   */
-  if (stamping !== null && result.code === 0) {
-    next.message = 'Writing the record onto it…';
-    next.note = null;
-    changed();
-    console.log(`[job] ${next.kind} ${stamping.join(' ')}`);
-    handle = runEngine(stamping, watch);
-    result = await handle.done;
-  }
-  // No child of this job's is alive from here on: the slot, or the detached
-  // registry, gives it up. See `RunWires`.
-  wires.release();
-  next.finishedAt = Date.now();
-
-  /*
-   * THE INTERMEDIATE GOES NOW, whichever way this ended. A run that failed while
-   * writing leaves a whole book in the temp directory, and the next one writes a
-   * fresh one under its own job id — so keeping it would be hoarding half-books
-   * nobody can name against a directory this app does not own.
-   *
-   * THERE USED TO BE THREE OF THEM: the untranslated cast a two-stage Generate
-   * made for its translator, the untidied translation an export made for its
-   * edition, and this one. Both of the others were the cost of a translation being
-   * a FILE; a translated book is cast by the run that assembles it now, so the
-   * only scratch file left is the one the metadata stamp reads, and it exists
-   * because both metadata commands refuse to write over their own input.
-   *
-   * BEST EFFORT, AND NEVER A THROW. A leftover temp file is a console line; the
-   * job it belonged to succeeded or failed on its own merits, and reporting three
-   * hours of GPU as a failure because a scratch file would not unlink would be
-   * the bookkeeping deciding what happened to the book. `force` so an
-   * already-absent file — the ordinary case when the run never got that far — is
-   * silence rather than an error.
-   */
-  if (unstamped !== null) {
-    try {
-      await fsp.rm(unstamped, { force: true });
-    } catch (err) {
-      console.error(`[job] the intermediate ${unstamped} could not be removed: ${(err as Error).message}`);
-    }
-  }
-
-  // And the book main materialised for this export or this translation,
-  // whichever way it ended — `sweepDerivedBook` carries the whole argument. It
-  // is swept BEFORE the landings below and that is safe by construction: what
-  // the run read is not what the landing writes, and the translation's own
-  // derived book is built from the ledger and the records rather than from this
-  // scratch copy of them.
-  await sweepDerivedBook(request);
-
-  if (result.code === 0) {
-    next.state = 'done';
-    /*
-     * A READING LANDED, which is the moment the whole front door turns on.
-     *
-     * `recordReading` stamps the catalogue: when it finished, how many pages the
-     * bank holds, and — through `generationForLanding`, the landing half of the
-     * rule in shared/ledger.ts — the reading GENERATION every overlay and its
-     * undo ledger are bound to.
-     * That is why the mint belongs here rather than at the first correction: this
-     * is the only moment anything in this app can honestly say a bank is a
-     * different bank from the one that was there before.
-     *
-     * It also puts the light out on Home. A project with a scan and no reading
-     * shows OCR as its waiting next step; from this line on, that project has
-     * been read.
-     */
-    if (request.kind === 'read') {
-      /*
-       * NO CAPTURED PARENT GOES WITH IT, AND THAT IS NOT AN OVERSIGHT.
-       *
-       * `next.parentStep` is where the user was standing when they pressed Add,
-       * and it is what a translation is filed against. A READING IS THE ONE
-       * ACTION THAT IS NOT MADE FROM A STEP: it reads the pixels in `archive/`,
-       * which `planReading` resolves for itself precisely because the document
-       * the person was looking at may be a real-text reprint with none of the ink
-       * in it. So its parent is the project's import, settled by what it read
-       * rather than by where anybody was standing — see `originOf` in
-       * shared/ledger.ts for what parenting it at the position would cost.
-       */
-      /*
-       * WHAT IT ASKED FOR GOES WITH IT, THOUGH — which is the other half of the
-       * same rule and the opposite conclusion.
-       *
-       * The parent is settled by what a reading READS; the identity is settled by
-       * what it was ASKED. `--skip-pages` and `--language` are the whole of what
-       * the OCR dialog lets somebody choose (`ReadRequest`), and they decide
-       * whether the next reading of this book replaces this step or branches
-       * beside it. Nothing on disk can answer that afterwards: a bank does not
-       * record which pages it was told to leave out. So the job hands them over,
-       * exactly as a translation hands over its `--to` rather than leaving the
-       * language legible only in a filename.
-       */
-      /*
-       * AND THE STEP THE BANK IS NAMED AFTER, which is the third thing that has
-       * to survive the wait.
-       *
-       * A branching re-read writes `readings/<key>.<id8>.jsonl`, and that `id8` is
-       * the front of the step's uuid — minted at the plan, before the row even
-       * appeared in the shelf, because the engine is handed one path and fills it
-       * for three hours. Minting a fresh id here would leave the bank named after a
-       * step nobody created. It is spent only if this lands as an append; a replace
-       * swaps into the step that is already there and throws it away.
-       */
-      await recordReading(
-        next.outputPath,
-        {
-          ...(request.skipPages !== undefined ? { skipPages: request.skipPages } : {}),
-          ...(request.language !== undefined ? { language: request.language } : {}),
-        },
-        request.stepId,
-      );
-      next.message = `Read ${path.basename(next.inputPath)} — the answers are banked.`;
-      changed();
-      /*
-       * ── AND THE ONE DOCUMENT THE BANK IS FOR, WHICH IS NOT A STEP ────────────
-       *
-       * The book file, recorded as this reading's product (docs/RENDERER.md §6).
-       *
-       * IT IS AWAITED AND IT CANNOT FAIL THE READING. Every way it can go wrong
-       * is a console line inside it: the bank is on disk, it is complete, and the
-       * reflow is made from it for nothing whenever it is asked for.
-       *
-       * TWO OTHER LINES USED TO BE HERE AND BOTH ARE GONE. `ensureCast` cast the
-       * project's flowing book — an EPUB in `generated/` that the app unpacked so
-       * a pane had files to show — and the pane reads the book file directly now
-       * (docs/RENDERER.md §7). The facsimile was the other, and it left for a
-       * different reason: it was protecting a reading against a re-read that could
-       * take its answers away, and banks are kept now, so the protection is the
-       * bank and the reprint is something a person asks for.
-       */
-      await landReadProducts(next.outputPath, next.inputPath);
-      return;
-    }
-    /*
-     * ── A TRANSLATION LANDED, AND WHAT IT LEFT IS ANSWERS ────────────────────
-     *
-     * The same shape as the reading above it, which is the shape it should always
-     * have had: this run produced no document at all. It wrote
-     * `readings/<key>.<tag>[.<id8>].records.jsonl` — one row per flowing block —
-     * and the step that keeps what those hours cost names THAT file as its payload
-     * (`recordTextPass`, electron/projects.ts), exactly as a read step names its
-     * bank.
-     *
-     * IT USED TO GO THROUGH `recordGenerated`, because the product was an EPUB in
-     * `generated/` and that function is where a finished document is catalogued.
-     * Nothing about a records translation fits there: there is no document to put
-     * on a type's chain, nothing to promote to the project's live PDF, and the file
-     * is not in `generated/` at all — the landing would have refused it by name.
-     *
-     * THE ONE FACT THE JOB HANDS OVER is the one nothing on disk can answer
-     * afterwards: which language was asked for. Reading it back out of a filename
-     * is what this codebase's oldest house rule forbids, so the job that asked says
-     * which. WHETHER THIS WAS A CHAIN IS NOT HANDED OVER, deliberately: it is a
-     * fact about the row this step hangs from, the landing is holding the ledger,
-     * and this request's `--from` is also where a person's typed guess about an
-     * untranslated book's language goes (`recordTextPass` argues it in full).
-     *
-     * AND THEN THE BOOK, WITHOUT BEING ASKED. A records file is not a thing a
-     * person reads, so the row would have nothing to show until somebody ordered a
-     * rendering by file format — which is the exact gap the automatic cast after a
-     * reading was built to close, one action later. It is the same cast: free,
-     * offline, seconds, and fired and forgotten so that a translation that landed
-     * is never reported as a failure because the book after it could not be planned.
-     */
-    /*
-     * ── AN ANALYSIS LANDED, AND WHAT IT LEFT IS A REPORT ─────────────────────
-     *
-     * The same shape as the two above it and the shortest of the three, because
-     * an analysis owes the book nothing. There is no document to catalogue, no
-     * bank to displace, no derived book to materialise afterwards and no chain to
-     * resolve: the run measured a book and wrote down what it found, and the step
-     * that keeps the report names that file as its payload (`recordAnalysis`,
-     * electron/projects.ts).
-     *
-     * THE ONE FACT THE JOB HANDS OVER is the one nothing on disk can answer
-     * afterwards: which categories were actually asked for. The report's header
-     * lists them, and reading a step's params back out of its payload is what this
-     * codebase's oldest house rule forbids — so the run that asked says what it
-     * asked for, exactly as a translation says which language. The model rides
-     * with it, in the answer pile (`MINTED_BY_THE_RUN`).
-     *
-     * AND NOTHING FOLLOWS IT. A translation lands and materialises a book,
-     * because a records file is not a thing a person reads; a report is drawn by
-     * a panel straight out of the file, so there is nothing to make and nothing
-     * to open. The pointer stays where it was (`RETAINED_BESIDE_YOU`), which is
-     * the whole of what an analysis does to a project's position.
-     */
-    if (request.kind === 'analysis') {
-      await recordAnalysis(next.outputPath, {
-        parentStep: next.parentStep ?? null,
-        categories: request.categories.filter((one) => one.enabled).map((one) => one.name),
-        model: request.model,
-        ...(request.stepId !== undefined ? { stepId: request.stepId } : {}),
-      });
-      next.message = `Analysed ${path.basename(next.inputPath)} — the report is on its step.`;
-      changed();
-      settled(next);
-      return;
-    }
-    if (isTextPassRequest(request)) {
-      /*
-       * ── ONE LANDING FOR THREE PASSES, AND THE ACTION IS THE THING IT CARRIES ──
-       *
-       * `recordTextPass` appends a step whose action is this job's kind, which is
-       * the whole of what the split changed here: a rewrite used to land as
-       * `translate` wearing `params.rewrite`, and a cleanup would have had to do
-       * the same. Owen ended it — *"it isnt a translate job"* — so the row says
-       * what the button said.
-       *
-       * WHAT THE JOB HANDS OVER IS WHAT NOTHING ON DISK CAN ANSWER AFTERWARDS: the
-       * language a translation went into and the mode a rewrite was asked in. Both
-       * are legible only in the records file's NAME, and reading a fact back out of
-       * a filename is what this codebase's oldest house rule forbids. A CLEANUP
-       * HANDS OVER NEITHER, because it has neither — `PARAMS_OF.clean` is empty,
-       * and the run's own facts are on the stamp beside its answers.
-       */
-      await recordTextPass(next.outputPath, {
-        action: request.kind,
-        parentStep: next.parentStep ?? null,
-        /*
-         * A CLEANUP GOES INTO NO LANGUAGE, and a rewrite's is resolved at spawn
-         * (`SimplifyRequest.to`) — so this asks whether there is one rather than
-         * asserting there is. An absent one here is unreachable and not guarded
-         * against: `languageOf` refuses the command line without it, so a run that
-         * reached this landing was spawned with a language and carries it still.
-         */
-        ...(request.kind === 'clean' || request.to === undefined ? {} : { language: request.to }),
-        ...(request.stepId !== undefined ? { stepId: request.stepId } : {}),
-        ...(request.kind === 'simplify' ? { rewrite: request.rewrite } : {}),
-      });
-      /*
-       * "the book follows" IS TRUE OF ALL THREE and is the sentence the shelf has
-       * always ended a text pass with: the records are on disk and the book is
-       * materialised from them in the next few lines, for nothing.
-       */
-      const said = request.kind === 'translate'
-        ? 'Translated'
-        : request.kind === 'simplify' ? 'Simplified' : 'Cleaned';
-      next.message = `${said} ${path.basename(next.inputPath)} — the book follows.`;
-      changed();
-      /*
-       * AND THE BOOK OF IT, WHICH IS THE PART THAT IS NOT A RENDERING. *"When a
-       * translate lands, main materializes parent book file + chain ops + records
-       * → readings/<key>.<lang>.book.jsonl."* (docs/RENDERER.md §4.) It is made
-       * HERE, at the landing, rather than at the first open, for the reason every
-       * derived file in this app is made where its inputs are known to be
-       * settled: the records have just been written, the step naming them exists,
-       * and the row the translation was made FROM is what the book is materialised
-       * over — a fact about the ledger that is answered once, now, rather than
-       * re-derived by every pane that ever draws this step.
-       *
-       * AND IT IS THE ONLY ONE NOW. There was a cast after this — an EPUB made
-       * from the records so the old viewer had a file to open — and standing on a
-       * translate row shows the derived book on the proof sheet instead, which is
-       * the document this line writes. It is not fatal to a landing that has
-       * already put hours of GPU safely on disk, and it says so in the terminal
-       * in its own words.
-       */
-      await materializeTextPass(next.outputPath);
-      settled(next);
-      return;
-    }
-    /*
-     * ── AN EXPORT IS FILED AND NOTHING ELSE HAPPENS TO IT ─────────────────────
-     *
-     * `recordGenerated` below does three things to a finished rendering: it puts a
-     * step on that type's chain, it can promote the result to the project's live
-     * PDF, and it announces the library. Every one of those is about a document
-     * OTHER WORK WILL BE MADE FROM, and an export is the one rendering in this app
-     * that nothing is ever made from — the user's ruling, verbatim: "it wont go
-     * into the working files as a step because it isnt the base for new steps. its
-     * a terminal step. so its an export."
-     *
-     * So the landing is one row in the tray. `recordFinal` never throws and
-     * announces the library itself, which is what puts the export under its project
-     * in the left nav; the tab opens itself from the shelf exactly as a Generate's
-     * does (`OPENS_ITSELF`), because somebody who asked for a book wants to look at
-     * it. No documents row, no ledger step, no live-PDF refresh, and no rotation to
-     * undo beyond the one `rotateFinal` already made.
-     */
-    if (exporting) {
-      /*
-       * THE STEP THE JOB CAPTURED GOES INTO THE TRAY ROW, so that a host reading
-       * `project.json` afterwards learns what a host listening at this instant
-       * learns from the announcement below. `next.parentStep` is where the person
-       * was standing when they pressed Export — held all along so a pointer move
-       * during the wait cannot change which corrections the book carries — and it
-       * is the same value both halves record, out of one variable, because two
-       * derivations of one provenance is how the event and the catalogue come to
-       * disagree.
-       */
-      const madeFrom = next.parentStep ?? null;
-      await recordFinal(next.outputPath, madeFrom);
-      const filed = path.basename(next.outputPath);
-      /*
-       * ── THE MINT'S DECLARATION, STAMPED AND THEN ANNOUNCED ──────────────────
-       *
-       * `request.mintMeta` is what the modal confirmed at the press
-       * (JobRequest.mintMeta carries the why). The LANGUAGE follows the step's
-       * own chain over the form: the request's language where the plan set one
-       * (a translated position), the reading's language otherwise, and only
-       * where the chain is silent does the form's answer stand — an
-       * auto-export of a German step must say de whatever the person last
-       * typed. Stamped into the file first, announced second, both out of ONE
-       * composed block, which is `madeFrom`'s own one-variable rule two
-       * comments up. A stamp that fails is a console line and never a failed
-       * job: the book is made and filed, and a metadata splice can be pressed
-       * again from the tile in seconds.
-       *
-       * ── AND A MINT NOBODY CONFIRMED INHERITS, the way the modal would have ──
-       *
-       * A host-ordered export (`exportEpubFromStep`, electron/mount.ts) has no
-       * modal in front of it, and used to carry the project's stored block or
-       * nothing. A hosted project minted from a bare document has no stored
-       * block until somebody confirms a mint, so BookForge's narrate-on-a-step
-       * produced an EPUB whose `dc:title` was the tray file's stem and whose
-       * `dc:creator` was absent — while BookForge's own shelf knew the author
-       * (bookforge-pc-1, 2026-09-07). The modal asked the host for exactly that
-       * record (`mintMetaFor`) and merged it under the stored block; the
-       * unattended route never did. Now it asks the same question through the
-       * same function (`inheritMintMeta`, shared/mint-meta.ts): the request's
-       * confirmed block first, the stored block over the host's record next,
-       * and nothing at all only when neither side has a record — the
-       * standalone first mint, which is what it always was.
-       *
-       * A BLOCK WITH NO TITLE IS NOT STAMPED. The splice writes `Untitled` for
-       * an empty one, and a title the compile already took from the scan is
-       * strictly better than that word over it.
-       */
-      /*
-       * WHERE IT LANDED, AND WHOSE IT IS — two questions since a host may ask
-       * for the file OUTSIDE every project (`ConversionRequest.home`). The
-       * project answers for the mint block and the announcement; the path
-       * answers for whether anything of this app's filed it, and a file filed
-       * nowhere is announced as `unfiled` so the mount answers its awaiting
-       * caller without telling the host's shelf about a version that is not one.
-       */
-      const filedIn = projectDirOf(next.outputPath);
-      const projectDir = homeOf(request) ?? filedIn;
-      let minted: ExportMintMetadata | undefined;
-      const inherited = request.kind === 'epub' && request.mintMeta === undefined && projectDir !== null
-        ? await inheritedMintMetaFor(projectDir)
-        : null;
-      const confirmed = request.kind === 'epub'
-        ? request.mintMeta ?? (inherited !== null && inherited.title.trim().length > 0 ? inherited : undefined)
-        : undefined;
-      if (request.kind === 'epub' && confirmed !== undefined) {
-        const meta = confirmed;
-        const declared = request.language
-          ?? await chainLanguageOf(next.outputPath, madeFrom, homeOf(request))
-          ?? meta.language;
-        minted = {
-          title: meta.title,
-          contributors: meta.contributors,
-          filename: filed,
-          ...(meta.subtitle !== undefined ? { subtitle: meta.subtitle } : {}),
-          ...(meta.year !== undefined ? { year: meta.year } : {}),
-          ...(declared !== undefined ? { language: declared } : {}),
-        };
-        const stamped = await stampMintMetadata(next.outputPath, meta, declared);
-        if (!stamped.ok) {
-          console.error(
-            `[queue] the mint metadata could not be stamped onto ${next.outputPath}: ${stamped.reason}`,
-          );
+    if (request.kind !== 'read' && !isTextPassRequest(request)) {
+      const projectDir = projectDirOf(request.outputPath);
+      if (projectDir !== null) {
+        rotatedIn = projectDir;
+        try {
+          if (exporting) {
+            filedRotation = await rotateFinal(projectDir, path.basename(request.outputPath), next.id);
+          } else {
+            rotation = await rotateGenerated(projectDir, path.basename(request.outputPath), next.id);
+          }
+        } catch (err) {
+          next.state = 'failed';
+          next.error = err instanceof Error ? err.message : String(err);
+          next.finishedAt = Date.now();
+          changed();
+          settle();
+          return;
         }
       }
-      next.message = `Wrote ${filed}`;
+    }
+
+    /*
+     * ── A BRANCH'S RECORDS START AS A COPY OF ITS PARENT'S ────────────────────
+     *
+     * Here, and not at plan time, because this is the first moment the job is a
+     * commitment rather than a row somebody can still remove: a held translation
+     * that is deleted from the shelf must leave `readings/` exactly as it found it,
+     * and a file seeded at the plan would sit there named by no step, invisible to
+     * the sweep, forever.
+     *
+     * WHY A BRANCH WANTS ITS PARENT'S ANSWERS AT ALL: translating from a save made
+     * under a translation branches, and a branch owns its own file — but an EMPTY
+     * one would make that first run a full re-translation of a book that is already
+     * translated. The rows are keyed by the blocks' own text, so the parent's
+     * answers are exactly as true in the branch as they were at home: the stricken
+     * blocks are never looked up, and only text somebody edited since is re-asked.
+     *
+     * AN EXISTING FILE IS NEVER OVERWRITTEN. A retried job has its own answers in
+     * there by now and they are newer than the seed; a replace of a row that already
+     * has records carries no seed at all.
+     *
+     * IT COVERS EVERY TRANSLATION, WHICH IS THE FIX. This copy used to sit inside
+     * the stage loop of a two-stage Generate, so it ran for a branch ordered by
+     * standing on a save and pressing Generate and NEVER for one ordered from the
+     * Translate dialog — which set no seed in the first place. A dialog-ordered
+     * branch therefore started empty and paid full model price for a book whose
+     * translation was one row up. One rule, one spawn, both doors.
+     */
+    if (isTextPassRequest(request)
+      && request.seedRecords !== undefined
+      && !existsSync(request.recordsPath)
+      && existsSync(request.seedRecords)) {
+      try {
+        await fsp.mkdir(path.dirname(request.recordsPath), { recursive: true });
+        copyFileSync(request.seedRecords, request.recordsPath);
+      } catch (err) {
+        console.error(`[job] could not seed ${request.recordsPath} from ${request.seedRecords}:`, err);
+      }
+    }
+
+    /*
+     * ── THE ANALYSIS CHECKLIST, WRITTEN AT THE SPAWN ──────────────────────────
+     *
+     * `--categories` takes a PATH to a JSON list, so the checklist cannot ride the
+     * command line as a value; it has to be a file, and this is the moment to make
+     * one. The seed copy above is here for the same reason and it is the same rule:
+     * a plan is not a commitment, and a held job somebody removes must leave the
+     * project exactly as it found it. A checklist written at plan time would sit in
+     * the analysis folder named by no step, invisible to every sweep, forever.
+     *
+     * BESIDE THE REPORT AND NAMED FROM IT (`categoriesFileFor`), so a person
+     * looking at a run in a terminal can see what it was asked for — and so the
+     * settle can remove it without composing a second opinion about where it went.
+     *
+     * THE WHOLE SET IS WRITTEN, unticked entries and all, which is the spelling
+     * `buildPlan` documents itself as accepting from this app: a list composed by
+     * DROPPING names is indistinguishable from a list of the only categories this
+     * build has heard of, and the day the engine grows an eleventh the two readings
+     * diverge in silence.
+     *
+     * A FAILURE HERE IS NOT SWALLOWED AND IS NOT A THROW. Without the file the
+     * engine refuses the run by name, which is the honest outcome and lands in the
+     * row's error where somebody will read it; a console line says which write
+     * failed so the cause is not a mystery.
+     *
+     * THE ENTRY IS REBUILT FIELD BY FIELD rather than spread, and that is the one
+     * detail this write cannot get wrong. `parseCategoriesJson` (src/analyze/plan.ts)
+     * REFUSES an entry carrying a field it does not read — deliberately, because a
+     * typo accepted in silence is a hand-written hypothesis that never reached the
+     * model and an hour spent looking fine — so anything this app grows on its own
+     * request shape would end the run the day it was added. Three fields are
+     * spelled here because three are the ones over there: `name`, `enabled`, and
+     * `description` where the category has one (a user's own; a built-in never
+     * does, and an empty one is omitted rather than written as "").
+     */
+    if (request.kind === 'analysis' && request.categories.length > 0) {
+      const where = categoriesFileFor(request);
+      const asked = request.categories.map((one) => {
+        const description = (one.description ?? '').trim();
+        const label = (one.label ?? '').trim();
+        return {
+          name: one.name,
+          enabled: one.enabled,
+          ...(description.length > 0 ? { description } : {}),
+          // The words the person reads for this category, carried so the report's
+          // `names` header shows every device the label the desktop shows —
+          // including a custom category exactly as its author typed it.
+          ...(label.length > 0 ? { label } : {}),
+        };
+      });
+      try {
+        await fsp.mkdir(path.dirname(where), { recursive: true });
+        await fsp.writeFile(where, `${JSON.stringify(asked, null, 2)}\n`, 'utf8');
+      } catch (err) {
+        console.error(`[job] the analysis checklist could not be written to ${where}:`, err);
+      }
+    }
+
+    /*
+     * ── THE ONE RUN THIS JOB IS ───────────────────────────────────────────────
+     *
+     * It was one for everything this app queued except a Generate standing under a
+     * translation, which was two: `vlm-convert` into a temp EPUB, then `translate`
+     * out of it. A translated book is cast by the first of those alone now, so the
+     * stage list, the loop that walked it and the `handle` reassigned between its
+     * spawns are gone with it.
+     *
+     * AIMED AT THE INTERMEDIATE WHEN A RECORD IS GOING ON AFTER IT. `unstamped` is
+     * non-null only for an export whose ancestry recorded metadata (see it, above,
+     * for the whole argument), and both metadata commands refuse to write over their
+     * own input. Everything else about this spawn is the request as it was stored —
+     * the stored one is what the row, the rotation and the landing are about, and
+     * only the child process sees this substitution.
+     *
+     * The `read` and `translate` arms are unreachable — neither is ever an export
+     * and neither has a record to carry — and they are written out because the
+     * alternative is a cast asserting that to the compiler, which is a promise
+     * rather than a fact.
+     */
+    const spawned: EngineRequest = unstamped === null
+      || request.kind === 'read'
+      || isTextPassRequest(request)
+      ? request
+      : { ...request, outputPath: unstamped };
+
+    /*
+     * ── THE LAST RUN: THE RECORD THE PERSON TYPED, PUT ON WHAT WAS MADE ───────
+     *
+     * `foundry epub-meta` or `foundry pdf-meta` over the finished product, into the
+     * file the row is about. It is the same command the metadata dialog writes
+     * with — the same refusals, in the same words, about the same fields — applied
+     * to a book that has just been assembled out of a bank that never knew the
+     * title had been corrected.
+     *
+     * SPELLED HERE RATHER THAN MADE A REQUEST SHAPE: the three shapes are what this
+     * app QUEUES, each with a row, a landing and a settle, and this is a step inside
+     * one job rather than a job. A fourth would have to be threaded through the
+     * plans, the shelf and every settle path to be used in one place. The flags are
+     * `metaFlagsFor`'s, which is one line and refuses to put an empty value on a
+     * command line.
+     *
+     * NULL FOR EVERY JOB THAT IS NOT AN EXPORT WITH SOMETHING TO SAY, which is
+     * nearly all of them.
+     */
+    const stamping: string[] | null = unstamped === null || record === null
+      ? null
+      : record.kind === 'pdf'
+        ? ['pdf-meta', '--pdf', unstamped, '--out', next.outputPath, ...record.flags]
+        : ['epub-meta', '--epub', unstamped, '--out', next.outputPath, ...record.flags];
+
+    const watch = (line: string): void => {
+      next.message = line;
+      /*
+       * WHAT THE RUN SPENT, off the same stderr the counts come off.
+       *
+       * The engine prints one usage line at the very end of a text act
+       * (`usageLine`, src/translate/transport.ts) and only when the server it
+       * talked to counted — so this fires once per run at most, and never on a
+       * local Ollama, which reports nothing. Read BEFORE the progress parse and
+       * kept out of it, because it is not progress: see `parseUsageLine`.
+       *
+       * IT DOES NOT CLEAR THE NOTE AND IS NOT SWALLOWED. The line stays the
+       * message and becomes the note like any other non-count line, because it is
+       * a real thing the engine said and a person reading the row's last line
+       * should see it. What this adds is the STRUCTURED copy, which is what the
+       * finished row and the bench card draw from.
+       */
+      const spent = parseUsageLine(line);
+      if (spent !== null) next.usage = spent;
+      const progress = parseProgressLine(line);
+      /*
+       * A count clears the note; anything else becomes it. So `note` reads as
+       * "what the engine has said SINCE the last count", which is empty on a run
+       * that is simply progressing and full of exactly the right sentence on one
+       * that is retrying, falling back, or naming a block it could not do.
+       */
+      next.note = progress ? null : line;
+      if (progress) {
+        // The rasterising pass finishes the instant reading starts: foundry draws
+        // the whole book before it posts the first page, but a book with pages
+        // skipped never reaches its own page count, so the render bar would stop
+        // short of work it had actually finished.
+        if (progress.phase === 'read' && next.progress?.phase === 'render') {
+          next.progress = { ...next.progress, page: next.progress.total };
+        }
+        next.progress = progress;
+      }
       changed();
       /*
-       * ── AND WHOEVER IS HOSTING US IS TOLD, LAST ───────────────────────────
-       *
-       * After the file is in `final/` and after the tray has recorded it, so a
-       * host that files this into a versions list is describing something that
-       * exists on disk and is already in the catalogue this app would answer
-       * with. Announcing it any earlier would be inviting the host to race the
-       * manifest.
-       *
-       * THE NAME IS THE ONE THE SHELF JUST SAID. A version row and a job row are
-       * two views of one landing, and a second derivation of "what to call it"
-       * is how the two come to disagree about what was made.
-       *
-       * A THROW HERE MUST NOT REACH THE SETTLE. The work is done — hours of it,
-       * sometimes — and a host whose handler has a bug in it does not get to
-       * turn a landed export into a failed job. `mountFoundry` catches it too,
-       * and this is the second catch rather than the same one written twice: a
-       * listener registered by anything else — a test, a future caller — reaches
-       * this line and not that one.
+       * AND OUT TO WHOEVER ASKED TO HEAR IT, after the row has been updated and
+       * published. A caller watching from outside (`runJob`'s `onProgress`) is
+       * reading the same lines the shelf is drawing, so it must not see one the
+       * mirror has not been told about — and its throw is not this run's problem,
+       * on `settled`'s rule: one listener's bug is not another's engine.
        */
-      if (projectDir !== null) {
+      if (wires.watch !== undefined) {
         try {
-          exportLanded({
-            projectDir,
-            path: next.outputPath,
-            kind: request.kind,
-            title: filed,
-            // See `ExportLanding.stepId`: absent for a job with no position
-            // behind it, which a host must read as "unknown" and not as "none".
-            ...(madeFrom !== null ? { stepId: madeFrom } : {}),
-            // And the mint's declaration, the same block the stamp just wrote —
-            // absent means "minted before the modal existed", never "no
-            // metadata" (`ExportLanding.metadata`).
-            ...(minted !== undefined ? { metadata: minted } : {}),
-            ...(filedIn === null ? { unfiled: true as const } : {}),
-          });
+          wires.watch(line);
         } catch (err) {
           console.error(
-            `[queue] the export-landed listener threw for ${next.outputPath}: `
+            `[queue] a progress listener threw for ${next.outputPath}: `
             + `${err instanceof Error ? err.message : String(err)}`,
           );
         }
       }
-      /*
-       * AND ANYBODY WAITING ON THIS JOB IS TOLD AFTER THE HOST IS, which is the
-       * ordering `onJobSettled` promises rather than an accident of where the
-       * line sits. A waiter watching for the landing of this file has to have
-       * SEEN that landing before it hears the job is over, or it would read a
-       * successful export as an ending with nothing in it.
-       */
-      settled(next);
-      return;
-    }
+    };
+
     /*
-     * ── A STEP'S OWN DOCUMENT IS FILED NOWHERE, AND THAT IS THE POINT ────────
+     * The command, once, before it runs.
      *
-     * It is a RENDERING of a payload that is already a step — the snapshot in
-     * `curations/` for a save, the records in `readings/` for a translation, the
-     * BANK for a reading's facsimile — so it is free to make again and there is
-     * nothing here for a catalogue to own. Cataloguing it would do active harm
-     * rather than merely being redundant: Home's document rows would grow one
-     * entry per landing, and the
-     * facsimile would land on the PDF's chain beside the scan and be offered as the
-     * document this app edits.
-     *
-     * Which leaves the file's disposal, and it is not left to chance: the step
-     * delete composes the same name and sweeps it, along with any working tree
-     * unpacked from it (`planStepSweep`).
-     *
-     * NO LEDGER STEP EITHER, for the reason above it: the step this is the document
-     * of already exists, and minting a second one for the rendering would put a
-     * filename where an action belongs.
-     *
-     * THE SENTENCE FOLLOWS THE PRODUCT, because these two are not the same thing to
-     * the person reading the shelf: one is the book at a row in the history, the
-     * other is the pages of a reading reprinted. Decided off the format, which is
-     * the whole of the difference — a per-step cast is an EPUB and a facsimile is
-     * the only PDF this app ever makes with a step on it.
+     * A failure that names a flag is only useful beside the flags it was given —
+     * "--out and --format contradict each other" means nothing without the pair,
+     * and the paths this app composes are exactly the ones nobody typed and
+     * therefore nobody can check. One line, at the start, in the terminal that is
+     * already open — and one PER RUN, because a job that is a spawn followed by a
+     * metadata stamp is exactly the case where a single line would leave somebody
+     * reading the wrong command.
      */
-    if (request.forStep !== undefined) {
-      next.message = request.kind === 'pdf'
-        ? 'The facsimile of those pages is ready.'
-        : 'The book at that step is ready.';
+    /*
+     * A COMMAND THAT CANNOT BE SPELLED IS A FAILED ROW WITH THE REASON ON IT, and
+     * not a rejected promise nobody catches. `argsFor` refuses exactly one thing —
+     * a text pass whose book was never materialised, which is a promise that reached
+     * the spawn without its parent (`bookOf`) — and this is the arm that turns that
+     * into the ending every other unmakeable job in this file gets: the row settles,
+     * the shelf shows main's sentence, and anybody awaiting it hears.
+     */
+    let args: string[];
+    try {
+      args = argsFor(spawned, merged, placement);
+    } catch (err) {
+      next.state = 'failed';
+      next.error = err instanceof Error ? err.message : String(err);
+      next.finishedAt = Date.now();
       changed();
-      settled(next);
+      settle();
       return;
     }
     /*
-     * The catalogue learns about the origin HERE, when it exists.
+     * THE LINE IS SAFE TO PRINT AND THAT IS A PROPERTY OF THE DESIGN, not luck. A
+     * Crucible's token is in `placement.env` and never in argv, so the command
+     * this prints is the whole command and carries no credential — which is what
+     * makes it something a person can paste into a terminal and into a bug report.
+     * Anything that ever puts a secret on this line has broken the contract
+     * `Placement.env` states.
      *
-     * Not at plan time, which is only an intention: a run that dies at page 200
-     * would leave `project.json` listing a book Home would then offer and
-     * nothing could open. `recordGenerated` never throws — a row it could not
-     * write is a named console line, because losing a catalogue entry is not a
-     * reason to report three hours of GPU as a failure.
+     * ── THE TWO FLAGS THE LOCAL PAGE READER ADDS, AND WHY NOT IN `argsFor` ─────
      *
-     * ONE ARGUMENT LIGHTER THAN IT WAS, and the whole of the difference is that a
-     * translation does not come through here any more. This call used to carry the
-     * language, the bank and the step id, because the run that produced a
-     * translation ended in `generated/` and its landing was a ledger step; a
-     * records translation lands where its answers land (`recordTextPass`), and
-     * what reaches this function from a translated position is the BOOK cast from
-     * those records — which carries `forStep` and returns above, uncatalogued.
+     * `argsFor` is a pure function of the REQUEST: the same request spells the
+     * same command line whenever it is asked, which is what lets the shelf, the
+     * log line and a re-run all agree. Neither of these is a property of the
+     * request. Both are properties of the server that answered a moment ago —
+     * which model it says it holds, and whether it is one this app started — and
+     * a pure function cannot know either without probing a socket.
      *
-     * The REQUEST's kind, not the job row's: `JobKind` also admits `env-install`,
-     * which never reaches this branch but which the compiler cannot know that
-     * about, and a cast here would be a promise made to the type system rather
-     * than a fact. The request is the narrower shape — narrowed by the two arms
-     * above, which return — and it is the same decision.
-     *
-     * ── A BOOK MADE OF A TRANSLATION'S WORDS IS FILED AS A TRANSLATION ────────
-     *
-     * `records` is the whole test, and it has to be here rather than implied. The
-     * roles are not four names for one thing: a `cast` sitting directly in
-     * `generated/` used to be THE PROJECT'S FLOWING BOOK, which every read row and
-     * save row resolved to. So a
-     * Hungarian book filed as a cast would quietly become what the German rows
-     * show — the exact confusion the per-step cast was built to end, arrived at
-     * from the other side.
-     *
-     * The old two-stage pipeline said this same sentence about its own second
-     * stage (`piped !== null ? 'translation'`). There is no second stage now; what
-     * makes a rendering a translation is that the words in its blocks came out of
-     * a records file, and that is one field on the request.
+     * A zero concurrency means "say nothing", which is how an ADOPTED server keeps
+     * the engine's own measured default of twelve.
      */
-    const live = await recordGenerated(
-      next.outputPath,
-      request.records !== undefined ? 'translation' : generatedRoleFor(request.kind),
-    );
+    // File preparation above also awaits. Cancelling before the child exists
+    // must never turn into a late spawn after the cancellation was acknowledged.
+    if (jobs.find((job) => job.id === next.id)?.state === 'cancelled') return;
+    console.log(`[job] ${next.kind} ${args.join(' ')}`);
+    let handle = runEngine(args, watch, placement.env);
     /*
-     * WHERE THE FINISHED ROW POINTS, when the catalogue made a live copy of what
-     * the engine wrote. Everything downstream reads `outputPath`: the tab that
-     * opens itself when the run lands, and the shelf's Reveal — and both of them
-     * want the file the user is meant to have, not the bookkeeping original.
+     * THE CANCEL FOLLOWS THE LIVE CHILD. `handle` is reassigned before the metadata
+     * stamp and the closure reads it, so the ✕ kills whichever engine is actually
+     * running rather than a child that has already exited — and whoever is holding
+     * this run holds it across the gap between them, so no second `pump()` can slip
+     * a job in beside this one and put two engines on one GPU.
      *
-     * Nothing promotes a conversion to the live PDF today (`recordGenerated`),
-     * so this is inert and kept rather than deleted: the branch costs a
-     * comparison, and the alternative is a queue that silently points at the
-     * wrong file the first time something is promoted again.
+     * HANDED OUT RATHER THAN STORED, because the two schedulers hold it in two
+     * places: the pump's serial slot, or `detachedRuns` for a run the host's queue
+     * chose. See `RunWires`.
      */
-    if (live !== null) next.outputPath = live;
-    // Said after the row settles on its final path, so the line names the file
-    // the Reveal button will actually show.
-    next.message = `Wrote ${path.basename(next.outputPath)}`;
-  } else if (result.code === -1) {
-    next.state = 'cancelled';
-    next.message = 'Cancelled.';
-    // Nothing was written, so nothing moved: the previous output comes home and
-    // the chain points back at it. See `restoreRotation` for what "nothing" has
-    // to include — the file, the working tree, and both of their catalogue rows.
-    // The tray obeys the same invariant through its own receipt: a cancelled
-    // export leaves the document somebody filed earlier exactly where it was.
-    await putBack(rotatedIn, rotation, filedRotation);
-  } else {
-    next.state = 'failed';
-    await putBack(rotatedIn, rotation, filedRotation);
-    // foundry's own stderr is the message a user needs — it names the missing
-    // Python, the model it could not load, the page it choked on. Never
-    // paraphrased, and never replaced with an exit code.
-    next.error = result.stderr.trim() || `The engine exited ${result.code} with nothing to say.`;
+    wires.claim(() => handle.cancel());
+
+    let result = await handle.done;
     /*
-     * AND IT GOES TO THE CONSOLE, WHOLE.
+     * ── AND THE RECORD, WHICH IS NOW THE LAST THING THAT HAPPENS ──────────────
      *
-     * Until now a failure existed in exactly one place a person could reach: a
-     * tooltip on one row of the shelf. So a job that failed while the window
-     * was reloading, or whose row was cleared, took its only account of itself
-     * with it — which is precisely what happened twice tonight, and the second
-     * time there was nothing left to read at all.
+     * Only for an export whose ancestry recorded metadata, only when the run before
+     * it succeeded, and it is what actually writes the file the row is about — the
+     * engine wrote into the temp directory. `handle` is reassigned, so the ✕ still
+     * kills the child that is running.
      *
-     * The terminal running the app is where somebody is already looking when
-     * something goes wrong, it survives every reload of the window, and it can
-     * be scrolled back and copied. The full stderr rather than a summary: the
-     * lines above the failure are usually the context that explains it, and
-     * this is a diagnostic rather than a notification.
+     * A FAILURE HERE FAILS THE JOB, in the engine's own words, and that is the
+     * conservative answer rather than the harsh one. The alternative is filing a
+     * book in the tray and reporting success while the corrections the person made
+     * are missing from it — which is the exact silence this whole unit exists to
+     * end, reintroduced one stage later.
      */
-    console.error(
-      `\n[job] ${next.kind} FAILED — exit ${result.code} — ${path.basename(next.inputPath)}\n`
-      + `${next.error}\n`,
-    );
+    if (stamping !== null && result.code === 0) {
+      next.message = 'Writing the record onto it…';
+      next.note = null;
+      changed();
+      console.log(`[job] ${next.kind} ${stamping.join(' ')}`);
+      handle = runEngine(stamping, watch);
+      result = await handle.done;
+    }
+    // No child of this job's is alive from here on: the slot, or the detached
+    // registry, gives it up. See `RunWires`.
+    wires.release();
+    /*
+     * AND THE ENDING BECOMES THIS RUN'S, in the same breath and for the same
+     * fact: the child is gone. The two lines are together because the gap
+     * between them is the defect — a ✕ arriving in it finds a `running` row with
+     * nothing to kill and settles it itself, while the landing below goes on to
+     * settle it again. `landings` holds the argument in full.
+     */
+    landings.add(next.id);
+    next.finishedAt = Date.now();
+
+    /*
+     * THE INTERMEDIATE GOES NOW, whichever way this ended. A run that failed while
+     * writing leaves a whole book in the temp directory, and the next one writes a
+     * fresh one under its own job id — so keeping it would be hoarding half-books
+     * nobody can name against a directory this app does not own.
+     *
+     * THERE USED TO BE THREE OF THEM: the untranslated cast a two-stage Generate
+     * made for its translator, the untidied translation an export made for its
+     * edition, and this one. Both of the others were the cost of a translation being
+     * a FILE; a translated book is cast by the run that assembles it now, so the
+     * only scratch file left is the one the metadata stamp reads, and it exists
+     * because both metadata commands refuse to write over their own input.
+     *
+     * BEST EFFORT, AND NEVER A THROW. A leftover temp file is a console line; the
+     * job it belonged to succeeded or failed on its own merits, and reporting three
+     * hours of GPU as a failure because a scratch file would not unlink would be
+     * the bookkeeping deciding what happened to the book. `force` so an
+     * already-absent file — the ordinary case when the run never got that far — is
+     * silence rather than an error.
+     */
+    if (unstamped !== null) {
+      try {
+        await fsp.rm(unstamped, { force: true });
+      } catch (err) {
+        console.error(`[job] the intermediate ${unstamped} could not be removed: ${(err as Error).message}`);
+      }
+    }
+
+    // And the book main materialised for this export or this translation,
+    // whichever way it ended — `sweepDerivedBook` carries the whole argument. It
+    // is swept BEFORE the landings below and that is safe by construction: what
+    // the run read is not what the landing writes, and the translation's own
+    // derived book is built from the ledger and the records rather than from this
+    // scratch copy of them.
+    await sweepDerivedBook(request);
+
+    if (result.code === 0) {
+      next.state = 'done';
+      // THE PRODUCT IS AT `outputPath` FROM HERE ON, so the rotation this run
+      // made was made for something and the restore below must not undo it.
+      // See `landed`, which every arm under this line depends on and none of
+      // them has to remember.
+      landed = true;
+      /*
+       * A READING LANDED, which is the moment the whole front door turns on.
+       *
+       * `recordReading` stamps the catalogue: when it finished, how many pages the
+       * bank holds, and — through `generationForLanding`, the landing half of the
+       * rule in shared/ledger.ts — the reading GENERATION every overlay and its
+       * undo ledger are bound to.
+       * That is why the mint belongs here rather than at the first correction: this
+       * is the only moment anything in this app can honestly say a bank is a
+       * different bank from the one that was there before.
+       *
+       * It also puts the light out on Home. A project with a scan and no reading
+       * shows OCR as its waiting next step; from this line on, that project has
+       * been read.
+       */
+      if (request.kind === 'read') {
+        /*
+         * NO CAPTURED PARENT GOES WITH IT, AND THAT IS NOT AN OVERSIGHT.
+         *
+         * `next.parentStep` is where the user was standing when they pressed Add,
+         * and it is what a translation is filed against. A READING IS THE ONE
+         * ACTION THAT IS NOT MADE FROM A STEP: it reads the pixels in `archive/`,
+         * which `planReading` resolves for itself precisely because the document
+         * the person was looking at may be a real-text reprint with none of the ink
+         * in it. So its parent is the project's import, settled by what it read
+         * rather than by where anybody was standing — see `originOf` in
+         * shared/ledger.ts for what parenting it at the position would cost.
+         */
+        /*
+         * WHAT IT ASKED FOR GOES WITH IT, THOUGH — which is the other half of the
+         * same rule and the opposite conclusion.
+         *
+         * The parent is settled by what a reading READS; the identity is settled by
+         * what it was ASKED. `--skip-pages` and `--language` are the whole of what
+         * the OCR dialog lets somebody choose (`ReadRequest`), and they decide
+         * whether the next reading of this book replaces this step or branches
+         * beside it. Nothing on disk can answer that afterwards: a bank does not
+         * record which pages it was told to leave out. So the job hands them over,
+         * exactly as a translation hands over its `--to` rather than leaving the
+         * language legible only in a filename.
+         */
+        /*
+         * AND THE STEP THE BANK IS NAMED AFTER, which is the third thing that has
+         * to survive the wait.
+         *
+         * A branching re-read writes `readings/<key>.<id8>.jsonl`, and that `id8` is
+         * the front of the step's uuid — minted at the plan, before the row even
+         * appeared in the shelf, because the engine is handed one path and fills it
+         * for three hours. Minting a fresh id here would leave the bank named after a
+         * step nobody created. It is spent only if this lands as an append; a replace
+         * swaps into the step that is already there and throws it away.
+         */
+        await recordReading(
+          next.outputPath,
+          {
+            ...(request.skipPages !== undefined ? { skipPages: request.skipPages } : {}),
+            ...(request.language !== undefined ? { language: request.language } : {}),
+          },
+          request.stepId,
+        );
+        next.message = `Read ${path.basename(next.inputPath)} — the answers are banked.`;
+        changed();
+        /*
+         * ── AND THE ONE DOCUMENT THE BANK IS FOR, WHICH IS NOT A STEP ────────────
+         *
+         * The book file, recorded as this reading's product (docs/RENDERER.md §6).
+         *
+         * IT IS AWAITED AND IT CANNOT FAIL THE READING. Every way it can go wrong
+         * is a console line inside it: the bank is on disk, it is complete, and the
+         * reflow is made from it for nothing whenever it is asked for.
+         *
+         * TWO OTHER LINES USED TO BE HERE AND BOTH ARE GONE. `ensureCast` cast the
+         * project's flowing book — an EPUB in `generated/` that the app unpacked so
+         * a pane had files to show — and the pane reads the book file directly now
+         * (docs/RENDERER.md §7). The facsimile was the other, and it left for a
+         * different reason: it was protecting a reading against a re-read that could
+         * take its answers away, and banks are kept now, so the protection is the
+         * bank and the reprint is something a person asks for.
+         */
+        await landReadProducts(next.outputPath, next.inputPath);
+        /*
+         * ── AND THE READING IS OVER, WHICH THIS BRANCH NEVER SAID ───────────────
+         *
+         * Every other landing in this function ends on the settle and this one
+         * ended on `return`. It was not noticed for as long as a reading's ending
+         * cost nothing: the branch used to call `void pump()` itself, which kept the
+         * queue moving, and when `runInSlot`'s `finally` took the pump over that line
+         * was removed with nothing put in its place (338027b → d1dd5b6). A reading
+         * finished, the row went `done`, and the one function that says a job is
+         * over was never called for it.
+         *
+         * WHAT THAT COST, measured 2026-09-18: a reading of a book ended at 02:22:10
+         * and `dots-ocr` — twelve gigabytes — was still on the card at 02:29, because
+         * `settled` is the ONE place a Crucible lease is given back. The lease is not
+         * best-effort tidying; while it is open the server refuses to clear the card
+         * (crucible/settle.py, fact 2 of four), so a lease nothing releases is a
+         * resident model nothing can unload. Worse than a leak: the heartbeat timer
+         * lives in the same object, so it beat every forty seconds for the life of
+         * this process and, answered `unknown_lease`, went on trying to TAKE THE
+         * CARD BACK on behalf of a run that ended minutes ago (`takeLease`,
+         * electron/crucible-dispatch.ts).
+         *
+         * The lease is only the loudest of the three. `forgetPark` never ran for a
+         * reading either, and nothing waiting on `onJobSettled` ever heard a
+         * successful one end — the promise that function's own docstring makes.
+         *
+         * LAST, AFTER THE PRODUCTS, which is that promise and not an accident of
+         * where the line sits: a waiter has to see the bank and the book file before
+         * it hears the job is over, or it reads a reading that worked as an ending
+         * with nothing in it.
+         */
+        settle();
+        return;
+      }
+      /*
+       * ── A TRANSLATION LANDED, AND WHAT IT LEFT IS ANSWERS ────────────────────
+       *
+       * The same shape as the reading above it, which is the shape it should always
+       * have had: this run produced no document at all. It wrote
+       * `readings/<key>.<tag>[.<id8>].records.jsonl` — one row per flowing block —
+       * and the step that keeps what those hours cost names THAT file as its payload
+       * (`recordTextPass`, electron/projects.ts), exactly as a read step names its
+       * bank.
+       *
+       * IT USED TO GO THROUGH `recordGenerated`, because the product was an EPUB in
+       * `generated/` and that function is where a finished document is catalogued.
+       * Nothing about a records translation fits there: there is no document to put
+       * on a type's chain, nothing to promote to the project's live PDF, and the file
+       * is not in `generated/` at all — the landing would have refused it by name.
+       *
+       * THE ONE FACT THE JOB HANDS OVER is the one nothing on disk can answer
+       * afterwards: which language was asked for. Reading it back out of a filename
+       * is what this codebase's oldest house rule forbids, so the job that asked says
+       * which. WHETHER THIS WAS A CHAIN IS NOT HANDED OVER, deliberately: it is a
+       * fact about the row this step hangs from, the landing is holding the ledger,
+       * and this request's `--from` is also where a person's typed guess about an
+       * untranslated book's language goes (`recordTextPass` argues it in full).
+       *
+       * AND THEN THE BOOK, WITHOUT BEING ASKED. A records file is not a thing a
+       * person reads, so the row would have nothing to show until somebody ordered a
+       * rendering by file format — which is the exact gap the automatic cast after a
+       * reading was built to close, one action later. It is the same cast: free,
+       * offline, seconds, and fired and forgotten so that a translation that landed
+       * is never reported as a failure because the book after it could not be planned.
+       */
+      /*
+       * ── AN ANALYSIS LANDED, AND WHAT IT LEFT IS A REPORT ─────────────────────
+       *
+       * The same shape as the two above it and the shortest of the three, because
+       * an analysis owes the book nothing. There is no document to catalogue, no
+       * bank to displace, no derived book to materialise afterwards and no chain to
+       * resolve: the run measured a book and wrote down what it found, and the step
+       * that keeps the report names that file as its payload (`recordAnalysis`,
+       * electron/projects.ts).
+       *
+       * THE ONE FACT THE JOB HANDS OVER is the one nothing on disk can answer
+       * afterwards: which categories were actually asked for. The report's header
+       * lists them, and reading a step's params back out of its payload is what this
+       * codebase's oldest house rule forbids — so the run that asked says what it
+       * asked for, exactly as a translation says which language. The model rides
+       * with it, in the answer pile (`MINTED_BY_THE_RUN`).
+       *
+       * AND NOTHING FOLLOWS IT. A translation lands and materialises a book,
+       * because a records file is not a thing a person reads; a report is drawn by
+       * a panel straight out of the file, so there is nothing to make and nothing
+       * to open. The pointer stays where it was (`RETAINED_BESIDE_YOU`), which is
+       * the whole of what an analysis does to a project's position.
+       */
+      if (request.kind === 'analysis') {
+        await recordAnalysis(next.outputPath, {
+          parentStep: next.parentStep ?? null,
+          categories: request.categories.filter((one) => one.enabled).map((one) => one.name),
+          model: request.model,
+          ...(request.stepId !== undefined ? { stepId: request.stepId } : {}),
+        });
+        next.message = `Analysed ${path.basename(next.inputPath)} — the report is on its step.`;
+        changed();
+        settle();
+        return;
+      }
+      if (isTextPassRequest(request)) {
+        /*
+         * ── ONE LANDING FOR THREE PASSES, AND THE ACTION IS THE THING IT CARRIES ──
+         *
+         * `recordTextPass` appends a step whose action is this job's kind, which is
+         * the whole of what the split changed here: a rewrite used to land as
+         * `translate` wearing `params.rewrite`, and a cleanup would have had to do
+         * the same. Owen ended it — *"it isnt a translate job"* — so the row says
+         * what the button said.
+         *
+         * WHAT THE JOB HANDS OVER IS WHAT NOTHING ON DISK CAN ANSWER AFTERWARDS: the
+         * language a translation went into and the mode a rewrite was asked in. Both
+         * are legible only in the records file's NAME, and reading a fact back out of
+         * a filename is what this codebase's oldest house rule forbids. A CLEANUP
+         * HANDS OVER NEITHER, because it has neither — `PARAMS_OF.clean` is empty,
+         * and the run's own facts are on the stamp beside its answers.
+         */
+        await recordTextPass(next.outputPath, {
+          action: request.kind,
+          parentStep: next.parentStep ?? null,
+          /*
+           * A CLEANUP GOES INTO NO LANGUAGE, and a rewrite's is resolved at spawn
+           * (`SimplifyRequest.to`) — so this asks whether there is one rather than
+           * asserting there is. An absent one here is unreachable and not guarded
+           * against: `languageOf` refuses the command line without it, so a run that
+           * reached this landing was spawned with a language and carries it still.
+           */
+          ...(request.kind === 'clean' || request.to === undefined ? {} : { language: request.to }),
+          ...(request.stepId !== undefined ? { stepId: request.stepId } : {}),
+          ...(request.kind === 'simplify' ? { rewrite: request.rewrite } : {}),
+        });
+        /*
+         * "the book follows" IS TRUE OF ALL THREE and is the sentence the shelf has
+         * always ended a text pass with: the records are on disk and the book is
+         * materialised from them in the next few lines, for nothing.
+         */
+        const said = request.kind === 'translate'
+          ? 'Translated'
+          : request.kind === 'simplify' ? 'Simplified' : 'Cleaned';
+        next.message = `${said} ${path.basename(next.inputPath)} — the book follows.`;
+        changed();
+        /*
+         * AND THE BOOK OF IT, WHICH IS THE PART THAT IS NOT A RENDERING. *"When a
+         * translate lands, main materializes parent book file + chain ops + records
+         * → readings/<key>.<lang>.book.jsonl."* (docs/RENDERER.md §4.) It is made
+         * HERE, at the landing, rather than at the first open, for the reason every
+         * derived file in this app is made where its inputs are known to be
+         * settled: the records have just been written, the step naming them exists,
+         * and the row the translation was made FROM is what the book is materialised
+         * over — a fact about the ledger that is answered once, now, rather than
+         * re-derived by every pane that ever draws this step.
+         *
+         * AND IT IS THE ONLY ONE NOW. There was a cast after this — an EPUB made
+         * from the records so the old viewer had a file to open — and standing on a
+         * translate row shows the derived book on the proof sheet instead, which is
+         * the document this line writes. It is not fatal to a landing that has
+         * already put hours of GPU safely on disk, and it says so in the terminal
+         * in its own words.
+         */
+        await materializeTextPass(next.outputPath);
+        settle();
+        return;
+      }
+      /*
+       * ── AN EXPORT IS FILED AND NOTHING ELSE HAPPENS TO IT ─────────────────────
+       *
+       * `recordGenerated` below does three things to a finished rendering: it puts a
+       * step on that type's chain, it can promote the result to the project's live
+       * PDF, and it announces the library. Every one of those is about a document
+       * OTHER WORK WILL BE MADE FROM, and an export is the one rendering in this app
+       * that nothing is ever made from — the user's ruling, verbatim: "it wont go
+       * into the working files as a step because it isnt the base for new steps. its
+       * a terminal step. so its an export."
+       *
+       * So the landing is one row in the tray. `recordFinal` never throws and
+       * announces the library itself, which is what puts the export under its project
+       * in the left nav; the tab opens itself from the shelf exactly as a Generate's
+       * does (`OPENS_ITSELF`), because somebody who asked for a book wants to look at
+       * it. No documents row, no ledger step, no live-PDF refresh, and no rotation to
+       * undo beyond the one `rotateFinal` already made.
+       */
+      if (exporting) {
+        /*
+         * THE STEP THE JOB CAPTURED GOES INTO THE TRAY ROW, so that a host reading
+         * `project.json` afterwards learns what a host listening at this instant
+         * learns from the announcement below. `next.parentStep` is where the person
+         * was standing when they pressed Export — held all along so a pointer move
+         * during the wait cannot change which corrections the book carries — and it
+         * is the same value both halves record, out of one variable, because two
+         * derivations of one provenance is how the event and the catalogue come to
+         * disagree.
+         */
+        const madeFrom = next.parentStep ?? null;
+        await recordFinal(next.outputPath, madeFrom);
+        const filed = path.basename(next.outputPath);
+        /*
+         * ── THE MINT'S DECLARATION, STAMPED AND THEN ANNOUNCED ──────────────────
+         *
+         * `request.mintMeta` is what the modal confirmed at the press
+         * (JobRequest.mintMeta carries the why). The LANGUAGE follows the step's
+         * own chain over the form: the request's language where the plan set one
+         * (a translated position), the reading's language otherwise, and only
+         * where the chain is silent does the form's answer stand — an
+         * auto-export of a German step must say de whatever the person last
+         * typed. Stamped into the file first, announced second, both out of ONE
+         * composed block, which is `madeFrom`'s own one-variable rule two
+         * comments up. A stamp that fails is a console line and never a failed
+         * job: the book is made and filed, and a metadata splice can be pressed
+         * again from the tile in seconds.
+         *
+         * ── AND A MINT NOBODY CONFIRMED INHERITS, the way the modal would have ──
+         *
+         * A host-ordered export (`exportEpubFromStep`, electron/mount.ts) has no
+         * modal in front of it, and used to carry the project's stored block or
+         * nothing. A hosted project minted from a bare document has no stored
+         * block until somebody confirms a mint, so BookForge's narrate-on-a-step
+         * produced an EPUB whose `dc:title` was the tray file's stem and whose
+         * `dc:creator` was absent — while BookForge's own shelf knew the author
+         * (bookforge-pc-1, 2026-09-07). The modal asked the host for exactly that
+         * record (`mintMetaFor`) and merged it under the stored block; the
+         * unattended route never did. Now it asks the same question through the
+         * same function (`inheritMintMeta`, shared/mint-meta.ts): the request's
+         * confirmed block first, the stored block over the host's record next,
+         * and nothing at all only when neither side has a record — the
+         * standalone first mint, which is what it always was.
+         *
+         * A BLOCK WITH NO TITLE IS NOT STAMPED. The splice writes `Untitled` for
+         * an empty one, and a title the compile already took from the scan is
+         * strictly better than that word over it.
+         */
+        /*
+         * WHERE IT LANDED, AND WHOSE IT IS — two questions since a host may ask
+         * for the file OUTSIDE every project (`ConversionRequest.home`). The
+         * project answers for the mint block and the announcement; the path
+         * answers for whether anything of this app's filed it, and a file filed
+         * nowhere is announced as `unfiled` so the mount answers its awaiting
+         * caller without telling the host's shelf about a version that is not one.
+         */
+        const filedIn = projectDirOf(next.outputPath);
+        const projectDir = homeOf(request) ?? filedIn;
+        let minted: ExportMintMetadata | undefined;
+        const inherited = request.kind === 'epub' && request.mintMeta === undefined && projectDir !== null
+          ? await inheritedMintMetaFor(projectDir)
+          : null;
+        const confirmed = request.kind === 'epub'
+          ? request.mintMeta ?? (inherited !== null && inherited.title.trim().length > 0 ? inherited : undefined)
+          : undefined;
+        if (request.kind === 'epub' && confirmed !== undefined) {
+          const meta = confirmed;
+          const declared = request.language
+            ?? await chainLanguageOf(next.outputPath, madeFrom, homeOf(request))
+            ?? meta.language;
+          minted = {
+            title: meta.title,
+            contributors: meta.contributors,
+            filename: filed,
+            ...(meta.subtitle !== undefined ? { subtitle: meta.subtitle } : {}),
+            ...(meta.year !== undefined ? { year: meta.year } : {}),
+            ...(declared !== undefined ? { language: declared } : {}),
+          };
+          const stamped = await stampMintMetadata(next.outputPath, meta, declared);
+          if (!stamped.ok) {
+            console.error(
+              `[queue] the mint metadata could not be stamped onto ${next.outputPath}: ${stamped.reason}`,
+            );
+          }
+        }
+        next.message = `Wrote ${filed}`;
+        changed();
+        /*
+         * ── AND WHOEVER IS HOSTING US IS TOLD, LAST ───────────────────────────
+         *
+         * After the file is in `final/` and after the tray has recorded it, so a
+         * host that files this into a versions list is describing something that
+         * exists on disk and is already in the catalogue this app would answer
+         * with. Announcing it any earlier would be inviting the host to race the
+         * manifest.
+         *
+         * THE NAME IS THE ONE THE SHELF JUST SAID. A version row and a job row are
+         * two views of one landing, and a second derivation of "what to call it"
+         * is how the two come to disagree about what was made.
+         *
+         * A THROW HERE MUST NOT REACH THE SETTLE. The work is done — hours of it,
+         * sometimes — and a host whose handler has a bug in it does not get to
+         * turn a landed export into a failed job. `mountFoundry` catches it too,
+         * and this is the second catch rather than the same one written twice: a
+         * listener registered by anything else — a test, a future caller — reaches
+         * this line and not that one.
+         */
+        if (projectDir !== null) {
+          try {
+            exportLanded({
+              projectDir,
+              path: next.outputPath,
+              kind: request.kind,
+              title: filed,
+              // See `ExportLanding.stepId`: absent for a job with no position
+              // behind it, which a host must read as "unknown" and not as "none".
+              ...(madeFrom !== null ? { stepId: madeFrom } : {}),
+              // And the mint's declaration, the same block the stamp just wrote —
+              // absent means "minted before the modal existed", never "no
+              // metadata" (`ExportLanding.metadata`).
+              ...(minted !== undefined ? { metadata: minted } : {}),
+              ...(filedIn === null ? { unfiled: true as const } : {}),
+            });
+          } catch (err) {
+            console.error(
+              `[queue] the export-landed listener threw for ${next.outputPath}: `
+              + `${err instanceof Error ? err.message : String(err)}`,
+            );
+          }
+        }
+        /*
+         * AND ANYBODY WAITING ON THIS JOB IS TOLD AFTER THE HOST IS, which is the
+         * ordering `onJobSettled` promises rather than an accident of where the
+         * line sits. A waiter watching for the landing of this file has to have
+         * SEEN that landing before it hears the job is over, or it would read a
+         * successful export as an ending with nothing in it.
+         */
+        settle();
+        return;
+      }
+      /*
+       * ── A STEP'S OWN DOCUMENT IS FILED NOWHERE, AND THAT IS THE POINT ────────
+       *
+       * It is a RENDERING of a payload that is already a step — the snapshot in
+       * `curations/` for a save, the records in `readings/` for a translation, the
+       * BANK for a reading's facsimile — so it is free to make again and there is
+       * nothing here for a catalogue to own. Cataloguing it would do active harm
+       * rather than merely being redundant: Home's document rows would grow one
+       * entry per landing, and the
+       * facsimile would land on the PDF's chain beside the scan and be offered as the
+       * document this app edits.
+       *
+       * Which leaves the file's disposal, and it is not left to chance: the step
+       * delete composes the same name and sweeps it, along with any working tree
+       * unpacked from it (`planStepSweep`).
+       *
+       * NO LEDGER STEP EITHER, for the reason above it: the step this is the document
+       * of already exists, and minting a second one for the rendering would put a
+       * filename where an action belongs.
+       *
+       * THE SENTENCE FOLLOWS THE PRODUCT, because these two are not the same thing to
+       * the person reading the shelf: one is the book at a row in the history, the
+       * other is the pages of a reading reprinted. Decided off the format, which is
+       * the whole of the difference — a per-step cast is an EPUB and a facsimile is
+       * the only PDF this app ever makes with a step on it.
+       */
+      if (request.forStep !== undefined) {
+        next.message = request.kind === 'pdf'
+          ? 'The facsimile of those pages is ready.'
+          : 'The book at that step is ready.';
+        changed();
+        settle();
+        return;
+      }
+      /*
+       * The catalogue learns about the origin HERE, when it exists.
+       *
+       * Not at plan time, which is only an intention: a run that dies at page 200
+       * would leave `project.json` listing a book Home would then offer and
+       * nothing could open. `recordGenerated` never throws — a row it could not
+       * write is a named console line, because losing a catalogue entry is not a
+       * reason to report three hours of GPU as a failure.
+       *
+       * ONE ARGUMENT LIGHTER THAN IT WAS, and the whole of the difference is that a
+       * translation does not come through here any more. This call used to carry the
+       * language, the bank and the step id, because the run that produced a
+       * translation ended in `generated/` and its landing was a ledger step; a
+       * records translation lands where its answers land (`recordTextPass`), and
+       * what reaches this function from a translated position is the BOOK cast from
+       * those records — which carries `forStep` and returns above, uncatalogued.
+       *
+       * The REQUEST's kind, not the job row's: `JobKind` also admits `env-install`,
+       * which never reaches this branch but which the compiler cannot know that
+       * about, and a cast here would be a promise made to the type system rather
+       * than a fact. The request is the narrower shape — narrowed by the two arms
+       * above, which return — and it is the same decision.
+       *
+       * ── A BOOK MADE OF A TRANSLATION'S WORDS IS FILED AS A TRANSLATION ────────
+       *
+       * `records` is the whole test, and it has to be here rather than implied. The
+       * roles are not four names for one thing: a `cast` sitting directly in
+       * `generated/` used to be THE PROJECT'S FLOWING BOOK, which every read row and
+       * save row resolved to. So a
+       * Hungarian book filed as a cast would quietly become what the German rows
+       * show — the exact confusion the per-step cast was built to end, arrived at
+       * from the other side.
+       *
+       * The old two-stage pipeline said this same sentence about its own second
+       * stage (`piped !== null ? 'translation'`). There is no second stage now; what
+       * makes a rendering a translation is that the words in its blocks came out of
+       * a records file, and that is one field on the request.
+       */
+      const live = await recordGenerated(
+        next.outputPath,
+        request.records !== undefined ? 'translation' : generatedRoleFor(request.kind),
+        // The row's id, which is what names the archive folder if this promotion
+        // rotates a live PDF aside — the same id the rotation above used.
+        next.id,
+      );
+      /*
+       * WHERE THE FINISHED ROW POINTS, when the catalogue made a live copy of what
+       * the engine wrote. Everything downstream reads `outputPath`: the tab that
+       * opens itself when the run lands, and the shelf's Reveal — and both of them
+       * want the file the user is meant to have, not the bookkeeping original.
+       *
+       * Nothing promotes a conversion to the live PDF today (`recordGenerated`),
+       * so this is inert and kept rather than deleted: the branch costs a
+       * comparison, and the alternative is a queue that silently points at the
+       * wrong file the first time something is promoted again.
+       */
+      if (live !== null) next.outputPath = live;
+      // Said after the row settles on its final path, so the line names the file
+      // the Reveal button will actually show.
+      next.message = `Wrote ${path.basename(next.outputPath)}`;
+    } else if (result.code === -1) {
+      next.state = 'cancelled';
+      next.message = 'Cancelled.';
+      /*
+       * AND A CANCELLED READING KEEPS NOTHING — Owen's ruling, and the one ending
+       * in this file that destroys. `discardCancelledReading` carries the whole
+       * argument, including the two guards that keep a finished reading out of it.
+       * Awaited so the row does not settle while its pages are still on disk: a
+       * re-read enqueued the instant the ✕ lands must not find them.
+       *
+       * UNLESS THE HOST SAID THIS WAS A STOP. BookForge's "Stop this step" and its
+       * "Cancel this book" arrive here as the same -1 (`engine.ts` resolves -1 for
+       * any cancel), and the first of the two promises in its own tooltip to keep
+       * what it has already read. Destroying the bank under that button would be a
+       * lie the person only discovers by pressing Start and watching page one go
+       * past. `RESUMABLE_STOP` (shared/types.ts) is how a host says which gesture
+       * it was; absent means cancel, so nothing about the ✕ changes.
+       */
+      if (resumableStops.has(next.id)) {
+        console.log(
+          `[queue] the reading was STOPPED rather than cancelled, so its pages stay banked and `
+          + 'Start resumes from where it left off.',
+        );
+      } else {
+        await discardCancelledReading(request);
+      }
+      // Nothing was written, so nothing moved: `landed` is still false and the
+      // `finally` below brings the previous output home and points the chain
+      // back at it. See `restoreRotation` for what "nothing" has to include —
+      // the file, the working tree, and both of their catalogue rows. The tray
+      // obeys the same invariant through its own receipt: a cancelled export
+      // leaves the document somebody filed earlier exactly where it was.
+    } else {
+      next.state = 'failed';
+      // foundry's own stderr is the message a user needs — it names the missing
+      // Python, the model it could not load, the page it choked on. Never
+      // paraphrased, and never replaced with an exit code.
+      next.error = result.stderr.trim() || `The engine exited ${result.code} with nothing to say.`;
+      /*
+       * AND IT GOES TO THE CONSOLE, WHOLE.
+       *
+       * Until now a failure existed in exactly one place a person could reach: a
+       * tooltip on one row of the shelf. So a job that failed while the window
+       * was reloading, or whose row was cleared, took its only account of itself
+       * with it — which is precisely what happened twice tonight, and the second
+       * time there was nothing left to read at all.
+       *
+       * The terminal running the app is where somebody is already looking when
+       * something goes wrong, it survives every reload of the window, and it can
+       * be scrolled back and copied. The full stderr rather than a summary: the
+       * lines above the failure are usually the context that explains it, and
+       * this is a diagnostic rather than a notification.
+       */
+      console.error(
+        `\n[job] ${next.kind} FAILED — exit ${result.code} — ${path.basename(next.inputPath)}\n`
+        + `${next.error}\n`,
+      );
+    }
+  } finally {
+    /*
+     * ── AND WHATEVER WAS MOVED ASIDE COMES HOME, ON EVERY WAY OUT ────────────
+     *
+     * The invariant the rotation block states about itself, kept by the one
+     * construct that cannot be reached past: a return, a refusal that settles,
+     * a cancel, an engine's non-zero exit and a THROW all arrive here. Two
+     * hand-placed calls used to stand for this and covered the last two of
+     * those five; `engineCommand()`'s refusal — Foundry hosted inside BookForge
+     * with no `FOUNDRY_BIN` — went straight past them to `executeJob`'s
+     * boundary, which settles the row correctly and cannot reach these locals.
+     *
+     * BEFORE THE `settle()` BELOW, which is why the tail of this function sits
+     * outside the `try` rather than inside it: `onJobSettled` promises that
+     * nothing else is coming from this job, and a listener told a run is over
+     * while its book is still in an archive folder would be reading the
+     * catalogue mid-rotation. The arms that settle and return say their own
+     * ending first and are the exception — they filed nothing either way, and a
+     * rotation put back a moment late is still a rotation put back.
+     *
+     * `putBack` IS A NO-OP BEFORE THE ROTATION HAPPENS — `rotatedIn` is null
+     * until the block above sets it — so the `try` may start wherever the
+     * locals are in scope.
+     */
+    if (!landed) {
+      try {
+        await putBack(rotatedIn, rotation, filedRotation);
+      } catch (err) {
+        /*
+         * NOT EXPECTED, AND CAUGHT ANYWAY, for one reason: a throw out of a
+         * `finally` REPLACES the error that is already in flight, so an
+         * unguarded restore would swap the engine's own refusal for a rename
+         * error and the run would be reported as something it was not. Both
+         * restores name their own failures and return (`restoreRotation`,
+         * `restoreFinalRotation`), so what reaches here is a defect in the
+         * restore itself — which gets a line naming the document and where the
+         * rotation put it, because a book in an archive folder that nothing
+         * says is there is exactly the silence this whole block exists to end.
+         */
+        console.error(
+          `[job] ${path.basename(next.outputPath)} was moved aside in ${rotatedIn} for a run `
+          + `that produced nothing, and putting it back threw: `
+          + `${err instanceof Error ? err.message : String(err)}. The generated rotation was `
+          + `${rotation === null ? 'none' : rotation.movedTo} and the filed rotation was `
+          + `${filedRotation === null ? 'none' : filedRotation.movedTo}; nothing was deleted.`,
+        );
+      }
+    }
   }
   changed();
   // The three arms above return before this line, each saying it for itself
   // after whatever that landing produced; what reaches here is a cancel, a
   // failure, and the rendering whose landing is a catalogue row.
-  settled(next);
+  settle();
 }
 
 /**
@@ -5822,7 +6286,16 @@ async function runDetached(
    * listener is dropped in `finally`: a host that keeps one controller per row
    * would otherwise leave this queue holding a reference to every row it ever ran.
    */
-  const abort = (): void => { cancelHere(job.id); };
+  const abort = (): void => {
+    /*
+     * WHICH GESTURE THIS WAS, read here and nowhere else. The host's Stop and its
+     * Cancel are one abort by the time `cancelHere` runs and one exit code by the
+     * time the discard decides, so the reason is captured at the only instant it
+     * is still distinguishable. See `RESUMABLE_STOP`, shared/types.ts.
+     */
+    if (isResumableStop(opts.signal?.reason)) resumableStops.add(job.id);
+    cancelHere(job.id);
+  };
   opts.signal?.addEventListener('abort', abort, { once: true });
   /*
    * A SIGNAL THAT WAS ALREADY ABORTED SPAWNS NOTHING, and it is worth the four

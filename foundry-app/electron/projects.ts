@@ -2395,8 +2395,9 @@ export async function deleteStep(dir: string, stepId: string): Promise<LedgerVie
   for (const sweep of sweeps) {
     for (const target of sweep.files) await fsp.rm(target, { force: true });
     // An `archived-<stamp>/` folder that held nothing but this payload's past goes
-    // with it. Emptiness is the test rather than "we emptied it", because one
-    // rotation folder can hold several documents stamped in the same second.
+    // with it. Emptiness is the test rather than "we emptied it", because a folder
+    // made before `stampedArchive` began naming them after the run can hold a
+    // sibling's work stamped in the same second — somebody else's record.
     for (const archive of sweep.archives) {
       try {
         const left = await fsp.readdir(archive);
@@ -4615,9 +4616,29 @@ function stepsOf(manifest: ProjectManifest, kind: ProjectDocumentKind): ProjectS
 // The generated layer
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** `archived-2026-08-14T00-31-02-114Z` — the engine's shape, colons removed. */
-function stampedArchive(parent: string): string {
-  return path.join(parent, `archived-${new Date().toISOString().replace(/[:.]/g, '-')}`);
+/**
+ * `archived-2026-08-14T00-31-02-114Z-9f2c1a04` — the engine's shape with colons
+ * removed, and the front of the id of the RUN that made the rotation after it.
+ *
+ * ── THE CLOCK ALONE IS NOT A NAME ───────────────────────────────────────────
+ *
+ * It was, and the cost was a refusal: two rotations inside one project in the
+ * same millisecond compose one folder name, so the second was refused by the
+ * first's folder — with a sentence about mixing two runs' work that was true of
+ * the name and false about the books. A person's job simply did not happen
+ * because another one was fast, and on faster hardware it happens more often.
+ *
+ * The run's id is already unique, already minted and already means something a
+ * stamp cannot say: WHICH job moved this aside. `id8` rather than the whole uuid
+ * for the reason it exists (shared/ledger.ts) — eight hex characters are
+ * collision-free across the handful of rotations one project holds, and the
+ * refusal below is still there for the day that stops being true.
+ */
+function stampedArchive(parent: string, by: string): string {
+  return path.join(
+    parent,
+    `archived-${new Date().toISOString().replace(/[:.]/g, '-')}-${id8(by)}`,
+  );
 }
 
 /**
@@ -4643,20 +4664,33 @@ export interface Rotation {
   movedTo: string;
 }
 
-export async function rotateGenerated(dir: string, file: string): Promise<Rotation | null> {
+export async function rotateGenerated(
+  dir: string,
+  file: string,
+  /**
+   * THE RUN THIS ROTATION IS FOR — a job id, and what makes the archive folder
+   * this run's own rather than this millisecond's. See `stampedArchive`.
+   */
+  by: string,
+): Promise<Rotation | null> {
   const target = path.join(dir, GENERATED, file);
   if (!await exists(target)) return null;
 
   let movedTo: string | null = null;
   await withManifest(dir, async (manifest) => {
     const from = `${GENERATED}/${file}`;
-    const archive = stampedArchive(path.join(dir, GENERATED));
+    const archive = stampedArchive(path.join(dir, GENERATED), by);
     if (await exists(archive)) {
       // The engine's rule, for the engine's reason: two runs' outputs under one
-      // folder name is two books' worth of work filed as one.
+      // folder name is two books' worth of work filed as one. The name carries
+      // the run's own id now, so what this catches is no longer two jobs
+      // arriving in one millisecond — it is one job rotating twice, which
+      // nothing does. Loud anyway, because the day it happens the alternative is
+      // a book written into somebody else's record.
       throw new ProjectError(
-        `${archive} already exists, so the previous ${file} cannot be moved aside without mixing `
-        + "two runs' work into one folder. Move it away and run again.",
+        `${archive} already exists, and it is named after this run — so the previous ${file} `
+        + 'cannot be moved aside without writing into a folder that is already a record of '
+        + 'something. Move it away and run again.',
       );
     }
     await fsp.mkdir(archive, { recursive: true });
@@ -4712,8 +4746,12 @@ export async function rotateGenerated(dir: string, file: string): Promise<Rotati
  * The file, and the step's location in the chain.
  *
  * NOTHING IS DELETED BY A RESTORE, and the empty archive folder is removed only
- * if it IS empty — a stamp is per second and a sibling rotated in the same
- * instant is somebody else's record.
+ * if it IS empty. That guard used to be about SIBLINGS — the folder was named
+ * after the clock, so a rotation in the same instant landed in it — and since
+ * `stampedArchive` names it after the run there is only ever this rotation's own
+ * file in there. What it answers now is whether the rename above actually
+ * happened: a restore that found the live slot taken has already returned, and
+ * one whose file somebody had moved leaves whatever is left standing.
  *
  * A failure here is a console line rather than a throw. It runs on the way out
  * of a job that has already failed, and the second failure worth reporting is
@@ -4746,7 +4784,7 @@ export async function restoreRotation(dir: string, rotation: Rotation): Promise<
 
     try {
       if ((await fsp.readdir(archive)).length === 0) await fsp.rmdir(archive);
-    } catch { /* somebody else's rotation shares the folder, or it is already gone */ }
+    } catch { /* the folder is already gone, or something has it open */ }
     announceProjects();
   } catch (err) {
     console.error(
@@ -4801,20 +4839,26 @@ export interface FinalRotation {
  * would stop somebody re-exporting the book they are looking at — which is the most
  * ordinary reason to export twice.
  */
-export async function rotateFinal(dir: string, file: string): Promise<FinalRotation | null> {
+export async function rotateFinal(
+  dir: string,
+  file: string,
+  /** The run this rotation is for — `rotateGenerated`'s `by`, for its reason. */
+  by: string,
+): Promise<FinalRotation | null> {
   const target = path.join(dir, FINAL, file);
   if (!await exists(target)) return null;
 
   let movedTo: string | null = null;
   let row: ProjectFinal | null = null;
   await withManifest(dir, async (manifest) => {
-    const archive = stampedArchive(path.join(dir, FINAL));
+    const archive = stampedArchive(path.join(dir, FINAL), by);
     if (await exists(archive)) {
-      // `rotateGenerated`'s rule, for its reason: two runs' outputs under one
-      // folder name is two exports filed as one.
+      // `rotateGenerated`'s rule, for its reason, down to the run's id being
+      // what makes the folder this export's own.
       throw new ProjectError(
-        `${archive} already exists, so the ${file} you filed earlier cannot be moved aside without `
-        + "mixing two exports into one folder. Move it away and run again.",
+        `${archive} already exists, and it is named after this run — so the ${file} you filed `
+        + 'earlier cannot be moved aside without writing into a folder that is already a record '
+        + 'of something. Move it away and run again.',
       );
     }
     await fsp.mkdir(archive, { recursive: true });
@@ -4847,10 +4891,11 @@ export async function rotateFinal(dir: string, file: string): Promise<FinalRotat
  *
  * `restoreRotation`'s invariant, said about the other folder: AN EXPORT THAT FAILS
  * OR IS CANCELLED LEAVES THE TRAY EXACTLY AS IT WAS. Nothing is deleted, the empty
- * archive folder goes only if it IS empty (a stamp is per second, and a sibling
- * rotated in the same instant is somebody else's record), and a failure here is a
- * console line rather than a throw — it runs on the way out of a job that has
- * already failed, and the failure worth reporting is the one the user asked about.
+ * archive folder goes only if it IS empty (see `restoreRotation`, where the same
+ * guard and what it answers now that a folder is named after its run are spelled
+ * out), and a failure here is a console line rather than a throw — it runs on the
+ * way out of a job that has already failed, and the failure worth reporting is
+ * the one the user asked about.
  */
 export async function restoreFinalRotation(dir: string, rotation: FinalRotation): Promise<void> {
   try {
@@ -5413,6 +5458,13 @@ export async function recordTextPass(
 export async function recordGenerated(
   outputPath: string,
   role: ProjectGeneratedRole,
+  /**
+   * THE RUN THAT PRODUCED IT, carried for one reason: promoting a searchable
+   * conversion rotates the live PDF aside, and an archive folder is named after
+   * the run that made it (`stampedArchive`). The landing is the only place that
+   * knows which job this was.
+   */
+  by: string,
 ): Promise<string | null> {
   const resolved = path.resolve(outputPath);
   const dir = projectDirOf(resolved);
@@ -5470,12 +5522,12 @@ export async function recordGenerated(
        */
       // WRITTEN BEFORE the live copy is refreshed, and that ordering is the
       // whole reason these are two writes. Refreshing can refuse — an archive
-      // folder from this same second already exists — and a refusal that took
+      // folder named for this run is already there — and a refusal that took
       // the origin's own catalogue row down with it would leave the engine's
       // output on disk, uncatalogued, invisible to Home.
       await writeManifest(dir, manifest);
       if (role !== 'searchable') return null;
-      const live = await refreshLivePdf(dir, manifest, file);
+      const live = await refreshLivePdf(dir, manifest, file, by);
       await writeManifest(dir, manifest);
       return live;
     }).finally(announceProjects);
@@ -5502,12 +5554,14 @@ async function refreshLivePdf(
   dir: string,
   manifest: ProjectManifest,
   generatedFile: string,
+  /** The run this promotion is part of — `rotateGenerated`'s `by`, for its reason. */
+  by: string,
 ): Promise<string> {
   const liveFile = `${manifest.stem}.pdf`;
   const live = path.join(dir, WORKING, liveFile);
   await fsp.mkdir(path.join(dir, WORKING), { recursive: true });
   if (await exists(live)) {
-    const archive = stampedArchive(path.join(dir, WORKING));
+    const archive = stampedArchive(path.join(dir, WORKING), by);
     if (await exists(archive)) {
       throw new ProjectError(
         `${archive} already exists, so the previous ${liveFile} cannot be moved aside. Move it away.`,
@@ -5819,7 +5873,7 @@ export async function recordReading(
  * sat in it, and the run asked about the other book archived a finished bank and
  * paid for a hundred pages again.
  */
-function completionMarkerFor(bankPath: string): string {
+export function completionMarkerFor(bankPath: string): string {
   return `${path.resolve(bankPath).replace(/\.jsonl$/i, '')}.completed.json`;
 }
 
@@ -6381,7 +6435,7 @@ async function hasBytes(target: string): Promise<boolean> {
  * because a
  * renderer's word is not an authorization. This function is the whole of that
  * gate for the one call that erases directories, so if it is wrong, an argument
- * of `C:\Users\<user>` is a recursive delete of a home folder.
+ * of `C:\Users\you` is a recursive delete of a home folder.
  *
  * A DIRECT CHILD, not a descendant. `projectDirOf` above answers "which project
  * is this path in", which is the right question for reading and the wrong one
@@ -6809,10 +6863,11 @@ export async function deleteDocument(filePath: string): Promise<DocumentRemoval>
 
   /*
    * An `archived-<stamp>/` folder that held nothing but this document's past
-   * goes with it. Emptiness is the test rather than "we made it empty", because
-   * one rotation folder can hold several documents archived in the same second
-   * (`rotateGenerated` shares a stamp) — and one that still has a sibling's work
-   * in it is somebody else's record, which this has no business removing.
+   * goes with it. Emptiness is the test rather than "we made it empty", because a
+   * folder made before `stampedArchive` began naming them after the run was
+   * shared by everything rotated in the same second — and one that still has a
+   * sibling's work in it is somebody else's record, which this has no business
+   * removing.
    */
   for (const archive of sweep.archives) {
     try {

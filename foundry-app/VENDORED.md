@@ -10,10 +10,142 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\<user>\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **1c1eaa3** — *The slot gets the sentence, the console gets the engine's log tail* |
+| Source sha | **7863c73** — *A machine's name belongs to its config, not to source a stranger reads* |
 | Engine | **NOT VENDORED AND NOT KNOWABLE FROM THIS FILE** — it is a spawned CLI resolved at RUNTIME (`FOUNDRY_BIN`, else `resolveFoundryPath`, `electron/main.ts`), so which build executes is a property of the machine and not of this copy. On a developer's Mac that resolves to Foundry's own checkout at `/Volumes/Callisto/Projects/foundry/dist/foundry-darwin-arm64`, which is whatever was last built there — `foundry 2.0.2 (1c1eaa3)` as of 2026-09-18. **Ask the binary: `$FOUNDRY_BIN --version`.** See *The engine this file named was not the engine that ran* below. |
-| Copied on | 2026-09-18 |
-| Copied by | Mechanical source sync, verified against Foundry `1c1eaa3:app/`; details below |
+| Copied on | 2026-09-19 |
+| Copied by | Mechanical source sync, verified against Foundry `7863c73:app/`; details below |
+
+## The `1c1eaa3 → 7863c73` re-vendor — a leased card, a destroyed bank, and the word that tells two gestures apart (2026-09-19)
+
+Eight commits touching `app/`, no files deleted. Two of them are why this was
+done at all, and the third exists because tracing the second found a defect
+before it reached anybody.
+
+### The lease that outlived every successful reading (`59a68d4`)
+
+Owen queued an OCR read; eleven minutes after it ended, `dots-ocr` was still
+resident on the Crucible server — **12.9 GB** — with a `pages` lease held by
+`foundry crucible-client/0.6.12`, heartbeated (its expiry kept sliding),
+`chat.in_flight` 0 and `running`/`queued` both empty. He wanted the card for a
+cleaning model and could not have it: Crucible allows ONE lease per server, so
+the clean would have parked behind a lease over finished work.
+
+**Not a cancel path — it leaked on SUCCESS.** The `read` landing never settled at
+all: that branch ended on a bare `return` where every other landing ends on the
+settle, lost when a `void pump()` was removed and nothing replaced it
+(`338027b` → `d1dd5b6`). No settle means no `release()`, and the only
+`clearInterval` on the heartbeat lives inside `release()`, so the beat renewed a
+two-minute claim for the life of the process.
+
+Two more in the same commit land on BookForge specifically: `executeJob`
+promised "nothing is thrown from here" and nothing enforced it, so a throw out of
+`engineCommand()` — *Foundry hosted with no `FOUNDRY_BIN`, which is this
+deployment* — left the row running and heartbeating forever; and
+`interpretFailure` keyed on `model_leased`, a code Crucible renamed to
+`leased_error` on 2026-09-14, so real lease refusals had fallen to the generic
+arm since that branch was written.
+
+### A cancelled reading keeps nothing (`bfce69d`)
+
+Owen's ruling, and the guards are the substance: `bankForReading` aims a
+same-params re-read at the EXISTING step's payload, so at the moment of a cancel
+there are two banks on disk and one of them is somebody's completed work.
+Deleting by the name on the request would have destroyed it. A pending file
+present discards only the pending pair; a marker with no pending discards nothing
+and says so; neither present takes the bank, its marker and its page crops. Only
+`result.code === -1` reaches any of it — a failure stays resumable.
+
+### And the word that keeps Stop honest (`47ae0d4`)
+
+**Found here, before the swap, and it would have destroyed users' work.**
+BookForge's two gestures promise opposite things — *Stop this step* keeps the
+pages already read ("Start picks it up from there"), *Cancel this book* returns
+the row to Pending and keeps nothing — but they reached Foundry through ONE door
+and arrived identical:
+
+| | |
+| --- | --- |
+| `engine.ts` | `resolve({ code: cancelled ? -1 : (code ?? 1), … })` — any cancel is `-1` |
+| `job-queue.ts` | the host's abort listener calls the same `cancelHere` the ✕ calls |
+| `job-queue.ts` | `code === -1` → `await discardCancelledReading(request)` |
+
+and BookForge's `foundryJobStep.cancel()` is a no-op whose whole body is the
+comment *"THE SIGNAL IS THE CANCEL"*. So after `bfce69d`, Stop would have
+silently destroyed the bank its own tooltip promises to keep, and the user would
+have found out by pressing Start and watching page 1 go past.
+
+The fix rides on the ABORT rather than on `RunOptions`, and Foundry's reasoning
+for that is worth keeping: `RunOptions` is handed over once, at `runJob`, before
+the engine has spawned — *which button somebody presses four minutes later is not
+a fact that exists at that moment*. `abort(reason)` carries a value at the
+instant of the gesture. `RESUMABLE_STOP` is re-exported from `mount.ts` (this
+app's surface) and compared in one function, `isResumableStop`, so the two sides
+cannot come to two answers about the spelling.
+
+**ABSENT MEANS CANCEL**, deliberately: a bare abort, a `DOMException`, a
+lookalike string and an object all read as a cancel, so the gentler behaviour is
+opt-in and nothing silently starts keeping banks nobody asked it to keep.
+BookForge keeps that rule rather than inverting it locally — every abort in
+`queue-engine.ts` is bare except the Stop door's.
+
+The trap on this side, pinned by `tools/test-queue-engine.js`: `engine.cancel`
+serves BOTH the Stop button and `queue.service.removeJob`'s branch for one step
+of a multi-step run. Deriving the flag from the module's `stopIsResumable` —
+true for every Foundry job — would have answered "keep the pages" for a removal,
+so the intent is STATED by the caller. Three checks press each button and assert
+the reason that reaches the running step's signal; dropping the flag fails the
+Stop one.
+
+Grep markers in the built dist: `RESUMABLE_STOP` and `isResumableStop` in
+`dist/electron/mount.js` / `shared/types.js`, `discardCancelledReading` in
+`dist/electron/job-queue.js`.
+
+### Two more that arrived while this was being vendored
+
+**`5fe3e0f` — hosted, nobody choosing a machine means `any`.** The other half of
+the defect at the top of this entry. BookForge asked for a hosted silence to be a
+REFUSAL, on the reasoning that a host which said nothing should not have the
+question answered by a setting on another app's screen. Owen ruled otherwise and
+his reading is the better one: *"the server is chosen when it's in the queue. if
+it isnt chosen or cant be for some reason, it should be 'any'."* A refusal makes
+the host's silence an ERROR and it is not one — it is the absence of a choice,
+and `any` is the word that already means that. So `placedBy` answers `ANY_SLOT`
+when a host is registered and named nothing: the board stops claiming a machine
+the run is not on, `ranOn` records where it went, and nothing has to fail to
+achieve it. Un-hosted Foundry is untouched, where `newJobsWaitFor` is the
+person's own answer on their own Servers card rather than a stray default.
+
+For this side it is a floor rather than a licence — `queue-steps/foundry-job.ts`
+still names a machine for every read it places, because `any` is a worse answer
+than the operator's, only never a wrong one.
+
+**`7863c73` — the machine names.** The `47ae0d4` sources tripped
+`tools/test-no-machine-addresses.js` with 13 hits across 10 files — this
+machine's two hostnames, a private LAN address and the operator's home path,
+across comments, prose and placeholder values. Clean at `1c1eaa3`, so they
+arrived with the new work. (Not quoted here, for the reason they were removed
+there: the keeper names them by shape, and it failed on THIS FILE while the
+paragraph was being drafted.) `foundry-app/` is a mechanical copy that must not
+be edited here, so the scrub was Foundry's to make and they made it, with the
+same conventions this repo uses (`example-pc-wsl`, RFC 5737 `192.0.2.20`,
+`C:\Users\you`) and across their `src/`, `docs/` and `tools/` as well, which
+this keeper cannot see.
+
+**Two of the thirteen were not comments.** `crucible-registry.ts:290` and
+`:1108` are user-facing REFUSALS — *"needs an address like http://…:7100"*,
+with a real private address where that ellipsis is — and the Servers card's URL
+input carried the same string as its placeholder. So that address was being
+suggested to every person who mistyped a server URL. Worth recording as the argument for the rule
+rather than the tidiness of it.
+
+**One thing is deliberately NOT scrubbed upstream**, and a future sync will show
+it rather than it being an oversight: `docs/PLAN.md` holds dated verification
+RECORDS — what was actually run against an actual machine, with the hostname and
+the `/v1/info` answer quoted back. Rewriting a hostname in the record of a
+measurement falsifies the record, and PLAN.md is an internal log rather than a
+doc a stranger reads. That file is outside `app/`, so this keeper never sees it;
+if its scan ever widens, that is the file that will argue with it, and the record
+should win.
 
 ## The `4fb203d → 1c1eaa3` re-vendor — the slot gets the sentence (2026-09-18)
 

@@ -51,6 +51,7 @@
 import {
   CrucibleBusy,
   CrucibleCapabilityUndecided,
+  CrucibleLeased,
   CrucibleProtocolError,
   CrucibleRefused,
   CrucibleUnreachable,
@@ -1198,8 +1199,11 @@ function headerMapFor(entry: CrucibleServerEntry, capability: CapabilityClass): 
  * that is doing exactly what it was asked. Nothing about that is anybody's bug,
  * and nothing short of an explicit claim prevents it. BookForge proposed the
  * lease and Owen ruled it in: while one is open, `load-model`, `unload-model`
- * and `load-voice` refuse `409 model_leased` naming the client, the act and
- * since when.
+ * and `load-voice` refuse `409 leased` naming the client, the act and since
+ * when. (The code was `model_leased` when the ruling was written; Crucible
+ * renamed it on 2026-09-14 because the leased thing is a voice or an aligner as
+ * often as a model — see `interpretFailure`'s branch, which read the old word
+ * for a month and therefore read nothing.)
  *
  * ── Liveness only, which is why the TTL is short and the heartbeat exists ──
  *
@@ -1252,7 +1256,7 @@ const LEASE_HEARTBEAT_MS = (LEASE_TTL_SECONDS / 3) * 1000;
  * name the contract owns.
  *
  * A REFUSAL HERE PROPAGATES AS A THROW and is read by `interpretFailure` like
- * every other one on this path — which is what makes `model_leased` a WAIT (the
+ * every other one on this path — which is what makes `leased` a WAIT (the
  * card is somebody else's for now, and another server's may be free) rather than
  * a failure. The load above has already made the model resident, so
  * `model_not_resident` from this route is the narrow race where somebody evicted
@@ -1302,9 +1306,41 @@ export async function takeLease(
          * a log line but a new lease on the same model — the model is still
          * resident (a restart that lost it would be answering the engine
          * `model_not_resident` already, which the engine refuses by name) and
-         * this run still intends every request it has left. A re-lease that is
-         * itself refused falls through to the log below, and the run goes on
-         * unprotected and said so.
+         * this run still intends every request it has left.
+         *
+         * ── AND A RE-LEASE THAT IS REFUSED IS THE END OF THE BEAT ───────────
+         *
+         * It used to fall through to the log below and keep beating, which is
+         * what the "a lost heartbeat is not a lost run" paragraph says to do with
+         * a BLIP. This is not a blip, and the difference is the whole of the fix:
+         * once the server has answered `unknown_lease`, `id` names nothing on
+         * that machine. Every further beat can only 404, and the re-lease behind
+         * it can only be refused for the same reason it was refused the first
+         * time. Measured 2026-09-18: 264 × (404 heartbeat → 409 `not_resident`
+         * re-lease) at a flat 40.0 s cadence for ten hours, on a run whose lease
+         * this app had itself released hours earlier. No backoff, no give-up, and
+         * nothing in the log file to find it by.
+         *
+         * THE RESTART THIS BRANCH ASSUMES IS DISTINGUISHABLE, which is why the
+         * re-lease is the test rather than the diagnosis: a server that really
+         * did restart with the model still resident ACCEPTS the new lease, and
+         * that is the one outcome the timer survives. Anything else — the model
+         * is gone (`not_resident`), somebody else took it (`leased`), the machine
+         * is unreachable — means the claim is not coming back, and a timer that
+         * goes on asking for it is a loop with no exit.
+         *
+         * ONCE, NEVER A RETRY. The acquire is attempted once per `unknown_lease`
+         * and its refusal ends the lease object rather than arming the next
+         * identical attempt. A SECOND `unknown_lease` after a re-lease that
+         * SUCCEEDED may acquire again, and that is not the loop: each success is
+         * protection genuinely regained, and refusing to take it back would be
+         * this app declining a card that is free.
+         *
+         * `stopped` IS SET, NOT JUST THE TIMER CLEARED. This lease object holds
+         * nothing now — the server forgot the old id and refused a new one — so
+         * there is no card to give back and `release()` from the queue's settle
+         * is honestly a no-op. Setting it is also what stops a beat already in
+         * flight from arming another.
          */
         if (err instanceof CrucibleRefused && err.code === 'unknown_lease' && !stopped) {
           try {
@@ -1321,7 +1357,24 @@ export async function takeLease(
             );
             return;
           } catch (again) {
-            err = again;
+            if (stopped) return;
+            stopped = true;
+            clearInterval(timer);
+            /*
+             * ONE LINE, AND IT SAYS WHAT THE RUN HAS LOST. The comment above has
+             * promised "unprotected and said so" since the lease landed; what was
+             * actually printed was a heartbeat-failed line that reads like a blip
+             * and repeated every forty seconds. This says the claim is gone, that
+             * nothing will take it back, and what the server's own refusal was —
+             * so an eviction later in the book has a cause somebody can find.
+             */
+            console.error(
+              `[slots] ${entry.name} had forgotten the lease on ${model} and refused a new one, `
+              + 'so this run is now UNPROTECTED — another client may load over it at any point. '
+              + 'The heartbeat has stopped; a lease that cannot be re-taken is not coming back. '
+              + `The server said: ${again instanceof Error ? again.message : String(again)}`,
+            );
+            return;
           }
         }
         /*
@@ -1403,19 +1456,38 @@ function interpretFailure(err: unknown, slotName: string, capability: Capability
        */
       return transientWait(`someone is narrating on "${slotName}"`);
     }
-    if (err.code === 'model_leased') {
+    if (err instanceof CrucibleLeased) {
       /*
-       * 409 `model_leased`: another client has claimed the resident model for the
+       * 409 `leased`: another client has claimed the resident thing for the
        * length of its own run, which is the protection this app takes for itself
-       * three functions up. It names who and for what, and the details are read
-       * here rather than in the sentence so that a body without them still gets a
-       * sentence — one that says less, never one that invents.
+       * three functions up.
+       *
+       * ── IT USED TO KEY ON `model_leased`, WHICH NOTHING EMITS ──────────────
+       *
+       * Crucible renamed the code on 2026-09-14 and said why in the function that
+       * raises it (`leased_error`, crucible/leases.py): *"the leased thing is a
+       * voice or an aligner as often as a model, and a client branching on
+       * `model_leased` while narrator holds the card would be branching on a word
+       * that is not true of what it was refused for."* `model_leased` survives in
+       * Crucible only inside that sentence. So this branch had been dead since the
+       * day it was written, and a real refusal fell through to the generic arm at
+       * the bottom — which waited, but by luck: `leased` happens to be in the
+       * SDK's server-specific set, and nothing here was reading the body at all.
+       *
+       * THE SDK OWNS THE PARSE AND THE SENTENCE, which is the other half of the
+       * repair. The hand-rolled read of `err.details` was three `typeof` checks
+       * over a `Record<string, unknown>` that quietly rendered "another client"
+       * for a malformed body; `CrucibleLeased` refuses such a body as a protocol
+       * error instead, and `leasedLine` is the one line a bench puts in front of
+       * a person — exactly as `CrucibleBusy.busyLine` is, one branch up. Who,
+       * for what, and until when, in the server's own words.
+       *
+       * THE KIND IS SAID BESIDE IT because it is the fact the rename was about
+       * and the one `leasedLine` does not carry: a refusal arrives with no
+       * `resident` beside it, and "the resident llm is held" and "the resident
+       * tts is held" are different news to somebody reading the queue.
        */
-      const held = (err.details ?? {}) as Record<string, unknown>;
-      const who = typeof held['client'] === 'string' ? held['client'] : 'another client';
-      const act = typeof held['act'] === 'string' ? ` for ${held['act']}` : '';
-      const since = typeof held['since'] === 'string' ? ` since ${held['since']}` : '';
-      return transientWait(`"${slotName}" is leased by ${who}${act}${since}`);
+      return transientWait(`the resident ${err.kind} on "${slotName}" is ${err.leasedLine}`);
     }
     /*
      * ── THE THREE PHASE15 REFUSALS, BY NAME (crucible §3.4) ─────────────────

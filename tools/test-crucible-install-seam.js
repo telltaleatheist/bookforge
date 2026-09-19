@@ -341,9 +341,46 @@ function posixRunner(platform, start) {
     run: async (argv, opts) => {
       let stdout;
       if (argv[0] === 'bash') stdout = `home=${home}\nuser=fixture\nfree_kib=99999999\ncrucible=${home}/envs/server/bin/crucible\nsha256=${sha}\nrelease=${CHANNEL_LATEST}\n`;
-      else if (argv[0] === 'curl') stdout = JSON.stringify({ schema: 1, version: CHANNEL_LATEST,
-        packs: [{ name: 'server', backend: platform === 'darwin' ? 'mlx-darwin' : 'cuda-linux', python: '3.11', bytes: 1,
-          unpacked_bytes: 1, sha256: sha, parts: ['fixture.tar.zst'] }] });
+      else if (argv[0] === 'curl') {
+        /*
+         * TWO THINGS ARE CURLED SINCE 1.0.5 and they are not the same document:
+         * the release MANIFEST, and the wheel's `.sha256` sidecar — which must
+         * be a bare digest, not JSON. Answering both with the manifest made the
+         * bootstrap refuse `runtime_download_failed` ("is not a sha256"), which
+         * is the fixture failing rather than the code.
+         */
+        stdout = argv.some(a => String(a).endsWith('.sha256'))
+          ? `${sha}\n`
+          : JSON.stringify({ schema: 1, version: CHANNEL_LATEST,
+            packs: [{ name: 'server', backend: platform === 'darwin' ? 'mlx-darwin' : 'cuda-linux', python: '3.11', bytes: 1,
+              unpacked_bytes: 1, sha256: sha, parts: ['fixture.tar.zst'] }] });
+      }
+      else if (argv[0] === 'shasum' || argv[0] === 'sha256sum') {
+        /*
+         * ALSO NEW IN 1.0.5: the bootstrap verifies the standalone CPython it
+         * has just fetched — `shasum -a 256 <file>` on darwin, `sha256sum
+         * <file>` on linux, BOTH of which print "<digest>  <path>",
+         * and the fixture answers with the same digest it hands back on every
+         * other door so the check passes rather than being bypassed.
+         */
+        /*
+         * THE PIN'S OWN DIGEST, asked of the package rather than pasted here.
+         * A literal would be a second copy of a number that moves with every
+         * interpreter bump — and the fixture would then pass by agreeing with
+         * itself while the bootstrap refused `runtime_sha_mismatch`.
+         */
+        const { interpreterFor } = require('@crucible/bootstrap');
+        const backend = platform === 'darwin' ? 'mlx-darwin' : 'cuda-linux';
+        const file = String(argv[argv.length - 1]);
+        /*
+         * PER FILE, because two different documents are verified against two
+         * different authorities: the CPython archive against the pin compiled
+         * into @crucible/bootstrap, and the WHEEL against the `.sha256` sidecar
+         * this fixture serves beside it. One answer for both made the wheel
+         * hash as the interpreter and the bootstrap refuse by name.
+         */
+        stdout = `${file.endsWith('.whl') ? sha : interpreterFor(backend).sha256}  ${file}\n`;
+      }
       else {
         assert.deepStrictEqual(argv, [command, '-m', 'crucible.cli', 'local', 'start', '--json']);
         assert.deepStrictEqual(opts.env, { CRUCIBLE_HOME: home });
@@ -352,7 +389,23 @@ function posixRunner(platform, start) {
       return { code: 0, failure: null, stderr: '', stdout };
     },
     stream: async argv => {
-      assert.ok(argv[0].endsWith('/bin/crucible'), `Unexpected command ${argv}`);
+      /*
+       * TWO SHAPES OF STREAMED COMMAND SINCE CRUCIBLE 1.0.5, and this used to
+       * admit only the first: the crucible binary itself, and a `bash -c` that
+       * fetches the standalone CPython the bootstrap now pins. The second is a
+       * REAL new step of the package's own plan — the neighbouring check, "the
+       * non-Windows steps are the PACKAGE's step list, in its order", passes
+       * against 1.0.5 — so a mock that refused it was asserting an old plan and
+       * failing the scenario before its actual subject was reached.
+       *
+       * Still an allow-list rather than an `ok(true)`: the point of the mock is
+       * that nothing escapes to a process or the network, and an unrecognised
+       * command must still say so by name.
+       */
+      const streamed = String(argv[0]);
+      assert.ok(
+        streamed.endsWith('/bin/crucible') || streamed === 'bash',
+        `Unexpected command ${argv}`);
       return { code: 0, failure: null, stderr: '', stdout: '' };
     },
   }});

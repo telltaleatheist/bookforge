@@ -72,7 +72,7 @@
       "artifactName": "Foundry-${version}-macos-${arch}.${ext}"
     }
   },
-  "_crucibleClientNote": "Crucible SDKs are vendored as immutable npm-pack tarballs matching the pinned installer release. Update both packages, integrity hashes, and generated module metadata together; directory dependencies are not supported.",
+  "_crucibleClientNote": "Crucible SDKs are vendored as immutable npm-pack tarballs: the LIBRARY this app is built against, never the release an install puts on a machine — that is the release channel's answer, read at install time (crucible docs/INSTALL-UNINSTALL.md 6.5). Compatibility with a server is the API version on X-Crucible-Api, not this number. Update both packages, integrity hashes, and generated module metadata together; directory dependencies are not supported.",
   "dependencies": {
     "@angular/common": "^21.0.0",
     "@angular/compiler": "^21.0.0",
@@ -80,8 +80,8 @@
     "@angular/forms": "^21.0.0",
     "@angular/platform-browser": "^21.0.0",
     "@angular/router": "^21.0.0",
-    "@crucible/bootstrap": "file:vendor/crucible-bootstrap-1.0.0.tgz",
-    "@crucible/client": "file:vendor/crucible-client-1.0.0.tgz",
+    "@crucible/bootstrap": "file:vendor/crucible-bootstrap-1.0.5.tgz",
+    "@crucible/client": "file:vendor/crucible-client-1.0.5.tgz",
     "libheif-js": "1.19.8",
     "pdf-lib": "1.17.1",
     "pdfjs-dist": "^6.2.108",

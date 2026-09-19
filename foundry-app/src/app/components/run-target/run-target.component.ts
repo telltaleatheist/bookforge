@@ -373,7 +373,7 @@ export class RunTargetComponent {
      * registered engine is a legitimate answer.
      *
      * It is the wrong rule here, and Owen met the difference: he opened an OCR
-     * on an engine that cannot read pages and got *"crucible@example-mac
+     * on an engine that cannot read pages and got *"crucible@example-mac-studio
      * cannot read pages — choose another engine."* Telling somebody to choose
      * again is a screen admitting it chose badly and handing the problem back.
      *

@@ -80,14 +80,23 @@ test('Windows installation uses the native installer and refuses a second concur
     return { code: 0, stdout: '', stderr: '', failure: null };
   });
   const runner = { platform: 'win32', stream } as unknown as bootstrap.Runner;
-  const first = installer.driveCrucibleInstall(() => {}, runner);
-  await expect(installer.driveCrucibleInstall(() => {}, runner)).rejects.toThrow('already running');
+  /*
+   * THE RELEASE CHANNEL AND THE RUNNING ENGINE ARE SCRIPTED, and they have to
+   * be: `driveCrucibleInstall` now asks both before it spawns anything
+   * (crucible docs/INSTALL-UNINSTALL.md 6.5.3), and a test that let them fall
+   * through would reach api.github.com and this machine's own Crucible.
+   * `crucible-install-latest.test.ts` is where the gate itself is held.
+   */
+  const channel = { latest: async () => '9.9.9', running: async () => null };
+  const first = installer.driveCrucibleInstall(() => {}, runner, channel);
+  await expect(installer.driveCrucibleInstall(() => {}, runner, channel)).rejects.toThrow('already running');
   finish();
   await first;
   expect(posixInstall).not.toHaveBeenCalled();
   const argv = stream.mock.calls[0]![0] as unknown as string[];
   expect(argv[0]).toBe('powershell.exe');
-  expect(argv.at(-1)).toContain(bootstrap.hostInstallCommand(bootstrap.BOOTSTRAP_VERSION));
+  // The CHANNEL's release, not the vendored library's: that swap is the fix.
+  expect(argv.at(-1)).toContain(bootstrap.hostInstallCommand('9.9.9'));
   expect(argv.join(' ')).not.toContain('wsl.exe');
   expect(installer.installationSteps('win32')[0]!.detail).toContain('native Windows');
 });
@@ -245,8 +254,10 @@ test('POSIX initial installation prepares only the lightweight core before model
   spyOn(registry, 'addLocalCrucible').mockResolvedValue({ outcome: 'added', servers: [],
     serverName: 'local', url: 'http://127.0.0.1:7100', configPath: 'pairing' });
   const install = spyOn(bootstrap, 'install').mockResolvedValue({} as never);
-  await installer.driveCrucibleInstall(() => {}, { platform: 'darwin' } as bootstrap.Runner);
+  await installer.driveCrucibleInstall(() => {}, { platform: 'darwin' } as bootstrap.Runner,
+    { latest: async () => '9.9.9', running: async () => null });
   expect(install.mock.calls[0]![0].jobTypes).toEqual(['echo']);
+  expect(install.mock.calls[0]![0].release).toBe('9.9.9');
 });
 
 test('first-run completion persists only after readiness and resets its gate after failure', async () => {

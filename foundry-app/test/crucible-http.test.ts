@@ -12,7 +12,7 @@ afterEach(()=>mock.restore());
 const classes=['pages','clean','translate','simplify','analysis'];
 const chosen=(cls:string)=>cls==='pages'?'dots-ocr':cls==='clean'?'qwen3.5-9b':'qwen3.8-27b-4bit';
 
-function fixture(options:{missing?:boolean;competing?:boolean;competitorStocks?:boolean;failCompetitor?:boolean}={}) {
+function fixture(options:{missing?:boolean;competing?:boolean;competitorStocks?:boolean;failCompetitor?:boolean;leased?:boolean}={}) {
   let stocked=!options.missing, competed=false, loaded:string|null=null;
   const calls:{method:string;path:string;body:any}[]=[];
   const revision='a'.repeat(40);
@@ -40,6 +40,10 @@ function fixture(options:{missing?:boolean;competing?:boolean;competitorStocks?:
     if(p.startsWith('/v1/tasks/'))return Response.json(task(p.split('/')[3]!));
     if(p==='/v1/jobs'){loaded=body?.model??null;return Response.json({job_id:'load'},{status:202});}
     if(p==='/v1/jobs/load/events')return sse('done',{resident:loaded});
+    // `leased`, with the six fields `Lease.to_dict()` attaches (crucible/leases.py).
+    // The code is `leased` and not `model_leased`: the leased thing is a voice or
+    // an aligner as often as a model, which is why the rename happened at all.
+    if(p.endsWith('/lease')&&req.method==='POST'&&options.leased)return Response.json({error:{code:'leased',message:"'dots-ocr' (the resident llm) is leased by 'bookforge' for 'tts' since 2026-09-18T03:00:00+00:00, until at least 2026-09-18T03:02:00+00:00",details:{lease_id:'someone-elses',kind:'llm',client:'bookforge',act:'tts',since:'2026-09-18T03:00:00+00:00',expires_at:'2026-09-18T03:02:00+00:00'}}},{status:409});
     if(p.endsWith('/lease')&&req.method==='POST')return Response.json({lease_id:'lease',kind:'llm',subject:p.split('/')[3],client:'fixture',act:body.act,since:'2026-09-16T00:00:00Z',expires_at:'2026-09-16T00:02:00Z'},{status:201});
     if(p==='/v1/leases/lease'&&req.method==='DELETE')return new Response(null,{status:204});
     return Response.json({error:{code:'fixture_unhandled',message:`${req.method} ${p}`}},{status:500});
@@ -80,3 +84,26 @@ for(const [kind,cls] of [['read','pages'],['clean','clean'],['translate','transl
     }finally{f.close();}
   });
 }
+
+/**
+ * A 409 `leased` IS READ, WHICH IT WAS NOT — the keeper for the twenty-line
+ * branch that keyed on `model_leased`, a code Crucible has never emitted: the
+ * server renamed it to `leased` on 2026-09-14 because the leased thing is a
+ * voice or an aligner as often as a model (crucible/leases.py, `leased_error`).
+ * The dead branch meant a real refusal fell to the generic arm — which waited by
+ * luck, because `leased` happens to be in the SDK's server-specific set — and
+ * the "leased by whom, for what, until when" sentence the body carries was
+ * never read. The assertion is on the sentence, because the sentence is the
+ * whole of what the branch is for.
+ */
+test('a 409 leased on the lease door waits and names who holds the card, for what, until when',async()=>{
+  const f=fixture({leased:true});try{
+    const result=await dispatch.placeJob('read',f.entry.name,()=>{},()=>true);
+    expect(result.verdict).toBe('wait');if(result.verdict!=='wait')throw Error(JSON.stringify(result));
+    expect(result.standing).toBe(false);
+    // THE WHOLE SENTENCE, not a substring of it: the server's own message names
+    // the holder too, so anything looser passes on the generic arm this branch
+    // exists to replace — which is exactly how a dead branch stays dead.
+    expect(result.reason).toBe(`the resident llm on "${f.entry.name}" is leased: bookforge, tts, until 2026-09-18T03:02:00+00:00`);
+  }finally{f.close();}
+});
