@@ -2354,9 +2354,9 @@ export interface CrucibleStatedBand {
    * states one, else the local catalog's clamped to the ceiling, else null.
    */
   targetChars: number | null;
-  paceCharsPerSec: number;
-  maxCharsPerSec: number;
-  minCharsPerSec: number;
+  paceCharsPerSec: number | null;
+  maxCharsPerSec: number | null;
+  minCharsPerSec: number | null;
 }
 
 export function higgsVoicesDocument(

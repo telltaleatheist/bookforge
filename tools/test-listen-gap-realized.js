@@ -27,9 +27,8 @@
  *
  * ── What is pinned here, and where each half runs ───────────────────────────
  *
- *   §0  the vendored `@crucible/client` is a version behind the field and drops
- *       it while shaping `done`, so two shims carry it. The skew is pinned, and
- *       this check going red is the instruction to delete them.
+ *   §0  (retired 2026-09-19: the vendored `@crucible/client` 1.0.5 shapes
+ *       `gapSec` onto `done` itself; the two shims that carried it are gone)
  *   §1  `shared/listen-client/crucible-rows.ts` — the gap comes off the SDK's
  *       `done` frame onto the row result, and a row that spoke without one is
  *       refused BY NAME rather than paced by a default.
@@ -113,32 +112,6 @@ async function main() {
     kind: 'done', id: 'r1', done: true, seconds: 1.0, chars: 20, charsPerSec: 20,
     capped: null, cancelled: false, gapSec: 0.62,
   };
-
-  // ═══════════════════════════════════════════════════════════════════════════
-  // 0. The version skew, and the day it ends
-  // ═══════════════════════════════════════════════════════════════════════════
-
-  await check('the vendored SDK still drops gap_sec, so the shims are still needed', () => {
-    /*
-     * A TRIPWIRE, NOT AN ASSERTION ABOUT THE FIX. `vendor/crucible-client-1.0.1.tgz`
-     * shapes a `done` out of six named fields and drops every other key, so this app
-     * cannot see `gap_sec` until the tarball is rebuilt from Crucible's `sdk/ts`.
-     * Two props carry it in the meantime — the `StreamRowDoneWithGap` alias in
-     * `shared/listen-client/crucible-rows.ts` and `clientWithGapOnDone` in
-     * `tools/test-crucible-stream.js` — and NOTHING ELSE WOULD SAY WHEN TO PULL THEM:
-     * once the SDK declares `gapSec` the alias merely restates a property the
-     * interface already has, which TypeScript accepts in silence. So the skew itself
-     * is pinned, and this check going red IS the re-vendor's instruction.
-     */
-    const shaper = path.join(REPO, 'node_modules', '@crucible', 'client', 'dist', 'cjs', 'stream.js');
-    const src = fs.readFileSync(shaper, 'utf-8');
-    assert.ok(src.includes("'chars_per_sec', 'done'"),
-      `${shaper} is not the done shaper this check reads — the SDK's layout moved`);
-    assert.ok(!src.includes('gap_sec'),
-      'the vendored @crucible/client now carries gap_sec: delete the '
-      + 'StreamRowDoneWithGap alias in shared/listen-client/crucible-rows.ts and '
-      + 'clientWithGapOnDone in tools/test-crucible-stream.js, and take this check out');
-  });
 
   // ═══════════════════════════════════════════════════════════════════════════
   // 1. The row layer: off the frame, onto the result — or refused

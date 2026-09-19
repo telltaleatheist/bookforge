@@ -426,51 +426,15 @@ function startFakeCrucible(options = {}) {
 const GAP_SEC = 0.62;
 
 /**
- * SDK 1.0.2's `done` reader, in a wrapper, because the VENDORED one is 1.0.1.
- *
- * `vendor/crucible-client-1.0.1.tgz` builds `StreamRowDone` out of six named
- * fields and drops every other key on the frame — `gap_sec` included — so this
- * app cannot see the pause its player is now required to insert until the
- * tarball is re-vendored. Everything else about the field is real here: the fake
- * server states it on the wire (`gap_sec` above), this wrapper carries THAT
- * value (`state.gapBySay`, keyed by row) rather than inventing one, and the
- * engine, the row layer and the scheduler treat it exactly as they will when the
- * SDK hands it over itself.
- *
- * DELETE THIS WRAPPER ON THE RE-VENDOR. `tools/test-listen-gap-realized.js` pins
- * the consumption against a `done` object directly and needs no such help; what
- * is bridged here is one version skew in one package.
+ * A client against the fake. The vendored `@crucible/client` (1.0.5) shapes
+ * `gapSec` onto every `done` frame itself; the wrapper that once carried it
+ * across the 1.0.1 tarball's skew is gone, as `tools/test-listen-gap-realized.js`
+ * §0 said it would be the day the shaper mentioned `gap_sec`.
  */
-function clientWithGapOnDone(fake) {
-  const client = new CrucibleClient({
+function clientAgainst(fake) {
+  return new CrucibleClient({
     url: fake.url, token: 'test-token-abcd', clientName: CRUCIBLE_CLIENT_NAME,
   });
-  const open = client.stream.bind(client);
-  client.stream = async (options) => {
-    const session = await open(options);
-    return new Proxy(session, {
-      get(target, prop, receiver) {
-        if (prop === Symbol.asyncIterator) {
-          return async function* withGap() {
-            for await (const event of target) {
-              if (event.kind !== 'done') { yield event; continue; }
-              // BY NAME, not by default: every `done` this fake emits records
-              // what it stated, so a miss here is the fake and the wrapper
-              // disagreeing about which rows retired — which is exactly the
-              // kind of silence this whole change removed.
-              if (!fake.state.gapBySay.has(event.id)) {
-                throw new Error(`the fake retired row ${event.id} without recording its gap_sec`);
-              }
-              yield { ...event, gapSec: fake.state.gapBySay.get(event.id) };
-            }
-          };
-        }
-        const value = Reflect.get(target, prop, receiver);
-        return typeof value === 'function' ? value.bind(target) : value;
-      },
-    });
-  };
-  return client;
 }
 
 function engineFor(fake, selectedEngine = 'higgs') {
@@ -478,7 +442,7 @@ function engineFor(fake, selectedEngine = 'higgs') {
     selectedEngine: () => selectedEngine,
     clientFor: (server) => {
       assert.strictEqual(server, 'fake1', `the engine asked for a client to "${server}", not the venue "fake1"`);
-      return clientWithGapOnDone(fake);
+      return clientAgainst(fake);
     },
   });
 }

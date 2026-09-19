@@ -71,10 +71,16 @@ export interface CrucibleVoiceBand {
   readonly safeMaxChars: number | null;
   /** The server's stated target, or null — null for every voice on the wire today. */
   readonly targetChars: number | null;
+  /**
+   * The three rates, or null. The SDK (1.0.5, `types.d.ts`) publishes null for
+   * a voice whose manifest carries no MEASURED band rather than inventing one,
+   * and says "a client packing to these must ask whether they are there" —
+   * `electron/crucible/stream.ts` already does, so this type says the same.
+   */
   /** The pace the guard is centred on, verbatim from the row. */
-  readonly paceCharsPerSec: number;
-  readonly maxCharsPerSec: number;
-  readonly minCharsPerSec: number;
+  readonly paceCharsPerSec: number | null;
+  readonly maxCharsPerSec: number | null;
+  readonly minCharsPerSec: number | null;
 }
 
 /** The band the SDK's row states, or a refusal by name. Never a guess. */
@@ -204,9 +210,9 @@ export function statedBandForDocument(
   ceilingChars: number;
   floorChars: number | null;
   targetChars: number | null;
-  paceCharsPerSec: number;
-  maxCharsPerSec: number;
-  minCharsPerSec: number;
+  paceCharsPerSec: number | null;
+  maxCharsPerSec: number | null;
+  minCharsPerSec: number | null;
 } {
   return {
     server: band.server,

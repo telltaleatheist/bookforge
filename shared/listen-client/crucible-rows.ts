@@ -52,32 +52,6 @@
 import type { StreamEvent, StreamRowDone, TtsStreamSession } from '@crucible/client';
 
 /**
- * A `done` frame WITH the gap the player realizes.
- *
- * THE VENDORED SDK IS OLDER THAN THE FIELD, and this alias is the whole of the
- * difference. `vendor/crucible-client-1.0.1.tgz` builds `StreamRowDone` out of
- * six named fields and drops every other key on the frame, `gap_sec` included —
- * the same situation `electron/crucible/probe.ts` describes for `/v1/activity`'s
- * `reference`, and it gets the same treatment: state the documented wire here
- * rather than let it diverge in silence.
- *
- * DELETE THIS ON THE RE-VENDOR, and a keeper says when. The compiler will not:
- * once `StreamRowDone` declares `gapSec` itself this intersection restates a
- * property it already has, which TypeScript accepts without a word (measured:
- * `A & {gapSec: number|null}` where `A` already has it is clean under `strict`).
- * So `tools/test-listen-gap-realized.js` reads the INSTALLED `@crucible/client`
- * and goes red the day its `done` shaper mentions `gap_sec` — that red names
- * this alias and `clientWithGapOnDone` in `tools/test-crucible-stream.js` as the
- * two props to pull out.
- *
- * Until the re-vendor the shaper drops `gap_sec`, so `gapSec` reads `undefined`
- * and every row is REFUSED BY NAME below. That is the intended behaviour of the
- * pair being out of step: Listen stops and says why, instead of pacing a read by
- * a number nobody chose. narrator, Crucible and this client ship together.
- */
-type StreamRowDoneWithGap = StreamRowDone & { readonly gapSec: number | null };
-
-/**
  * The take every Listen row asks for. Zero, always — the engine's own sampling,
  * which is what asking for nothing gets, and the SDK's `say` has no default on
  * the wire (PHASE3-TTS.md §7, difference 5). A take above 0 on a voice that
@@ -381,7 +355,7 @@ export class CrucibleRowSession {
         return;
       }
       case 'done': {
-        const done = event as StreamRowDoneWithGap;
+        const done = event as StreamRowDone;
         this.rows.delete(event.id);
         // RECORDED, NEVER ACTED ON — see the header.
         this.deps.onRowDone?.(event.id, row.ordinal, event);
@@ -393,8 +367,8 @@ export class CrucibleRowSession {
         // rather than a zero. `null` is the server's word for "this row was
         // cancelled", which the branch above has already taken, so a null here
         // is a server that retired a row without saying how it paces — and
-        // `undefined` is a vendored SDK older than the field (see
-        // StreamRowDoneWithGap). The player cannot invent the number: the audio
+        // `undefined` is a vendored SDK older than the field (the 1.0.1 tarball
+        // dropped it; 1.0.5 carries it). The player cannot invent the number: the audio
         // is bare, so a guess is heard at every sentence boundary of the read.
         if (typeof done.gapSec !== 'number') {
           this.settle(row, {
