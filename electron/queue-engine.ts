@@ -1244,6 +1244,105 @@ export function appendStep(jobId: string, spec: AppendStepSpec, opts?: EnqueueOp
   return step;
 }
 
+// ────────────────────────────────────────────────────────────────────────────
+// THE DOORS THAT DISPOSE OF THE ACT A LEASE WAS KEPT FOR
+// ────────────────────────────────────────────────────────────────────────────
+//
+// ── The defect ─────────────────────────────────────────────────────────────
+//
+// `settleStep` keeps a row's Crucible lease open across a seam for exactly ONE
+// reason: the step that just landed has a child that leases the SAME model
+// (`leaseWantedAfter`). Four more doors then make that reason false and used to
+// say nothing — Stop (`cancel` → `settleNotStarted` → `cascadeCancel`), Remove
+// (`remove`), Remove-one-step (`removeStep`) and Pause (`pause`).
+//
+// `withRowLease` named the TTL as the backstop for exactly this. It is not one:
+// the heartbeat is a THIRD of the ttl (`electron/crucible/lease.ts`,
+// `crucibleHeartbeatIntervalMs`), so a lease this process is still beating
+// never expires while the app lives. Stop a `clean → simplify` row after
+// `clean` lands and a 9–27 GB model stays leased until BookForge quits — and
+// Crucible answers this app's OWN next job `409 leased`, naming `bookforge`.
+// The app blocking itself is the same failure `StepModule.leasedModel` was
+// added to end, arriving through a different door.
+//
+// ── The rule ───────────────────────────────────────────────────────────────
+//
+// A lease is kept for an act that is ABOUT TO START. Every door that takes
+// that act away, or defers it without end, gives the card back — through
+// `closeRow`, which is `closeCrucibleRowLease`, which is the one owner. There
+// is no second release path here and must never be: a row's lease is held in
+// one map and given back by one function.
+
+/**
+ * IS THIS ROW'S OPEN LEASE STILL WANTED — asked of the whole row.
+ *
+ * The row-wide mirror of {@link leaseWantedAfter}, which a door cannot use:
+ * `leaseWantedAfter` asks about the children of *the step that just settled*,
+ * and a door settles nothing. So this asks the same question of every step of
+ * the run, with the same two halves — the module says its work is a run of
+ * chat completions, and names the model the lease is already on.
+ *
+ * WHAT IT DELIBERATELY WILL NOT SAY YES TO, so that it can never keep a lease
+ * `leaseWantedAfter` would have released:
+ *
+ *  - a step BEHIND work that has not landed. An act queued behind an hour of
+ *    ffmpeg was never what the lease was kept for, and holding somebody's model
+ *    across that assembly is the thing ONE LEASE PER ROW rules out by name.
+ *    So a step that is not running counts only when its parent is `done`.
+ *  - a step the queue is not claiming. While `running` is false nothing is
+ *    admitted, so the next act starts when a person presses Start and not
+ *    before — an unbounded hold on a card, which is a different sentence from
+ *    "it is next".
+ *
+ * A step that is RUNNING is using the lease right now, whatever the queue's
+ * dial says: `pause()` does not stop what is already running, and taking the
+ * protection out from under a live run is the eviction the lease exists to
+ * prevent.
+ */
+function rowLeaseStillWanted(job: QueueJob, heldModel: string): boolean {
+  for (const step of job.steps) {
+    if (TERMINAL_STEP_STATUSES.has(step.status)) continue;
+    const mod = modules.get(step.type);
+    if (mod?.leasesModel?.(step.config ?? {}) !== true) continue;
+    if (mod.leasedModel?.(step.config ?? {}) !== heldModel) continue;
+    if (runningSteps.has(step.id)) return true;
+    if (!running) continue;
+    const parent = parentOf(step);
+    if (parent === null || parent.status === 'done') return true;
+  }
+  return false;
+}
+
+/**
+ * Give this run's lease back unless something of it still wants the card.
+ *
+ * A no-op for a run holding none, which is every run that never spoke to a
+ * Crucible. `void`, not awaited, for `settleStep`'s reason: the release is a
+ * DELETE over the network, these doors are read synchronously by their callers
+ * on the next line, and `release()` never throws.
+ */
+function closeRowLeaseIfUnwanted(job: QueueJob): void {
+  if (crucibleLeaseHost === null) return;
+  const held = crucibleLeaseHost.leaseSubject(job.id);
+  if (held === null) return;
+  if (rowLeaseStillWanted(job, held)) return;
+  void crucibleLeaseHost.closeRow(job.id);
+}
+
+/**
+ * The queue has stopped claiming work: give back every card being held for an
+ * act that will now start only when a person presses Start.
+ *
+ * Every row, not one — `running` is the whole queue's dial, so a book on the
+ * Mac holding a 27B for its next act is as parked as the one the operator was
+ * looking at. A row whose act is mid-run keeps its lease; see
+ * {@link rowLeaseStillWanted}.
+ */
+function closeRowLeasesTheQueueWillNotStart(): void {
+  if (crucibleLeaseHost === null) return;
+  for (const job of jobs) closeRowLeaseIfUnwanted(job);
+}
+
 /** Every step under `stepId` in this run, transitively, by `parentStepId`. */
 function descendantsOf(job: QueueJob, stepId: string): QueueStep[] {
   const under = new Set<string>([stepId]);
@@ -1296,6 +1395,9 @@ export async function removeStep(stepId: string): Promise<void> {
   const gone = new Set(going.map((s) => s.id));
   job.steps = job.steps.filter((s) => !gone.has(s.id));
   if (job.steps.length === 0) jobs = jobs.filter((j) => j.id !== job.id);
+  // The subtree went with the step, so the act the row's lease was being kept
+  // for may have gone with it. Asked AFTER the filter, of what is left.
+  closeRowLeaseIfUnwanted(job);
   changed();
   pump();
 }
@@ -1395,6 +1497,12 @@ export function release(target?: { jobId?: string; stepId?: string }): void {
  */
 export function pause(): void {
   running = false;
+  // A DEFERRED ACT IS NOT A NEXT ACT. Nothing is admitted while the dial is
+  // off, so a lease being held for the step after the one that just landed is
+  // holding a 9–27 GB model until somebody presses Start — and the heartbeat
+  // means the ttl will never take it back. A run that is already moving keeps
+  // its lease: `pause()` does not stop those.
+  closeRowLeasesTheQueueWillNotStart();
   changed();
 }
 
@@ -1451,6 +1559,11 @@ export async function cancel(
   // A user stop idles the queue: you stop a GPU job to get the card back, and
   // auto-starting the next one would defeat the purpose.
   running = false;
+  // And getting the card back means the LEASE too, on every row the idled
+  // queue will not be starting anything for — the same sentence `pause()`
+  // says, because this is the same dial. A row stopped here has already given
+  // its own back through `cascadeCancel`; this is for the others.
+  closeRowLeasesTheQueueWillNotStart();
   changed();
 }
 
@@ -1477,6 +1590,12 @@ function cascadeCancel(job: QueueJob, stepId: string, reason: string): void {
       changedAny = true;
     }
   }
+  // THE ONE PLACE A NOT-YET-RUN STEP IS DISPOSED OF — `settleNotStarted`, a
+  // stopped step and a failed one all arrive here — so it is the one place
+  // that has to ask whether the act the row's lease was kept for is still
+  // there. `settleStep` asks the same question for the step it settles; a
+  // child cancelled underneath it never reached that door.
+  closeRowLeaseIfUnwanted(job);
 }
 
 /** Take a run out of the queue. Anything of it that is running is stopped first. */
@@ -1496,6 +1615,14 @@ export async function remove(jobId: string): Promise<void> {
     runningSteps.delete(step.id);
   }
   jobs = jobs.filter((j) => j.id !== jobId);
+  /*
+   * THE WHOLE RUN IS GONE, so nothing can still want its lease — closed
+   * outright rather than through `closeRowLeaseIfUnwanted`, whose question
+   * ("is a step of this run still next?") has no meaning once the run is not
+   * in the queue. Its steps are still on the object in hand and would answer
+   * that question yes.
+   */
+  if (crucibleLeaseHost !== null) void crucibleLeaseHost.closeRow(jobId);
   changed();
   pump();
 }
@@ -3168,21 +3295,36 @@ function settleStep(job: QueueJob, step: QueueStep, outcome: StepOutcome): void 
    *
    * Fired on EVERY settle — success, failure, cancel and the 409 wait below —
    * because a lease left open on a row that is not about to use it holds
-   * somebody's card for its whole ttl. A no-op when the row holds none, which
-   * is every row that never spoke to a Crucible.
+   * somebody's card until this app quits. A no-op when the row holds none,
+   * which is every row that never spoke to a Crucible.
+   *
+   * NOT "for its whole ttl", which is what this said until 2026-09-18: the
+   * heartbeat renews at a third of the ttl, so a lease this process still
+   * holds never lapses. This door and the four beside it (THE DOORS THAT
+   * DISPOSE OF THE ACT A LEASE WAS KEPT FOR, above) are the mechanism, and
+   * there is no backstop behind them.
    *
    * `void`, not awaited: the release is a DELETE over the network and the
    * scheduler's settle is synchronous by design (every caller reads the row's
-   * new state on the next line). Nothing depends on the release having landed —
-   * the ttl is the mechanism and this is the courtesy — and `release()` never
-   * throws.
+   * new state on the next line). Nothing later in this function depends on the
+   * DELETE having landed, and `release()` never throws.
    */
   if (crucibleLeaseHost !== null) {
     // WHAT IS ACTUALLY HELD, asked of the seam rather than assumed from the
     // step that just ran: a lease survives its act, so the thing on the card
     // may have been taken three steps ago.
     const held = crucibleLeaseHost.leaseSubject(job.id);
-    const leaseSurvives = outcome.ok && !stopped && leaseWantedAfter(job, step, held);
+    /*
+     * `running` IS PART OF THE QUESTION, not a second one. A lease is kept
+     * for an act that is ABOUT TO START, and nothing is admitted while the
+     * queue's dial is off — so a step that lands after somebody pressed Pause
+     * has no next act, it has a deferred one, and the difference is an
+     * unbounded hold on a 9–27 GB model that the heartbeat will never let the
+     * ttl reclaim. `pause()` cannot cover this on its own: at the moment it
+     * was pressed this step was still running and rightly kept the card.
+     */
+    const leaseSurvives = outcome.ok && !stopped && running
+      && leaseWantedAfter(job, step, held);
     if (!leaseSurvives) void crucibleLeaseHost.closeRow(job.id);
   }
 

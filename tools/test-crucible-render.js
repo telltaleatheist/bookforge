@@ -185,6 +185,7 @@ function provenanceFor(name, voice) {
  * One fake server. `behaviour` decides what it does with a submit:
  *   'render' — the happy path, one chunk/artifact/progress triple per chunk
  *   'busy'   — 409 server_busy with the holder named
+ *   'leased' — 409 leased: a CLIENT is mid-run on what is on the card
  *   'cancel' — streams two chunks, then waits for DELETE and ends `cancelled`
  */
 function startFakeCrucible(behaviour) {
@@ -231,6 +232,26 @@ function startFakeCrucible(behaviour) {
                 since: '2026-09-13T19:00:00Z',
                 progress: 0.62,
                 message: '640 of 1030 chunk(s) rendered',
+              },
+            },
+          });
+        }
+        if (behaviour === 'leased') {
+          // `crucible/crucible/leases.py`, `Lease.to_dict()` — the six fields a
+          // `409 leased` carries. A `tts` submit is refused one because `tts` is
+          // in `EVICTS_THE_RESIDENT_MODEL`: the render would take the 27B this
+          // lease is holding off the card.
+          return send(res, 409, {
+            error: {
+              code: 'leased',
+              message: "'qwen3.8-27b-4bit' is leased by 'foundry' for 'translate'",
+              details: {
+                lease_id: 'lease-held',
+                kind: 'llm',
+                client: 'foundry',
+                act: 'translate',
+                since: '2026-09-18T01:00:00+00:00',
+                expires_at: '2026-09-18T01:02:00+00:00',
               },
             },
           });
@@ -609,6 +630,59 @@ async function busyChecks() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// A LEASED card is the same WAIT a busy lane is, with a longer clock
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// `CrucibleLeased` is a subclass of `CrucibleRefused` and NOT of `CrucibleBusy`
+// (`crucible/sdk/ts/src/errors.ts`), so `describeCrucibleRefusal` used to fall
+// straight through to its generic arm: the row went red and waited for somebody
+// to press Retry. Foundry, on the identical refusal, parks with the holder's
+// name and comes back on its own — so Foundry waited out BookForge's narrations
+// while BookForge died on Foundry's translations.
+//
+// `busyLine` is what the park is made of: `parallel-tts-bridge.ts` calls
+// `noteStepBusy(jobId, err.busyLine)` and `settleStep` puts the row back to
+// `queued` carrying that line. Absent, the row FAILS.
+
+async function leasedChecks() {
+  const fake = await startFakeCrucible('leased');
+  const server = registerFake(fake.url);
+  const sentencesDir = freshSentencesDir();
+  let thrown = null;
+  try {
+    await render.runCrucibleRender({
+      server,
+      renderId: 'test-render-leased',
+      voice: 'mistborn',
+      language: 'en',
+      chunks: CHUNKS,
+      sentencesDir,
+    });
+  } catch (err) {
+    thrown = err;
+  } finally {
+    await fake.close();
+  }
+
+  await check('409 leased is a WAIT the queue can park on, not a red row', () => {
+    assert.ok(thrown, 'a leased card must not produce a render');
+    assert.strictEqual(thrown.code, 'leased');
+    assert.strictEqual(thrown.busyLine, 'leased: foundry, translate, until 2026-09-18T01:02:00+00:00',
+      'without a busyLine `noteStepBusy` is never called and the row FAILS instead of holding');
+    assert.ok(/foundry/.test(thrown.message), `the holder must be named; got: ${thrown.message}`);
+    assert.ok(/translate/.test(thrown.message),
+      'and what they are doing, so a person can judge the wait');
+    assert.ok(/2026-09-18T01:02:00\+00:00/.test(thrown.message),
+      'and until when — a lease may hold for an hour where a lane frees in minutes');
+  });
+
+  await check('a leased card renders NOTHING locally and writes no file', () => {
+    assert.strictEqual(fs.readdirSync(sentencesDir).length, 0,
+      'a refused render leaves an empty sentences dir — no silent downgrade');
+  });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Cancel reaches the server
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -842,6 +916,7 @@ async function bridgeSeamChecks() {
   await bridgeSeamChecks();
   await happyPathChecks();
   await busyChecks();
+  await leasedChecks();
   await cancelChecks();
   await refusalChecks();
 

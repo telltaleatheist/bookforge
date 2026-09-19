@@ -98,22 +98,30 @@
  * row-wide lease is stamped with the act that OPENED it. That is a ruling owed
  * (`docs/CRUCIBLE_ROLLOUT_PLAN.md` §3), not a decision taken here.
  *
- * ── Why this is hand-rolled HTTP and not three SDK calls ────────────────────
+ * ── Why this is still hand-rolled HTTP and not three SDK calls ──────────────
  *
- * `client.lease()`, `client.heartbeat()` and `client.release()` exist on the
- * Crucible branch (`aa2a24f`) and ship in the release after this one. The pin in
- * `package.json` is `@crucible/client` **v0.5.0**, which does not carry them. So
- * the three routes are called with `fetch` here, and the ERROR MAPPING below is
- * the reason this is a module and not three inline calls: everything else on
- * these paths throws the SDK's own error types and every door switches on them,
- * so a route called by hand that threw a bare `Error` would turn `409
- * leased` — a WAIT — into "something went wrong", which is a failure.
+ * THE PIN HAS MOVED. `package.json` carries `@crucible/client` **v1.0.1**, and
+ * `client.lease()`, `client.heartbeat()` and `client.release()` are on it. So
+ * the sentence that used to stand here — "the pin is v0.5.0, which does not
+ * carry them" — is no longer true, and the ONE thing it promised has been done:
+ * **`CrucibleLeased` is the SDK's**, imported and re-thrown by
+ * {@link leaseRequest}, so the type a door catches is the same object whether
+ * the refusal came through the SDK's own routes or through the `fetch` below.
+ * A second class of the same name beside it was two owners of one refusal, and
+ * the two were catchable in different places: `render.ts` and `job.ts` go
+ * through the SDK and saw the SDK's, `text-venue.ts` went through this file and
+ * saw this file's, and neither caught the other's.
  *
- * **THE DAY THE PIN MOVES, THIS FILE COLLAPSES TO THE SDK'S THREE METHODS.**
- * {@link leaseRequest} and its mapping go; {@link withCrucibleLease} stays, and
- * so does every caller. {@link CrucibleLeased} is replaced by the SDK's own type
- * of the same name, which carries the same five fields and the same
- * `leasedLine`.
+ * What has NOT been done is the rest of the collapse: the three routes are
+ * still called with `fetch` here, because {@link takeCrucibleLease} resolves
+ * the token per call (`crucible init --force` mints a new one mid-run) and
+ * re-acquires under a restart, and moving that onto the SDK's client is a
+ * change to the heartbeat's own shape rather than a swap of three calls. The
+ * ERROR MAPPING below is why this is a module and not three inline calls:
+ * everything else on these paths throws the SDK's own error types and every
+ * door switches on them, so a route called by hand that threw a bare `Error`
+ * would turn `409 leased` — a WAIT — into "something went wrong", which is a
+ * failure.
  *
  * ── Two semantics that are not optional ─────────────────────────────────────
  *
@@ -129,7 +137,15 @@
  * deliberately: two clients guessing differently at the same restart is how one
  * of them loses a book.
  *
- * ── Expiry is the backstop, and the only one ────────────────────────────────
+ * **AND A RE-LEASE THAT IS REFUSED ENDS THE HEARTBEAT.** It is asked ONCE. A
+ * server whose model has left the card refuses it `not_resident`, and a lease
+ * never loads one — so that refusal cannot become a success by being asked
+ * again, and a timer that goes on asking is a loop with no ending (measured on
+ * Foundry's identical branch, 2026-09-15: 264 × 404 → 409 for ten hours). The
+ * beat stops, ONE line says so with the server's own message, and the run goes
+ * on unprotected and said so. See {@link takeCrucibleLease}.
+ *
+ * ── Expiry is the backstop for a client that has STOPPED TALKING ────────────
  *
  * There is no sweeper on the server: every read compares the stored instant to
  * the clock. So a client that crashes, sleeps or is killed stops blocking the
@@ -137,13 +153,20 @@
  * {@link CRUCIBLE_LEASE_TTL_SECONDS} a LIVENESS number rather than a duration —
  * it is how long the server should keep believing in a client it cannot see, not
  * how long the run will take.
+ *
+ * **IT IS NOT A CLEANER FOR A LEASE THIS PROCESS IS STILL HEARTBEATING**, and
+ * reading it as one is how a door came to leave a 9–27 GB model held until the
+ * app quit. The beat is a THIRD of the ttl, so a lease nobody gives back is
+ * renewed roughly twice before it could lapse: it never expires while this
+ * process lives. What gives a lease back is a door — see {@link withRowLease}.
  */
 
 import { AsyncLocalStorage } from 'node:async_hooks';
 
 import {
   CrucibleAuthError,
-  CrucibleBusy,
+  CrucibleLeased,
+  CrucibleProtocolError,
   CrucibleRefused,
   CrucibleServerError,
   CrucibleUnreachable,
@@ -203,92 +226,38 @@ function leaseUserAgent(): string {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * `409 leased`: somebody has said they are mid-run on that model.
+ * `409 leased` — somebody has said they are mid-run on that model — IS THE
+ * SDK'S TYPE, AND ONLY THE SDK'S.
  *
- * Its own type for {@link CrucibleBusy}'s reason — the body is not decoration.
- * The server answers with the holder's name, the act, when it started and when
- * it expires *"enough for a client to back off intelligently"*, and a caller
- * left to dig that out of `details: unknown` would re-implement the same parse in
- * every door.
+ * This file used to declare a second class of the same name, for a pin that no
+ * longer exists (see the header). Two classes meant two `catch`es that could
+ * not see each other: a refusal raised through the SDK's own routes
+ * (`render.ts`, `job.ts`) was never an `instanceof` this file's, and one raised
+ * through {@link leaseRequest} was never an `instanceof` the SDK's — so the
+ * same 409 was a WAIT in one door and an unnamed failure in the next. One
+ * refusal, one owner.
  *
- * **`holder` is null when the lease was taken without a User-Agent, and null
- * means "it did not say".** Never guessed at: a bench must not be confidently
- * wrong about whose run is on the card.
+ * Re-exported rather than left to each door to import, because this module is
+ * where the lease vocabulary lives and every leasing door already imports from
+ * it; the import site is a detail, the single class is the rule.
  *
- * **Nothing here retries or waits it out.** ARCHITECTURE.md R5 — queues belong to
- * clients. A sleep loop in this module would be a queue with a policy nobody
+ * What it carries (`crucible/crucible/leases.py`, `Lease.to_dict`): the lease's
+ * id, the resident KIND it holds, the holder's recorded `client` — **null when
+ * the lease was taken without a User-Agent, and null means "it did not say"**,
+ * never guessed at — the act, the since and the expiry. `leasedLine` is the one
+ * line a bench or a held queue row puts in front of a person, the same shape
+ * `CrucibleBusy.busyLine` has, because the two are read in the same place by
+ * the same reader for the same purpose: what is in the way, and whose it is.
+ *
+ * **Nothing here retries or waits it out.** ARCHITECTURE.md R5 — queues belong
+ * to clients. A sleep loop in this module would be a queue with a policy nobody
  * chose; what a door does with the wait is the door's, every time. Where the
  * caller is a queue step the wait is rendered through the queue's own busy hold
- * ({@link leasedLine} → `noteStepBusy`), which is the same road `server_busy`
- * already travels.
- *
- * A subclass of {@link CrucibleRefused} so that every `catch` already written
- * against the SDK's types still catches it, and so it is a one-line deletion the
- * day the pin carries the SDK's own `CrucibleLeased`.
+ * (`leasedLine` → `noteStepBusy`), which is the same road `server_busy` already
+ * travels — and since 2026-09-18 both refusal readers take that road, so a
+ * `leased` parks a row instead of failing it.
  */
-export class CrucibleLeased extends CrucibleRefused {
-  /** The open lease's id, as the server named it. */
-  readonly leaseId: string;
-  /** The holder's recorded User-Agent. Null = it did not say. */
-  readonly holder: string | null;
-  /** The capability class it was taken for: `translate`, `clean`, `pages`, … */
-  readonly act: string;
-  /** When the holder took it, as the server said it. */
-  readonly since: string;
-  /** The earliest it can lapse without a heartbeat. */
-  readonly expiresAt: string;
-
-  constructor(
-    status: number,
-    code: string,
-    serverMessage: string,
-    details: unknown,
-    fields: {
-      leaseId: string;
-      holder: string | null;
-      act: string;
-      since: string;
-      expiresAt: string;
-    },
-  ) {
-    super(status, code, serverMessage, details);
-    this.name = 'CrucibleLeased';
-    this.leaseId = fields.leaseId;
-    this.holder = fields.holder;
-    this.act = fields.act;
-    this.since = fields.since;
-    this.expiresAt = fields.expiresAt;
-  }
-
-  /**
-   * "leased: foundry, translate since 2026-09-14T01:02:03Z" — the one line a
-   * bench or a held queue row puts in front of a person.
-   *
-   * Deliberately the same shape as {@link CrucibleBusy.busyLine}, because the two
-   * are read in the same place by the same reader for the same purpose: what is
-   * in the way, and whose it is.
-   */
-  get leasedLine(): string {
-    const who = this.holder === null ? 'an unnamed client' : this.holder;
-    return `leased: ${who}, ${this.act} since ${this.since}`;
-  }
-}
-
-/**
- * The SDK's `isServerSpecificRefusal` — which decides whether a `waitFor: "any"`
- * walk should try the NEXT server — does not know `leased` on the pinned
- * v0.5.0: it lists codes explicitly and answers `false` for anything it has not
- * seen. So today a `leased` stops an `any` walk rather than moving it
- * along, which costs an opportunity and never a wrong answer (the conservative
- * direction the SDK chose on purpose).
- *
- * This is the one place that knows better, and it is NOT a second copy of that
- * table: it answers only for this one code, for the callers that walk. The SDK's
- * next release puts `leased` in `SERVER_SPECIFIC_REFUSALS` and this goes.
- */
-export function isCrucibleLeasedElsewhere(err: unknown): err is CrucibleLeased {
-  return err instanceof CrucibleLeased;
-}
+export { CrucibleLeased } from '@crucible/client';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // The three routes
@@ -357,13 +326,45 @@ async function leaseRequest(
   }
   if (response.status >= 500) throw new CrucibleServerError(response.status, code, message);
   if (response.status === 409 && code === 'leased') {
+    /*
+     * THE SIX FIELDS `Lease.to_dict()` SENDS, READ AS THE SDK READS THEM.
+     *
+     * Every one is REQUIRED, and a body missing one is a
+     * {@link CrucibleProtocolError} rather than a `CrucibleLeased` with blanks
+     * in it — the SDK's own policy on this exact body (`leasedRefusal`), and
+     * the reason is that a door shows the holder and the deadline to a person.
+     * Standing in `''` for a missing `since` would put "leased: foundry,
+     * translate, until " in front of somebody and tell nobody that the server
+     * had stopped saying. `client` is the one nullable field: null is an
+     * ANSWER there ("it did not say"), not an absence.
+     */
     const held = (details ?? {}) as Record<string, unknown>;
+    const said = (key: string): string => {
+      const value = held[key];
+      if (typeof value !== 'string') {
+        throw new CrucibleProtocolError(
+          `a 409 leased from ${where.url} carries no "${key}" in error.details, so this client `
+          + 'cannot say who holds the card or until when. crucible docs/DESIGN.md §4 and '
+          + 'crucible/leases.py Lease.to_dict list the six fields it sends.',
+        );
+      }
+      return value;
+    };
+    const client = held['client'];
+    if (client !== null && typeof client !== 'string') {
+      throw new CrucibleProtocolError(
+        `a 409 leased from ${where.url} carries no "client" in error.details. The server sends `
+        + 'it, and null is its way of saying the holder was not named — a key that is simply '
+        + 'absent is a document this client cannot read, not an unnamed holder.',
+      );
+    }
     throw new CrucibleLeased(409, code, message, details, {
-      leaseId: typeof held['lease_id'] === 'string' ? held['lease_id'] : '',
-      holder: typeof held['client'] === 'string' ? held['client'] : null,
-      act: typeof held['act'] === 'string' ? held['act'] : 'a run',
-      since: typeof held['since'] === 'string' ? held['since'] : '',
-      expiresAt: typeof held['expires_at'] === 'string' ? held['expires_at'] : '',
+      leaseId: said('lease_id'),
+      kind: said('kind'),
+      holder: client,
+      act: said('act'),
+      since: said('since'),
+      expiresAt: said('expires_at'),
     });
   }
   throw new CrucibleRefused(response.status, code, message, details);
@@ -621,10 +622,11 @@ export async function takeCrucibleLease(options: CrucibleLeaseOptions): Promise<
          * but a NEW lease on the same model: the model is still resident (a server
          * that had lost it would already be answering our requests
          * `not_resident`) and this run still intends every request it has
-         * left. A re-lease that is itself refused falls through to the log below,
-         * and the run goes on unprotected AND SAID SO.
+         * left. It is asked ONCE: a re-lease that is itself refused ENDS the
+         * beat in the arm below, because that refusal cannot become a success
+         * by being asked again.
          */
-        let failure = err;
+        const failure = err;
         if (err instanceof CrucibleRefused && err.code === 'unknown_lease' && !released) {
           try {
             id = await acquire();
@@ -632,7 +634,38 @@ export async function takeCrucibleLease(options: CrucibleLeaseOptions): Promise<
               + `took a new one (${id})`);
             return;
           } catch (again) {
-            failure = again;
+            /*
+             * THE RE-LEASE WAS REFUSED, SO THE BEAT ENDS HERE. THIS IS NOT A
+             * RETRY THAT FAILED; IT IS AN ANSWER.
+             *
+             * A re-lease is refused `not_resident` whenever the model has left
+             * the card, and a lease never loads one — a load evicts whatever is
+             * there, which on a shared server is somebody else's book. So this
+             * refusal cannot become a success by being asked again, and the
+             * timer that goes on asking is a loop with no ending: measured
+             * 2026-09-15 against Foundry's identical branch, 264 × (404 → 409
+             * `not_resident`) forty seconds apart for ten hours, no backoff, no
+             * give-up and no line anywhere a person would look.
+             *
+             * ONE line, carrying the SERVER'S OWN message, and then the run goes
+             * on unprotected — which is what the branch above always promised
+             * and never did. Unprotected is the truthful state: this side has no
+             * lease and cannot get one, so an eviction later in the book has its
+             * cause written down here rather than looking like the server
+             * misbehaving. `clearInterval` and not a flag, so nothing wakes up
+             * to re-decide it.
+             *
+             * A heartbeat that fails for any OTHER reason still falls through to
+             * the log below and the beat continues: that is a blip, two more go
+             * out before the ttl is up, and the ttl is three beats long for
+             * exactly that.
+             */
+            clearInterval(timer);
+            log(`crucible "${server}" had forgotten the lease on ${leased} and would not grant `
+              + 'another, so the heartbeat GAVE UP — this run continues UNPROTECTED and nothing '
+              + 'will stop the model being taken off that card: '
+              + `${again instanceof Error ? again.message : String(again)}`);
+            return;
           }
         }
         /*
@@ -908,10 +941,38 @@ async function withRowLease<T>(
   rowLeases.set(row, lease);
   /*
    * NO `finally` HERE, AND THAT IS THE WHOLE POINT. The lease outlives this
-   * act. Every way it can still be given back: the scheduler closes the row
-   * (`closeCrucibleRowLease`) when nothing follows, a later act of the same row
-   * swaps it above, the app quits (`releaseAllCrucibleLeases`), or the ttl
-   * expires — which is the mechanism, the other three being courtesies.
+   * act.
+   *
+   * ── THE DOORS ARE THE MECHANISM. THE TTL IS NOT ONE ──────────────────────
+   *
+   * This said the opposite until 2026-09-18 — "the ttl expires, which is the
+   * mechanism, the other three being courtesies" — and it was false in the one
+   * way that matters: the heartbeat above beats at a THIRD of the ttl
+   * ({@link crucibleHeartbeatIntervalMs}), so a lease this process still holds
+   * is renewed roughly twice before it could lapse. It does not expire while
+   * the app lives. A door that "left it to the ttl" left a 9–27 GB model
+   * leased until BookForge quit, with Crucible answering this app's own next
+   * job `409 leased`, naming `bookforge`.
+   *
+   * So the ways it is given back are all deliberate acts, and each one is the
+   * mechanism for its own case:
+   *
+   *  - the SCHEDULER closes the row when the act the lease was kept for is
+   *    gone or cannot start — `settleStep` when nothing follows the step it
+   *    settles or the queue has been paused, and `cascadeCancel`, `remove`,
+   *    `removeStep` and `pause` when a door disposes of that act
+   *    (`queue-engine.ts`, THE DOORS THAT DISPOSE OF THE ACT A LEASE WAS KEPT
+   *    FOR). All five call {@link closeCrucibleRowLease}, which is the one
+   *    owner;
+   *  - a later act of the same row SWAPS it above, when it wants another
+   *    model or another machine;
+   *  - the app QUITS ({@link releaseAllCrucibleLeases});
+   *  - and the heartbeat GIVES UP, which stops the renewal and hands the ttl
+   *    back its job — see the re-lease branch in {@link takeCrucibleLease}.
+   *
+   * The ttl remains the backstop for the case it was written for and the only
+   * one it can serve: a process that is killed, sleeps, or loses the network,
+   * and therefore stops heartbeating. It is a LIVENESS number, not a cleaner.
    */
   return run(lease);
 }

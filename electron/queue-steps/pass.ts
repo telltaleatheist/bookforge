@@ -258,6 +258,25 @@ function passModule(type: JobType): StepModule {
         const result = await runProcessingPass(
           ctx.stepId, config, queueMainWindow(), ctx.job.waitForResolved);
         if (!result.success) {
+          if (result.busyLine !== undefined) {
+            /*
+             * A CRUCIBLE REFUSED THIS PASS BECAUSE SOMEBODY IS MID-RUN ON THAT
+             * CARD — `409 leased`. Nothing about this book is wrong and none
+             * of its work is lost, because it never started, so the row goes
+             * back to `queued` carrying the holder's own line and the
+             * admission tick tries again. The same hold a render and an align
+             * already ask for (`crucible/align.ts`, `parallel-tts-bridge.ts`),
+             * and the same road `server_busy` travels — with a longer clock, a
+             * lane frees in minutes and a lease may hold for an hour.
+             *
+             * Failing instead is what BookForge did until 2026-09-18: a red
+             * row nobody did anything wrong on, and `retry()` — which resets
+             * failures — as the only way back. Foundry, on the identical
+             * refusal, parked and came back.
+             */
+            const { noteStepBusy } = await import('../queue-engine.js');
+            noteStepBusy(ctx.stepId, result.busyLine);
+          }
           throw new Error(result.error || `${ctx.step.label} failed and gave no reason.`);
         }
         // What the pass has to SAY carries onto the row, not just whether it

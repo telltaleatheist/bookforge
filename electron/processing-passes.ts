@@ -618,7 +618,15 @@ async function runSimplifyPass(
     }
   );
   if (!result.success || !result.outputPath) {
-    return { success: false, error: result.error || 'Simplify produced no EPUB and gave no reason.' };
+    // `busyLine` TRAVELS WITH THE FAILURE, because it is what says the failure
+    // is a WAIT: a Crucible refused this pass `409 leased` and the queue step
+    // behind us parks the row on it rather than reddening it. Spread only when
+    // present — absent is the ordinary case and means nothing is waiting.
+    return {
+      success: false,
+      error: result.error || 'Simplify produced no EPUB and gave no reason.',
+      ...(result.busyLine === undefined ? {} : { busyLine: result.busyLine }),
+    };
   }
 
   const produced = result.outputPath;

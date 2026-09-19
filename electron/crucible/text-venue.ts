@@ -655,17 +655,20 @@ export function describeTextActRefusal(
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const { CrucibleBusy, CrucibleRefused } = require('@crucible/client') as typeof import('@crucible/client');
   // Required the same way and for the same reason, and by NAME rather than by
-  // code: `model_leased` is a CrucibleRefused subclass, so it must be asked about
-  // before the generic branch below or it would lose the holder's line.
+  // code: `leased` is a CrucibleRefused subclass, so it must be asked about
+  // before the generic branch below or it would lose the holder's line. Re-
+  // exported by `lease.js` and owned by the SDK — one class, so the door that
+  // goes through `leaseRequest` and the doors that go through the SDK's own
+  // routes catch the same object.
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const { CrucibleLeased } = require('./lease.js') as typeof import('./lease');
   if (err instanceof CrucibleLeased) {
     return new CrucibleTextActError(
       'crucible_model_leased',
-      `crucible "${server}"'s resident model is leased by another run, so the ${act} act was not `
-        + `started: ${err.leasedLine} (until at least ${err.expiresAt}). A lease is that client `
-        + 'saying it intends more work on this model; nothing here waits it out or loads a model '
-        + 'somewhere else. This book waits for that server.',
+      `crucible "${server}"'s resident ${err.kind} is leased by another run, so the ${act} act `
+        + `was not started: ${err.leasedLine}. A lease is that client saying it intends more work `
+        + 'on this model; nothing here waits it out or loads a model somewhere else. This book '
+        + 'waits for that server.',
       err.leasedLine,
     );
   }
