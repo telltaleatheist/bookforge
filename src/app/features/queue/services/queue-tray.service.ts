@@ -479,6 +479,26 @@ export class QueueTrayService {
     await this.queue.cancelJob(stepId);
   }
 
+  /**
+   * Stop every step of a book that currently holds a slot, leaving the queue
+   * running — the queue page's *"■ Stop this book"*.
+   *
+   * The same narrow act as {@link stopStep}, said once for a book whose chain
+   * can occupy two slots at a time (a render on the card and an assembly on
+   * the CPU pair). Nothing new is taught to the engine here: it is `cancelJob`
+   * per running step, exactly as the slot's own Stop performs it, so each step
+   * comes back `held` with what it rendered and Start resumes from there.
+   *
+   * Sequential and NOT wrapped in a catch, for `cancelPlan`'s reason: a
+   * refusal on the second step is said out loud while the first has genuinely
+   * stopped.
+   */
+  async stopPlan(plan: BookPlan): Promise<void> {
+    for (const step of plan.steps) {
+      if (step.status === 'running') await this.stopStep(step.stepId);
+    }
+  }
+
   /** Release one held or stopped step. */
   async startStep(stepId: string): Promise<void> {
     await this.queue.runJobStandalone(stepId);
