@@ -37,10 +37,11 @@ const {
   REPO, installElectronStub, makeChecker, startFakeCrucible, fakeNamer, provenanceFor,
   crucibleHost, noServerHost,
 } = require('./fake-crucible');
+const { skipLine } = require('./keeper-skip.js');
 
 const ALIGN = path.join(REPO, 'dist', 'electron', 'crucible', 'align.js');
 if (!fs.existsSync(ALIGN)) {
-  console.log('SKIP: dist/electron/crucible/align.js is not built — run npx tsc -p tsconfig.electron.json');
+  console.log(skipLine('dist/electron/crucible/align.js is not built — run npx tsc -p tsconfig.electron.json'));
   process.exit(0);
 }
 const { work } = installElectronStub('bf-crucible-align-');

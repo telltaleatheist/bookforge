@@ -107,7 +107,21 @@ function checkAsync(name, fn) {
 const stream = require(path.join(DIST, 'streaming-engine.js'));
 const higgsModels = require(path.join(DIST, 'higgs-models.js'));
 const streamJs = fs.readFileSync(path.join(DIST, 'streaming-engine.js'), 'utf-8');
-const streamTs = fs.readFileSync(path.join(REPO, 'electron', 'streaming-engine.ts'), 'utf-8');
+/*
+ * READ WITH ITS LINE ENDINGS NORMALISED, because the source pins below are
+ * anchored on `\n` — `/function higgsAvailability\(\): EngineInfo \{[\s\S]*?\n\}\n/`
+ * and the `\n\]\);` beside it.
+ *
+ * `core.autocrlf=true` on this machine, so a FRESH CHECKOUT of this file lands
+ * CRLF while the main checkout's working copy is LF (measured 2026-09-18: 639
+ * CRLF and 0 bare LF in a worktree, 0 and 599 in the main checkout). The same
+ * commit's guard was therefore green in one directory and red in another, for
+ * a reason that is not about the code at all — which is the same defect as a
+ * keeper that reports on a `+dirty` suffix rather than on the thirteen files
+ * it exists to watch. A pin on SOURCE is a pin on what the source SAYS.
+ */
+const streamTs = fs.readFileSync(path.join(REPO, 'electron', 'streaming-engine.ts'), 'utf-8')
+  .replace(/\r\n/g, '\n');
 
 function stub(mod, name, fn) {
   const d = Object.getOwnPropertyDescriptor(mod, name);

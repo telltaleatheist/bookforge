@@ -48,13 +48,14 @@ const http = require('http');
 const os = require('os');
 const path = require('path');
 const Module = require('module');
+const { skipLine } = require('./keeper-skip.js');
 
 const REPO = path.resolve(__dirname, '..');
 const VENUE = path.join(REPO, 'dist', 'electron', 'crucible', 'text-venue.js');
 
 if (!fs.existsSync(VENUE)) {
-  console.log('SKIP: dist/electron/crucible/text-venue.js is not built — run '
-    + 'npx tsc -p tsconfig.electron.json');
+  console.log(skipLine('dist/electron/crucible/text-venue.js is not built — run '
+    + 'npx tsc -p tsconfig.electron.json'));
   process.exit(0);
 }
 

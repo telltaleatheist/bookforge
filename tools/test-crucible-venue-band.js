@@ -49,13 +49,14 @@ const http = require('http');
 const os = require('os');
 const path = require('path');
 const Module = require('module');
+const { skipLine } = require('./keeper-skip.js');
 
 const REPO = path.resolve(__dirname, '..');
 const BAND = path.join(REPO, 'dist', 'electron', 'crucible', 'voice-band.js');
 
 if (!fs.existsSync(BAND)) {
-  console.log('SKIP: dist/electron/crucible/voice-band.js is not built — run '
-    + 'npx tsc -p tsconfig.electron.json');
+  console.log(skipLine('dist/electron/crucible/voice-band.js is not built — run '
+    + 'npx tsc -p tsconfig.electron.json'));
   process.exit(0);
 }
 

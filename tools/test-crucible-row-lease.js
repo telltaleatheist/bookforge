@@ -63,11 +63,12 @@ const path = require('path');
 const {
   REPO, installElectronStub, makeChecker, startFakeCrucible, leaseRoutes, fakeNamer,
 } = require('./fake-crucible.js');
+const { skipLine } = require('./keeper-skip.js');
 
 const LEASE = path.join(REPO, 'dist', 'electron', 'crucible', 'lease.js');
 if (!fs.existsSync(LEASE)) {
-  console.log('SKIP: dist/electron/crucible/lease.js is not built — run '
-    + 'npx tsc -p tsconfig.electron.json');
+  console.log(skipLine('dist/electron/crucible/lease.js is not built — run '
+    + 'npx tsc -p tsconfig.electron.json'));
   process.exit(0);
 }
 

@@ -48,13 +48,14 @@ const fs = require('fs');
 const http = require('http');
 const os = require('os');
 const path = require('path');
+const { skipLine } = require('./keeper-skip.js');
 
 const REPO = path.resolve(__dirname, '..');
 const PAGES = path.join(REPO, 'dist', 'electron', 'crucible', 'pages.js');
 
 if (!fs.existsSync(PAGES)) {
-  console.log('SKIP: dist/electron/crucible/pages.js is not built — run '
-    + 'npx tsc -p tsconfig.electron.json');
+  console.log(skipLine('dist/electron/crucible/pages.js is not built — run '
+    + 'npx tsc -p tsconfig.electron.json'));
   process.exit(0);
 }
 

@@ -49,33 +49,38 @@ const { spawnSync } = require('child_process');
 /**
  * NO BOOK, NO RUN — AND THAT IS A SKIP, NOT A FAILURE.
  *
- * This suite needs a fixture that is not in the repository (see THE VARIABLE
- * SAYS WHERE, NOT WHICH below). It used to print its explanation and
- * `process.exit(1)`, which a runner cannot tell from a real regression — so it
- * was simply left out of run-keepers, where being left out is how a guard rots
- * unnoticed (crucible/docs/ARCHITECTURE.md R2). It now SKIPS BY NAME and exits
- * 0: run-keepers lists it as skipped, with this reason, on every run.
+ * This suite needs a fixture that is not in the repository: a regression test
+ * naming three specific plates, so no other book will do. It used to print its
+ * explanation and `process.exit(1)`, which a runner cannot tell from a real
+ * regression — so it was simply left out of run-keepers, where being left out
+ * is how a guard rots unnoticed (crucible/docs/ARCHITECTURE.md R2). It now
+ * SKIPS BY NAME and exits 0: run-keepers lists it as skipped, with this
+ * reason, on every run.
+ *
+ * ── AND IT SKIPPED EVERY RUN, ON THE MACHINE THAT HAS THE BOOK ─────────────
+ *
+ * Being listed and skipping for ever is one step short of not being listed.
+ * Until 2026-09-18 the only way to name the fixture was `BOOKFORGE_KA_EPUB`,
+ * and nothing sets it: the suite had skipped on Owen's PC, where the book is,
+ * since the day it joined the list. The path is now DERIVED from the library
+ * root the app records and the layout the app owns —
+ * `tools/ka-fixture.js` — so a machine that holds the book runs the suite
+ * without being told anything. The variable stays as an OVERRIDE: it says
+ * WHERE the book is on a machine that keeps it somewhere else, not WHICH book.
+ * It is only ever READ.
  *
  * The check sits ahead of the Electron relaunch on purpose — a machine without
- * the book should not pay for a browser to be told it has no book.
+ * the book should not pay for a browser to be told it has no book. The
+ * derivation runs there too, in bare node, and the answer reaches the relaunch
+ * through the same variable (the child inherits this process's environment),
+ * so the Electron half asks nothing and needs no library.
  */
-function bookOrSkipReason() {
-  const at = process.env.BOOKFORGE_KA_EPUB;
-  if (at && fs.existsSync(at)) return { book: at };
-  return {
-    reason: 'BOOKFORGE_KA_EPUB '
-      + (at ? `names a file that is not there (${at})` : 'is not set')
-      + ' — this suite needs the Killing America EPUB, which is on the shared library, '
-      + 'not in the repo: <library>/projects/Killing_America_-_Turning_the_Tide_on_the_'
-      + 'Tsunami_of_Darkness_-_Gene_Bailey_(2024)/archive/Killing America. Bailey, Gene.epub '
-      + '(Windows Z:\\bookforge\\…, Mac /Volumes/iO/bookforge/…). The variable says WHERE '
-      + 'the book is on this machine, not WHICH book. It is only ever READ.',
-  };
-}
+const { killingAmericaEpub } = require(path.join(__dirname, 'ka-fixture.js'));
+const { skipLine } = require('./keeper-skip.js');
 
-const skip = bookOrSkipReason().reason;
-if (skip) {
-  console.log(`SKIP: ${skip}`);
+const found = killingAmericaEpub();
+if (found.book === undefined) {
+  console.log(skipLine(found.reason));
   process.exitCode = 0;
   return;
 }
@@ -84,7 +89,14 @@ if (!process.versions.electron) {
   const electron = require(path.join(__dirname, '..', 'node_modules', 'electron'));
   const result = spawnSync(electron, [__filename, ...process.argv.slice(2)], {
     stdio: 'inherit',
-    env: { ...process.env, ELECTRON_DISABLE_SECURITY_WARNINGS: '1' },
+    // The book crosses to the Electron half as the override, so that half
+    // derives nothing: deriving would load the headless `electron` shim into a
+    // process that IS Electron, replacing the runtime module for good.
+    env: {
+      ...process.env,
+      ELECTRON_DISABLE_SECURITY_WARNINGS: '1',
+      BOOKFORGE_KA_EPUB: found.book,
+    },
   });
   process.exit(result.status === null ? 1 : result.status);
 }
@@ -146,9 +158,9 @@ app.on('window-all-closed', () => { /* the harness decides when it is done */ })
  * So the fixture is fixed and its LOCATION is not — it sits on the shared
  * library, which every machine mounts at a different path.
  */
-// Resolved once, at the top of the file, by `bookOrSkipReason()` — which has
+// Resolved once, at the top of the file, by `killingAmericaEpub()` — which has
 // already returned here if the book could not be found.
-const KA = bookOrSkipReason().book;
+const KA = found.book;
 
 let passed = 0;
 const failures = [];

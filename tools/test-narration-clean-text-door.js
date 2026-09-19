@@ -43,6 +43,7 @@ const http = require('http');
 const os = require('os');
 const path = require('path');
 const zlib = require('zlib');
+const { skipLine } = require('./keeper-skip.js');
 
 const REPO = path.resolve(__dirname, '..');
 const DIST = path.join(REPO, 'dist', 'electron');
@@ -73,9 +74,9 @@ function realFoundry() {
 
 const BINARY = realFoundry();
 if (BINARY === null) {
-  console.log(
-    'SKIP test-narration-clean-text-door — no foundry engine on this machine. Set '
-    + 'FOUNDRY_CLI_PATH, or build one with tools/release-build.sh host in the foundry checkout.');
+  console.log(skipLine(
+    'no foundry engine on this machine. Set '
+    + 'FOUNDRY_CLI_PATH, or build one with tools/release-build.sh host in the foundry checkout.'));
   process.exit(0);
 }
 

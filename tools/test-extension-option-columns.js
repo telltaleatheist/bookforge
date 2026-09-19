@@ -267,5 +267,52 @@ check('KEPT: the tab-recording rows are untouched', () => {
   }
 });
 
+// ═══════════════════════════════════════════════════════════════════════════
+// AND §2's RULING, WHICH THE SAME DOCUMENT STATED TWICE AND DIFFERENTLY
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// This file already keeps one of the plan's rulings honest (§0's two columns),
+// and §2 carries another: Correct Sentences spreads its candidates across the
+// take ladder. It said so in two incompatible ways at once — "with a two-rung
+// ladder and N = 3 that is takes 1, 0, 1", and, four lines later, that a take
+// past the ladder's length is refused `unknown_take`. A rung repeated is not a
+// second reading: narrator seeds per chunk (`_seed_for` returns `seed + index`,
+// `HiggsConfig.seed` defaults to 1234), so the same rung renders the same bytes
+// and the third candidate of that cycle is a copy of the first — which is the
+// defect Correct Sentences exists to avoid, written into the plan for it.
+//
+// A plan that states a rule twice is a plan that will be implemented twice.
+
+const planPath = path.join(REPO, 'docs', 'EXTENSION-TO-CRUCIBLE-PLAN.md');
+const plan = fs.readFileSync(planPath, 'utf-8');
+
+check('§2 does not cycle the take ladder', () => {
+  if (/takes 1, 0, 1/.test(plan)) {
+    throw new Error(
+      'the plan still says a two-rung ladder answers N = 3 with "takes 1, 0, 1". Rung 1 twice is '
+      + 'the same seed and the same bytes, so that audition list offers two copies of one reading. '
+      + 'A candidate gets a rung of its own or the request is refused by name.');
+  }
+});
+
+check('§2 does not rest on the unseeded premise', () => {
+  if (/sampling is unseeded/.test(plan)) {
+    throw new Error(
+      'the plan still explains differing takes by narrator\'s sampling being unseeded. It is '
+      + 'seeded — python/narrator/engine/higgs/engine.py `_seed_for` returns `seed + index` off a '
+      + 'default of 1234 — and narrator\'s own CONTRACTS.md says two take-0 re-rolls always were '
+      + 'byte-identical. That premise is what made the cycle look harmless.');
+  }
+});
+
+check('§2 states the ladder rule: a rung per candidate, refused by name past it', () => {
+  if (!/candidate k \(0-based\) is asked at `take: k \+ 1`/.test(plan)) {
+    throw new Error('§2 no longer states which rung a candidate is asked at');
+  }
+  if (!/unknown_take/.test(plan)) {
+    throw new Error('§2 no longer names the refusal for a take past the ladder\'s length');
+  }
+});
+
 console.log(failures === 0 ? '\nBoth columns hold.' : `\n${failures} check(s) FAILED.`);
 process.exitCode = failures === 0 ? 0 : 1;

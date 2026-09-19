@@ -52,10 +52,11 @@ const path = require('path');
 const {
   REPO, installElectronStub, makeChecker, startFakeCrucible, fakeNamer, settingsRoutes,
 } = require('./fake-crucible');
+const { skipLine } = require('./keeper-skip.js');
 
 const COORDINATE = path.join(REPO, 'dist', 'electron', 'crucible', 'coordinate.js');
 if (!fs.existsSync(COORDINATE)) {
-  console.log('SKIP: dist/electron/crucible/coordinate.js is not built — run npx tsc -p tsconfig.electron.json');
+  console.log(skipLine('dist/electron/crucible/coordinate.js is not built — run npx tsc -p tsconfig.electron.json'));
   process.exit(0);
 }
 installElectronStub('bf-crucible-coordinate-');
