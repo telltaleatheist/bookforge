@@ -31,10 +31,6 @@
 // PCM16 mono @ 24 kHz — the reader engine's output (mirrors reader-protocol.ts).
 const SAMPLE_RATE = 24000;
 const BYTES_PER_SECOND = SAMPLE_RATE * 2;
-// Trailing inter-paragraph gap baked into each block's WAV. Mirrors the client's
-// PARAGRAPH_GAP_SECONDS so the client's boundary math (sentenceAt/seek) and the
-// served audio agree on the block's total length.
-const PARAGRAPH_GAP_SECONDS = 0.5;
 // Total resident audio cap across all blocks. Oldest settled blocks are evicted
 // first; an evicted block simply re-generates if the client asks for it again.
 const CAP_BYTES = 256 * 1024 * 1024;
@@ -80,16 +76,47 @@ export function feed(key: string, pcm: Buffer, sampleRate: number): void {
   b.bytes += pcm.length;
 }
 
-/** Mark a block done. `ok` = the whole block generated (append the paragraph gap);
- *  !ok = cancelled/preempted/failed (serve whatever partial audio we captured). */
+/**
+ * Insert the silence one finished ROW states after itself, at the block's own
+ * sample rate. Called from the bridge's sink on that row's `done`, with the
+ * number narrator classified for it (`gapSec`).
+ *
+ * WHY THE ROW AND NOT THE BLOCK. This used to append a flat 0.5 s once, at
+ * `settle`, to give paragraphs a pause — the sentences inside a block were
+ * separated by the 0.3 s narrator baked into its own audio. Neither number was
+ * the book's: `gaps.json` asks the assembler for 0.6 s, or for the voice's
+ * measured inject, so the same paragraph read aloud in the app and rendered into
+ * an audiobook paced differently. narrator's audio is bare speech now and states
+ * what belongs after each row, so every join here — inside a block and at its
+ * end — is the book's own number (Owen, 2026-09-18).
+ *
+ * A non-number is a caller that skipped the scheduler's own refusal, so it is
+ * thrown rather than defaulted: silence invented here is heard on every sentence
+ * boundary of the read.
+ */
+export function gap(key: string, seconds: number): void {
+  if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds < 0) {
+    throw new Error(
+      `reader-audio-store was asked to insert a gap of ${String(seconds)} seconds. `
+      + 'The gap after a row is narrator\'s own classification of it, carried on the '
+      + 'row\'s `done`; there is no default to fall back to.',
+    );
+  }
+  const b = blocks.get(key);
+  if (!b || b.settled || seconds === 0) return;
+  const n = Math.floor(seconds * (b.sampleRate * 2));
+  const even = n - (n % 2);          // PCM16 = 2 bytes/sample, keep alignment
+  b.segments.push(Buffer.alloc(even));
+  b.bytes += even;
+}
+
+/** Mark a block done. `ok` = the whole block generated; !ok = cancelled/
+ *  preempted/failed (serve whatever partial audio we captured). Nothing is
+ *  appended here: the pause after the block's last row is that row's own gap,
+ *  inserted by {@link gap} when it finished. */
 export function settle(key: string, ok: boolean): void {
   const b = blocks.get(key);
   if (!b || b.settled) return;
-  if (ok && b.bytes > 0 && PARAGRAPH_GAP_SECONDS > 0) {
-    const n = Math.floor(PARAGRAPH_GAP_SECONDS * (b.sampleRate * 2));
-    b.segments.push(Buffer.alloc(n - (n % 2)));
-    b.bytes += n - (n % 2);
-  }
   b.settled = true;
   b.ok = ok;
   b.lastUsed = ++lru;
@@ -175,4 +202,6 @@ function evictToCap(): void {
   }
 }
 
-export const readerAudioStore = { makeKey, begin, feed, settle, drop, waitSettled, wav, BYTES_PER_SECOND };
+export const readerAudioStore = {
+  makeKey, begin, feed, gap, settle, drop, waitSettled, wav, BYTES_PER_SECOND,
+};

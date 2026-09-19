@@ -4,9 +4,10 @@ TWO DEFECTS, ONE FILE, because they are two halves of the same rule
 (crucible/docs/ARCHITECTURE.md R1: one fact, one owner, and where a copy must
 exist it is CHECKED rather than authored twice).
 
-**1. GARBAGE WAS COERCED TO A DEFAULT.** Four reads in `serve/worker.py` -
-`STREAM_GAP_SEC`, the warm-up's `n` and `ramp`, and the grouping `cap` - sat
-behind `except (TypeError, ValueError): <the default>` and `if x < 1: x = 1`.
+**1. GARBAGE WAS COERCED TO A DEFAULT.** Four reads in `serve/worker.py` - the
+stream gap (since deleted, see below), the warm-up's `n` and `ramp`, and the
+grouping `cap` - sat behind
+`except (TypeError, ValueError): <the default>` and `if x < 1: x = 1`.
 `ORPHEUS_STREAM_BATCH='1 6'` (a stray space) therefore rendered every Listen
 batch 16 wide on a box tuned for 4, and nothing said so. The same package
 already had the opposite policy written down and enforced, in
@@ -26,8 +27,14 @@ TypeScript here and asserted equal, the way
 `test_engine_protocol.test_the_engines_agree_with_the_assemblers_own_table`
 holds the assembler's copy of `pads`/`edge_fade` to the engines'.
 
-`ORPHEUS_STREAM_GAP` has no owner anywhere else; that default IS narrator's, and
-this file says so rather than leaving it to look the same as the other two.
+**THE THIRD KNOB IS GONE (2026-09-18).** `ORPHEUS_STREAM_GAP` used to be here as
+the one default that WAS narrator's own - 0.3 s of silence appended to every
+streamed row. It is deleted with the padding: the gap between two Listen rows is
+`text/gaps.classify_gap`'s answer for the row, stated on the wire as `gapSec` and
+inserted by the PLAYER, so the number has one owner and it is the same one the
+book uses. What is pinned about it lives in
+`test_engine_serve_protocol.py` (the field, per row) rather than here, because
+there is no longer an environment variable to have an opinion about.
 """
 import os
 import re
@@ -84,13 +91,22 @@ class TheOwnerOfEachDefaultTest(unittest.TestCase):
     def test_the_ramp_default_is_the_pools(self):
         self.assertEqual(W.STREAM_RAMP_DEFAULT, _ts_const('STREAM_RAMP_WIDTH'))
 
-    def test_the_gap_default_is_narrators_own(self):
-        """No `ORPHEUS_STREAM_GAP` is set anywhere on the TypeScript side, so
-        this number has ONE owner and it is this package. Asserted because
-        "nobody else sets it" is exactly the claim that rots quietly."""
-        with open(POOL_TS, encoding='utf-8') as handle:
-            self.assertNotIn('ORPHEUS_STREAM_GAP', handle.read())
-        self.assertEqual(W.STREAM_GAP_DEFAULT_SEC, 0.3)
+    def test_the_stream_gap_knob_is_gone(self):
+        """THE GAP IS NOT AN ENVIRONMENT ANY MORE, and a reappearing constant is
+        a second owner of a number the book already has.
+
+        It was 0.3 s appended to every streamed row here while `gaps.json` asked
+        the assembler for 0.6 s - so Listen paced at half the book and ignored
+        the voice's inject entirely. The rule moved to the one function that has
+        always held it (`text/gaps.classify_gap`) and the number now travels as
+        `gapSec` for the player to realize.
+        """
+        for gone in ('STREAM_GAP_SEC', 'STREAM_GAP_DEFAULT_SEC', 'STREAM_GAP_ENV'):
+            self.assertFalse(hasattr(W, gone),
+                             f'{gone} is back; the gap has one owner and it is '
+                             'text/gaps.classify_gap')
+        self.assertIn('gapSec', open(W.__file__, encoding='utf-8').read(),
+                      'the worker no longer states the gap it classified')
 
 
 class UnsetMeansTheDefaultTest(unittest.TestCase):
@@ -159,25 +175,20 @@ class GarbageIsRefusedByNameTest(unittest.TestCase):
                 W.stream_warm_max()
             self.assertIn(W.STREAM_BATCH_ENV, str(caught.exception))
 
-    def test_the_gap_refuses_garbage_and_a_negative(self):
-        for value in ('0,3', 'none', '-0.5'):
-            with self.subTest(value=value):
-                with mock.patch.dict(os.environ, {W.STREAM_GAP_ENV: value},
-                                     clear=True):
-                    with self.assertRaises(ValueError) as caught:
-                        env_number(W.STREAM_GAP_ENV, W.STREAM_GAP_DEFAULT_SEC,
-                                   float, 0.0, 'the inter-sentence gap')
-                    self.assertIn(W.STREAM_GAP_ENV, str(caught.exception))
+    def test_zero_is_a_real_answer_for_a_gap_and_not_for_a_width(self):
+        """Same reader, two minima, and that difference is the whole reason
+        `minimum` is a parameter: a gap of 0 means "let the chunks butt together
+        on the model's own pauses", while a width of 0 is not a narrower batch,
+        it is a typo.
 
-    def test_zero_is_a_real_answer_for_the_gap_and_not_for_a_width(self):
-        """`ORPHEUS_STREAM_GAP=0` DISABLES the pad and is documented as doing so;
-        a width of 0 is not a narrower batch, it is a typo. Same reader, two
-        minima, and that difference is the whole reason `minimum` is a
-        parameter."""
-        with mock.patch.dict(os.environ, {W.STREAM_GAP_ENV: '0'}, clear=True):
-            self.assertEqual(
-                env_number(W.STREAM_GAP_ENV, W.STREAM_GAP_DEFAULT_SEC, float,
-                           0.0, 'the inter-sentence gap'), 0.0)
+        The gap half is read through `text/gaps.classify_gap`'s
+        `NARRATOR_SENTENCE_GAP` now - this worker has no gap variable of its own
+        (see the module docstring) - so what is asserted here is the FLOOR
+        behaviour it still has to keep."""
+        from narrator.text.gaps import classify_gap_seconds
+        with mock.patch.dict(os.environ, {'NARRATOR_SENTENCE_GAP': '0'},
+                             clear=True):
+            self.assertEqual(classify_gap_seconds('A sentence.'), (0.0, 0.0))
         with mock.patch.dict(os.environ, {W.STREAM_BATCH_ENV: '0'}, clear=True):
             with self.assertRaises(ValueError):
                 W.stream_batch_cap()

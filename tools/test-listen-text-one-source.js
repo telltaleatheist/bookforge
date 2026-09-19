@@ -363,6 +363,43 @@ check('the extension imports the Listen text path from shared/, not from a copy'
   }
 });
 
+check('no player declares a pause of its own any more', () => {
+  /*
+   * ONE SILENCE, ONE OWNER (Owen, 2026-09-18). Every player used to declare
+   * `PARAGRAPH_GAP_SECONDS = 0.5` — the extension's offscreen document,
+   * BookForge's reader audio store and the Bookshelf reader — three copies whose
+   * comments called each other "mirrors", on top of narrator's own flat 0.3 s,
+   * while a book of the same sentences was assembled at 0.6 s or at the voice's
+   * measured inject. The number is narrator's classification of the row now
+   * (`gapSec` on its `done`), and a constant reappearing on this side is the
+   * drift starting again — silently, because nothing throws when a paragraph
+   * pauses wrong.
+   */
+  const players = [
+    path.join(EXT, 'src', 'offscreen.ts'),
+    path.join(REPO, 'electron', 'reader-audio-store.ts'),
+    path.join(REPO, 'projects', 'bookshelf', 'src', 'app', 'reader', 'reader-playback.service.ts'),
+    // The Play tab's Web Audio player — the fourth surface that joins rows, and
+    // the one a node keeper cannot drive (it needs an AudioContext), so this is
+    // where it is held to the same rule.
+    path.join(REPO, 'src', 'app', 'features', 'audiobook', 'services', 'audio-player.service.ts'),
+  ];
+  const offenders = [];
+  for (const file of players) {
+    const src = fs.readFileSync(file, 'utf-8');
+    for (const line of src.split(/\r?\n/)) {
+      // A DECLARATION, not a mention: every one of these files explains in prose
+      // what the constant was and why it went.
+      if (/^\s*(const|let|var|private|readonly)[^=]*GAP[^=]*=\s*[0-9]/i.test(line)) {
+        offenders.push(`${path.basename(file)}: ${line.trim()}`);
+      }
+    }
+  }
+  if (offenders.length > 0) {
+    throw new Error(`a player declares its own pause again: ${offenders.join(' | ')}`);
+  }
+});
+
 check('no extension source declares its own segmenter, normalizer or packer', () => {
   const offenders = [];
   for (const file of fs.readdirSync(path.join(EXT, 'src'))) {

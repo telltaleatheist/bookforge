@@ -92,6 +92,14 @@ export interface DoneEvent {
   requestId: string;
   sentenceIndex: number;
   duration: number;
+  /**
+   * Seconds of silence the CLIENT must insert after this row (Owen, 2026-09-18).
+   * The audio is bare speech: this is narrator's own classification of the row's
+   * text — the number a book of the same sentence is assembled with — relayed by
+   * Crucible and by the bridge. The server bakes the same value into the WAV it
+   * serves the native player, so the two agree on where every sentence starts.
+   */
+  gapSec: number;
 }
 
 export interface FailedEvent {

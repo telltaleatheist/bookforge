@@ -800,6 +800,14 @@ carries **no `data`** — every byte already went out as `batch_chunk`s — and 
 read missing audio as failure. **A `batch_chunk` whose index has no sink is a protocol break,
 not a race to swallow.**
 
+**A LISTEN row's `batch_item` carries `gapSec` (2026-09-18), and its audio is bare speech.**
+That is the silence the PLAYER must insert after the row — `text/gaps.classify_gap`'s answer
+for its text, the same call that writes a book's `gaps.json` — because on a stream there is no
+assembler but the player (Owen: *"yes, it paces like the book"*). It rides the row's TERMINAL
+record only, never a `batch_chunk`: the gap follows the row's last sample, and one number with
+a copy on every chunk is the two-owner shape it replaced (a flat `ORPHEUS_STREAM_GAP` = 0.3 s
+baked in here against the book's 0.6 s). A RENDER row carries none — `gaps.json` says it there.
+
 **The taint mechanism is part of the contract.** A timed-out generate or load leaves the
 worker still rendering; dispatching new work would cross-wire late results (a stale
 `batch_item {i:0}` resolving index 0 of the NEXT batch, or a late `loaded` resolving the next

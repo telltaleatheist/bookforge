@@ -79,7 +79,6 @@ const STARTUP_LEAD_SECONDS = 1;
 const RESUME_MIN_SECONDS = 1.5;
 const PREFETCH_LOOKAHEAD_SECONDS = 2000;
 const SEEK_STEP_GRACE = 0.05;
-const PARAGRAPH_GAP_SECONDS = 0.5;
 const STATUS_INTERVAL_MS = 300;
 const BUFFERING_GRACE_MS = 450;
 const WEB_MAX_VOLUME = 3;    // Web Audio gain can boost past 1×.
@@ -93,7 +92,13 @@ function isNativePlatform(): boolean {
 
 // ─── PCM assembly ─────────────────────────────────────────────────────────────
 
-interface Slot { chunks: Uint8Array[]; done: boolean; }
+interface Slot {
+  chunks: Uint8Array[];
+  done: boolean;
+  /** Seconds of silence this row states must follow it, from its `done` event.
+   *  Null until the row retires. */
+  gapSec: number | null;
+}
 
 class Session {
   requestId: string;
@@ -106,22 +111,39 @@ class Session {
   cursorSeq = 0;
   complete = false;
   generationDone = false;
-  gapAppended = false;
   note: string | null = null;
 
   constructor(requestId: string) { this.requestId = requestId; }
 
   initSlots(sentences: string[]): void {
     this.sentences = sentences;
-    this.slots = sentences.map(() => ({ chunks: [], done: false }));
+    this.slots = sentences.map(() => ({ chunks: [], done: false, gapSec: null }));
   }
   addChunk(i: number, seq: number, bytes: Uint8Array): void {
     let slot = this.slots[i];
-    if (!slot) { slot = { chunks: [], done: false }; this.slots[i] = slot; }
+    if (!slot) { slot = { chunks: [], done: false, gapSec: null }; this.slots[i] = slot; }
     slot.chunks[seq] = bytes;
   }
-  markDone(i: number): void { const s = this.slots[i]; if (s) s.done = true; }
-  markFailed(i: number): void { const s = this.slots[i]; if (s) { s.chunks = []; s.done = true; } }
+  /** A row retired, with the silence narrator says follows it. Refused by name
+   *  rather than defaulted: the audio is bare speech, and a number invented here
+   *  would also disagree with the WAV the server assembled for the native
+   *  player, which uses the one on the wire. */
+  markDone(i: number, gapSec: number): void {
+    if (typeof gapSec !== 'number' || !Number.isFinite(gapSec) || gapSec < 0) {
+      throw new Error(
+        `row ${i} retired with gapSec ${String(gapSec)}. Listen paces from narrator's own `
+        + 'classification of the row and this player has no default to use instead.',
+      );
+    }
+    const s = this.slots[i];
+    if (s) { s.done = true; s.gapSec = gapSec; }
+  }
+  /** A row the server refused: no audio and no pause — there is no sentence
+   *  there to pause after. */
+  markFailed(i: number): void {
+    const s = this.slots[i];
+    if (s) { s.chunks = []; s.done = true; s.gapSec = 0; }
+  }
 
   drain(): void {
     while (this.appendCursor < this.slots.length) {
@@ -134,6 +156,28 @@ class Session {
         this.cursorSeq++;
       }
       if (slot.done && this.cursorSeq >= slot.chunks.length) {
+        // THE ROW'S OWN PAUSE, INSIDE ITS BOUNDARY — the same arithmetic the
+        // extension's offscreen player does, and the same bytes the server put
+        // in the WAV it serves the native player. `boundaries[i + 1]` is taken
+        // AFTER the silence, so a playhead inside the gap still maps to the row
+        // that was speaking (`sentenceAt`) and a seek to row i + 1 lands on its
+        // first sample instead of in the pause in front of it.
+        if (slot.gapSec === null) {
+          // Unreachable by construction - `markDone` and `markFailed` are the
+          // only ways a slot becomes done and both state a gap - so it is named
+          // rather than defaulted: a 0 substituted here would run two sentences
+          // together and nothing would say which number was missing.
+          throw new Error(
+            `row ${this.appendCursor} is finished but stated no gap; the pause after a row `
+            + "is narrator's own classification of it and this player invents none.",
+          );
+        }
+        const gap = Math.floor(slot.gapSec * BYTES_PER_SECOND);
+        const even = gap - (gap % 2);   // PCM16 = 2 bytes/sample, keep aligned
+        if (even > 0) {
+          this.segments.push(new Uint8Array(even));
+          this.bytes += even;
+        }
         this.appendCursor++;
         this.cursorSeq = 0;
         this.boundaries[this.appendCursor] = this.bytes;
@@ -1053,7 +1097,8 @@ export class ReaderPlaybackService implements OutputHost {
         return;
       case 'done':
         if (!this.currentSession || msg.requestId !== this.currentSession.requestId) return;
-        this.currentSession.markDone(msg.sentenceIndex);
+        // The row's pause travels with its retirement — see Session.markDone.
+        this.currentSession.markDone(msg.sentenceIndex, msg.gapSec);
         this.currentSession.drain();
         this.out.onData();
         return;
@@ -1087,17 +1132,8 @@ export class ReaderPlaybackService implements OutputHost {
   private finishGeneration(success: boolean, note?: string): void {
     if (!this.currentSession) return;
     this.currentSession.generationDone = true;
-    if (success) { this.currentSession.complete = true; this.appendParagraphGap(this.currentSession); }
+    if (success) { this.currentSession.complete = true; }
     if (note) this.currentSession.note = note;
-  }
-
-  private appendParagraphGap(s: Session): void {
-    if (s.gapAppended || s.bytes === 0 || PARAGRAPH_GAP_SECONDS <= 0) return;
-    const n = Math.floor(PARAGRAPH_GAP_SECONDS * BYTES_PER_SECOND);
-    const silence = new Uint8Array(n - (n % 2));
-    s.segments.push(silence);
-    s.bytes += silence.length;
-    s.gapAppended = true;
   }
 
   private concludeIfIdle(): void {
@@ -1177,13 +1213,12 @@ export class ReaderPlaybackService implements OutputHost {
     switch (msg.type) {
       case 'speaking': s.initSlots(msg.sentences); return;
       case 'chunk': s.addChunk(msg.sentenceIndex, msg.seq, decodeBase64(msg.data)); s.drain(); return;
-      case 'done': s.markDone(msg.sentenceIndex); s.drain(); return;
+      case 'done': s.markDone(msg.sentenceIndex, msg.gapSec); s.drain(); return;
       case 'failed': s.markFailed(msg.sentenceIndex); s.drain(); return;
       case 'complete':
         s.generationDone = true;
         s.complete = true;
         s.drain();
-        this.appendParagraphGap(s);
         this.prefetches.delete(s.requestId);
         this.readyAhead.set(item.id, s.seconds);
         // web → store audio in the LRU cache; native → keep for adoption (audio is

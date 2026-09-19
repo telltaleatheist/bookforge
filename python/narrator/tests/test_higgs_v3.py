@@ -2979,8 +2979,7 @@ class PadsOnTheWireTest(unittest.TestCase):
                                 np.full(2400, 0.5, dtype=np.float32),
                                 np.zeros(24000, dtype=np.float32)])
         out = W.finalize_audio(quiet, W.FOR_STREAM)
-        gap = int(24000 * W.STREAM_GAP_SEC)
-        self.assertLess(out.size - gap, quiet.size,
+        self.assertLess(out.size, quiet.size,
                         "Orpheus's long trailing pause is cut back")
 
     def test_a_no_pads_engine_is_not_trimmed(self):
@@ -2993,31 +2992,28 @@ class PadsOnTheWireTest(unittest.TestCase):
                                 np.full(2400, 0.5, dtype=np.float32),
                                 np.zeros(24000, dtype=np.float32)])
         out = W.finalize_audio(quiet, W.FOR_STREAM)
-        gap = int(24000 * W.STREAM_GAP_SEC)
-        self.assertEqual(out.size - gap, quiet.size,
+        self.assertEqual(out.size, quiet.size,
                          'nothing may be removed from a pads=False chunk')
 
-    def test_the_gap_follows_the_DOOR_and_not_pads(self):
-        """THE TRIM IS THE ENGINE'S QUESTION AND THE GAP IS THE DOOR'S, and this
-        pins that they are not the same question.
+    def test_neither_door_appends_a_gap(self):
+        """THE TRIM IS THE ENGINE'S QUESTION AND THE GAP IS NOBODY'S HERE, and
+        this pins that they are not the same question.
 
         `pads` says who owns the silence INSIDE a chunk, so it decides the trim
-        and nothing else. Whether a gap is appended after it is decided by which
-        caller asked: on the Listen stream the player concatenates rows and this
-        worker is the only thing that can separate two sentences, so the gap is
-        appended for a `pads=True` Orpheus and a `pads=False` Higgs alike; on the
-        render door BookForge's assembler realizes the manifest's gaps and a gap
-        here would be a second one (Owen, 2026-09-18).
+        and nothing else. The silence BETWEEN two chunks belongs to whoever joins
+        them - the assembler behind the render door, the PLAYER on the stream,
+        and neither of them is this function (Owen, 2026-09-18). The stream door
+        states its gap as `gapSec` on the row's record instead, which
+        `test_engine_serve_protocol.py` pins; what is left to say here is that no
+        waveform grows by a sample at either door, on either kind of engine.
         """
         W = self.W
         tone = np.full(2400, 0.5, dtype=np.float32)
-        gap = int(24000 * W.STREAM_GAP_SEC)
-        self.assertGreater(gap, 0, 'this test says nothing with the gap disabled')
         for pads in (True, False):
             with self.subTest(pads=pads):
                 W.set_active_engine_audio(24000, pads)
                 self.assertEqual(W.finalize_audio(tone, W.FOR_STREAM).size,
-                                 tone.size + gap)
+                                 tone.size)
                 self.assertEqual(W.finalize_audio(tone, W.FOR_RENDER).size,
                                  tone.size)
 

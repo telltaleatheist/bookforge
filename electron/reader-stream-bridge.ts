@@ -31,7 +31,7 @@
  *     {type:'status',   ...same}
  *     {type:'speaking', requestId, sentences}
  *     {type:'chunk',    requestId, sentenceIndex, seq, data(pcm16 b64), duration, sampleRate}
- *     {type:'done',     requestId, sentenceIndex, duration}
+ *     {type:'done',     requestId, sentenceIndex, duration, gapSec}
  *     {type:'failed',   requestId, sentenceIndex, error}
  *     {type:'complete', requestId}
  *     {type:'cancelled',requestId}
@@ -311,6 +311,16 @@ export class ReaderStreamBridge {
     const sink = (event: Record<string, unknown>) => {
       if (event.kind === 'chunk') {
         readerAudioStore.feed(key, Buffer.from(String(event.data), 'base64'), Number(event.sampleRate) || 0);
+      } else if (event.kind === 'done') {
+        // THE ROW'S OWN PAUSE, into the same buffer the audio went into. The
+        // served WAV and the client's boundary math must come to the same total
+        // for a seek to land where the highlight says it will, so the silence is
+        // inserted here — at the row's `done`, in reading order, the moment the
+        // row's last chunk has been fed — rather than added to one of them
+        // afterwards. `gapSec` is narrator's classification of that row, relayed
+        // by Crucible and by the scheduler; `gap` refuses anything that is not a
+        // number rather than pacing the read by a guess.
+        readerAudioStore.gap(key, event.gapSec as number);
       } else if (event.kind === 'complete' || event.kind === 'cancelled') {
         readerAudioStore.settle(key, event.kind === 'complete');
         state.activeRequestIds.delete(requestId);

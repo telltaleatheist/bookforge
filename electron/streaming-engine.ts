@@ -89,7 +89,19 @@ export interface StreamingEngine {
     priority?: boolean,
     isCancelled?: () => boolean,
     onChunk?: (chunk: StreamChunk) => void
-  ): Promise<{ success: boolean; audio?: AudioChunk; streamed?: boolean; duration?: number; error?: string }>;
+  ): Promise<{
+    success: boolean;
+    audio?: AudioChunk;
+    streamed?: boolean;
+    duration?: number;
+    /** Seconds of silence the CLIENT inserts after this row — narrator's own
+     *  classification of its text, relayed by the venue. Present on every
+     *  successful row: the audio is bare speech, so this is the whole of the
+     *  pause before the next one, and the scheduler refuses a success without
+     *  it rather than pacing the read by a number of its own. */
+    gapSec?: number;
+    error?: string;
+  }>;
   generateSentenceStream(
     text: string,
     settings: PlaySettings,

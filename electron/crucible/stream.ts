@@ -327,7 +327,17 @@ function pcm16ToBase64(pcm: Int16Array): string {
 // The engine
 // ─────────────────────────────────────────────────────────────────────────────
 
-type GenResult = { success: boolean; audio?: AudioChunk; streamed?: boolean; duration?: number; error?: string };
+type GenResult = {
+  success: boolean;
+  audio?: AudioChunk;
+  streamed?: boolean;
+  duration?: number;
+  /** Seconds of silence the CLIENT inserts after this row — narrator's own
+   *  `classify_gap` answer for its text, relayed by Crucible. The audio is bare
+   *  speech, so this is the whole of the pause before the next row. */
+  gapSec?: number;
+  error?: string;
+};
 
 /*
  * THE ROW MACHINERY LEFT THIS FILE (Phase 16 step 2).
@@ -695,11 +705,18 @@ export class CrucibleStreamingEngine {
       throw refusal;
     }
     if (!outcome.success) return { success: false, error: outcome.error };
+    // THE ROW'S PACING TRAVELS WITH ITS AUDIO. `crucible-rows.ts` has already
+    // refused a successful row that arrived without it, so this is a relay and
+    // never a default — the scheduler refuses a success with no gap for the same
+    // reason, one layer up.
     if (outcome.streamed === true) {
-      return { success: true, streamed: true, duration: outcome.seconds ?? 0 };
+      return {
+        success: true, streamed: true, duration: outcome.seconds ?? 0, gapSec: outcome.gapSec,
+      };
     }
     return {
       success: true,
+      gapSec: outcome.gapSec,
       audio: {
         data: pcm16ToBase64(outcome.pcm as Int16Array),
         duration: outcome.seconds ?? 0,
