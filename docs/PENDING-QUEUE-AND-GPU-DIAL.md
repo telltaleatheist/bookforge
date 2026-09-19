@@ -78,14 +78,59 @@ The `409 server_busy` path stays as the backstop it is, and when it fires it
 row is free to take a different machine. A 409 that left the venue standing was the
 bug that pinned a book to the server that had refused it.
 
-**Prepare is its own CPU step** (Owen, 2026-09-19): it starts *"the moment a free CPU
-slot is open and an item enters the active (and unpaused) queue"* — it does not wait
-for a server. The lease and the GPU slot are asked for only once the chunks exist.
+## A narration is THREE rows — prepare → narrate → align
 
-**A render step releases its lease when the render ends.** Owen: *"as soon as the GPU
-finishes, it releases the lease."* Lease carry-over is feed-forward only — *"if the
-next step is guaranteed to use the currently loaded model, we can leave it loaded"* —
-and Align loads a different model, so Narrate always releases.
+Owen, **2026-09-19**. Shipped the same evening; the plan is
+`shared/queue/narration-run.ts` (`buildNarrationSteps`), the modules are
+`electron/queue-steps/{prepare,tts-conversion,align}.ts`, and the keeper that drives
+all three through the real pump is `tools/test-queue-narration-plan.js`.
+
+| row | resource | travels | what it does |
+|---|---|---|---|
+| `prepare` | **CPU** (`local-work`) | **no** | cuts the narration copy, extracts, splits, packs the generation chunks. Produces a `prepared-session` artifact. |
+| `tts-conversion` | GPU | yes | the render, and only the render. Consumes the packed session. |
+| `align` | GPU (the run's server) | yes | the qwen3 coverage alignment. |
+
+**Prepare is its own CPU step**: it starts *"the moment a free CPU slot is open and an
+item enters the active (and unpaused) queue"* — it does not wait for a server. The
+lease and the GPU slot are asked for only once the chunks exist. It was the first
+minutes of the render step until this date, which cost a GPU slot for work that
+touches no card AND meant a `409 server_busy` threw away a prep the next attempt did
+not match, so a busy server made a long book pay for its prep over and over.
+
+**One thing prep still asks a server, and it is not admission.** The chunk boundaries
+are the RENDERING machine's numbers (`max_chars` and the pace block off
+`GET /v1/voices`, never this machine's catalog — `electron/crucible/voice-band.ts`),
+so prep reads ONE band from one enabled server and refuses by name when none will
+state it. A busy server answers `/v1/voices` in milliseconds, so this is not waiting
+for a free machine; and the alternative — inventing a cap — is a whole book packed to
+numbers nobody measured. Which server's band it read is recorded on the session
+(`PrepInfo.packedFor`) and travels to the render, which **refuses by name if it is
+admitted to a server with a TIGHTER ceiling** (`packingTravelsTo`), because Crucible
+refuses an over-long chunk rather than re-splitting it.
+
+**A restored row with no prepare step still runs.** `tts-conversion` consumes
+`['prepared-session', 'epub']`; the `epub` arm preps inline, announced in the TTS log,
+and it is what the CLI and the language-learning wizard's own chain take too.
+
+**A render step releases its slot and its lease when the render ends.** Owen: *"as soon
+as the GPU finishes, it releases the lease."* Lease carry-over is feed-forward only —
+*"if the next step is guaranteed to use the currently loaded model, we can leave it
+loaded"* — and Align loads a different model, so Narrate always releases. (A render
+takes no lease of its own: a `tts` job already holds the lane, and `tts` evicts the
+resident model.) The SLOT still goes back mid-step through
+`TTS_GPU_PHASE_OVER`/`releaseGpu`, and that is a measurement rather than a preference:
+publishing the session into the project spent **458 s** on *Letter to the American
+Church*, every second of it after the card went quiet.
+
+**A failed Align stops the book**, and every remaining failure names a
+misconfiguration: no session on disk, no language on the row, the server would not take
+the job, the server has no aligner, the chunks are marker-only, a chapter gap the
+assembler cannot realize, or this machine could not measure the book from the items the
+server placed. **There is no "skipped" outcome left** — the dead LOCAL-env gate
+(`resolveQwenAlignEnv` in front of work that happens on a server, plus
+`coverageAlignPython`/`coverageAlignRefusal` and the CLI's plan-time check) went with
+the phase.
 
 ## What "adding a book" means — narration, and a hosted Foundry text act
 

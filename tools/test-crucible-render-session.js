@@ -376,17 +376,39 @@ function lift(name) {
     assert.ok(/if \(session\.venue\?\.where === 'crucible'\) return false;/.test(pred));
   });
 
-  await check('the fresh launch points decide the venue BEFORE prep and hand it to prepareSession', () => {
+  await check('every door that PREPS decides the venue first and hands it to prepareSession', () => {
+    /*
+     * THE DOORS CHANGED ON 2026-09-19, THE RULE DID NOT.
+     *
+     * `prepareSession` is handed a venue because the venue decides what the
+     * chunks are packed TO — the rendering machine's `max_chars` and pace block
+     * off `GET /v1/voices`, never this machine's catalog. (It also used to
+     * decide where the session was CREATED; that half is moot now, since every
+     * venue is a Crucible and every session is host-native.)
+     *
+     * Owen split the prep off into its own CPU row that evening, so the doors
+     * that prep are `packSessionForNarration` — which both the `prepare` queue
+     * row and `startParallelConversion`'s inline compatibility arm go through —
+     * and `renderRangeHeadless`, the CLI's, which preps inline by design.
+     * `startParallelConversion` itself no longer preps: handed a packed
+     * session, it reads the chunks off disk.
+     */
     const src = fs.readFileSync(path.join(REPO, 'electron', 'parallel-tts-bridge.ts'), 'utf8');
-    for (const name of ['export async function startParallelConversion(', 'async function renderRangeHeadless(']) {
+    for (const name of ['async function packSessionForNarration(', 'async function renderRangeHeadless(']) {
       const at = src.indexOf(name);
       assert.ok(at > 0, `${name} not found`);
       const body = src.slice(at, at + 12000);
       const decide = body.indexOf('await decideGenerationVenue(');
       const prep = body.indexOf('await prepareSession(');
       assert.ok(decide > 0 && prep > 0 && decide < prep,
-        `${name} preps before it knows where the render runs`);
+        `${name} preps before it knows whose numbers to pack to`);
     }
+    // And exactly one door spawns the prep, so a third could not appear with a
+    // venue decided somewhere else.
+    const spawns = src.match(/await prepareSession\(/g) || [];
+    assert.strictEqual(spawns.length, 2,
+      `prepareSession is called ${spawns.length} time(s): the shared prep half and the CLI's `
+      + 'headless door. A third caller must decide the venue first, for the same reason.');
   });
 
   await check('the copy-out probe asks mountpoint, not test -d (a stale mount point is a directory)', () => {

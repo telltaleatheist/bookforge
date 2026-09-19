@@ -369,37 +369,31 @@ function sendProgress(
   win.webContents.send('coverage-align:progress', { jobId: stepId, progress });
 }
 
-/**
- * The interpreter that can align, or null.
+/*
+ * ── `coverageAlignPython` AND `coverageAlignRefusal` ARE GONE (2026-09-19) ──
  *
- * Exported because the plan-time check asks the same question — the CLI refuses a
- * run whose aligner is missing BEFORE it starts, which is the only point at which
- * the answer is still cheap.
+ * They were the PLAN-TIME GATE: "can THIS machine align?", answered by
+ * resolving the local `qwen-align` conda env, and asked in two places — in
+ * front of the post-render alignment phase (`parallel-tts-bridge`) and in front
+ * of the CLI's align door (`cli/coverage-align.js`).
  *
- * ON WINDOWS THIS IS A GUEST PATH (`/home/.../envs/qwen-align/bin/python`) and
- * nothing on the Windows side may execute it or stat it. It is what goes on
- * `narrator align --python` inside the guest, and `runCoverageAlign` is what
- * knows which arm it is on. A caller that only wants "can this machine align"
- * should read the null-ness, not the string.
+ * Both were asking about the wrong machine, and the bug hunt of 2026-09-19
+ * (finding B2) measured what it cost: `runCoverageAlign` dispatches the model
+ * to a CRUCIBLE server and then measures the book here in the TOOLS env, which
+ * is native on every platform. There is no local qwen interpreter in that path
+ * at all. So a Mac — where `align` is off because qwen3-aligner has no
+ * mlx-darwin block — shipped an unaligned transcript from a render that had
+ * just finished on a machine that would have aligned it perfectly.
+ *
+ * A gate that refuses work the machine can actually do is worse than no gate:
+ * it is a refusal that names the wrong thing. What is left is the refusal the
+ * RUN makes, once, from inside `runCoverageAlign` — and every one of those
+ * names something a person can repair.
+ *
+ * `runCoverageAlignLocally`'s own `fromAlignment === undefined` arm still
+ * resolves the local env, because that arm IS the local spawn; it is reached by
+ * nothing in the app today and is the legacy answer, never a fallback.
  */
-export function coverageAlignPython(): string | null {
-  const resolved = resolveQwenAlignEnv();
-  return resolved.ok ? resolved.env.python : null;
-}
-
-/**
- * WHY this machine cannot align, or null when it can.
- *
- * The refusal text is `qwen-aligner`'s, exported through here so the CLI's
- * plan-time check and this job say the SAME sentence. The app states this
- * refusal twice on purpose — once when a row is composed, once when it runs,
- * because a row outlives the machine state that composed it — and two different
- * wordings for one fact is how an operator ends up looking for two problems.
- */
-export function coverageAlignRefusal(): string | null {
-  const resolved = resolveQwenAlignEnv();
-  return resolved.ok ? null : resolved.error;
-}
 
 /**
  * THE TORCH DEVICE THIS MACHINE CAN GIVE THE ALIGNER, for a row that asked for

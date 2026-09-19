@@ -104,19 +104,41 @@ function settings(over = {}) {
  * removed it on 2026-09-08 — "remove the align the narration checkbox. lets just
  * have it permanently do it that way" — so a narration run composes no align
  * row and the cases that pinned its shape went with it.
+ *
+ * IT IS A ROW AGAIN SINCE 2026-09-19, and the distinction is the whole point:
+ * it is not a STAGE the user chooses. `narrate` brings three rows with it —
+ * `prepare` (CPU, in front), the render, and `align` (the qwen3 alignment that
+ * had been happening inside the render since 2026-09-08 anyway) — because Owen
+ * ruled that the render row must end when the render ends and that a failed
+ * alignment must stop the book. Nothing was added to this object.
  */
 const stages = (over = {}) =>
   Object.assign({ narrate: true, enhance: false, assemble: true }, over);
 
 /** The step types of a run, in order — the shape, said in one line. */
 const shapeOf = (steps) => steps.map((s) => s.type);
+
+/**
+ * The shape a run BEYOND the narration has — its enhancement and assembly rows.
+ *
+ * The three rows `narrate` brings are asserted once, on their own, rather than
+ * repeated in front of every enhancement case: those cases are about which pass
+ * bakes the gap, and prefixing each of them with the render's own shape would
+ * make six tests fail for one change to it.
+ */
+const NARRATE_ROWS = ['prepare', 'tts-conversion', 'align'];
+const afterNarration = (steps) => {
+  assert.deepStrictEqual(shapeOf(steps).slice(0, 3), NARRATE_ROWS,
+    'every run that narrates is prepare → render → align');
+  return shapeOf(steps).slice(3);
+};
 const find = (steps, type) => steps.find((s) => s.type === type);
 
 // ── the four shapes ─────────────────────────────────────────────────────────
 
 test('NEITHER PASS: narrate → assemble, and the assembly owns the gap', () => {
   const steps = buildNarrationSteps(BOOK, settings({ sentenceGap: 0.4 }), stages());
-  assert.deepStrictEqual(shapeOf(steps), ['tts-conversion', 'reassembly']);
+  assert.deepStrictEqual(afterNarration(steps), ['reassembly']);
   assert.strictEqual(find(steps, 'reassembly').config.sentenceGap, 0.4,
     'nothing upstream bakes it, so the assembly states it');
 });
@@ -124,8 +146,7 @@ test('NEITHER PASS: narrate → assemble, and the assembly owns the gap', () => 
 test('DENOISE ONLY: narrate → denoise → assemble, gap on the denoise', () => {
   const steps = buildNarrationSteps(
     BOOK, settings({ finalDenoise: true, sentenceGap: 0.4 }), stages({ enhance: true }));
-  assert.deepStrictEqual(shapeOf(steps),
-    ['tts-conversion', 'final-denoise', 'reassembly']);
+  assert.deepStrictEqual(afterNarration(steps), ['final-denoise', 'reassembly']);
   assert.strictEqual(find(steps, 'final-denoise').config.sentenceGap, 0.4);
   assert.strictEqual('sentenceGap' in find(steps, 'reassembly').config, false,
     'the assembly is handed a set the gap is already in');
@@ -134,8 +155,7 @@ test('DENOISE ONLY: narrate → denoise → assemble, gap on the denoise', () =>
 test('RVC ONLY: narrate → convert → assemble, and THE CONVERSION owns the gap', () => {
   const steps = buildNarrationSteps(
     BOOK, settings({ rvc: RVC, sentenceGap: 0.4 }), stages({ enhance: true }));
-  assert.deepStrictEqual(shapeOf(steps),
-    ['tts-conversion', 'rvc-enhancement', 'reassembly']);
+  assert.deepStrictEqual(afterNarration(steps), ['rvc-enhancement', 'reassembly']);
   // The case the split fixed: with no denoise in the run, nothing used to apply
   // the gap at all — the assembly skipped it because "rvc bakes it" and the rvc
   // job only ran a gap pass as part of a denoise it was no longer doing.
@@ -148,8 +168,8 @@ test('BOTH, default order: narrate → denoise → convert → assemble', () => 
     BOOK,
     settings({ finalDenoise: true, rvc: RVC, sentenceGap: 0.4 }),
     stages({ enhance: true }));
-  assert.deepStrictEqual(shapeOf(steps),
-    ['tts-conversion', 'final-denoise', 'rvc-enhancement', 'reassembly']);
+  assert.deepStrictEqual(afterNarration(steps),
+    ['final-denoise', 'rvc-enhancement', 'reassembly']);
   assert.strictEqual(find(steps, 'final-denoise').config.sentenceGap, 0.4,
     'the denoise is first, so it reads the raw sentences and bakes the gap');
   assert.strictEqual('sentenceGap' in find(steps, 'rvc-enhancement').config, false,
@@ -163,8 +183,8 @@ test('BOTH, reversed: narrate → convert → denoise → assemble, gap moves wi
       finalDenoise: true, rvc: RVC, sentenceGap: 0.4, enhancementOrder: 'rvc-first',
     }),
     stages({ enhance: true }));
-  assert.deepStrictEqual(shapeOf(steps),
-    ['tts-conversion', 'rvc-enhancement', 'final-denoise', 'reassembly']);
+  assert.deepStrictEqual(afterNarration(steps),
+    ['rvc-enhancement', 'final-denoise', 'reassembly']);
   assert.strictEqual(find(steps, 'rvc-enhancement').config.sentenceGap, 0.4,
     'the conversion is first now, so the gap is its job');
   assert.strictEqual('sentenceGap' in find(steps, 'final-denoise').config, false);
@@ -218,12 +238,95 @@ test('the two enhancement rows are named apart', () => {
   assert.strictEqual(find(steps, 'rvc-enhancement').metadata.title, 'Voice conversion');
 });
 
+// ── prepare → render → align, and what each of the three carries ────────────
+//
+// Owen, 2026-09-19: "Prepare can be its own CPU step… we could start the CPU
+// prep the moment a free CPU slot is open and an item enters the active (and
+// unpaused) queue", and "as soon as the GPU finishes, it releases the lease" —
+// the render row ends at the render, and the alignment is a row of its own.
+
+test('the HEAD of a narrating run is the prepare row, and it reads the DOCUMENT', () => {
+  const steps = buildNarrationSteps(BOOK, settings(), stages());
+  const head = steps[0];
+  assert.strictEqual(head.type, 'prepare',
+    'the render must not be the first step: nothing about a card may be asked for until the '
+    + 'chunks exist');
+  assert.deepStrictEqual(head.sourceRef, { kind: 'epub', path: BOOK.epubPath },
+    'the prepare row is what reads the book — the render behind it reads the packed session');
+  assert.strictEqual(head.epubPath, BOOK.epubPath);
+  assert.strictEqual(head.bfpPath, BOOK.projectDir);
+});
+
+test('the prepare row carries what the CHUNKS depend on, and nothing about output', () => {
+  const prep = find(buildNarrationSteps(BOOK, settings(), stages()), 'prepare').config;
+  // The engine, the voice and the band decide where one chunk ends; the cleanup
+  // answer decides the shape of the copy prep cuts; "start fresh" is what
+  // authorises deleting the checkpoints BEFORE the pack.
+  assert.strictEqual(prep.ttsEngine, 'higgs');
+  assert.strictEqual(prep.fineTuned, 'deathstalker');
+  assert.strictEqual(prep.language, 'en');
+  assert.strictEqual(prep.textCleanup, 'required');
+  assert.strictEqual(prep.startFresh, false);
+  for (const key of ['outputDir', 'skipAssembly', 'finalDenoise', 'metadata']) {
+    assert.strictEqual(key in prep, false,
+      `the prepare row states ${key}, which is a fact about output — it packs chunks and `
+      + 'nothing else');
+  }
+});
+
+test('"Start fresh" is the PREPARE row\'s answer — it is what deletes the checkpoints', () => {
+  const steps = buildNarrationSteps(BOOK, settings({ startFresh: true }), stages());
+  assert.strictEqual(find(steps, 'prepare').config.startFresh, true);
+});
+
+test('the align row follows the render, on the GPU, and says which language', () => {
+  const steps = buildNarrationSteps(BOOK, settings(), stages());
+  assert.strictEqual(shapeOf(steps).indexOf('align'), shapeOf(steps).indexOf('tts-conversion') + 1,
+    'the alignment measures the RENDER, so nothing may sit between them');
+  const align = find(steps, 'align').config;
+  // NEVER defaulted: the aligner loads a per-language checkpoint, and one
+  // pointed at the wrong language refuses a book that was read correctly.
+  assert.strictEqual(align.language, 'en');
+  // A Crucible has only the card; `runCoverageAlignOnCrucible` refuses a CPU row.
+  assert.strictEqual(align.device, 'gpu');
+  // Discovered at run time from the session the render actually wrote.
+  assert.deepStrictEqual(
+    [align.sessionId, align.sessionDir, align.processDir], ['', '', '']);
+});
+
+test('the align row is measured on the ASSEMBLY\'s chapter gap, or on neither', () => {
+  // Absent is not zero: it means this run did not choose, and both sides
+  // resolve it to DEFAULT_CHAPTER_GAP. A transcript measured at a gap the
+  // assembly does not use drifts by that gap at every chapter boundary — which
+  // is what every book sealed between 2026-09-09 and 2026-09-11 carries.
+  const stated = buildNarrationSteps(BOOK, settings({ chapterGap: 1.5 }), stages());
+  assert.strictEqual(find(stated, 'align').config.chapterGap, 1.5);
+  assert.strictEqual(find(stated, 'reassembly').config.chapterGap, 1.5,
+    'the two must be measured and assembled on ONE number');
+
+  const unstated = buildNarrationSteps(BOOK, settings(), stages());
+  assert.strictEqual('chapterGap' in find(unstated, 'align').config, false);
+  assert.strictEqual('chapterGap' in find(unstated, 'reassembly').config, false);
+});
+
+test('a CACHE-ONLY run composes NO prepare and NO align row', () => {
+  // There is nothing to pack — the sentences exist — and the alignment measures
+  // a RENDER, whose thresholds were calibrated on raw engine output. An align
+  // behind an enhancement pass would refuse books that were read perfectly, and
+  // the step's own `consumes` makes it a compose-time refusal anyway.
+  const steps = buildNarrationSteps(
+    BOOK, settings({ rvc: RVC }), stages({ narrate: false, enhance: true }));
+  assert.deepStrictEqual(shapeOf(steps), ['rvc-enhancement', 'reassembly']);
+  assert.deepStrictEqual(steps[0].sourceRef, { kind: 'audio-session' },
+    'the head of a cache run reads the session this project has cached');
+});
+
 // ── what the stage flag means ───────────────────────────────────────────────
 
 test('enhance OFF runs neither pass however the settings are set', () => {
   const steps = buildNarrationSteps(
     BOOK, settings({ finalDenoise: true, rvc: RVC }), stages({ enhance: false }));
-  assert.deepStrictEqual(shapeOf(steps), ['tts-conversion', 'reassembly']);
+  assert.deepStrictEqual(afterNarration(steps), ['reassembly']);
 });
 
 test('the order is only consulted when both passes run', () => {

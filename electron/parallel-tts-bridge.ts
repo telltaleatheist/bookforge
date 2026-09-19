@@ -152,13 +152,16 @@ import {
   type NarratorSpawnPlan,
 } from './narrator-spawn';
 
-import {
-  coverageReportPath,
-  runCoverageAlign,
-  stopCoverageAlign,
-} from './coverage-align-job';
+/*
+ * ONLY THE REPORT'S PATH. `runCoverageAlign` / `stopCoverageAlign` were
+ * imported here for the post-render alignment phase, which is the `align` queue
+ * row now (Owen, 2026-09-19); `resolveQwenAlignEnv` was the LOCAL env gate in
+ * front of it, which refused a phase that ran on a server (finding B2). What
+ * assembly still needs is whether a coverage report is on disk beside the
+ * session, which is this one path.
+ */
+import { coverageReportPath } from './coverage-align-job';
 import { takeChunkGuards } from './chunk-guard-ledger';
-import { resolveQwenAlignEnv } from './qwen-aligner';
 
 /**
  * Append the voice/fine-tune CLI args for the selected voice. Centralizes the
@@ -2039,6 +2042,35 @@ export interface PrepInfo {
     creator?: string;
     language?: string;
   };
+  /**
+   * WHOSE NUMBERS THESE CHUNKS WERE PACKED TO — the server that stated the
+   * voice's band, and the ceiling it stated.
+   *
+   * Recorded because prep and the render are two ROWS since 2026-09-19 and the
+   * render may be admitted to a different machine from the one whose
+   * `GET /v1/voices` prep read. Every chunk here is at most `ceilingChars`
+   * long, so a render on a server whose own ceiling is at least that high is
+   * safe; one whose ceiling is LOWER would have its chunks refused by the
+   * server, and the render step says so by name before it submits
+   * (`packingTravelsTo`). Absent for a session prepped before this date.
+   */
+  packedFor?: { server: string; ceilingChars: number };
+}
+
+/**
+ * MAY CHUNKS PACKED TO ONE SERVER'S CEILING BE READ BY ANOTHER?
+ *
+ * Yes exactly when the rendering server's ceiling is at least as high as the
+ * one they were packed to. Chunking is the client's and the cap is the
+ * server's — Crucible REFUSES an over-long chunk rather than re-splitting it
+ * (`crucible/jobs/tts/render.py`) — so a tighter ceiling downstream is a book
+ * that fails chunk by chunk, an hour in, for a reason nothing on the row says.
+ *
+ * Pure, and its own function, so the rule is stated once and a keeper can drive
+ * it without a server (`tools/test-queue-narration-plan.js`).
+ */
+export function packingTravelsTo(packedCeiling: number, renderCeiling: number): boolean {
+  return renderCeiling >= packedCeiling;
 }
 
 export type ParallelMode = 'sentences' | 'chapters';
@@ -3851,7 +3883,12 @@ export async function prepareSession(
       sentenceStart: c.sentence_start,
       sentenceEnd: c.sentence_end
     })),
-    metadata: state.metadata
+    metadata: state.metadata,
+    // WHOSE CEILING THESE CHUNKS RESPECT — see `PrepInfo.packedFor`. Written
+    // from the band this prep actually read, never re-derived later.
+    ...(venueBand === undefined
+      ? {}
+      : { packedFor: { server: venue.server, ceilingChars: venueBand.ceilingChars } }),
   };
 
   console.log('[PARALLEL-TTS] Prep complete:', prepInfo.totalSentences, 'sentences');
@@ -3968,299 +4005,35 @@ export interface RegenerateIndicesResult {
 
 const MAX_WORKER_RETRIES = 2;  // Maximum retry attempts per worker
 
-/**
- * The align child's step id for a render, derived from the job id so a user stop
- * can reach it. `runCoverageAlign` keys its live children on this string.
+/*
+ * ── THE POST-RENDER ALIGNMENT LIVED HERE, AND IT IS A QUEUE ROW NOW ────────
+ *
+ * `postRenderAlignStepId`, `runPostRenderAlignment`, `alignFailureLine` and
+ * `postRenderAlignProgress` were the final phase of the `tts-conversion` step:
+ * a qwen3 coverage alignment submitted to the same Crucible the render had just
+ * used, reported as a stage under a narration bar that read 100 %.
+ *
+ * Owen, 2026-09-19: *"as soon as the GPU finishes, it releases the lease"*, and
+ * alignment *"is its own queue step"*. Three things went wrong while it was a
+ * phase and all three are structural:
+ *
+ *  1. THE SLOT. The render row kept the GPU slot through it — ten to twenty
+ *     minutes on a long book, on a card Crucible had already freed.
+ *  2. THE GATE. It refused to run at all unless THIS machine had a local
+ *     `qwen-align` conda env (`resolveQwenAlignEnv`) — while the alignment
+ *     itself was dispatched to a server. A Mac with no such env shipped an
+ *     unaligned transcript with a WARN in a log, from a render that had just
+ *     finished on a machine that would have aligned it (finding B2).
+ *  3. THE OUTCOME. A failure was announced and swallowed: the book was sealed
+ *     with the proportional ESTIMATE and nothing stopped to say so. Owen's
+ *     ruling: a failed align stops the book, *"but we need to fix it so it
+ *     doesn't fail. It should only fail because of a misconfiguration, which
+ *     can be repaired."*
+ *
+ * `electron/queue-steps/align.ts` is the row, `runCoverageAlign` is the same
+ * single door it always called, and `shared/queue/narration-run.ts` composes it
+ * directly behind the render.
  */
-function postRenderAlignStepId(jobId: string): string {
-  return `${jobId}:post-render-align`;
-}
-
-/**
- * THE FINAL PHASE OF THE TTS STEP: force-align every rendered chunk, on the card
- * the render just finished with.
- *
- * Owen, 2026-09-08 (via the Mac): *"good. go ahead and wire it up to alignment so
- * itll be used to align the chunks in app"*, *"for generate-sentences logic and
- * for normal post-render alignment"*, and earlier: *"lets build that in instead
- * then … run it as a gpu job after tts finishes … as long as its faster than
- * assembly, we can do the proper job."* It is faster: 151 s of qwen3 for Shift's
- * 16.56 h against an 8-minute assembly, where the WhisperX row this replaces took
- * two hours on CPU and was the reason Owen deleted the Align checkbox on
- * 2026-09-08 (cd1678d7) in the first place.
- *
- * ── WHERE IT SITS, AND WHY EXACTLY HERE ─────────────────────────────────────
- *
- * AFTER the workers are done — so the serving process the render owned is gone
- * and the card is free for a second model — and BEFORE `cacheSessionToProject`
- * and `normalizeWslSessionToWindows`, which are the two copies that carry a
- * session out of the WSL guest.
- *
- * Both halves of that are load-bearing on this PC. The render happens inside WSL
- * with the session on ext4; the `qwen-align` env is IN the guest; and the guest
- * cannot see the Z: network drive the session is copied to afterwards (WSL has no
- * /mnt for a network drive). So the alignment has to happen while the audio and
- * the model are on the same side of that boundary. And its two outputs —
- * `coverage.json` and `<stem>.sentences.vtt` — are SESSION FILES: written before
- * the copies, they ride along with them and the native assembly finds them on the
- * Windows path it reads. Written after, they would sit on ext4 where nothing
- * downstream looks.
- *
- * The cost of being first is that the durable resume checkpoint is a couple of
- * minutes later than it was. That is the right trade at 151 s a book and it would
- * not be at two hours — which is the measurement that moved the backend.
- *
- * On the Mac the render is native and this runs natively in the same place in the
- * sequence; nothing about the ordering is Windows-specific except the reason.
- *
- * ── IT NEVER FAILS THE RENDER. THREE OUTCOMES, ALL ANNOUNCED ────────────────
- *
- *   no aligner env   the phase is SKIPPED and the row says so. This is the one
- *                    allowed skip in the whole path and it is stated, never
- *                    silent: the audiobook still ships, carrying the proportional
- *                    ESTIMATE that `assemble/run.py` writes when no report
- *                    exists (`if coverage is None: write_estimated_sentence_vtt`).
- *   the align failed the row says what failed and the estimate ships, same as
- *                    above. A device that cannot be resolved is this case.
- *   it ran           `coverage.json` and the measured `<stem>.sentences.vtt` are
- *                    beside the session; `runAssembly` passes `--coverage_report`
- *                    because the file exists, and assembly leaves the measured
- *                    transcript alone.
- *
- * There is no whisperx arm behind any of that — see `coverage-align-job.ts`.
- */
-async function runPostRenderAlignment(session: ConversionSession): Promise<void> {
-  if (session.cancelled) return;
-  const processDir = session.prepInfo?.processDir;
-  if (!processDir) {
-    await logger.log('WARN', session.jobId,
-      'Chunk alignment skipped: this session has no process dir to align.');
-    return;
-  }
-  const language = session.config.settings.language;
-  if (!language) {
-    // NOT DEFAULTED TO 'en'. The aligner is language-selected (qwen3 takes an
-    // English language NAME, mapped from the ISO code, and refuses a code it was
-    // not trained on), and a guess would place a whole book's words badly while
-    // reporting success. Prep already refuses a render with no language, so this
-    // is a statement that the two agree rather than a case that happens.
-    await logger.log('WARN', session.jobId,
-      'Chunk alignment skipped: this render names no language, and the aligner '
-      + 'loads a different model for each.');
-    return;
-  }
-
-  const resolved = resolveQwenAlignEnv();
-  if (!resolved.ok) {
-    const message = `Chunk alignment skipped: ${resolved.error} `
-      + 'The audiobook carries the estimated transcript.';
-    console.log(`[PARALLEL-TTS] ${message}`);
-    await logger.log('WARN', session.jobId, message);
-    if (mainWindow) {
-      rendererSend('parallel-tts:progress', {
-        jobId: session.jobId,
-        // NO STAGE AT ALL when there is no aligner: an empty bar labelled
-        // "Aligning" would report a step this run is never going to take.
-        progress: postRenderAlignProgress(session, 'Chunk alignment skipped — no aligner env'),
-      });
-    }
-    return;
-  }
-
-  const stepId = postRenderAlignStepId(session.jobId);
-  // The align job reports on the bridge channel it always reports on; this maps
-  // it onto the TTS row rather than duplicating the parser. `mainWindow` is NOT
-  // handed to the job (below) precisely so 'coverage-align:progress' never
-  // reaches the renderer for a row that does not exist there.
-  const unsubscribe = onBridgeEvent<{
-    jobId: string;
-    progress: { percentage: number; processed?: number; total?: number; message?: string };
-  }>('coverage-align:progress', (event) => {
-    if (event.jobId !== stepId) return;
-    const total = event.progress.total ?? 0;
-    const processed = event.progress.processed ?? 0;
-    const counted = total > 0 ? ` (chunk ${processed}/${total})` : '';
-    /*
-     * THE BAR READS THE CHUNKS, not the job's own `percentage`. The aligner
-     * reports both and the chunk pair is the one that is about THIS stage;
-     * `percentage` is its share of a run it does not know the shape of. A total
-     * of 0 is "it has not said yet", which is a running stage at 0 rather than
-     * a division nobody would see fail.
-     */
-    const pct = total > 0 ? Math.min(100, Math.round((processed / total) * 100)) : 0;
-    rendererSend('parallel-tts:progress', {
-      jobId: session.jobId,
-      progress: postRenderAlignProgress(session, `Aligning chunks (qwen3)…${counted}`, {
-        pct,
-        status: 'running',
-        label: 'Aligning transcript (qwen3)',
-      }),
-    });
-  });
-
-  const started = Date.now();
-  await logger.log('INFO', session.jobId,
-    `Chunk alignment starting (qwen3, ${resolved.env.source} env${
-      resolved.env.viaWsl ? ` "${resolved.env.wslEnvName}" in WSL` : ''}): ${processDir}`);
-  try {
-    const result = await runCoverageAlign(
-      stepId,
-      // THE GPU, EXPLICITLY. This phase runs inside the TTS step, which already
-      // owns the gpu lane, so there is no card to wait for and no queue slot to
-      // claim — which is exactly the run Owen described ("a gpu job after tts
-      // finishes"). `resolveAlignDevice` turns it into cuda or mps and refuses by
-      // name on a machine with neither; that refusal lands in `result.error`.
-      {
-        processDir,
-        language,
-        device: 'gpu',
-        // THE SAME NUMBER `runAssembly` RESOLVES, off the same field, so the
-        // transcript this phase measures and the audiobook the next phase builds
-        // are on ONE ruler. Absent is not zero here either: it resolves to
-        // `DEFAULT_CHAPTER_GAP`, which is exactly what the assembly does with an
-        // unstated gap. Without it the aligner measured at gap 0 and assembly
-        // sealed the file untouched — 3 s of drift per chapter boundary on every
-        // book between 2026-09-09 and 2026-09-11.
-        chapterGap: session.config.chapterGap,
-      },
-      null,
-    );
-    const seconds = Math.round((Date.now() - started) / 1000);
-    if (!result.success) {
-      const message = `Chunk alignment failed after ${seconds}s, so the audiobook carries the `
-        + `estimated transcript: ${result.error}`;
-      console.warn(`[PARALLEL-TTS] ${message}`);
-      await logger.log('WARN', session.jobId, message);
-      /*
-       * AND INTO THE TTS LOG, which is the one a person actually opens.
-       *
-       * `logger` here is the AUDIOBOOK logger, which writes into the LIBRARY's
-       * own `logs/` directory — and on 2026-09-15 that directory held nothing
-       * newer than August, so this reason had been going nowhere for a month.
-       * The renderer got "Chunk alignment failed — estimated transcript" and the
-       * only copy of WHY was on a console nobody was attached to. A refusal that
-       * names its cause into a file that is never written is a refusal that
-       * names nothing.
-       */
-      getTTSLogger().warn(message);
-      if (mainWindow) {
-        rendererSend('parallel-tts:progress', {
-          jobId: session.jobId,
-          /*
-           * A FAILED ALIGN IS A FINISHED STAGE, and the label is where it says
-           * so. There is no `failed` among the three stage statuses, and
-           * leaving it `running` would spin a bar over a stage that has
-           * stopped — so it completes, and carries the outcome in its name.
-           * The audiobook is fine; it has the estimated transcript.
-           */
-          /*
-           * THE REASON TRAVELS TO THE PAGE. It used to read "Chunk alignment
-           * failed — estimated transcript" and stop, which tells somebody that
-           * something went wrong and nothing about what, on the one surface
-           * they are actually looking at. Trimmed, because this is a row label
-           * and the untruncated form is in the log beside it.
-           */
-          progress: postRenderAlignProgress(session, alignFailureLine(result.error), {
-            pct: 100,
-            status: 'complete',
-            label: 'Aligning transcript — failed, estimate kept',
-          }),
-        });
-      }
-      return;
-    }
-    const retake = result.retakeIndices ?? [];
-    const message = `Chunk alignment complete in ${seconds}s — ${result.chunksAligned ?? 0} aligned, `
-      + `${result.chunksFailed ?? 0} failed coverage, ${result.chunksErrored ?? 0} could not be placed`
-      + (retake.length > 0 ? ` — retake: ${retake.join(',')}` : '');
-    console.log(`[PARALLEL-TTS] ${message}`);
-    await logger.log('INFO', session.jobId, message);
-    /*
-     * AND THE STAGE CLOSES. Without this the bar stops wherever the last chunk
-     * event left it — 263 of 376 if the final events arrive together — and a
-     * finished pass reads as one that stalled. The failure path above closes it
-     * too; every way out of this function leaves the stage at 100.
-     */
-    if (mainWindow) {
-      rendererSend('parallel-tts:progress', {
-        jobId: session.jobId,
-        progress: postRenderAlignProgress(session, message, {
-          pct: 100,
-          status: 'complete',
-          label: 'Aligning transcript (qwen3)',
-        }),
-      });
-    }
-  } finally {
-    unsubscribe();
-  }
-}
-
-/**
- * One progress frame for the align phase, in the shape the denoise and RVC passes
- * already use.
- *
- * `phase: 'enhancing'` rather than a seventh phase name: the union is read by the
- * queue card, the job list and the analytics writer, and a value none of them
- * knows would render as nothing at all. 'enhancing' is this row's existing "a
- * post-render pass is running" state and the MESSAGE says which pass — the same
- * decision `denoiseSentences` and `enhanceSentences` made above.
- */
-/**
- * The TTS row during the post-render align.
- *
- * `align` IS THE POINT AND IT USED NOT TO EXIST. The aligner reports
- * `processed`/`total` on every chunk and this function used to throw both away,
- * hardcode `percentage: 95` and put the count in the MESSAGE — so the page said
- * "Aligning chunks (qwen3)… (chunk 263/376)" beside a bar that had not moved
- * since conversion ended and would not move again. The numbers were always
- * there; nothing carried them to a bar.
- */
-/**
- * The one line the queue row shows when the align fails, reason and all.
- *
- * The audiobook is FINE and the sentence says so first: the estimated
- * transcript is what it would have had anyway, and the align is the pass that
- * improves it. What follows is the cause, trimmed to something a row can hold.
- */
-function alignFailureLine(error: unknown): string {
-  const reason = String(error ?? '').replace(/\s+/g, ' ').trim();
-  if (reason === '') {
-    // NOT "unknown error". If the aligner failed and said nothing, that is
-    // itself the thing to report, and it is a different bug from a failure
-    // that explained itself.
-    return 'Chunk alignment failed and gave no reason — estimated transcript kept';
-  }
-  const short = reason.length > 160 ? `${reason.slice(0, 157)}…` : reason;
-  return `Chunk alignment failed — estimated transcript kept: ${short}`;
-}
-
-function postRenderAlignProgress(
-  session: ConversionSession,
-  message: string,
-  align?: AlignStageState,
-): AggregatedProgress {
-  return {
-    phase: 'enhancing',
-    totalSentences: session.prepInfo!.totalSentences,
-    completedSentences: session.prepInfo!.totalSentences,
-    completedInSession: session.isResumeJob
-      ? (session.totalMissing || 0) : session.prepInfo!.totalSentences,
-    /*
-     * The OVERALL bar still moves through the align, because `aligning` now
-     * carries a weight of its own — 95 was a number picked to mean "nearly
-     * done" and it stuck there for the entire model call.
-     */
-    percentage: 95,
-    activeWorkers: 0,
-    workers: session.workers,
-    estimatedRemaining: 0,
-    message,
-    ...(align === undefined ? {} : {
-      stages: buildTtsStages(session, { convertPct: 100, align }),
-    }),
-  };
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // THE GENERATION STEP, ON A CRUCIBLE SERVER
@@ -4302,14 +4075,45 @@ function postRenderAlignProgress(
  */
 async function decideGenerationVenue(settings: ParallelTtsSettings): Promise<GenerationVenue> {
   const { decideWhereGenerationRuns, processVenueHost } = await import('./crucible/generation-venue.js');
-  const venue = await decideWhereGenerationRuns(settings, processVenueHost());
-  if (venue.where === 'crucible' && settings.crucible === undefined) {
-    // Written onto the LIVE settings object, which `savePersistentState`
-    // spreads into session_state.json — so a Continue after a crash reads a
-    // name rather than deciding again.
-    settings.crucible = { server: venue.server };
-  }
-  return venue;
+  return decideWhereGenerationRuns(settings, processVenueHost());
+}
+
+/**
+ * THE MACHINE THIS RUN IS ON, WRITTEN DOWN — and not one instant earlier than
+ * the server said yes.
+ *
+ * ── The trap this closes (bug hunt 2026-09-19, A1) ─────────────────────────
+ *
+ * `decideGenerationVenue` used to write `settings.crucible = { server }` onto
+ * the LIVE settings the moment it picked a machine — before prep, before the
+ * submit, before that server had said anything at all — and `savePersistentState`
+ * spread it into `session_state.json` on the next tick. So a render the server
+ * then refused `409 server_busy` left a ZERO-SENTENCE session stamped with the
+ * name of a machine that had not taken it. When the row was re-admitted
+ * somewhere else, `coverage-align-job.readSessionRunVenue` read the old stamp,
+ * compared it with the row's real venue and refused the alignment by name
+ * (`crucible_align_venue_disagrees`) over a disagreement nobody had caused.
+ *
+ * A session that rendered nothing is not "started on a machine". So the stamp
+ * is written HERE, from `runCrucibleRender`'s `onStarted` — the callback that
+ * fires when Crucible has admitted the job and given it an id, which is the
+ * moment the card is actually taken. A refused submit leaves the session with
+ * no venue, and the next launch is free to take a different machine.
+ *
+ * Both places, for the reason `decideAndRememberVenue` already gives: the live
+ * settings (which the next `savePersistentState` writes) AND the state already
+ * saved for this run, because the initial save happened before this.
+ */
+function stampAdmittedVenue(session: ConversionSession, server: string): void {
+  const settings = session.config.settings;
+  if (settings.crucible === undefined) settings.crucible = { server };
+  const persisted = session.persistentState?.settings;
+  if (persisted && persisted.crucible === undefined) persisted.crucible = { server };
+  void savePersistentState(session).catch((err) => {
+    getTTSLogger().error(
+      `The admitted venue "${server}" could not be persisted onto session ${session.prepInfo?.sessionId}: `
+      + `${err instanceof Error ? err.message : String(err)}`);
+  });
 }
 
 /**
@@ -4324,10 +4128,13 @@ async function decideGenerationVenue(settings: ParallelTtsSettings): Promise<Gen
 async function decideAndRememberVenue(session: ConversionSession): Promise<GenerationVenue> {
   const venue = await decideGenerationVenue(session.config.settings);
   session.venue = venue;
-  if (venue.where === 'crucible') {
-    const persisted = session.persistentState?.settings;
-    if (persisted && persisted.crucible === undefined) persisted.crucible = { server: venue.server };
-  }
+  /*
+   * NOTHING IS STAMPED HERE. It was, until 2026-09-19 — this function's whole
+   * name was about remembering — and the memory was written before the server
+   * had been asked. {@link stampAdmittedVenue} is the one writer now, and it
+   * fires from the submit's `onStarted`. What this still owns is the session's
+   * in-memory `venue`, which is where the render is being SENT.
+   */
   return venue;
 }
 
@@ -4486,6 +4293,13 @@ function startCrucibleGeneration(session: ConversionSession, server: string): vo
         onStarted: ({ jobId: crucibleJobId, cancel }) => {
           session.crucibleJobId = crucibleJobId;
           session.crucibleCancel = cancel;
+          /*
+           * THE SERVER TOOK IT, so now the session says where it is. This is
+           * the ONE place a venue is written onto a session — see
+           * `stampAdmittedVenue` for the 409 that used to stamp a machine that
+           * had refused the book.
+           */
+          stampAdmittedVenue(session, server);
           // Stop can arrive while submission is in flight, before the remote
           // job has an id. The newly admitted job must still receive DELETE.
           if (session.cancelled) {
@@ -4699,28 +4513,35 @@ async function completeAfterWorkers(session: ConversionSession): Promise<void> {
       await logger.log('INFO', session.jobId, 'All workers complete, starting assembly');
     }
 
-    // THE ALIGNMENT, HERE AND NOT LATER. The workers are gone, so the card and
-    // the serving process are free; the session is still where the render wrote
-    // it, which on Windows is inside the WSL guest beside the aligner's own env;
-    // and the two files this writes are session files that have to travel with
-    // the copies below. See runPostRenderAlignment. It never throws: the three
-    // outcomes are all announced and the render succeeds through all of them.
-    await runPostRenderAlignment(session);
-
     /*
-     * THE CARD IS FREE FROM HERE — on the path the app queues, which is every
-     * narration composed by `shared/queue/narration-run.ts`: the enhancement
-     * passes and the assembly are their own rows, so this session will not touch
-     * a GPU again. Said BEFORE the copy below, which is the whole point: the
-     * copy is minutes of file IO and it used to run inside the queue's GPU slot.
+     * ── THE ALIGNMENT IS NOT HERE ANY MORE (Owen, 2026-09-19) ──────────────
      *
-     * Unconditional on how the alignment went. It has three outcomes and all
-     * three leave the card idle; the failed one is the path Owen measured.
+     * `runPostRenderAlignment` stood on this line: a qwen3 coverage alignment,
+     * submitted to the same Crucible, inside the render step. It is the
+     * `align` QUEUE ROW behind this one now — Owen: *"as soon as the GPU
+     * finishes, it releases the lease"* — so the render row ends when the
+     * render ends. What that buys, besides the slot: the act is visible as
+     * itself on the bench ("Aligning · Book", with its own Stop), and a
+     * failure STOPS THE BOOK instead of shipping an estimated transcript with
+     * a WARN in a log nobody opens. It also took a dead gate with it — the
+     * phase refused to run at all on a machine with no LOCAL qwen env, while
+     * the alignment itself was happening on a server (finding B2).
+     *
+     * ── THE CARD IS FREE FROM HERE ─────────────────────────────────────────
+     *
+     * The workers are gone and the serving process with them, and what is left
+     * of this step is a file copy. Announced BEFORE that copy, which is the
+     * whole point: on Owen's *Letter to the American Church*
+     * `cacheSessionToProject` spent 458 s publishing the session onto the
+     * library volume, every second of it charged to a card that had been idle
+     * since the last chunk landed.
+     *
+     * The step BOUNDARY is not a substitute for this and that is a measurement,
+     * not a preference: the boundary is minutes later than the card goes quiet.
      */
     if (session.config.skipAssembly) {
       announceGpuPhaseOver(session,
-        'the render and the post-render alignment have settled, and this run assembles on its '
-        + 'own row');
+        'the render has settled, and this run aligns and assembles on their own rows');
     }
 
     // Cache TTS session to project BEFORE assembly or skipAssembly return,
@@ -4974,10 +4795,15 @@ async function completeAfterWorkers(session: ConversionSession): Promise<void> {
      * THE INLINE PATH'S OWN HAND-OFF — after the denoise and the RVC pass, which
      * are the card's, and before `runAssembly`, which is ffmpeg on the CPU. A
      * `skipAssembly` run said this above and this call is then a no-op.
+     *
+     * The inline path aligns NOTHING, and it did not before either: the phase
+     * this replaced ran on both arms, but the audiobook it produced carried the
+     * proportional estimate whenever it was skipped or failed. A run that wants
+     * a measured transcript takes the queue's `align` row, or
+     * `narrator align` / "Generate sentences" over the finished book.
      */
     announceGpuPhaseOver(session,
-      'the render, the alignment and the enhancement passes have settled; what is left is the '
-      + 'assembly');
+      'the render and the enhancement passes have settled; what is left is the assembly');
 
     try {
       const outputPath = await runAssembly(session);
@@ -5751,34 +5577,28 @@ async function getUniqueFilePath(filePath: string): Promise<string> {
  */
 function ttsStageWeights(skipAssembly: boolean): Record<string, number> {
   /*
-   * `aligning` earns a share of its own because it is a MODEL CALL, not
-   * bookkeeping — Qwen3 over every chunk of the book, minutes of it. Owen,
-   * 2026-09-15: *"i thought aligning text after it's rendered was its own step.
-   * its fine that its not... but if we're going to keep it as part of the
-   * broader TTS step, which is defensible, then it should get its own progress
-   * bar. especially since it's its own model call."* Taken out of `converting`,
-   * which had been quietly paying for it: the overall bar used to sit at 95%
-   * through the whole align with nothing moving.
+   * NO `aligning` SHARE ANY MORE (Owen, 2026-09-19). It had one because the
+   * alignment was a phase of this step — 2026-09-15: *"i thought aligning text
+   * after it's rendered was its own step. its fine that its not... but if we're
+   * going to keep it as part of the broader TTS step, which is defensible, then
+   * it should get its own progress bar."* It IS its own step now, with its own
+   * row and its own bar, so a share of this one's bar would be a stage this run
+   * never reaches. Its 0.05 goes back to `converting`, which is what was
+   * quietly paying for it before it was priced at all.
    */
   return skipAssembly
-    ? { preparing: 0.05, loading: 0.10, converting: 0.80, aligning: 0.05 }
-    : { preparing: 0.04, loading: 0.08, converting: 0.68, aligning: 0.05, assembling: 0.15 };
+    ? { preparing: 0.05, loading: 0.10, converting: 0.85 }
+    : { preparing: 0.04, loading: 0.08, converting: 0.73, assembling: 0.15 };
 }
 
-/**
- * The align stage's state, when the run has reached it. Absent before that, and
- * absent for a run with no aligner env at all — a bar that can only ever read
- * 0% is the same lie the assembly bar refuses to tell below.
+/*
+ * `AlignStageState` AND THE STAGE IT DESCRIBED ARE GONE (Owen, 2026-09-19).
+ * The alignment is the `align` QUEUE ROW behind this one, with a bar of its
+ * own; a stage on this row's bar would be one this step never reaches.
  */
-interface AlignStageState {
-  readonly pct: number;
-  readonly status: JobStageProgress['status'];
-  readonly label: string;
-}
-
 function buildTtsStages(
   session: ConversionSession,
-  opts: { convertPct: number; assemblyPct?: number; done?: boolean; align?: AlignStageState }
+  opts: { convertPct: number; assemblyPct?: number; done?: boolean }
 ): JobStageProgress[] {
   const weights = ttsStageWeights(session.config.skipAssembly === true);
   const stage = (
@@ -5825,17 +5645,6 @@ function buildTtsStages(
       opts.convertPct,
       assembling || opts.convertPct >= 100 ? 'complete' : (converting ? 'running' : 'pending')),
   ];
-
-  /*
-   * ALIGNING, BETWEEN CONVERTING AND ASSEMBLING, which is where it runs
-   * (`runPostRenderAlignment` is awaited before `runAssembly`). Present only
-   * once the run has reached it: the aligner env may not exist, in which case
-   * the phase is skipped outright and a stage nobody will ever fill has no
-   * business on the page.
-   */
-  if (opts.align !== undefined) {
-    stages.push(stage('aligning', opts.align.label, opts.align.pct, opts.align.status));
-  }
 
   // When a separate assembly STEP follows in the chain, this job never assembles —
   // showing a bar that can only ever read 0% would be a lie.
@@ -7310,12 +7119,310 @@ function prepProgressSink(
 }
 
 /**
- * Start a parallel conversion
+ * A SESSION NARRATOR HAS PACKED AND NOTHING HAS READ ALOUD YET — what the
+ * `prepare` queue row hands the `tts-conversion` row behind it.
+ *
+ * It names the session on DISK rather than carrying a `PrepInfo`, and that is
+ * the point: the two acts are two rows now, they can be separated by an app
+ * restart, and `session-state.json` is the thing that survives one. The render
+ * reads its chunk texts out of the same file a resume does.
+ */
+export interface PreparedSessionRef {
+  readonly sessionId: string;
+  readonly sessionDir: string;
+  readonly processDir: string;
+  /**
+   * The document that was actually packed — the narration COPY when one was
+   * cut, never the book the row names. Every resume match, the clean-session
+   * sweep and the persisted state key on this path, so the render has to be
+   * given the same one prep used.
+   */
+  readonly epubPath: string;
+  readonly totalSentences: number;
+  readonly totalChapters: number;
+  /** See {@link PrepInfo.packedFor}. Absent when nothing stated a band. */
+  readonly packedFor?: { server: string; ceilingChars: number };
+}
+
+/** What {@link prepareNarrationSession} answers. Never throws; see the header. */
+export interface PrepareNarrationResult {
+  success: boolean;
+  error?: string;
+  /** The server's own sentence naming a holder, for a refusal the row can wait out. */
+  busyLine?: string;
+  prepared?: PreparedSessionRef;
+}
+
+/** The packed session, as the rest of this file names it. */
+function preparedRefOf(epubPath: string, prep: PrepInfo): PreparedSessionRef {
+  return {
+    sessionId: prep.sessionId,
+    sessionDir: prep.sessionDir,
+    processDir: prep.processDir,
+    epubPath,
+    totalSentences: prep.totalSentences,
+    totalChapters: prep.totalChapters,
+    ...(prep.packedFor === undefined ? {} : { packedFor: prep.packedFor }),
+  };
+}
+
+/** Where this run's audiobook is written. Throws, naming the missing setting. */
+async function effectiveOutputDirFor(config: ParallelConversionConfig): Promise<string> {
+  if (config.bfpPath) {
+    // Output directly to the project audiobook folder (no temp dir needed).
+    const dir = getAudiobookDirFromBfp(config.bfpPath);
+    await fs.mkdir(dir, { recursive: true });
+    return dir;
+  }
+  if (config.outputDir && config.outputDir.trim() !== '') return config.outputDir;
+  throw new Error(
+    'Output directory not configured. Please set the audiobook output folder in Settings.');
+}
+
+/**
+ * PACK THE BOOK INTO GENERATION CHUNKS — the prep half of a narration, with no
+ * card asked for and no venue stamped.
+ *
+ * ── Why it is a door of its own (Owen, 2026-09-19) ─────────────────────────
+ *
+ * *"Prepare can be its own CPU step… we could start the CPU prep the moment a
+ * free CPU slot is open and an item enters the active (and unpaused) queue."*
+ * It was the first minutes of `startParallelConversion`, which meant a GPU slot
+ * was held while a book was extracted and split, and — worse — that a render
+ * refused `409 server_busy` had already paid for a prep into a scratch session
+ * the next attempt did not match, so it paid for it again (finding A2).
+ *
+ * ── It still has to ASK a server one question ──────────────────────────────
+ *
+ * The chunk boundaries are the RENDERING machine's numbers: `max_chars` and the
+ * pace block off `GET /v1/voices`, never this machine's catalog
+ * (`electron/crucible/voice-band.ts` — "only one of them can refuse, and the
+ * engine is the one that will"). So prep reads one band from one server, and
+ * REFUSES BY NAME when no enabled server will state it. That is not "waiting
+ * for a server": a busy server answers `/v1/voices` in milliseconds, and the
+ * refusal names a misconfiguration a person repairs in seconds — against a cap
+ * invented here, which would be a whole book packed to numbers nobody measured.
+ *
+ * Which server's band it read is recorded on the session (`PrepInfo.packedFor`)
+ * and travels to the render, which refuses by name if it is admitted somewhere
+ * with a TIGHTER ceiling (`packingTravelsTo`).
+ *
+ * NEVER THROWS: the queue step turns a `{ success: false }` into its own
+ * refusal, and a `busyLine` into a park, exactly as the render door does.
+ */
+export async function prepareNarrationSession(
+  jobId: string,
+  config: ParallelConversionConfig,
+): Promise<PrepareNarrationResult> {
+  const ttsLog = getTTSLogger();
+  ttsLog.info('Preparing the narration session', {
+    jobId,
+    epubPath: config.epubPath,
+    ttsEngine: config.settings.ttsEngine,
+    voice: config.settings.fineTuned,
+    language: config.settings.language || null,
+  });
+  // Prep is minutes of CPU on a long book; the machine must not sleep through it.
+  startPowerBlock();
+  try {
+    const packed = await packSessionForNarration(jobId, config);
+    return { success: true, prepared: preparedRefOf(packed.config.epubPath, packed.prepInfo) };
+  } catch (err) {
+    const error = err instanceof Error ? err.message : String(err);
+    ttsLog.error('The narration session could not be prepared', { jobId, error });
+    const busyLine = (err as { busyLine?: unknown })?.busyLine;
+    return {
+      success: false,
+      error,
+      ...(typeof busyLine === 'string' && busyLine !== '' ? { busyLine } : {}),
+    };
+  } finally {
+    stopPowerBlock();
+  }
+}
+
+/**
+ * THE PREP PHASE, shared by the `prepare` row and by every door that still
+ * preps inline (the CLI, the language-learning wizard, a queue row restored
+ * from before the row existed).
+ *
+ * Throws, naming what went wrong; the two callers report it in their own shape.
+ * It returns the CONFIG as well as the chunks because prep may substitute the
+ * document — the narration copy it cuts is the file every later match keys on.
+ */
+async function packSessionForNarration(
+  jobId: string,
+  config: ParallelConversionConfig,
+): Promise<{ config: ParallelConversionConfig; prepInfo: PrepInfo }> {
+  // WHICH CLEANUP STORY THIS RUN IS, refused rather than guessed. Everything
+  // that queues a conversion states it (the Narrate button asks the user when
+  // the file it is about to read carries no stamp); a config that reached here
+  // without it is a row from a build that had no such question, and reading it
+  // as either answer would be this file deciding whether an unstamped book is a
+  // mistake or the user's own choice. Re-queueing says it.
+  const textCleanup = config.textCleanup;
+  if (textCleanup === undefined) {
+    throw new Error(
+      'This narration run does not say whether the narration text cleanup is '
+      + 'required of it, so there is no way to tell whether reading the book as printed is a '
+      + "mistake or your own choice. Press Narrate again on the book's version row — the run it "
+      + 'queues says so.');
+  }
+
+  // The captions out, before anything downstream sees the path: the session,
+  // its resume matching and the clean-session sweep all key on `epubPath`, so
+  // one substitution here keeps every one of them speaking about one file.
+  let prepared: NarrationPrepResult;
+  try {
+    prepared = await prepareNarrationInput(config.epubPath, jobId, {
+      skipAssembly: config.skipAssembly === true,
+      // THE RUN'S OWN ANSWER, carried from the Narrate button. Not defaulted
+      // here: the step that queued this refuses a config that does not say, so
+      // by this line it is one of the two words the user's press produced.
+      textCleanup,
+    });
+  } catch (err) {
+    throw new Error(
+      `The narration copy could not be cut: ${err instanceof Error ? err.message : err}`);
+  }
+  if (prepared.inputPath !== config.epubPath) {
+    config = { ...config, epubPath: prepared.inputPath };
+  }
+
+  // Clean any existing sessions for this epub if requested.
+  // ONLY set when the submission explicitly intended a fresh render (the wizard's
+  // "Start fresh" over "Continue") — see queue.service.ts. Anything else must leave
+  // scratch sessions alone: they are the crash-resume checkpoint.
+  if (config.cleanSession) {
+    console.log(`[PARALLEL-TTS] cleanSession=true, deleting existing sessions for ${config.epubPath}`);
+    const deleted = await deleteSessionsForEpub(config.epubPath);
+    getTTSLogger().warn('cleanSession: deleted scratch sessions for this EPUB', {
+      jobId, epubPath: config.epubPath, bfpPath: config.bfpPath, deletedSessions: deleted,
+    });
+  }
+
+  // NOTE: We intentionally do NOT auto-skip to assembly for complete sessions.
+  // Users who want to assemble an existing session should use the Reassembly feature.
+  // TTS jobs always run prep to create a fresh session with the current settings.
+
+  // WHOSE NUMBERS THIS BOOK IS PACKED TO. Not an admission and not a placement:
+  // one `GET /v1/voices` for the voice's band. See `prepareNarrationSession`.
+  const venue = await decideGenerationVenue(config.settings);
+
+  // Prep is a real, minute-scale stage (extract the epub, split it, pack chunks)
+  // that used to emit nothing — so announce it before starting, or the job shows
+  // a blank 0% until the first worker spawns.
+  emitPrepStageProgress(jobId, 'Extracting text and splitting sentences…', config.skipAssembly === true);
+  let prepInfo: PrepInfo;
+  try {
+    prepInfo = await prepareSession(config.epubPath, config.settings, venue, jobId);
+  } catch (err) {
+    throw new Error(`Preparation failed: ${err}`);
+  }
+  await logger.log('INFO', jobId, 'Prep complete', {
+    totalSentences: prepInfo.totalSentences,
+    totalChapters: prepInfo.totalChapters,
+    sessionId: prepInfo.sessionId,
+  });
+  return { config, prepInfo };
+}
+
+/**
+ * THE CHUNKS A `prepare` ROW ALREADY PACKED, read back off the session.
+ *
+ * `session-state.json` is the authority for a prepared session exactly as it is
+ * for a resumed one (`resumeParallelConversion` builds the same shape from the
+ * same file), which is what lets the render row survive an app restart between
+ * itself and the prep in front of it.
+ */
+async function prepInfoForPreparedSession(prepared: PreparedSessionRef): Promise<PrepInfo> {
+  const statePath = path.join(toReadablePath(prepared.processDir), 'session-state.json');
+  let state: {
+    total_sentences?: number; total_chapters?: number; total_raw_sentences?: number;
+    chapter_sentences?: unknown; chapters?: Array<Record<string, number>>;
+    metadata?: { title?: string; creator?: string; language?: string };
+  };
+  try {
+    state = JSON.parse(await fs.readFile(statePath, 'utf-8'));
+  } catch (err) {
+    throw new Error(
+      `The prepared session this render was handed is not readable (${statePath}): `
+      + `${err instanceof Error ? err.message : String(err)}. The prepare step wrote it; if it `
+      + 'has been swept, queue the book again so it is packed afresh.');
+  }
+  if (!state || !state.total_sentences || !Array.isArray(state.chapters) || state.chapters.length === 0) {
+    throw new Error(
+      `The prepared session at ${prepared.processDir} holds no chunks `
+      + `(total_sentences=${String(state?.total_sentences)}). Nothing was rendered; queue the `
+      + 'book again so it is packed afresh.');
+  }
+  const metrics = buildChunkTextMetrics(state.chapter_sentences);
+  const rawSum = metrics.sentences.reduce((a, b) => a + b, 0);
+  const wordSum = metrics.words.reduce((a, b) => a + b, 0);
+  const charSum = metrics.chars.reduce((a, b) => a + b, 0);
+  return {
+    sessionId: prepared.sessionId,
+    sessionDir: prepared.sessionDir,
+    processDir: prepared.processDir,
+    chaptersDir: path.join(prepared.processDir, 'chapters'),
+    chaptersDirSentences: path.join(prepared.processDir, 'chapters', 'sentences'),
+    totalChapters: state.total_chapters ?? prepared.totalChapters,
+    totalSentences: state.total_sentences,
+    totalRawSentences: state.total_raw_sentences ?? (rawSum > 0 ? rawSum : undefined),
+    rawSentenceCounts: metrics.sentences.length > 0 ? metrics.sentences : undefined,
+    wordCounts: metrics.words.length > 0 ? metrics.words : undefined,
+    charCounts: metrics.chars.length > 0 ? metrics.chars : undefined,
+    totalRawWords: wordSum > 0 ? wordSum : undefined,
+    totalRawChars: charSum > 0 ? charSum : undefined,
+    chapters: state.chapters.map((c) => ({
+      chapterNum: c['chapter_num'] as number,
+      sentenceCount: c['sentence_count'] as number,
+      sentenceStart: c['sentence_start'] as number,
+      sentenceEnd: c['sentence_end'] as number,
+    })),
+    metadata: state.metadata ?? {},
+    ...(prepared.packedFor === undefined ? {} : { packedFor: prepared.packedFor }),
+  };
+}
+
+/**
+ * THE RENDERING MACHINE WILL TAKE THESE CHUNKS, or this says why not.
+ *
+ * Asked only when the render is admitted to a DIFFERENT server from the one
+ * whose band prep read. Null when the packing travels; a sentence naming both
+ * ceilings when it does not — which is a repairable misconfiguration (name the
+ * server on the book, or queue it again so it is packed for this one), not an
+ * hour of GPU spent on chunks the server will refuse one at a time.
+ */
+async function packingRefusalFor(
+  prepInfo: PrepInfo,
+  settings: ParallelTtsSettings,
+  server: string,
+): Promise<string | null> {
+  const packed = prepInfo.packedFor;
+  if (packed === undefined || packed.server === server) return null;
+  const band = await venueBandForPrep(settings, server);
+  if (packingTravelsTo(packed.ceilingChars, band.ceilingChars)) return null;
+  return `crucible_packing_ceiling_too_low: this book was packed to chunks of at most `
+    + `${packed.ceilingChars} characters, which is what crucible "${packed.server}" states for `
+    + `this voice, and the render was admitted to crucible "${server}", which states `
+    + `${band.ceilingChars}. Chunking is this client's and the cap is that server's, so the `
+    + 'over-long chunks would be refused one at a time. Name a server on the book, or remove it '
+    + 'and queue it again so it is packed for the machine it will run on.';
+}
+
+/**
+ * Start a parallel conversion.
+ *
+ * `prepared` is the session a `prepare` row already packed (Owen, 2026-09-19).
+ * WITHOUT it this door preps inline, exactly as it always did — which is what
+ * the CLI, the language-learning wizard and a queue row restored from before
+ * the prepare row existed all still do.
  */
 export async function startParallelConversion(
   jobId: string,
   config: ParallelConversionConfig,
-  onProgress?: (progress: AggregatedProgress) => void
+  prepared?: PreparedSessionRef,
 ): Promise<ParallelConversionResult> {
   const ttsLog = getTTSLogger();
   ttsLog.info('Starting TTS conversion', {
@@ -7345,44 +7452,47 @@ export async function startParallelConversion(
     voice: config.settings.fineTuned
   });
 
-  // WHICH CLEANUP STORY THIS RUN IS, refused rather than guessed. Everything
-  // that queues a conversion states it (the Narrate button asks the user when
-  // the file it is about to read carries no stamp); a config that reached here
-  // without it is a row from a build that had no such question, and reading it
-  // as either answer would be this file deciding whether an unstamped book is a
-  // mistake or the user's own choice. Re-queueing says it.
-  const textCleanup = config.textCleanup;
-  if (textCleanup === undefined) {
-    const error = 'This narration run does not say whether the narration text cleanup is '
-      + 'required of it, so there is no way to tell whether reading the book as printed is a '
-      + "mistake or your own choice. Press Narrate again on the book's version row — the run it "
-      + 'queues says so.';
-    console.error('[PARALLEL-TTS]', error);
-    await logger.failJob(jobId, error);
-    stopPowerBlock();
-    emitJobFailure(jobId, error);
-    return { success: false, error };
-  }
-
-  // The captions out, before anything downstream sees the path: the session,
-  // its resume matching and the clean-session sweep all key on `epubPath`, so
-  // one substitution here keeps every one of them speaking about one file.
-  // After the title above, which should read as the book and not as a sha.
+  /*
+   * WHERE THE AUDIOBOOK GOES, and WHAT THIS RUN READS ALOUD.
+   *
+   * Two arms, and the difference between them is which row packed the book:
+   *
+   *   PREPARED — a `prepare` row already did it, on a CPU slot, before any card
+   *              was asked for (Owen, 2026-09-19). The chunks are on disk and
+   *              this reads them back; nothing here extracts, splits or cuts a
+   *              copy, and the row's whole life is the render.
+   *   INLINE   — THE COMPATIBILITY ARM, and it is never a silent default. It is
+   *              what a queue row restored from before the prepare row existed
+   *              takes, what the language-learning wizard's own chain takes, and
+   *              what the CLI takes. It preps here, exactly as this door always
+   *              did.
+   */
+  let prepInfo: PrepInfo;
+  let effectiveOutputDir: string;
   try {
-    const prepared = await prepareNarrationInput(
-      config.epubPath, jobId, {
-        skipAssembly: config.skipAssembly === true,
-        // THE RUN'S OWN ANSWER, carried from the Narrate button through the tts
-        // step's settings. Not defaulted here: `tts-conversion.ts` refuses a
-        // step whose config does not say, so by the time it reaches this line it
-        // is one of the two words the user's press produced.
-        textCleanup,
+    if (prepared !== undefined) {
+      config = { ...config, epubPath: prepared.epubPath };
+      effectiveOutputDir = await effectiveOutputDirFor(config);
+      prepInfo = await prepInfoForPreparedSession(prepared);
+      ttsLog.info('Rendering a session the prepare row packed', {
+        jobId,
+        sessionId: prepared.sessionId,
+        totalSentences: prepInfo.totalSentences,
+        packedFor: prepared.packedFor?.server ?? null,
       });
-    if (prepared.inputPath !== config.epubPath) {
-      config = { ...config, epubPath: prepared.inputPath };
+    } else {
+      ttsLog.info('No prepare row in front of this render — packing the book inline', {
+        jobId, epubPath: config.epubPath,
+      });
+      const packed = await packSessionForNarration(jobId, config);
+      config = packed.config;
+      prepInfo = packed.prepInfo;
+      // AFTER the pack, because prep substitutes the document and the config it
+      // hands back is the one every later reader keys on.
+      effectiveOutputDir = await effectiveOutputDirFor(config);
     }
   } catch (err) {
-    const error = `The narration copy could not be cut: ${err instanceof Error ? err.message : err}`;
+    const error = err instanceof Error ? err.message : String(err);
     console.error('[PARALLEL-TTS]', error);
     await logger.failJob(jobId, error);
     stopPowerBlock();
@@ -7390,49 +7500,11 @@ export async function startParallelConversion(
     return { success: false, error };
   }
 
-  // Determine effective output directory:
-  // - If bfpPath is set, output directly to the project audiobook folder
-  // - Otherwise, require outputDir to be set
-  let effectiveOutputDir: string;
-
-  if (config.bfpPath) {
-    // Output directly to the project audiobook folder (no temp dir needed)
-    effectiveOutputDir = getAudiobookDirFromBfp(config.bfpPath);
-    await fs.mkdir(effectiveOutputDir, { recursive: true });
-    console.log(`[PARALLEL-TTS] Outputting directly to the project audiobook folder: ${effectiveOutputDir}`);
-  } else if (config.outputDir && config.outputDir.trim() !== '') {
-    // No project directory: output directly to outputDir
-    effectiveOutputDir = config.outputDir;
-  } else {
-    const error = 'Output directory not configured. Please set the audiobook output folder in Settings.';
-    console.error('[PARALLEL-TTS]', error);
-    await logger.failJob(jobId, error);
-    stopPowerBlock();
-    emitJobFailure(jobId, error);
-    return { success: false, error };
-  }
-
-  // Clean any existing sessions for this epub if requested.
-  // ONLY set when the submission explicitly intended a fresh render (the wizard's
-  // "Start fresh" over "Continue") — see queue.service.ts. Anything else must leave
-  // scratch sessions alone: they are the crash-resume checkpoint.
-  if (config.cleanSession) {
-    console.log(`[PARALLEL-TTS] cleanSession=true, deleting existing sessions for ${config.epubPath}`);
-    const deleted = await deleteSessionsForEpub(config.epubPath);
-    ttsLog.warn('cleanSession: deleted scratch sessions for this EPUB', {
-      jobId, epubPath: config.epubPath, bfpPath: config.bfpPath, deletedSessions: deleted,
-    });
-  }
-
-  // NOTE: We intentionally do NOT auto-skip to assembly for complete sessions.
-  // Users who want to assemble an existing session should use the Reassembly feature.
-  // TTS jobs always run prep to create a fresh session with the current settings.
-
-  // WHERE THE GENERATION STEP RUNS, decided BEFORE prep — because the answer
-  // decides where the session is created and which python preps it
-  // (prepareSession, prepRunsInWsl). Refused here, before a session directory
-  // or a GPU lease exists, when no server can be chosen: there is no local
-  // fallback (generation-venue.ts).
+  // WHERE THE GENERATION STEP RUNS. Refused here, before a GPU lease exists,
+  // when no server can be chosen: there is no local fallback
+  // (generation-venue.ts). NOTHING IS STAMPED ONTO THE SESSION YET — see
+  // `stampAdmittedVenue` for the 409 that used to pin a book to the machine
+  // that had refused it.
   let venue: GenerationVenue;
   try {
     venue = await decideGenerationVenue(config.settings);
@@ -7445,20 +7517,23 @@ export async function startParallelConversion(
     return { success: false, error };
   }
 
-  // Prepare the session first. Prep is a real, minute-scale stage (extract the epub,
-  // split it, pack chunks) that used to emit nothing — so announce it before starting,
-  // or the job shows a blank 0% until the first worker spawns.
-  let prepInfo: PrepInfo;
-  emitPrepStageProgress(jobId, 'Extracting text and splitting sentences…', config.skipAssembly === true);
+  // AND THAT MACHINE CAN TAKE THESE CHUNKS — asked only when the render landed
+  // somewhere other than the server whose band packed them. See
+  // `packingRefusalFor`; this is the one check that a separate prepare row made
+  // possible to get wrong.
   try {
-    prepInfo = await prepareSession(config.epubPath, config.settings, venue, jobId);
-    await logger.log('INFO', jobId, 'Prep complete', {
-      totalSentences: prepInfo.totalSentences,
-      totalChapters: prepInfo.totalChapters,
-      sessionId: prepInfo.sessionId
-    });
+    const refusal = await packingRefusalFor(prepInfo, config.settings, venue.server);
+    if (refusal !== null) {
+      console.error('[PARALLEL-TTS]', refusal);
+      await logger.failJob(jobId, refusal);
+      stopPowerBlock();
+      emitJobFailure(jobId, refusal);
+      return { success: false, error: refusal };
+    }
   } catch (err) {
-    const error = `Preparation failed: ${err}`;
+    const error = `crucible "${venue.server}" would not state this voice's chunk length, so `
+      + `there is no way to know whether the chunks already packed can be read there: ${
+        err instanceof Error ? err.message : String(err)}`;
     console.error('[PARALLEL-TTS]', error);
     await logger.failJob(jobId, error);
     stopPowerBlock();
@@ -7755,10 +7830,27 @@ export async function renderRangeHeadless(
 }> {
   const jobId = opts?.jobId || `cli-${crypto.randomUUID()}`;
 
-  // The same seam AND the same decision as the app's path (items 2.4, 2.2), so
-  // the CLI mirrors the app's code path rather than acquiring a second way to
-  // reach a Crucible — or a second answer to where a render runs. Decided BEFORE
-  // prep, as the app does, because it places the session (prepareSession).
+  /*
+   * THE HEADLESS DOOR IS ONE ACT, AND IT SAYS SO (2026-09-19).
+   *
+   * The QUEUE's narration is three rows since Owen's ruling of that evening —
+   * `prepare` (CPU, no server), `tts-conversion` (the render, and only the
+   * render), `align` (its own GPU row) — because the queue has slots and a
+   * bench to show them on, and because a book refused `409 server_busy` must
+   * not pay for its prep twice.
+   *
+   * This door has none of that. It is one process, one book, started by a
+   * person at a shell who is waiting for it, and there is nothing to contend
+   * with and no row to park. So it PREPS INLINE, here, exactly as it always
+   * has — and, like the queue's render row, it aligns NOTHING: a measured
+   * transcript is `bookforge-tts --align` / `cli/coverage-align.js` over the
+   * finished session, which is the door that has always written one headlessly.
+   * See `cli/README.md` § "The queue's shape and the CLI's".
+   *
+   * The DECISION is still the app's: one `decideGenerationVenue`, so the CLI
+   * mirrors the app's code path rather than acquiring a second answer to where
+   * a render runs. The band it packs to is that server's, for the same reason.
+   */
   const venue = await decideGenerationVenue(settings);
 
   // Real e2a prep — identical packing/session-creation to a UI job.
@@ -7906,12 +7998,10 @@ export async function stopParallelConversion(jobId: string): Promise<boolean> {
   // see cancelled=true so the retry loop can never fight the stop (it once respawned a
   // stopping job's worker twice against a full GPU).
   session.cancelled = true;
-  // A stop that arrives DURING the post-render alignment has to reach that child
-  // too, whole tree. It is the one long-running thing in this job that is not a
-  // worker, so the worker teardown below does not cover it, and an aligner left
-  // holding the card is exactly the orphan `stopCoverageAlign` was written for.
-  // A no-op when the phase is not running.
-  stopCoverageAlign(postRenderAlignStepId(jobId));
+  // NOTHING TO STOP IN AN ALIGNER HERE ANY MORE. The post-render alignment was
+  // a child of this job until 2026-09-19 and this line reached it; it is the
+  // `align` queue row behind this one now, and the queue stops it through that
+  // module's own `cancel` (`queue-steps/align.ts` → `stopCoverageAlign`).
   // The closer polls on a timer of its own; without this it would outlive the
   // cancelled job and keep reading a session that is being torn down. Its partial
   // output stays on disk and is simply never marked complete, so assembly ignores it.
@@ -9820,6 +9910,9 @@ export const parallelTtsBridge = {
   initializeLogger,
   detectRecommendedWorkerCount,
   prepareSession,
+  // The prep half on its own — what the `prepare` queue row calls (Owen,
+  // 2026-09-19). `startParallelConversion` takes what it produced.
+  prepareNarrationSession,
   startParallelConversion,
   stopParallelConversion,
   stopAndCacheParallelConversion,

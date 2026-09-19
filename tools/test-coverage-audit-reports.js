@@ -251,74 +251,98 @@ check('every app door states --backend qwen3, and none of them resolves a backen
   }
 });
 
-check('the per-chunk door resolves ONE aligner env, and refuses instead of falling back', () => {
+check('the per-chunk door resolves ONE aligner env, and no door gates on it up front', () => {
   const job = read('electron/coverage-align-job.ts');
   assert.ok(/resolveQwenAlignEnv/.test(job),
     'the job must ask qwen-aligner.ts — a second copy of that ladder is a second '
     + 'answer, and the copy is the one that goes stale');
   assert.ok(!/resolveWhisperxEnvRoot/.test(job),
     'the job still reaches for the whisperx env; the align stage does not run there');
+  /*
+   * THE PLAN-TIME GATE IS GONE (2026-09-19, bug hunt finding B2).
+   *
+   * `coverageAlignPython()` / `coverageAlignRefusal()` answered "can THIS
+   * machine align?" by resolving the local `qwen-align` conda env, and two
+   * doors refused up front on it. Both were asking about the wrong machine:
+   * `runCoverageAlign` sends the model to a Crucible server and measures the
+   * book here in the TOOLS env, which is native everywhere. A Mac — no
+   * mlx-darwin block for qwen3-aligner, so `align` is off — was refused an
+   * alignment the server it had just rendered on would have done.
+   *
+   * What survives is the env resolution INSIDE `runCoverageAlignLocally`'s
+   * local-spawn arm, which is the arm that actually needs an interpreter.
+   */
   const compiled = require(JOB);
-  assert.strictEqual(typeof compiled.coverageAlignRefusal, 'function',
-    'the refusal is exported so the CLI\'s plan-time check says the SAME sentence '
-    + 'as the job, rather than a second wording of one fact');
-  assert.ok(read('cli/coverage-align.js').includes('coverageAlignRefusal()'),
-    'and the CLI adapter uses it rather than writing its own');
+  for (const symbol of ['coverageAlignPython', 'coverageAlignRefusal']) {
+    assert.strictEqual(compiled[symbol], undefined,
+      `the module still exports ${symbol} — the local-env gate in front of the Crucible `
+      + 'alignment was removed because it refused machines that could align');
+  }
+  // Matched on the CALL (`job.…(`), not on the name: the adapter's comment
+  // still explains what the gate was and why it went, and a test that fails on
+  // its own history teaches people to delete history.
+  assert.ok(!/job\.coverageAlign(Refusal|Python)\s*\(/.test(read('cli/coverage-align.js')),
+    'the CLI adapter still gates on the local aligner env');
 });
 
-check('the post-render phase runs BEFORE the session is cached, and never fails the render', () => {
+check('the alignment is a ROW, not a phase of the render — and the render ends at the render', () => {
+  /*
+   * THIS CHECK WAS THE OPPOSITE ONE UNTIL 2026-09-19.
+   *
+   * It pinned `runPostRenderAlignment` as the render's final phase, ordered
+   * before `cacheSessionToProject`, and required that it NEVER THROW: no
+   * aligner was an announced SKIP and a failure was an announced failure, and
+   * the audiobook shipped either way carrying the proportional estimate.
+   *
+   * Owen ruled the phase out that evening — alignment *"is its own queue
+   * step"*, *"as soon as the GPU finishes, it releases the lease"*, and *"if
+   * alignment fails it should stop"*. Every property this used to defend was a
+   * property of the wrong arrangement: the render row held a GPU slot for ten
+   * minutes of model call after the card was idle; the skip arm was a dead
+   * LOCAL-env gate in front of work that happens on a server (finding B2); and
+   * "ships either way" is how a misconfigured aligner went a month unnoticed.
+   *
+   * So the defence is inverted, and it is the same discipline: the phase must
+   * be GONE from the bridge, and the row must be composed by the run.
+   */
   const bridge = read('electron/parallel-tts-bridge.ts');
-  // Scoped to the completion path itself: `cacheSessionToProject` is DEFINED
-  // earlier in this file and called by other doors, so a whole-file indexOf
-  // compares the phase against a declaration rather than against the call that
-  // copies this render's session.
+  const ts = require('typescript');
+  const parsed = ts.createSourceFile('parallel-tts-bridge.ts', bridge, ts.ScriptTarget.Latest, true);
+  const phaseNode = parsed.statements.find((node) => ts.isFunctionDeclaration(node)
+    && node.name?.text === 'runPostRenderAlignment');
+  assert.ok(!phaseNode,
+    'runPostRenderAlignment is back in the bridge — the alignment is the `align` queue row '
+    + '(shared/queue/narration-run.ts), and a phase inside the render is what held the GPU slot');
+  assert.ok(!/await runPostRenderAlignment\(/.test(bridge),
+    'the completion path still awaits a post-render alignment phase');
+
+  // THE CARD IS HANDED BACK BEFORE THE SESSION COPY, which is the half of the
+  // old arrangement that WAS right and is measured: 458 s of file copy on
+  // Owen's *Letter to the American Church*, every second charged to an idle
+  // card. Scoped to the completion path — `cacheSessionToProject` is defined
+  // earlier in this file and called by other doors.
   const at = bridge.indexOf('async function checkAllWorkersComplete');
   assert.ok(at > 0, 'checkAllWorkersComplete is the completion path');
   const complete = bridge.slice(at);
-  const align = complete.indexOf('await runPostRenderAlignment(session)');
+  const handoff = complete.indexOf('announceGpuPhaseOver(session');
   const cache = complete.indexOf('await cacheSessionToProject(');
-  assert.ok(align > 0, 'the TTS step must run the alignment as its final phase');
+  assert.ok(handoff > 0, 'the render must announce that the card is free');
   assert.ok(cache > 0, 'the copy to the project cache is here');
-  /*
-   * THERE WAS A SECOND COPY — `normalizeWslSessionToWindows`, which moved a
-   * session off ext4 after a legacy WSL render. It is deleted with that render
-   * path (docs/LEGACY-REMOVAL.md), so the ORDER argument below now has one
-   * subject instead of two. The argument itself is unchanged and is still the
-   * whole design.
-   */
+  assert.ok(handoff < cache,
+    'the GPU slot must go back BEFORE the session is copied into the project: the copy is '
+    + 'minutes of file IO on a card that has been idle since the last chunk landed');
+
   assert.ok(!/(await |function )normalizeWslSessionToWindows\s*\(/.test(bridge),
     'the WSL session normaliser is back — there is no guest render to normalise out of. '
     + '(Matched on a CALL or a DEFINITION, not on the name: several comments still explain '
     + 'what it did, and a test that fails on its own history teaches people to delete '
     + 'history.)');
-  // ORDER IS THE WHOLE DESIGN. On Windows the render writes the session inside
-  // WSL, the qwen env is in the guest, and the guest cannot see the network
-  // drive the session is copied to. The report and the measured transcript are
-  // session files: written after either copy, they stay on ext4 and the native
-  // assembly never sees them.
-  assert.ok(align < cache,
-    'the alignment must run BEFORE the session is copied to the project cache: the report '
-    + 'and the measured transcript are SESSION files, and written after the copy they would '
-    + 'never reach it — see runPostRenderAlignment');
-  const ts = require('typescript');
-  const parsed = ts.createSourceFile('parallel-tts-bridge.ts', bridge, ts.ScriptTarget.Latest, true);
-  const phaseNode = parsed.statements.find((node) => ts.isFunctionDeclaration(node)
-    && node.name?.text === 'runPostRenderAlignment');
-  assert.ok(phaseNode, 'the post-render alignment function must exist');
-  const phase = phaseNode.getText(parsed);
-  let throws = false;
-  const visit = (node) => { if (ts.isThrowStatement(node)) throws = true; ts.forEachChild(node, visit); };
-  visit(phaseNode);
-  assert.ok(!throws,
-    'the phase must never throw: no aligner is an announced SKIP and a failed '
-    + 'align is an announced failure, and the audiobook ships either way with '
-    + 'the proportional estimate');
-  assert.ok(/Chunk alignment skipped/.test(phase) && /Chunk alignment failed/.test(phase),
-    'and both outcomes must be SAID — the one allowed skip in this path is a '
-    + 'stated one');
-  assert.ok(/stopCoverageAlign\(postRenderAlignStepId\(/.test(bridge),
-    'a user stop must reach the align child; it is the one long-running thing in '
-    + 'this job that is not a worker');
+
+  // AND THE ROW IS COMPOSED. A render whose alignment is nobody's step is a
+  // book sealed with the estimate for a different reason.
+  const plan = read('shared/queue/narration-run.ts');
+  assert.ok(/narrationAlignStep\(/.test(plan) && /steps\.push\(narrationAlignStep\(book, settings\)\)/.test(plan),
+    'the narration run must compose an align row behind the render');
 });
 
 check('the gate is one constant, in one place, imported by the whole-book door', () => {

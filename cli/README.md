@@ -86,6 +86,31 @@ python scripts), or copy `electron/data` into `dist/electron/` by hand.
 
 `--mode streaming` is **deleted** — see **Streaming: where it went** at the bottom.
 
+### The queue's shape and the CLI's — they differ, and here is how
+
+Since **2026-09-19** the app's queue splits one narration into **three rows**
+(Owen: *"Prepare can be its own CPU step… we could start the CPU prep the moment a
+free CPU slot is open"*, and *"as soon as the GPU finishes, it releases the
+lease"*):
+
+| queue row | resource | what it does |
+|---|---|---|
+| `prepare` | CPU (`local-work`) | cuts the narration copy, extracts, splits, packs the chunks. Travels nowhere; starts without waiting for a server. |
+| `tts-conversion` | GPU (a Crucible server) | the render, and **only** the render. |
+| `align` | GPU (the run's server) | the qwen3 coverage alignment. A failure **stops the book**. |
+
+**This door is still ONE act, and that is deliberate.** `--tts` /
+`--audiobook` / `--batch` call `renderRangeHeadless`, which **preps inline** and
+then renders, exactly as it always has: there is no queue behind it, no slot to
+contend for and no row to park, so there is nothing for a split to buy. It runs
+in one process, started by a person who is waiting for it.
+
+**And it aligns nothing** — which is also what the queue's render row does now.
+A measured transcript is its own door here: `--align` (below), or
+`node cli/coverage-align.js`, over the session the render left. A book assembled
+with no coverage report beside it carries the proportional sentence transcript,
+exactly as it always has.
+
 **The narration prep runs first, automatically.** The render path calls
 `prepareNarrationInput` (see `--prep` below) before `renderRangeHeadless` and hands it
 the result, so a `--tts` audition reads its numbers as words exactly as the shipped

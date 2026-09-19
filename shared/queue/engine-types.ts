@@ -44,6 +44,24 @@ import type { SlotSet } from './slot-sets';
 
 /** Job types this queue can run. Retired vocabulary is listed separately below. */
 export type JobType =
+  /**
+   * PACK THE BOOK INTO GENERATION CHUNKS — narrator's prep, on this machine's
+   * CPU, before any card is asked for.
+   *
+   * Owen, 2026-09-19: *"Prepare can be its own CPU step… we could start the CPU
+   * prep the moment a free CPU slot is open and an item enters the active (and
+   * unpaused) queue."* It was the first minutes of the `tts-conversion` step
+   * until then, which had two costs and one of them was a defect: the row held
+   * a GPU slot while it extracted and split a book (no card involved at all),
+   * and a render refused `409 server_busy` had ALREADY prepped — minutes on a
+   * long book — into a scratch session the next attempt did not match, so the
+   * prep was paid again (bug hunt 2026-09-19, finding A2).
+   *
+   * It travels nowhere: `machines()` is absent, so the pump admits it the
+   * moment a `local-work` CPU slot is free, with no server decided and no lease
+   * reserved. Those are asked for once the chunks exist.
+   */
+  | 'prepare'
   | 'tts-conversion'
   | 'translation'
   | 'rvc-enhancement'
@@ -278,6 +296,17 @@ export type StepResource = 'gpu' | 'cpu' | 'wait';
 export type ArtifactKind =
   | 'epub'
   | 'audio-session'
+  /**
+   * A SESSION PACKED AND NOT YET READ ALOUD — what the `prepare` step writes.
+   *
+   * Its own kind rather than `audio-session`, because the difference is the
+   * whole point: a prepared session holds `session-state.json` and its chunk
+   * texts and NOT ONE `.flac`. Declaring it as an audio session would let a
+   * denoise, a voice conversion or an assembly be composed straight behind the
+   * prep — `checkLineage` would say yes — and each of them would find an empty
+   * `chapters/sentences` and either fail deep or produce silence.
+   */
+  | 'prepared-session'
   | 'sentences'
   | 'm4b'
   | 'video'
@@ -292,7 +321,9 @@ export interface ArtifactRef {
   /** The file or directory, absolute, when the artifact IS one. */
   path?: string;
   /**
-   * e2a session identity. Present exactly on kind 'audio-session'.
+   * e2a session identity. Present on kind 'audio-session' and on the
+   * 'prepared-session' the `prepare` step writes — the same three names, one
+   * step earlier, before a single chunk has been read aloud.
    *
    * `sessionDir` is the `ebook-<uuid>` folder and `processDir` the directory
    * inside it holding `chapters/` and `session-state.json` — the two arguments

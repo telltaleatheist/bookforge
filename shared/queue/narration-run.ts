@@ -321,6 +321,87 @@ export type NarrationTextCleanupChoice = 'required' | 'skipped';
 // on either side is a compile error here rather than a value that arrives
 // somewhere as a string nobody reads.
 
+/**
+ * PACK THE BOOK INTO GENERATION CHUNKS — the CPU row in front of the render.
+ *
+ * Owen, 2026-09-19: *"Prepare can be its own CPU step… we could start the CPU
+ * prep the moment a free CPU slot is open and an item enters the active (and
+ * unpaused) queue."*
+ *
+ * It carries the same reading settings the render does, and that is not a
+ * duplication: the chunk boundaries ARE a function of the engine, the voice and
+ * the venue's stated band, so prep has to be told all three. What it does NOT
+ * carry is anything about the output — no output dir, no metadata, no assembly
+ * flags — because it produces a packed session and nothing else.
+ */
+export interface NarrationPrepareConfig {
+  readonly type: 'prepare';
+  readonly language: string;
+  readonly ttsEngine: string;
+  /** The voice. Its band is what the chunks are packed to. */
+  readonly fineTuned: string;
+  readonly speed: number;
+  readonly enableTextSplitting: boolean;
+  readonly parallelMode: 'sentences';
+  /**
+   * The user's answer about the narration text cleanup, carried to the door
+   * that cuts the copy this prep reads. Not optional, for
+   * {@link NarrationRunSettings.textCleanup}'s reason — and it belongs HERE
+   * rather than on the render because cutting the copy is prep's act.
+   */
+  readonly textCleanup: NarrationTextCleanupChoice;
+  /**
+   * Delete the scratch checkpoints for this book before packing it — the
+   * wizard's "Start fresh" over "Continue", and the ONE submission that may.
+   */
+  readonly startFresh: boolean;
+  readonly sentencePerParagraph?: boolean;
+  readonly skipHeadings?: boolean;
+  readonly testMode?: boolean;
+  readonly testSentences?: number;
+}
+
+/**
+ * MEASURE THE RENDER — its own row behind the narration since 2026-09-19.
+ *
+ * Owen: *"as soon as the GPU finishes, it releases the lease"* and *"a failed
+ * Align step STOPS the book"*. It was the last phase INSIDE the render step
+ * until then (`parallel-tts-bridge.runPostRenderAlignment`), which is what held
+ * the GPU slot for ten minutes after the card was idle and what hid the act
+ * behind a narration bar reading 100 %.
+ *
+ * The session fields are empty for `narrationRvcStep`'s reason: the queue hands
+ * this row the session the render actually wrote.
+ */
+export interface NarrationAlignConfig {
+  readonly type: 'align';
+  readonly sessionId: string;
+  readonly sessionDir: string;
+  readonly processDir: string;
+  /**
+   * The language the aligner loads its checkpoint for. NEVER defaulted — the
+   * step refuses a row that does not say, because a checkpoint pointed at the
+   * wrong language scores every word badly and reads as a book that was read
+   * wrong.
+   */
+  readonly language: string;
+  /**
+   * 'gpu' always, for a row composed here: the alignment is a Crucible `align`
+   * job and a Crucible has only the card (`runCoverageAlignOnCrucible` refuses
+   * a CPU row by name). The field stays because the CLI still queues a CPU row
+   * against a local session.
+   */
+  readonly device: 'gpu';
+  /**
+   * The gap the ASSEMBLY of this session will leave between chapters, so the
+   * transcript is measured on the assembly's own ruler. Absent is not zero —
+   * it is "this run did not choose", which resolves to `DEFAULT_CHAPTER_GAP`
+   * on both sides. Passing it is the fix for the 3 s/chapter drift every book
+   * sealed between 2026-09-09 and 2026-09-11 carries.
+   */
+  readonly chapterGap?: number;
+}
+
 /** What e2a is told to do with the book. */
 export interface NarrationTtsConfig {
   readonly type: 'tts-conversion';
@@ -501,9 +582,13 @@ export interface NarrationRunMetadata {
  * choice is made here, once, rather than in each caller's mapping.
  */
 export interface NarrationStepPlan {
-  readonly type: 'tts-conversion' | 'final-denoise' | 'rvc-enhancement' | 'reassembly';
+  readonly type:
+    | 'prepare' | 'tts-conversion' | 'align'
+    | 'final-denoise' | 'rvc-enhancement' | 'reassembly';
   readonly config:
+    | NarrationPrepareConfig
     | NarrationTtsConfig
+    | NarrationAlignConfig
     | NarrationDenoiseConfig
     | NarrationRvcConfig
     | NarrationReassemblyConfig;
@@ -639,6 +724,75 @@ function actMetadata(book: NarrationRunBook, act: string): NarrationRunMetadata 
 }
 
 /**
+ * PACK THE BOOK — the CPU row the render waits behind.
+ *
+ * It is the head of every run that narrates, and it is the step that reads the
+ * DOCUMENT: `sourceRef` is the EPUB, and the render behind it reads the packed
+ * session rather than the book. That is the whole of Owen's ruling in the
+ * chain's shape — nothing about a card is asked until the chunks exist.
+ */
+export function narrationPrepareStep(
+  book: NarrationRunBook,
+  settings: NarrationRunSettings,
+): NarrationStepPlan {
+  requireNarrationRun(book, settings);
+  return {
+    type: 'prepare',
+    epubPath: book.epubPath,
+    sourceRef: { kind: 'epub', path: book.epubPath },
+    variantId: book.variantId,
+    ...(book.isArticle ? { projectDir: book.projectDir } : { bfpPath: book.projectDir }),
+    metadata: actMetadata(book, 'Prepare'),
+    config: {
+      type: 'prepare',
+      language: settings.language,
+      ttsEngine: settings.ttsEngine,
+      fineTuned: settings.voice,
+      speed: settings.speed,
+      enableTextSplitting: true,
+      parallelMode: 'sentences',
+      textCleanup: settings.textCleanup,
+      startFresh: settings.startFresh,
+    },
+  };
+}
+
+/**
+ * MEASURE WHAT WAS READ — the row behind the narration.
+ *
+ * Composed for every run that narrates, and for no other: this measures the
+ * RENDER, its thresholds were calibrated on raw engine output, and a row
+ * chained behind an enhancement pass is a compose-time refusal by the step's
+ * own `consumes` (`electron/queue-steps/align.ts`). A cache-only enhancement
+ * therefore composes none — the sentences it converts were measured, or not,
+ * by the run that rendered them.
+ */
+export function narrationAlignStep(
+  book: NarrationRunBook,
+  settings: NarrationRunSettings,
+): NarrationStepPlan {
+  requireNarrationRun(book, settings);
+  return {
+    type: 'align',
+    ...(book.isArticle ? { projectDir: book.projectDir } : { bfpPath: book.projectDir }),
+    variantId: book.variantId,
+    metadata: actMetadata(book, 'Align'),
+    config: {
+      type: 'align',
+      // Filled at run time by session discovery — see `narrationRvcStep`.
+      sessionId: '', sessionDir: '', processDir: '',
+      language: settings.language,
+      // The alignment is a Crucible `align` job; a Crucible has only the card.
+      device: 'gpu',
+      // The assembly's own ruler, so the transcript this row measures and the
+      // audiobook the assembly seals are on ONE number. Absent stays absent:
+      // both sides resolve it to the house default.
+      ...(settings.chapterGap === undefined ? {} : { chapterGap: settings.chapterGap }),
+    },
+  };
+}
+
+/**
  * Read the book aloud.
  *
  * `skipAssembly` is TRUE whenever an assembly step follows: e2a would otherwise
@@ -654,8 +808,15 @@ export function narrationTtsStep(
   return {
     type: 'tts-conversion',
     epubPath: book.epubPath,
-    // It reads the document, whether or not anything precedes it — and nothing
-    // ever does, since narration is the first act of any run that performs it.
+    /*
+     * WHAT IT READS WHEN NOTHING PRECEDES IT — and since 2026-09-19 something
+     * does: `narrationPrepareStep` heads every run built by
+     * `buildNarrationSteps`, so this ref is carried only by a caller that
+     * composes a narration with no prepare row in front of it, and the queue
+     * reads a step's `sourceRef` exactly when its parent is the source
+     * (`queue.service.ts`, `buildStep`). The step module still accepts an
+     * `epub` for that shape and preps inline — see its compatibility arm.
+     */
     sourceRef: { kind: 'epub', path: book.epubPath },
     // The version travels with the file, all the way to the row in the queue. It
     // is the only thing that says which of a project's versions this render is.
@@ -986,14 +1147,36 @@ export function buildNarrationSteps(
    * wizard is a caller that composes its own chain and still answers it for
    * itself; this is the answer for a run described BY STAGES.
    */
-  if (stages.narrate) steps.push(narrationTtsStep(book, settings, true));
   /*
-   * NO ALIGN ROW IS COMPOSED HERE ANY MORE (Owen, 2026-09-08): "remove the align
-   * the narration checkbox. lets just have it permanently do it that way." The
-   * audiobook's sentence transcript is the proportional estimate assembly writes
-   * for itself — see `NarrationRunStages` for the ruling and the measurement
-   * behind it.
+   * PREPARE → NARRATE → ALIGN, and each of the three is a row (Owen,
+   * 2026-09-19).
+   *
+   * They were ONE row until that evening, and the two ends of it were the
+   * defect. The FRONT — extracting, splitting and packing the book — is CPU
+   * work that held a GPU slot for minutes and, when the server answered
+   * `409 server_busy`, was thrown away and paid again on the next attempt
+   * (bug hunt A2). The BACK — the qwen3 coverage alignment — held the same slot
+   * for another ten minutes after the card had gone idle, under a narration bar
+   * that read 100 % (finding B1).
+   *
+   * Owen: *"Prepare can be its own CPU step… we could start the CPU prep the
+   * moment a free CPU slot is open and an item enters the active (and unpaused)
+   * queue"*, and *"as soon as the GPU finishes, it releases the lease"*. So the
+   * render row is exactly the render: it begins when the chunks exist and ends
+   * when the last one has been read.
+   *
+   * THE ALIGN ROW IS NOT THE ONE THAT WAS DELETED on 2026-09-08. That row was a
+   * two-hour WhisperX CPU pass beside the assembly, and Owen removed the
+   * checkbox that composed it. What runs here is the qwen3 alignment that
+   * replaced it — 151 s for a 16.5 h book — which has been happening on every
+   * render since 2026-09-08 anyway, inside the narration step. This gives it
+   * the row it always deserved; it does not give the user back a choice.
    */
+  if (stages.narrate) {
+    steps.push(narrationPrepareStep(book, settings));
+    steps.push(narrationTtsStep(book, settings, true));
+    steps.push(narrationAlignStep(book, settings));
+  }
   /*
    * THE ENHANCEMENT IS ONE ROW PER PASS, IN THE USER'S ORDER.
    *

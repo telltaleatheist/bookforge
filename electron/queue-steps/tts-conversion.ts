@@ -41,6 +41,7 @@ import {
   detectRecommendedWorkerCount,
   setMainWindow,
   TTS_GPU_PHASE_OVER,
+  type PreparedSessionRef,
 } from '../parallel-tts-bridge';
 import { getTTSLogger } from '../rolling-logger';
 import type { StepModule, StepRunContext, StepReport } from '../queue-engine';
@@ -195,6 +196,38 @@ interface TtsConfig {
  * which is why the July 2026 destructive-resume incident could not be
  * reconstructed from files. Running in main, the log is simply there.
  */
+/**
+ * THE PACKED SESSION THIS RENDER WAS HANDED, or undefined when it was handed a
+ * book.
+ *
+ * Structural rather than a cast: the artifact's KIND is the fact that decides
+ * the arm, and a `prepared-session` that is missing any of the four names it
+ * must carry is a bug in the prepare step, not an epub row. Refused there
+ * (`run`, by name) rather than quietly falling into the inline arm, which would
+ * pack a book a second time and throw the first pack away.
+ */
+function preparedSessionOf(input: ArtifactRef): PreparedSessionRef | undefined {
+  if (input.kind !== 'prepared-session') return undefined;
+  const detail = (input.detail ?? {}) as Record<string, unknown>;
+  const said = (value: unknown): string | undefined =>
+    typeof value === 'string' && value !== '' ? value : undefined;
+  const epubPath = said(detail['epubPath']);
+  const num = (key: string): number =>
+    typeof detail[key] === 'number' ? (detail[key] as number) : 0;
+  const server = said(detail['packedForServer']);
+  const ceiling = detail['packedCeilingChars'];
+  return {
+    sessionId: input.sessionId ?? '',
+    sessionDir: input.sessionDir ?? '',
+    processDir: input.processDir ?? '',
+    epubPath: epubPath ?? '',
+    totalSentences: num('totalSentences'),
+    totalChapters: num('totalChapters'),
+    ...(server !== undefined && typeof ceiling === 'number'
+      ? { packedFor: { server, ceilingChars: ceiling } } : {}),
+  };
+}
+
 function ttsDecision(
   level: 'INFO' | 'WARN' | 'ERROR',
   message: string,
@@ -208,9 +241,42 @@ function ttsDecision(
 
 export const ttsConversionStep: StepModule = {
   type: 'tts-conversion',
-  consumes: 'epub',
+  /**
+   * A PACKED SESSION, OR THE BOOK ITSELF — and the pair is not a widening for
+   * convenience.
+   *
+   * `prepared-session` is what a run composed since 2026-09-19 hands it: the
+   * `prepare` row in front packed the book on a CPU slot, and this row is the
+   * render and nothing else (Owen: *"Prepare can be its own CPU step"*).
+   *
+   * `epub` is THE COMPATIBILITY ARM. A queue.json restored from before that
+   * date holds `tts-conversion` rows rooted at the document with no prepare
+   * step in front of them, and the language-learning wizard composes its own
+   * chain the same way. Such a row preps INLINE, exactly as this step always
+   * did — announced in the log, never a silent default. Declaring one kind
+   * would fail every one of those rows at compose time for a reason that has
+   * nothing to do with them.
+   */
+  consumes: ['prepared-session', 'epub'],
   produces: 'audio-session',
   resource: () => 'gpu',
+  /*
+   * NO `leasesModel` AND NO `leasedModel` HERE, AND THE ABSENCE IS THE
+   * STATEMENT (Owen, 2026-09-19: *"as soon as the GPU finishes, it releases the
+   * lease"*).
+   *
+   * A render takes NO Crucible lease in the first place: it is one `tts` job on
+   * the lane, which already holds everything a lease would hold, and `tts` is
+   * in crucible's `EVICTS_THE_RESIDENT_MODEL`, so a lease taken around one
+   * would have the server refuse `409 leased` to the very run that took it
+   * (`electron/crucible/render.ts`). What the absence decides is the OTHER
+   * half: if this row is carrying a lease taken by an earlier text act,
+   * `leaseWantedAfter` asks the children of this step whether the same model is
+   * wanted next, `align` declares nothing either — it loads the ALIGNER, a
+   * different model — and `settleStep` gives the card back. Declaring anything
+   * here would keep somebody's model resident across a render that has no use
+   * for it. `tools/test-queue-narration-plan.js` pins both directions.
+   */
   /**
    * THE ONE STEP THAT TRAVELS (crucible `docs/PHASE7-LANES.md` §4).
    *
@@ -234,7 +300,31 @@ export const ttsConversionStep: StepModule = {
     const config = ctx.step.config as unknown as TtsConfig;
     setMainWindow(queueMainWindow());
 
-    const epubPath = ctx.input.path;
+    /*
+     * ── WHICH ARM: A PACKED SESSION, OR THE BOOK ─────────────────────────────
+     *
+     * See `consumes` above. The prepared arm is what every run composed since
+     * 2026-09-19 takes; the epub arm is the compatibility one, and it is said
+     * out loud in the persisted TTS log rather than inferred from a silence.
+     */
+    const prepared = preparedSessionOf(ctx.input);
+    if (prepared !== undefined) {
+      /*
+       * A PREPARED SESSION THAT IS MISSING A NAME IS A BUG IN THE PREPARE STEP,
+       * and it is refused as one rather than falling through to the inline arm
+       * — which would pack the book a second time and throw away the pack this
+       * row's parent already paid minutes for.
+       */
+      const missing = (['sessionId', 'sessionDir', 'processDir', 'epubPath'] as const)
+        .filter((key) => prepared[key] === '');
+      if (missing.length > 0) {
+        throw new Error(
+          `The prepared session this render was handed names no ${missing.join(', no ')}. The `
+          + 'prepare step records all four; a session missing any of them cannot be rendered or '
+          + 'matched to a book. Remove this book from the queue and add it again.');
+      }
+    }
+    const epubPath = prepared?.epubPath ?? ctx.input.path;
     if (!epubPath) {
       throw new Error('Narration was given no book to read.');
     }
@@ -307,6 +397,11 @@ export const ttsConversionStep: StepModule = {
 
     ttsDecision('INFO', 'TTS resume decision: evaluating', {
       stepId: ctx.stepId,
+      // WHICH ARM — the first thing a person reconstructing a run needs, because
+      // it says whether the chunks in the session were packed by the row in
+      // front of this one or by this one.
+      packedBy: prepared ? 'the prepare row' : 'this row (no prepare step in front of it)',
+      preparedSession: prepared?.sessionDir ?? null,
       hasResumeInfo: !!config.resumeInfo,
       wasInterrupted: interrupted,
       startFresh: !!config.startFresh,
@@ -314,6 +409,31 @@ export const ttsConversionStep: StepModule = {
       projectDir: projectDir || null,
       epubPath,
     });
+
+    /*
+     * A PREPARED SESSION IS NOT A RESUME, and none of the three resume modes
+     * below may claim it.
+     *
+     * They all answer the same question — "is there a session on disk with
+     * audio in it that this render should pick up?" — and a session this run's
+     * own prepare row wrote has none: it was minted minutes ago and holds
+     * `session-state.json` and nothing else. Letting mode 2.5 match it against
+     * the PROJECT CACHE would be worse than useless: it would find the previous
+     * render's cached session, resume that, and silently throw away the pack
+     * this run just paid for — including a pack made with different settings.
+     *
+     * The wizard's explicit Continue (mode 1) is the one case that can still
+     * arrive alongside a prepare row, because the user named a session; it is
+     * honoured, and the prepared one is not used. Said in the log, because two
+     * sessions in one run is exactly the shape a person will be reconstructing.
+     */
+    if (prepared && config.resumeInfo) {
+      ttsDecision('WARN', 'A prepared session AND an explicit resume: the resume wins', {
+        stepId: ctx.stepId,
+        preparedSession: prepared.sessionDir,
+        resumingSession: config.resumeInfo['sessionDir'] ?? null,
+      });
+    }
 
     if (config.resumeInfo) {
       // Mode 1: the wizard's Continue, carrying the session it found.
@@ -332,8 +452,15 @@ export const ttsConversionStep: StepModule = {
       ttsDecision('INFO', 'TTS resume mode 1: explicit resume from the wizard', {
         stepId: ctx.stepId, sessionDir: config.resumeInfo['sessionDir'],
       });
-    } else if (interrupted) {
+    } else if (interrupted && prepared === undefined) {
       // Mode 2: this step's own work was cut short. Look for its scratch session.
+      //
+      // NOT WHEN A PREPARE ROW IS IN FRONT OF IT. An interrupted render whose
+      // chunks were packed by its own parent resumes THAT session by rendering
+      // it again — every `.flac` already on disk is skipped by the worker's own
+      // `--sentences_dir` — and scanning the scratch for a session matching the
+      // epub would find the same directory by a slower road, or a different
+      // one packed with other settings.
       const found = await checkResumeStatusFast(epubPath);
       if (found.success && !found.complete && (found.completedSentences ?? 0) > 0) {
         resumeInfo = found as unknown as Record<string, unknown>;
@@ -358,8 +485,13 @@ export const ttsConversionStep: StepModule = {
     // deleting the scratch checkpoints — the ONE submission that may.
     const explicitFresh = config.startFresh === true && !interrupted && !config.resumeInfo;
 
-    if (!resumeInfo && !explicitFresh && projectDir) {
+    if (!resumeInfo && !explicitFresh && projectDir && prepared === undefined) {
       // Mode 2.5: a partial session cached under the project for this language.
+      //
+      // NEVER WHEN A PREPARE ROW PACKED THIS RUN — see the note above the modes.
+      // The chunks this render is about are the ones its parent just wrote, and
+      // resuming the project's PREVIOUS cached session instead would discard
+      // them along with whatever settings they were packed with.
       try {
         // The SAME lookup the narration dialog shows the user, so the offer and
         // the decision cannot disagree — see findResumableProjectSession.
@@ -384,7 +516,20 @@ export const ttsConversionStep: StepModule = {
       }
     }
 
-    if (!resumeInfo && explicitFresh) {
+    if (prepared !== undefined && !resumeInfo) {
+      /*
+       * THE CHUNKS ARE THE PREPARE ROW'S, and `cleanSession` is not this row's
+       * to set even on a "Start fresh" run: that answer was honoured by the
+       * prepare row, which deleted the scratch checkpoints BEFORE it packed.
+       * Setting it here would delete the session this render is about.
+       */
+      ttsDecision('INFO', 'TTS: rendering the session the prepare row packed', {
+        stepId: ctx.stepId,
+        sessionId: prepared.sessionId,
+        totalSentences: prepared.totalSentences,
+        packedFor: prepared.packedFor?.server ?? null,
+      });
+    } else if (!resumeInfo && explicitFresh) {
       conversionConfig['cleanSession'] = true;
       ttsDecision('WARN', 'TTS mode 3: starting fresh, cleanSession=true (explicit Start fresh)', {
         stepId: ctx.stepId, epubPath, language: config.language || null,
@@ -411,6 +556,14 @@ export const ttsConversionStep: StepModule = {
      * this listens — the queue is told by the work, never by a guess about how
      * long a tail lasts.
      *
+     * THE STEP BOUNDARY IS NOT A SUBSTITUTE FOR THIS, and that is a
+     * measurement. Taking the alignment out of this step (2026-09-19) shortened
+     * the tail by ten minutes but did not remove it: on Owen's *Letter to the
+     * American Church* `cacheSessionToProject` alone spent 458 s copying the
+     * rendered session onto the library volume, every second of it after the
+     * card went quiet. So the hand-over stays, and it now fires the moment the
+     * last chunk lands.
+     *
      * The reason is passed through verbatim rather than restated here: two
      * sentences for one fact is the shape that drifts.
      */
@@ -431,7 +584,9 @@ export const ttsConversionStep: StepModule = {
     try {
       const invoked = resumeInfo
         ? await resumeParallelConversion(ctx.stepId, conversionConfig as never, resumeInfo as never)
-        : await startParallelConversion(ctx.stepId, conversionConfig as never);
+        // The packed session when a prepare row wrote one; `undefined` takes
+        // the door's own inline prep, which is the compatibility arm.
+        : await startParallelConversion(ctx.stepId, conversionConfig as never, prepared);
 
       if (invoked && invoked.success === false) {
         // The bridge normally emits a completion for these too. Wait a beat for
