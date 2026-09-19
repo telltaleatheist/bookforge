@@ -2165,11 +2165,55 @@ export function clearFinished(): void {
 }
 
 /**
+ * A RUN WHOSE ATTEMPT IS ENTIRELY GONE IS NOT ASSIGNED TO ANYTHING ANY MORE.
+ *
+ * §4.3 — a job that started on a machine finishes on that machine — is about a
+ * run that is PARTWAY THROUGH. That is what {@link QueueJob.waitForResolved}
+ * records and what it protects: a half-rendered book must never be quietly
+ * continued on a different card.
+ *
+ * A retry after a failure is the other case, and the two had been folded
+ * together. Owen, 2026-09-19: a render was refused by a Crucible whose card was
+ * busy (409, nothing rendered, `total 0s, 0 sentences`), Retry step was pressed,
+ * the other machine was switched on and that one switched off — *"it went to wsl
+ * anyway"*. The assignment survived a failure that produced nothing, so the run
+ * was pinned to the machine that would not take it; and because `setWaitFor`
+ * refuses every edit to a resolved row, the picker was read-only too. "Try this
+ * again somewhere else" was not expressible at all, by either control, and the
+ * only way out was to cancel the book back to Pending.
+ *
+ * So the assignment is released exactly when there is nothing of the run left
+ * standing on that machine: no step `done`, none `running`. The test is about
+ * the run rather than about the step being retried, because §4.4 is — one book
+ * is one GPU, so a run with a finished narration on a card keeps its card while
+ * its assembly is retried, and the retried step follows it. A run where every
+ * step is now held, waiting or failed has nothing to follow.
+ *
+ * `step.venue` goes with it. That is where one step's work HAPPENED, and with
+ * the attempt reset there is no such place — left standing it would keep the
+ * bench drawing the row on a lane belonging to a machine the run is no longer
+ * going to.
+ *
+ * It does NOT choose a new machine. Releasing the assignment hands the question
+ * back to the two controls that own it — the row's own `waitFor` and the dial —
+ * so a retry restores the QUESTION rather than answering it differently.
+ */
+function releaseVenueIfNothingStands(job: QueueJob): void {
+  if (job.waitForResolved === undefined) return;
+  if (job.steps.some((step) => step.status === 'done' || step.status === 'running')) return;
+  job.waitForResolved = undefined;
+  for (const step of job.steps) step.venue = undefined;
+}
+
+/**
  * Put a terminal step back in the queue.
  *
  * A retried step is HELD, not queued: re-running is a decision, and a failure the
  * user has not looked at yet must not restart itself because the queue happened
  * to be running.
+ *
+ * See {@link releaseVenueIfNothingStands} for what happens to the machine the
+ * failed attempt was assigned to, and why that is not a weakening of §4.3.
  */
 export function retry(target: { jobId?: string; stepId?: string }): void {
   const reset = (step: QueueStep): void => {
@@ -2193,6 +2237,7 @@ export function retry(target: { jobId?: string; stepId?: string }): void {
       if (step.parentStepId === found.step.id) reset(step);
     }
     found.job.finishedAt = undefined;
+    releaseVenueIfNothingStands(found.job);
   } else if (target.jobId) {
     const job = requireJob(target.jobId);
     // Steps that already SUCCEEDED are left alone — re-narrating a book because
@@ -2202,6 +2247,7 @@ export function retry(target: { jobId?: string; stepId?: string }): void {
       reset(step);
     }
     job.finishedAt = undefined;
+    releaseVenueIfNothingStands(job);
   } else {
     throw new Error('Retrying needs to be told what to retry.');
   }

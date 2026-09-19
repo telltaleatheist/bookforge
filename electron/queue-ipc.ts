@@ -35,6 +35,7 @@ import { readRouting } from './crucible/routing';
 import { readGpuDial, setGpuDial } from './crucible/gpu-dial';
 import { pingServer } from './crucible/probe';
 import { crucibleLeaseSeam } from './crucible/lease';
+import { onCrucibleRecordChanged } from './crucible/routes';
 import { WAIT_FOR_ANY, type WaitForServer } from '../shared/queue/wait-for';
 
 let registered = false;
@@ -60,9 +61,22 @@ let registered = false;
  * `wsl.exe` spawn of a few hundred milliseconds. That name is gone and so is
  * the spawn; the memo is kept on its own smaller merits.)
  *
- * The staleness is bounded and harmless: admission re-asks on its own tick
- * (15 s), so a server enabled in Settings is used within one tick at worst, and
- * the doors in THIS file that change a row invalidate it immediately.
+ * THE STALENESS IS BOUNDED, AND THE ENABLE SWITCH IS NOT ALLOWED TO PAY IT.
+ *
+ * A few seconds of an old rank order costs nothing. A few seconds of an old
+ * ENABLE list is a different thing, because that switch is the one way to say
+ * "not that machine, right now" (Owen, 2026-09-14) — and this memo made the
+ * bench and the scheduler disagree about it for up to ten seconds: `slotSets`
+ * greyed the card the instant it was flipped, while admission went on placing
+ * work from the list it had. Owen, 2026-09-19: *"i enabled the mac gpu slot,
+ * disabled wsl slot. it went to wsl anyway."* A press that pumps — Retry, Start,
+ * Send to queue — lands inside that window easily.
+ *
+ * So the record ANNOUNCES (`setServerEnabled` → `announceCrucibleRecordChanged`)
+ * and this memo is dropped on the announcement, below. Not in the IPC handler
+ * that flips the switch: the Settings panel and the bench both call the same
+ * record door, and a memo is invalidated where it lives, not at each of the
+ * places that might make it stale.
  */
 const ROUTING_CACHE_MS = 10_000;
 let routingCache: { at: number; view: ReturnType<typeof readRouting> } | null = null;
@@ -204,6 +218,13 @@ function refused(err: unknown): { success: false; error: string } {
 export function registerQueueIpc(): void {
   if (registered) return;
   registered = true;
+
+  /*
+   * THE ROUTING RECORD CHANGED, SO THE MEMO OVER IT IS GONE — see
+   * `cachedRouting`. Registered once, for the life of the process: this module's
+   * IPC handlers are too, and there is nothing to unsubscribe from.
+   */
+  onCrucibleRecordChanged(() => { forgetRoutingCache(); });
 
   ipcMain.handle('jobs:list', () => ({ success: true, data: engine.snapshot() }));
 

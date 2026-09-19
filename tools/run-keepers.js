@@ -487,6 +487,7 @@ const SUITES = [
   // package owns; and the four doors' states, including the card that must
   // name the Crucible a run is going to rather than "this machine's GPU (WSL)".
   'test-crucible-install-seam',
+  'test-crucible-setup-surface',
   // ...and taking one off again. `crucible uninstall` is the ENGINE's verb;
   // what is pinned here is that the door is LOCAL ONLY (`uninstall_not_local`
   // for anything else — an engine is uninstalled on the machine it is on),
@@ -613,6 +614,7 @@ const SUITES = [
   'test-pass-lifecycle',
   'test-pass-diff',
   'test-narration-deletions',
+  'test-narration-gpu-handoff',
   'test-book-block-category',
   'test-chapter-heading-insert',
   'test-book-block-text',
@@ -628,6 +630,8 @@ const SUITES = [
   'test-epub-provenance-lifecycle',
   'test-processing-chain',
   'test-queue-engine',
+  // The enable switch must reach the scheduler before the next pump, not in ten seconds.
+  'test-queue-routing-freshness',
   // Which project a session-consuming row is about, and the session a narration
   // hands the row behind it. Both halves of the 2026-09-12 Starcraft failure: a
   // Foundry-ordered run has no `projectId`, and the assembly chained under one

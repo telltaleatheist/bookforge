@@ -68,6 +68,36 @@ const electronStub = {
     stop: () => {},
     isStarted: () => false,
   },
+  /*
+   * A ROUTER WITH NO RENDERER ON THE OTHER END.
+   *
+   * `registerQueueIpc()` does two things in one call: it mounts the handlers a
+   * window would invoke, and it WIRES THE ENGINE — the Crucible routing host,
+   * the lease seam, the thermal sampler. A keeper that wants the second half has
+   * to survive the first, and there is no window here to answer any of it.
+   *
+   * So the handlers are REMEMBERED rather than dropped: `invoke` lets a keeper
+   * call one the way a renderer would, and a name nobody registered throws
+   * instead of returning undefined, which is this file's rule everywhere else.
+   * `send`/`emit` have no subscriber and say so by doing nothing.
+   */
+  ipcMain: (() => {
+    const handlers = new Map();
+    return {
+      handle(channel, fn) { handlers.set(channel, fn); },
+      handleOnce(channel, fn) { handlers.set(channel, fn); },
+      removeHandler(channel) { handlers.delete(channel); },
+      on() {},
+      once() {},
+      removeAllListeners() {},
+      /** Not an Electron API — the keeper's door onto what was registered. */
+      invoke(channel, ...args) {
+        const fn = handlers.get(channel);
+        if (!fn) throw new Error(`electron-stub: no ipcMain handler for "${channel}"`);
+        return fn({}, ...args);
+      },
+    };
+  })(),
 };
 
 const origLoad = Module._load;

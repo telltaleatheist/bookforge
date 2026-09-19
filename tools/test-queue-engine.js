@@ -103,6 +103,18 @@ async function fresh(name, mods, configureExtra = {}) {
   for (const mod of mods) engine.registerStepModule(mod);
   engine.setGpuLockProbe(() => null);
   engine.setGpuHolderProbe(() => null);
+  /*
+   * AND NO CRUCIBLE RECORD, unless this test installs one.
+   *
+   * The host is module state and `fresh` did not touch it, so a test that
+   * installed one leaked it into every test AFTER it in this file. That went
+   * unnoticed only because the two blocks that install a host happened to sit at
+   * the end; adding a third in the middle failed two staging tests four hundred
+   * lines further down, which is the most confusing way for a suite to tell you
+   * its tests are not independent. Cleared HERE rather than at the end of each
+   * borrowing test, so the next one to install a host cannot forget.
+   */
+  engine.setCrucibleRoutingHost(null);
   const dir = path.join(SCRATCH, name);
   fs.mkdirSync(dir, { recursive: true });
   await engine.configure({ stateDir: dir, ...configureExtra });
@@ -1252,6 +1264,106 @@ test('retrying a run leaves the steps that already succeeded alone', async () =>
   assert.strictEqual(narrate.status, 'done', 're-narrating a book is an hour nobody asked for');
   assert.strictEqual(assemble.status, 'held', 'a retry is a decision, so it is held');
   assert.strictEqual(assemble.error, undefined);
+});
+
+/*
+ * ── A RETRY AFTER A FAILURE IS NOT A RESUME ─────────────────────────────────
+ *
+ * §4.3 — a job finishes on the machine it started on — protects a run that is
+ * PARTWAY THROUGH. `waitForResolved` is what records that, and until 2026-09-19
+ * it survived a failure that produced nothing, so a render a Crucible refused
+ * (409, busy card, `0 sentences`) stayed pinned to the machine that would not
+ * take it. Owen pressed Retry step, switched the other machine on and that one
+ * off, and *"it went to wsl anyway"* — and because `setWaitFor` refuses every
+ * edit to a resolved row, the picker was read-only as well. Neither control
+ * could say "try this somewhere else".
+ *
+ * The line is the RUN, not the step: one book is one GPU (§4.4), so a run
+ * holding a finished narration keeps its card while its assembly is retried.
+ * Both sides of that are pinned below, because a fix that released the venue
+ * unconditionally would move a half-rendered book to another machine — which is
+ * the thing §4.3 exists to forbid.
+ */
+
+/** A run on one server, failed at its only step, ready to be retried. */
+async function failedOnAServer(name, extraSteps = []) {
+  const tts = fakeModule('tts-conversion', { produces: 'audio-session', machines: () => 'any' });
+  const asm = fakeModule('reassembly', { produces: 'm4b' });
+  await fresh(name, [tts, asm]);
+  engine.setCrucibleRoutingHost({
+    routing: () => ({ ranked: [{ name: 'pc', enabled: true }], serversOnThisMachine: [] }),
+    defaultWaitFor: () => 'pc',
+    dial: () => 'any',
+    reach: async () => ({ reachable: true }),
+  });
+  const job = engine.enqueue({
+    title: 'Book', release: true,
+    steps: [
+      { type: 'tts-conversion', label: 'Narrate', config: {}, sourceRef: { kind: 'epub', path: '/a.epub' } },
+      ...extraSteps,
+    ],
+  });
+  engine.start();
+  await settle();
+  return { job, tts, asm };
+}
+
+test('a run assigned to a server records it the moment the step launches', async () => {
+  const { job } = await failedOnAServer('venue-assigned');
+  const live = engine.snapshot().jobs.find((j) => j.id === job.id);
+  assert.strictEqual(live.waitForResolved, 'pc',
+    'the rest of this section is meaningless if the run was never assigned');
+});
+
+test('RETRY releases the machine when the failed attempt left nothing standing', async () => {
+  const { job, tts } = await failedOnAServer('venue-retry-release');
+  tts.runs[0].settled = true;
+  tts.runs[0].reject(new Error('accelerator_busy: that card is in use'));
+  await settle();
+
+  engine.retry({ jobId: job.id });
+  const live = engine.snapshot().jobs.find((j) => j.id === job.id);
+  assert.strictEqual(live.waitForResolved, undefined,
+    'a run with nothing done and nothing running is not "partway through" anywhere');
+  assert.strictEqual(live.steps[0].venue, undefined,
+    'and the bench must stop drawing it on that machine\'s lane');
+  // The whole point of releasing it: the picker answers again.
+  engine.setWaitFor(job.id, 'any');
+  assert.strictEqual(
+    engine.snapshot().jobs.find((j) => j.id === job.id).waitFor, 'any',
+    'this call refuses by name while the run is resolved — that refusal was the trap');
+});
+
+test('RETRY keeps the machine while a step of the run is already DONE — one book, one GPU', async () => {
+  const { job, tts, asm } = await failedOnAServer('venue-retry-keep', [
+    { type: 'reassembly', label: 'Assemble', config: {}, parentIndex: 0 },
+  ]);
+  tts.runs[0].resolve({ kind: 'audio-session', sessionId: 's' });
+  await settle();
+  asm.runs[0].settled = true;
+  asm.runs[0].reject(new Error('ffmpeg fell over'));
+  await settle();
+
+  engine.retry({ jobId: job.id });
+  const live = engine.snapshot().jobs.find((j) => j.id === job.id);
+  assert.strictEqual(live.waitForResolved, 'pc',
+    'the narration IS on that machine; retrying the assembly must not move the book');
+});
+
+test('retrying ONE step of a run that has nothing done releases it too', async () => {
+  // The rule is about the run's standing work, not about which door was pressed:
+  // a per-step retry of the only step that ran is the same fact as a whole-run
+  // one, and answering differently would make the two buttons mean different
+  // things about the machine.
+  const { job, tts } = await failedOnAServer('venue-retry-step');
+  tts.runs[0].settled = true;
+  tts.runs[0].reject(new Error('accelerator_busy'));
+  await settle();
+  const stepId = stepsOf(job.id)[0].id;
+
+  engine.retry({ stepId });
+  assert.strictEqual(
+    engine.snapshot().jobs.find((j) => j.id === job.id).waitForResolved, undefined);
 });
 
 test('clear-finished drops the runs that are over and nothing else', async () => {
