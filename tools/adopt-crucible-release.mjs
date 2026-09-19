@@ -141,7 +141,22 @@ function repin(manifest, from, to) {
   const changed = [];
   for (const name of PACKAGES) {
     const short = name.split('/')[1];
-    const before = `"${name}": "file:vendor/crucible-${short}-${from}.tgz"`;
+    /*
+     * THE SPECIFIER THAT IS THERE, NOT ONE REBUILT FROM A VERSION NUMBER.
+     *
+     * This composed `crucible-<short>-<from>.tgz` and died when the two did
+     * not match — which is what a LABELLED pre-release pin looks like
+     * (`crucible-bootstrap-1.0.5-phase19.tgz`, PHASE19). `pinnedVersion` was
+     * taught to READ such a name on 2026-09-19 and this half was not, so the
+     * script could say "1.0.5 -> 1.0.6", download both tarballs, and then
+     * refuse — leaving new bytes in vendor/ and the manifest untouched.
+     *
+     * The pin has one owner and it is `dependencies[name]`. Reading it is also
+     * what makes adopting a release the thing that ENDS a pre-release: the
+     * label goes because the whole specifier is replaced, not edited.
+     */
+    const specifier = manifest.parsed.dependencies[name];
+    const before = `"${name}": "${specifier}"`;
     const after = `"${name}": "file:vendor/crucible-${short}-${to}.tgz"`;
     if (!text.includes(before)) die(`could not find the pin line for ${name} (${before})`);
     text = text.replace(before, after);
@@ -205,15 +220,32 @@ async function main() {
     fetched.push(await download(to, name, vendor));
   }
 
+  /*
+   * WHAT THE PIN NAMED BEFORE IT WAS CHANGED — read here, because `repin`
+   * rewrites the manifest and after that nothing can say what the old file was
+   * called. It matters for the prune below: a LABELLED pre-release
+   * (`crucible-bootstrap-1.0.5-phase19.tgz`) is not `crucible-bootstrap-<from>
+   * .tgz`, and a prune that rebuilt the name from the version left the
+   * labelled tarball sitting in vendor/, unpinned, for the next reader to
+   * wonder about.
+   */
+  const superseded = PACKAGES
+    .map((name) => manifest.parsed.dependencies[name].replace(/^file:vendor\//, ''));
+
   const changed = repin(manifest, from, to);
   console.log(`adopt: repinned ${changed.join(', ')}`);
 
   // Only after the new bytes are safely on disk and the manifest names them.
-  for (const name of ['client', 'bootstrap']) {
-    const stale = path.join(vendor, `crucible-${name}-${from}.tgz`);
+  // Both the plain `<from>` tarballs and whatever the pins ACTUALLY named, so
+  // adopting a release is what ends a pre-release rather than leaving it about.
+  const gone = new Set();
+  for (const name of ['client', 'bootstrap']) gone.add(`crucible-${name}-${from}.tgz`);
+  for (const file of superseded) gone.add(file);
+  for (const file of gone) {
+    const stale = path.join(vendor, file);
     if (fs.existsSync(stale)) {
       fs.unlinkSync(stale);
-      console.log(`adopt: removed crucible-${name}-${from}.tgz`);
+      console.log(`adopt: removed ${file}`);
     }
   }
 
