@@ -10,10 +10,181 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\<user>\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **806d44b** — *adopt 1.0.6 — the phase19 pre-release pack is retired* |
+| Source sha | **f349771** — *Record the two checks that found today's defects, and run neither of them for you* |
 | Engine | **NOT VENDORED AND NOT KNOWABLE FROM THIS FILE** — it is a spawned CLI resolved at RUNTIME (`FOUNDRY_BIN`, else `resolveFoundryPath`, `electron/main.ts`), so which build executes is a property of the machine and not of this copy. On a developer's Mac that resolves to Foundry's own checkout at `/Volumes/Callisto/Projects/foundry/dist/foundry-darwin-arm64`, which is whatever was last built there — `foundry 2.0.2 (1c1eaa3)` as of 2026-09-18. **Ask the binary: `$FOUNDRY_BIN --version`.** See *The engine this file named was not the engine that ran* below. |
-| Copied on | 2026-09-19 (three times: 3738c01, 3436fc5, 806d44b) |
-| Copied by | Mechanical source sync, verified against Foundry `806d44b:app/`; details below |
+| Copied on | 2026-09-19 (four times: 3738c01, 3436fc5, 806d44b, f349771) |
+| Copied by | Mechanical source sync, verified against Foundry `f349771:app/`; details below |
+
+## The `806d44b → f349771` re-vendor — a window opens onto a move nobody in it started (2026-09-19, night)
+
+Three commits that touch `app/` and two merges that do not. Seven files: four
+modified, three added, none deleted, no dependency movement — `package.json`,
+`package-lock.json` and all four `vendor/` tarballs are untouched, so the pin
+stays at Crucible **1.0.6** and nothing in the range is about a version.
+
+### `145d5ba` — asking where the move got to and joining its stream are one question
+
+crucible `docs/PHASE19-AUTOMATIC-WSL.md` §2.3, §2.6, §3.1. The defect is the
+direct consequence of the entry below this one: §2.3 put the install's START in
+the tray, so the ordinary running move is one **no window pressed a button
+for** — and both halves of Foundry's live path had been written for a run this
+process began. The door's `watch` is fan-out and only fan-out, fed by `relay`,
+and `relay` runs only while this process drives; the face subscribed to events
+inside `runInstall`, around a press. So a person who opened the install door
+onto a tray-started move read `running: true` off `status()` and then sat under
+**five waiting rows**, because not one event was going anywhere.
+
+§2.6 already had the door for it — `GET /install/events` replays a ring of the
+last 200 events and then follows — and the SDK's `watchInstall()` is that read.
+`CrucibleInstallDoor` gains `attach()`, which is explicitly *not a fourth verb*:
+it makes that read once, is idempotent, is silent on a machine with no host
+pack, never runs while this process is itself driving (a second reader would put
+every event on the rows twice), and **cannot start a move** — `watchInstall` is
+incapable of it. `crucible:install-status` calls it when the answer says a move
+is running, which is the moment the face opens.
+
+Two details worth carrying, because BookForge's half has the same shapes. A
+dropped stream is **said to the console, not drawn**: emitting `failed` would
+put a red row under somebody watching a healthy install, and the next `status()`
+is the recovery. And the one-shot that draws *"Starting the Windows engine"* is
+reset per follow, so a window joining the tray's SECOND move in one session
+still gets that row rather than finding the flag spent by the first.
+
+On the renderer side `crucible-doors.component.ts` replaces the
+subscribe-around-the-press with `syncInstallListening()`, called from the
+constructor, from `loadStatus`, and from both ends of the press path. It listens
+in exactly two cases — a run this window pressed a button for, or an open door
+over a `status().running` — and a closed door still detaches, which is the rule
+the press path already kept.
+
+### `eb41bc5` — the mount is a one-way door, so the test spies the host
+
+The root cause of a Mac suite failure that Windows could not reproduce, and it
+is a module singleton: `recordHost` writes a module-level value in
+`electron/host.ts` that nothing un-writes, by design, because production mounts
+a host once and the process ends with it. `hosted-shelf.test.ts` called it, so
+every test file bun ran AFTER it in the same process got a Foundry that believed
+it was hosted — and `mock.restore()` could not put it back, because a plain
+assignment is not a mock.
+
+The order is the filesystem's. On macOS bun walks in hash order, that file ran
+third, `crucible-install-latest.test.ts` ran eighth, and all four of its tests
+failed on the hosted refusal *"Install Crucible from BookForge."* instead of the
+answer they asked. On Windows the walk is sorted, the file ran eleventh, and the
+suite was green. **One suite, two verdicts, and the difference was a directory
+listing.** The fix spies the host through the same three doors every reader
+uses — the shape `crucible-lifecycle.test.ts` already had — and `afterAll` gives
+it back. Neither of the file's own two tests changes.
+
+Nothing in this commit reaches a shipped file, and it is recorded anyway: the
+next reader to find a BookForge keeper that passes alone and fails in a batch
+has the mechanism written down.
+
+### `f349771` — two checks recorded, and run by nothing
+
+Owen, 2026-09-19: *"you can record the scripts somewhere, but we dont need to
+run them every time."* So `app/tools/checks/` — hand-run diagnostics with no npm
+script, no `.test.` in any name (so `bun test` does not collect them) and
+nothing wired into a build, plus a README that says which to reach for and says
+plainly that the real keepers live one directory up and that this is not that
+set. `install-attach.ts` is the eight assertions that verified attach-on-open
+against a scripted host door, and it opens no socket. `suite-order.sh` runs the
+suite N times in random file order.
+
+`suite-order.sh` is written down **with a warning rather than a promise**: RUN
+IT ON THE MAC. With the leaky `hosted-shelf.test.ts` restored on purpose, six
+shuffled orders on the Mac failed and three on Windows stayed green, as did an
+explicit hosted-shelf → crucible-install-latest pairing — so hash-ordered versus
+sorted is not the only difference between the two machines, and a green run on
+Windows is not evidence. The suspected mechanism (bun rebuilding the module
+graph around `mock.module('electron', …)`) is recorded as unconfirmed, because
+it is. Its own first run called `" 0 fail"` a failure, having matched the word
+and not the number — caught only because it was pointed at a suite already known
+green.
+
+These three files are carried because this subtree is a mechanical copy of
+`app/` and the copy is not curated. **Nothing in BookForge runs them**, and
+nothing should start to: they are Foundry's bench tools, they assume Foundry's
+bun and its `electron` mock, and a keeper this repo did not write is a keeper
+nobody here maintains.
+
+### IPC
+
+**No channel is added, renamed or removed in this range.** The whole of the
+`ipc.ts` diff is the body of the existing `'crucible:install-status'` handler,
+which becomes `async`, awaits `installDoor.status()` and calls
+`installDoor.attach()` when the answer says a move is running. Verified rather
+than taken from the commit messages: the diff's only `ipcMain.handle` lines are
+that one name on both sides, and it contains no `ipcMain.on`, no `ipcRenderer`
+and no channel literal at all.
+
+`IPC-CHANNELS.md` does not move either — Foundry's `docs/IPC-CHANNELS.md` is
+unchanged across `806d44b..f349771` and the vendored copy was **already
+byte-identical** (`896227c`), so the re-copy is a no-op this time.
+
+**MEASURED HERE, and it does not agree with the header the previous entry
+quoted.** Counting `foundry-app/electron/ipc.ts` with the same regex
+`tools/test-ipc-collision.js` uses:
+
+| | `806d44b` | `f349771` |
+| --- | --- | --- |
+| `ipcMain.handle` call sites | 142 | 142 |
+| distinct channel names | 142 | 142 |
+| duplicates | 0 | 0 |
+| `ipcMain.on` | 0 | 0 |
+
+Identical at both ends, which is what "no channel moved" should look like. The
+**130 = 130** this file has repeated since `6497c5e` is what a LINE-anchored
+grep returns: twelve of the 142 call sites put the channel name on the line
+after `ipcMain.handle(`, and a per-line count cannot see them. So the figure was
+never wrong about the thing it was defending — distinct still equals total, and
+nothing in Foundry collides with itself — but it is not the count of call sites,
+and repeating it here again without saying so would be the fourth
+hand-maintained number this subtree's own keeper warns about. **142 = 142, zero
+`ipcMain.on`.**
+
+The number the keeper actually reads is a third one: it parses the doc's TABLE
+ROWS, not the sources, and those yield **163** well-formed `family:verb` names
+with **zero** malformed, against a floor of 60. `tools/test-ipc-collision.js`
+passes 7/7.
+
+### Verification
+
+192 of 192 files in `f349771:app/` are byte-identical to `foundry-app/`, plus
+`IPC-CHANNELS.md` out of Foundry's `docs/` — 193 compared, **zero mismatches**,
+zero files on either side the other lacks. Compared as INDEX blob ids rather
+than `git hash-object` over the working tree, because this checkout is
+`core.autocrlf=true` and these files are stored `i/lf w/crlf`: the seven were
+written with LF, staged, then deleted and re-checked-out so the working copies
+carry this repo's CRLF while the committed bytes are Foundry's. `VENDORED.md` is
+the only tracked file under `foundry-app/` that is this repo's own.
+
+**`npm ci` in the subtree, and the lockfile did not move — which is the
+interesting part.** The main checkout's `foundry-app/node_modules` holds
+`@crucible/bootstrap` **1.0.0** under a `1.0.6` pin, stale since the adoption in
+the entry below, and a junction to it cannot typecheck this subtree at all: six
+`TS2305`/`TS2724` errors for `installStatus`, `watchInstall`, `InstallStatus`
+and `TERMINAL_OUTCOME_STATES`. Those errors reproduce on `main` at its own sha
+with nothing copied, so they are the environment and not this range; a real
+install in the worktree (733 packages, exit 0) makes both SDKs answer **1.0.6**
+and the build green. Worth recording because the next re-vendor will junction
+that same directory and get the same six errors.
+
+`npm run build` in the subtree exited **0** — ng initial total 1.02 MB (main
+816.80 kB) with the standing budget WARNING only, and `test:surface` clean over
+12 built renderer files. On BookForge's side `npx tsc -p tsconfig.electron.json`
+exited **0** both emitting and `--noEmit`; `tools/test-ipc-collision.js` and all
+thirteen `tools/test-foundry-*.js` keepers pass (7, 40, 13, 13, 9, 32, 22, 35,
+13, 47, ok, 33, 6, 20).
+
+Grep markers in the BUILT output, which is how a re-vendor is proved here —
+`145d5ba`'s `attach()` reaches all three artifacts:
+
+| Built file | String |
+| --- | --- |
+| `dist/electron/crucible-install-door.js:210` | `attach: () => {`, and its `lost the install event stream` |
+| `dist/electron/ipc.js:3713` | `installDoor.attach();` |
+| `dist/renderer/browser/main-*.js` | `syncInstallListening` |
 
 ## The `3436fc5 → 806d44b` re-vendor — the pre-release pack is retired on both sides (2026-09-19, late)
 

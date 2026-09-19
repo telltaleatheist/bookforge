@@ -24,10 +24,11 @@
  * and `noteQueueIdle` answers immediately unless this process OWNS a server
  * (electron/page-reader.ts) — which a test never does.
  */
-import { beforeAll, expect, mock, test } from 'bun:test';
+import { afterAll, beforeAll, expect, mock, spyOn, test } from 'bun:test';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
+import type { FoundryHost } from '../electron/host';
 import type { CleanRequest, GenerateRequest, Job } from '../shared/types';
 
 const APP_DIR = path.dirname(import.meta.dir);
@@ -63,9 +64,41 @@ beforeAll(async () => {
   // alone: a static import would be hoisted above it.
   queue = await import('../electron/job-queue');
   host = await import('../electron/host');
+  spyOn(host, 'foundryHost').mockReturnValue(THE_HOST);
+  spyOn(host, 'hosted').mockReturnValue(true);
+  spyOn(host, 'hostedLibraryDir').mockReturnValue(PROJECT);
 });
 
+afterAll(() => mock.restore());
+
 const PROJECT = path.join(os.tmpdir(), 'foundry-hosted-shelf-test', 'projects', 'Twain-a1b2');
+
+/*
+ * THE MOUNT IS A ONE-WAY DOOR, SO THIS FILE DOES NOT WALK THROUGH IT.
+ *
+ * `recordHost` writes a module-level singleton that nothing un-writes — by
+ * design: production mounts a host once and the process ends with it. A test
+ * that calls it hands every LATER FILE in the same `bun test` process a
+ * Foundry that believes it is hosted, and `mock.restore()` cannot put it back
+ * because a plain assignment is not a mock. That is exactly what happened: on
+ * macOS bun walks the directory in hash order, so this file ran third and
+ * `crucible-install-latest.test.ts` eighth, and all four of its tests failed
+ * on the HOSTED refusal — "Install Crucible from BookForge." — instead of the
+ * answer they asked for. On Windows the walk is sorted, this file ran
+ * eleventh, and the suite was green. One suite, two verdicts, decided by the
+ * filesystem.
+ *
+ * So the host is SPIED rather than recorded. It is the same shape through the
+ * same three doors every reader uses, `crucible-lifecycle.test.ts` already
+ * fakes a host this way, and `afterAll` gives it back.
+ */
+const THE_HOST: FoundryHost = {
+  libraryDir: PROJECT,
+  onExport: () => {},
+  hostQueue: {
+    enqueue: () => { throw new Error('nothing in this test routes'); },
+  },
+};
 
 /** A host's own row for a text pass, exactly as `setHostQueueRows` receives it. */
 function hostRow(id: string, mints: string): Job {
@@ -109,13 +142,6 @@ function cleanRequest(mints: string): CleanRequest {
  * from the mint — the exact list the versions tree walked.
  */
 test('hosted: the row runJob mints is not drawn beside the host row it stands for', async () => {
-  host.recordHost({
-    libraryDir: PROJECT,
-    onExport: () => {},
-    hostQueue: {
-      enqueue: () => { throw new Error('nothing in this test routes'); },
-    },
-  });
   const theirs = hostRow('host-row-1', 'step-clean-1');
   queue.setHostQueueRows(PROJECT, [theirs]);
 

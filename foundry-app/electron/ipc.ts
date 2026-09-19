@@ -4013,7 +4013,24 @@ export function registerIpc(): void {
    * machine, and a second window drawing an empty list would be this app
    * pretending the install belongs to a window.
    */
-  ipcMain.handle('crucible:install-status', () => installDoor.status());
+  /*
+   * AND THE ASK IS ALSO THE ATTACH.
+   *
+   * §2.3 put the move's start in the tray, so the ordinary running move is one
+   * no window pressed a button for — and until 2026-09-19 a window that opened
+   * onto one read `running: true` here and then sat under five waiting rows,
+   * because `watch` fans out events this process was never being sent. Asking
+   * where the move got to and joining its stream are the same question, so
+   * they are the same call: the door replays its ring and the rows fill in.
+   *
+   * It is idempotent and it never starts anything (see `attach`), so the
+   * second window to open costs the tray one question and nothing else.
+   */
+  ipcMain.handle('crucible:install-status', async () => {
+    const answered = await installDoor.status();
+    if (answered.running) installDoor.attach();
+    return answered;
+  });
   ipcMain.handle('crucible:install-retry', () => runInstallAndCoordinate(installDoor.retry));
   /**
    * RESTART NOW — §2.3, and it is the only thing in Foundry that reboots a

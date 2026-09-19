@@ -49,7 +49,7 @@ import type {
 } from '../shared/crucible-install-wire';
 
 /**
- * THE DOOR, as Foundry uses it. Three verbs and no fourth.
+ * THE DOOR, as Foundry uses it. §2.6's three, and `attach` is not a fourth.
  *
  * `watch` answers the unsubscribe, synchronously, so a window that closes
  * mid-install detaches without waiting on a promise that may be a stream.
@@ -57,8 +57,28 @@ import type {
 export interface CrucibleInstallDoor {
   /** §2.6's `GET /install`: is a move running, and what did the last one do? */
   status(): Promise<CrucibleInstallStatus>;
-  /** Attach to the run in flight, or to the next one. Answers the detach. */
+  /** Who in this process hears the events. Answers the detach. */
   watch(onEvent: (event: CrucibleInstallEvent) => void): () => void;
+  /**
+   * §2.6's `GET /install/events` — MAKE SURE THERE IS SOMETHING TO HEAR.
+   *
+   * {@link watch} is the fan-out and only the fan-out: it is fed by
+   * {@link relay}, and `relay` is only called while THIS process is the one
+   * driving. §2.3 moved the start into the tray, so the ordinary case is a
+   * move nobody in this process began — and a window opened onto it read
+   * `running: true` off `status()` and then drew five waiting rows under it,
+   * because not one event was going anywhere. The stream it was missing is
+   * the one the door replays a 200-event ring from; `watchInstall()` is that
+   * read, and this is the one place Foundry makes it.
+   *
+   * IDEMPOTENT AND SILENT ON A MACHINE WITH NOTHING TO FOLLOW, because every
+   * caller is a window opening and there may be several: it is a statement
+   * that this process should be listening, not a request to open a second
+   * stream. It NEVER starts a move — `watchInstall` is explicit that it
+   * cannot — so calling it on a machine that is idle costs the tray one
+   * question and changes nothing.
+   */
+  attach(): void;
   /**
    * §2.5's **Try again** — `POST /install`. Drawn only on a `cannot` or a
    * `failed`, because a machine that is done has nothing to try and a machine
@@ -120,6 +140,13 @@ const watchers = new Set<(event: CrucibleInstallEvent) => void>();
 
 /** One run at a time, and the flag this door's `status` falls back on. */
 let running = false;
+
+/**
+ * The follow in flight, or null. Its only job is to keep {@link
+ * CrucibleInstallDoor.attach} from opening a second stream onto one move —
+ * every window that opens asks, and they are all asking for the same thing.
+ */
+let following: Promise<unknown> | null = null;
 
 /** Tell every attached window. */
 function emit(event: CrucibleInstallEvent): void {
@@ -246,6 +273,38 @@ export function crucibleInstallDoor(wire: InstallDoorWire = {}): CrucibleInstall
     watch: (onEvent) => {
       watchers.add(onEvent);
       return () => { watchers.delete(onEvent); };
+    },
+    attach: () => {
+      /*
+       * NOT WHILE THIS PROCESS IS DRIVING. `runInstallNarrated` and `retry`
+       * already feed `relay` from the stream they own, and a second reader of
+       * the same door would put every event on the rows twice.
+       */
+      if (running || following !== null) return;
+      // The same absence `status` answers: no host pack, no door to follow.
+      if (runner.platform !== 'win32' || !hostInstalled(runner)) return;
+      /*
+       * The ring this is about to replay begins at the move's first step, and
+       * §3.1's second row is drawn off that step (see {@link windowsEngineUp}).
+       * A window opening onto the tray's SECOND move in one session would find
+       * the one-shot already spent by the first and never draw it, so the run
+       * being joined gets its own.
+       */
+      windowsEngineSeen = false;
+      following = watchInstall({ ...options, onEvent: relay }, runner)
+        .catch((error: unknown) => {
+          /*
+           * SAID, NOT DRAWN. A stream that drops is this process losing sight
+           * of a move that is very likely still going; emitting `failed` would
+           * put a red row under somebody watching a healthy install. The next
+           * `status()` attaches again, which is the recovery.
+           */
+          console.error(
+            '[crucible] lost the install event stream: '
+            + (error instanceof Error ? error.message : String(error)),
+          );
+        })
+        .finally(() => { following = null; });
     },
     retry: async () => {
       const before = await installStatus(options, runner);

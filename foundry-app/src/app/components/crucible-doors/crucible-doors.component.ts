@@ -720,7 +720,11 @@ export class CrucibleDoorsComponent {
   >(null);
 
   constructor() {
-    this.destroyRef.onDestroy(() => this.cancelRemotePairing());
+    this.destroyRef.onDestroy(() => {
+      this.cancelRemotePairing();
+      this.detachInstallEvents?.();
+      this.detachInstallEvents = null;
+    });
     if (!api) return;
     /*
      * AND MAIN'S PROOF FOR DOOR 4, once. It is a read — a file test, and one
@@ -746,6 +750,9 @@ export class CrucibleDoorsComponent {
     // before: it spawns wsl.exe, and a wizard step that probed WSL on arrival
     // would be doing work for somebody who is about to press Skip.
     if (this.open() === 'install' && this.plan() === null) void this.loadPlan();
+    // Reopening a door whose plan is already read re-asks nothing, so the
+    // listening is settled here too — and closing it is what detaches.
+    this.syncInstallListening();
     /*
      * CLOSING DOOR 4 THROWS ITS PLAN AWAY. A plan is a statement about a machine
      * at a moment, and a door reopened an hour later over yesterday's rows with
@@ -798,6 +805,8 @@ export class CrucibleDoorsComponent {
       this.status.set(null);
       this.installSaid.set(err instanceof Error ? err.message : String(err));
     }
+    // The ask above is also main's attach, so by here there may be a stream.
+    this.syncInstallListening();
   }
 
   // ── §3.1's words. Composed HERE, because the screen owns the wording ──────
@@ -969,10 +978,7 @@ export class CrucibleDoorsComponent {
     this.busy.set('install');
     this.installSaid.set(null);
     this.finishedOn.set(undefined);
-    const unsubscribe = api.crucible.onInstallEvent((event) => {
-      this.rows.update((rows) => applyInstallEvent(rows, event));
-      if (event.event === 'done') this.finishedOn.set(event.backend);
-    });
+    this.syncInstallListening();
     try {
       await call();
       await this.loadPlan();
@@ -980,9 +986,44 @@ export class CrucibleDoorsComponent {
     } catch (err) {
       this.installSaid.set(err instanceof Error ? err.message : String(err));
     } finally {
-      unsubscribe();
       this.busy.set(null);
+      this.syncInstallListening();
     }
+  }
+
+  /** This window's detach, or null when it is not listening. */
+  private detachInstallEvents: (() => void) | null = null;
+
+  /**
+   * LISTEN EXACTLY WHILE THERE IS SOMETHING TO HEAR, and it is two cases now.
+   *
+   * The first is the old one: a run this window pressed a button for. The
+   * second is §2.3's, which this window used to be deaf to — the TRAY started
+   * the move, and a person opening this door lands in the middle of it. Main
+   * joins that stream when it is asked for the status (electron/ipc.ts's
+   * `crucible:install-status`); without this the events then arrived in a
+   * window that had subscribed to nothing, and the list stayed five waiting
+   * rows under a status line that said a move was running.
+   *
+   * A CLOSED DOOR STILL DETACHES, which is the rule the press path was already
+   * keeping: rows nobody is looking at are not worth accumulating, and §2.6's
+   * `GET /install` is asked again the next time the door opens — which is what
+   * re-attaches.
+   */
+  private syncInstallListening(): void {
+    if (!api) return;
+    const wanted = this.busy() === 'install'
+      || (this.open() === 'install' && this.status()?.running === true);
+    if (!wanted) {
+      this.detachInstallEvents?.();
+      this.detachInstallEvents = null;
+      return;
+    }
+    if (this.detachInstallEvents !== null) return;
+    this.detachInstallEvents = api.crucible.onInstallEvent((event) => {
+      this.rows.update((rows) => applyInstallEvent(rows, event));
+      if (event.event === 'done') this.finishedOn.set(event.backend);
+    });
   }
   // ── The fourth door's four acts ──────────────────────────────────────────
 
