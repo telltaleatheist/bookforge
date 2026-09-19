@@ -2965,7 +2965,7 @@ class LoadedMessageTest(V3TestCase):
 
 
 class PadsOnTheWireTest(unittest.TestCase):
-    """finalize_audio's trim is ORPHEUS behaviour; the gap is a CLIENT contract."""
+    """finalize_audio's trim is ORPHEUS behaviour; the gap belongs to the DOOR."""
 
     def setUp(self):
         from narrator.serve import worker as W
@@ -2978,7 +2978,7 @@ class PadsOnTheWireTest(unittest.TestCase):
         quiet = np.concatenate([np.zeros(2400, dtype=np.float32),
                                 np.full(2400, 0.5, dtype=np.float32),
                                 np.zeros(24000, dtype=np.float32)])
-        out = W.finalize_audio(quiet)
+        out = W.finalize_audio(quiet, W.FOR_STREAM)
         gap = int(24000 * W.STREAM_GAP_SEC)
         self.assertLess(out.size - gap, quiet.size,
                         "Orpheus's long trailing pause is cut back")
@@ -2992,23 +2992,50 @@ class PadsOnTheWireTest(unittest.TestCase):
         quiet = np.concatenate([np.zeros(2400, dtype=np.float32),
                                 np.full(2400, 0.5, dtype=np.float32),
                                 np.zeros(24000, dtype=np.float32)])
-        out = W.finalize_audio(quiet)
+        out = W.finalize_audio(quiet, W.FOR_STREAM)
         gap = int(24000 * W.STREAM_GAP_SEC)
         self.assertEqual(out.size - gap, quiet.size,
                          'nothing may be removed from a pads=False chunk')
 
-    def test_the_gap_is_appended_for_BOTH(self):
-        """DELIBERATE. `pads` says who owns the silence inside a chunk FILE for
-        assembly; this is the streaming wire, where the worker is the only thing
-        that can put a gap between two sentences - the player concatenates
-        chunks with none of its own."""
+    def test_the_gap_follows_the_DOOR_and_not_pads(self):
+        """THE TRIM IS THE ENGINE'S QUESTION AND THE GAP IS THE DOOR'S, and this
+        pins that they are not the same question.
+
+        `pads` says who owns the silence INSIDE a chunk, so it decides the trim
+        and nothing else. Whether a gap is appended after it is decided by which
+        caller asked: on the Listen stream the player concatenates rows and this
+        worker is the only thing that can separate two sentences, so the gap is
+        appended for a `pads=True` Orpheus and a `pads=False` Higgs alike; on the
+        render door BookForge's assembler realizes the manifest's gaps and a gap
+        here would be a second one (Owen, 2026-09-18).
+        """
         W = self.W
         tone = np.full(2400, 0.5, dtype=np.float32)
         gap = int(24000 * W.STREAM_GAP_SEC)
+        self.assertGreater(gap, 0, 'this test says nothing with the gap disabled')
         for pads in (True, False):
             with self.subTest(pads=pads):
                 W.set_active_engine_audio(24000, pads)
-                self.assertEqual(W.finalize_audio(tone).size - gap, tone.size)
+                self.assertEqual(W.finalize_audio(tone, W.FOR_STREAM).size,
+                                 tone.size + gap)
+                self.assertEqual(W.finalize_audio(tone, W.FOR_RENDER).size,
+                                 tone.size)
+
+    def test_a_caller_that_does_not_say_which_door_is_refused(self):
+        """THE BUG WAS EXACTLY A CALLER THAT HAD NOT DECIDED. `finalize_audio`
+        took the stream contract as read and `_emit_guarded_batch` - written on
+        2026-09-13, and the door Crucible's render job drives - picked it up
+        without ever naming it. So the door is a required argument with no
+        default, and a name that is neither door fails by name rather than
+        being read as one of them.
+        """
+        W = self.W
+        tone = np.full(2400, 0.5, dtype=np.float32)
+        with self.assertRaises(TypeError):
+            W.finalize_audio(tone)
+        with self.assertRaises(ValueError) as caught:
+            W.finalize_audio(tone, 'listen')
+        self.assertIn('listen', str(caught.exception))
 
     def test_the_wire_rate_follows_the_loaded_engine(self):
         W = self.W

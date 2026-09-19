@@ -885,20 +885,30 @@ single place any correction goes.
 ### 12.10 The streaming wire: trim, gap, rate, and the `loaded` line
 
 `serve/worker.py:finalize_audio` used to do three things to every clip
-unconditionally. Two of them are Orpheus's, and one is the client's:
+unconditionally. One of them is Orpheus's, one is the DOOR's, and one is the
+loaded engine's:
 
 - **The trim is ORPHEUS's** and now runs only for a `pads=True` engine. Orpheus
   bakes its lead/trail silence in and its end-pause is long enough to hear as a
   stall. Higgs emits bare speech, so the same 0.01-threshold trim would cut into
   a quiet final consonant with no padding in front of it to absorb the cut.
-- **The 0.3 s gap is appended for EVERY engine, deliberately.** This is the
-  decision the review asked for. `pads` says who owns the silence INSIDE a chunk
-  file for ASSEMBLY; the streaming wire is a different contract, where the
-  player concatenates chunks with no gap of its own and the worker is the only
-  thing that can put one between two sentences. Dropping it for Higgs would make
-  every streamed sentence run into the next. The audiobook path never passes
-  through here - it writes chunk files, and the assembler realizes the
-  manifest's gaps.
+- **The 0.3 s gap is appended for EVERY engine on the STREAM door, and for none
+  on the RENDER door.** `pads` says who owns the silence INSIDE a chunk file for
+  ASSEMBLY, which is why it decides the trim above and not this; the gap is the
+  silence BETWEEN two chunks, and it belongs to whoever joins them. On the
+  streaming wire the player concatenates chunks with no gap of its own, so the
+  worker is the only thing that can put one between two sentences and dropping
+  it for Higgs would make every streamed sentence run into the next.
+
+  CORRECTED 2026-09-18. This bullet used to end "the audiobook path never passes
+  through here - it writes chunk files, and the assembler realizes the manifest's
+  gaps". That stopped being true on 2026-09-13, when `_emit_guarded_batch` landed
+  and became the door Crucible's `tts` render job drives: an audiobook rendered
+  remotely came back with 0.30 s baked into every chunk and the assembler's
+  0.60 s on top of it. Owen ruled on 2026-09-18 that "whoever assembles them is
+  who owns the gap. I think that's bookforge", so `finalize_audio` now takes a
+  required `door` - `FOR_STREAM` or `FOR_RENDER`, no default - and the render
+  door emits bare speech.
 - **The rate is the LOADED ENGINE's**, not `DEFAULT_SAMPLERATE`. Both shipping
   engines are 24 kHz, so no byte on either path changes today; what it prevents
   is the next engine mis-timing every cue in a session.
