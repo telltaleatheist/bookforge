@@ -85,6 +85,21 @@ if (found.book === undefined) {
   return;
 }
 
+/*
+ * A CLOSED PIPE IS NOT A TEST FAILURE. This file runs its second half INSIDE the
+ * Electron binary, and Electron shows an uncaught exception as a desktop dialog
+ * — so when the keeper runner closed stdout early, a `console.log` here hit
+ * EPIPE and put an "Uncaught Exception: write EPIPE" box on Owen's screen
+ * (2026-09-19, from an agent's run-keepers pass). The parent already has its
+ * verdict by then; the child has nothing left to say and simply stops.
+ */
+for (const stream of [process.stdout, process.stderr]) {
+  stream.on('error', (err) => {
+    if (err && err.code === 'EPIPE') process.exit(process.exitCode ?? 0);
+    throw err;
+  });
+}
+
 if (!process.versions.electron) {
   const electron = require(path.join(__dirname, '..', 'node_modules', 'electron'));
   const result = spawnSync(electron, [__filename, ...process.argv.slice(2)], {
