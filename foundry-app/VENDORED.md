@@ -8,7 +8,7 @@ two places.
 
 | | |
 | --- | --- |
-| Source repo | `C:\Users\tellt\Projects\foundry` (branch `main`) |
+| Source repo | `C:\Users\<user>\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
 | Source sha | **1c1eaa3** — *The slot gets the sentence, the console gets the engine's log tail* |
 | Engine | **NOT VENDORED AND NOT KNOWABLE FROM THIS FILE** — it is a spawned CLI resolved at RUNTIME (`FOUNDRY_BIN`, else `resolveFoundryPath`, `electron/main.ts`), so which build executes is a property of the machine and not of this copy. On a developer's Mac that resolves to Foundry's own checkout at `/Volumes/Callisto/Projects/foundry/dist/foundry-darwin-arm64`, which is whatever was last built there — `foundry 2.0.2 (1c1eaa3)` as of 2026-09-18. **Ask the binary: `$FOUNDRY_BIN --version`.** See *The engine this file named was not the engine that ran* below. |
@@ -22,7 +22,7 @@ One commit, one file: `app/electron/crucible-dispatch.ts`. Nothing under `src/`.
 **A queue slot four inches wide was printing a vLLM spawn command line.** What
 Owen read while a model loaded:
 
-    Loading qwen3.5-9b on crucible@owens-pc-wsl: vllm loading; 16s elapsed,
+    Loading qwen3.5-9b on crucible@example-pc-wsl: vllm loading; 16s elapsed,
     886s before give-up — (APIServer pid=233320) INFO 09-18 01:29:35
     [kernel.py:369] Final IR op priority after setting platform defaults: …
 
@@ -42,7 +42,7 @@ built dist: `[slots] warming: ` in `crucible-dispatch.js`.
 **The bigger lesson of the night, and it cost two sessions a wrong diagnosis.**
 Owen's cleanup against the 3090 Ti refused with
 
-    http://owens-pc.owenmorgan.com:7100/openai/api/tags answered 404.
+    http://pc.example.test:7100/openai/api/tags answered 404.
     Something is listening there, but it is not an Ollama server.
 
 An Ollama client on a vLLM OpenAI base. This side ruled out a stale engine by
@@ -1408,12 +1408,12 @@ The one exception is this file, which is BookForge's own note about the copy.
 ## Refreshing it
 
 ```
-cd C:\Users\tellt\Projects\foundry
+cd C:\Users\<user>\Projects\foundry
 git archive <new-sha> app > <scratch>\foundry-app.tar
 # in BookForge:
 rm -r foundry-app/electron foundry-app/shared foundry-app/src   # sources only
 cd foundry-app && tar --force-local -xf <scratch>\foundry-app.tar --strip-components=1
-git -C C:\Users\tellt\Projects\foundry show <new-sha>:docs/IPC-CHANNELS.md > foundry-app/IPC-CHANNELS.md
+git -C C:\Users\<user>\Projects\foundry show <new-sha>:docs/IPC-CHANNELS.md > foundry-app/IPC-CHANNELS.md
 ```
 
 Then rebuild (below) and run `node tools/run-keepers.js` — the collision keeper
@@ -2042,7 +2042,7 @@ and `electron/crucible-registry.ts`), and **`"foundry": "file:.."`**, Foundry's
 self-link back to its own repo root. Inside `<foundry>/app` that resolves to
 `foundry@1.3.0`. Inside `<bookforge>/foundry-app` it resolves to
 **`bookforge-app@0.1.7` — this repository's root** — and `npm ci` duly created
-`foundry-app/node_modules/foundry` as a **JUNCTION to `C:\Users\tellt\Projects\bookforge\`**,
+`foundry-app/node_modules/foundry` as a **JUNCTION to `C:\Users\<user>\Projects\bookforge\`**,
 verified by `(Get-Item …).LinkType` before it was removed. That is a loaded gun
 next to the standing worktree-hygiene rule: any later `rm -rf
 foundry-app/node_modules` would follow it and delete the entire checkout. So the

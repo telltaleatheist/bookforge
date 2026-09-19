@@ -1,17 +1,26 @@
-import { Component, inject, signal } from '@angular/core';
+import { Component, computed, inject, signal } from '@angular/core';
 import { ServerConfigService } from '../services/server-config.service';
-
-/** Known BookForge library servers, offered as one-tap choices. */
-const SUGGESTED_SERVERS = [
-  { label: 'Mac Studio', url: 'http://owens-mac-studio.owenmorgan.com:8765' },
-  { label: 'PC', url: 'http://owens-pc.owenmorgan.com:8765' },
-];
 
 /**
  * Full-screen "Connect to your library" gate — the native app's first-run
  * pairing screen. Shown only in the Capacitor shell when no server is saved
  * (the web app is served by its server, so it never sees this). Verifies the
  * server with /api/health before saving.
+ *
+ * ── THE ONE-TAP CHIPS COME FROM THE SERVERS THIS APP ALREADY KNOWS ─────────
+ *
+ * They used to be a two-entry constant naming two specific machines on one
+ * person's tailnet. That is a fact owned by the phone's own server list
+ * (`bookshelf-servers` in localStorage, written by every successful connect) —
+ * a second copy in tracked source goes stale the moment a box is renamed, and
+ * in a public repo it publishes somebody's network to everyone who clones it.
+ * So the chips are `cfg.servers()`, minus the on-device pseudo-server, which
+ * has no address to offer.
+ *
+ * ON A GENUINE FIRST RUN THERE ARE NONE, and the row is simply not rendered.
+ * That is the honest answer rather than a built-in suggestion: nothing has told
+ * this phone where a library lives yet, and the address field above is the
+ * place that is asking.
  */
 @Component({
   selector: 'app-server-gate',
@@ -24,11 +33,13 @@ const SUGGESTED_SERVERS = [
         }
         <h1>Connect to your library</h1>
         <p class="hint">Enter the address of a BookForge library server on your tailnet.</p>
-        <div class="suggested">
-          @for (s of suggested; track s.url) {
-            <button class="chip" (click)="url.set(s.url)" [class.active]="url() === s.url">{{ s.label }}</button>
-          }
-        </div>
+        @if (suggested().length) {
+          <div class="suggested">
+            @for (s of suggested(); track s.url) {
+              <button class="chip" (click)="url.set(s.url)" [class.active]="url() === s.url">{{ s.label }}</button>
+            }
+          </div>
+        }
         <input class="text" type="url" placeholder="http://host:8765" autocapitalize="off" autocorrect="off" spellcheck="false"
           [value]="url()" (input)="url.set($any($event.target).value)"
           (keyup.enter)="connect()" />
@@ -71,7 +82,10 @@ const SUGGESTED_SERVERS = [
 export class ServerGateComponent {
   readonly cfg = inject(ServerConfigService);
 
-  readonly suggested = SUGGESTED_SERVERS;
+  /** Servers this phone has already connected to, as one-tap chips. */
+  readonly suggested = computed(() => this.cfg.servers()
+    .filter(s => !!s.url)
+    .map(s => ({ label: s.label, url: s.url })));
   readonly url = signal('');
   readonly key = signal('');
   readonly name = signal('');

@@ -4,7 +4,7 @@ name: catalog-indexer
 # Stanza language packs, merged with tools/catalog-indexer/releases.json) and
 # publishes them to the `catalog-data` branch. The app fetches them from there
 # via raw.githubusercontent.com. Replaces the old Triton cron that wrote them to
-# the owenmorgan.com docroot.
+# a web server's docroot.
 
 on:
   schedule:

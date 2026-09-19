@@ -25,7 +25,7 @@ two differ and why neither changes when the book's bytes change. The key is call
 `epub_content_hash` and it is not a content hash; renaming it would break every
 reader in `render/SESSION_READERS.md`, so it keeps its name and gets this note.
 
-Verified on kershaw: `md5('/home/telltale/ebook2audiobook/tmp/staged-ccd14111-...
+Verified on kershaw: `md5('/home/<user>/ebook2audiobook/tmp/staged-ccd14111-...
 .epub')` == the process_dir name `645fe70686...`, and
 `md5('<that process_dir>/staged-ccd14111-....epub')` == the stored
 `epub_content_hash` `6d302f8c08...`.

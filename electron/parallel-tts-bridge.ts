@@ -513,9 +513,9 @@ export function getAudiobookDirFromBfp(bfpPath: string): string {
  * Whether WSL can see this Windows drive under /mnt.
  *
  * WSL auto-mounts FIXED drives only: C: is /mnt/c the moment the distro boots,
- * but a NETWORK drive — the titan library at Z: — has no /mnt entry at all, and
+ * but a NETWORK drive — the NAS library at Z: — has no /mnt entry at all, and
  * `mkdir -p /mnt/z` inside the guest is "Permission denied", not a mount (hit
- * live 2026-08-18, the first titan narration's copy-out; the same asymmetry the
+ * live 2026-08-18, the first NAS narration's copy-out; the same asymmetry the
  * INPUT side hit first, which is why prepareSession stages the ebook INTO WSL).
  */
 async function wslSeesDrive(driveLetter: string): Promise<boolean> {
@@ -827,7 +827,7 @@ export async function cacheSessionToProject(
     if (isWslSession && process.platform === 'win32') {
       // Routed copy-out: guest-side to a mounted drive, \\wsl$ read on the
       // Windows side to a drive the guest cannot see (network drives never
-      // appear under /mnt — the titan library's Z: is the live case).
+      // appear under /mnt — the NAS library's Z: is the live case).
       await copyDirOutOfWsl(sessionDir, tempDestDir);
     } else {
       // Clone-on-write where the filesystem supports it (APFS/ReFS) — with the
@@ -1089,13 +1089,13 @@ export interface SessionOwnerInfo {
   createdAt: string;
   /**
    * WHICH MACHINE IS RENDERING THIS. The scratch dir is `<library>/tmp`, and the
-   * library is a share both machines mount (Z: on Windows, /Volumes/iO on the
+   * library is a share both machines mount (Z: on Windows, /Volumes/<share> on the
    * Mac), so "this scratch dir" is not "this computer's scratch dir". The startup
    * sweep's licence — "nothing is converting yet at startup, so everything here is
    * from a dead run" — is only ever true of THIS host's sessions.
    *
    * MEASURED, 2026-09-05: Windows started while the Mac was 8 minutes into a
-   * render, swept `Z:\bookforge\tmp\ebook-83fa5cb8-…` out from under it, and took
+   * render, swept `Z:\<library>\tmp\ebook-83fa5cb8-…` out from under it, and took
    * `session-state.json` and this sidecar with it. The Mac kept rendering into the
    * gutted directory and later cached a session with audio and no text.
    *
@@ -3371,7 +3371,7 @@ export async function prepareSession(
   // The --ebook path as the spawned e2a will see it. For a WSL prep the file is
   // STAGED into WSL's own filesystem first: buildWslBashCommand maps drive
   // letters to /mnt/<letter>, but WSL auto-mounts only fixed drives — a library
-  // on a mapped network drive (Z: → titan since 2026-08-17) has no /mnt/z, and
+  // on a mapped network drive (Z: → the NAS since 2026-08-17) has no /mnt/z, and
   // prep died in prepare_dirs' shutil.copy on exactly that. Staging through the
   // \\wsl$ UNC works for EVERY source the host can read — local, mapped, or UNC
   // — so it is done unconditionally for WSL preps rather than by probing mounts.

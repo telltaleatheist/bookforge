@@ -83,7 +83,7 @@ async function loadPairModule() {
 
 function urlCases(pair) {
   check('a bare IP becomes a dialable base URL on Crucible\'s port', () => {
-    assert.strictEqual(pair.normaliseServerUrl('192.168.68.79'), 'http://192.168.68.79:7100');
+    assert.strictEqual(pair.normaliseServerUrl('192.0.2.79'), 'http://192.0.2.79:7100');
   });
 
   check('a named port is kept', () => {
@@ -91,7 +91,7 @@ function urlCases(pair) {
   });
 
   check('a full URL survives unchanged', () => {
-    assert.strictEqual(pair.normaliseServerUrl('http://10.0.0.5:7100'), 'http://10.0.0.5:7100');
+    assert.strictEqual(pair.normaliseServerUrl('http://192.0.2.5:7100'), 'http://192.0.2.5:7100');
   });
 
   check('https is accepted and not rewritten to http', () => {

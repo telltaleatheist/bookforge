@@ -287,7 +287,7 @@ export function writeCrucibleServers(edits: readonly CrucibleServerEdit[]): Cruc
     }
     if (url === null) {
       throw new Error(
-        `"${name}" needs an address like http://192.168.1.20:7100 — the server's base URL, `
+        `"${name}" needs an address like http://192.0.2.20:7100 — the server's base URL, `
         + 'without /v1 on the end.',
       );
     }
@@ -722,7 +722,7 @@ export interface EngineTarget {
 export interface EngineHop {
   /** What the person actually registered. `crucible:open` still opens THIS. */
   readonly orchestratorUrl: string;
-  /** `info().server.name` of the orchestrator — `crucible-orchestrator@owens-pc`. */
+  /** `info().server.name` of the orchestrator — `crucible-orchestrator@example-pc`. */
   readonly orchestratorName: string;
   /** PHASE17 §3.2's `engine` ref, as it arrived. `name` is null when it could not be read. */
   readonly engineName: string | null;
@@ -1105,7 +1105,7 @@ export async function probeCrucibleAt(url: string, token: string): Promise<Cruci
   if (clamped === null) {
     return {
       outcome: 'failed',
-      message: 'That needs to be an address like http://192.168.1.20:7100 — the server\'s base URL, '
+      message: 'That needs to be an address like http://192.0.2.20:7100 — the server\'s base URL, '
         + 'without /v1 on the end.',
     };
   }

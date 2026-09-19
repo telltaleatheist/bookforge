@@ -201,7 +201,7 @@ SERVE_DEFAULT_PORT = 8200
 #: dir when there is one. One per SESSION, overwritten per start.
 SERVER_LOG_NAME = 'higgs-sgl-server.log'
 
-#: MEASURED COLD START: ~110 s to health on owens-pc with warm weights
+#: MEASURED COLD START: ~110 s to health on example-pc with warm weights
 #: (`night3/logs/serve_events.log`, 2026-09-05). narrator waits far longer (see
 #: `HiggsV3Defaults.READY_TIMEOUT_SECONDS`) because `wait_ready` raises
 #: immediately if the process actually died, so patience costs nothing when the
@@ -605,7 +605,7 @@ class HiggsSglServedBackend(GuestOwnedServer):
         'The usual causes are flashinfer\'s JIT (the env needs CUDA_HOME pointed '
         'at nvidia/cu13 with lib64 -> lib and libcudart.so -> libcudart.so.13, '
         'plus the flashinfer-jit-cache cu130 wheel) and a mem-fraction-static '
-        'the card cannot honour. Healthy takes ~110 s on owens-pc.')
+        'the card cannot honour. Healthy takes ~110 s on example-pc.')
 
     def __init__(self, base_url: str = None, serve_script: str = None,
                  wsl_distro: str = None, checkpoint_dir: str = None,

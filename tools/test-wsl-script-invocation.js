@@ -4,10 +4,10 @@
  *
  *   npx tsc -p tsconfig.electron.json && node tools/test-wsl-script-invocation.js
  *
- * ── The bug this exists for, measured on owens-pc 2026-09-05 ────────────────
+ * ── The bug this exists for, measured on example-pc 2026-09-05 ────────────────
  *
  * The Higgs doctor reported BOTH site-packages patches as "was not found in
- * /home/telltale/anaconda3/envs/higgs3" on a machine where the files were
+ * /home/<user>/anaconda3/envs/higgs3" on a machine where the files were
  * present AND correctly patched — sentinel marker present, `[:, :-1]` absent,
  * sha 0b36f650, the certifying server's own file. Nothing was wrong with the
  * env. The probe could not see it.

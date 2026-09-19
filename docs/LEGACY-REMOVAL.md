@@ -479,7 +479,7 @@ prompt, the former a CATALOG ID indexing the voices document. Engine-id near-mis
 
 ## B. The measurements
 
-**The stage-fraction ladder** (owens-pc, RTX 3090 Ti 24.5 GB, vllm-omni 0.28.0, 2026-09-05):
+**The stage-fraction ladder** (example-pc, RTX 3090 Ti 24.5 GB, vllm-omni 0.28.0, 2026-09-05):
 
 | talker + codec | Result |
 | --- | --- |

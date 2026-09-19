@@ -33,7 +33,7 @@ Two modes:
     spoken audio, the clip goes `uncertain`.
 
 epub extraction (epub_text/_Strip) and the smart-quote table are minimal ports
-from C:\\Users\\tellt\\Projects\\orpheus-finetune\\correct_vtt.py and
+from C:\\Users\\<user>\\Projects\\orpheus-finetune\\correct_vtt.py and
 align_excerpts.py (credited inline; NOT imported across repos, per task rule).
 
 Progress protocol (stdout, one per line, for the JS bridge to parse):

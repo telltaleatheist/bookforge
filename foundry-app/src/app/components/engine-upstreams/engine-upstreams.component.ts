@@ -265,7 +265,7 @@ export class EngineUpstreamsComponent {
 
   protected addressHint(): string {
     const url = this.ollamaUrl();
-    return url === null ? 'Address — http://192.168.1.20:11434' : `Address — ${url}`;
+    return url === null ? 'Address — http://192.0.2.20:11434' : `Address — ${url}`;
   }
 
   protected type(name: UpstreamName, value: string): void {

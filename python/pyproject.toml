@@ -225,7 +225,7 @@ higgs-v3-server = [
 # (`electron/scripts/higgs/install_sglomni.sh`) builds it as a SEPARATE conda env
 # for that reason - "Never touches higgs3", in the campaign script's own words.
 #
-# EVERY VERSION HERE IS READ OFF THE WORKING `sglomni` ENV on owens-pc
+# EVERY VERSION HERE IS READ OFF THE WORKING `sglomni` ENV on example-pc
 # (2026-09-15), not chosen - the same rule as every group above. They are the
 # versions the night-3 measurements were taken against.
 #

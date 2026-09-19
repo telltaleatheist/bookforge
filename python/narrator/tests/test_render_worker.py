@@ -44,7 +44,7 @@ SAMPLE_RATE = 24000
 # The bridge's own regexes, copied verbatim with their file:line
 # =============================================================================
 #
-# From C:\Users\tellt\Projects\bookforge\electron\parallel-tts-bridge.ts. These
+# From C:\Users\<user>\Projects\bookforge\electron\parallel-tts-bridge.ts. These
 # are the JS sources, translated to Python only by dropping the `/.../i`
 # delimiters. If the worker's output stops matching them, the render bar in
 # BookForge stops moving and the watchdog kills a healthy worker after 12

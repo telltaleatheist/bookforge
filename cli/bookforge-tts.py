@@ -146,8 +146,8 @@ def _user_path(value):
     path AS TYPED rather than what it resolves to.
 
     `Path.resolve()` on Windows rewrites a mapped network drive to its UNC
-    target: `Z:\bookforge` (the titan library) comes back as
-    `\\TITAN\iO\bookforge`. The app never sees that spelling - it works in
+    target: `Z:\<library>` (the NAS library) comes back as
+    `\\NAS\iO\bookforge`. The app never sees that spelling - it works in
     drive letters - and the bridge's WSL mapping (`windowsToWslPath`) knows
     `/mnt/<letter>` and nothing else, so a UNC path handed onward is a path the
     guest cannot open (the CLI defect recorded on 2026-09-11: a Z: project
@@ -1695,7 +1695,7 @@ def cmd_pass(args):
 # CRUCIBLE — the inference server, reached through the app's own registry
 # ─────────────────────────────────────────────────────────────────────────────
 #
-# Crucible (C:\Users\tellt\Projects\crucible, docs/DESIGN.md) is one inference
+# Crucible (C:\Users\<user>\Projects\crucible, docs/DESIGN.md) is one inference
 # server for all of Owen's apps: it runs models and returns bytes. These seven
 # commands are BookForge's half of the phase-1 handshake, and they all drive one
 # adapter over the app's own compiled registry (electron/crucible/servers.ts).
@@ -2029,7 +2029,7 @@ the book the app ships.""",
             '# a checkpoint under test — the path is read WHERE THE RENDER RUNS (absolute on the\n'
             '# Mac, GUEST-native and not stat\'d here on the PC):\n'
             'bookforge-tts --tts --engine higgs --voice mistborn --input chunks.jsonl --as-chunks \\\n'
-            '    --out mb616.wav --checkpoint-dir /home/telltale/higgs_v3_merged/mb_v7_616',
+            '    --out mb616.wav --checkpoint-dir /home/<user>/higgs_v3_merged/mb_v7_616',
             '# the GENERATION step on a Crucible server (the FLACs come back over HTTP):\n'
             'bookforge-tts --tts --engine higgs --voice mistborn --input book.epub --out mb.wav \\\n'
             '    --crucible-server mac',
@@ -2088,7 +2088,7 @@ its canonical project location, so there is no --out. It RESUMES by default —
             '    "$HOME/Library/Application Support/BookForge/runtime/higgs-models/mb_v7_440_prod"',
             '# PC: the same checkpoint, guest-native path\n'
             'bookforge-tts --audiobook --project "<library>/projects/<slug>" --engine higgs \\\n'
-            '    --voice mistborn --checkpoint-dir /home/telltale/higgs_v3_merged/mb_v7_616',
+            '    --voice mistborn --checkpoint-dir /home/<user>/higgs_v3_merged/mb_v7_616',
             '# ignore the cached session and re-render from scratch, tier forced:\n'
             'bookforge-tts --audiobook --project "<library>/projects/<slug>" --voice deathstalker \\\n'
             '    --fresh --tier light --dry-run',
@@ -2558,7 +2558,7 @@ bundle, which no headless process can read, so it is passed here.""",
             'bookforge-tts --generate-epub --project "<library>/projects/<slug>" --readings fresh',
             '# read the pages on somebody else\'s server instead of this machine\'s route:\n'
             'bookforge-tts --generate-epub --project "<library>/projects/<slug>" \\\n'
-            '    --vlm-endpoint http://192.168.68.83:8000/v1 --vlm-endpoint-model rednote-hilab/dots.ocr',
+            '    --vlm-endpoint http://192.0.2.83:8000/v1 --vlm-endpoint-model rednote-hilab/dots.ocr',
             '# add the reading BESIDE the book this project already has:\n'
             'bookforge-tts --generate-epub --project "<library>/projects/<slug>" --destination new-copy',
             'bookforge-tts --generate-epub --project "<library>/projects/<slug>" --readings fresh --dry-run',
@@ -2594,7 +2594,7 @@ over a session's per-sentence cache.""",
 
 Crucible is one inference server for all of Owen's apps — it runs models and
 returns bytes, and never knows what an audiobook is (the spec is
-C:\\Users\\tellt\\Projects\\crucible\\docs\\DESIGN.md). This writes the entry the
+C:\\Users\\<user>\\Projects\\crucible\\docs\\DESIGN.md). This writes the entry the
 other --crucible-* commands read, through the app's own compiled registry
 (electron/crucible/servers.ts → <userData>/crucible-servers.json).
 
@@ -2612,7 +2612,7 @@ empty token are each refused by name.""",
             '    --token-file /tmp/crucible-token.txt',
             '# the Mac Studio over the tailnet:\n'
             'bookforge-tts --crucible-add --name mac \\\n'
-            '    --url http://owens-mac-studio.hs.owenmorgan.com:7100 --token-file mac-token.txt',
+            '    --url http://mac.example.test:7100 --token-file mac-token.txt',
             'bookforge-tts --crucible-add --name wsl --url http://127.0.0.1:7100 \\\n'
             '    --token-file token.txt --dry-run',
         ],
@@ -3374,7 +3374,7 @@ def _flag_registry():
 
     p.group("Crucible: the inference server (--crucible-*)",
             "Crucible runs models and returns bytes; it never knows what an audiobook is.\n"
-            "The spec is C:\\Users\\tellt\\Projects\\crucible\\docs\\DESIGN.md. These name a\n"
+            "The spec is C:\\Users\\<user>\\Projects\\crucible\\docs\\DESIGN.md. These name a\n"
             "server in the registry at <userData>/crucible-servers.json, or a file to send.")
     p.add_argument("--name", help="--crucible-add / --crucible-remove: the name this machine "
                    "knows a Crucible server by (letters, digits, dot, dash, underscore). The "

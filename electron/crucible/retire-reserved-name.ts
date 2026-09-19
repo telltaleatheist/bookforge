@@ -35,7 +35,7 @@
  *      the operator got there first, and adding a second row for one machine is
  *      the duplicate this whole ruling is about;
  *   2. otherwise the name the server calls ITSELF (`[server] name`, e.g.
- *      `crucible@owens-pc-wsl`), which is the only name in the world that
+ *      `crucible@example-pc-wsl`), which is the only name in the world that
  *      nobody here invented.
  *
  * It is not "local", not a label, not a guess at what Owen would have typed. He

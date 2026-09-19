@@ -166,12 +166,12 @@ class LauncherModeTest(unittest.TestCase):
         on the Windows filesystem, so checking it here would refuse a path that
         exists."""
         os.environ[v3_served.SERVE_SCRIPT_ENV] = (
-            '/home/telltale/anaconda3/envs/higgs3/bin/serve_higgs_v3.sh')
+            '/home/<user>/anaconda3/envs/higgs3/bin/serve_higgs_v3.sh')
         backend = HiggsV3ServedBackend()
         self.addCleanup(backend._close_log)
         self.assertEqual(backend.launcher_source, LAUNCHER_OPERATOR)
         os.environ[v3_served.SERVE_SCRIPT_ENV] = (
-            r'\\wsl$\Ubuntu\home\telltale\serve_higgs_v3.sh')
+            r'\\wsl$\Ubuntu\home\<user>\serve_higgs_v3.sh')
         second = HiggsV3ServedBackend()
         self.addCleanup(second._close_log)
         self.assertEqual(second.launcher_source, LAUNCHER_OPERATOR)

@@ -40,16 +40,44 @@ const os = require('os');
 const { spawn } = require('child_process');
 require('./electron-stub.js'); // intercept require('electron') for the compiled chain engine
 
-// The dedicated conda env's python and the bundled ffmpeg. Hardcoded as
-// DEFAULTS (overridable via --python / --ffmpeg) — never a silent fallback: a
-// missing python FAILS LOUDLY below with an install hint.
-const DEFAULT_SPEAKERS_PYTHON = 'C:\\Users\\tellt\\Miniforge3\\envs\\clipforge-speakers\\python.exe';
-const DEFAULT_FFMPEG = 'C:\\Users\\tellt\\Miniforge3\\envs\\bookforge-urvc\\Library\\bin\\ffmpeg.exe';
+/**
+ * A TOOL PATH THIS MACHINE OWNS — the flag, else the named environment
+ * variable, else a REFUSAL naming both.
+ *
+ * These were hard-coded absolute paths under one operator's home. Two things
+ * were wrong with that, and this fixes both. A conda env's location is a fact
+ * owned by the machine it is installed on, so a copy of it in a tracked file is
+ * the one-fact-two-owners shape — and this repo is public, so the copy also
+ * published that machine's layout. And it read as a "default" while behaving as
+ * a FALLBACK: on any machine laid out differently it produced a path nobody
+ * chose, and the failure surfaced as a puzzling "not found" instead of "you
+ * never told me where this is".
+ */
+function machinePath(flagValue, flagName, envName, what) {
+  if (flagValue) return path.resolve(flagValue);
+  const fromEnv = (process.env[envName] || '').trim();
+  if (fromEnv) return path.resolve(fromEnv);
+  throw new Error(
+    what + ' is not configured, and clipforge will not guess it: where a conda env or a\n'
+    + '  binary lives is a fact about THIS machine, not about the repo.\n'
+    + '  Name it with ' + flagName + ' <path>, or set ' + envName + '.');
+}
+
+/** %APPDATA%, or a refusal. Windows always sets it; nothing else may stand in. */
+function appDataDir() {
+  const appData = (process.env.APPDATA || '').trim();
+  if (!appData) {
+    throw new Error(
+      'APPDATA is not set, and this path is BookForge\'s own runtime directory under it.\n'
+      + '  That variable is Windows\'s to provide — a substitute here would name a folder\n'
+      + '  the app has never written to.');
+  }
+  return appData;
+}
+
 // anchor mode transcribes with faster-whisper, which lives in the e2a runtime
 // env. Map mode has no whisper dependency (runs fine under clipforge-speakers).
-const DEFAULT_E2A_PYTHON = path.join(
-  process.env.APPDATA || 'C:\\Users\\tellt\\AppData\\Roaming',
-  'BookForge', 'runtime', 'e2a-env', 'python.exe');
+const e2aPython = () => path.join(appDataDir(), 'BookForge', 'runtime', 'e2a-env', 'python.exe');
 
 function parseArgs(argv) {
   const a = {};
@@ -155,17 +183,18 @@ async function runSpeakers(args) {
   const outDir = path.resolve(args.out);
   fs.mkdirSync(outDir, { recursive: true });
 
-  const python = args.python ? path.resolve(args.python) : DEFAULT_SPEAKERS_PYTHON;
+  const python = machinePath(args.python, '--python', 'CLIPFORGE_SPEAKERS_PYTHON',
+    'the clipforge-speakers python');
   if (!fs.existsSync(python)) {
     throw new Error(
       `speakers python not found: ${python}\n` +
       '  Create the dedicated env (one-time):\n' +
-      '    C:\\Users\\tellt\\Miniforge3\\Scripts\\conda.exe create -n clipforge-speakers python=3.11 -y\n' +
-      '    C:\\Users\\tellt\\Miniforge3\\envs\\clipforge-speakers\\python.exe -m pip install torch --index-url https://download.pytorch.org/whl/cpu\n' +
-      '    C:\\Users\\tellt\\Miniforge3\\envs\\clipforge-speakers\\python.exe -m pip install resemblyzer soundfile librosa scipy webrtcvad-wheels\n' +
+      '    C:\\Users\\<user>\\Miniforge3\\Scripts\\conda.exe create -n clipforge-speakers python=3.11 -y\n' +
+      '    C:\\Users\\<user>\\Miniforge3\\envs\\clipforge-speakers\\python.exe -m pip install torch --index-url https://download.pytorch.org/whl/cpu\n' +
+      '    C:\\Users\\<user>\\Miniforge3\\envs\\clipforge-speakers\\python.exe -m pip install resemblyzer soundfile librosa scipy webrtcvad-wheels\n' +
       '  ...or pass --python <python.exe> pointing at an env that has those packages.');
   }
-  const ffmpeg = args.ffmpeg ? path.resolve(args.ffmpeg) : DEFAULT_FFMPEG;
+  const ffmpeg = machinePath(args.ffmpeg, '--ffmpeg', 'CLIPFORGE_FFMPEG', 'ffmpeg');
   if (!fs.existsSync(ffmpeg)) {
     throw new Error(`ffmpeg not found: ${ffmpeg} — pass --ffmpeg <ffmpeg.exe>`);
   }
@@ -308,13 +337,14 @@ function spawnWorker(python, cmd) {
 }
 
 function resolveMergemapWorker(args) {
-  const python = args.python ? path.resolve(args.python) : DEFAULT_SPEAKERS_PYTHON;
+  const python = machinePath(args.python, '--python', 'CLIPFORGE_SPEAKERS_PYTHON',
+    'the clipforge-speakers python');
   if (!fs.existsSync(python)) {
     throw new Error(
       `python not found: ${python}\n` +
       '  merge/split reuse the clipforge-speakers env (numpy + soundfile). Create it (one-time):\n' +
-      '    C:\\Users\\tellt\\Miniforge3\\Scripts\\conda.exe create -n clipforge-speakers python=3.11 -y\n' +
-      '    C:\\Users\\tellt\\Miniforge3\\envs\\clipforge-speakers\\python.exe -m pip install numpy soundfile librosa\n' +
+      '    C:\\Users\\<user>\\Miniforge3\\Scripts\\conda.exe create -n clipforge-speakers python=3.11 -y\n' +
+      '    C:\\Users\\<user>\\Miniforge3\\envs\\clipforge-speakers\\python.exe -m pip install numpy soundfile librosa\n' +
       '  ...or pass --python <python.exe> pointing at an env that has numpy + soundfile.');
   }
   const worker = path.resolve(__dirname, 'py', 'clip_mergemap.py');
@@ -369,7 +399,7 @@ async function runMerge(args) {
     if (!fs.existsSync(source)) throw new Error(`--source not found: ${source}`);
     const minutes = Number(args.minutes);
     if (Number.isNaN(minutes) || minutes <= 0) throw new Error('--minutes must be a number > 0');
-    ffmpeg = args.ffmpeg ? path.resolve(args.ffmpeg) : DEFAULT_FFMPEG;
+    ffmpeg = machinePath(args.ffmpeg, '--ffmpeg', 'CLIPFORGE_FFMPEG', 'ffmpeg');
     if (!fs.existsSync(ffmpeg)) throw new Error(`ffmpeg not found: ${ffmpeg} — pass --ffmpeg <ffmpeg.exe>`);
     cmd.push('--speakers', speakers, '--bucket', String(args.bucket),
       '--source', source, '--minutes', String(minutes), '--ffmpeg', ffmpeg);
@@ -509,7 +539,9 @@ async function runSentences(args) {
 
   // Default python per mode: anchor needs faster_whisper (e2a env); map does not
   // (clipforge-speakers env). --python overrides both. FAIL LOUDLY if missing.
-  const defaultPython = mapMode ? DEFAULT_SPEAKERS_PYTHON : DEFAULT_E2A_PYTHON;
+  const defaultPython = mapMode
+    ? machinePath(undefined, '--python', 'CLIPFORGE_SPEAKERS_PYTHON', 'the clipforge-speakers python')
+    : e2aPython();
   const python = args.python ? path.resolve(args.python) : defaultPython;
   if (!fs.existsSync(python)) {
     if (mapMode) {
@@ -727,7 +759,7 @@ async function runVerify(args) {
   const corpus = path.resolve(args.corpus);
   if (!fs.existsSync(corpus)) throw new Error(`verify: corpus not found: ${corpus}`);
 
-  const python = args.python ? path.resolve(args.python) : DEFAULT_E2A_PYTHON;
+  const python = args.python ? path.resolve(args.python) : e2aPython();
   if (!fs.existsSync(python)) {
     throw new Error(
       `verify python not found: ${python}\n` +
@@ -769,26 +801,23 @@ async function runVerify(args) {
 // it from seven scattered scripts.
 //
 // THE REPO IS NAMED, NEVER GUESSED - the same doctrine as qwenAlignEnv:
-//   --training-root <dir> | CLIPFORGE_TRAINING_ROOT | the default below.
+//   --training-root <dir> | CLIPFORGE_TRAINING_ROOT, and nothing else.
 // An unresolvable root REFUSES BY NAME rather than silently doing nothing.
 // ===========================================================================
 
-// PLATFORM-AWARE DEFAULTS. This same file runs on BOTH sides, deliberately (Owen, 2026-09-09:
-// "we could move clipforge code to wsl"). Nothing needs moving: the CLIP tools need the
-// WINDOWS BookForge components (whisperx-env, ffmpeg via tool-paths) while the GPU stack lives
-// in WSL (higgs3, qwen-align, sgl-omni), so the pipeline genuinely spans two OSes. Verified
-// 2026-09-09: this file loads and runs under WSL node v18.
+// This same file runs on BOTH sides, deliberately (Owen, 2026-09-09: "we could move
+// clipforge code to wsl"). Nothing needs moving: the CLIP tools need the WINDOWS BookForge
+// components (whisperx-env, ffmpeg via tool-paths) while the GPU stack lives in WSL
+// (higgs3, qwen-align, sgl-omni), so the pipeline genuinely spans two OSes. Verified
+// 2026-09-09: this file loads and runs under WSL node v18. Which side you are on used to
+// pick a hard-coded default path per side; those are gone — the paths are now named by
+// flag or environment on whichever side you run, so there is nothing here to branch on but
+// the campaign root below.
 const IS_LINUX = process.platform === 'linux';
-const TRAINING_ROOT_DEFAULT = IS_LINUX
-  ? '/mnt/c/Users/tellt/Projects/orpheus-finetune'
-  : 'C:/Users/tellt/Projects/orpheus-finetune';
-const TRAINING_PYTHON_DEFAULT = IS_LINUX
-  ? '/home/telltale/anaconda3/envs/whisperx/bin/python'
-  : 'C:/Users/tellt/AppData/Roaming/BookForge/components/whisperx-env/python.exe';
 
 function resolveTrainingRoot(args) {
-  const root = args['training-root'] || process.env.CLIPFORGE_TRAINING_ROOT || TRAINING_ROOT_DEFAULT;
-  const abs = path.resolve(root);
+  const abs = machinePath(args['training-root'], '--training-root', 'CLIPFORGE_TRAINING_ROOT',
+    'the orpheus-finetune checkout');
   if (!fs.existsSync(path.join(abs, 'pipeline', 'untreated'))) {
     throw new Error(
       'training root not found (no pipeline/untreated under it): ' + abs + '\n' +
@@ -799,7 +828,8 @@ function resolveTrainingRoot(args) {
 }
 
 function resolveTrainingPython(args, what) {
-  const py = args.python ? path.resolve(args.python) : TRAINING_PYTHON_DEFAULT;
+  const py = machinePath(args.python, '--python', 'CLIPFORGE_TRAINING_PYTHON',
+    'the whisperx python');
   if (!fs.existsSync(py)) {
     throw new Error(
       what + ' python not found: ' + py + '\n' +
@@ -984,7 +1014,7 @@ TRAINING_HELP['rvc-dataset'] = [
  * transform. Folding them into one verb would put slice's 24 kHz assert one flag away from an RVC
  * build - the exact class of silent wrong-corpus mistake 4n.11 records.
  *
- * Python default is DEFAULT_SPEAKERS_PYTHON, not TRAINING_PYTHON_DEFAULT: the selector needs
+ * Python comes from CLIPFORGE_SPEAKERS_PYTHON, not CLIPFORGE_TRAINING_PYTHON: the selector needs
  * soundfile, which whisperx-env does not have (checked 2026-09-10).
  */
 async function runRvcDataset(args) {
@@ -994,7 +1024,8 @@ async function runRvcDataset(args) {
   }
   const root = resolveTrainingRoot(args);
   const cwd = path.join(root, 'pipeline', 'untreated');
-  const python = args.python ? path.resolve(args.python) : DEFAULT_SPEAKERS_PYTHON;
+  const python = machinePath(args.python, '--python', 'CLIPFORGE_SPEAKERS_PYTHON',
+    'the clipforge-speakers python');
   if (!fs.existsSync(python)) {
     throw new Error(
       'rvc-dataset python not found: ' + python + '\n' +
@@ -1022,12 +1053,8 @@ async function runRvcDataset(args) {
 }
 
 // --- RVC voice-model training. Windows-side: ultimate-rvc lives in BookForge's rvc-env, not WSL.
-const RVC_MODELS_DIR_DEFAULT = path.join(
-  process.env.APPDATA || 'C:\\Users\\tellt\\AppData\\Roaming',
-  'BookForge', 'runtime', 'rvc-models');
-const RVC_PYTHON_DEFAULT = path.join(
-  process.env.APPDATA || 'C:\\Users\\tellt\\AppData\\Roaming',
-  'BookForge', 'components', 'rvc-env', 'python.exe');
+const rvcModelsDir = () => path.join(appDataDir(), 'BookForge', 'runtime', 'rvc-models');
+const rvcPython = () => path.join(appDataDir(), 'BookForge', 'components', 'rvc-env', 'python.exe');
 
 TRAINING_HELP['rvc-train'] = [
   'clipforge rvc-train - train an RVC voice model from a dataset (ultimate-rvc)',
@@ -1052,7 +1079,7 @@ TRAINING_HELP['rvc-train'] = [
   '                        leaves room for a GPU job on the other side of the machine.',
   '  --stages a,b,c        default preprocess,extract,train. Re-run one stage after a crash without',
   '                        redoing the others - the model dir keeps each stage\'s output.',
-  '  --models-dir <dir>    default ' + RVC_MODELS_DIR_DEFAULT,
+  '  --models-dir <dir>    default %APPDATA%\\BookForge\\runtime\\rvc-models',
   '',
   'THE THREE STAGES, AND WHY EACH IS SEPARATE',
   '  preprocess-dataset  slices and normalises the dataset INTO the model. This is where RVC does',
@@ -1099,8 +1126,8 @@ async function runRvcDeploy(args) {
   const root = resolveTrainingRoot(args);
   const script = path.join(root, 'pipeline', 'rvc', 'deploy_rvc_voice.py');
   if (!fs.existsSync(script)) throw new Error('rvc-deploy: missing entry point ' + script);
-  const python = args.python ? path.resolve(args.python) : RVC_PYTHON_DEFAULT;
-  const argv = [script, String(args.voice), '--models-dir', RVC_MODELS_DIR_DEFAULT];
+  const python = args.python ? path.resolve(args.python) : rvcPython();
+  const argv = [script, String(args.voice), '--models-dir', rvcModelsDir()];
   for (const k of ['id', 'label', 'matches', 'stage-dir']) if (args[k]) argv.push('--' + k, String(args[k]));
   for (const k of ['mac', 'hf', 'dry-run']) if (args[k]) argv.push('--' + k);
   const code = await new Promise((resolve, reject) => {
@@ -1123,14 +1150,14 @@ async function runRvcTrain(args) {
   const root = resolveTrainingRoot(args);
   const script = path.join(root, 'pipeline', 'rvc', 'urvc_train.py');
   if (!fs.existsSync(script)) throw new Error('rvc-train: missing entry point ' + script);
-  const python = args.python ? path.resolve(args.python) : RVC_PYTHON_DEFAULT;
+  const python = args.python ? path.resolve(args.python) : rvcPython();
   if (!fs.existsSync(python)) {
     throw new Error(
       'rvc-train python not found: ' + python + '\n' +
       '  Needs ultimate_rvc PLUS matplotlib and tensorboard (the training extras, which the\n' +
       '  inference path does not import). BookForge\'s rvc-env has them. Override with --python.');
   }
-  const modelsDir = path.resolve(args['models-dir'] || RVC_MODELS_DIR_DEFAULT);
+  const modelsDir = path.resolve(args['models-dir'] || rvcModelsDir());
   const sr = String(args['sample-rate'] || 40000);
   if (!['32000', '40000', '48000'].includes(sr)) {
     throw new Error('rvc-train: --sample-rate must be 32000, 40000 or 48000 (got ' + sr + ')');
@@ -1355,7 +1382,8 @@ TRAINING_HELP['normalize-pauses'] = [
  * TOGETHER and defaults to a dry run. Same python as rvc-dataset (needs soundfile + numpy).
  */
 function resolvePausePython(args, verb) {
-  const python = args.python ? path.resolve(args.python) : DEFAULT_SPEAKERS_PYTHON;
+  const python = machinePath(args.python, '--python', 'CLIPFORGE_SPEAKERS_PYTHON',
+    'the clipforge-speakers python');
   if (!fs.existsSync(python)) {
     throw new Error(
       verb + ' python not found: ' + python + '\n' +
@@ -1500,7 +1528,6 @@ async function runMergeTiers(args) {
 const CAMPAIGN_ROOT_DEFAULT = IS_LINUX
   ? '/mnt/e/training/_campaigns/2026-09-01-cod-full-rebuild/higgs'
   : 'E:/training/_campaigns/2026-09-01-cod-full-rebuild/higgs';
-const GPU_PYTHON_DEFAULT = '/home/telltale/anaconda3/envs/higgs3/bin/python';
 
 // Campaign dirs are named BY DATE now - Owen 2026-09-10: "we dont use night3/night4/etc anymore.
 // we go by date. this project will be going for months." A sequence counter stops meaning anything
@@ -1537,7 +1564,7 @@ function requireGuestSide(verb) {
     verb + ': this is a WSL GPU job and must run inside the guest.',
     '  From Windows, path.resolve() rewrites /mnt/e/... into a Git-Bash path and the spawn fails.',
     '  Run it there instead:',
-    '    wsl -e node /mnt/c/Users/tellt/Projects/bookforge/cli/clipforge-process.js ' + verb + ' ...',
+    '    wsl -e node /mnt/c/Users/<user>/Projects/bookforge/cli/clipforge-process.js ' + verb + ' ...',
     '  (slice, gate and merge-tiers are Windows-side and work from here.)',
   ].join('\n'));
   throw new Error(verb + ': refusing to run a guest-side job from Windows');
@@ -1582,7 +1609,8 @@ async function runMix(args) {
     if (!args[k]) throw new Error('mix: --' + k + ' is required (see: clipforge mix --help)');
   }
   const camp = resolveCampaignRoot(args);
-  const python = args.python ? path.resolve(args.python) : GPU_PYTHON_DEFAULT;
+  const python = machinePath(args.python, '--python', 'CLIPFORGE_GPU_PYTHON',
+    'the higgs3 python in the guest');
   const pass = ['out', 'build-root', 'long', 'short', 'heading', 'rows-l', 'rows-s', 'rows-h',
     'short-rows-frac', 'short-frac', 'short-prefer-min', 'short-max', 'served-cap-chars',
     'max-hours', 'workers', 'device', 'mode-name', 'seed'];
@@ -1625,7 +1653,8 @@ async function runTrain(args) {
   }
   const camp = resolveCampaignRoot(args);
   const ft = path.join(camp, 'v3_ft');
-  const python = args.python ? path.resolve(args.python) : GPU_PYTHON_DEFAULT;
+  const python = machinePath(args.python, '--python', 'CLIPFORGE_GPU_PYTHON',
+    'the higgs3 python in the guest');
   const pass = ['data', 'out', 'init-adapter', 'steps', 'epochs', 'patience', 'lora-r',
     'lora-alpha', 'lora-dropout', 'lr', 'accum', 'warmup', 'max-seq-len', 'eval-every',
     'save-every', 'log-every', 'seed'];
@@ -1657,7 +1686,8 @@ async function runMasters(args) {
   if (!args['adobe-dir']) throw new Error('masters: --adobe-dir is required (see: clipforge masters --help)');
   const dir = path.resolve(args['adobe-dir']);
   const step = String(args.step || 'both');
-  const python = args.python ? path.resolve(args.python) : TRAINING_PYTHON_DEFAULT;
+  const python = machinePath(args.python, '--python', 'CLIPFORGE_TRAINING_PYTHON',
+    'the whisperx python');
   const scripts = [];
   if (step === 'inventory' || step === 'both') scripts.push('build_span_inventory.py');
   if (step === 'masters' || step === 'both') scripts.push('build_masters.py');
@@ -1684,7 +1714,7 @@ TRAINING_HELP.align = [
   '',
   '  --adobe-dir <dir>   holds align_spans.py and the rebuilt masters',
   '  --book <fe|woa|hoa|...>   [--limit N] [--window-s 280]',
-  '  --python <exe>      the qwen-align env (default /home/telltale/anaconda3/envs/qwen-align/bin/python)',
+  '  --python <exe>      the qwen-align env (or CLIPFORGE_QWEN_PYTHON; required)',
   '',
   '  PER SPAN, NOT PER BOOK. A concatenated master is non-contiguous, and the whole-book aligner',
   '  loses the thread at the seams: on fe_ad it dropped 2.71 h of 5.99 h into asr-fallback while',
@@ -1702,7 +1732,6 @@ TRAINING_HELP.align = [
   '  if a prose tier drops far above 2% re-align that book with wav2vec2 instead.',
 ].join('\n');
 
-const QWEN_PYTHON_DEFAULT = '/home/telltale/anaconda3/envs/qwen-align/bin/python';
 
 async function runAlign(args) {
   if (args.help) { console.log(TRAINING_HELP.align); return; }
@@ -1713,7 +1742,8 @@ async function runAlign(args) {
   const dir = path.resolve(args['adobe-dir']);
   const script = path.join(dir, 'align_spans.py');
   if (!fs.existsSync(script)) throw new Error('align: missing ' + script);
-  const python = args.python ? path.resolve(args.python) : QWEN_PYTHON_DEFAULT;
+  const python = machinePath(args.python, '--python', 'CLIPFORGE_QWEN_PYTHON',
+    'the qwen-align python in the guest');
   const argv = [String(args.book)];
   for (const k of ['limit', 'window-s']) {
     if (args[k] !== undefined && args[k] !== true) argv.push('--' + k, String(args[k]));
@@ -1759,7 +1789,7 @@ function printUsage() {
     '',
     '  Each takes --help and explains the WHY with its field-note reference.',
     '  Scripts live in the orpheus-finetune repo: --training-root <dir> or',
-    '  CLIPFORGE_TRAINING_ROOT (default ' + TRAINING_ROOT_DEFAULT + ').',
+    '  CLIPFORGE_TRAINING_ROOT (required — clipforge does not guess where it is).',
     '  Campaign scripts (mix, train): --campaign-root or CLIPFORGE_CAMPAIGN_ROOT',
     '  (default ' + CAMPAIGN_ROOT_DEFAULT + ').',
     '',
@@ -1855,7 +1885,8 @@ async function runCheckpoints(args) {
   if (!args['run-dir']) throw new Error('checkpoints: --run-dir is required (see: clipforge checkpoints --help)');
   const camp = resolveCampaignRoot(args);
   const n4 = stageDir(camp);
-  const python = args.python ? path.resolve(args.python) : GPU_PYTHON_DEFAULT;
+  const python = machinePath(args.python, '--python', 'CLIPFORGE_GPU_PYTHON',
+    'the higgs3 python in the guest');
   const runDir = String(args['run-dir']);
   if (args['rebuild-log']) {
     if (!args.stdout) {
@@ -1926,7 +1957,7 @@ TRAINING_HELP['pause-screen'] = [
   '  --run-dir <dir>       the train run (ckpt-<step>/ + train_log.json)',
   '  --bank <bank.json>    an in-band bank (500-600 char prose; the first --items prompts are used)',
   '  --out-root <dir>      where <name>_ckpt<K>/, pause_ref.json, pause_screen.json go',
-  '  --name <run name>     merged dirs are /home/telltale/higgs_v3_merged/<name>_<step> (default: basename of --run-dir)',
+  '  --name <run name>     merged dirs are /home/<user>/higgs_v3_merged/<name>_<step> (default: basename of --run-dir)',
   '  --data <dir>          the encoded train set (for the corpus reference; default <run>/../../data/<name>)',
   '  --ckpts "all"|"128 256"  which checkpoints (default all)',
   '  --seeds "500 501 502 503"   --items 2   --conc 4   --max-tokens 3000   --ctx 8192   --top 2',
@@ -1959,7 +1990,7 @@ TRAINING_HELP['merge-lora'] = [
   'clipforge merge-lora - fold a LoRA checkpoint into the base weights (v3_ft/merge_for_serving.py)',
   '',
   '  --ckpt <dir>          a ckpt-<step> directory from a train run',
-  '  --out <dir>           the merged model directory, normally /home/telltale/higgs_v3_merged/<name>',
+  '  --out <dir>           the merged model directory, normally /home/<user>/higgs_v3_merged/<name>',
   '  --allow-overwrite     replace an existing --out',
   '',
   'A CHECKPOINT IS NOT SERVABLE. Neither serving stack attaches an adapter at runtime: SGLang-Omni',
@@ -1978,7 +2009,8 @@ async function runMergeLora(args) {
     if (!args[k]) throw new Error('merge-lora: --' + k + ' is required (see: clipforge merge-lora --help)');
   }
   const camp = resolveCampaignRoot(args);
-  const python = args.python ? path.resolve(args.python) : GPU_PYTHON_DEFAULT;
+  const python = machinePath(args.python, '--python', 'CLIPFORGE_GPU_PYTHON',
+    'the higgs3 python in the guest');
   const argv = ['--lora', String(args.ckpt), '--out', String(args.out)];
   if (args['allow-overwrite']) argv.push('--allow-overwrite');
   await spawnTraining(python, path.join(camp, 'v3_ft', 'merge_for_serving.py'), argv, camp, 'merge-lora');
@@ -1998,7 +2030,7 @@ TRAINING_HELP.deploy = [
   '       (v3_ft/merge_for_serving.py, CPU-only, ~1 min). A checkpoint dir is NOT servable.',
   '',
   '    2. TWO ARMS, TWO COPIES OF THOSE WEIGHTS. `served` is the PC: SGLang-Omni inside WSL,',
-  '       reading /home/telltale/higgs_v3_merged/<dir>. `mlx` is the Mac: the same merged',
+  '       reading /home/<user>/higgs_v3_merged/<dir>. `mlx` is the Mac: the same merged',
   '       directory rsynced to ~/Library/Application Support/BookForge/runtime/higgs-models/<dir>.',
   '       No safetensors->MLX conversion - MLX loads the same files. Promote one arm only and the',
   '       machines quietly disagree about which checkpoint is live.',
@@ -2076,7 +2108,8 @@ async function runDeploy(args) {
   }
   for (const k of ['apply', 'push', 'mac']) if (args[k]) argv.push('--' + k);
   if (!args.apply) console.log('[deploy] DRY RUN - no files written. Add --apply when the winner looks right.');
-  const python = args.python ? path.resolve(args.python) : GPU_PYTHON_DEFAULT;
+  const python = machinePath(args.python, '--python', 'CLIPFORGE_GPU_PYTHON',
+    'the higgs3 python in the guest');
   await spawnTraining(python, path.join(stageDir(camp), 'promote_voice.py'), argv, camp, 'deploy');
 }
 

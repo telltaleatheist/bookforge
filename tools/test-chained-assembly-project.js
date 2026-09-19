@@ -115,7 +115,7 @@ const test = (name, fn) => tests.push({ name, fn });
 
 /* ── The failed job, as queue-engine.json recorded it ──────────────────────── */
 
-const PROJECT = "/Volumes/iO/bookforge/projects/Starcraft_1._Liberty_s_Crusade_-_Jeff_Grubb_(2001)";
+const PROJECT = "/Volumes/<share>/bookforge/projects/Starcraft_1._Liberty_s_Crusade_-_Jeff_Grubb_(2001)";
 const CACHED_SESSION = `${PROJECT}/stages/03-tts/sessions/en/ebook-c0030f67-b6d0-48a1-b472-a9ab90f27f9b`;
 const CACHED_PROCESS = `${CACHED_SESSION}/a3f430c50aa7371ee0617a8fd4900384`;
 
@@ -140,7 +140,7 @@ const TTS_ARTIFACT_BEFORE = {
   kind: 'audio-session',
   path: `${CACHED_PROCESS}/chapters/sentences`,
   sessionId: 'c0030f67-b6d0-48a1-b472-a9ab90f27f9b',
-  sessionDir: '/Volumes/iO/bookforge/tmp/ebook-c0030f67-b6d0-48a1-b472-a9ab90f27f9b',
+  sessionDir: '/Volumes/<share>/bookforge/tmp/ebook-c0030f67-b6d0-48a1-b472-a9ab90f27f9b',
   detail: { projectDir: PROJECT, language: 'en', skipAssembly: true },
 };
 
@@ -206,7 +206,7 @@ test("the failed row's OWN config answers: bfpPath, with no processDir on the in
     // THE FOUNDRY-ORDERED RUN: a documentPath and no project. This is the
     // header that made the old code refuse.
     id: 'job_mtyr7fex_6fe410f7',
-    documentPath: '/Volumes/iO/bookforge/foundry/projects/Starcraft-.../generated/starcraft.epub',
+    documentPath: '/Volumes/<share>/bookforge/foundry/projects/Starcraft-.../generated/starcraft.epub',
   });
   const out = await reassemblyStep.run(ctx);
   assert.strictEqual(out.kind, 'm4b');

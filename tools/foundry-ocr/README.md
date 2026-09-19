@@ -386,7 +386,7 @@ question, because the headline eval is English throughout.
 
 ## dagger's actual recipe, as found
 
-From `training_profiles.json` on owens-pc (`/mnt/c/Users/tellt/Projects/orpheus-finetune/`,
+From `training_profiles.json` on example-pc (`/mnt/c/Users/<user>/Projects/orpheus-finetune/`,
 not version controlled) and `/Volumes/Callisto/training/rubric/dagger/sft/`.
 
 ```
@@ -475,7 +475,7 @@ loss mask   assistant_only_loss=True: 1,101,881 of 7,674,925 train tokens
 seq length  max_seq_length 512 against a MEASURED max of 246 tokens
             (p50 163, p95 181, p99 201 over all 46,726 rows)
 log         ~/ocr-line/train.log      temps: ~/ocr-line/temp.log
-adapter     /home/telltale/xtts_ft/ocr_line_v1_06b_lora
+adapter     /home/<user>/xtts_ft/ocr_line_v1_06b_lora
 ```
 
 ### How it was launched, and why not over ssh
@@ -491,15 +491,15 @@ outside the ssh job object:
 ```bash
 # runner staged into WSL first, so nothing has to survive nested quoting
 schtasks /create /tn "ocr_line_v1" /sc once /st 00:00 /f \
-         /tr "wsl.exe -e /home/telltale/ocr-line/run.sh"
+         /tr "wsl.exe -e /home/<user>/ocr-line/run.sh"
 schtasks /run    /tn "ocr_line_v1"
 ```
 
 Two quoting traps, both hit on the way:
 
 - **The remote login shell is PowerShell**, which expanded `$HOME` inside the
-  `/tr` string into `C:\Users\tellt` and broke the escaping. The action string
-  ended up as `wsl.exe -e bash -lc " C:\Users\tellt/ocr-line/run.sh\`. Use
+  `/tr` string into `C:\Users\<user>` and broke the escaping. The action string
+  ended up as `wsl.exe -e bash -lc " C:\Users\<user>/ocr-line/run.sh\`. Use
   literal WSL paths and no `$` in `/tr`; verify with `schtasks /query /v`.
 - **Any command sent inside nested quotes** loses `sed`/`grep` expressions to the
   same shell. `train-line.sh`'s `wsl()` helper now pipes the script body through
@@ -558,7 +558,7 @@ RUN=ocr_line_v1_06b bash tools/foundry-ocr/train-line.sh --go
 #    Its best-checkpoint picker reads the HIGHEST-numbered checkpoint's
 #    trainer_state.json, because an early checkpoint names only itself.
 BLOCKS_QUANT="" tools/aligner/blocks-merge-mac.sh \
-    ocr-line-v1-0.6b /home/telltale/xtts_ft/ocr_line_v1_06b_lora
+    ocr-line-v1-0.6b /home/<user>/xtts_ft/ocr_line_v1_06b_lora
 #    Space check before running this: the Mac's data volume was at 100% with
 #    11 GB free on Aug 1. The merge needs ~2.5 GB — adapter + merged weights +
 #    f16 GGUF — and NOT a base download, because unsloth/Qwen3-0.6B (the id the

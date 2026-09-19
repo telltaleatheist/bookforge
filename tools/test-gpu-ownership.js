@@ -69,21 +69,21 @@ function check(cond, label) {
 //   700    python -m narrator.serve (the resident Listen server) <- never a fault
 //   710    separator_worker.py (audio separation)                <- NOT worker.py
 //   720    python app.py (someone's Flask app)                   <- NOT e2a
-const E2A = '/Users/telltale/Projects/ebook2audiobook-latest';
-const PY = '/Users/telltale/Library/Application Support/BookForge/runtime/e2a-env/bin/python';
+const E2A = '/Users/<user>/Projects/ebook2audiobook-latest';
+const PY = '/Users/<user>/Library/Application Support/BookForge/runtime/e2a-env/bin/python';
 const OUR_SESSION = 'ours-1234-abcd';
 
 const PS = [
   '  PID  PPID     ELAPSED COMMAND',
   '    1     0 24-03:25:14 /sbin/launchd',
-  '  400     1    02:10:00 sshd: telltale@notty',
+  '  400     1    02:10:00 sshd: <user>@notty',
   `  410   400    01:40:11 ${PY} ${E2A}/../BookForgeApp/cli/bookforge-tts.py --voice=thirdreich --input book.epub`,
   `  420   410    01:40:09 node --require ./cli/electron-stub.js cli/orpheus-batch-render.js --voice thirdreich --input passage.txt`,
   `  430   420    01:39:02 ${PY} -u -m narrator.compat.worker --session ${OUR_SESSION} --sentence_start 0 --sentence_end 5312`,
   `  700     1    09:12:44 ${PY} -u -m narrator.serve`,
   `  710     1       04:31 ${PY} electron/scripts/separator_worker.py --model htdemucs`,
-  '  720     1     1:02:00 /usr/bin/python3 /Users/telltale/dashboards/app.py --port 5000',
-  `  900     1    01:31:07 ${PY} -u -m narrator.compat.worker --session orphan-9999 --sentences_dir /Volumes/iO/bookforge/projects/Kershaw/stages/03-tts --sentence_start 0 --sentence_end 4210`,
+  '  720     1     1:02:00 /usr/bin/python3 /Users/<user>/dashboards/app.py --port 5000',
+  `  900     1    01:31:07 ${PY} -u -m narrator.compat.worker --session orphan-9999 --sentences_dir /Volumes/<share>/bookforge/projects/Kershaw/stages/03-tts --sentence_start 0 --sentence_end 4210`,
   `  910     1       12:03 ${PY} -u -m narrator.compat.app --headless --session other-5555 --assemble_only`,
   // A PRE-CUT-OVER ORPHAN. Nothing spawns worker.py any more, which is exactly why
   // it must still be recognised: this guard exists for the Sep 1 2026 incident, an
@@ -108,7 +108,7 @@ console.log('parsing `ps -Ao pid,ppid,etime,command`');
   check(worker.command.includes('--sentence_end 4210'),
     'the command keeps every space-separated argument (only the first 3 fields are delimited)');
   const sshd = rows.find((r) => r.pid === 400);
-  check(sshd.command === 'sshd: telltale@notty', 'a command containing a colon is not mangled');
+  check(sshd.command === 'sshd: <user>@notty', 'a command containing a colon is not mangled');
   check(parsePsRows('').length === 0 && parsePsRows('  PID  PPID     ELAPSED COMMAND\n').length === 0,
     'an empty list, and a header with no rows, are both empty');
 }

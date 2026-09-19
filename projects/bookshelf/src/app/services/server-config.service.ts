@@ -84,7 +84,7 @@ export class ServerConfigService {
     // Without the enabled check the first arm always won and the `find(enabled)`
     // below was unreachable — which is how a phone ended up asking a
     // switched-off Mac for its reader list and reporting "Load failed" on a
-    // shelf whose books were all coming from titan (2026-08-31).
+    // shelf whose books were all coming from the NAS (2026-08-31).
     const active = list.find(s => s.id === this.activeId());
     if (active?.enabled) return active;
     // Substituting for an unusable active entry, prefer a real server over the
@@ -464,7 +464,7 @@ export class ServerConfigService {
   }
 
   /** Default name for the same-origin served library: the serving host's short
-   *  name when it's meaningful (e.g. "owens-mac-studio"), else a neutral
+   *  name when it's meaningful (e.g. "example-mac"), else a neutral
    *  placeholder the user renames to "Owen's Mac" etc. */
   private originDefaultLabel(): string {
     try {

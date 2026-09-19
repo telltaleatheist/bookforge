@@ -104,7 +104,7 @@ test('a URL that is not one is refused by name, not repaired', async () => {
   await assert.rejects(
     () => planVlmConversion({
       projectDir: path.join(ROOT, 'no-such-project'),
-      endpoint: { url: '192.168.1.4:8000', model: '', concurrency: 0 },
+      endpoint: { url: '192.0.2.4:8000', model: '', concurrency: 0 },
     }),
     (err) => /is not a URL a VLM endpoint can be reached at/.test(err.message),
   );

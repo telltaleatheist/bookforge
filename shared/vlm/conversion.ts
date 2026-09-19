@@ -516,7 +516,7 @@ export function vlmRouteLabel(route: VlmRoute): string {
     case 'wsl-server': return "this machine's GPU (WSL)";
     // The server by NAME, never its URL: the name is what the person ranked in
     // Settings → Crucible Servers and what the queue row says it waits for, and
-    // a card that printed `http://192.168.68.x:7100` would be telling them
+    // a card that printed `http://192.0.2.x:7100` would be telling them
     // about a machine under a label they never chose.
     case 'crucible': return `crucible "${route.server}"`;
     // Nothing reads the pages, so nothing is about to be busy. Callers refuse

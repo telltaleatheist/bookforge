@@ -16,7 +16,7 @@ Companion documents, which this one does not repeat:
 deviations, 9 preserved bugs), `python/narrator/text/PORT_NOTES.md` (the packer),
 `python/narrator/assemble/README.md` (the gap rule, the ffmpeg commands).
 
-**Sources.** e2a at `C:\Users\tellt\Projects\ebook2audiobook`, branch
+**Sources.** e2a at `C:\Users\<user>\Projects\ebook2audiobook`, branch
 `bookforge`, `9daab0ba` — read-only, never written to.
 
 **Headline: no phase of the pipeline is missing.** Prep, worker, retake,
@@ -76,7 +76,7 @@ read as clearing it.
 
 Measured on this machine today (details in "The e2a checkout is still load-bearing"
 below): the tools python, the default session scratch root and the installer's
-staged payload all live inside `C:\Users\tellt\Projects\ebook2audiobook`. Nothing
+staged payload all live inside `C:\Users\<user>\Projects\ebook2audiobook`. Nothing
 SPAWNS e2a any more — `tools/test-no-e2a-doors.js` proves that — but deleting the
 checkout today breaks the dev app and every installer build. This is a known,
 planned phase (`NARRATOR_CUTOVER.md` "Phase 6 is a RELOCATION, not a rename"), not
@@ -266,7 +266,7 @@ returns **772 hits in 96 files**. Classified:
 channel survives, and no kill pattern hunts a process the app cannot spawn** —
 `tools/test-no-e2a-doors.js` asserts all three and is green.
 
-### What would break if `C:\Users\tellt\Projects\ebook2audiobook` were deleted today
+### What would break if `C:\Users\<user>\Projects\ebook2audiobook` were deleted today
 
 1. **Every installer build.** `packaging/stage-resources.js:70` hard-fails unless
    `<e2a>/app.py` and `<e2a>/lib` exist, then stages the whole checkout into
@@ -294,7 +294,7 @@ dependency, not a shipped one. It is Phase 6's whole job.
 ### The WSL sessions root
 
 Orpheus prep and render still write their session to
-`/home/telltale/ebook2audiobook/tmp/ebook-<uuid>` inside the guest
+`/home/<user>/ebook2audiobook/tmp/ebook-<uuid>` inside the guest
 (`parallel-tts-bridge.ts:3296-3305`, from `getWslE2aPath()`), and
 `normalizeWslSessionToWindows` copies it onto a Windows path afterwards.
 Known Phase 6 leftover; **recorded, deliberately not relocated here** — moving a

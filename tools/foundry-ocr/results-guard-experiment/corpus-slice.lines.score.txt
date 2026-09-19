@@ -1,4 +1,4 @@
-eval-guard — 1232 units from C:/Users/tellt/AppData/Local/Temp/claude/C--Users-tellt-Projects-bookforge/086cf711-ae6e-4b04-8dab-8263f60b671f/scratchpad/data/slice.jsonl
+eval-guard — 1232 units from C:/Users/<user>/AppData/Local/Temp/claude/C--Users-tellt-Projects-bookforge/086cf711-ae6e-4b04-8dab-8263f60b671f/scratchpad/data/slice.jsonl
   generated 2026-08-05T00:50:05-0400 in 200.0s on http://127.0.0.1:8771
   server args: llama-server.exe -m foundry-4b-f16.gguf -c 32768 -np 16 -ngl 99 --no-webui --lora-scaled ../../../../AppData/Local/foundry/models/foundry-ocr-v1-4b.gguf:0.0 [b7482 CUDA 12.4, RTX 3090 Ti]
 
@@ -13,7 +13,7 @@ policy        CER before  CER after  degraded  deg/100k  rep/100k  falseEdit  co
   per-run        0.331%     0.232%        11      18.2     117.3      0.64%          100   93.7%
 
   1232 units, 76722 gold characters, 1099 already correct (89.2%)
-  model C:/Users/tellt/AppData/Local/foundry/models/foundry-4b-f16.gguf
+  model C:/Users/<user>/AppData/Local/foundry/models/foundry-4b-f16.gguf
 
   A model only beats "do nothing" by moving CER down without moving degraded
   and falseEdit up. `degraded` counts UNITS — compare it only within one unit
@@ -129,4 +129,4 @@ WORST DAMAGE UNDER per-run (5 of 11) — read these, do not average them
     OUT  "talk about. 'We have peacekeepers, to take care of the criminal element,"
     GOLD "talk about. \"We have peacekeepers, to take care of the criminal element,"
 
-wrote C:/Users/tellt/AppData/Local/Temp/claude/C--Users-tellt-Projects-bookforge/086cf711-ae6e-4b04-8dab-8263f60b671f/scratchpad/data/slice.stats.json
+wrote C:/Users/<user>/AppData/Local/Temp/claude/C--Users-tellt-Projects-bookforge/086cf711-ae6e-4b04-8dab-8263f60b671f/scratchpad/data/slice.stats.json

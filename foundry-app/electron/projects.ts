@@ -6381,7 +6381,7 @@ async function hasBytes(target: string): Promise<boolean> {
  * because a
  * renderer's word is not an authorization. This function is the whole of that
  * gate for the one call that erases directories, so if it is wrong, an argument
- * of `C:\Users\tellt` is a recursive delete of a home folder.
+ * of `C:\Users\<user>` is a recursive delete of a home folder.
  *
  * A DIRECT CHILD, not a descendant. `projectDirOf` above answers "which project
  * is this path in", which is the right question for reading and the wrong one

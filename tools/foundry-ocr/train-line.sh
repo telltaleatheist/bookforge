@@ -9,7 +9,8 @@
 #  store the executable bit — git records these as 100644 whatever chmod says)
 #
 #   env: RUN=ocr_line_v1_06b  SFT=/Volumes/Callisto/training/rubric/ocr/sft-line
-#        HOST=owens-pc
+#        HOST=<ssh name of the training box>
+#        FINETUNE_DIR=<the orpheus-finetune checkout, as the GUEST sees it>
 #
 # IT DOES NOTHING WITHOUT --go, ON PURPOSE. The 3090 Ti is shared, and the box
 # has a faulty fan (docs/BLOCKS_TRAINING.md section 6): a run needs the owner's
@@ -34,14 +35,18 @@
 # (start this script itself as a background task; do not nohup/setsid it).
 set -euo pipefail
 
-HOST="${HOST:-owens-pc}"
+# The training box, the checkout on it and the output root are NAMED, never
+# defaulted: each is a fact about your machines, and this repo is public.
+HOST="${HOST:?set HOST to the ssh name of the training box}"
 RUN="${RUN:-ocr_line_v1_06b}"
 SFT="${SFT:-/Volumes/Callisto/training/rubric/ocr/sft-line}"
 REMOTE_DIR="${REMOTE_DIR:-\$HOME/ocr-line}"
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 PROFILES="$REPO_ROOT/tools/foundry-ocr/line-training-profiles.json"
-RIG_PROFILES='/mnt/c/Users/tellt/Projects/orpheus-finetune/training_profiles.json'
-FINETUNE_DIR='/mnt/c/Users/tellt/Projects/orpheus-finetune'
+FINETUNE_DIR="${FINETUNE_DIR:?set FINETUNE_DIR to the orpheus-finetune checkout as the GUEST sees it, e.g. /mnt/c/<...>/orpheus-finetune}"
+RIG_PROFILES="$FINETUNE_DIR/training_profiles.json"
+# The guest's own home, so the run lands in the same place on any box.
+OUT_BASE="${OUT_BASE:-\$HOME/xtts_ft}"
 
 MODE=plan
 case "${1:-}" in
@@ -120,7 +125,7 @@ if [ "$MODE" = plan ]; then
          python orpheus_owen.py --profile $RUN \\
            --train-data $REMOTE_DIR/train.jsonl \\
            --eval-data  $REMOTE_DIR/eval.jsonl \\
-           --run-name $RUN --out-base /home/telltale/xtts_ft train
+           --run-name $RUN --out-base $OUT_BASE train
     d. NOT merge. Merge on the Mac: tools/aligner/blocks-merge-mac.sh
 
   Afterwards, judge it with tools/foundry-ocr/eval-line.py and read \`degraded\` first.
@@ -213,7 +218,7 @@ ssh "$HOST" "wsl -e bash -lc 'source ~/anaconda3/etc/profile.d/conda.sh && \
   --profile $RUN \
   --train-data $REMOTE_DIR/train.jsonl \
   --eval-data  $REMOTE_DIR/eval.jsonl \
-  --run-name $RUN --out-base /home/telltale/xtts_ft train \
+  --run-name $RUN --out-base $OUT_BASE train \
   2>&1 | tee $REMOTE_DIR/train_$RUN.log'"
 
 cat <<EOF

@@ -108,3 +108,7 @@ _dc.wav
 # Editable-install metadata from `pip install -e python/` (the dedicated narrator venv).
 # Build output, never source.
 python/*.egg-info/
+
+# deploy:nas — the NAS host and health URL are that machine's facts, never the repo's
+# (deploy/bookshelf-server/.env.example is the tracked template).
+deploy/bookshelf-server/.env

@@ -9,7 +9,7 @@
  * the directory differently from the app would write a copy the app never finds,
  * and the app would pay for the model pass again. Measured 2026-09-02: the CLI's
  * first `--prep` landed in `<e2a>/tmp` while the app's own run had used
- * `Z:\bookforge\tmp`.
+ * `Z:\<library>\tmp`.
  *
  * One function, the same two rules, in the same order. A headless run that has
  * no library root (`--prep --input file.txt`, `--tts --text …`) cannot make the

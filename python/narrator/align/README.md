@@ -226,7 +226,7 @@ gradio/flask, which have no business in a small CPU env.
 
 **win32 has no component and cannot have one**: the env has to be a CUDA torch
 env, and on this PC that means a WSL env. It is the hand-built guest env
-**`qwen-align`** (`/home/telltale/anaconda3/envs/qwen-align`, verified
+**`qwen-align`** (`/home/<user>/anaconda3/envs/qwen-align`, verified
 2026-09-08), NAMED in BookForge's `tool-paths.json` as `qwenAlignEnv` (Settings
 -> Add-ons -> "Qwen3 aligner WSL env"). Absent, BookForge refuses by name and
 does not guess. **`install_qwen_align.sh` is owed** - the env is built by hand

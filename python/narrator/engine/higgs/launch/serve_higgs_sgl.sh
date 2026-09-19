@@ -10,12 +10,12 @@
 #
 # PROVENANCE. Transcribed from
 #   E:\training\_campaigns\2026-09-01-cod-full-rebuild\higgs\night3\sgl\serve_sgl.sh
-# (owens-pc, WSL Ubuntu, RTX 3090 Ti, 2026-09-05) and the flags recorded in
+# (example-pc, WSL Ubuntu, RTX 3090 Ti, 2026-09-05) and the flags recorded in
 # orpheus-finetune/HIGGS_FIELD_NOTES.md §4n.3, which is the configuration every
 # night-3 measurement was taken against. What differs from the campaign script,
 # and why each is a fix rather than drift:
 #   1. The env prefix is a parameter ($HIGGS_SGL_ENV) instead of a hardcoded
-#      /home/telltale path, so this ships.
+#      /home/<user> path, so this ships.
 #   2. The three --tts_engine.factory flags are passed HERE rather than left to
 #      the caller's "$@" passthrough. In the campaign they were typed on the
 #      launch line; a launcher that takes them from the environment is the only

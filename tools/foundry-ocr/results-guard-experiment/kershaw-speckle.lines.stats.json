@@ -1,7 +1,7 @@
 {
  "meta": {
   "meta": true,
-  "units": "C:/Users/tellt/AppData/Local/Temp/claude/C--Users-tellt-Projects-bookforge/086cf711-ae6e-4b04-8dab-8263f60b671f/scratchpad/kershaw/speckle.lines.units.jsonl",
+  "units": "C:/Users/<user>/AppData/Local/Temp/claude/C--Users-tellt-Projects-bookforge/086cf711-ae6e-4b04-8dab-8263f60b671f/scratchpad/kershaw/speckle.lines.units.jsonl",
   "unitCount": 479,
   "endpoint": "http://127.0.0.1:8771",
   "adapterId": 0,
@@ -64,7 +64,7 @@
    },
    "total_slots": 16,
    "model_alias": "foundry-4b-f16.gguf",
-   "model_path": "C:/Users/tellt/AppData/Local/foundry/models/foundry-4b-f16.gguf",
+   "model_path": "C:/Users/<user>/AppData/Local/foundry/models/foundry-4b-f16.gguf",
    "modalities": {
     "vision": false,
     "audio": false

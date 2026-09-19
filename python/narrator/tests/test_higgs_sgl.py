@@ -28,7 +28,7 @@ render's status:
 WHAT IS FIXTURE AND WHAT IS CAPTURE. The expected request body is built from the
 training side's `higgs_ladder.py render` (which drove every night-3 measurement)
 and from sglang-omni 0.1.4's own `serve/protocol.py` and
-`models/higgs_tts/request_builders.py`, read on owens-pc 2026-09-06. There is no
+`models/higgs_tts/request_builders.py`, read on example-pc 2026-09-06. There is no
 recorded capture; when one lands, `EXPECTED_REQUEST` is the one place it
 replaces.
 """

@@ -27,7 +27,7 @@
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<!-- The BookForge library server speaks plain HTTP over the private
-		     tailnet (owens-*.owenmorgan.com:8765); the tailnet is the trust
+		     tailnet (a host on :8765); the tailnet is the trust
 		     boundary, so ATS exceptions are acceptable here. -->
 		<key>NSAllowsArbitraryLoads</key>
 		<true/>

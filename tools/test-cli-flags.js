@@ -88,7 +88,7 @@ fs.writeFileSync(EPUB, '');                       // never opened: the flag refu
 // and nothing on this host is created for it. A host temp dir here made three
 // checks fail on the PC for doing exactly what the rule says.
 const WIN = process.platform === 'win32';
-const CKPT = WIN ? '/home/telltale/higgs_v3_merged/mb_v7_616' : path.join(TMP, 'mb_v7_616');
+const CKPT = WIN ? '/home/<user>/higgs_v3_merged/mb_v7_616' : path.join(TMP, 'mb_v7_616');
 if (!WIN) fs.mkdirSync(CKPT);
 /** What the override must carry for CKPT: the resolved host path, or the guest string verbatim. */
 const CKPT_EXPECTED = WIN ? CKPT : fs.realpathSync(CKPT);
@@ -506,8 +506,8 @@ check('the full --help still lists every command selector', () => {
 // ── A TYPED DRIVE LETTER SURVIVES THE WRAPPER ON WINDOWS (2026-09-12) ────────
 //
 // `Path.resolve()` on Windows rewrites a mapped network drive to its UNC target:
-// the titan library `Z:\bookforge` came out of the wrapper as
-// `\\TITAN\iO\bookforge`, a spelling the app never uses and the bridge's WSL
+// the NAS library `Z:\<library>` came out of the wrapper as
+// `\\NAS\iO\bookforge`, a spelling the app never uses and the bridge's WSL
 // mapping cannot open in the guest (the CLI defect recorded 2026-09-11). The
 // wrapper now makes a typed path absolute WITHOUT resolving it (`_user_path`).
 // Proved here with a `subst` drive — the same class of drive letter, and one
@@ -560,7 +560,7 @@ check('a typed drive letter reaches the adapter as typed, not as its UNC/target 
   // A free letter: the highest one with no drive behind it. `subst` refuses a
   // letter in use, and a machine with Q: mapped would otherwise fail the check
   // for the wrong reason. The search used to be Q–Y only, and on the PC every
-  // one of those is taken (Z: is the titan share), so this check silently did
+  // one of those is taken (Z: is the NAS share), so this check silently did
   // not run there — the one machine whose defect it was written for. G upward
   // is the whole range a temporary `subst` may safely claim; the highest free
   // letter is taken first so a low letter stays available for a real volume.

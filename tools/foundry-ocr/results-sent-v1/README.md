@@ -1,7 +1,7 @@
 # ocr_sent_v1_4b — retrieved, merged and scored on the Mac, Aug 5 2026
 
 **NOT COMMITTED, NOT PUBLISHED.** Owen reviews first. Nothing was uploaded to
-HuggingFace and nothing on owens-pc was deleted.
+HuggingFace and nothing on example-pc was deleted.
 
 The question: the Aug 5 guard experiment measured that the LINE model, fed
 sentences, *loses* — 12–25% false-edit rate, `deg/100k` up, `rep/100k` down

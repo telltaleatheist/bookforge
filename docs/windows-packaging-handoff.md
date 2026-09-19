@@ -326,7 +326,7 @@ optional component gated on a detected NVIDIA GPU.
 ## Fallback-mirror wiring for downloads (added Jun 13 2026)
 
 Done — component downloads try upstream first, then the BookForge GitHub release
-mirror (`assets` tag). (The former owenmorgan.com mirror was retired Jun 30 2026.)
+mirror (`assets` tag). (The former project-website mirror was retired Jun 30 2026.)
 
 - **CUDA**: handled in `components/llama-cuda.ts` (GitHub → mirror), see above.
 - **XTTS voices + base**: `bookforge_ext/download_model.py` (in the e2a fork). On

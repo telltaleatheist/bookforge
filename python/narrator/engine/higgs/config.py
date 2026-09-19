@@ -17,7 +17,7 @@ command line and must not be guessed, so it is a JSON document named by
       "deathstalker": {
         "scene": "Audio is recorded from a quiet room.",
         "clips": [
-          {"path": "/home/telltale/xtts_ft/ds_ad4s/wavs/cd_cd_00000008.wav",
+          {"path": "/home/<user>/xtts_ft/ds_ad4s/wavs/cd_cd_00000008.wav",
            "transcript": "The purpose here is not sectarian, ...",
            "seconds": 14.02}
         ]

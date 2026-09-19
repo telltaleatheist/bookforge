@@ -778,7 +778,7 @@ function busyWithOurs(lane: string): string {
  * logs where the logs are in the slot currently but they shouldnt be showing the
  * user the underlying technical stuff."* What the slot held was
  *
- *     Loading qwen3.5-9b on crucible@owens-pc-wsl: vllm loading; 16s elapsed,
+ *     Loading qwen3.5-9b on crucible@example-pc-wsl: vllm loading; 16s elapsed,
  *     886s before give-up — (APIServer pid=233320) INFO 09-18 01:29:35
  *     [kernel.py:369] Final IR op priority after setting platform defaults:
  *     IrOpPriorityConfig(rms_norm=['native'], fused_add_rms_norm=['native'])

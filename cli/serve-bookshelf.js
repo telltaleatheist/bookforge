@@ -20,7 +20,7 @@
  *
  * Usage:
  *   node cli/serve-bookshelf.js --library /mnt/library/bookforge
- *   node cli/serve-bookshelf.js --library Z:\bookforge --port 8765 --state-dir /var/lib/bookforge
+ *   node cli/serve-bookshelf.js --library Z:\<library> --port 8765 --state-dir /var/lib/bookforge
  *
  * Options:
  *   --library <path>     REQUIRED. The library root (the folder holding

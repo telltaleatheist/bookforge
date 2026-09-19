@@ -148,7 +148,7 @@ type DoorId = 'connect' | 'local' | 'install' | 'uninstall';
         <div class="panel">
           <label class="field">
             <span class="label">Computer address</span>
-            <input type="text" name="remoteAddress" placeholder="192.168.1.20 or mac-studio"
+            <input type="text" name="remoteAddress" placeholder="192.0.2.20 or mac-studio"
                    [ngModel]="remoteAddress()" (ngModelChange)="remoteAddress.set($event)"
                    [disabled]="remotePairing()?.status === 'pending'">
           </label>

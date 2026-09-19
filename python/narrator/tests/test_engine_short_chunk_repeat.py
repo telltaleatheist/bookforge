@@ -36,7 +36,7 @@ WHAT THIS PROVES, driving the real methods (no GPU, no model):
      audio byte-for-byte alone.
 
 FIXTURE. The 52 non-empty chunks of <= 60 chars from the real render at
-Z:\\bookforge\\projects\\witches_-_Unknown\\stages\\03-tts\\sessions\\en\\
+Z:\\<library>\\projects\\witches_-_Unknown\\stages\\03-tts\\sessions\\en\\
 ebook-38a708a4-cba0-486c-8af2-1bc7857c2092\\2055c81ef480ca96c96465726894841c
 (deathstalker). Raw file duration IS the generated audio here: _save_audio does
 not trim (NO-FALLBACK 2026-07-11) and deathstalker ships sentenceGap 0 - proven

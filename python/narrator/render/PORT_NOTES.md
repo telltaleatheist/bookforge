@@ -135,7 +135,7 @@ It contains nothing because it does not exist.
 ## 6. The progress lines, and the regexes that read them
 
 Copied verbatim into `tests/test_render_worker.py` with their file:line, from
-`C:\Users\tellt\Projects\bookforge\electron\parallel-tts-bridge.ts`:
+`C:\Users\<user>\Projects\bookforge\electron\parallel-tts-bridge.ts`:
 
 | narrator emits | bridge matcher | line | effect |
 |---|---|---|---|
@@ -585,7 +585,7 @@ Resume of the kershaw golden session: 133 chunks, `0.flac`..`4.flac` deleted fro
 a copy at `C:\tmp\narrator-R\kershaw-resume\`, re-rendered from WSL through
 `python -m narrator.compat.app --headless --worker_mode` with `PYTHONPATH` at the
 worktree's `python/`, the deathstalker model at
-`/home/telltale/orpheus-models/deathstalker`, and the caps from
+`/home/<user>/orpheus-models/deathstalker`, and the caps from
 `electron/data/orpheus-models.json` (`maxCharsPerSec` 22.6, and `backends.vllm`:
 `repPenalty` 1.1, `eosBoost` 8, `eosBoostStart` 2.0, plus `sentenceGap` 0.0).
 Guarded by `%APPDATA%\BookForge\external-gpu-job.lock`; 7 min 15 s of GPU across

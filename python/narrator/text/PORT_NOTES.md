@@ -2,7 +2,7 @@
 
 Migration step 4 of `docs/NARRATOR_PLAN.md`: ebook2audiobook's `--prep_only` path,
 ported into `python/narrator/text/`. Source of truth for every line here:
-**ebook2audiobook@9daab0ba** (`C:\Users\tellt\Projects\ebook2audiobook`, branch
+**ebook2audiobook@9daab0ba** (`C:\Users\<user>\Projects\ebook2audiobook`, branch
 `bookforge`), read-only.
 
 Everything below was measured on 2026-09-04 against the three golden sessions in
@@ -62,7 +62,7 @@ e2a's situation too (its `except Exception: return unidecode(word)` covers it).
 | machine | interpreter | stanza | `STANZA_RESOURCES_DIR` | models on disk |
 |---|---|---|---|---|
 | Windows | `ebook2audiobook\python_env\python.exe` (3.12.12) | **1.10.1** | `<e2a>\models\stanza`, set by `lib/conf.py:78`; unset in the ambient env | **NONE** — the directory does not exist |
-| WSL Ubuntu | `/home/telltale/anaconda3/envs/orpheus_tts/bin/python` (3.11.14) | **1.11.0** | `/home/telltale/ebook2audiobook/models/stanza`, same line | `en`, `de`, `resources.json` — **591 MB** |
+| WSL Ubuntu | `/home/<user>/anaconda3/envs/orpheus_tts/bin/python` (3.11.14) | **1.11.0** | `/home/<user>/ebook2audiobook/models/stanza`, same line | `en`, `de`, `resources.json` — **591 MB** |
 
 `STANZA_RESOURCES_DIR` is absent from both ambient environments (checked in WSL
 through a login shell, which is how `spawnWithWslSupport` runs Orpheus); e2a sets
@@ -197,7 +197,7 @@ spawn cannot reach. Each raises with the flag/name and what to do instead.
    (`session.py:66`), and the process-dir name is `md5(<the --ebook path string>)`
    (`session.py:466`). Neither changes when the book's bytes change, and the two
    differ because `prepare_dirs` rebinds `session['ebook']` to the copy between
-   them. Verified on kershaw: `md5('/home/telltale/ebook2audiobook/tmp/staged-
+   them. Verified on kershaw: `md5('/home/<user>/ebook2audiobook/tmp/staged-
    ccd14111-....epub') == '645fe70686...'` (the process-dir name) and
    `md5('<that dir>/staged-ccd14111-....epub') == '6d302f8c08...'` (the stored
    hash). Preserved with its name, because `render/SESSION_READERS.md` enumerates

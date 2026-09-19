@@ -154,7 +154,7 @@ gets exactly the behaviour it has always had. The app states `qwen3`.
 
 The per-chunk door can cross into the guest because what it reads was written
 there. This one reads an **m4b and an EPUB out of the library**, which on this PC
-is the titan share on **Z:**, and WSL has no `/mnt` for a network drive. So the
+is the NAS share on **Z:**, and WSL has no `/mnt` for a network drive. So the
 bridge refuses BY NAME rather than handing the guest a path it cannot open
 halfway through a 40-minute transcribe. What unblocks it is a **native** CUDA
 qwen env on Windows named as `qwenAlignEnv` — which is also what

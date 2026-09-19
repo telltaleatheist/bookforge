@@ -21,7 +21,7 @@ of the three" had been read as "reads nothing". So the throughput did not regres
 lost by every render that moved out of the app and into the server. The live process's environment
 held exactly two variables, and the engine log carried zero `MLX batch generating` heartbeats.
 
-**MEASURED on owens-mac-studio** (M1 Ultra, `thirdreich`, one resident load per run, 521-572-char
+**MEASURED on example-mac** (M1 Ultra, `thirdreich`, one resident load per run, 521-572-char
 chunks inside the voice's 500-700 band, driven through `generate_batch` the way the render job does):
 
 | width | chars/min | realtime | vs width 1 |
@@ -255,7 +255,7 @@ e0c0ebe3+):**
 - **Servers:** WSL engine at crucible 53f40e2 on 7100 (`role: engine`), run tonight as a held process —
   the unit's user bus has NO socket in this boot, so `systemctl --user` fails from every session; the
   fix is `systemctl restart user@1000`, which would kill the trainer → done in the card window, then the
-  unit owns the server again. Linger enabled (`loginctl enable-linger telltale`, root). The WSL distro
+  unit owns the server again. Linger enabled (`loginctl enable-linger <your-wsl-user>`, root). The WSL distro
   terminates seconds after the last `wsl.exe` session even with units running → the orchestrator now
   holds it open (c59dc9d); tonight a held `sleep infinity` does. **Windows orchestrator installed for
   real**: `%LOCALAPPDATA%\Crucible\host\` (pack built locally — NO release publishes a host pack yet;
@@ -311,7 +311,7 @@ orchestrator claims the engine (`managed_by` set); T2 full pytest; then hand bac
 - **Windows orchestrator:** the Phase 17 pack rebuilt (sha 0da51e6d…) with a NEW consent setting —
   `%LOCALAPPDATA%\Crucible\config.toml` `[orchestrator] distro = "Ubuntu"` names the distro the orchestrator may
   manage (watch + claim + unit restart widen; destructive recipes stay refused by rootfs) — and the unit probe /
-  start / restart / tray Stop all carry `XDG_RUNTIME_DIR`. **Tray swapped 08:24, pack 0da51e6d, pid 23052 — THE CLAIM LANDED:** 7101 `/v1/info` reads `engine.owner: wsl-unit`, 7100 `/v1/peer` reads `managed_by {crucible-orchestrator@owens-pc, http://127.0.0.1:7101}`, pairing file byte-identical. Measured on the way: `taskkill /PID` without /F does not stop the tray (PHASE17 §4.4 `POST /quit` owed). The morning's figures are in crucible PHASE15 §7.3/§7.6/§7b and PHASE17 §8 (f300df8).
+  start / restart / tray Stop all carry `XDG_RUNTIME_DIR`. **Tray swapped 08:24, pack 0da51e6d, pid 23052 — THE CLAIM LANDED:** 7101 `/v1/info` reads `engine.owner: wsl-unit`, 7100 `/v1/peer` reads `managed_by {crucible-orchestrator@example-pc, http://127.0.0.1:7101}`, pairing file byte-identical. Measured on the way: `taskkill /PID` without /F does not stop the tray (PHASE17 §4.4 `POST /quit` owed). The morning's figures are in crucible PHASE15 §7.3/§7.6/§7b and PHASE17 §8 (f300df8).
 - Two things for later rulings: the tray has no shutdown route (PHASE17 §4.4 owed: `POST /quit`); `recipe_sha256` in
   envpacks.json is line-ending dependent (CRLF checkout vs LF) — one line to fix in release machinery.
 
@@ -402,7 +402,7 @@ read.
 
 **One live READ, nothing else.** `%LOCALAPPDATA%\Crucible\pairing` EXISTS — the Windows host
 agent has written it — and `GET /v1/ping` on 7100 answers
-`{"crucible":true,"name":"crucible@owens-pc-wsl","api_version":1}`. So step 1's first door is live
+`{"crucible":true,"name":"crucible@example-pc-wsl","api_version":1}`. So step 1's first door is live
 on this machine right now. **No install was run**: it would fight the host agent and the WSL
 server holding the card. Everything else was driven over injected runners and a fake host door.
 
@@ -472,7 +472,7 @@ yes); the Ollama store.
 
 ## 0d. PHASE 15 — the engine is the one door, and the apps have no provider code (2026-09-14, evening)
 
-Read `C:\Users\tellt\Projects\crucible\docs\PHASE15-HOST.md` — it is the CONTRACT, and it
+Read `C:\Users\<user>\Projects\crucible\docs\PHASE15-HOST.md` — it is the CONTRACT, and it
 carries the rulings this section only summarises. Owen, that evening: *"the user will be
 installing bookforge/foundry (and by extension, crucible) on windows … one centralized
 location that controls the GPU power … bookforge/foundry gain a simple contract: send
@@ -526,7 +526,7 @@ of `<userData>/app-settings.json`, is deleted with everything that called it.
 ### THE WRITE-THROUGH PATH, RUN AGAINST A REAL PHASE 15 SERVER (2026-09-14, the Mac)
 
 Owen: *"we can freely test the logic pathways anyway by using the mac."* The Mac Studio runs
-the merged Phase 15 server (`mlx-darwin`, `192.168.68.79:7100`). Everything below went
+the merged Phase 15 server (`mlx-darwin`, `192.0.2.79:7100`). Everything below went
 through BookForge's OWN doors — `parsePairing` → `addServer` → `engine-settings.ts` — from a
 node script against a TEMP userData, never curl and never the real registry. **The Mac's
 settings were put back and the final GET is byte-identical to the first.**
@@ -754,7 +754,7 @@ Foundry does the same simplification now.
 
 **Live servers:** the PC's WSL Crucible runs the PAGE build (2328562, restarted 16:10 via
 `systemctl restart user@1000` as root after a clean SIGTERM left it down — `Restart=on-failure`
-defect owed). The WSL clone `/home/telltale/crucible` is BEHIND HEAD; pull + restart once the
+defect owed). The WSL clone `/home/<user>/crucible` is BEHIND HEAD; pull + restart once the
 env-pack agent lands. The Mac still runs 22eccf0 (pre-page). Both hold nothing.
 
 **Disk:** C: 5 GB → ~505 GB free. Root cause was the Higgs checkpoint screen's fused merges
@@ -765,7 +765,7 @@ pip cache, `tts-orpheus` Crucible env; OneDrive Documents+Projects marked online
 with the local spawn layer after the in-app pass.
 
 **Needs Owen, in order:**
-1. **Publish v0.6.0** once the env-pack agent reports: `cd /c/Users/tellt/Projects/crucible &&
+1. **Publish v0.6.0** once the env-pack agent reports: `cd /c/Users/<user>/Projects/crucible &&
    ./scripts/release.sh --branch feat/phase6-remote-render` — its CI run is the first real
    build of the packs and the rootfs; the agent's report says which packs fit a hosted runner.
    Then BookForge and Foundry swap the vendored tarball for the release URL and
@@ -795,7 +795,7 @@ denoised or read a page on a GPU.
 
 1. **Publish v0.6.0** — one line, and it is what makes the client library and the installer
    package installable and both apps' setup screens clickable:
-   `cd /c/Users/tellt/Projects/crucible && ./scripts/release.sh --branch feat/phase6-remote-render`
+   `cd /c/Users/<user>/Projects/crucible && ./scripts/release.sh --branch feat/phase6-remote-render`
 2. **The in-app pass on a free card.** Settings → Crucible Servers, Test each, render a short
    chapter. The first render goes to `local`.
 3. **Five rulings**, each blocking a build: narrator into its own repo (a friend cannot
@@ -1277,8 +1277,8 @@ server only**:
 
 | machine | version running | job types enabled | envs installed | models on disk |
 |---|---|---|---|---|
-| PC (WSL2, `crucible@owens-pc-wsl`) | 0.5.0, **not running** tonight | echo, llm | `llm` only | qwen3.5-9b, qwen3.8-27b-4bit |
-| Mac (`crucible@owens-mac-studio`) | **0.4.0**, running since 16:38 from the `main` checkout, started by hand | echo, llm | `llm` only | qwen3.5-9b, qwen3.8-27b-4bit |
+| PC (WSL2, `crucible@example-pc-wsl`) | 0.5.0, **not running** tonight | echo, llm | `llm` only | qwen3.5-9b, qwen3.8-27b-4bit |
+| Mac (`crucible@example-mac`) | **0.4.0**, running since 16:38 from the `main` checkout, started by hand | echo, llm | `llm` only | qwen3.5-9b, qwen3.8-27b-4bit |
 
 No `tts`, `asr`, `align` or `rvc` env has ever been installed anywhere. No voice, whisper,
 aligner or RVC weights have been pulled. Neither server is a service; both were started
@@ -1326,7 +1326,7 @@ branch with tests; nothing is merged, because Owen tests in-app first.
 - [x] PC: `crucible capability --write`; `crucible doctor` — every env ready, both patches applied, every type ready except `rvc` (base assets, see below) *20:25*
 - [x] Mac: checkout `feat/phase6-remote-render` (v0.5.0), `pip install -e .`, same enables, installs and pulls *done 19:55; asr/align have no mlx-darwin recipe and `capability --write` recorded them off, correctly; doctor: `tts` NOT READY only because ffmpeg is off the non-login PATH, `rvc` NOT READY for the base assets*
 - [x] Mac: restart the server *done 22:15 once Owen's stream ended and nothing was resident: checkout at the pushed branch, `pip install -e .`, `host = "0.0.0.0"` in its config, hand-started process stopped by Owen, `crucible service install` → launchd agent running v0.5.0, reachable from the PC; rvc base assets pulled; rvc env rebuilt with the separator pin; doctor: tts + rvc ready, `denoise` NOT READY until a pull verb exists — then `crucible denoise pull` landed (`83e3b86`) and both machines report `job denoise: ready`, installed `denoise-roformer` (0.91 GB, digests verified; one stamp per model; the puller and the job read one layout function). Crucible: 877 tests green.*
-- [x] `crucible service install` — a systemd user unit in WSL, a launchd agent on the Mac (PHASE5-APPS.md section 6.0 ruled a local Crucible is a *service*). *Built (crucible `a838101`); installed on the PC 20:30 — the unit crash-looped because `python -m crucible` from systemd's $HOME cwd resolved `crucible.voices` to the checkout's `voices/` manifest directory; hand-fixed, then the generator fix landed (crucible `b40de27`: the unit runs the console script in `WorkingDirectory=<CRUCIBLE_HOME>`) and `service install` was re-run on the PC at 22:35. **The WSL server is up as a service now** (`{"crucible":true,"name":"crucible@owens-pc-wsl"}`), no model resident, no VRAM taken. Needs Owen: `sudo loginctl enable-linger telltale` so it survives the last shell. Mac: at the 2 AM wake.*
+- [x] `crucible service install` — a systemd user unit in WSL, a launchd agent on the Mac (PHASE5-APPS.md section 6.0 ruled a local Crucible is a *service*). *Built (crucible `a838101`); installed on the PC 20:30 — the unit crash-looped because `python -m crucible` from systemd's $HOME cwd resolved `crucible.voices` to the checkout's `voices/` manifest directory; hand-fixed, then the generator fix landed (crucible `b40de27`: the unit runs the console script in `WorkingDirectory=<CRUCIBLE_HOME>`) and `service install` was re-run on the PC at 22:35. **The WSL server is up as a service now** (`{"crucible":true,"name":"crucible@example-pc-wsl"}`), no model resident, no VRAM taken. Needs Owen: `sudo loginctl enable-linger <your-wsl-user>` so it survives the last shell. Mac: at the 2 AM wake.*
 - [x] Owed to Foundry: per-model sampling and thinking defaults in manifests, applied server-side; then tell Foundry-pc-1. *Done 22:40 (crucible `835628e`, PHASE2-LLM.md §9): request states it → wins; else manifest; else engine; `X-Crucible-Sampling` header names the source per key; `qwen3.5-9b` ships `thinking = false`. Foundry told. Ruling owed: should `dots-ocr` state `temperature = 0` server-side?*
 - [x] `denoise` job type (shares the RVC env; `audio-separator` pinned by name) *done (crucible `380e9d2`: roformer pass in the rvc env, `audio-separator==0.31.1` compatible-not-resolved until the first real install; `enable_denoise` flag; capability class). Also `5593320`: the urvc base assets are pulled from HF by pinned digest (`crucible rvc pull-base`) — the upstream is the installed fork's own `JackismyShephard/ultimate-rvc`, not the ancestral repos, and the embedder's `config.json` joined the list (without it transformers will not load the directory). Crucible: 859 tests green.*
 
@@ -1604,7 +1604,7 @@ branch with tests; nothing is merged, because Owen tests in-app first.
   re-state a lease's act (an `act` on the heartbeat, or a PATCH), or a lease carries a LIST of
   acts, or this stays as the opening act's name.** The vocabulary is the server's, so it is not
   BookForge's to settle.
-- Needs your hands, not a ruling: `sudo loginctl enable-linger telltale` in WSL (the service dies with your last shell otherwise); (Foundry v1.3.0 is VOID per Owen's 22:40 reframe — do not publish it); the first `wsl.exe` read against a cold VM returning −1 wants a reproduction.
+- Needs your hands, not a ruling: `sudo loginctl enable-linger <your-wsl-user>` in WSL (the service dies with your last shell otherwise); (Foundry v1.3.0 is VOID per Owen's 22:40 reframe — do not publish it); the first `wsl.exe` read against a cold VM returning −1 wants a reproduction.
 
 ## 4. State log
 
@@ -1711,7 +1711,7 @@ branch with tests; nothing is merged, because Owen tests in-app first.
   `9eb91bc`, `7e63905`), `@crucible/bootstrap` (`ab6d7bd` + `3550763` + `6b15c6d`);
   BookForge streaming via a Crucible session (`f079b456`, `323803fb`).
 - **01:35 THE FIRST REAL HIGGS RENDER THROUGH CRUCIBLE PASSED — on the Mac, 8/8.** The live
-  keeper in remote mode against `crucible@owens-mac-studio` (v0.5.0+ at `2d6b1f5`, narrator
+  keeper in remote mode against `crucible@example-mac` (v0.5.0+ at `2d6b1f5`, narrator
   `0eeb0267`, deathstalker): voice loaded with `warming` lines, render ended `done`, a `chunk`
   event per row with its own seconds/chars/chars-per-sec (`capped` null, as PHASE3 says),
   both FLACs real and mono at 24 kHz naming the merge, a second render reused the resident

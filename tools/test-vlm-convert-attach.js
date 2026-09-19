@@ -63,8 +63,8 @@ function test(name, fn) {
   }
 }
 
-const PROJECT = 'C:\\Users\\tellt\\Library\\Dune';
-const OTHER = 'C:\\Users\\tellt\\Library\\Emma';
+const PROJECT = 'C:\\Users\\<user>\\Library\\Dune';
+const OTHER = 'C:\\Users\\<user>\\Library\\Emma';
 
 // ── 1. The decision ────────────────────────────────────────────────────────
 
@@ -102,8 +102,8 @@ test('the path is matched by samePath, not by string equality', () => {
   // The project directory reaches this question from main, from a manifest and
   // from a component input, and those spell a Windows path differently. A
   // string compare here would make the same book look like two.
-  const asMain = 'C:\\Users\\tellt\\Library\\Dune';
-  const asComponent = 'C:/Users/tellt/Library/Dune';
+  const asMain = 'C:\\Users\\<user>\\Library\\Dune';
+  const asComponent = 'C:/Users/<user>/Library/Dune';
   assert.strictEqual(
     conversionInFlightFor(asComponent, [{ projectDir: asMain, claimed: true }]), true);
   assert.strictEqual(

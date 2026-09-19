@@ -31,18 +31,18 @@ function check(name, fn) {
 const TOKEN = '2SgeABHkBGZEDsljnL_BFxSZtZqKR0mdgxtTQGfJXn0';
 
 check('it matches `crucible token --url` byte for byte', () => {
-  // Measured against the real output of `crucible token --url` on owens-pc-wsl.
+  // Measured against the real output of `crucible token --url` on example-pc-wsl.
   assert.strictEqual(
-    connectCodeFor('crucible@owens-pc-wsl', 'http://127.0.0.1:7100', TOKEN),
-    `crucible://crucible%40owens-pc-wsl@127.0.0.1:7100/#${TOKEN}`,
+    connectCodeFor('crucible@example-pc-wsl', 'http://127.0.0.1:7100', TOKEN),
+    `crucible://crucible%40example-pc-wsl@127.0.0.1:7100/#${TOKEN}`,
   );
 });
 
 check('the NAME is percent-encoded, because it carries an @ of its own', () => {
   /*
-   * The half that actually bites. `crucible@owens-pc-wsl` unencoded would make
+   * The half that actually bites. `crucible@example-pc-wsl` unencoded would make
    * the authority start at the wrong `@`: the line still parses, names the host
-   * `owens-pc-wsl`, and is wrong in a way that looks right.
+   * `example-pc-wsl`, and is wrong in a way that looks right.
    */
   const line = connectCodeFor('crucible@mac', 'http://box:7100', TOKEN);
   assert.ok(line.includes('crucible%40mac@box:7100'), line);

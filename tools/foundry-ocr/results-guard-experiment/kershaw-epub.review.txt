@@ -1,5 +1,5 @@
 ====================================================================================================
-review-edits — 145 units from C:/Users/tellt/AppData/Local/Temp/claude/C--Users-tellt-Projects-bookforge/086cf711-ae6e-4b04-8dab-8263f60b671f/scratchpad/kershaw/kershaw.units.jsonl
+review-edits — 145 units from C:/Users/<user>/AppData/Local/Temp/claude/C--Users-tellt-Projects-bookforge/086cf711-ae6e-4b04-8dab-8263f60b671f/scratchpad/kershaw/kershaw.units.jsonl
 ====================================================================================================
 generated 2026-08-04T23:49:44-0400 in 55.9s on http://127.0.0.1:8771
 server: llama-server.exe -m foundry-4b-f16.gguf -c 32768 -np 16 -ngl 99 --no-webui --lora-scaled ../../../../AppData/Local/foundry/models/foundry-ocr-v1-4b.gguf:0.0 [b7482 CUDA 12.4, RTX 3090 Ti]

@@ -10,26 +10,26 @@
     "tier": "fast",
 
     "_comment_model": "Picking a model (2026-09-12). checkpoint-dir is a Higgs checkpoint under test, rendered against --voice's certificate (caps, pace, band): a Mac path here, a guest-native /home/... path on the PC. safe-band is MIN-MAX characters; top-k, batch-width and mem-budget-gb are Higgs-only, and the last two are Mac-MLX-only. title names the one-chapter EPUB a .txt/.jsonl input is packed as.",
-    "checkpoint_dir": "/Users/telltale/Library/Application Support/BookForge/runtime/higgs-models/mb_v7_616",
+    "checkpoint_dir": "/Users/<user>/Library/Application Support/BookForge/runtime/higgs-models/mb_v7_616",
     "top_k": 50,
     "safe_band": "200-700",
     "batch_width": 62,
     "mem_budget_gb": 40,
     "title": "Band sweep",
     "_comment_library": "--tts only: the library whose tmp/ holds the sessions and the narration cuts. Omitted, the CLI uses the root this machine chose in BookForge (userData/library-root.json) and refuses if there is none.",
-    "library": "/Volumes/iO/bookforge"
+    "library": "/Volumes/<share>/bookforge"
   },
 
   "voices": {
     "_comment": "Aliases -> a registered voice id (string), OR an unregistered model {model_dir, token}. Lets you name things whatever you want.",
     "rohan": "deathstalker",
-    "richard": { "model_dir": "/home/telltale/orpheus-models/deathstalker", "token": "rohan" }
+    "richard": { "model_dir": "/home/<user>/orpheus-models/deathstalker", "token": "rohan" }
   },
 
   "engines": {
     "_comment": "type '--engine orpheus' and it looks up where orpheus lives. Fills --orpheus-install / --conda-env / --models-dir only where you didn't set them. Omit any key to inherit BookForge's own config.",
     "orpheus": {
-      "install": "C:/Users/tellt/Projects/ebook2audiobook",
+      "install": "C:/Users/<user>/Projects/ebook2audiobook",
       "conda_env": "orpheus_tts"
     }
   },

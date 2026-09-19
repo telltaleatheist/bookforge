@@ -1,12 +1,12 @@
 #!/bin/sh
-# Deploy the bookshelf mirror to titan from ONE commit — the runbook in TITAN.md
+# Deploy the bookshelf mirror to the NAS from ONE commit — the runbook in NAS.md
 # ("Deploying an update") as a single command, so none of its steps can be
 # skipped or misordered by hand.
 #
-#   npm run deploy:titan -- <sha|ref>        # e.g. HEAD, origin/main, 97af8c3d
+#   npm run deploy:nas -- <sha|ref>        # e.g. HEAD, origin/main, 97af8c3d
 #
-# What it enforces, and why (each one was paid for, see TITAN.md):
-#   · The ref must already be on origin/main. Titan only ever serves committed,
+# What it enforces, and why (each one was paid for, see NAS.md):
+#   · The ref must already be on origin/main. NAS only ever serves committed,
 #     pushed code — never a working tree, never a local-only commit — so the sha
 #     it prints is one anyone can check out.
 #   · The build happens in a STAGE outside the checkout, cut with `git archive`
@@ -18,35 +18,61 @@
 #   · BOOKFORGE_BUILD_SHA / _COUNT are set here — stamp-build refuses to stamp a
 #     tree with no .git and no override, and forgetting them was the first thing
 #     that went wrong with the staged flow.
-#   · Titan's compose.yml is never touched. Only the context tarball moves.
+#   · NAS's compose.yml is never touched. Only the context tarball moves.
 #
-# Runs from any machine that can `ssh titan` (the Mac and the PC both can).
-# Override the stage location with BOOKFORGE_TITAN_STAGE.
+# Runs from any machine that can `ssh $BOOKFORGE_NAS_HOST`.
+# Override the stage location with BOOKFORGE_NAS_STAGE.
+#
+# ── WHERE THE NAS'S NAME AND ADDRESS COME FROM ──────────────────────────────
+#
+# Not from here. A machine's name and address are facts owned by THAT machine's
+# config, and this repo is public — a hostname baked into a tracked script goes
+# stale the day the box moves and publishes the operator's network in the
+# meantime. So both are REQUIRED environment variables, normally set once in
+# `deploy/bookshelf-server/.env` (untracked; copy `.env.example`). Missing means
+# a refusal by name, never a guess: a default host would deploy this tree to
+# whatever machine happens to answer to it.
 set -eu
 
 REF=${1:-}
 if [ -z "$REF" ]; then
-  echo "usage: npm run deploy:titan -- <sha|ref>   (e.g. HEAD, origin/main)" >&2
+  echo "usage: npm run deploy:nas -- <sha|ref>   (e.g. HEAD, origin/main)" >&2
   exit 2
 fi
 
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
-TITAN_HOST=${BOOKFORGE_TITAN_HOST:-titan}
-TITAN_DIR=/volume1/System/bookshelf-server
-HEALTH_URL=${BOOKFORGE_TITAN_HEALTH:-http://192.168.68.125:8766/api/health}
+ENV_FILE=$(dirname "$0")/.env
+if [ -f "$ENV_FILE" ]; then
+  . "$ENV_FILE"
+fi
+if [ -z "${BOOKFORGE_NAS_HOST:-}" ]; then
+  echo "refusing: BOOKFORGE_NAS_HOST is not set — this script does not know which machine" >&2
+  echo "          to deploy to, and will not guess. Copy deploy/bookshelf-server/.env.example" >&2
+  echo "          to .env beside it and fill in your NAS's ssh host, or export it." >&2
+  exit 2
+fi
+if [ -z "${BOOKFORGE_NAS_HEALTH:-}" ]; then
+  echo "refusing: BOOKFORGE_NAS_HEALTH is not set — the deploy verifies the new container by" >&2
+  echo "          curling it, and the URL is this machine's fact, not the repo's. Set it in" >&2
+  echo "          deploy/bookshelf-server/.env (see .env.example)." >&2
+  exit 2
+fi
+NAS_HOST=$BOOKFORGE_NAS_HOST
+NAS_DIR=/volume1/System/bookshelf-server
+HEALTH_URL=$BOOKFORGE_NAS_HEALTH
 
-if [ -n "${BOOKFORGE_TITAN_STAGE:-}" ]; then
-  STAGE=$BOOKFORGE_TITAN_STAGE
+if [ -n "${BOOKFORGE_NAS_STAGE:-}" ]; then
+  STAGE=$BOOKFORGE_NAS_STAGE
 elif [ -d /Volumes/Callisto/Projects ]; then
-  STAGE=/Volumes/Callisto/Projects/bookforge-titan-stage
+  STAGE=/Volumes/Callisto/Projects/bookforge-nas-stage
 else
-  STAGE=$HOME/bookforge-titan-stage
+  STAGE=$HOME/bookforge-nas-stage
 fi
 case "$STAGE" in
   "$REPO"|"$REPO"/*) echo "refusing: stage $STAGE is inside the checkout" >&2; exit 2 ;;
 esac
 
-say() { printf '\n[deploy:titan] %s\n' "$*"; }
+say() { printf '\n[deploy:nas] %s\n' "$*"; }
 
 # ── 1. Resolve the ref and prove it is on origin/main ────────────────────────
 say "fetching origin"
@@ -56,7 +82,7 @@ SHORT=$(git -C "$REPO" rev-parse --short "$SHA")
 COUNT=$(git -C "$REPO" rev-list --count "$SHA")
 if ! git -C "$REPO" merge-base --is-ancestor "$SHA" origin/main; then
   echo "refusing: $SHORT is not on origin/main — push it first, then deploy." >&2
-  echo "          (titan serves only code that exists on origin)" >&2
+  echo "          (nas serves only code that exists on origin)" >&2
   exit 1
 fi
 SUBJECT=$(git -C "$REPO" log -1 --format=%s "$SHA")
@@ -87,21 +113,21 @@ for must in dist/electron/bookshelf-server.js dist/electron/bookshelf-ui/index.h
   [ -e "$STAGE/$must" ] || { echo "build did not produce $must" >&2; exit 1; }
 done
 
-# ── 4. Ship the context tarball and rebuild on titan ─────────────────────────
+# ── 4. Ship the context tarball and rebuild on the NAS ─────────────────────────
 TGZ=$STAGE/bookshelf-server-context.tgz
 say "packing context"
 (cd "$STAGE" && tar -czf "$TGZ" \
   package.json package-lock.json vendor cli deploy/bookshelf-server dist/electron dist/shared)
-say "upload → $TITAN_HOST:$TITAN_DIR/  ($(du -h "$TGZ" | cut -f1))"
+say "upload → $NAS_HOST:$NAS_DIR/  ($(du -h "$TGZ" | cut -f1))"
 # Streamed over plain ssh, not scp: OpenSSH ≥ 9 scp speaks SFTP by default and
-# titan's sftp subsystem answers "dest open: No such file or directory" for a
+# the NAS's sftp subsystem answers "dest open: No such file or directory" for a
 # directory that exists (2026-09-18). Piping into cat needs nothing of the
 # remote but a shell, from any OpenSSH on either machine. Written to a .tmp
 # and renamed, so a broken upload never replaces the last good tarball.
-REMOTE_TGZ=$TITAN_DIR/bookshelf-server-context.tgz
-ssh "$TITAN_HOST" "cat > $REMOTE_TGZ.tmp && mv -f $REMOTE_TGZ.tmp $REMOTE_TGZ" < "$TGZ"
-say "redeploy on titan (docker compose build + up)"
-ssh "$TITAN_HOST" "sh $TITAN_DIR/redeploy.sh"
+REMOTE_TGZ=$NAS_DIR/bookshelf-server-context.tgz
+ssh "$NAS_HOST" "cat > $REMOTE_TGZ.tmp && mv -f $REMOTE_TGZ.tmp $REMOTE_TGZ" < "$TGZ"
+say "redeploy on the NAS (docker compose build + up)"
+ssh "$NAS_HOST" "sh $NAS_DIR/redeploy.sh"
 
 # ── 5. Verify, and leave a record of what is running ─────────────────────────
 say "waiting for /api/health"
@@ -109,10 +135,10 @@ i=0
 until curl -sf -m 5 "$HEALTH_URL" >/dev/null 2>&1; do
   i=$((i+1))
   if [ "$i" -ge 30 ]; then
-    echo "titan is not answering at $HEALTH_URL after 60s — see TITAN.md 'If it's down'" >&2
+    echo "nas is not answering at $HEALTH_URL after 60s — see NAS.md 'If it's down'" >&2
     exit 1
   fi
   sleep 2
 done
-ssh "$TITAN_HOST" "printf '%s %s %s\n' '$SHA' '$(date -u +%Y-%m-%dT%H:%M:%SZ)' '$(echo "$SUBJECT" | tr -d "'")' > $TITAN_DIR/DEPLOYED_SHA"
-say "titan is now serving $SHORT — $(curl -s -m 5 "$HEALTH_URL")"
+ssh "$NAS_HOST" "printf '%s %s %s\n' '$SHA' '$(date -u +%Y-%m-%dT%H:%M:%SZ)' '$(echo "$SUBJECT" | tr -d "'")' > $NAS_DIR/DEPLOYED_SHA"
+say "nas is now serving $SHORT — $(curl -s -m 5 "$HEALTH_URL")"

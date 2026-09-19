@@ -166,7 +166,7 @@ async function withFake(behaviour, fn) {
 
   await withFake({
     routes: { translate: 'anthropic/claude-sonnet-5' },
-    upstreams: { anthropic: { key: 'sk-ant-secret-k3A9' }, ollama: { url: 'http://192.168.68.20:11434' } },
+    upstreams: { anthropic: { key: 'sk-ant-secret-k3A9' }, ollama: { url: 'http://192.0.2.20:11434' } },
   }, async ({ name, door }) => {
     await check('GET /v1/settings comes back as the document, in the client\'s spelling', async () => {
       const doc = await seam.crucibleEngineSettings(name);
@@ -187,7 +187,7 @@ async function withFake(behaviour, fn) {
       assert.strictEqual(doc.upstreams.openai.configured, false);
       assert.strictEqual(doc.upstreams.openai.keyHint, null);
       assert.strictEqual(doc.upstreams.ollama.configured, true);
-      assert.strictEqual(doc.upstreams.ollama.url, 'http://192.168.68.20:11434');
+      assert.strictEqual(doc.upstreams.ollama.url, 'http://192.0.2.20:11434');
       assert.ok(!JSON.stringify(doc).includes('sk-ant-secret'), 'the key reached the client');
       for (const served of door.settings.served) {
         assert.ok(!served.includes('sk-ant-secret'), `the server served a key: ${served.slice(0, 80)}`);

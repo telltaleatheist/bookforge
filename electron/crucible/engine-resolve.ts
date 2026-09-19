@@ -10,7 +10,7 @@
  * engine, and reads capability THROUGH to it. It is a property of a PROCESS
  * and never of an install: on this machine ONE install runs both, as two
  * processes on two ports — measured 2026-09-15, `:7101` answers
- * `role: orchestrator` naming `crucible@owens-pc-wsl` at `:7100`, and `:7100`
+ * `role: orchestrator` naming `crucible@example-pc-wsl` at `:7100`, and `:7100`
  * answers `role: engine` with eleven job types and `managed_by` the first.
  *
  * ── The rule, and why it is the SDK's ─────────────────────────────────────

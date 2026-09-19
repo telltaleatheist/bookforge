@@ -17,8 +17,8 @@ tree**. If the Foundry checkout has uncommitted changes, the refresh is blocked
 until they are committed — the sha is the only thing that identifies a build.
 
 ```sh
-git -C /c/Users/tellt/Projects/foundry status --short
-git -C /c/Users/tellt/Projects/foundry log --oneline -5
+git -C /c/Users/<user>/Projects/foundry status --short
+git -C /c/Users/<user>/Projects/foundry log --oneline -5
 ```
 
 If it is dirty, ask the Foundry side to land it. There is usually a live Foundry
@@ -38,8 +38,8 @@ deleted upstream actually disappears here.
 ```sh
 SHA=<the sha>
 SCRATCH=<your scratchpad dir>
-BF=/c/Users/tellt/Projects/bookforge
-FO=/c/Users/tellt/Projects/foundry
+BF=/c/Users/<user>/Projects/bookforge
+FO=/c/Users/<user>/Projects/foundry
 
 git -C "$FO" archive "$SHA" app > "$SCRATCH/foundry-app.tar"
 rm -rf "$BF/foundry-app/electron" "$BF/foundry-app/shared" "$BF/foundry-app/src"

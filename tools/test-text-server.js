@@ -138,8 +138,8 @@ function world(overrides = {}) {
     sleep: () => new Promise((resolve) => setTimeout(resolve, 0)),
     now: () => Date.now(),
     distro: () => 'Ubuntu',
-    condaEnvPrefix: () => '/home/telltale/anaconda3/envs/higgs3',
-    scriptPath: () => 'C:\\Users\\tellt\\Projects\\bookforge\\electron\\scripts\\vllm\\serve_text_vllm.sh',
+    condaEnvPrefix: () => '/home/<user>/anaconda3/envs/higgs3',
+    scriptPath: () => 'C:\\Users\\<user>\\Projects\\bookforge\\electron\\scripts\\vllm\\serve_text_vllm.sh',
     isStaged: async (profile) => { calls.staged.push(profile.id); return state.staged; },
     stage: async (profile, onProgress) => {
       calls.stages.push(profile.id);
@@ -302,7 +302,7 @@ test('only OUR loopback port is managed; everything else is used as given', () =
   assert.ok(/READING server/.test(foundryDefault.note), foundryDefault.note);
   assert.ok(foundryDefault.note.includes(server.TEXT_SERVER_URL), foundryDefault.note);
   // A remote server is somebody else's, always.
-  const remote = server.textServerRoute('http://titan:8300/v1');
+  const remote = server.textServerRoute('http://nas:8300/v1');
   assert.strictEqual(remote.manage, false);
   assert.ok(/starts and stops nothing/.test(remote.note), remote.note);
   assert.strictEqual(server.isLocalTextServerUrl('not a url'), false);
@@ -387,8 +387,8 @@ test('a start spawns the launcher, takes the card, and waits for OUR served name
     'the model dir must be left for the GUEST\'s bash to expand');
   assert.ok(command.includes(`VLLM_TEXT_PORT='${server.TEXT_SERVER_PORT}'`), command);
   assert.ok(command.includes("VLLM_TEXT_DTYPE='bfloat16'"), command);
-  assert.ok(command.includes("VLLM_TEXT_ENV='/home/telltale/anaconda3/envs/higgs3'"), command);
-  assert.ok(command.includes('/mnt/c/Users/tellt/Projects/bookforge/electron/scripts/vllm/serve_text_vllm.sh'),
+  assert.ok(command.includes("VLLM_TEXT_ENV='/home/<user>/anaconda3/envs/higgs3'"), command);
+  assert.ok(command.includes('/mnt/c/Users/<user>/Projects/bookforge/electron/scripts/vllm/serve_text_vllm.sh'),
     'the launcher path must be translated for the guest');
   assert.strictEqual(server.textServerStatus().running, true);
   assert.strictEqual(server.textServerStatus().profileId, NINE_B);

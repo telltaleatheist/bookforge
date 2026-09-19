@@ -138,7 +138,7 @@ def build_session(
         "language": "eng",
         "language_iso1": "en",
         "fine_tuned": "mistborn",
-        "orpheus_model_dir": "/home/telltale/orpheus-models/mistborn",
+        "orpheus_model_dir": "/home/<user>/orpheus-models/mistborn",
         "orpheus_adapter_dir": None,
         "orpheus_base_dir": None,
         "tts_engine": "orpheus",
@@ -162,8 +162,8 @@ def build_session(
         "chapter_docs": chapter_docs,
         "chapter_titles_by_doc": titles_by_doc,
         # Paths from a DIFFERENT machine, on purpose: the reader must ignore them.
-        "session_dir": "/home/telltale/ebook2audiobook/tmp/ebook-ccd14111",
-        "process_dir": "/home/telltale/ebook2audiobook/tmp/ebook-ccd14111/645fe70",
+        "session_dir": "/home/<user>/ebook2audiobook/tmp/ebook-ccd14111",
+        "process_dir": "/home/<user>/ebook2audiobook/tmp/ebook-ccd14111/645fe70",
         "chapters_dir": "/nonexistent/chapters",
         "chapters_dir_sentences": "/nonexistent/chapters/sentences",
     }

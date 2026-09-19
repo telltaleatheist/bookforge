@@ -92,7 +92,7 @@ export class ReaderService {
     // Only when the servers this device is signed into AGREE on one reader. This
     // used to take whichever profile came first out of the map, which is server
     // probe order, not a decision — and since none of Owen's profiles has a PIN,
-    // the wrong one logged in silently. That signed his phone into titan as "Ky"
+    // the wrong one logged in silently. That signed his phone into the NAS as "Ky"
     // (2026-08-25) and his stats page went blank, because it only sums the
     // profile it holds a token for. Ambiguity is not something to guess at: fall
     // through to the sign-in gate, the one place that can actually ask.

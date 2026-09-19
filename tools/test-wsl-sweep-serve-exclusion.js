@@ -141,7 +141,7 @@ const ORPHAN_WORKER = 201;  // and a genuinely orphaned batch worker
 const TEXT_SERVER = 300;
 const TEXT_SERVER_CORE = 301;  // its engine core, which says nothing about the entrypoint either
 
-const PY = '/home/telltale/anaconda3/envs/orpheus_tts/bin/python';
+const PY = '/home/<user>/anaconda3/envs/orpheus_tts/bin/python';
 
 // The vLLM rows carry a LOWERCASE `vllm` in their command lines because the sweep's
 // pattern is a pgrep -f regex and pgrep is case-sensitive. A fixture full of
@@ -157,8 +157,8 @@ function table() {
     {
       pid: TEXT_SERVER,
       ppid: 1,
-      args: '/home/telltale/anaconda3/envs/higgs3/bin/python -m vllm.entrypoints.openai.api_server '
-        + '--model /home/telltale/models/Qwen3.5-9B --served-model-name Qwen3.5-9B-bf16 '
+      args: '/home/<user>/anaconda3/envs/higgs3/bin/python -m vllm.entrypoints.openai.api_server '
+        + '--model /home/<user>/models/Qwen3.5-9B --served-model-name Qwen3.5-9B-bf16 '
         + '--host 127.0.0.1 --port 8300',
     },
     { pid: TEXT_SERVER_CORE, ppid: TEXT_SERVER, args: `${PY} -m vllm.v1.engine.core` },
@@ -234,11 +234,11 @@ async function main() {
     // server's argv, so an exclusion that demanded it would fail on a truncated
     // row — and a failed exclusion is a kill of the thing it protects.
     assert.ok(!TEXT_SERVER_RE.includes('--port'), TEXT_SERVER_RE);
-    const truncated = '/home/telltale/anaconda3/envs/higgs3/bin/python -m vllm.entrypoints.openai.api_';
+    const truncated = '/home/<user>/anaconda3/envs/higgs3/bin/python -m vllm.entrypoints.openai.api_';
     assert.ok(!new RegExp(TEXT_SERVER_RE).test(truncated),
       'a row truncated mid-module is not this server and must not be protected by accident');
     assert.ok(new RegExp(TEXT_SERVER_RE).test(
-      '/home/telltale/anaconda3/envs/higgs3/bin/python -m vllm.entrypoints.openai.api_server --model x'),
+      '/home/<user>/anaconda3/envs/higgs3/bin/python -m vllm.entrypoints.openai.api_server --model x'),
       'a row truncated after the module name must still be protected');
   });
 

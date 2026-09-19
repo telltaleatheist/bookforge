@@ -80,14 +80,14 @@ export interface PairingStart {
 /**
  * Turn what a person typed into a base URL, or refuse and say why.
  *
- * `192.168.68.79`, `192.168.68.79:7100` and `http://192.168.68.79:7100` are the
+ * `192.0.2.79`, `192.0.2.79:7100` and `http://192.0.2.79:7100` are the
  * same server and all three are accepted; a missing port means Crucible's own.
  * A trailing `/v1` is trimmed because that is what gets copied out of a browser
  * bar after visiting the API, and `CrucibleClient` appends its own.
  */
 export function normaliseServerUrl(typed: string): string {
   const raw = typed.trim();
-  if (raw === '') throw new Error('Type the address of a Crucible, e.g. 192.168.68.79');
+  if (raw === '') throw new Error('Type the address of a Crucible, e.g. 192.0.2.79');
   const withScheme = /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(raw) ? raw : `http://${raw}`;
   let parsed: URL;
   try {

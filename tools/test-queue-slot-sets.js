@@ -1047,10 +1047,10 @@ test('THE BENCH REDRAWS WHEN THE RECORD LEARNS — nothing else would ever redra
 
   // A role landing is news too — and takes the orchestrator's row off the bench.
   routes.noteCrucibleRole('mac', {
-    server: { name: 'crucible-orchestrator@owens-pc', version: '0.6.0', apiVersion: 1 },
+    server: { name: 'crucible-orchestrator@example-pc', version: '0.6.0', apiVersion: 1 },
     role: 'orchestrator',
     engine: {
-      name: 'crucible@owens-pc-wsl', url: 'http://127.0.0.1:7100',
+      name: 'crucible@example-pc-wsl', url: 'http://127.0.0.1:7100',
       backend: 'cuda-linux', owner: 'wsl-unit',
     },
   });

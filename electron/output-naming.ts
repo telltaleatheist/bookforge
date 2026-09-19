@@ -11,7 +11,7 @@
  * before filing a new render ("the audiobook it replaces was made from
  * sentences that no longer exist"), and that sweep deleted two professionally
  * read recordings that happened to live in output/ (Shift and Dust,
- * 2026-08-23, recovered from titan's recycle bin) — see memory
+ * 2026-08-23, recovered from the NAS's recycle bin) — see memory
  * audiobook-manifest-registration-gap. The inline TTS path had its own
  * overwrite: e2a writes into the output folder under a name derived from the
  * book, and a second run under the same name simply replaced the first. Both

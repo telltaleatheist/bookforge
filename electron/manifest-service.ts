@@ -6035,7 +6035,7 @@ async function resolveTtsTarget(manifest: ProjectManifest): Promise<TtsTarget | 
  * The same index-counter-plus-N-workers shape `sweepEditorState` uses, for the
  * same reason: the library may be on a network volume, and one `Promise.all`
  * over every project fires as many simultaneous operations as there are books.
- * Measured against the SMB library on titan (410 projects, manifest read + stat
+ * Measured against the SMB library on the NAS (410 projects, manifest read + stat
  * each), that unbounded burst is not the fastest option — it is SLOWER than a
  * bounded pool, because a share only has so many credits and the overflow queues
  * behind itself:

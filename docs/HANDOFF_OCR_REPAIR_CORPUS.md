@@ -1,6 +1,6 @@
 # Hand-off: the OCR repair corpus, to be built on the Mac
 
-Written 2026-08-05 on owens-pc, for whoever picks this up on the Mac. The
+Written 2026-08-05 on example-pc, for whoever picks this up on the Mac. The
 corpus lives there; the GPU lives here. This document is the state of play, the
 facts already established (so nobody re-derives them), and the work to do.
 
@@ -49,17 +49,17 @@ instead of guessing categories from font size.
 
 ## Where things are
 
-| | Mac | owens-pc |
+| | Mac | example-pc |
 |---|---|---|
 | Training corpus | `/Volumes/Callisto/training/rubric/` | — |
 | OCR line corpus | `rubric/galley/sft-line/` (`eval.jsonl`, 21,696 rows) | — |
 | Footnotes corpus | `rubric/dagger/` (`sft/train-v3-4b.jsonl`, 4,398 rows) | — |
-| BookForge checkout | `/Volumes/Callisto/Projects/BookForgeApp` | `C:\Users\tellt\Projects\bookforge` |
-| foundry checkout | (check) | `C:\Users\tellt\Projects\foundry` |
+| BookForge checkout | `/Volumes/Callisto/Projects/BookForgeApp` | `C:\Users\<user>\Projects\bookforge` |
+| foundry checkout | (check) | `C:\Users\<user>\Projects\foundry` |
 | Models (base + adapters) | — | `%LOCALAPPDATA%\foundry\models\` |
 | GPU | no | RTX 3090 Ti |
 
-**Mine and build on the Mac. Train on owens-pc.** The standing corpus-prep
+**Mine and build on the Mac. Train on example-pc.** The standing corpus-prep
 doctrine says not to train on the Mac, and the GPU is here.
 
 **Sync the checkouts with git, never `cp`/`scp`/`rsync`.** Windows has
@@ -265,7 +265,7 @@ wired. **Prove the adapter is active before trusting any number** — generate o
 known-error line with it on and off and show the outputs differ. A whole
 measurement run was nearly spent on the bare base model this way.
 
-**5. GPU courtesy on owens-pc.** Create `%APPDATA%\BookForge\external-gpu-job.lock`
+**5. GPU courtesy on example-pc.** Create `%APPDATA%\BookForge\external-gpu-job.lock`
 while holding the card and remove it after; BookForge's own sweeps check it.
 
 ---
@@ -284,7 +284,7 @@ while holding the card and remove it after; BookForge's own sweeps check it.
 3. **Include the split-word cases** Owen asked for, subject to landmine 2.
 4. **Keep the eval honest**: hold out books, not rows, and report the pair —
    repaired versus degraded — against the do-nothing baseline.
-5. **Train on owens-pc**, not the Mac.
+5. **Train on example-pc**, not the Mac.
 
 Before starting, check the two in-flight measurements above: they may answer
 whether a retrain is needed at all, and whether the extraction fix removes the

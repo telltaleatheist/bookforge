@@ -3,7 +3,7 @@
 # hand the result to Ollama, so BookForge classifies locally.
 #
 #   ./blocks-merge-mac.sh <ollama-name> <remote-checkpoint> [ssh-host]
-#   ./blocks-merge-mac.sh blocks-v2 /home/telltale/xtts_ft/blocks_v2_lora
+#   ./blocks-merge-mac.sh blocks-v2 /home/<user>/xtts_ft/blocks_v2_lora
 #
 # The Mac is the right machine for this even though the model was trained
 # elsewhere. Merging needs the whole 4B base resident (~8 GB fp16) and the
@@ -38,8 +38,9 @@
 set -euo pipefail
 
 NAME="${1:?usage: blocks-merge-mac.sh <ollama-name> <remote-checkpoint> [ssh-host]}"
-REMOTE_CKPT="${2:?remote checkpoint dir, e.g. /home/telltale/xtts_ft/blocks_v2_lora}"
-HOST="${3:-owens-pc}"
+REMOTE_CKPT="${2:?remote checkpoint dir, e.g. /home/<user>/xtts_ft/blocks_v2_lora}"
+# The training box is NAMED, never defaulted — same reason as blocks-deploy.sh.
+HOST="${3:-${BLOCKS_TRAIN_HOST:?name the training box: blocks-merge-mac.sh <name> <ckpt> <ssh-host>, or set BLOCKS_TRAIN_HOST}}"
 QUANT="${BLOCKS_QUANT-q4_K_M}"
 
 WORK="$HOME/blocks-export"
@@ -57,8 +58,10 @@ if [ -d "$CKPT" ]; then
 else
   # WSL paths are not reachable over scp directly; stage through the Windows
   # side, which is the same trick the rest of this toolchain uses.
-  ssh "$HOST" "wsl -d Ubuntu -- tar -C $(dirname "$REMOTE_CKPT") -czf /mnt/c/Users/tellt/blocks-ckpt.tgz $(basename "$REMOTE_CKPT")"
-  scp "$HOST:blocks-ckpt.tgz" "$WORK/"
+  ssh "$HOST" "wsl -d Ubuntu -- tar -C $(dirname "$REMOTE_CKPT") -czf \$HOME/blocks-ckpt.tgz $(basename "$REMOTE_CKPT")"
+  # Out of the GUEST home over ssh stdout: /mnt/c/Users/<somebody> would be one
+  # machine's account, and the guest's own $HOME is the same directory on any.
+  ssh "$HOST" "wsl -d Ubuntu -- cat \$HOME/blocks-ckpt.tgz" > "$WORK/blocks-ckpt.tgz"
   tar -C "$WORK" -xzf "$WORK/blocks-ckpt.tgz"
   rm -f "$WORK/blocks-ckpt.tgz"
 fi

@@ -68,7 +68,7 @@ function bookOrSkipReason() {
       + ' — this suite needs the Killing America EPUB, which is on the shared library, '
       + 'not in the repo: <library>/projects/Killing_America_-_Turning_the_Tide_on_the_'
       + 'Tsunami_of_Darkness_-_Gene_Bailey_(2024)/archive/Killing America. Bailey, Gene.epub '
-      + '(Windows Z:\\bookforge\\…, Mac /Volumes/iO/bookforge/…). The variable says WHERE '
+      + '(Windows Z:\\<library>\\…, Mac /Volumes/<share>/bookforge/…). The variable says WHERE '
       + 'the book is on this machine, not WHICH book. It is only ever READ.',
   };
 }

@@ -6,19 +6,19 @@ this file wins; where this file is silent, the plan wins.
 
 ## Ground rules (apply to every builder)
 
-- Worktree: `C:\Users\tellt\Projects\bookforge\.claude\worktrees\narrator` (branch
+- Worktree: `C:\Users\<user>\Projects\bookforge\.claude\worktrees\narrator` (branch
   `feat/narrator`). Work ONLY here. Do not touch the main checkout, do not commit, do
   not push. The orchestrator reviews and commits.
-- `C:\Users\tellt\Projects\ebook2audiobook` (branch `bookforge`, HEAD `9daab0ba`) is
+- `C:\Users\<user>\Projects\ebook2audiobook` (branch `bookforge`, HEAD `9daab0ba`) is
   READ-ONLY source material. Never edit it, never run anything that writes into it.
   Note the commit you ported from in every ported module's docstring
   (`Ported from ebook2audiobook@9daab0ba lib/core.py:combine_audio_chapters`).
 - Python 3.11 compatible (the WSL env is 3.11; the Windows env is 3.12). Pure
   stdlib + numpy + soundfile for everything outside `engine/`. No new third-party
   dependencies without writing WHY in the module docstring.
-- Windows interpreter for tests: `C:\Users\tellt\Projects\ebook2audiobook\python_env\python.exe`
+- Windows interpreter for tests: `C:\Users\<user>\Projects\ebook2audiobook\python_env\python.exe`
   (3.12, numpy 1.26.4, soundfile 0.13.1, NO pytest). WSL interpreter:
-  `/home/telltale/anaconda3/envs/orpheus_tts/bin/python` (3.11, has pytest — do not
+  `/home/<user>/anaconda3/envs/orpheus_tts/bin/python` (3.11, has pytest — do not
   rely on it). Tests are `unittest` modules under `python/narrator/tests/`, run with
   `python -m unittest discover -s python/narrator/tests -t python` from the worktree root.
   Every test must pass under the Windows interpreter before you report.
@@ -34,7 +34,7 @@ this file wins; where this file is silent, the plan wins.
 - Scratch: `C:\tmp\narrator-<yourname>\` for anything transient; delete what you create
   when you are done. Golden copies live in `C:\tmp\narrator-golden\` (owned by the
   golden builder; read-only for everyone else).
-- The library is on `Z:\bookforge` (a network drive: slow, and invisible to WSL).
+- The library is on `Z:\<library>` (a network drive: slow, and invisible to WSL).
   Read from it; never write into a project directory there.
 - No GPU work unless your brief explicitly allows it and states the guard.
 - Final report: every file created/changed, what was run and its exact result, what
@@ -213,7 +213,7 @@ binaries read `NARRATOR_GOLDEN_LOCAL` (default `C:\tmp\narrator-golden`) and SKI
 with a clear message when the directory is absent - that is the one permitted
 "missing input" behaviour, and only in tests.
 
-Golden slugs for this phase (chosen 2026-09-04 from `Z:\bookforge\projects`):
+Golden slugs for this phase (chosen 2026-09-04 from `Z:\<library>\projects`):
 
 | slug | project dir | chunks | why |
 |---|---|---|---|

@@ -361,7 +361,7 @@ check('the checkpoint dir is the PRODUCTION one, not the staging convention', ()
 check('deathstalker is staged on BOTH arms, each in that arm\'s own shape', () => {
   // THE GAP THIS BRANCH CLOSES. One `checkpointDir` string could only be one
   // machine's path, and it was the guest's — so the Mac's voice document carried
-  // /home/telltale/… and the MLX backend refused a directory that machine has
+  // /home/<user>/… and the MLX backend refused a directory that machine has
   // never had. The Mac copy was staged 2026-09-05 (same basename, sha-verified
   // against the frozen WSL dir).
   //
@@ -399,7 +399,7 @@ check('a MISSHAPEN per-arm path is refused when the catalog is READ, not when it
 
   const darwinAbsolute = probeVoice({
     kind: 'checkpoint',
-    voice: { checkpoint: { darwin: '/Users/telltale/Library/Application Support/BookForge/x' } },
+    voice: { checkpoint: { darwin: '/Users/<user>/Library/Application Support/BookForge/x' } },
     backends: { served: { maxChars: 900, maxCharsSource: 'length-sweep' } },
   });
   assert.throws(() => higgs.higgsVoicesDocument(darwinAbsolute, MAC_DOC),
@@ -883,7 +883,7 @@ check('a clone voice document carries path, transcript AND seconds', () => {
 //
 // A `checkpoint` voice is ~8.5 GB on disk and the two arms cannot see each
 // other's disks. Until 2026-09-05 the catalog held ONE `checkpointDir`, and it
-// was the WSL guest's — so a Mac render was handed /home/telltale/… and refused
+// was the WSL guest's — so a Mac render was handed /home/<user>/… and refused
 // it deep inside narrator, after the environment had already been declared green.
 console.log('per-arm checkpoint staging');
 
@@ -897,10 +897,10 @@ function stagedVoice(checkpoint, extra) {
 }
 
 check('a WSL-only fine-tune is REFUSED ON DARWIN, by name, and loads on WSL', () => {
-  const m = stagedVoice({ wsl: '/home/telltale/higgs_v3_merged/ds' });
+  const m = stagedVoice({ wsl: '/home/<user>/higgs_v3_merged/ds' });
 
   const doc = onArm('wsl', () => higgs.higgsVoicesDocument(m, WSL_DOC));
-  assert.strictEqual(doc.ft.checkpointDir, '/home/telltale/higgs_v3_merged/ds',
+  assert.strictEqual(doc.ft.checkpointDir, '/home/<user>/higgs_v3_merged/ds',
     'the arm that HAS the weights did not get them');
 
   let threw = null;
@@ -910,7 +910,7 @@ check('a WSL-only fine-tune is REFUSED ON DARWIN, by name, and loads on WSL', ()
   // never a search of the disk.
   assert.match(threw.message, /Higgs voice "ft" is not staged for the Mac/);
   assert.match(threw.message, /no darwin checkpoint in the catalog/);
-  assert.ok(!/\/home\/telltale/.test(threw.message.split('it names only')[0]),
+  assert.ok(!/\/home\/<user>/.test(threw.message.split('it names only')[0]),
     "the refusal offered the WSL path as if it were an answer");
   assert.match(threw.message, /new certificate/,
     'the refusal does not say that staging a copy means measuring again');
@@ -931,13 +931,13 @@ check('a darwin-only fine-tune is REFUSED ON WSL, by name', () => {
 
 check('staged on BOTH arms: each arm gets ITS path, absolute and arm-shaped', () => {
   const m = stagedVoice({
-    wsl: '/home/telltale/higgs_v3_merged/ds_ad4lm_prod_ckpt1080',
+    wsl: '/home/<user>/higgs_v3_merged/ds_ad4lm_prod_ckpt1080',
     darwin: 'runtime/higgs-models/ds_ad4lm_prod_ckpt1080',
   });
 
   const wsl = onArm('wsl', () => higgs.higgsVoicesDocument(m, WSL_DOC));
   assert.strictEqual(wsl.ft.checkpointDir,
-    '/home/telltale/higgs_v3_merged/ds_ad4lm_prod_ckpt1080',
+    '/home/<user>/higgs_v3_merged/ds_ad4lm_prod_ckpt1080',
     'the WSL document does not carry the GUEST path');
 
   const mac = onArm('darwin', () => higgs.higgsVoicesDocument(m, MAC_DOC));
@@ -1017,7 +1017,7 @@ function withExtraVoices(extra, fn) {
 check('a fine-tune certified on ONE arm is renderable there and greyed on the other', () => {
   const wslOnly = {
     id: 'wslonly', label: 'WSL-only fine-tune', kind: 'checkpoint', engineVersion: 'v3',
-    voice: { checkpoint: { wsl: '/home/telltale/higgs_v3_merged/wslonly' } },
+    voice: { checkpoint: { wsl: '/home/<user>/higgs_v3_merged/wslonly' } },
     license: 'x', commercialUse: false, sampleRate: 24000, addedAt: '2026-09-05',
     backends: { served: { maxChars: 1200, maxCharsSource: 'length-sweep' } },
   };
@@ -1042,7 +1042,7 @@ check('a fine-tune certified on ONE arm is renderable there and greyed on the ot
 });
 
 check('the reason the picker shows is the REFUSAL, not a second description of it', () => {
-  const m = stagedVoice({ wsl: '/home/telltale/higgs_v3_merged/ds' });
+  const m = stagedVoice({ wsl: '/home/<user>/higgs_v3_merged/ds' });
   const reason = onArm('darwin', () => higgs.higgsVoiceUnavailableReason(m, PICKER_USER_DATA));
   assert.ok(reason, 'a voice with no copy on this arm was reported as available');
   assert.match(reason, /is not staged for the Mac/);
@@ -2270,13 +2270,13 @@ if (skipWhy) {
       // script receives inside the guest, and load_voices never opens it (only
       // clips are checked for existence), so a real Windows temp dir would be
       // the wrong shape for the right reason.
-      voice: { checkpoint: { wsl: '/home/telltale/higgs_v3_merged/ft' } },
+      voice: { checkpoint: { wsl: '/home/<user>/higgs_v3_merged/ft' } },
       backends: { served: { maxChars: 1350, maxCharsSource: 'length-sweep', referenceSecondsCap: 30, allowedControls: [] } },
     });
     const r = runLoad(higgs.higgsVoicesDocument(m, WSL_DOC));
     assert.strictEqual(r.status, 0, 'narrator refused it:\n' + (r.stderr || '').trim());
     const got = JSON.parse(r.stdout.trim().split('\n').pop());
-    assert.strictEqual(got.checkpoint, '/home/telltale/higgs_v3_merged/ft');
+    assert.strictEqual(got.checkpoint, '/home/<user>/higgs_v3_merged/ft');
     assert.strictEqual(got.max_chars, 1350);
     assert.strictEqual(got.source, 'length-sweep');
   });
@@ -2363,7 +2363,7 @@ if (skipWhy) {
     // `_voice_sampling` DOES refuse an unknown key, so a merged block has to
     // contain only the three levers.
     const m = higgs.higgsModelForRender('deathstalker', {
-      checkpointDir: '/home/telltale/higgs_v3_merged/ds_v8_1200_test',
+      checkpointDir: '/home/<user>/higgs_v3_merged/ds_v8_1200_test',
       sampling: { temperature: 0.8 },
       note: 'keeper: the override document must load in narrator',
     });
@@ -2372,7 +2372,7 @@ if (skipWhy) {
     const got = JSON.parse(r.stdout.trim().split('\n').pop());
     assert.strictEqual(got.name, 'deathstalker+ds_v8_1200_test');
     assert.strictEqual(got.cls, 'DefaultVoice', 'an override checkpoint must be prompted TEXT-ONLY');
-    assert.strictEqual(got.checkpoint, '/home/telltale/higgs_v3_merged/ds_v8_1200_test');
+    assert.strictEqual(got.checkpoint, '/home/<user>/higgs_v3_merged/ds_v8_1200_test');
     // MERGED, not replaced: narrator's own docstring warns that a partial block
     // leaves the rest at the checkpoint's generation_config.json (1.0, which
     // nobody chose), so the override must arrive complete.
@@ -2437,7 +2437,7 @@ check('NO override is the catalog, unchanged — same model, same refusals', () 
 
 check('an override DERIVES from the base voice: id names both, kind is checkpoint', () => {
   const m = higgs.higgsModelForRender('deathstalker', {
-    checkpointDir: '/home/telltale/higgs_v3_merged/ds_v8_1200_test',
+    checkpointDir: '/home/<user>/higgs_v3_merged/ds_v8_1200_test',
     note: 'keeper',
   });
   // The id is what `--higgs_voice` carries, what keys the document, and what
@@ -2448,7 +2448,7 @@ check('an override DERIVES from the base voice: id names both, kind is checkpoin
   assert.match(m._overrideNote, /keeper/);
   // ONLY THIS ARM. Claiming the other one asserts a copy on a disk nobody looked
   // at — the same mistake the retired single `checkpointDir` string made.
-  assert.deepStrictEqual(m.voice.checkpoint, { wsl: '/home/telltale/higgs_v3_merged/ds_v8_1200_test' });
+  assert.deepStrictEqual(m.voice.checkpoint, { wsl: '/home/<user>/higgs_v3_merged/ds_v8_1200_test' });
   // The CATALOG is untouched: a later resolve must not see the override.
   assert.deepStrictEqual(higgs.resolveHiggsModel('deathstalker').voice.checkpoint, {
     wsl: '/home/telltale/higgs_v3_merged/ds_v8_rvcbed1_3658_prod',
@@ -2460,7 +2460,7 @@ check("a base of kind 'default' takes a checkpoint — base weights are a legal 
   // The zero-shot 600 placeholder is what such a run is judged against, and it
   // is stated rather than inherited silently: `maxCharsSource` says 'placeholder'.
   const m = higgs.higgsModelForRender('default', {
-    checkpointDir: '/home/telltale/higgs_v3_merged/fresh_merge',
+    checkpointDir: '/home/<user>/higgs_v3_merged/fresh_merge',
     note: 'keeper: a fresh merge nobody has certified',
   });
   assert.strictEqual(m.id, 'default+fresh_merge');
@@ -2472,7 +2472,7 @@ check("a base of kind 'default' takes a checkpoint — base weights are a legal 
 
 check("a 'clips' base + a checkpoint is REFUSED — the checkpoint IS the voice", () => {
   const err = overrideThrows('zeroshot-deathstalker', {
-    checkpointDir: '/home/telltale/higgs_v3_merged/ds_v8_1200_test',
+    checkpointDir: '/home/<user>/higgs_v3_merged/ds_v8_1200_test',
     note: 'keeper',
   });
   assert.ok(err, 'a clips voice accepted a checkpoint');
@@ -2525,7 +2525,7 @@ onArm('darwin', () => {
     // repo-tracked absolute Mac path names a directory on exactly one machine.
     const m = probeVoice({
       id: 'hand-edited', kind: 'checkpoint',
-      voice: { checkpoint: { darwin: '/Users/telltale/merged/ds' } },
+      voice: { checkpoint: { darwin: '/Users/<user>/merged/ds' } },
       backends: { mlx: { maxChars: 800, maxCharsSource: 'catalog' } },
     });
     assert.throws(() => higgs.higgsCheckpointDirFor(m, 'darwin', MAC_USER_DATA), /is absolute/);

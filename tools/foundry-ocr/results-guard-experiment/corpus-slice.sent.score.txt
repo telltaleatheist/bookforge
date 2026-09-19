@@ -1,4 +1,4 @@
-eval-guard — 284 units from C:/Users/tellt/AppData/Local/Temp/claude/C--Users-tellt-Projects-bookforge/086cf711-ae6e-4b04-8dab-8263f60b671f/scratchpad/data/slice.sent.jsonl
+eval-guard — 284 units from C:/Users/<user>/AppData/Local/Temp/claude/C--Users-tellt-Projects-bookforge/086cf711-ae6e-4b04-8dab-8263f60b671f/scratchpad/data/slice.sent.jsonl
   generated 2026-08-05T00:51:53-0400 in 107.6s on http://127.0.0.1:8771
   server args: llama-server.exe -m foundry-4b-f16.gguf -c 32768 -np 16 -ngl 99 --no-webui --lora-scaled ../../../../AppData/Local/foundry/models/foundry-ocr-v1-4b.gguf:0.0 [b7482 CUDA 12.4, RTX 3090 Ti]
 
@@ -13,7 +13,7 @@ policy        CER before  CER after  degraded  deg/100k  rep/100k  falseEdit  co
   per-run        0.327%     0.277%        37      54.1     104.4     13.81%          110   68.0%
 
   284 units, 77565 gold characters, 181 already correct (63.7%)
-  model C:/Users/tellt/AppData/Local/foundry/models/foundry-4b-f16.gguf
+  model C:/Users/<user>/AppData/Local/foundry/models/foundry-4b-f16.gguf
 
   A model only beats "do nothing" by moving CER down without moving degraded
   and falseEdit up. `degraded` counts UNITS — compare it only within one unit
@@ -153,4 +153,4 @@ WORST DAMAGE UNDER per-run (5 of 37) — read these, do not average them
     OUT  "To both Michelle and Dr. Pazder, the friendship of Bishop De Roo has meant much. From their first meeting with him they have found him acute and compassionate. When Michelle's remembering was finished, he asked a priest and scholar, Father Améthée Dupas, to make a thorough investigation. Working eighteen hours a day for a week,"
     GOLD "To both Michelle and Dr. Pazder, the friendship of Bishop De Roo has meant much. From their first meeting with him they have found him acute and compassionate. When Michelle's remembering was finished, he asked a priest and scholar, Father Amedee Dupas, to make a thorough investigation. Working eighteen hours a day for a week,"
 
-wrote C:/Users/tellt/AppData/Local/Temp/claude/C--Users-tellt-Projects-bookforge/086cf711-ae6e-4b04-8dab-8263f60b671f/scratchpad/data/slice.sent.stats.json
+wrote C:/Users/<user>/AppData/Local/Temp/claude/C--Users-tellt-Projects-bookforge/086cf711-ae6e-4b04-8dab-8263f60b671f/scratchpad/data/slice.sent.stats.json

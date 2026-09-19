@@ -129,7 +129,7 @@ const HERE_URL = 'http://127.0.0.1:7100';
 const HERE_NAME = '3090 Ti';
 
 const LOCAL_HERE = () => ({
-  name: 'crucible@owens-pc-wsl',
+  name: 'crucible@example-pc-wsl',
   url: HERE_URL,
   token: 'tok',
   configPath: path.join(MAC_HOME, 'config.toml'),
@@ -139,7 +139,7 @@ const LOCAL_HERE = () => ({
 /** The registry, scripted: `3090 Ti` is here, `mac` is somewhere else. */
 const REGISTRY = (name) => {
   if (name === HERE_NAME) return HERE_URL;
-  if (name === 'mac') return 'http://owens-mac-studio.hs.owenmorgan.com:7100';
+  if (name === 'mac') return 'http://mac.example.test:7100';
   throw new CrucibleRegistryError('unknown_server', `no crucible server named "${name}"`);
 };
 

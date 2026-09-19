@@ -47,7 +47,7 @@ whole point. What narrator never does is call it.
 | machine | interpreter | stanza | STANZA_RESOURCES_DIR | models present |
 |---|---|---|---|---|
 | Windows | `ebook2audiobook\\python_env\\python.exe` (3.12.12) | 1.10.1 | `<e2a>\\models\\stanza` (set by `lib/conf.py:78`, NOT in the ambient env) | **NONE** - the directory does not exist |
-| WSL Ubuntu | `/home/telltale/anaconda3/envs/orpheus_tts/bin/python` (3.11.14) | 1.11.0 | `/home/telltale/ebook2audiobook/models/stanza` (same line) | `en`, `de`, `resources.json` - 591 MB |
+| WSL Ubuntu | `/home/<user>/anaconda3/envs/orpheus_tts/bin/python` (3.11.14) | 1.11.0 | `/home/<user>/ebook2audiobook/models/stanza` (same line) | `en`, `de`, `resources.json` - 591 MB |
 
 `STANZA_RESOURCES_DIR` is unset in both ambient environments (checked in WSL
 through a login shell, which is how `spawnWithWslSupport` runs Orpheus); e2a sets

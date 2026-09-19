@@ -17,9 +17,9 @@ patches),
 vocabulary), `work/refs/manifest.json` (the reference clips) and
 `work/serve_v3c.log` (the route table).
 
-THE ENVIRONMENT (owens-pc, WSL Ubuntu, RTX 3090 Ti)
+THE ENVIRONMENT (example-pc, WSL Ubuntu, RTX 3090 Ti)
 
-    env      /home/telltale/anaconda3/envs/higgs3 (python 3.11,
+    env      /home/<user>/anaconda3/envs/higgs3 (python 3.11,
              torch 2.13.0+cu130, vllm 0.28.0, vllm-omni 0.28.0)
     launch   BookForge's serve_higgs_v3.sh (transcribed from the campaign's
              serve_v3.sh) - vllm-omni serve <model dir> --served-model-name
@@ -184,7 +184,7 @@ WSL_DISTRO_ENV = 'NARRATOR_HIGGS3_WSL_DISTRO'
 #:
 #: Normally it CAN: vllm-omni 0.28's `/v1/models` carries `"root": <the model
 #: path the server was started on>` beside the served name (measured on
-#: owens-pc 2026-09-05: root = the base snapshot path when the launcher was
+#: example-pc 2026-09-05: root = the base snapshot path when the launcher was
 #: started without HIGGS_MODEL_DIR), and `running_checkpoint()` reads it. This
 #: variable is the operator's assertion for a server build whose model list
 #: does NOT carry a root; it is consulted only then, and never overrides a root
@@ -482,7 +482,7 @@ def _check_override_script(path: str, variable: str) -> None:
     WHAT CANNOT BE CHECKED is a GUEST path on the Windows arm - exactly the
     three forms `served_common.to_wsl` rewrites into the distro:
 
-      /home/telltale/.../serve_higgs_v3.sh    BookForge's own
+      /home/<user>/.../serve_higgs_v3.sh    BookForge's own
                                               (higgs-spawn.ts
                                               `serveScriptGuestPath`)
       \\wsl$\Ubuntu\...                       the same file named as a share
@@ -1379,7 +1379,7 @@ class HiggsV3ServedBackend(GuestOwnedServer):
         bug. Without it `wsl.exe` hands the command line to the distro's DEFAULT
         SHELL, which expands every `$` before `bash -c` sees the script - so
         `_wrapper()`'s `echo $! > <pidfile>; wait $!` wrote an EMPTY pid file and
-        degenerated into a bare `wait`. Measured on owens-pc 2026-09-05 through
+        degenerated into a bare `wait`. Measured on example-pc 2026-09-05 through
         this exact argv: bare and `--` both write `pid=[]`; `--exec` writes
         `pid=[42679]`. The consequence is not cosmetic - `stop()` could then
         never signal the server BY PID inside the distro, which is the one path

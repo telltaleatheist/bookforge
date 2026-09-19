@@ -2,7 +2,7 @@
  * What makes two audiobook rows THE SAME BOOK on the shelf.
  *
  * The shelf fans `/api/books` across every enabled server and collapses the
- * result, so one book mirrored on the PC and on titan draws one card. The
+ * result, so one book mirrored on the PC and on the NAS draws one card. The
  * collapsing key can't be the absolute path (the same file has a different one
  * on each server) — it has to be the part of the path that is identical
  * everywhere.

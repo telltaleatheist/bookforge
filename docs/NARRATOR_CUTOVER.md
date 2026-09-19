@@ -443,7 +443,7 @@ produced audio.
 **DEFERRED, not merely owed (Owen, 2026-09-05).** It was scheduled into the
 Windows GPU window of 2026-09-05 and cut from it: the training session needed the
 card back, and the run is to be made against the CERTIFIED PRODUCTION CHECKPOINT
-rather than `/home/telltale/higgs_v3_merged/ds_ad4lm`. So the next attempt is
+rather than `/home/<user>/higgs_v3_merged/ds_ad4lm`. So the next attempt is
 waiting on a checkpoint, not on a GPU. It is still the first live Higgs-on-Listen
 anywhere whenever it happens — the Mac's has not run either.
 
@@ -491,7 +491,7 @@ wsl.exe -d Ubuntu bash -c 'export PYTHONUNBUFFERED=1 PYTHONIOENCODING=utf-8 \
      python -u -m narrator.compat.app --headless --ebook <staged>.epub \
      --session <uuid> --session_dir <guest tmp>/ebook-<uuid> --language en \
      --tts_engine orpheus --device CPU --prep_only \
-     --orpheus_model_dir /home/telltale/orpheus-models/mistborn \
+     --orpheus_model_dir /home/<user>/orpheus-models/mistborn \
      --fine_tuned mistborn'
 ```
 
@@ -554,7 +554,7 @@ the bridge can see it. It does.
 
 #### `normalizeWslSessionToWindows` ran, and assembly was native
 
-The copy ran inside the guest (`wsl.exe … cp -r /home/telltale/… /mnt/c/…`),
+The copy ran inside the guest (`wsl.exe … cp -r /home/<user>/… /mnt/c/…`),
 `session-state.json`'s paths were rewritten to the Windows tree, the GPU lock was
 released, and assembly then ran in the native tools env:
 
@@ -667,7 +667,7 @@ remaining 20 slices arrive faster than they play.
 
 **Higgs v3 served on Listen** was cut from this window by Owen: the training
 session needed the card back, and the run will be made against the CERTIFIED
-production checkpoint rather than `/home/telltale/higgs_v3_merged/ds_ad4lm`. The
+production checkpoint rather than `/home/<user>/higgs_v3_merged/ds_ad4lm`. The
 argv/env snapshot remains its only proof. It is still the FIRST live Higgs-on-Listen
 anywhere when it happens.
 
@@ -859,9 +859,9 @@ measurement that justified the work. What actually changed is in
 Measured on this machine, 2026-09-05:
 
 ```
-e2a root  : C:\Users\tellt\Projects\ebook2audiobook
-tools env : C:\Users\tellt\Projects\ebook2audiobook\python_env
-tmp root  : C:\Users\tellt\Projects\ebook2audiobook\tmp
+e2a root  : C:\Users\<user>\Projects\ebook2audiobook
+tools env : C:\Users\<user>\Projects\ebook2audiobook\python_env
+tmp root  : C:\Users\<user>\Projects\ebook2audiobook\tmp
 ```
 
 The tools environment — the bundled relocatable python that every assembly,

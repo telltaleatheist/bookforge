@@ -64,7 +64,7 @@
    },
    "total_slots": 8,
    "model_alias": "foundry-4b-f16.gguf",
-   "model_path": "/Users/telltale/Library/Application Support/foundry/models/foundry-4b-f16.gguf",
+   "model_path": "/Users/<user>/Library/Application Support/foundry/models/foundry-4b-f16.gguf",
    "modalities": {
     "vision": false,
     "audio": false

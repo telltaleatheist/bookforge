@@ -1,4 +1,4 @@
-# BookForge Bookshelf — standalone (library-only) server, for titan (UGREEN NAS).
+# BookForge Bookshelf — standalone (library-only) server, for the NAS (UGREEN NAS).
 #
 #   cd <repo root>
 #   npm run build:electron
@@ -18,13 +18,13 @@ services:
     container_name: bookforge-bookshelf
     restart: unless-stopped
     # First-boot sweep over a cold library (cover-cracking + durations for 170
-    # m4bs) blew node's 2 GB default heap (titan, 2026-08-24). 4 GB heap in a
+    # m4bs) blew node's 2 GB default heap (the NAS, 2026-08-24). 4 GB heap in a
     # 5 GB cap: the host never suffocates, an OOM-kill restarts cleanly.
     mem_limit: 5g
 
     ports:
       # host:container. 8765 is the port the desktop app serves on, so a phone
-      # already paired with owens-pc finds the mirror at the same port on titan.
+      # already paired with example-pc finds the mirror at the same port on the NAS.
       - "8765:8765"
 
     volumes:
@@ -35,7 +35,7 @@ services:
       # primary — mounting the library read-only would silently lose every
       # position the phone saves while the PC is off.
       #
-      # PLACEHOLDER: titan's real path for \\TITAN\iO\bookforge (Z:\bookforge on
+      # PLACEHOLDER: the NAS's real path for \\NAS\iO\bookforge (Z:\<library> on
       # the PC). On UGOS this is typically /volume1/<share>/bookforge — check
       # with `ls /volume*` on the NAS before bringing this up.
       - /volume1/iO/bookforge:/library
@@ -61,7 +61,7 @@ services:
     # readiness signal. Nothing here needs privileged access or a device.
 
 # A core-dump janitor sidecar is worth adding on hosts whose kernel dumps to a
-# small tmpfs (see titan's /volume1/System/bookshelf-server/compose.yml): 196k
+# small tmpfs (see the NAS's /volume1/System/bookshelf-server/compose.yml): 196k
 # smbd cores once filled /tmp and took the whole NAS's daemons down with it.
 
 volumes:

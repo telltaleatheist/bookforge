@@ -50,9 +50,9 @@ import { getServer } from './servers';
  *
  * BOTH COMPONENTS ARE PERCENT-ENCODED WITH NOTHING SAFE, which is `quote(...,
  * safe='')` on the other side. The name is the half that matters today:
- * `crucible@owens-pc-wsl` carries an `@`, and unencoded it would make the
+ * `crucible@example-pc-wsl` carries an `@`, and unencoded it would make the
  * authority start at the wrong one — the line would parse, name the host
- * `owens-pc-wsl`, and be wrong in a way that looks right. The token is encoded
+ * `example-pc-wsl`, and be wrong in a way that looks right. The token is encoded
  * for the reason `operatorUrl` states: `secrets.token_urlsafe` emits only
  * unreserved characters today, so it changes nothing today, which is precisely
  * when a rule should be written down.

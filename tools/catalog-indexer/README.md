@@ -68,7 +68,7 @@ gh workflow run catalog-indexer.yml --repo telltaleatheist/bookforge
 ```
 
 (This replaces the old Triton cron that wrote `catalog.json`/`manifest.json` to
-the owenmorgan.com docroot.)
+a web server's docroot.)
 
 ## Safety
 

@@ -7,9 +7,9 @@ enumerate them before changing a byte").
 
 Produced 2026-09-04 by grepping, in the two read-only checkouts:
 
-- BookForge main `C:\Users\tellt\Projects\bookforge` - `electron/`, `cli/`,
+- BookForge main `C:\Users\<user>\Projects\bookforge` - `electron/`, `cli/`,
   `shared/`, `src/`
-- ebook2audiobook `C:\Users\tellt\Projects\ebook2audiobook` at `9daab0ba` -
+- ebook2audiobook `C:\Users\<user>\Projects\ebook2audiobook` at `9daab0ba` -
   `bookforge_ext/`, `lib/core.py`
 
 Patterns: `chapters/sentences`, `sentences_dir`/`sentencesDir`,

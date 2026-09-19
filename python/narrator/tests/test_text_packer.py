@@ -45,10 +45,10 @@ from narrator.text.chapters import ChapterContext, filter_chapter  # noqa: E402
 
 #: The read-only ebook2audiobook checkout, for the copied-table comparison below.
 #: Windows default; `NARRATOR_E2A_ROOT` names it on the other two machines
-#: (WSL `/home/telltale/ebook2audiobook`, Mac
-#: `/Users/telltale/Projects/ebook2audiobook-latest`).
+#: (WSL `/home/<user>/ebook2audiobook`, Mac
+#: `/Users/<user>/Projects/ebook2audiobook-latest`).
 E2A_ROOT = os.environ.get('NARRATOR_E2A_ROOT',
-                          r'C:\Users\tellt\Projects\ebook2audiobook')
+                          r'C:\Users\<user>\Projects\ebook2audiobook')
 
 
 class _FixtureDoc:

@@ -164,7 +164,7 @@ roster, and a voice not in it is refused by name.
                                   //   `path` = a NAME under <userData>/runtime/
                                   //   higgs-models/refs/, or an absolute host path
       "checkpoint": {             //   a MERGED fine-tune dir (~8.5 GB), ONE PER ARM
-        "wsl":    "/home/telltale/higgs_v3_merged/<dir>",   // guest-absolute
+        "wsl":    "/home/<user>/higgs_v3_merged/<dir>",   // guest-absolute
         "darwin": "runtime/higgs-models/<dir>"              // relative to userData
       }
     },
@@ -298,7 +298,7 @@ Two rules, both discovered the same way: **the two Higgs arms cannot see each
 other's disks, and cannot inherit each other's measurements.**
 
 **THE PATH.** A `checkpoint` voice had ONE `voice.checkpointDir`, and it held the
-WSL guest's path. On the Mac that wrote `/home/telltale/higgs_v3_merged/...` into
+WSL guest's path. On the Mac that wrote `/home/<user>/higgs_v3_merged/...` into
 the voice document and the MLX backend refused a directory that machine has never
 had - correctly, by name, and five minutes after the environment had been reported
 green. The merged directory is now staged on the Mac too (2026-09-05, sha256-verified
@@ -307,7 +307,7 @@ against the frozen WSL dir, same basename), so the catalog names it once per arm
 | key | shape | why |
 |---|---|---|
 | `wsl` | **absolute**, guest-resident (`/home/...`, or its `\\wsl$\<distro>\...` UNC form) | it is what the launch script is started on INSIDE the guest, whose home is fixed. A `C:` path is not another spelling - it is a different directory, behind the 9p mount, which is ruinous for 8.5 GB |
-| `darwin` | **relative to the app's userData** (`runtime/higgs-models/<dir>`) | a Mac's Application Support path carries the ACCOUNT NAME, so an absolute `/Users/telltale/...` in a repo-tracked catalog names a directory that exists on exactly one machine. The app knows its userData; the catalog does not |
+| `darwin` | **relative to the app's userData** (`runtime/higgs-models/<dir>`) | a Mac's Application Support path carries the ACCOUNT NAME, so an absolute `/Users/<user>/...` in a repo-tracked catalog names a directory that exists on exactly one machine. The app knows its userData; the catalog does not |
 
 The exact Mac location today:
 
@@ -748,8 +748,8 @@ and in the catalog's `_checkpointDirNote`, and a change to any part of it means 
 
 | directory | what it is | certificate |
 |---|---|---|
-| `/home/telltale/higgs_v3_merged/ds_ad4lm_prod_ckpt1080` | **PRODUCTION.** ckpt-1080, the lowest-loss checkpoint, chosen by Owen after an ear test. What `electron/data/higgs-models.json` names | **none yet** — staged, not served-certified. `maxChars` is null and the loader refuses the voice |
-| `/home/telltale/higgs_v3_merged/ds_ad4lm_prod` | **ALTERNATE.** ckpt-480, the rule-picked checkpoint. Kept on disk | **`max_chars` 1200**, certified 2026-09-05 against this directory and the patched stage processor `0b36f650…` |
+| `/home/<user>/higgs_v3_merged/ds_ad4lm_prod_ckpt1080` | **PRODUCTION.** ckpt-1080, the lowest-loss checkpoint, chosen by Owen after an ear test. What `electron/data/higgs-models.json` names | **none yet** — staged, not served-certified. `maxChars` is null and the loader refuses the voice |
+| `/home/<user>/higgs_v3_merged/ds_ad4lm_prod` | **ALTERNATE.** ckpt-480, the rule-picked checkpoint. Kept on disk | **`max_chars` 1200**, certified 2026-09-05 against this directory and the patched stage processor `0b36f650…` |
 
 Both are **frozen**: a re-merge or a recipe change writes a new directory name and
 re-certifies, and since 2026-09-05 a merged directory may not be **renamed**
@@ -831,7 +831,7 @@ the rename, and the original value is **kept** rather than overwritten
 
 | | |
 |---|---|
-| `merge_manifest.out` | `/home/telltale/higgs_v3_merged/ds_ad4lm_prod_ckpt1080` ✓ |
+| `merge_manifest.out` | `/home/<user>/higgs_v3_merged/ds_ad4lm_prod_ckpt1080` ✓ |
 | `generation_config._written_by` | `merge_for_serving.py for ds_ad4lm_prod_ckpt1080 (from runs/ds_ad4lm_prod/generation_config.override.json)` ✓ |
 | `lora` | `runs/ds_ad4lm_prod/ckpt-1080` — unchanged |
 | snapshot | `239f63fb…` — unchanged |
@@ -1011,7 +1011,7 @@ into `convert` (served, MLX) and the MLX batch path:
 started with, is therefore a hard ceiling on the audio length of **every** render,
 and no request parameter can raise it.
 
-MEASURED 2026-09-05 (owens-pc, RTX 3090 Ti, vllm-omni 0.28.0): vllm-omni's
+MEASURED 2026-09-05 (example-pc, RTX 3090 Ti, vllm-omni 0.28.0): vllm-omni's
 auto-discovered `higgs_multimodal_qwen3.yaml` sets it to **2048 frames = 81.92 s**.
 A chunk needing more audio than that is **cut mid-sentence**, and the request still
 reports success — there is no error to notice, only a book with clipped paragraphs.
@@ -1065,7 +1065,7 @@ GPU KV cache size: 61,120 tokens
 ```
 
 i.e. stage 0 holds 7.72 GiB of weights **and** 8.4 GiB of cache. Reading the fraction
-as a cap is what overcommitted the card. MEASURED on owens-pc (24.5 GB), 2026-09-05:
+as a cap is what overcommitted the card. MEASURED on example-pc (24.5 GB), 2026-09-05:
 
 | talker + codec | card in use | throughput @ 16 concurrent |
 |---|---|---|
@@ -1391,7 +1391,7 @@ Orpheus keeps voices at `/home/<user>/orpheus-models/<voice>`; Higgs mirrors it 
 than the slow `/mnt/c` 9p mount. Catalog paths are WSL paths, like Orpheus's.
 
 **That is where a voice MAY be staged, and it is not where the deathstalker
-fine-tune is.** Its merged directories live under `/home/telltale/higgs_v3_merged/`,
+fine-tune is.** Its merged directories live under `/home/<user>/higgs_v3_merged/`,
 where the merge wrote them, and the catalog names one of those directly — because
 **a cap is certified against a directory, not against a voice** (see
 [Certificates](#certificates-a-cap-belongs-to-a-directory) below). Moving or

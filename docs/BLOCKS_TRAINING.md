@@ -38,7 +38,7 @@ seen. **Not** an OCR-correction model — categorization only.
 | Built SFT | `training/sft/{train,eval}.jsonl` + `build-stats.json` | via backups |
 | v3 relabel overlay | `training/matter-relabel/` (49 files) | via backups |
 | Toolchain | `tools/aligner/` (in-repo) | git |
-| Training rig | owens-pc, 3090 Ti 24 GB, `C:\Users\tellt\Projects\orpheus-finetune` | git on that box |
+| Training rig | example-pc, 3090 Ti 24 GB, `C:\Users\<user>\Projects\orpheus-finetune` | git on that box |
 
 ### Storage policy (user, Jul 30 2026)
 
@@ -322,26 +322,26 @@ node tools/aligner/build-sft-dataset.mjs
 
 # 4. Stage to WSL, train, CLEAR THE STAGING AFTER
 #    THE GPU MAY BE BUSY — the 3090 runs other jobs (voice training, etc.).
-#    Check before launching (nvidia-smi via ssh owens-pc; idle ≈2.4 GB used),
+#    Check before launching (nvidia-smi via ssh example-pc; idle ≈2.4 GB used),
 #    and NEVER start a training run without the user's explicit green light.
 #    HEAT: the box has a faulty fan. Watch GPU temp during the run (~82°C is
 #    normal); at ≥86°C throttle NOW: nvidia-smi -pl 270, then 220 if still hot.
 #
 #    Staging: pipe stdin through ssh (PowerShell quoting mangles anything inline)
 #    and verify sha256sum on both sides:
-cat train.jsonl | ssh owens-pc "wsl -e bash -lc 'cat > ~/training_data/block_categorize/train.jsonl'"
+cat train.jsonl | ssh example-pc "wsl -e bash -lc 'cat > ~/training_data/block_categorize/train.jsonl'"
 #
 #    Launch (three pitfalls baked in: conda is NOT on the wsl login PATH; the
 #    training env is orpheus_train, not orpheus_ft; global options go BEFORE
 #    the `train` subcommand). Run it as a BACKGROUND task so the ssh handle
 #    stays alive — WSL kills detached descendants. NO --merge (merge on the Mac).
-ssh owens-pc "wsl -e bash -lc 'source ~/anaconda3/etc/profile.d/conda.sh && \
-  conda activate orpheus_train && cd /mnt/c/Users/tellt/Projects/orpheus-finetune && \
+ssh example-pc "wsl -e bash -lc 'source ~/anaconda3/etc/profile.d/conda.sh && \
+  conda activate orpheus_train && cd /mnt/c/Users/<user>/Projects/orpheus-finetune && \
   PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True python orpheus_owen.py \
   --profile blocks_v4 \
   --train-data ~/training_data/block_categorize/train.jsonl \
   --eval-data  ~/training_data/block_categorize/eval.jsonl \
-  --run-name blocks_v4 --out-base /home/telltale/xtts_ft train \
+  --run-name blocks_v4 --out-base /home/<user>/xtts_ft train \
   2>&1 | tee ~/training_data/block_categorize/train_v4.log'"
 
 # 5. Publish (on the Mac — needs llama.cpp + the HF token)
@@ -839,7 +839,7 @@ NOT kill its children — verify a stop actually stopped things.
 
 ### 11a. What is RUNNING as this was written
 
-**blocks v5 training, on owens-pc.** Started 23:16 EDT, step ~96/930 at
+**blocks v5 training, on example-pc.** Started 23:16 EDT, step ~96/930 at
 12.4s/step, ETA ~3h. Launched per §6 exactly (that section is authoritative —
 three of its four documented pitfalls bit before it was read: conda is not on the
 wsl login PATH, the env is `orpheus_train` not `orpheus_ft`, global options go
@@ -1751,7 +1751,7 @@ Order is forced: P0 gates the corpus, the corpus gates the run.
 Nothing about a second head argues for more, and the format is already solved.
 
 **The rig protocol is §6's and is not optional.** Check `nvidia-smi` via
-`ssh owens-pc` first — the 3090 Ti runs other jobs, idle is ≈2.4 GB. **The box
+`ssh example-pc` first — the 3090 Ti runs other jobs, idle is ≈2.4 GB. **The box
 has a faulty fan**: watch GPU temperature, ~82 °C is normal, at ≥86 °C
 `nvidia-smi -pl 270` immediately and 220 if it stays hot, and do not run it
 unattended without the monitor. Stage through stdin over ssh and verify
@@ -1826,7 +1826,7 @@ re-proposed as part of it:
    scoring set that the phase-0 flush rule and every later measurement need — so
    it is worth doing even if the training run never happens.
 
-2. **Run the training?** — P3 plus the P4 seed-2 control on owens-pc:
+2. **Run the training?** — P3 plus the P4 seed-2 control on example-pc:
    **~5 hours paired-only or ~9 hours union, twice** (the control is not
    optional; the noise floor for this head is unmeasured). The GPU may be busy,
    the box has a faulty fan, and **no run starts without this green light.**
