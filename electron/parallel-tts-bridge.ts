@@ -2807,6 +2807,8 @@ interface ConversionSession {
   // AI-cleanup LLM stays off the GPU while TTS runs). Released on every terminal
   // path. See gpu-arbiter.
   holdsGpu?: boolean;
+  /** Set by `announceGpuPhaseOver`, so a second call is a no-op. */
+  gpuPhaseOver?: boolean;
   /*
    * THE SEVEN `orpheus*` SIZING FIELDS ARE GONE — the tier, the artifact form, the
    * sized `gpu_memory_utilization`, the vLLM submission batch, the level label and
@@ -4714,6 +4716,22 @@ async function completeAfterWorkers(session: ConversionSession): Promise<void> {
     // outcomes are all announced and the render succeeds through all of them.
     await runPostRenderAlignment(session);
 
+    /*
+     * THE CARD IS FREE FROM HERE — on the path the app queues, which is every
+     * narration composed by `shared/queue/narration-run.ts`: the enhancement
+     * passes and the assembly are their own rows, so this session will not touch
+     * a GPU again. Said BEFORE the copy below, which is the whole point: the
+     * copy is minutes of file IO and it used to run inside the queue's GPU slot.
+     *
+     * Unconditional on how the alignment went. It has three outcomes and all
+     * three leave the card idle; the failed one is the path Owen measured.
+     */
+    if (session.config.skipAssembly) {
+      announceGpuPhaseOver(session,
+        'the render and the post-render alignment have settled, and this run assembles on its '
+        + 'own row');
+    }
+
     // Cache TTS session to project BEFORE assembly or skipAssembly return,
     // because e2a's headless mode deletes the process dir (sentence files)
     // after successful assembly, and skipAssembly callers still need cached sessions.
@@ -4960,6 +4978,15 @@ async function completeAfterWorkers(session: ConversionSession): Promise<void> {
         return;
       }
     }
+
+    /*
+     * THE INLINE PATH'S OWN HAND-OFF — after the denoise and the RVC pass, which
+     * are the card's, and before `runAssembly`, which is ffmpeg on the CPU. A
+     * `skipAssembly` run said this above and this call is then a no-op.
+     */
+    announceGpuPhaseOver(session,
+      'the render, the alignment and the enhancement passes have settled; what is left is the '
+      + 'assembly');
 
     try {
       const outputPath = await runAssembly(session);
@@ -6405,6 +6432,60 @@ function releaseSessionGpu(session: ConversionSession): void {
   if (wasHolding) {
     console.log(`[PARALLEL-TTS] Released GPU lock for job ${session.jobId}`);
   }
+}
+
+/**
+ * THE CHANNEL THIS JOB'S GPU WORK IS OVER ON — heard in main, by the queue step.
+ *
+ * Not a renderer channel: no window has anything to do with it, and the only
+ * listener is `queue-steps/tts-conversion.ts`, which turns it into
+ * `StepRunContext.releaseGpu`. Published straight onto the main-side bus rather
+ * than through `rendererSend`, because sending it across the wire would be
+ * inventing a reader.
+ */
+export const TTS_GPU_PHASE_OVER = 'parallel-tts:gpu-phase-over';
+
+/**
+ * THE LAST THING THIS RENDER WILL DO WITH A CARD IS DONE — say so, now.
+ *
+ * ── The measurement (Owen's Mac against this PC's Crucible, 2026-09-19) ────
+ *
+ * Crucible unloaded the voice at 12:57:49. The post-render alignment failed
+ * fourteen seconds later — the server had gone unreachable — and `tts.log` then
+ * says nothing at all until 13:05:41, when `cacheSessionToProject` finished
+ * copying the session onto the library volume. The queue row was a GPU row for
+ * every one of those 458 seconds, so a second book could not start rendering on
+ * a card that had been free since 12:57:49. Owen: *"it just sits in the gpu slot
+ * for another 10 minutes after alignment fails."*
+ *
+ * The copy is not the bug and cannot be optimised away — `fs.cp` already asks
+ * for a clone and the library volume is not a filesystem that has them, so it is
+ * a real copy of a real book. What was wrong is that it was charged to the card.
+ *
+ * ── Where it is called, and why only there ──────────────────────────────────
+ *
+ * At the point where nothing this session does afterwards touches a GPU:
+ *
+ *  - `skipAssembly` (every run the app queues — the assembly is its own row):
+ *    straight after the alignment, whichever of its three outcomes it had. The
+ *    alignment NEVER throws, so the failed-align path reaches this line exactly
+ *    as the clean one does; that is the path Owen measured and it must hand the
+ *    slot over just the same, carrying the estimated transcript.
+ *  - the inline path (the CLI, the language-learning wizard): after the denoise
+ *    and the RVC pass, which are GPU work, and before `runAssembly`, which is
+ *    ffmpeg.
+ *
+ * It also gives back this machine's own GPU mutex, which `emitComplete` would
+ * otherwise hold until the copy finished — the same lateness, one lock down.
+ * Idempotent: `emitComplete` still releases, and calling twice is a no-op.
+ */
+function announceGpuPhaseOver(session: ConversionSession, reason: string): void {
+  if (session.gpuPhaseOver === true) return;
+  session.gpuPhaseOver = true;
+  releaseSessionGpu(session);
+  console.log(`[PARALLEL-TTS] Job ${session.jobId}: GPU phase over — ${reason}`);
+  logger.log('INFO', session.jobId, `GPU phase over — ${reason}`).catch(() => {});
+  publishBridgeEvent(TTS_GPU_PHASE_OVER, { jobId: session.jobId, reason });
 }
 
 /** Emit a 'preparing'-phase progress message (used while a job waits for the GPU). */

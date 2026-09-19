@@ -286,6 +286,161 @@ test('the cpu pool takes two at once, beside a running GPU step', async () => {
   assert.strictEqual(cloud.runs.length, 2, 'two cpu slots, and only two');
 });
 
+// ── THE GPU HAND-OFF — a step gives the card back before it is done ─────────
+//
+// Owen, 2026-09-19, watching a narration on his Mac render on this PC's
+// Crucible: *"it just sits in the gpu slot for another 10 minutes after
+// alignment fails. a timeout? it takes up the slot."*
+//
+// It was not a timeout, and it was not the assembly either — a narration has
+// been two rows for a while and the CPU row was claiming its slot 1 ms after the
+// narration settled. What held the card was the END OF THE RENDER ROW. The
+// measurement, off the Mac's own `tts.log` and `queue-engine.json`:
+//
+//   12:57:49  Crucible unloads the voice — the card is free
+//   12:58:03  the post-render alignment fails (the server went unreachable)
+//   13:05:41  `cacheSessionToProject` finishes copying the session
+//   13:05:42  the tts-conversion step settles and the GPU slot is released
+//
+// 458 seconds of file copy charged to a card that had been idle for all of them.
+// These four tests are about the engine's half: a running step may hand the slot
+// back, and the next book must take it while the first is still going.
+
+test('A RUNNING GPU STEP CAN HAND THE SLOT BACK, and the next book starts on it', async () => {
+  const gpu = fakeModule('tts-conversion');
+  const cpu = fakeModule('reassembly', { resource: () => 'cpu', consumes: null });
+  await fresh('gpu-handoff', [gpu, cpu]);
+
+  const first = engine.enqueue({
+    title: 'Letter to the American Church',
+    steps: [
+      { type: 'tts-conversion', label: 'TTS', config: {}, sourceRef: { kind: 'epub', path: '/letter.epub' } },
+      { type: 'reassembly', label: 'Assembly', config: {}, parentIndex: 0 },
+    ],
+  });
+  const second = engine.enqueue({
+    title: 'Working Towards The Fuhrer',
+    steps: [{ type: 'tts-conversion', label: 'TTS', config: {}, sourceRef: { kind: 'epub', path: '/fuhrer.epub' } }],
+  });
+  engine.start();
+  await settle();
+
+  assert.strictEqual(gpu.runs.length, 1, 'one card, one render');
+  assert.strictEqual(stepsOf(second.id)[0].status, 'queued', 'the second book waits for the card');
+
+  // The bridge has just said its last GPU act settled. The render row keeps
+  // running — it still has a session to copy into the project.
+  gpu.runs[0].ctx.releaseGpu('the render and the post-render alignment have settled');
+  await settle();
+
+  assert.strictEqual(gpu.runs.length, 2, 'THE NEXT BOOK IS RENDERING — this is the acceptance behaviour');
+  assert.strictEqual(gpu.runs[1].ctx.job.title, 'Working Towards The Fuhrer');
+  assert.strictEqual(stepsOf(second.id)[0].status, 'running');
+  assert.strictEqual(stepsOf(first.id)[0].status, 'running',
+    'the row that handed the slot back is still running — it has a session to publish');
+  assert.strictEqual(stepsOf(first.id)[0].resource, 'cpu',
+    'and it is charged to the CPU pool, because that is what the rest of it is');
+
+  // And it still settles as itself: the assembly behind it waits on the same
+  // parent and reads the same output.
+  gpu.runs[0].resolve({ kind: 'audio-session', path: '/sessions/letter' });
+  await settle();
+  assert.strictEqual(stepsOf(first.id)[0].status, 'done');
+  assert.strictEqual(cpu.runs.length, 1, 'the assembly claimed its own CPU slot behind it');
+  assert.strictEqual(cpu.runs[0].input.path, '/sessions/letter');
+});
+
+test('the handed-over step is COUNTED in the cpu pool, so nothing is started on top of it', async () => {
+  /*
+   * Recorded, not admitted: the copy is already happening. The point of counting
+   * it is that the pump does not then start two more CPU jobs beside it and put
+   * three file copies on one disk.
+   */
+  const gpu = fakeModule('tts-conversion');
+  const cpu = fakeModule('reassembly', { resource: () => 'cpu', consumes: null });
+  await fresh('gpu-handoff-counts', [gpu, cpu]);
+
+  engine.enqueue({
+    title: 'Book',
+    steps: [{ type: 'tts-conversion', label: 'TTS', config: {}, sourceRef: { kind: 'epub', path: '/a.epub' } }],
+  });
+  engine.enqueue({
+    title: 'Assembly 1',
+    steps: [{ type: 'reassembly', label: 'Assembly', config: {}, sourceRef: { kind: 'audio-session', path: '/s1' } }],
+  });
+  engine.start();
+  await settle();
+  assert.strictEqual(cpu.runs.length, 1, 'one of the two cpu slots is taken, beside the render');
+
+  gpu.runs[0].ctx.releaseGpu('the render has settled');
+  await settle();
+
+  // The pool is now full: the assembly above, and the render row publishing its
+  // session. A third CPU job must wait — without the hand-off the copy is
+  // invisible to the pool and this one would start on top of it.
+  engine.enqueue({
+    title: 'Assembly 2',
+    steps: [{ type: 'reassembly', label: 'Assembly', config: {}, sourceRef: { kind: 'audio-session', path: '/s2' } }],
+  });
+  await settle();
+  assert.strictEqual(cpu.runs.length, 1,
+    'the handed-over row fills the second cpu slot, so nothing is started on top of it');
+});
+
+test('the hand-off is ONE WAY and idempotent: a second call changes nothing', async () => {
+  const gpu = fakeModule('tts-conversion');
+  await fresh('gpu-handoff-twice', [gpu]);
+  const job = engine.enqueue({
+    title: 'Book',
+    steps: [{ type: 'tts-conversion', label: 'TTS', config: {}, sourceRef: { kind: 'epub', path: '/a.epub' } }],
+  });
+  engine.start();
+  await settle();
+
+  gpu.runs[0].ctx.releaseGpu('the render has settled');
+  await settle();
+  assert.strictEqual(stepsOf(job.id)[0].resource, 'cpu');
+  // Said twice rather than crashing the render that said it: bookkeeping must
+  // never be able to fail nine hours of work.
+  gpu.runs[0].ctx.releaseGpu('the render has settled');
+  await settle();
+  assert.strictEqual(stepsOf(job.id)[0].resource, 'cpu', 'a second hand-off must not re-charge the row');
+  assert.strictEqual(stepsOf(job.id)[0].status, 'running');
+});
+
+test('a render that hands the slot back still carries its THERMAL story into analytics', async () => {
+  /*
+   * The card's story belongs to the render, and the render happened. The gate
+   * used to re-ask `step.resource` at settle, which would have thrown every
+   * narration's thermal record away the moment the hand-off existed.
+   */
+  const gpu = fakeModule('tts-conversion');
+  await fresh('gpu-handoff-thermal', [gpu]);
+  const job = engine.enqueue({
+    title: 'Book',
+    release: true,
+    steps: [{ type: 'tts-conversion', label: 'TTS', config: {}, sourceRef: { kind: 'epub', path: '/a.epub' } }],
+  });
+  engine.start();
+  await settle();
+
+  const at = (s) => new Date(1755640000000 + s * 1000).toISOString();
+  engine.recordGpuThermal({ tempC: 78, throttleActive: false, at: at(0) });
+  engine.recordGpuThermal({ tempC: 84, throttleActive: false, at: at(20) });
+
+  gpu.runs[0].ctx.releaseGpu('the render has settled');
+  await settle();
+  // Nothing further is charged to this step — it is no longer on the card.
+  engine.recordGpuThermal({ tempC: 91, throttleActive: true, at: at(40) });
+
+  gpu.runs[0].resolve();
+  await settle();
+  const thermal = stepsOf(job.id)[0].analytics && stepsOf(job.id)[0].analytics.gpuThermal;
+  assert.ok(thermal, 'the render was sampled, so its row must carry the story');
+  assert.strictEqual(thermal.samples, 2, 'and only the samples taken while it held the card');
+  assert.strictEqual(thermal.maxTempC, 84);
+});
+
 test('AN ALIGN LEAF AND THE ASSEMBLY RUN AT THE SAME TIME, and the assembly can join on it', async () => {
   /*
    * Owen, 2026-09-07, watching a standalone assembly run beside the chain's
