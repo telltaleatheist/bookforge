@@ -1,0 +1,210 @@
+#!/usr/bin/env node
+/**
+ * THE WAY OUT, THE WAY IN, AND THE EVIDENCE EITHER LEAVES BEHIND.
+ *
+ *   npx tsc -p tsconfig.electron.json && node tools/test-quit-and-logs.js
+ *
+ * Four findings from the 2026-09-20 bug hunt whose rules are pure enough to
+ * state here:
+ *
+ *  P1 — `electron:dev` ran `concurrently` with no `--kill-others`, so a normal
+ *       ⌘Q ended Electron and left `ng serve` holding port 4250; the next
+ *       launch died on it (seed failure S8).
+ *  P4 — the audiobook job log captured `getLibraryRoot()` before the persisted
+ *       root was restored, so a month of sessions went to
+ *       `~/Documents/BookForge/logs` while the library's own `logs/` stops at
+ *       2026-08-17.
+ *  P5 — the Foundry CLI wrote to no file at all. `foundry.log` exists now, and
+ *       every hosted run goes through one door that tees to it.
+ *  P11 — `whenReady` had no `.catch`, so a throw before `createWindow()` left a
+ *       windowless main process on darwin with no way out but a kill — and a
+ *       kill skips `before-quit`, which is how a Crucible render is left
+ *       holding a card for an app that no longer exists.
+ *  Q4 — a hosted Foundry act refused by a HOLDER (Crucible `409 leased`) failed
+ *       the row instead of parking it (Contract 2).
+ *
+ * No electron, no network, no GPU.
+ */
+'use strict';
+const assert = require('assert');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const { skipLine } = require('./keeper-skip.js');
+
+const REPO = path.resolve(__dirname, '..');
+const DIST = path.join(REPO, 'dist', 'electron');
+for (const built of ['startup-failure.js', 'audiobook-logger.js', 'rolling-logger.js']) {
+  if (!fs.existsSync(path.join(DIST, built))) {
+    console.log(skipLine(`dist/electron/${built} is not built — run npx tsc -p tsconfig.electron.json`));
+    process.exit(0);
+  }
+}
+
+let passed = 0;
+const failures = [];
+const queued = [];
+const it = (name, run) => queued.push(async () => {
+  try {
+    await run();
+    passed += 1;
+    console.log(`  ok  ${name}`);
+  } catch (err) {
+    failures.push({ name, err });
+    console.log(`  FAIL  ${name}\n        ${err.message}`);
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// P1 · the dev script stops everything it started
+// ─────────────────────────────────────────────────────────────────────────────
+
+it('P1: both dev scripts kill their siblings, with SIGTERM', () => {
+  const pkg = JSON.parse(fs.readFileSync(path.join(REPO, 'package.json'), 'utf-8'));
+  const dev = Object.entries(pkg.scripts)
+    .filter(([, body]) => typeof body === 'string' && body.includes('concurrently'));
+  assert.ok(dev.length >= 2, `both dev scripts must be found: ${dev.map(([k]) => k).join(', ')}`);
+  for (const [name, body] of dev) {
+    assert.ok(body.includes('--kill-others'),
+      `${name}: concurrently 8's killOthers defaults to [], so a clean Electron exit leaves `
+      + '`ng serve` holding port 4250 and the NEXT launch dies on it');
+    assert.ok(body.includes('--kill-signal SIGTERM'),
+      `${name}: SIGTERM, so ng serve gets to shut its watchers down rather than being SIGKILLed`);
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// P11 · a startup that threw still draws something
+// ─────────────────────────────────────────────────────────────────────────────
+
+const startupFailure = require(path.join(DIST, 'startup-failure.js'));
+
+it('P11: the failure names the STEP, not just the error', () => {
+  const line = startupFailure.startupFailureLine('starting the queue', 'Unexpected token }');
+  assert.ok(line.includes('starting the queue'),
+    `"Unexpected token }" alone is not a report anybody can act on: ${line}`);
+  assert.ok(line.includes('Unexpected token }'), line);
+});
+
+it('P11: an error with no message still says something', () => {
+  const line = startupFailure.startupFailureLine('loading the plugins', '   ');
+  assert.ok(line.includes('no reason given'), line);
+  assert.ok(line.includes('loading the plugins'), line);
+});
+
+it('P11: the page escapes the message it is reporting', () => {
+  const html = startupFailure.startupFailureHtml(
+    'opening the window', '<script>alert(1)</script> at C:\\a & "b"');
+  assert.ok(!html.includes('<script>'),
+    'the message is an arbitrary Error.message — a thrown string holding markup must not '
+    + `rewrite the page reporting it: ${html}`);
+  assert.ok(html.includes('&lt;script&gt;') && html.includes('&amp;') && html.includes('&quot;'), html);
+  assert.ok(html.includes('opening the window'), html);
+  // It must survive being made into a data: URL, which is how main loads it.
+  assert.ok(decodeURIComponent(encodeURIComponent(html)) === html);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// P5 · the Foundry CLI has a log
+// ─────────────────────────────────────────────────────────────────────────────
+
+it('P5: there is a foundry logger, and it is opened and closed with the rest', () => {
+  const rolling = require(path.join(DIST, 'rolling-logger.js'));
+  assert.strictEqual(typeof rolling.getFoundryLogger, 'function');
+  const logPath = rolling.getFoundryLogger().getLogPath();
+  assert.ok(/foundry\.log$/.test(logPath),
+    `the hosted CLI's words go in a file of their own: ${logPath}`);
+  assert.notStrictEqual(logPath, rolling.getMainLogger().getLogPath(),
+    'bookforge.log is a STARTUP log and ends at the last startup line — that is the finding');
+
+  const source = fs.readFileSync(path.join(REPO, 'electron', 'rolling-logger.ts'), 'utf-8');
+  for (const fn of ['initializeLoggers', 'closeLoggers']) {
+    const body = source.slice(source.indexOf(`export async function ${fn}`));
+    assert.ok(body.slice(0, 400).includes('oundryLogger'),
+      `${fn} must include the foundry log, or it is opened lazily and never flushed on quit`);
+  }
+});
+
+it('P5: every hosted Foundry run goes through the ONE door that tees', () => {
+  const src = fs.readFileSync(path.join(REPO, 'electron', 'foundry-host-queue.ts'), 'utf-8');
+  assert.ok(src.includes('getFoundryLogger'),
+    'the tee lives in foundryRunner() — the single door — so no caller has to remember it');
+  const job = fs.readFileSync(path.join(REPO, 'electron', 'queue-steps', 'foundry-job.ts'), 'utf-8');
+  assert.ok(job.includes('foundryRunner()'),
+    'and the step module still reaches the runner through that door');
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Q4 · a Foundry row refused by a holder PARKS
+// ─────────────────────────────────────────────────────────────────────────────
+
+it('Q4: a Foundry row carrying a busyLine parks; one without it fails', () => {
+  const hostQueue = require(path.join(DIST, 'foundry-host-queue.js'));
+  const runtime = require(path.join(DIST, 'queue-steps', 'runtime.js'));
+
+  const held = hostQueue.foundryRowFailure(
+    { state: 'failed', error: 'Crucible refused the lease', busyLine: 'crucible@the-mac is rendering' },
+    'Clean text');
+  assert.strictEqual(runtime.busyLineOf(held), 'crucible@the-mac is rendering',
+    'THE FINDING: Foundry takes its own Crucible lease, so a 409 crosses this seam as prose — '
+    + 'and reddened a row in Needs you over a card that was merely held');
+  assert.strictEqual(held.name, 'StepParked');
+
+  const broke = hostQueue.foundryRowFailure({ state: 'failed', error: 'model not found' }, 'Clean text');
+  assert.strictEqual(runtime.busyLineOf(broke), undefined,
+    'a row that BROKE is still a failure a person must read');
+  assert.strictEqual(broke.message, 'model not found', "and it wears Foundry's own sentence");
+
+  const mute = hostQueue.foundryRowFailure({ state: 'failed' }, 'Clean text');
+  assert.ok(/Clean text failed/.test(mute.message),
+    `an engine that said nothing gets this side's label, and only then: ${mute.message}`);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// P4 · the audiobook job log follows the library
+// ─────────────────────────────────────────────────────────────────────────────
+
+it('P4: registering the resolver touches NOTHING on the library', async () => {
+  const logger = require(path.join(DIST, 'audiobook-logger.js'));
+  const root = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'bf-log-lazy-')), 'library');
+  logger.useLibraryRoot(() => root);
+  await logger.initializeLogger(root);
+  assert.ok(!fs.existsSync(root),
+    'P11 coupling: this runs before createWindow() and the library is an SMB volume — a mkdir '
+    + 'here turns a wedged mount into a launch with no window. The first WRITE creates it.');
+});
+
+it('P4: the log lands under whichever library is current when it writes', async () => {
+  const logger = require(path.join(DIST, 'audiobook-logger.js'));
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), 'bf-log-move-'));
+  const before = path.join(work, 'documents-default');
+  const after = path.join(work, 'the-real-library');
+
+  // Startup order, exactly: the root is the DEFAULT when the logger is wired.
+  let current = before;
+  logger.useLibraryRoot(() => current);
+  await logger.initializeLogger(current);
+
+  await logger.log('INFO', 'system', 'while the default root was current');
+  const day = new Date().toISOString().split('T')[0];
+  assert.ok(fs.existsSync(path.join(before, 'logs', `audiobook-${day}.log`)));
+
+  // …and now the persisted root is restored, hundreds of lines later.
+  current = after;
+  await logger.log('INFO', 'system', 'after the library root was restored');
+
+  const moved = path.join(after, 'logs', `audiobook-${day}.log`);
+  assert.ok(fs.existsSync(moved),
+    'THE FINDING (P4): the library\'s own logs/ ends 2026-08-17 because this path was captured '
+    + 'once, before the root was restored, and the re-init door stopped being taken');
+  assert.ok(fs.readFileSync(moved, 'utf-8').includes('after the library root was restored'));
+  assert.ok(!fs.readFileSync(moved, 'utf-8').includes('while the default root'),
+    'and nothing is re-written backwards: each line lands where the library was at the time');
+});
+
+(async () => {
+  console.log('quit, startup and the evidence they leave behind');
+  for (const run of queued) await run();
+  console.log(`\n${passed} passed, ${failures.length} failed`);
+  process.exit(failures.length === 0 ? 0 : 1);
+})();

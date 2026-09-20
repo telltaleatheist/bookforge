@@ -54,6 +54,8 @@ import {
   start as engineStart,
 } from './queue-engine';
 import { TERMINAL_STEP_STATUSES } from '../shared/queue/engine-types';
+import { getFoundryLogger } from './rolling-logger';
+import { stepFailure } from './queue-steps/runtime';
 import type { QueueJob, QueueStep } from '../shared/queue/engine-types';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -333,6 +335,23 @@ export interface FoundryJobRow {
    * person who believes a job is hung kills it.
    */
   note?: string | null;
+  /**
+   * THE HOLDER'S OWN SENTENCE, when this row was refused by one rather than
+   * broken — Contract 2 of the 2026-09-20 bug hunt.
+   *
+   * Foundry takes its own Crucible lease (`crucible-dispatch.ts`), so a
+   * `409 server_busy` / `409 leased` over there arrives on this side as a row
+   * in state `failed` carrying prose. Every module that calls OUR bridges
+   * already parks on a held card (`busyLineOf`, A5, 2026-09-19); this seam
+   * crosses a process boundary as a string and kept the old behaviour, so a
+   * hosted Foundry act that met a busy card turned RED in *Needs you* and
+   * waited for a Retry press for something nobody did wrong (Q4).
+   *
+   * Set on the FOUNDRY side (PK5) and simply absent until then, which is the
+   * behaviour this build already had. Read in one place — see
+   * {@link foundryRowFailure}.
+   */
+  busyLine?: string;
   parentStep?: string | null;
   /** Their field: an export that is one step's own book (`GenerateRequest.forStep`). */
   forStep?: string;
@@ -449,7 +468,22 @@ export function setFoundrySeam(seam: {
   sayDrained = seam.drained;
 }
 
-/** The runner, or the sentence saying why this row cannot run. */
+/**
+ * The runner, or the sentence saying why this row cannot run.
+ *
+ * ── EVERY LINE IS TEED TO `foundry.log` ON THE WAY PAST ─────────────────────
+ *
+ * HERE, because this is the ONE door every hosted Foundry run goes through, so
+ * nothing has to remember. Until 2026-09-20 the CLI's output lived in the
+ * vendored engine's memory and in one row message; the row's message is one
+ * line deep and a Stop erases the row's error, so a night of failures left
+ * nothing on disk to read in the morning — `grep -c '[job]'` over every log
+ * was 0 (P5/F7). A hosted run is a subprocess this app started: its words are
+ * this app's to keep.
+ *
+ * The caller's own `onProgress` is called FIRST and its failure cannot stop
+ * the tee, nor the tee the caller: a logger that throws must not fail a book.
+ */
 export function foundryRunner(): FoundryRunner {
   if (runner === null) {
     throw new Error(
@@ -457,7 +491,57 @@ export function foundryRunner(): FoundryRunner {
       + 'cannot schedule its work. Update Foundry — the queue seam (runJob) arrives with it.',
     );
   }
-  return runner;
+  const run = runner;
+  return async (request, opts) => {
+    const log = getFoundryLogger();
+    const said = (line: string): void => {
+      try {
+        log.info(line, { kind: request.kind, input: request.inputPath });
+      } catch { /* the log is never worth a row */ }
+    };
+    said(`START ${request.kind} ${request.inputPath}`);
+    const row = await run(request, {
+      ...opts,
+      onProgress: (line) => {
+        try {
+          opts.onProgress(line);
+        } finally {
+          said(line);
+        }
+      },
+    });
+    /*
+     * THE LAST THING THE ENGINE SAID, on the way out and only when it went
+     * wrong. `row.error` is where the vendored engine puts the CLI's final
+     * stderr, and it is the one sentence that explains a failed book — the
+     * exact thing a stopped row deletes on this side. Written at ERROR so it
+     * is findable without knowing the job id.
+     */
+    if (row.state === 'failed') {
+      log.error(`FAILED ${request.kind}: ${row.error ?? 'Foundry did not say why.'}`,
+        { kind: request.kind, input: request.inputPath, busyLine: row.busyLine });
+    } else {
+      said(`${row.state.toUpperCase()} ${request.kind}`);
+    }
+    return row;
+  };
+}
+
+/**
+ * WHAT A SETTLED FOUNDRY ROW MEANS TO THE QUEUE — a park or a failure.
+ *
+ * ONE place decides, because the decision is a rule and not a line of glue:
+ * a row refused by a HOLDER (`busyLine`) is a row waiting for a card, which
+ * parks and retries itself; a row that broke is a failure a person must read.
+ * `foundry-job.ts` used to mint a bare `Error` from `row.error`, so both
+ * arrived as red rows in *Needs you* (Q4, Contract 2).
+ *
+ * The label is this side's name for the act, used only when Foundry said
+ * nothing at all — their sentence always wins, because the engine knows more
+ * about why it stopped than we do.
+ */
+export function foundryRowFailure(row: FoundryJobRow, label: string): Error {
+  return stepFailure(row.error ?? `${label} failed, and Foundry did not say why.`, row.busyLine);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
