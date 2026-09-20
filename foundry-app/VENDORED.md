@@ -10,10 +10,18 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\<user>\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **77e1d6d** — *Lease on load: whichever act made the residency ours hands us the lease id* (branch `feat/lease-on-load`, cut from `main` @ `b54c148`) |
+| Source sha | **8b9efb8** — *Adopt Crucible 1.0.14: a loader states its lease_id even when there is none* |
 | Engine | **NOT VENDORED AND NOT KNOWABLE FROM THIS FILE** — it is a spawned CLI resolved at RUNTIME (`FOUNDRY_BIN`, else `resolveFoundryPath`, `electron/main.ts`), so which build executes is a property of the machine and not of this copy. On a developer's Mac that resolves to Foundry's own checkout at `/Volumes/Callisto/Projects/foundry/dist/foundry-darwin-arm64`, which is whatever was last built there — `foundry 2.0.2 (1c1eaa3)` as of 2026-09-18. **Ask the binary: `$FOUNDRY_BIN --version`.** See *The engine this file named was not the engine that ran* below. |
 | Copied on | 2026-09-19 (five times: 3738c01, 3436fc5, 806d44b, f349771, ca4754c) and 2026-09-20 (98a4344, 9e0b27d, dccc144, 7b98004, cc5fc5b, 93010d8, 77e1d6d) |
 | Copied by | Mechanical source sync, verified against Foundry `77e1d6d:app/` (`diff -rq`, clean but for this file, `IPC-CHANNELS.md` and `.gitignore` — see below); details below |
+
+## The `77e1d6d → 8b9efb8` re-vendor — the 1.0.14 SDK adoption (2026-09-20, evening)
+
+Foundry 8b9efb8 is 77e1d6d plus `tools/adopt-crucible-release.mjs 1.0.14` (`app/package.json`,
+`app/package-lock.json`, the two `-1.0.14.tgz` tarballs; the 1.0.13 pair `git rm`'d by hand).
+1.0.14: `JobStatus.leaseId` typed, and a loader states `lease_id: null` when it holds nothing
+(absent ≠ null). Foundry's own code unchanged from 77e1d6d. Lockstep is Owen's ruling
+(2026-09-20): both servers and both apps move together; no tolerance code.
 
 ## The `93010d8 → 77e1d6d` re-vendor — lease on load, and the 1.0.13 SDK (2026-09-20, PK14a)
 
