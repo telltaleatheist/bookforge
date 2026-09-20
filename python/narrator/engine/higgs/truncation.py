@@ -1082,6 +1082,126 @@ class GuardPlan:
                    if task.parent is None and not task.done)
 
 
+class UnjudgedPlan:
+    """The ladder's driver surface, with no ladder: one take per chunk, shipped.
+
+    WHY THIS IS A CLASS AND NOT A FLAG ON `GuardPlan`. A batch that carries
+    `retake: false` has no band to be judged against — a screening render of a
+    fine-tuned checkpoint has no measured pace, because MEASURING IT IS WHAT THE
+    RENDER IS FOR (crucible/docs/PHASE18-UNCERTIFIED.md). `GuardPlan(tracker=
+    None)` is NOT that: it falls back to `self.fixed`, so it still judges, just
+    against a constant. "Judge against a different model's numbers" and "do not
+    judge" are different instructions and only one of them is what the wire
+    said.
+
+    WHAT IT FIXES, measured on the training PC 2026-09-20. `generate_batch`
+    picked the guarded arm `if rows and retake:` and a sequential comprehension
+    otherwise, so the two arms differed in TWO ways: the guarded one judged AND
+    batched, the bare one did neither. A 128-chunk render at width 4, with
+    `HIGGS_MAX_NUM_SEQS=4` exported and sglang demonstrably willing (zero
+    rejections across 1,024 renders at concurrency 4, direct), sat at
+    `#running-req: 1` on all 684 sampled scheduler lines — 12.9 s/chunk against
+    4.16 s/render direct. The client that must send `retake: false` is the
+    client rendering a thousand chunks for throughput, so the flag cost exactly
+    the caller who could least afford it.
+
+    With this, `render_many` is the ONE driver and the plan is what varies. The
+    width is spent by the ENGINE either way — `v3_engine` pools threads,
+    `mlx_backend` groups into a BatchGenerator — which is why the fix is here
+    and not a thread pool in `serve/worker.py`: a pool there would be right for
+    the served arm and wrong for MLX, and the caller cannot tell which engine it
+    got.
+
+    THE SURFACE IS `GuardPlan`'s, exactly, because `render_many` drives it and
+    a second shape would mean a second driver. What every method does instead is
+    the whole of the difference: nothing is re-rolled, nothing is split, nothing
+    is measured against anything, and `verdict()` is None for every chunk —
+    which is already the wire's contract for an unjudged row (a `guard` key is
+    additive and optional; a row with no verdict carries none).
+    """
+
+    def __init__(self, *, sample_rate: int, base_seed: Optional[int]) -> None:
+        self.sample_rate = int(sample_rate)
+        self.base_seed = base_seed
+        #: index -> the request issued for it, while it is in flight.
+        self._waiting: dict = {}
+        #: index -> text, for chunks that have not been issued yet.
+        self._queued: list = []
+        self._finished: List[tuple] = []
+        self._measures: dict = {}
+        self._added = 0
+
+    # -- building ------------------------------------------------------------
+    def add(self, index: int, text: str, first_take=None,
+            first_measure=None) -> None:
+        """A chunk to render once. `first_take` is take 0 when the caller
+        already has it, exactly as on `GuardPlan` — a slab arm that decoded its
+        own rows hands them here and nothing is rendered twice."""
+        if first_take is not None:
+            self._measures[int(index)] = first_measure
+            self._finished.append((int(index), first_take, True))
+            return
+        self._queued.append((self._added, int(index), text))
+        self._added += 1
+
+    # -- the driver's surface ------------------------------------------------
+    def next_request(self) -> Optional[RenderRequest]:
+        """One render, in the order the chunks were added.
+
+        `seed=None` is the engine's own seed rule for `index` — take 0 of that
+        chunk in its own lane. There is no other rung to ask for: a re-roll is a
+        judgment, and this plan makes none.
+        """
+        if not self._queued:
+            return None
+        order, index, text = self._queued.pop(0)
+        request = RenderRequest(path=(order,), index=index, text=text,
+                                seed=None, rung='take', depth=0)
+        self._waiting[request.path] = request
+        return request
+
+    def offer(self, request: RenderRequest, audio, measure=None) -> None:
+        """The audio for one request. It ships: there is nothing to decide.
+
+        `clean` is True on the tuple because the row is exactly what was asked
+        for and nothing found anything wrong with it — nothing looked. It is not
+        a verdict and `verdict()` still answers None.
+        """
+        self._waiting.pop(request.path, None)
+        self._measures[request.index] = measure
+        self._finished.append((request.index, audio, True))
+
+    def abandon(self, request: RenderRequest) -> int:
+        """The driver could not render this request; the chunk leaves.
+
+        `GuardPlan`'s contract, kept: the index comes back for the driver to
+        report as that row's failure, and it never reaches `finished()`.
+        """
+        self._waiting.pop(request.path, None)
+        self._measures.pop(request.index, None)
+        return request.index
+
+    def finished(self) -> List[tuple]:
+        out, self._finished = self._finished, []
+        return out
+
+    def verdict(self, index: int) -> Optional[dict]:
+        """None, always. Nothing judged this chunk, so there is no conclusion to
+        report — and a verdict here would be narrator claiming to have judged a
+        row it was told not to judge."""
+        return None
+
+    def measure(self, index: int) -> Optional[FrameMeasure]:
+        """What the shipped take SPENT. A measurement, not a judgment: it is
+        taken whether or not anything judged the chunk, which is the whole
+        reason a screening render is worth running."""
+        return self._measures.pop(int(index), None)
+
+    @property
+    def pending(self) -> int:
+        return len(self._queued) + len(self._waiting)
+
+
 def render_guarded(render: Callable[[str, Optional[int]], np.ndarray],
                    text: str, index: int, *, sample_rate: int,
                    base_seed: Optional[int],

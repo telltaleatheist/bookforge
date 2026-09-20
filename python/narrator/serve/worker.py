@@ -1836,10 +1836,14 @@ class OrpheusStreamServer:
         # The row index goes with each call so a served engine seeds row i with
         # `seed + i` (see HiggsV3Engine._seed_for); Orpheus ignores it.
         #
-        # THE BARE ARM, AND IT IS A CHOICE NOW - BUT ITS SEQUENCE NEVER WAS.
-        # `generate_batch`'s `elif rows:` carries the measurement and the whole
-        # finding; in one line, a batch that asked not to be JUDGED also stops
-        # being BATCHED here, and no caller asked for that. Until 2026-09-13 this
+        # SEQUENTIAL, AND ONLY FOR ENGINES THAT HAVE NO BATCHED DRIVER.
+        # Orpheus on the Listen door, and `_warmup`. A Higgs batch reached here
+        # between 2026-09-19 and 2026-09-20 when it carried `retake: false`, and
+        # being sequential was the cost of that - one flag decided both whether
+        # the batch was judged and whether it was batched. It now goes through
+        # `render_many` with an `UnjudgedPlan`, so the width is spent by the
+        # engine whether or not anything judges the rows
+        # (`generate_batch`'s first branch). Until 2026-09-13 this
         # comprehension was the whole of what the serve world did with a Higgs
         # engine: sequential AND unguarded, while the audiobook world ran the
         # same model through the PaceTracker, the re-roll and the split ladder
@@ -2714,60 +2718,51 @@ class OrpheusStreamServer:
                 rows.append((it, normalize_for_tts(it.get('text', ''), language),
                              v, rung, take))
 
-            if rows and retake:
-                # THE GUARDED ARM (Owen, 2026-09-13, and asked for per batch
-                # since 2026-09-19). The engine runs its own PaceTracker,
-                # re-roll and split ladder over the whole batch - against the
-                # band THIS batch carried - and yields each chunk with the
-                # verdict it reached; this worker ships the audio and forwards
-                # the verdict. The engine was checked for `render_many` when
-                # the tracker was built (`retake_unsupported`), so reaching
-                # here means the ladder exists.
+            if rows and _can_guard_its_own_batch(engine):
+                # THE ENGINE'S OWN BATCHED DRIVER, judged or not (Owen,
+                # 2026-09-13; asked for per batch since 2026-09-19; unjudged
+                # batches routed here 2026-09-20).
+                #
+                # `tracker` carries the whole of the difference. With one, the
+                # engine runs its PaceTracker, re-roll and split ladder against
+                # the band THIS batch carried and yields each chunk with the
+                # verdict it reached. With None - the batch said `retake:
+                # false` - it builds a `truncation.UnjudgedPlan` instead: one
+                # take per row, exactly as sent, `verdict` None for every chunk,
+                # which `_emit_batch_item` already turns into a row with no
+                # `guard` key at all.
+                #
+                # WHY BOTH ARE HERE NOW. Until 2026-09-20 `retake: false` fell
+                # through to the sequential comprehension in
+                # `_generate_audio_batch`, so ONE flag decided two unrelated
+                # things: whether the batch was judged, and whether it was
+                # batched at all. The caller that must send `retake: false` is
+                # the screening render of a fine-tuned checkpoint - no measured
+                # band, because measuring one is what the render is for - which
+                # is also the caller rendering a thousand chunks for
+                # throughput. Measured on the training PC: `#running-req` pinned
+                # at 1 across all 684 sampled scheduler lines at width 4, 12.9
+                # s/chunk against 4.16 s/render on the direct path, with sglang
+                # demonstrably willing (zero rejections at concurrency 4).
+                #
+                # The width is spent by the ENGINE either way, which is why the
+                # fix is a plan and not a thread pool here: `v3_engine` pools
+                # threads, `mlx_backend` groups into a BatchGenerator, and a
+                # pool in this method would be right for one and wrong for the
+                # other.
                 self._emit_guarded_batch(rows, emitted, tracker, width)
             elif rows:
-                # THE BARE ARM: one take per row, exactly as sent. No verdict
-                # is attached because none was reached - a `guard` key here
-                # would be narrator claiming to have judged a row it was told
-                # not to judge.
+                # THE ENGINES WITH NO BATCHED DRIVER: Orpheus on the Listen
+                # door, and `_warmup`. One take per row, exactly as sent, no
+                # verdict - there is no `render_many` to ask, and
+                # `_can_guard_its_own_batch` is the only test that cannot be
+                # wrong about which engine this is.
                 #
-                # KNOWN DEFECT, MEASURED 2026-09-20: THIS ARM IS ALSO SERIAL,
-                # AND NOTHING ASKED IT TO BE.
+                # A HIGGS BATCH NO LONGER ARRIVES HERE. It did between
+                # 2026-09-19 and 2026-09-20, and being sequential was the cost
+                # (see the branch above). Orpheus is genuinely serial through
+                # this path and always was.
                 #
-                # `retake` names one thing and decides two. The guarded arm
-                # above both JUDGES (PaceTracker, re-roll, split) and BATCHES
-                # (`render_many` keeps `width` rows in flight); this arm does
-                # neither, because it is the old pre-2026-09-13 comprehension
-                # and that comprehension was sequential. Judging and batching
-                # are unrelated, and only one of them was ever the subject of
-                # this branch.
-                #
-                # WHO PAYS: exactly the caller who can least afford it. A
-                # screening render of a fine-tuned checkpoint MUST send
-                # `retake: false` - it has no measured band, and measuring one
-                # is what the render is for (PHASE18-UNCERTIFIED.md) - so the
-                # one client that is rendering a thousand chunks for throughput
-                # is the one client guaranteed to get them one at a time.
-                # Nothing at the call site could tell you that.
-                #
-                # MEASURED on the training PC: a 128-chunk job at width 4 with
-                # `HIGGS_MAX_NUM_SEQS=4` exported and sglang willing (zero
-                # rejections across 1,024 renders at concurrency 4 on the same
-                # checkpoint, direct) sat at `#running-req: 1` on all 684
-                # sampled scheduler lines. 12.9 s/chunk against 4.16 s/render
-                # on the direct path - at least 2.4x, and bounded above by
-                # `width` because this arm is exactly one.
-                #
-                # THE FIX IS NOT A THREAD POOL HERE. The two Higgs engines
-                # parallelise differently - `v3_engine.render_many` pools
-                # threads, `mlx_backend.render_many` groups into a
-                # BatchGenerator - so the width has to be spent by the ENGINE,
-                # as the guarded arm already spends it. What is missing is an
-                # unjudged driver at width: `render_many` without a
-                # `GuardPlan`, which is a change inside `truncation` and not
-                # here. Until that exists, DO NOT paper over it with an
-                # executor around `_generate_audio`: it would be right for the
-                # served arm and wrong for MLX, and the caller cannot tell
-                # which engine it got.
                 rendered = self._generate_audio_batch(
                     [t for _, t, _, _, _ in rows],
                     [v for _, _, v, _, _ in rows],
