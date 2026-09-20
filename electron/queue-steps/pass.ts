@@ -143,8 +143,9 @@ function passModule(type: JobType): StepModule {
      * Read by the scheduler for ONE decision: may the run's lease stay open
      * for this step when the step in front of it finishes. THIS FLAG IS NOT
      * SUFFICIENT ON ITS OWN — a lease is per MODEL ID and a server holds one,
-     * so `leasedModel` below has to name the same id or the lease is given
-     * back at the seam (see the note there).
+     * so `crucibleClass` above has to name the class the open lease was taken
+     * under, on the same machine, or the lease is given back at the seam
+     * (`nextActWouldUseHeldCard`, queue-engine.ts).
      *
      * `footnote-refs` declares nothing and so answers false: an hour is not
      * what it takes, but neither is a model.
@@ -155,10 +156,10 @@ function passModule(type: JobType): StepModule {
       const ai = aiBlockOfPass(pass);
       return ai !== null && ai.aiProvider === 'crucible';
     },
-    /**
-     * WHICH Crucible model this pass will lease — the id, or null.
+    /*
+     * NO `leasedModel` HOOK, AND ITS ABSENCE IS THE 2026-09-19 RULING.
      *
-     * ── The defect this closes (Foundry, 2026-09-14) ─────────────────────────
+     * ── What it was for (Foundry, 2026-09-14) ───────────────────────────────
      *
      * A lease is taken on a MODEL (`POST /v1/models/{id}/lease`) and Crucible
      * holds ONE per server. The row scope built for A5 kept the lease open for
@@ -166,60 +167,27 @@ function passModule(type: JobType): StepModule {
      * wanted — and clean resolves to the 9B while simplify and translate
      * resolve to the 27B. So the archetypal row, clean then simplify, carried
      * the 9B's lease into a step that has to put the 27B on the card, and the
-     * load is refused `leased` — naming `bookforge`, which is us. The row then
-     * parks on a claim this app made against itself until the ttl lapses.
+     * load is refused `leased` — naming `bookforge`, which is us.
      *
-     * ── Where the id comes from, and why not from a table here ───────────────
+     * ── Why naming the id here became impossible ────────────────────────────
      *
-     * From the same owner the act itself reads at run time, every time:
+     * `narration-text` lost the answer first: the `clean` act's model is
+     * `GET /v1/capability`'s `selected` on the chosen server, because
+     * `crucible install` probed that machine's card to make that record
+     * (docs/CRUCIBLE_ROLLOUT_PLAN.md §3). Phase 15 made the same true of
+     * `simplify` and `translate-pass` — a text door sends the capability's
+     * `selected` for its class and nothing else (PHASE15 §5.3), so the row's
+     * `aiModel` is not the id either. A lookup table in this file saying
+     * "clean is the 9B" would be a second owner of a per-host fact (crucible
+     * ARCHITECTURE.md R1).
      *
-     *  · `simplify` / `translate-pass` run through BookForge's own bridges with
-     *    the provider block on the row, so the id is `aiModel`
-     *    (`crucibleModelForAiStep`, beside `providerConfigOf`).
-     *  · `narration-text` is the `clean` act through the engine, and its model
-     *    IS NOT KNOWABLE HERE ANY MORE (2026-09-14). It used to be
-     *    `textModelFor('clean')`, out of `<userData>/crucible-models.json`;
-     *    that record is deleted and `GET /v1/capability` on the chosen server
-     *    owns the act-to-model mapping, because `crucible install` probed that
-     *    machine's card to make it (Owen's ruling with Foundry,
-     *    docs/CRUCIBLE_ROLLOUT_PLAN.md section 3). Asking it needs a server
-     *    name and a round trip, and this function has neither — it is
-     *    synchronous and runs before the step is placed. So it answers `null`,
-     *    which the paragraph below already describes as a real answer.
-     *
-     * A lookup table in this file saying "clean is the 9B" would be a second
-     * owner of that fact and would be wrong the first time somebody re-pointed
-     * an act in Settings (crucible `docs/ARCHITECTURE.md` R1).
-     *
-     * ── Null is an ANSWER ────────────────────────────────────────────────────
-     *
-     * No model chosen for the act, or a provider that leases nothing. The
-     * scheduler compares ids: null never equals an open lease's subject, so
-     * the lease is given back at the seam — which is exactly the behaviour
-     * before one lease per row existed. The refusal itself is NOT swallowed,
-     * only deferred: the act raises `crucible_text_model_not_set` by name when
-     * the step actually runs, which is where an operator can act on it. This
-     * is a question about a lease, asked before the step starts, and it must
-     * not be the thing that fails the row.
+     * So every pass answered `null`, `null` never equalled an open lease's
+     * subject, and the comparison matched NOTHING — which is how `pause()`
+     * came to close the lease of a step that was still running (bug hunt
+     * 2026-09-19, §H). The scheduler compares `crucibleClass` on the row's
+     * server now (`nextActWouldUseHeldCard`, queue-engine.ts), which is what
+     * both sides can state, and the hook is gone.
      */
-    leasedModel: (): string | null => {
-      /*
-       * NULL BY CONSTRUCTION, FOR EVERY PASS NOW.
-       *
-       * `narration-text` reached this answer first, when the capability record
-       * took ownership of the per-act model: the id is the SERVER's answer,
-       * asked at run time, and nothing synchronous here can know it. Phase 15
-       * made that true of `simplify` and `translate-pass` too — a text door
-       * sends `capability.selected` for its class and nothing else (crucible
-       * PHASE15 §5.3), so the row's `aiModel` is no longer the id either.
-       *
-       * Null never equals an open lease's subject, so the lease is given back
-       * at the seam — exactly the behaviour before one lease per row existed.
-       * OWED: an async `leasedModel` given the run's venue would let a row
-       * keep its lease across a chain of acts on one model.
-       */
-      return null;
-    },
 
     async run(ctx: StepRunContext): Promise<ArtifactRef> {
       const config = ctx.step.config as unknown as PassJobConfig;

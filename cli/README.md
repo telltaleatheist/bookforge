@@ -519,12 +519,20 @@ to refuse a book that was read correctly. `--language` carries a render default
 (`en`), so align gets its own flag rather than laundering that default into a
 measurement. The app's own step refuses an absent language for the same reason.
 
-CPU only, by design: `align/aligner.py` refuses CUDA by name while
-`%APPDATA%\BookForge\external-gpu-job.lock` exists, and it does not want it —
-RTF 0.082, a book in minutes. The whisperx add-on must be installed
-(Settings → Add-ons); an absent one is refused here **before** the job starts.
-(The narration dialog used to make the same plan-time check; it has nothing to
-check since the align row left it on 2026-09-08.)
+**It runs on the run's Crucible server, and it asks for the CARD (2026-09-19).**
+This door queued `device: 'cpu'` until that date — a sentence left over from the
+local spawn, when a CPU align ran beside the assembly without competing for this
+machine's GPU. `runCoverageAlign` sends every alignment to the Crucible the
+session's own record names, and a Crucible has only the card, so a CPU row is
+refused by name (`crucible_align_cpu_row`) and this door could not run at all.
+Whether the card is free is the SERVER's question and it answers it: a machine
+running somebody's job refuses with its own holder line. There is no `--device`
+flag here, because the only two values would be "run" and "refused by name".
+
+The local plan-time add-on check is gone too (2026-09-19, finding B2): it asked
+whether THIS machine had a qwen env for a model that runs on the server, so it
+refused doors that would have worked. The refusal that is left is the job's own,
+naming the server it could not reach or the thing that server would not do.
 
 ## The two enhancement passes — `--denoise`, `--rvc-enhance`
 

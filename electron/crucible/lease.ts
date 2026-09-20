@@ -909,11 +909,13 @@ class CrucibleReserveRefused extends Error {
  *
  * A lease is on a MODEL (`POST /v1/models/{id}/lease`), and since phase 15 the
  * id for an act is the SERVER's answer — `GET /v1/capability`'s `selected` for
- * the class ({@link crucibleActModel}, the one owner). That is why
- * `StepModule.leasedModel` answers null for every module and why this door is
- * async: the scheduler knows the act and the machine, and the machine knows the
- * model. A table on this side naming "simplify is the 27B" would be a second
- * owner of a per-host fact (crucible ARCHITECTURE.md R1).
+ * the class ({@link crucibleActModel}, the one owner). That is why this door is
+ * async — the scheduler knows the act and the machine, and the machine knows
+ * the model — and why the scheduler's own carry-over rule compares CLASSES and
+ * not ids (`nextActWouldUseHeldCard`, queue-engine.ts; the `leasedModel` hook
+ * that tried to name an id here was removed 2026-09-19). A table on this side
+ * naming "simplify is the 27B" would be a second owner of a per-host fact
+ * (crucible ARCHITECTURE.md R1).
  *
  * ── It is the SAME lease the act will use ──────────────────────────────────
  *
@@ -997,7 +999,7 @@ export function crucibleLeaseSeam(): {
   withRowScope<T>(row: string, fn: () => Promise<T>): Promise<T>;
   reserveRow(row: string, where: { server: string; act: string }): Promise<void>;
   closeRow(row: string): Promise<void>;
-  leaseSubject(row: string): string | null;
+  leaseHeld(row: string): { server: string; act: string } | null;
 } {
   return {
     withRowScope: withCrucibleRowScope,
@@ -1005,10 +1007,22 @@ export function crucibleLeaseSeam(): {
     // the lease, and only then the slot. See {@link reserveCrucibleRowLease}.
     reserveRow: reserveCrucibleRowLease,
     closeRow: closeCrucibleRowLease,
-    // WHAT this run is holding, so the scheduler can compare it to what the
-    // next act needs. A lease is per model and a server holds one, so keeping
-    // it open across a change of model is a refusal this app hands itself.
-    leaseSubject: (row: string): string | null => crucibleRowLease(row)?.leased ?? null,
+    /*
+     * WHAT this run is holding, so the scheduler can compare it to what the
+     * next act needs. A lease is per model and a server holds one, so keeping
+     * it open across a change of model is a refusal this app hands itself.
+     *
+     * The MACHINE and the CLASS, not the model id: the scheduler asks this of
+     * a step that has NOT STARTED, and since phase 15 that step's model id is
+     * the server's answer (`crucibleActModel`, one round trip). The class is
+     * what both sides can state — see `nextActWouldUseHeldCard` in
+     * queue-engine.ts. The id stays available through `crucibleRowLease` for
+     * the log lines and the keepers that need the real subject.
+     */
+    leaseHeld: (row: string): { server: string; act: string } | null => {
+      const held = crucibleRowLease(row);
+      return held === null ? null : { server: held.server, act: held.act };
+    },
   };
 }
 

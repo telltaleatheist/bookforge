@@ -261,7 +261,7 @@ export const ttsConversionStep: StepModule = {
   produces: 'audio-session',
   resource: () => 'gpu',
   /*
-   * NO `leasesModel` AND NO `leasedModel` HERE, AND THE ABSENCE IS THE
+   * NO `leasesModel` HERE, AND THE ABSENCE IS THE
    * STATEMENT (Owen, 2026-09-19: *"as soon as the GPU finishes, it releases the
    * lease"*).
    *
@@ -271,7 +271,7 @@ export const ttsConversionStep: StepModule = {
    * would have the server refuse `409 leased` to the very run that took it
    * (`electron/crucible/render.ts`). What the absence decides is the OTHER
    * half: if this row is carrying a lease taken by an earlier text act,
-   * `leaseWantedAfter` asks the children of this step whether the same model is
+   * `leaseWantedAfter` asks the children of this step whether the same card is
    * wanted next, `align` declares nothing either — it loads the ALIGNER, a
    * different model — and `settleStep` gives the card back. Declaring anything
    * here would keep somebody's model resident across a render that has no use

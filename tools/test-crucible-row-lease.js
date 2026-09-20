@@ -37,7 +37,9 @@
  *     gap a `load-model` for the 27B is refused `leased`, naming `bookforge`.
  *     That load is not hypothetical: `resolveCrucibleTextEngine`'s `loadFirst`
  *     door issues one before any lease is taken, and so does an operator at
- *     the CLI. `StepModule.leasedModel` is what closes it.
+ *     the CLI. Comparing what the two acts would take is what closes it — the
+ *     CLASS on the row's server since 2026-09-19, the step's own model id
+ *     before that (a hook every module had to answer `null` for).
  *  3c. AND A RELEASE THAT HAS NOT LANDED IS NOT A RELEASE. `settleStep` fires
  *     `closeRow` without awaiting the DELETE and pumps in the same tick, so
  *     the next act can ask for its lease while the server still holds the
@@ -77,6 +79,7 @@ installElectronStub('bf-crucible-row-lease-');
 
 const lease = require(LEASE);
 const servers = require(path.join(REPO, 'dist', 'electron', 'crucible', 'servers.js'));
+const routes = require(path.join(REPO, 'dist', 'electron', 'crucible', 'routes.js'));
 const engine = require(path.join(REPO, 'dist', 'electron', 'queue-engine.js'));
 
 const nameFake = fakeNamer(servers);
@@ -249,8 +252,14 @@ const settle = async (n = 20) => { for (let i = 0; i < n; i += 1) await new Prom
 
   const SCRATCH = fs.mkdtempSync(path.join(os.tmpdir(), 'bf-rowlease-'));
 
-  /** The model the scheduler checks pretend every act runs on, unless they say. */
-  const DEFAULT_MODEL = 'qwen3.5-9b';
+  /**
+   * The CLASS the scheduler checks pretend every act is, unless they say.
+   *
+   * It was a model id until 2026-09-19. The id belongs to the server now
+   * (`GET /v1/capability`), so what a module can state — and what the carry-over
+   * compares — is the capability class it is (`StepModule.crucibleClass`).
+   */
+  const DEFAULT_ACT = 'clean';
 
   function fakeModule(type, opts = {}) {
     const runs = [];
@@ -275,15 +284,17 @@ const settle = async (n = 20) => { for (let i = 0; i < n; i += 1) await new Prom
       cancel() {},
     };
     /*
-     * `leases` is `true` for the suite's default model, or a model ID. BOTH
+     * `leases` is `true` for the suite's default CLASS, or a class name. BOTH
      * declarations go on together, because the scheduler needs both: one says
-     * a lease may be held, the other says on WHAT, and keeping it across the
-     * seam requires the id to match what is already held.
+     * a lease may be held, the other says for WHICH ACT, and keeping it across
+     * the seam requires the class to match the one the open lease was taken
+     * under (`nextActWouldUseHeldCard`). It was the model ID until 2026-09-19;
+     * the id is the server's answer now and no module can name it.
      */
     if (opts.leases !== undefined && opts.leases !== false) {
-      const id = opts.leases === true ? DEFAULT_MODEL : opts.leases;
+      const act = opts.leases === true ? DEFAULT_ACT : opts.leases;
       mod.leasesModel = () => true;
-      mod.leasedModel = () => id;
+      mod.crucibleClass = () => act;
     }
     return mod;
   }
@@ -291,11 +302,13 @@ const settle = async (n = 20) => { for (let i = 0; i < n; i += 1) await new Prom
   /**
    * Records what the scheduler asked of the lease seam, with no network.
    *
-   * `subject` is what the row is pretending to hold. The scheduler compares it
-   * to the next step's `leasedModel`, so a spy that always answered null would
-   * make every keep-the-lease check vacuously pass.
+   * `subject` is what the row is pretending to hold — the MACHINE and the
+   * CLASS, which is what `leaseHeld` answers (the model id is the server's and
+   * this side never sees it). The scheduler compares it to what the next step
+   * would take, so a spy that always answered null would make every
+   * keep-the-lease check vacuously pass.
    */
-  function spyHost(subject = 'qwen3.5-9b') {
+  function spyHost(subject = { server: 'mac', act: DEFAULT_ACT }) {
     const scopes = [];
     const closed = [];
     const held = new Map();
@@ -306,7 +319,7 @@ const settle = async (n = 20) => { for (let i = 0; i < n; i += 1) await new Prom
       host: {
         withRowScope(row, fn) { scopes.push(row); held.set(row, subject); return fn(); },
         async closeRow(row) { closed.push(row); held.delete(row); },
-        leaseSubject(row) { return held.get(row) ?? null; },
+        leaseHeld(row) { return held.get(row) ?? null; },
       },
     };
   }
@@ -369,17 +382,22 @@ const settle = async (n = 20) => { for (let i = 0; i < n; i += 1) await new Prom
     assert.strictEqual(spy.closed.length, 1, 'and it IS given back when the last act lands');
   });
 
-  await check('a row whose next act wants a DIFFERENT model gives the lease back at the seam',
+  await check('a row whose next act is a DIFFERENT CLASS gives the lease back at the seam',
     async () => {
       /*
        * THE ARCHETYPAL ROW, and the one this seam broke. Clean runs on the 9B
        * and simplify on the 27B, so keeping the clean lease open for the
        * simplify would mean the simplify's own load is refused `leased` by
        * BookForge, against BookForge, until the ttl lapsed.
+       *
+       * The CLASS is what says so here. Neither side can name those ids — the
+       * server owns the act-to-model mapping — so the comparison is `clean` vs
+       * `simplify` on one machine, which is the same two cards said in the
+       * vocabulary both sides have.
        */
-      const clean = fakeModule('narration-text', { consumes: 'epub', leases: 'qwen3.5-9b' });
-      const simplify = fakeModule('simplify', { consumes: 'epub', leases: 'qwen3.8-27b-4bit' });
-      const spy = spyHost('qwen3.5-9b');
+      const clean = fakeModule('narration-text', { consumes: 'epub', leases: 'clean' });
+      const simplify = fakeModule('simplify', { consumes: 'epub', leases: 'simplify' });
+      const spy = spyHost({ server: 'mac', act: 'clean' });
       await freshEngine('model-changes', [clean, simplify], spy);
       engine.enqueue({
         title: 'Mistborn',
@@ -398,13 +416,13 @@ const settle = async (n = 20) => { for (let i = 0; i < n; i += 1) await new Prom
     });
 
   await check('a next act that leases but will not say WHICH ends the run of acts', async () => {
-    // Undeclared is not "probably the same model": that assumption IS the
-    // defect above. A module with no answer releases, which is the behaviour
-    // before one lease per row existed.
+    // Undeclared is not "probably the same card": that assumption IS the
+    // defect above. A module that declares `leasesModel` and no `crucibleClass`
+    // releases, which is the behaviour before one lease per row existed.
     const t = fakeModule('translation', { consumes: 'epub', leases: true });
     const b = fakeModule('book-analysis', { consumes: 'epub', produces: 'report' });
     b.leasesModel = () => true;
-    const spy = spyHost(DEFAULT_MODEL);
+    const spy = spyHost();
     await freshEngine('unnamed-model', [t, b], spy);
     engine.enqueue({
       title: 'Mistborn',
@@ -448,10 +466,10 @@ const settle = async (n = 20) => { for (let i = 0; i < n; i += 1) await new Prom
     // no card to hold. `leasesModel` is asked of the CONFIG for exactly this.
     const t = fakeModule('translation', { consumes: 'epub', produces: 'epub' });
     t.leasesModel = (config) => config.aiProvider === 'crucible';
-    t.leasedModel = (config) => (config.aiProvider === 'crucible' ? DEFAULT_MODEL : null);
+    t.crucibleClass = () => DEFAULT_ACT;
     const b = fakeModule('book-analysis', { consumes: 'epub', produces: 'report' });
     b.leasesModel = (config) => config.aiProvider === 'crucible';
-    b.leasedModel = (config) => (config.aiProvider === 'crucible' ? DEFAULT_MODEL : null);
+    b.crucibleClass = () => DEFAULT_ACT;
     const spy = spyHost();
     await freshEngine('config-decides', [t, b], spy);
     engine.enqueue({
@@ -544,7 +562,7 @@ const settle = async (n = 20) => { for (let i = 0; i < n; i += 1) await new Prom
       'the next act must NOT have started, or the door below is testing settleStep again');
     assert.deepStrictEqual(spy.closed, [],
       'the row must be holding its lease here, or the door below proves nothing');
-    assert.strictEqual(spy.host.leaseSubject(job.id), 'qwen3.5-9b');
+    assert.deepStrictEqual(spy.host.leaseHeld(job.id), { server: 'mac', act: DEFAULT_ACT });
     return { job, spy, t, b };
   }
 
@@ -555,7 +573,7 @@ const settle = async (n = 20) => { for (let i = 0; i < n; i += 1) await new Prom
     assert.deepStrictEqual(spy.closed, [job.id],
       'the act the lease was kept for was cancelled, so nothing is holding that model for '
       + 'anything — and the ttl will never take it back, because the heartbeat keeps it');
-    assert.strictEqual(spy.host.leaseSubject(job.id), null);
+    assert.strictEqual(spy.host.leaseHeld(job.id), null);
   });
 
   await check('REMOVING the run gives the card back', async () => {
@@ -609,6 +627,98 @@ const settle = async (n = 20) => { for (let i = 0; i < n; i += 1) await new Prom
       t.runs[0].resolve({ kind: 'epub', path: '/out/t' });
       await settle(30);
       assert.deepStrictEqual(spy.closed, [job.id], 'and it is given back when that act lands');
+    });
+
+  await check('PAUSE keeps the lease of a RUNNING act that cannot name its card — the defect',
+    async () => {
+      /*
+       * THE BUG THIS PACKET FIXES (bug hunt 2026-09-19, §H).
+       *
+       * The check above passes a module that names its class. THIS one is the
+       * app: since phase 15 the model id is the server's answer, so every real
+       * module answered `null` to "which model will you lease" — and the
+       * running-step branch sat BEHIND that comparison. Null never equalled the
+       * subject, the branch was never reached, and `pause()` closed the lease of
+       * a step that was mid-act: the eviction the lease exists to prevent,
+       * handed out by the app itself.
+       *
+       * A running act is guaranteed to be using the card. It needs no
+       * comparison, and it does not get one.
+       */
+      const t = fakeModule('translation', { consumes: 'epub', produces: 'epub' });
+      t.leasesModel = () => true;
+      // No `crucibleClass`, exactly as no module could name a model id: the
+      // scheduler cannot tell what this act would take, and must not need to.
+      const spy = spyHost();
+      await freshEngine('pause-keeps-unnamed', [t], spy);
+      const job = engine.enqueue({
+        title: 'Mistborn',
+        steps: [{
+          type: 'translation', label: 'Translate', config: { aiProvider: 'crucible' },
+          sourceRef: { kind: 'epub', path: '/a.epub' },
+        }],
+      });
+      engine.start();
+      await settle(30);
+      assert.strictEqual(t.runs.length, 1, 'the act must be running, or this proves nothing');
+      engine.pause();
+      await settle(20);
+      assert.deepStrictEqual(spy.closed, [],
+        'the act holding this lease is mid-run — closing it evicts a live book');
+      t.runs[0].resolve({ kind: 'epub', path: '/out/t' });
+      await settle(30);
+      assert.deepStrictEqual(spy.closed, [job.id],
+        'and it goes back the moment that act lands: a paused queue has no next act');
+    });
+
+  await check('a next act on ANOTHER MACHINE gives the card back, whatever its class',
+    async () => {
+      /*
+       * THE SERVER IS HALF THE CARD. Two machines can both serve `clean`, and a
+       * lease on one protects nothing on the other — so "same class" is only an
+       * answer together with "same machine". The row here is placed on `mac`
+       * (`waitForResolved`, written the moment the card is taken) while the
+       * lease it carries is on `pc`.
+       */
+      // `gpu` and `machines: 'any'` on both: only a GPU step that travels is
+      // PLACED (`pump`), and an unplaced row has no machine to compare.
+      const t = fakeModule('translation', {
+        consumes: 'epub', produces: 'epub', leases: true, resource: 'gpu' });
+      t.machines = () => 'any';
+      const b = fakeModule('book-analysis', {
+        consumes: 'epub', produces: 'report', leases: true, resource: 'gpu' });
+      b.machines = () => 'any';
+      const spy = spyHost({ server: 'pc', act: DEFAULT_ACT });
+      await freshEngine('other-machine', [t, b], spy);
+      // The class these steps declare is routed LOCALLY on `mac`. Without a
+      // route the pump holds the row on `unknown` — never a guess — and the
+      // step would not launch at all (crucible PHASE15 §5.3).
+      routes.noteCrucibleRoutes('mac', { [DEFAULT_ACT]: 'local' });
+      engine.setCrucibleRoutingHost({
+        routing: () => ({ ranked: [{ name: 'mac', enabled: true }], serversOnThisMachine: [] }),
+        defaultWaitFor: () => 'mac',
+        dial: () => 'any',
+        async reach() { return { reachable: true }; },
+      });
+      const job = engine.enqueue({
+        title: 'Mistborn',
+        steps: [
+          { type: 'translation', label: 'Translate', config: { aiProvider: 'crucible' },
+            sourceRef: { kind: 'epub', path: '/a.epub' } },
+          { type: 'book-analysis', label: 'Analyse', config: { aiProvider: 'crucible' },
+            parentIndex: 0 },
+        ],
+      });
+      engine.start();
+      await settle(40);
+      assert.strictEqual(
+        engine.snapshot().jobs.find((j) => j.id === job.id).waitForResolved, 'mac',
+        'the row must be placed, or the machines being compared are both nothing');
+      t.runs[0].resolve({ kind: 'epub', path: '/out/t' });
+      await settle(40);
+      assert.ok(spy.closed.includes(job.id),
+        'the next act is the same class on a DIFFERENT machine, so the card this row holds '
+        + 'is not the card it is about to take');
     });
 
   await check('a disposal that leaves a next act of the SAME model alone keeps the lease',
@@ -689,7 +799,7 @@ const settle = async (n = 20) => { for (let i = 0; i < n; i += 1) await new Prom
       produces: 'epub',
       resource: () => 'gpu',
       leasesModel: () => true,
-      leasedModel: () => where.model,
+      crucibleClass: () => where.act,
       async run(ctx) {
         return lease.withCrucibleLease(
           { server: where.server, kind: 'model', id: where.model, act: where.act, onLog: () => {} },
@@ -794,8 +904,27 @@ const settle = async (n = 20) => { for (let i = 0; i < n; i += 1) await new Prom
       }
     });
 
-  await check('translate(27B) then simplify(27B) on the wire: ONE take, ONE release',
+  await check('translate then simplify on the wire: the card is given back BETWEEN CLASSES',
     async () => {
+      /*
+       * WHAT THE 2026-09-19 RULE COSTS, stated rather than discovered later.
+       *
+       * These two acts may well resolve to the SAME model on a big machine —
+       * `translate` and `simplify` are both the 27B on the Ultra — and until
+       * this date the keeper pinned ONE take across them. It pinned a behaviour
+       * the app never had: the comparison was the step's own model id, phase 15
+       * had already left every module answering `null` for it, and null never
+       * equalled the subject, so production released here every time (bug hunt
+       * §H). The keeper only passed because its fake modules named ids no real
+       * module can.
+       *
+       * So the rule compares what both sides CAN state — the class on the
+       * machine — and two classes are not a guarantee of one model: the same
+       * pair is two different models on a smaller card, and only the server
+       * knows which. Owen's ruling 2 is *"if the next step is guaranteed to use
+       * the currently loaded model"*, and this pair is not guaranteed. The card
+       * goes back, and the check below is the half that is kept.
+       */
       const routes = leaseRoutes();
       const fake = await startFakeCrucible(routes.handler);
       const server = nameFake(fake.url);
@@ -804,7 +933,7 @@ const settle = async (n = 20) => { for (let i = 0; i < n; i += 1) await new Prom
           server, model: 'qwen3.8-27b-4bit', act: 'translate', consumes: 'epub' });
         const simplify = leasingModule('simplify', {
           server, model: 'qwen3.8-27b-4bit', act: 'simplify', consumes: 'epub' });
-        await freshEngine('wire-one-model', [translate, simplify],
+        await freshEngine('wire-two-classes', [translate, simplify],
           { host: lease.crucibleLeaseSeam() });
         engine.enqueue({
           title: 'Mistborn',
@@ -817,9 +946,54 @@ const settle = async (n = 20) => { for (let i = 0; i < n; i += 1) await new Prom
         engine.start();
         await settle(80);
 
+        assert.deepStrictEqual(wireOf(routes), [
+          'take qwen3.8-27b-4bit ok',
+          'release qwen3.8-27b-4bit ok',
+          'take qwen3.8-27b-4bit ok',
+          'release qwen3.8-27b-4bit ok',
+        ], 'two classes, so the run of acts ends — and the first lease is given back BEFORE '
+          + 'the second is asked for, or the server refuses us in our own name');
+        assert.deepStrictEqual(routes.lease.refusals, [],
+          'a refusal here is this app blocking itself, which is the whole defect');
+      } finally {
+        await fake.close();
+      }
+    });
+
+  await check('translate then translate on the wire: ONE take, ONE release',
+    async () => {
+      /*
+       * THE CARRY-OVER THAT SURVIVES, and the shape it is for: a row with two
+       * acts of ONE class on one machine — the language-learning row's
+       * per-language translations. Same class, same server, so the next act is
+       * guaranteed to want the model that is loaded, and the lease is handed to
+       * it rather than released and re-taken with an unload in the gap.
+       */
+      const routes = leaseRoutes();
+      const fake = await startFakeCrucible(routes.handler);
+      const server = nameFake(fake.url);
+      try {
+        const de = leasingModule('translation', {
+          server, model: 'qwen3.8-27b-4bit', act: 'translate', consumes: 'epub' });
+        const ko = leasingModule('translate-pass', {
+          server, model: 'qwen3.8-27b-4bit', act: 'translate', consumes: 'epub' });
+        await freshEngine('wire-one-class', [de, ko], { host: lease.crucibleLeaseSeam() });
+        engine.enqueue({
+          title: 'Mistborn',
+          steps: [
+            { type: 'translation', label: 'Translate (de)', config: { aiProvider: 'crucible' },
+              sourceRef: { kind: 'epub', path: '/a.epub' } },
+            { type: 'translate-pass', label: 'Translate (ko)', config: { kind: 'translate' },
+              parentIndex: 0 },
+          ],
+        });
+        engine.start();
+        await settle(80);
+
         assert.deepStrictEqual(wireOf(routes),
           ['take qwen3.8-27b-4bit ok', 'release qwen3.8-27b-4bit ok'],
-          'same model, so the run of acts continues and the model is not unloaded between them');
+          'same class on one machine, so the run of acts continues and the model is not '
+          + 'unloaded between them');
         assert.strictEqual(routes.lease.taken[0].act, 'translate',
           'stamped with the act that OPENED it - crucible has no name for "a row of acts"');
       } finally {
@@ -842,7 +1016,7 @@ const settle = async (n = 20) => { for (let i = 0; i < n; i += 1) await new Prom
     const routes = leaseRoutes();
     // The capability door, because the reserve has to ask the SERVER which
     // model serves this act (phase 15 §5.3) — that is the whole reason
-    // `StepModule.leasedModel` answers null and this door is async.
+    // no module can name the id and this door is async.
     const door = settingsRoutes({});
     const fake = await startFakeCrucible(async (req, res, ctx) => {
       if (await door.handle(req, res, ctx)) return true;
@@ -855,8 +1029,10 @@ const settle = async (n = 20) => { for (let i = 0; i < n; i += 1) await new Prom
       assert.strictEqual(routes.lease.taken.length, 1, 'admission took it');
       assert.strictEqual(routes.lease.taken[0].model, 'qwen3.5-9b',
         'on the model the SERVER names for that class, not one this side guessed');
-      assert.strictEqual(seam.leaseSubject('job_reserve'), 'qwen3.5-9b',
+      assert.deepStrictEqual(seam.leaseHeld('job_reserve'), { server, act: 'clean' },
         'and the row is holding it before anything has started');
+      assert.strictEqual(lease.crucibleRowLease('job_reserve').leased, 'qwen3.5-9b',
+        'on the model the SERVER named — the id the scheduler never sees');
 
       // The act, exactly as a step runs it.
       await lease.withCrucibleRowScope('job_reserve', () => lease.withCrucibleLease(
@@ -902,7 +1078,7 @@ const settle = async (n = 20) => { for (let i = 0; i < n; i += 1) await new Prom
       assert.strictEqual(typeof thrown.busyLine, 'string',
         'the holder\'s line has to arrive under the name the scheduler reads');
       assert.match(thrown.busyLine, /^leased: foundry, translate, until /);
-      assert.strictEqual(lease.crucibleLeaseSeam().leaseSubject('job_refused'), null,
+      assert.strictEqual(lease.crucibleLeaseSeam().leaseHeld('job_refused'), null,
         'and nothing is recorded as held — the take never happened');
     } finally {
       await lease.closeCrucibleRowLease('job_refused');

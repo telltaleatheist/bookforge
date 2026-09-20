@@ -2041,6 +2041,17 @@ export class StudioComponent implements OnInit, OnDestroy {
    *
    * The narration run's engine comes from Pipeline Defaults, seeds the narration
    * modal there, and is stated exactly once.
+   *
+   * AND THE TYPE WENT WITH THEM (2026-09-19, bug hunt §H).
+   * `features/studio/models/tts.types.ts` declared that `TTSSettings` — plus a
+   * `HardwareInfo` and a `VoiceOption` nothing had ever imported. With the
+   * signal gone the file had no readers at all, and a dead type shaped like a
+   * live one is one a new component binds to by accident: it names an ENGINE
+   * and a DEVICE, which is exactly the second invisible answer removing the
+   * signal was about. `core/models/manifest.types.ts`'s `TTSSettings` is the
+   * renderer's one TTSSettings, and its `device` stays there because a manifest
+   * that recorded one must keep parsing
+   * (`tools/test-retired-engine-settings.js`).
    */
 
   // ─────────────────────────────────────────────────────────────────────────

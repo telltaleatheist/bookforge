@@ -562,16 +562,49 @@ What the fixers found on the way, and what is still owed:
   to the held subject and every module answers `null` since phase 15 — so
   `pause()` closes the row lease of a step that is still running. Same before and
   after; worth its own fix.
+  **FIXED (2026-09-19, later).** Two halves, per Owen's ruling 2. A RUNNING step
+  that leases keeps the row lease with no comparison at all — that act is using
+  the card at this instant, and `pause()` does not stop it. The feed-forward for
+  the NEXT step compares what both sides can state: `StepModule.crucibleClass` on
+  the row's `waitForResolved`, against `CrucibleLeaseHost.leaseHeld` (the machine
+  and the class the open lease was taken under). `StepModule.leasedModel` is
+  REMOVED — the id belongs to the server since phase 15, so no module could
+  answer it, and a hook every module answers `null` for is a comparison that
+  matches nothing. One server maps one class to one model, and a class repointed
+  between two acts is still caught at the act by `withRowLease`, which compares
+  the real ids. Cost, stated: a `translate → simplify` pair that happens to share
+  a model on a big card now gives the lease back between them — which is what
+  production already did, for the wrong reason. Keepers:
+  `tools/test-crucible-row-lease.js` (a running act that names no class keeps its
+  lease across a pause; a next act on another machine releases; two acts of one
+  class on one machine hold ONE lease on the wire), plus the fakes in
+  `test-queue-admission.js`, `test-queue-narration-plan.js` and
+  `test-queue-pass-travel.js`.
 - `busyLineOf`'s docstring says `CrucibleLeased` carries `busyLine`; it carries
   `leasedLine` (the reserve path translates it; other readers should not trust the
-  docstring).
+  docstring). **FIXED (2026-09-19, later):** the one rule now READS both
+  spellings — a `CrucibleLeased` that propagates out of a module untranslated
+  parks the row on its `leasedLine` instead of reddening it — and the docstring
+  says what the SDK actually mints. Keeper: `tools/test-queue-step-parks.js`
+  drives the real `CrucibleLeased` through a step.
 - **Running / Paused** lives on the Up next band header, so it is absent on an
   empty queue; a toolbar twin if Owen wants to pre-arm Paused.
 - `cli/coverage-align.js` passes `device: 'cpu'`, which the Crucible align route
-  refuses by name — pre-existing, a different door.
+  refuses by name — pre-existing, a different door. **FIXED (2026-09-19,
+  later):** it queues `gpu`. The `cpu` was a sentence from the local-spawn era —
+  a CPU align ran beside the assembly without competing for this machine's card
+  — and `runCoverageAlign` sends every alignment to the run's Crucible now, so
+  the door could not run at all. No `--device` flag was added: its only two
+  values would be "run" and "refused by name". The `--device` in
+  `bookforge-tts.py` is the generate-sentences flag and has its own live reader,
+  so `COMMAND_FLAGS` is unchanged. Keeper: `tools/test-cli-parity.js`.
 - `src/app/features/studio/models/tts.types.ts` `TTSSettings.device` is a dead
   type (no readers since 2026-09-14); the manifest's `TTSSettings.device` stays
-  because records must keep parsing.
+  because records must keep parsing. **FIXED (2026-09-19, later):** the whole
+  FILE is deleted — its `HardwareInfo` and `VoiceOption` had no importers either
+  — and `studio.component`'s deletion note records why. The manifest's
+  `TTSSettings` is the renderer's one TTSSettings, `device` included. Keeper:
+  `tools/test-retired-engine-settings.js`.
 - The CLI `--tts` door keeps inline prep and aligns nothing; `cli/README.md` says
   so beside the queue's three-row shape.
 - Owen's running `electron:dev` needs a restart to take the main-process changes;

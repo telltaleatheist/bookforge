@@ -114,7 +114,8 @@ function fakeModule(type, opts = {}) {
   if (opts.travels !== false) mod.machines = () => 'any';
   if (opts.leases === true) {
     mod.leasesModel = () => true;
-    mod.leasedModel = () => null;
+    // No `leasedModel`: the hook is gone (2026-09-19). What a module states is
+    // the CLASS, and `leaseActOf` reads both halves.
     if (opts.act !== null) mod.crucibleClass = () => opts.act || 'clean';
   }
   return mod;
@@ -178,21 +179,24 @@ function fakeLeaseSeam(opts = {}) {
     withRowScope(row, fn) { seam.scopes.push(row); return fn(); },
     async reserveRow(row, where) {
       seam.reserves.push({ row, ...where });
+      // What the row then HOLDS is the machine and the class the reserve was
+      // for — `leaseHeld`'s shape, and the terms the scheduler compares in.
+      const subject = { server: where.server, act: where.act };
       if (opts.holdOpen === true) {
         return new Promise((resolve, reject) => {
           seam.pending.push({
             row,
-            grant: () => { seam.held.set(row, opts.subject || 'qwen3.5-27b'); resolve(); },
+            grant: () => { seam.held.set(row, subject); resolve(); },
             refuse: (err) => reject(err),
           });
         });
       }
       const answer = opts.answer === undefined ? null : opts.answer({ row, ...where });
       if (answer instanceof Error) throw answer;
-      seam.held.set(row, opts.subject || 'qwen3.5-27b');
+      seam.held.set(row, subject);
     },
     async closeRow(row) { seam.closed.push(row); seam.held.delete(row); },
-    leaseSubject(row) { return seam.held.get(row) ?? null; },
+    leaseHeld(row) { return seam.held.get(row) ?? null; },
   };
   return seam;
 }

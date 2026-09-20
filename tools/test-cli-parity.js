@@ -349,6 +349,25 @@ test('--align drives the app\'s align job, and builds no spawn of its own', () =
   // was and why it went.
   assert.ok(!/job\.coverageAlign(Python|Refusal)\s*\(/.test(source),
     'cli/coverage-align.js still gates on the local aligner env');
+
+  /*
+   * AND IT DOES NOT ASK FOR THE CPU (2026-09-19, bug hunt §H).
+   *
+   * Every alignment goes to the Crucible the session's own record names, and a
+   * Crucible has only the card: `runCoverageAlignOnCrucible` refuses anything
+   * but `gpu` by name. The adapter queued `device: 'cpu'` — a sentence left
+   * over from the local spawn — so this door could not run at all. Both halves
+   * are pinned, because either one alone would let the pair drift back apart.
+   */
+  assert.ok(/device:\s*'gpu'/.test(source),
+    "cli/coverage-align.js must queue device: 'gpu' — the align route is a Crucible and a "
+    + 'Crucible has only the card');
+  assert.ok(!/device:\s*'cpu'/.test(source),
+    "cli/coverage-align.js asks for the CPU, which the Crucible align route refuses by name");
+  const alignSrc = read('electron/coverage-align-job.ts');
+  assert.ok(/crucible_align_cpu_row/.test(alignSrc),
+    'the refusal this adapter is written against is gone — check what replaced it before '
+    + 'trusting the device the CLI sends');
 });
 
 test('--align refuses to guess the language, as the app\'s step does', () => {

@@ -597,10 +597,15 @@ Owen's PC today there is no host, so door 2 is the live one. `LocalServer.via` g
 class and nothing else. `crucibleActModel` in `electron/crucible/text-venue.ts` is the one
 owner of that read and of the stamp that memoises it for the run, so a translation making
 three hundred batch calls asks once. `providerConfigOf` takes the ACT, required and never
-guessed. `crucibleModelForAiStep` is gone: the id needs a server and a round trip and
-`leasedModel` is synchronous, so all three lease hooks answer `null` by construction — the
-argument `pass.ts` had already written for `narration-text`, now true of every act. **OWED:**
-an async `leasedModel` given the run's venue would let a row keep one lease across a chain.
+guessed. `crucibleModelForAiStep` is gone: the id needs a server and a round trip and the scheduler's
+question is synchronous, so all three lease hooks answered `null` by construction — the
+argument `pass.ts` had already written for `narration-text`, true of every act. **And a hook
+every module answers `null` for is a comparison that matches nothing**, which is how `pause()`
+came to close the lease of a step that was still running (bug hunt 2026-09-19 §H). So
+`StepModule.leasedModel` was REMOVED on 2026-09-19 and the carry-over compares
+`StepModule.crucibleClass` on the row's server (`nextActWouldUseHeldCard`, queue-engine.ts):
+one server maps one class to one model, and `withRowLease` still compares the real ids at the
+act. The OWED async id-read is closed by that — not by a table on this side.
 
 **THE `[cloud]` LANE (§5.3).** A row whose class routes `upstream` on its engine takes that
 engine's `<server>:cloud` lane — one per server, `gpu: 0`, two wide — and no GPU slot and no
@@ -1586,8 +1591,10 @@ branch with tests; nothing is merged, because Owen tests in-app first.
   (`POST /v1/models/{id}/lease`) and a server holds one, while clean runs on `qwen3.5-9b` and
   simplify/translate on `qwen3.8-27b-4bit`. So the archetypal clean→simplify row carried the
   9B's lease into the step that must load the 27B, and that load is refused `leased` naming
-  `bookforge`. `StepModule.leasedModel` names the id, `CrucibleLeaseHost.leaseSubject` reports
-  what is held, and the lease survives the seam only when they match. Scoped precisely, because
+  `bookforge`. `StepModule.leasedModel` named the id and `CrucibleLeaseHost.leaseSubject`
+  reported what was held; since 2026-09-19 the pair is `StepModule.crucibleClass` and
+  `CrucibleLeaseHost.leaseHeld` (the machine and the class), because no module could name an id
+  after phase 15. The lease survives the seam only when they match. Scoped precisely, because
   half of it was already covered: `withRowLease` swaps on a model change, so BookForge's own
   chat acts never deadlocked — what the stale keep held was the GAP between steps, where
   `resolveCrucibleTextEngine`'s `loadFirst` door and an operator's CLI load both live. Also

@@ -53,23 +53,24 @@ export function machinesForAiStep(config: Record<string, unknown>): 'local' | 'a
  * step's lease would be about. That stopped being knowable here the day the
  * capability record took ownership of the act-to-model mapping: the model is
  * `GET /v1/capability`'s `selected` for the class ON THE SERVER THE ROW WAS
- * PLACED ON, which needs a server name and a round trip, and `leasedModel` is
- * synchronous and asked BEFORE the step is placed.
+ * PLACED ON, which needs a server name and a round trip, and the scheduler's
+ * question is synchronous and asked BEFORE the step is placed.
  *
  * `pass.ts` had already reached this answer for `narration-text` and written
- * the argument out in full; phase 15 makes it true of every act, so all three
- * `leasedModel` hooks now answer `null` and say so in one voice. Null is a
- * real answer to "which model will this lease be about": null never equals an
- * open lease's subject, so the lease is given back at the seam, which is
- * exactly the behaviour before one-lease-per-row existed. The refusal is not
- * swallowed, only deferred — the act raises its own named refusal when it runs,
- * which is where an operator can act on it.
+ * the argument out in full; phase 15 made it true of every act, so all three
+ * `leasedModel` hooks answered `null` in one voice — and a hook every module
+ * answers `null` for is a comparison that matches nothing. `pause()` closing
+ * the lease of a step that was still running is what that cost (bug hunt
+ * 2026-09-19, §H), so on 2026-09-19 the hook itself was REMOVED and the
+ * scheduler's carry-over compares `StepModule.crucibleClass` on the row's
+ * server instead (`nextActWouldUseHeldCard`, queue-engine.ts): the class is
+ * what this side can state about a step that has not started, one server maps
+ * one class to one model, and `withRowLease` still compares the real ids at
+ * the act and swaps the lease if the class was repointed underneath it.
  *
  * A table here saying "simplify is the 27B" would be a second owner of a
  * per-HOST fact (crucible ARCHITECTURE.md R1) and would be wrong on the first
- * machine with a smaller card. OWED, and written down in
- * `docs/CRUCIBLE_ROLLOUT_PLAN.md`: an async `leasedModel` given the run's
- * venue would let a `clean` row keep its lease across a chain.
+ * machine with a smaller card.
  */
 
 /**
