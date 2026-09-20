@@ -87,6 +87,7 @@ from . import served_common
 from . import sgl_served
 from . import truncation
 from . import v3_served
+from .codec import FrameMeasure
 from .prompt import clean_text
 from .served_common import STACK_SGLANG_OMNI, STACK_VLLM_OMNI
 from .sgl_served import HiggsSglServedBackend
@@ -100,7 +101,11 @@ class HiggsV3Defaults:
     MODEL_ID = v3_served.MODEL_ID
     SAMPLE_RATE = v3_served.SAMPLE_RATE
     FRAMES_PER_SECOND = v3_served.FRAMES_PER_SECOND
-    CONTEXT_TOKENS = v3_served.CONTEXT_TOKENS
+    #: The window a config gets when nobody states one. The LAUNCHED value
+    #: is `v3_served.context_tokens()`, read per load by
+    #: `higgs_v3_config_from_worker_kwargs` - this is only the default that
+    #: applies when a config is built in code with no environment at all.
+    CONTEXT_TOKENS = v3_served.DEFAULT_CONTEXT_TOKENS
     # <= 600 chars is the measured safe zone; the delivered render used 300.
     MAX_CHARS = v3_served.MAX_CHARS
     # THE LENGTH BAND, ENFORCED since 2026-09-06 by `truncation.render_guarded`
@@ -472,32 +477,29 @@ class HiggsV3Budget:
         return self._config.voice
 
     def max_chars(self, voice=None) -> int:
-        """THE VOICE'S chunk size, not the engine's.
-
-        A voice that declared `maxChars` in the NARRATOR_HIGGS_VOICES document
-        gets its own number. A zero-shot clips voice that did not gets the
-        engine placeholder - 600, the measured safe zone for the BASE model
-        (900 chars drops the tail reproducibly, coverage 0.78-0.86, and a
+        """THE VOICE'S chunk size when the document declared one, else the
+        engine's own placeholder - 600, the measured safe zone for the BASE
+        model (900 chars drops the tail reproducibly, coverage 0.78-0.86, and a
         reference clip does not fix it; the delivered render used 300).
 
-        AN ADAPTER VOICE WITH NO `maxChars` IS REFUSED, by the same rule as
-        `OrpheusBudget.max_chars`: a fine-tune's safe chunk length is a measured
-        property of that model, and the base model's placeholder is not it. The
-        voice document normally catches this at load; this is the belt for a
-        config assembled in code.
+        `max_chars_source` says which of the two answered, and narrator's prep
+        log prints it, so a book packed at the placeholder says so.
+
+        NARRATOR NO LONGER REFUSES A FINE-TUNE THAT DECLARES NO `maxChars`
+        (Owen, 2026-09-19). Until then a checkpoint voice with none raised here
+        and at load: a fine-tune's safe chunk length is a measured property of
+        that model, so narrator would not guess it. But `maxChars` IS THE
+        CLIENT'S PACKING SIZE - the client packs the book and sends the chunks,
+        and narrator renders what it is sent - and a screening render of a
+        checkpoint nobody has measured yet is exactly the render that produces
+        the measurement. Refusing it made the first render of every new
+        checkpoint impossible. Nothing narrator does per chunk reads this
+        number: the frame ceiling is `cap_frames(text)` over the text actually
+        sent, and `higgs_v3_stop_policy`'s `max_new_tokens` is the ENGINE's own
+        `config.max_chars`, never the voice's.
         """
         ref = self._voice(voice)
         if ref.max_chars is None:
-            # `checkpoint_dir`, which is the FINE-TUNE and not merely a
-            # directory: a zero-shot voice's `base_dir` is the base model, and
-            # the base model's placeholder is what it should be packed at.
-            if ref.checkpoint_dir:
-                raise ValueError(
-                    f"Higgs v3 voice '{ref.name}' is a fine-tune "
-                    f'({ref.checkpoint_dir}) and has no maxChars. Measure the safe chunk '
-                    f'length for THAT model and declare it in the voice document - '
-                    f"refusing to pack a book at the base model's "
-                    f'{self._config.max_chars}-char placeholder.')
             return int(self._config.max_chars)
         return int(ref.max_chars)
 
@@ -907,22 +909,32 @@ class HiggsV3Engine:
             lambda part, seed: self.render_audio(part, seed=seed, index=index),
             clean, index, sample_rate=self.SAMPLE_RATE,
             # THE BAND FOLLOWS THE BOOK (Owen, 2026-09-08): one tracker per
-            # engine, seeded from the voice's recorded pace and band when the
-            # catalog measured them, else from the engine default band - itself
-            # a measurement (Fuhrer, deathstalker), not a guess - and re-centred
-            # on the shipped takes' own median. `truncation.tracker_for`.
+            # engine, seeded from the ENGINE's own measured band (Fuhrer,
+            # deathstalker) and re-centred on the shipped takes' own median.
+            # This is narrator's own audiobook path; the serve door is given
+            # its band by the batch instead (`_pace_tracker`).
             tracker=self._pace_tracker(),
             base_seed=self.config.seed, first_take=first_take)
 
     def _pace_tracker(self):
-        """The engine's ONE `PaceTracker`, made on first use so the running
-        pace spans the whole book and a test that builds the engine without
-        `__init__` still gets one."""
+        """The engine's ONE `PaceTracker` for ITS OWN audiobook path, made on
+        first use so the running pace spans the whole book and a test that
+        builds the engine without `__init__` still gets one.
+
+        ON THE ENGINE'S OWN BAND, stated at the call site (`engine_band`), and
+        no longer on the voice entry's: the band has ONE owner and on the serve
+        door that owner is the batch (Owen, 2026-09-19 - see
+        `truncation.tracker_for`). `convert` / `convert_many` are narrator
+        rendering a book itself, with no caller to be given a band by, so the
+        engine's measured pair is the honest source there and this is the only
+        place it is read.
+        """
         tracker = getattr(self, '_pace', None)
         if tracker is None:
             tracker = truncation.tracker_for(
-                self.voice_ref, float(self.config.max_chars_per_sec),
-                float(self.config.min_chars_per_sec))
+                truncation.engine_band(float(self.config.max_chars_per_sec),
+                                       float(self.config.min_chars_per_sec)),
+                'HiggsV3Engine._pace_tracker')
             self._pace = tracker
         return tracker
 
@@ -991,18 +1003,38 @@ class HiggsV3Engine:
         # serve worker cleans before it calls, which is why Listen never showed
         # it; the render worker hands convert() the stored text, which is why
         # every book did.
+        return self.render_audio_measured(text, seed=seed, index=index,
+                                          sampling=sampling, take=take)[0]
+
+    def render_audio_measured(self, text: str, seed=None, index: int = 0,
+                              sampling=None, take: int = 0):
+        """`render_audio`, with the `FrameMeasure` it spent - `(audio, measure)`.
+
+        THE MEASUREMENT IS UNCONDITIONAL (Owen, 2026-09-19), so it is taken
+        here, where the cap this render was sized at is still in hand, rather
+        than reconstructed later by a caller doing the arithmetic again.
+
+        INFERRED, NOT COUNTED, on this arm, and `FrameMeasure.counted` says so.
+        The server returns a WAV and nothing else: no token count and no stop
+        reason (`v3_served.decode_response`). The cap-hit is still decidable
+        from the frames that came back - see `FrameMeasure.from_audio` - but
+        the frame COUNT is a lower bound, so it is not reported as `tokens`.
+        Closing that would mean a metadata channel on /v1/audio/speech, which
+        is a server change and not narrator's to make.
+        """
         clean = self._clean_sentence_for_tts(text)
         if not clean:
             raise ValueError(
                 'HiggsV3Engine.render_audio(): the chunk has no text once its '
                 f'markers are stripped ({(text or "").strip()!r}).')
+        cap = self._budget.cap_frames(clean)
         request = SpeechRequest(
             text=clean, voice=self.voice_ref,
-            max_new_tokens=self._budget.cap_frames(clean),
+            max_new_tokens=cap,
             seed=self._request_seed(seed, index, take),
             sampling=self._sampling_for(sampling))
         audio, _rate = self.server.speak(request)
-        return audio
+        return audio, FrameMeasure.from_audio(audio, cap, self.SAMPLE_RATE)
 
     def _sentence_file(self, sentence_number: int) -> str:
         if not self.config.sentences_dir:
@@ -1135,7 +1167,8 @@ class HiggsV3Engine:
         (crucible/docs/PHASE6-REMOTE-RENDER.md section 0). Lifting the driver
         ABOVE the file layer is the whole fix: one plan, one ladder, two sinks.
         """
-        for index, audio, _verdict in self.render_many(rows, in_flight):
+        for index, audio, _verdict, _measure in self.render_many(
+                rows, in_flight, tracker=self._pace_tracker()):
             # The verdict is dropped HERE and nowhere else: this arm's analytics
             # have always come off the `[HIGGS3][HIGGS_GUARD_EVENT]` lines the
             # plan still prints, and `GuardPlan.verdict()` POPS - reading it and
@@ -1147,9 +1180,33 @@ class HiggsV3Engine:
                 on_done(index, True)
 
     def render_many(self, rows, in_flight=None, sampling_by_index=None,
-                    take_by_index=None):
-        """THE GUARDED DRIVER: yields `(index, audio, verdict)` as the ladder
-        decides each chunk, and writes NOTHING.
+                    take_by_index=None, *, tracker, width=None):
+        """THE GUARDED DRIVER: yields `(index, audio, verdict, measure)` as the
+        ladder decides each chunk, and writes NOTHING.
+
+        `tracker` is the `PaceTracker` this call judges against, and it is
+        REQUIRED: the band has one owner per call and no default (Owen,
+        2026-09-19). The serve door builds it from the band on the batch
+        (`generate_batch`'s `band`); `convert_many` passes the engine's own
+        (`_pace_tracker`). There is no arm that picks one for the caller - an
+        inherited band was the defect, a band centred at 15.0 against a book
+        running at 17.2 chars/s re-rolling healthy chunks to MAX_DEPTH.
+
+        `measure` is the shipped take's `FrameMeasure` (`GuardPlan.measure`):
+        what the render SPENT against its frame ceiling, joined across a
+        chunk's parts when the ladder split it. A measurement, never a verdict
+        - it is taken whether or not anything judged the chunk.
+
+        `width` is how many takes this CALL may keep in flight, at most
+        `BATCH_SIZE` - the width the server was started with
+        (`v3_served.serve_concurrency`, `HIGGS_MAX_NUM_SEQS`). Absent means
+        that serving width, which is the engine's own configuration and not a
+        default substituted for a missing value. MEASURED, 2026-09-19: 16 wide
+        at SGLang `mem_fraction_static` 0.60 summed to 24.2 GB on a 24 GB card
+        and WDDM paged the excess to host RAM - 4-10x slower, with no error
+        anywhere - so a job that knows it wants 4 has to be able to say 4
+        without restarting the server. Nothing here reconfigures the server;
+        this only limits what narrator asks of it at once.
 
         `BATCH_SIZE` renders in flight for as long as there is work, exactly as
         `convert_many` describes - that docstring is the rationale for every
@@ -1221,12 +1278,12 @@ class HiggsV3Engine:
                     'row (0 for a chunk at take 0); a missing key would render a '
                     "retake in take 0's own seed lane.")
             return takes[index]
-        width = int(self.BATCH_SIZE)
+        width = int(self.BATCH_SIZE) if width is None else int(width)
         if width < 1:
-            raise ValueError(f'render_many needs BATCH_SIZE >= 1; got {width}.')
+            raise ValueError(f'render_many needs a width >= 1; got {width}.')
         plan = truncation.GuardPlan(
             sample_rate=self.SAMPLE_RATE, base_seed=self.config.seed,
-            tracker=self._pace_tracker())
+            tracker=tracker)
         pool = ThreadPoolExecutor(max_workers=width, thread_name_prefix='higgs3-render')
         running = {}      # future -> RenderRequest
         outstanding = {}  # chunk index -> how many of its requests are in flight
@@ -1239,11 +1296,14 @@ class HiggsV3Engine:
             numbers the caller asked that chunk for, and in that chunk's own
             take lane. `request.seed` is the ladder's (None for take 0 of the
             chunk, `reroll_seed` for a re-roll); `_request_seed` shifts
-            whichever it is."""
-            return self.render_audio(request.text, seed=request.seed,
-                                     index=request.index,
-                                     sampling=rung_for(request.index),
-                                     take=take_for(request.index))
+            whichever it is.
+
+            MEASURED, not merely rendered: the pair goes to `plan.offer`,
+            which carries the measure to whichever take ships."""
+            return self.render_audio_measured(request.text, seed=request.seed,
+                                              index=request.index,
+                                              sampling=rung_for(request.index),
+                                              take=take_for(request.index))
 
         def start(request) -> None:
             outstanding[request.index] = outstanding.get(request.index, 0) + 1
@@ -1308,9 +1368,12 @@ class HiggsV3Engine:
                 # `finish_root` files the verdict BEFORE it appends to
                 # `finished()`, so it is there; `verdict()` pops, so it is there
                 # exactly once and only for a chunk the ladder really shipped.
-                yield index, audio, plan.verdict(index)
+                # The measure is filed and popped the same way.
+                yield index, audio, plan.verdict(index), plan.measure(index)
             if index_failed is not None:
-                yield index_failed, None, None
+                # No audio, no verdict and nothing measured: a chunk that never
+                # reached a decision spent takes nobody shipped.
+                yield index_failed, None, None, None
 
         try:
             fill()
@@ -1319,7 +1382,7 @@ class HiggsV3Engine:
                 for future in done:
                     request = running.pop(future)
                     try:
-                        audio = future.result()   # re-raises HiggsV3ServerDown
+                        audio, measure = future.result()  # re-raises HiggsV3ServerDown
                     except v3_served.HiggsV3ServerDown:
                         raise
                     except Exception as exc:
@@ -1329,7 +1392,7 @@ class HiggsV3Engine:
                         yield from retire(request, index_failed=failed)
                         fill()
                         continue
-                    plan.offer(request, audio)
+                    plan.offer(request, audio, measure)
                     yield from retire(request)
                     fill()
         except BaseException:
@@ -1584,4 +1647,8 @@ def higgs_v3_config_from_worker_kwargs(voice=None, model_dir=None, base_dir=None
         voice=resolved,
         checkpoint_dir=getattr(resolved, 'checkpoint_dir', None),
         base_dir=getattr(resolved, 'base_dir', None),
+        # THE WINDOW THE SERVER WAS LAUNCHED WITH, not the class default: this
+        # bounds `max_total_tokens`, so a prompt is refused against the context
+        # that actually exists rather than against 8192 forever.
+        context_tokens=v3_served.context_tokens(),
         sampling=getattr(resolved, 'sampling', None))

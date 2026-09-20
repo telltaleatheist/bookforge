@@ -343,6 +343,216 @@ LOADED engine has a given lever or a lane is the per-row answer above.
 Nothing about take 0's defaults, its seed, the guard, the retake ladder, the
 caps or the frame budget is changed by this.
 
+## The batch's judging flag, its band and its width (`serve/worker.py`)
+
+Added 2026-09-19 on Owen's ruling. **The CALLER decides whether narrator
+judges.** Until then an engine that COULD guard a batch always did: the arm was
+picked by a capability probe on `render_many` and the caller had no say. The
+fine-tuning ladder is what broke that. Screening a checkpoint has no measured
+pace and no measured cap *by definition* - measuring them is what the render is
+for - so judging that render means judging one model against another model's
+band. BookForge wants the opposite: the guarded render, judged against the band
+it read off the voice row. Both are one flag.
+
+**The fields**, all BATCH-level on `generate_batch`, none on an item:
+
+```json
+{"action": "generate_batch",
+ "retake": true,
+ "band": {"paceCharsPerSec": 17.2, "maxCharsPerSec": 21.7, "minCharsPerSec": 13.6},
+ "width": 4,
+ "items": [{"i": 412, "text": "..."}]}
+```
+
+- **`retake`** (bool, optional, ABSENT = false). `true` takes the guarded arm -
+  the engine's own PaceTracker, re-roll and split ladder - and its rows come
+  back with `guard`, the verdict the ladder reached. `false` or absent takes
+  the bare arm: **every row is rendered exactly once as it was sent, nothing is
+  judged, nothing is retaken, nothing is split**, and the row carries NO `guard`
+  key at all. Absent is not a fallback; it is the documented meaning of "nobody
+  asked to be judged". A value that is not a boolean is refused, never coerced -
+  `bool("false")` is `True`, and a client that spelled the flag wrong would get
+  the exact opposite of what it asked for on every row of a book, silently,
+  because both answers are ordinary audio.
+- **`band`** (object, optional) - `paceCharsPerSec`, `maxCharsPerSec`,
+  `minCharsPerSec`, three positive numbers with `min < pace < max`. It is the
+  band the batch is judged against, and with `retake: true` it is
+  **REQUIRED**. narrator will NOT fall back to the engine's own band: that
+  fallback was the defect. A band centred at 15.0 chars/s against a book
+  actually running near 17.2 called healthy chunks run-ons and re-rolled them
+  to MAX_DEPTH. A band sent with `retake` false or absent is **accepted and not
+  used** - Owen: *"it won't do anything with the number because it wasn't asked
+  to"* - so it is not even parsed, and a malformed one riding along is not a
+  refusal.
+- **`width`** (int >= 1, optional, ABSENT = the serving width the engine was
+  started with). How many rows of THIS batch narrator may keep in flight - the
+  guarded driver's pool/slab width. MEASURED 2026-09-19: SGLang started 16 wide
+  at `mem_fraction_static` 0.60 summed to 24.2 GB on a 24 GB card and WDDM
+  paged the excess to host RAM, 4-10x slower with no error and no log line;
+  the fine-tuning ladder renders 4 wide on voices whose manifest says 16.
+  narrator does not restart or reconfigure the server for it - the width only
+  limits what it asks of the server it already has - and it **cannot be
+  raised**: a width above the serving width is refused, never clamped. The
+  BARE arm renders one row at a time, so what it keeps in flight is 1, inside
+  any width a caller can ask for; the width is a ceiling, not a target.
+
+**THE BAND HAS ONE OWNER, AND IT IS THE BATCH.** `truncation.tracker_for` takes
+the band explicitly; nothing in narrator builds a `PaceTracker` from a voice
+entry any more. The voices document still carries and validates the three keys
+(`config._length_band`) and they still reach `ClipsVoice` - because they are
+what the CLIENT reads off the voice row and sends back here. narrator's own
+audiobook path (`convert`, `convert_many`, `convert_batch`) passes
+`truncation.engine_band(...)`, the engine's own measured pair, and says so at
+the call site; that path is narrator acting as its own client.
+
+**The refusals**, all for the WHOLE batch (the flag and the band are the
+batch's, so answering some rows and refusing others would be two answers to one
+question). Each is delivered in this door's existing shape - one `batch_item`
+carrying `{i, message}` for every requested `i`, then `batch_done` - with the
+name at the head of the message:
+
+| name | when |
+|---|---|
+| `retake_without_band` | `retake: true` and no `band`. |
+| `band_malformed` | `retake: true` and the band is not three positive numbers with `min < pace < max`. Never checked when `retake` is false - it was not asked for. |
+| `retake_malformed` | `retake` present and not a boolean. Never coerced. |
+| `retake_unsupported` | `retake: true` and this engine offers no `render_many` (Orpheus). Refused rather than rendered unjudged, which would report a success for a render that silently skipped the retake it was asked for. |
+| `retake_with_stream` | `retake: true` on a batch any of whose items carry `stream: true`. A streamed row leaves as it generates, so there is nothing left to re-roll by the time the ladder could decide. |
+| `width_malformed` | `width` present and not a whole number `>= 1`. |
+| `width_over_serving` | `width` above the width the engine was started with (`BATCH_SIZE`: `HIGGS_MAX_NUM_SEQS` on the served arms, `NARRATOR_HIGGS3_MLX_BATCH` on MLX). Refused, not clamped. |
+
+**MEASUREMENT IS UNCONDITIONAL**, on both arms. Every retired row carries
+
+- **`capped`** (bool) - whether generation reached `cap_frames`' ceiling for
+  that chunk. It is a FACT about the render, never a verdict on it, and the
+  bare arm is exactly the one whose numbers nobody else has. COUNTED on the MLX
+  arm, which generates in this process and can see the frames it produced;
+  INFERRED on the served arms from the decoded audio, which is still exact for
+  this question (a generation that hit the cap emitted no EOS, so no sentinel
+  run was stripped and the delay diagonal - 7 frames - is all that was:
+  `cap - 7` frames come back, and `cap_frames` is 2x the expected duration plus
+  150 frames of slack, so nothing that stopped on EOS is near it). A chunk the
+  ladder SPLIT is capped when any part was.
+- **`tokens`** (int) - the frames the model generated, which is
+  `max_new_tokens`' own unit. Sent **only when the count is counted**: on the
+  served arms the only thing that crosses the HTTP boundary is a WAV (no token
+  count, no stop reason - `v3_served.decode_response`), so what narrator can
+  see there is a lower bound and stating it would state a number nobody
+  generated. Closing that means a metadata channel on `/v1/audio/speech`, which
+  is a server change and not narrator's to make.
+
+A missing `capped` or `tokens` means **"narrator did not say"** and must never
+be read as `false` / 0: a runaway reported as "not capped" is the one failure
+the field exists to prevent (crucible/docs/PHASE18-UNCERTIFIED.md).
+
+**`maxChars` IS THE CLIENT'S PACKING SIZE**, and narrator no longer refuses a
+voice without it. Three refusals retired with this ruling - the voices-document
+gate (`config.load_voices`) and the budget belts on both v3 arms
+(`HiggsV3Budget.max_chars`, `HiggsV3MlxBudget.max_chars`); the v2 scaffold's
+belt went with them so the two cannot drift. The reasoning they rested on is
+unchanged and still worth acting on (a fine-tune's safe chunk length is a
+measured property of THAT model), but the refusal was in the wrong place: the
+client packs the book, narrator renders what it is sent, and the screening
+render of an unmeasured checkpoint is precisely the render that produces the
+number. A voice with none packs at the engine placeholder and
+`max_chars_source` says `placeholder`. **Nothing narrator does per chunk reads
+it**: the frame ceiling is `cap_frames(text)` over the text actually sent (the
+engine's own arithmetic over `HiggsDefaults.CHARS_PER_SEC`), and the stop
+policy's `max_new_tokens` "for the largest permitted chunk" is the ENGINE's own
+`config.max_chars` constant, never the voice's. One consequence had to be fixed
+with the retirement: `_safe_band` and the `targetChars` ceiling now cross-check
+against the voice's **stated** `maxChars` and skip when it states none, because
+comparing a measured safe band against a placeholder the voice never claimed
+refuses it against another model's number.
+
+**`take` is unchanged.** It is the client's starting seed lane
+(`seed = base + index + REROLL_SEED_STRIDE * (TAKE_REROLL_LANES * take +
+attempt)`); with `retake` false, `attempt` is always 0, so the draw is a pure
+function of `(index, take)`. narrator refuses a take only for being malformed
+or above `MAX_TAKE`, or on an engine with no seed lane at all - it has never
+required a take to name a declared rung, and does not now.
+
+**The index on the bare arm is the CALLER'S `i`.** Behind the render door both
+arms seed the chunk with `seed + i`, and a row whose `i` is not an integer is
+refused by name. The bare arm used to seed by POSITION IN THE BATCH, which made
+chunk 412 render differently depending on which rows happened to travel with it
+in a read-ahead window - so a resume or a single-chunk re-render stopped
+reproducing. The Listen door keeps the position: its `i` is a label the player
+resolves by, and its engine is Orpheus, whose seeding is not `seed + index` at
+all.
+
+## The serving environment (three names, one per spawn)
+
+Crucible starts a FRESH narrator per resident voice - a voice change is a full
+engine restart - and sets these in that spawn's environment from the voice's
+`[voice.serving]` block. So "per voice" IS "per spawn", and there is no
+load-message channel for any of them (ruling, 2026-09-19). narrator translates
+each name into whatever the stack underneath actually takes; **each stack's own
+number applies when a name is unset**, which is a statement, not a fallback.
+
+| name | sglang-omni | vllm-omni | mlx |
+|---|---|---|---|
+| `HIGGS_MAX_NUM_SEQS` | `--tts_engine.factory.max_running_requests`, and `BATCH_SIZE` | `max_num_seqs` per stage, and `BATCH_SIZE` | n/a - MLX reads `NARRATOR_HIGGS3_MLX_BATCH` (default 1) |
+| `HIGGS_CONTEXT_LENGTH` | `HiggsTtsEngineBuilder.context_length`, ASSIGNED by narrator's entry module (default 4096) | exported as `HIGGS_MAX_MODEL_LEN` -> `--max-model-len` (default 8192) | `HiggsV3MlxConfig.context_tokens` at load (default 8192) |
+| `HIGGS_SGL_MEM_FRACTION` | `--mem-fraction-static` (default 0.60), exported by narrator rather than inherited | n/a - that stack splits two vLLM stages through `--stage-overrides` | `NARRATOR_HIGGS3_MLX_MEM_BUDGET_GB` = fraction x the device's unified memory |
+
+**`HIGGS_CONTEXT_LENGTH` on sglang-omni is a class attribute, not a flag.**
+`sglang_omni/models/higgs_tts/engine_builder.py:29` reads
+`class HiggsTtsEngineBuilder: context_length = 4096`, and three flag spellings
+were tried and recorded as failures (2026-09-09, sglang_omni 0.1.4 /
+sglang 0.5.18 - the versions Crucible's tts env carries):
+`--tts_engine.factory.context_length` dies with "factory does not accept a
+'context_length' parameter"; `--tts_engine.engine.context_length` collides with
+an explicit keyword; there is no thinker stage. The only thing that has ever
+moved it is changing the attribute, which the ladder's author did by REWRITING
+that line in site-packages with a sed script - wiped by the 2026-09-15 env
+rebuild, taking every 8192-token render with it. narrator does not patch
+site-packages (this stack's selling point is that it needs none). It launches
+the server through `engine/higgs/launch/sgl_omni_entry.py`, which imports the
+builder, ASSIGNS the attribute from this variable, prints what it changed to
+the server log, and then calls `sgl-omni`'s own `app()` unwrapped. The shell
+launcher execs that module instead of `bin/sgl-omni` and **refuses to start
+without it**: falling back to the console script would serve the built-in 4096
+under a request for something else and report a clean start.
+
+`sgl_served.context_tokens()` / `max_context_positions()` read the same
+variable, so the client sizes every request against the window the server is
+actually serving. They are functions, not the constants they used to be: a
+constant would have gone on sizing chunks for a 4096-token server while an
+8192-token one ran - every chunk quietly short, and nothing to see.
+
+**vllm-omni keeps both names and refuses a disagreement.** `HIGGS_MAX_MODEL_LEN`
+predates `HIGGS_CONTEXT_LENGTH` and is what `serve_higgs_v3.sh:123` reads, so
+renaming it would break every launch line that sets it. `v3_served
+.context_tokens()` takes either, and when both are set and differ it refuses by
+name - picking a winner would mean a server started at one window and a client
+sizing against the other, invisible until an HTTP 500 hundreds of chunks later.
+
+**The fraction on MLX is a fraction of the machine.** The Mac is unified memory,
+so `HIGGS_SGL_MEM_FRACTION` x `mx.metal.device_info()['memory_size']` is a real
+budget, and that is what `mlx_mem_budget_gb()` returns. A device whose Metal
+cannot answer is a refusal, not a guess. If the absolute name
+(`NARRATOR_HIGGS3_MLX_MEM_BUDGET_GB`) is ALSO set and disagrees by more than
+0.1 GB, that is refused by name too. The pinned buffer cache
+(`HIGGS_MLX_CACHE_LIMIT_GB`) does NOT follow the fraction: it caps a cache that
+lives inside the budget and is already subtracted by `_mlx_kv_headroom_gb`, so
+scaling both would take it off twice.
+
+**Nothing checks a context against the model's own maximum.** narrator never
+loads the weights on either served stack - it hands a server a path and talks
+HTTP - so `max_position_embeddings` is not a number it has, and the MLX arm
+loads through mlx-audio's loader whose config carries no position ceiling this
+code has verified. A window above what the weights support is passed through,
+and what refuses it is the server's own startup or the first request that runs
+past the rotary table. Closing that means reading the model directory's
+`config.json`, which is a change with its own measurement to take.
+
+**One length refusal remains that is not narrator's and not Crucible's:**
+`sglang_omni/serve/speech_service.py:58`, `MAX_SPEECH_INPUT_CHARS = 4096` - a
+cap on the request TEXT in characters, answered as an HTTP 400 before
+generation. It is not a token window and it does not move with
+`HIGGS_CONTEXT_LENGTH`. It is the server's to own and is left alone.
+
 ## Reporting a guess
 
 If a behaviour of e2a is ambiguous (two code paths, a flag the bridge never

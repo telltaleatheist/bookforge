@@ -357,8 +357,53 @@ REFERENCE_JOIN_SECONDS = 0.35
 MAX_CHARS = 600
 DELIVERED_MAX_CHARS = 300
 
-#: The fused context window (`--max-model-len 8192`).
-CONTEXT_TOKENS = 8192
+#: The fused context window the vllm-omni launcher serves when nobody says
+#: otherwise (`--max-model-len`, from `HIGGS_MAX_MODEL_LEN`).
+DEFAULT_CONTEXT_TOKENS = 8192
+
+#: THE LAUNCHER'S OWN NAME for the same number. It predates
+#: `HIGGS_CONTEXT_LENGTH` and is what `serve_higgs_v3.sh:123` reads, so it stays
+#: - renaming it would break every launch line and every campaign script that
+#: sets it. narrator TRANSLATES instead: one external name across the three
+#: stacks, each stack's own spelling underneath.
+SERVE_MAX_MODEL_LEN_ENV = 'HIGGS_MAX_MODEL_LEN'
+
+
+def context_tokens() -> int:
+    """THE CONTEXT THIS STACK IS LAUNCHED WITH, from either name, and a
+    REFUSAL when both are set and disagree.
+
+    TWO NAMES FOR ONE NUMBER IS THE FAILURE, NOT THE FEATURE. `HIGGS_MAX_MODEL_LEN`
+    is the launcher's, `HIGGS_CONTEXT_LENGTH` is the one Crucible sets per voice
+    for every stack. Picking a winner silently would mean a server started at
+    one window and a client sizing chunks against the other - which is invisible
+    until a chunk is an HTTP 500 or, worse, quietly short. So a disagreement is
+    named and the launch stops.
+    """
+    external = served_common.context_length(DEFAULT_CONTEXT_TOKENS)
+    raw = (os.environ.get(SERVE_MAX_MODEL_LEN_ENV) or '').strip()
+    if not raw:
+        return external
+    try:
+        launcher = int(raw)
+    except ValueError:
+        raise ValueError(
+            f'{SERVE_MAX_MODEL_LEN_ENV}={raw!r} is not a whole number of '
+            'tokens.') from None
+    if launcher < 1:
+        raise ValueError(
+            f'{SERVE_MAX_MODEL_LEN_ENV}={raw!r} must be at least 1 token.')
+    stated = (os.environ.get(served_common.CONTEXT_LENGTH_ENV) or '').strip()
+    if stated and launcher != external:
+        raise ValueError(
+            f'{served_common.CONTEXT_LENGTH_ENV}={external} and '
+            f'{SERVE_MAX_MODEL_LEN_ENV}={launcher} are two names for ONE number '
+            'and they disagree. They are the model context the server is started '
+            'with AND the window every request is sized against; narrator will '
+            'not pick one, because the loser is invisible - the server comes up '
+            'clean either way and the fault shows as an HTTP 500 hundreds of '
+            'chunks later. Set one, or set both to the same value.')
+    return launcher
 #: LM frames per second of audio, and the sample rate. Identical to v2.
 FRAMES_PER_SECOND = 25.0
 SAMPLE_RATE = 24000
@@ -1324,6 +1369,13 @@ class HiggsV3ServedBackend(GuestOwnedServer):
             f'{SERVE_MAX_NUM_SEQS_ENV}={self.concurrency}',
             f'{OWNER_ENV}={shlex.quote(self.owner_id())}',
             f'{SENTINEL_REPORT_ENV}={shlex.quote(report)}',
+            # THE CONTEXT, TRANSLATED. The launcher's name is
+            # `HIGGS_MAX_MODEL_LEN`; the name Crucible sets per voice is
+            # `HIGGS_CONTEXT_LENGTH`. `context_tokens()` reads both and refuses
+            # a disagreement, so what is exported here is the one number this
+            # server is starting with - stated, not inherited, like every other
+            # knob narrator has an opinion about.
+            f'{SERVE_MAX_MODEL_LEN_ENV}={context_tokens()}',
         ]
         if self.checkpoint_dir:
             target = (_to_wsl(self.checkpoint_dir) if sys.platform == 'win32'

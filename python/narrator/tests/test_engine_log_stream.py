@@ -137,10 +137,21 @@ class NoBarePrintsTest(unittest.TestCase):
     stream whatever the host needs. `engine/log.py` is the single exemption.
     """
 
+    #: THE SECOND EXEMPTION, and it is not an engine module at all:
+    #: `higgs/launch/sgl_omni_entry.py` runs under the SGLANG ENV's interpreter
+    #: (`$HIGGS_SGL_ENV/bin/python`), which has never heard of `narrator` and
+    #: cannot import `engine.log`. It is packaged here because the shell
+    #: launcher beside it execs it by path. Its one print is the line that says
+    #: which context window the server is coming up with, on stderr, which is
+    #: the server log narrator already reads - and there is no `set_log_stream`
+    #: in that process to route it with.
+    LAUNCH_ENTRY = os.path.join(_ENGINE, 'higgs', 'launch', 'sgl_omni_entry.py')
+
     def test_nothing_under_engine_calls_print(self):
         offenders = []
+        exempt = {os.path.abspath(_LOG_HELPER), os.path.abspath(self.LAUNCH_ENTRY)}
         for path in _engine_modules():
-            if os.path.abspath(path) == os.path.abspath(_LOG_HELPER):
+            if os.path.abspath(path) in exempt:
                 continue
             rel = os.path.relpath(path, _ENGINE).replace(os.sep, '/')
             offenders += [f'{rel}:{c.func.lineno}' for c in _print_calls(path)]
@@ -156,6 +167,23 @@ class NoBarePrintsTest(unittest.TestCase):
         """It must still hold exactly one print, or the rule above is guarding
         a helper that no longer writes anything."""
         self.assertEqual(len(_print_calls(_LOG_HELPER)), 1)
+
+    def test_the_launch_entry_is_a_STANDALONE_script_and_stays_one(self):
+        """Its exemption rests on it not being narrator code: it runs under
+        another env's interpreter. An import of `narrator` here would be a
+        crash at launch, not a lint - so the rule is checked, not trusted."""
+        with io.open(self.LAUNCH_ENTRY, encoding='utf-8') as handle:
+            tree = ast.parse(handle.read())
+        imported = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                imported |= {a.name.split('.')[0] for a in node.names}
+            elif isinstance(node, ast.ImportFrom):
+                if node.level:
+                    self.fail('a relative import cannot work in the SGLang env')
+                imported.add((node.module or '').split('.')[0])
+        self.assertNotIn('narrator', imported)
+        self.assertLessEqual(len(_print_calls(self.LAUNCH_ENTRY)), 1)
 
 
 class LogCallCountTest(unittest.TestCase):

@@ -609,29 +609,40 @@ def _uses_orpheus_token_pipeline(engine) -> bool:
     return getattr(engine, 'ENGINE_ID', None) == 'orpheus'
 
 
-def _guards_its_own_batch(engine) -> bool:
-    """True when this engine offers the GUARDED batched driver, `render_many`.
+def _can_guard_its_own_batch(engine) -> bool:
+    """True when this engine OFFERS the guarded batched driver, `render_many`.
 
-    THE DISCRIMINATOR IS THE CAPABILITY, NOT THE BACKEND NAME - the same lesson
-    `_uses_orpheus_token_pipeline` above was bitten by and fixed: `backend` is a
-    RUNTIME name shared by engines that have nothing else in common (Higgs v3 on
-    the Mac truthfully reports 'mlx'), so routing on it selects a method the
-    object may not have. `render_many` is the method being called; asking for it
-    by name is the only test that cannot be wrong.
+    A CAPABILITY, NOT A CHOICE, since 2026-09-19. It used to be both: an engine
+    that could guard was an engine that DID, on every batch, and this predicate
+    picked the arm. Owen ruled that the caller decides instead - a batch carries
+    `retake`, and `retake: false` renders every row exactly once as it was sent,
+    judged by nothing (crucible/docs/PHASE18-UNCERTIFIED.md). The fine-tuning
+    ladder is why: screening a checkpoint has no measured pace and no measured
+    cap by definition, because MEASURING THEM IS WHAT THE RENDER IS FOR, so a
+    guard there judges a model against a band belonging to some other model.
+    What is left here is the honest question - can this engine guard if asked -
+    and it answers `retake_unsupported` rather than quietly rendering a batch
+    that asked to be judged without judging it.
 
-    WHY THIS ARM EXISTS AT ALL (Owen's ruling, 2026-09-13, worked out in
+    THE DISCRIMINATOR IS STILL THE CAPABILITY AND NOT THE BACKEND NAME - the
+    lesson `_uses_orpheus_token_pipeline` above was bitten by: `backend` is a
+    RUNTIME name shared by engines that have nothing else in common (Higgs v3
+    on the Mac truthfully reports 'mlx'), so routing on it selects a method the
+    object may not have. `render_many` is the method being called; asking for
+    it by name is the only test that cannot be wrong.
+
+    WHY THE GUARDED ARM EXISTS AT ALL (Owen, 2026-09-13,
     crucible/docs/PHASE6-REMOTE-RENDER.md sections 0 and 2). narrator had two
-    rendering worlds and only the audiobook one was guarded: the serve world -
-    which is the door Crucible's render job drives - reached a Higgs engine
-    through a bare `render_audio()` per sentence, with no PaceTracker, no
-    re-roll, no split ladder. The model and its inference own the guard, so the
-    guard must run wherever the model does; `render_many` is `convert_many`'s
-    driver with the file-writing sink removed, so the serve world can have the
-    ladder without acquiring a `sentences_dir`.
+    rendering worlds and only the audiobook one was guarded: the serve world
+    reached a Higgs engine through a bare `render_audio()` per sentence, with
+    no PaceTracker, no re-roll, no split ladder. The model and its inference
+    own the guard, so the guard must run wherever the model does; `render_many`
+    is `convert_many`'s driver with the file-writing sink removed, so the serve
+    world can have the ladder without acquiring a `sentences_dir`.
 
-    Orpheus answers False and is untouched: its guard is a different and older
-    mechanism (`_guard_truncation`) that already runs in this worker, and it has
-    no `render_many` to offer.
+    Orpheus answers False: its guard is a different and older mechanism
+    (`_guard_truncation`) that already runs in this worker, and it has no
+    `render_many` to offer.
     """
     return callable(getattr(engine, 'render_many', None))
 
@@ -692,6 +703,147 @@ def set_active_engine_audio(samplerate: int, pads: bool) -> None:
     global _ACTIVE_SAMPLERATE, _ACTIVE_PADS
     _ACTIVE_SAMPLERATE = int(samplerate)
     _ACTIVE_PADS = bool(pads)
+
+
+class BatchRefused(ValueError):
+    """A whole `generate_batch` is refused, BY NAME, before anything renders.
+
+    `name` is the refusal - the first word of the message, and the word a
+    caller matches on. One object rather than a bare string so the door can
+    answer every row of the batch with the same sentence (that is this wire's
+    refusal shape: one `batch_item` per requested `i`, then `batch_done`) and
+    a test can assert the name without matching prose.
+    """
+
+    def __init__(self, name: str, detail: str):
+        self.name = name
+        super().__init__(f'{name}: {detail}')
+
+
+def parse_retake(value) -> bool:
+    """`retake` off the wire. ABSENT IS FALSE.
+
+    WHO DECIDES WHETHER NARRATOR JUDGES (Owen's ruling, 2026-09-19). Before
+    it, an engine that COULD guard a batch always did, and the caller had no
+    say; the fine-tuning ladder needs the opposite - a screening render of a
+    checkpoint has no measured pace and no measured cap, because measuring
+    them is what the render produces, so judging it means judging it against
+    another model's band. `true` takes the guarded arm (re-roll on truncation,
+    runaway or loop), `false` or absent takes the bare one: every row rendered
+    exactly once as sent, nothing judged, nothing retaken, nothing split.
+
+    A VALUE THAT IS NOT A BOOLEAN IS REFUSED rather than coerced. `bool("false")`
+    is True, and a client that spelled the flag wrong would get the opposite of
+    what it asked for on every row of the book - silently, because both answers
+    are ordinary audio.
+    """
+    if value is None:
+        return False
+    if not isinstance(value, bool):
+        raise BatchRefused(
+            'retake_malformed',
+            f'`retake` must be true or false; got {value!r}. It is not coerced - '
+            'a string "false" is truthy in Python, and the batch would be judged '
+            'by the ladder its caller was trying to switch off.')
+    return value
+
+
+def batch_tracker(retake: bool, band, engine):
+    """The `PaceTracker` for ONE batch, or None when nothing will judge it.
+
+    THE BAND COMES FROM THE BATCH OR THE BATCH IS REFUSED (Owen, 2026-09-19).
+    It used to come from the voice entry at load, and from the engine's own
+    default band when the entry carried none - and that fallback is the defect
+    this refusal exists for: a default band centred at 15.0 chars/s against a
+    book actually running near 17.2 judged healthy chunks run-ons and re-rolled
+    them to MAX_DEPTH. A band is a MEASUREMENT of one voice at one checkpoint;
+    an engine cannot supply one for a checkpoint nobody has measured, and the
+    caller that packed the book can.
+
+    A BAND SENT WITH `retake` FALSE IS ACCEPTED AND NOT USED - it was not asked
+    for (Owen: "it won't do anything with the number because it wasn't asked
+    to"), so it is not read and not checked. Nothing here silently half-honours
+    it: the bare arm judges nothing at all.
+    """
+    if not retake:
+        return None
+    if band is None:
+        raise BatchRefused(
+            'retake_without_band',
+            'a batch that asks to be judged must carry the band it is judged '
+            'against - {"paceCharsPerSec", "maxCharsPerSec", "minCharsPerSec"}. '
+            "narrator will not fall back to the engine's own band: that band is "
+            'a different measurement of a different model, and using it re-rolled '
+            'healthy chunks of a 17.2 chars/s book against a 15.0 centre until the '
+            'ladder hit MAX_DEPTH.')
+    if not _can_guard_its_own_batch(engine):
+        raise BatchRefused(
+            'retake_unsupported',
+            f"engine '{getattr(engine, 'ENGINE_ID', '?')}' offers no render_many, "
+            'so it has no ladder to judge this batch with. The batch is refused '
+            'rather than rendered unjudged - a render that silently skipped the '
+            'retake it asked for would be reported as a success.')
+    # IMPORTED HERE, not at module scope: this worker serves Orpheus too, and
+    # `narrator.serve` sends its `ready` line before any engine import
+    # (tests/test_engine_lazy_imports.py pins that). A batch that asks to be
+    # judged has a Higgs engine loaded already.
+    from ..engine.higgs import truncation
+    try:
+        return truncation.tracker_for(band, 'generate_batch')
+    except ValueError as exc:
+        raise BatchRefused('band_malformed', str(exc)) from exc
+
+
+def serving_width(engine) -> int:
+    """The width the ENGINE WAS STARTED WITH - what a batch's `width` is
+    measured against.
+
+    `BATCH_SIZE` on every Higgs arm, and it is the process's own
+    configuration, not a default: the served arms read `HIGGS_MAX_NUM_SEQS`
+    (`v3_served.serve_concurrency`, which refuses to invent one) and the MLX
+    arm reads `NARRATOR_HIGGS3_MLX_BATCH`. An engine that declares no
+    `BATCH_SIZE` serves one row at a time, which is the honest reading of "no
+    width was configured" and not a substituted value.
+    """
+    return max(1, int(getattr(engine, 'BATCH_SIZE', 1) or 1))
+
+
+def parse_width(value, engine):
+    """`width` off the wire: how many rows of THIS batch narrator may keep in
+    flight. None (absent) means the serving width the engine was started with.
+
+    WHY A JOB GETS TO NARROW ITS OWN BATCH (Owen, 2026-09-19, off a
+    measurement): SGLang started 16 wide at `mem_fraction_static` 0.60 summed
+    to 24.2 GB on a 24 GB card, and WDDM paged the excess to host RAM - 4 to 10
+    times slower, with no error and no log line anywhere. The fine-tuning
+    ladder renders 4 wide on voices whose manifest says 16, and restarting the
+    server to say so is not a thing a job can do. So the width is a per-batch
+    CEILING on what narrator asks of a server it does not reconfigure.
+
+    IT CANNOT BE RAISED. A width above the serving width is refused by name
+    rather than clamped: a caller that believes it is running 16 wide and is
+    quietly given 4 has no way to find out, and the number it reports
+    afterwards is wrong. Crucible refuses one above the voice's `max_num_seqs`
+    before it reaches here; this is what happens when one arrives anyway.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise BatchRefused(
+            'width_malformed',
+            f'`width` must be a whole number >= 1; got {value!r}. It is the '
+            'number of rows this batch may keep in flight, so there is nothing '
+            'to round it to.')
+    serving = serving_width(engine)
+    if value > serving:
+        raise BatchRefused(
+            'width_over_serving',
+            f'this batch asks for width {value}, above the {serving} the engine '
+            'was started with. narrator does not restart or reconfigure the '
+            'server for a job, and it does not clamp: a caller that believes it '
+            f'is running {value} wide while narrator quietly runs {serving} '
+            'reports a number nobody rendered at.')
+    return value
 
 
 #: The two contracts `finalize_audio` serves, named because the caller is the
@@ -1146,7 +1298,10 @@ class OrpheusStreamServer:
         #    MLX recompiles per sequence length, so warm a few increasing lengths.
         for t in warm_texts:
             try:
-                self._generate_audio(t)  # discard - the side effect is the warmup
+                # Discarded - the side effect is the warmup - so the door is
+                # nominal; FOR_STREAM because nothing assembles a render nobody
+                # keeps.
+                self._generate_audio(t, door=FOR_STREAM)
             except Exception as e:
                 print(f'[narrator.serve] warmup generation failed (non-fatal): {e}',
                       file=sys.stderr)
@@ -1155,7 +1310,8 @@ class OrpheusStreamServer:
         #    bucket at exactly this width.
         for w in widths:
             try:
-                self._generate_audio_batch([warm_texts[1]] * w)  # discard - warms the graph
+                # Discarded too (see above); it warms the graph.
+                self._generate_audio_batch([warm_texts[1]] * w, door=FOR_STREAM)
             except Exception as e:
                 print(f'[narrator.serve] batch warmup (width {w}) failed (non-fatal): {e}',
                       file=sys.stderr)
@@ -1280,7 +1436,7 @@ class OrpheusStreamServer:
         `accept_item_take` are members of every engine this worker drives:
         Higgs's arms parse both, Orpheus's refuse both by name. Asking the
         engine - rather than testing ENGINE_ID here - is the same discriminator
-        `_guards_its_own_batch` settled on, for the same reason: `backend` is a
+        `_can_guard_its_own_batch` settled on, for the same reason: `backend` is a
         runtime name and an engine is the only thing that knows its own levers.
         """
         v = self._row_voice(item.get('voice'))
@@ -1368,7 +1524,7 @@ class OrpheusStreamServer:
         return accept(raw, where)
 
     def _generate_audio(self, text: str, voice: str = None, index: int = 0,
-                        sampling=None, take: int = 0):
+                        sampling=None, take: int = 0, *, door):
         """Generate one sentence to a float numpy waveform via the engine's
         backend-specific path (mirrors OrpheusEngine.convert(), but in-memory).
 
@@ -1406,7 +1562,10 @@ class OrpheusStreamServer:
                 'and be reported as the take.')
         clean = orph._clean_sentence_for_tts(text)
         if not clean:
-            return np.zeros(int(active_samplerate() * 0.05), dtype=np.float32)
+            # An empty chunk is silence, and silence was not generated: there
+            # is no cap it could have hit.
+            return np.zeros(int(active_samplerate() * 0.05), dtype=np.float32), None
+        measure = None
         if not _uses_orpheus_token_pipeline(orph):
             # NOT AN ORPHEUS ENGINE. Higgs v3 - served by vllm-omni on
             # Windows/Linux, in-process through mlx-audio on the Mac. Either
@@ -1426,7 +1585,18 @@ class OrpheusStreamServer:
                     f"engine '{getattr(orph, 'ENGINE_ID', '?')}' is not Orpheus and "
                     'offers no render_audio(text). This worker has no way to render '
                     'one sentence with it.')
-            audio = render(clean, index=index, sampling=sampling, take=take)
+            # MEASURED WHERE THE CAP IS KNOWN. An engine that can say what a
+            # render spent against its frame ceiling offers
+            # `render_audio_measured` and is asked for both; one that cannot
+            # (Orpheus, whose budget is a token cap of a different shape)
+            # renders as before and reports nothing, which the wire publishes
+            # as absent - "narrator did not say" - and never as `capped: false`.
+            measured = getattr(orph, 'render_audio_measured', None)
+            if callable(measured):
+                audio, measure = measured(clean, index=index, sampling=sampling,
+                                          take=take)
+            else:
+                audio = render(clean, index=index, sampling=sampling, take=take)
         elif orph.backend == 'mlx':
             self._reject_per_request_voice(v)
             # _safe variant: render the sentence WHOLE, and only re-render it split at
@@ -1461,21 +1631,19 @@ class OrpheusStreamServer:
             audio = orph._tokens_to_audio(
                 orph._generate_tokens_transformers(f"{orph.voice}: {clean}")
             )
-        # FOR_STREAM, for all three callers, and the third one rests on a
-        # ROUTING fact rather than a wish. `generate` is one Listen sentence,
-        # `_warmup` discards what it renders, and the third is
-        # `_generate_audio_batch`'s sequential arm - which `generate_batch`
-        # reaches only for an engine it did not already hand to
-        # _emit_guarded_batch. Of the engines serve will run (higgs-v2-scaffold
-        # is refused outright, UNSERVABLE_ENGINES) that leaves Orpheus, whose
-        # audiobooks are rendered by the legacy e2a layer and never by this
-        # worker; higgs-v3 offers `render_many` and is routed away. An engine
-        # with `render_audio` and no `render_many` would put the render door on
-        # this line - there is none today, and the day there is, this is where
-        # it needs its own answer.
-        return finalize_audio(audio, FOR_STREAM)
+        # THE DOOR IS THE CALLER'S, and it is required here for the reason
+        # `finalize_audio` requires it: the caller is the only thing that knows
+        # whether a player or an assembler follows. It used to be FOR_STREAM on
+        # this line, justified by a ROUTING fact - "a Higgs engine is always
+        # handed to _emit_guarded_batch, so only Listen reaches here". That
+        # stopped being true on 2026-09-19, when `retake: false` made the bare
+        # arm the render door's own unguarded path: a Crucible render batch
+        # that asks for no judging comes through here, and an assembler
+        # follows it.
+        return finalize_audio(audio, door), measure
 
-    def _generate_audio_batch(self, texts, voices=None, samplings=None, takes=None):
+    def _generate_audio_batch(self, texts, voices=None, samplings=None,
+                              takes=None, indexes=None, *, door):
         """Generate many sentences at once. On the vLLM backend this is a TRUE
         batch - one engine.generate([prompts]) call whose continuous batching runs
         the sequences concurrently on the GPU (the same path Orpheus audiobooks use
@@ -1497,7 +1665,27 @@ class OrpheusStreamServer:
 
         `takes` is the rung's other half, aligned the same way and refused on
         the same arms for the same reason: Orpheus has no seed lane, so a take
-        above 0 there would draw exactly what take 0 drew."""
+        above 0 there would draw exactly what take 0 drew.
+
+        `door` is required and is passed straight to `finalize_audio`: this
+        method is reached by Listen AND, since `retake: false` landed
+        (2026-09-19), by the render door's unguarded arm, and the two are not
+        the same contract.
+
+        `indexes`, when given, is aligned to `texts` and is THE CALLER'S OWN
+        chunk index for each row - what seeds it (`seed + index`). It matters
+        on the render door and it is not cosmetic: the position in a batch is
+        an accident of how the caller packed its read-ahead window, so seeding
+        by position renders chunk 412 differently depending on which rows
+        happened to travel with it, and a resume or a re-render of one chunk
+        stops reproducing. `_emit_guarded_batch` has keyed the ladder on the
+        caller's `i` since it landed, for exactly this reason; this is the bare
+        arm's half of the same rule. Absent (Listen, `_warmup`) keeps the
+        position, which is what those callers have always rendered at.
+
+        Each entry of the returned list is `(audio, measure)` - the waveform
+        and what it SPENT against its frame ceiling, or `(None, None)` for a
+        non-empty sentence that failed to render."""
         orph = self.orph
         cleaned = [orph._clean_sentence_for_tts(t) for t in texts]
         row_voices = [self._row_voice(voices[i] if voices else None)
@@ -1512,6 +1700,11 @@ class OrpheusStreamServer:
             raise ValueError(
                 f'narrator.serve: {len(row_sampling)} sampling(s) for {len(texts)} '
                 'rows; samplings must be aligned to texts or None.')
+        row_indexes = list(indexes) if indexes is not None else list(range(len(texts)))
+        if len(row_indexes) != len(texts):
+            raise ValueError(
+                f'narrator.serve: {len(row_indexes)} index(es) for {len(texts)} '
+                'rows; indexes must be aligned to texts or None.')
 
         if _uses_orpheus_token_pipeline(orph) and any(r is not None for r in row_sampling):
             # Belt and braces with `_resolve_row`, and not redundant: `_warmup`
@@ -1643,22 +1836,26 @@ class OrpheusStreamServer:
         # The row index goes with each call so a served engine seeds row i with
         # `seed + i` (see HiggsV3Engine._seed_for); Orpheus ignores it.
         #
-        # AN ENGINE THAT GUARDS ITS OWN BATCH NO LONGER ARRIVES HERE. This
-        # comprehension was, until 2026-09-13, the whole of what the serve world
-        # did with a Higgs engine: sequential AND unguarded, while the audiobook
-        # world ran the same model through the PaceTracker, the re-roll and the
-        # split ladder (PHASE6-REMOTE-RENDER.md section 0). `generate_batch` now
-        # routes a `render_many`-capable engine to _emit_guarded_batch BEFORE
-        # calling this, so what is left on this line is the engines that have no
-        # driver to route to - plus `_warmup`, which calls this method directly
-        # with texts and no caller indices, and whose discarded renders want the
-        # compile, not the ladder.
-        return [self._generate_audio(t, row_voices[i], index=i,
-                                     sampling=row_sampling[i], take=row_takes[i])
+        # THE BARE ARM, AND IT IS A CHOICE NOW. Until 2026-09-13 this
+        # comprehension was the whole of what the serve world did with a Higgs
+        # engine: sequential AND unguarded, while the audiobook world ran the
+        # same model through the PaceTracker, the re-roll and the split ladder
+        # (PHASE6-REMOTE-RENDER.md section 0) - a gap, and it was closed by
+        # routing a `render_many`-capable engine away from here. Since
+        # 2026-09-19 a Higgs batch arrives here again WHEN IT ASKED TO
+        # (`retake: false`), and that is the point: one take per row, rendered
+        # exactly as sent, nothing judged, nothing re-rolled, nothing split.
+        # The screening render of a fine-tune has no measured band to be judged
+        # against, and inventing one is what this arm exists to not do. Also
+        # `_warmup`, which calls this method directly with texts and no caller
+        # indices, and whose discarded renders want the compile, not the ladder.
+        return [self._generate_audio(t, row_voices[i], index=row_indexes[i],
+                                     sampling=row_sampling[i], take=row_takes[i],
+                                     door=door)
                 for i, t in enumerate(texts)]
 
     @staticmethod
-    def _emit_batch_item(it, audio, door, guard=None):
+    def _emit_batch_item(it, audio, door, guard=None, measure=None):
         """Emit one 'batch_item', keyed by the caller-supplied index `i`. Empty/None
         audio -> the 'No audio generated' message; otherwise the PCM16 payload. This
         is the exact per-item wire shape the non-MLX single-dispatch loop uses, so
@@ -1685,6 +1882,19 @@ class OrpheusStreamServer:
         nothing about a ladder: `render_many` hands back `verdict is None` for a
         chunk that never reached a decision (`GuardPlan.abandon` drops its
         records), so there is nothing true to attach.
+
+        `measure` is the render's `FrameMeasure` and is where `capped` (and
+        `tokens`) come from. THE MEASUREMENT IS UNCONDITIONAL (Owen,
+        2026-09-19): it rides both arms, because whether a generation ran out
+        of frame budget is a fact about the render and not a verdict on it, and
+        a bare render is exactly the one whose numbers nobody else has. A
+        missing measure omits the keys rather than sending `false` - Crucible
+        reads absent as "narrator did not say", and "not capped" is the one
+        thing a runaway must never be reported as
+        (crucible/docs/PHASE18-UNCERTIFIED.md). `tokens` is sent only when the
+        count is COUNTED: the served stack returns a WAV and no token count, so
+        the frames narrator can see there are a lower bound
+        (`FrameMeasure.counted`).
         """
         if audio is None or len(audio) == 0:
             send_response('batch_item', {'i': it.get('i'), 'message': 'No audio generated'})
@@ -1698,11 +1908,24 @@ class OrpheusStreamServer:
                 **({'gapSec': row_gap_sec(it.get('text'))}
                    if door == FOR_STREAM else {}),
                 **({'guard': guard} if guard is not None else {}),
+                **({'capped': bool(measure.capped)} if measure is not None else {}),
+                **({'tokens': measure.tokens}
+                   if measure is not None and measure.tokens is not None else {}),
             })
 
-    def _emit_guarded_batch(self, rows, emitted):
+    def _emit_guarded_batch(self, rows, emitted, tracker, width=None):
         """Drive `rows` through the ENGINE'S OWN guarded driver and emit each chunk
         as the ladder decides it, verdict attached.
+
+        `tracker` is THE BATCH'S `PaceTracker`, built from the band the batch
+        carried (`generate_batch`), and there is no other source for it: the
+        band has one owner and it is the caller (Owen, 2026-09-19). A batch
+        that asks to be judged and names no band never reaches this method -
+        `retake_without_band` refuses it whole.
+
+        `width` is how many of this batch's takes the driver may keep in
+        flight, already checked against the serving width (`parse_width`).
+        None means the engine's own.
 
         `rows` is generate_batch's `(item, normalized text, voice token,
         sampling, take)` quintuples, already past the per-row voice and rung
@@ -1830,8 +2053,9 @@ class OrpheusStreamServer:
             return
 
         driver = orph.render_many(plan_rows, sampling_by_index=rungs,
-                                  take_by_index=takes)
-        for index, audio, verdict in driver:
+                                  take_by_index=takes, tracker=tracker,
+                                  width=width)
+        for index, audio, verdict, measure in driver:
             it = by_index.pop(index, None)
             if it is None:
                 # The driver yielded an index this batch never asked for (or asked
@@ -1853,7 +2077,7 @@ class OrpheusStreamServer:
                 None if audio is None or len(audio) == 0
                 else finalize_audio(audio, FOR_RENDER),
                 FOR_RENDER,
-                guard=verdict)
+                guard=verdict, measure=measure)
             if self._is_cancelled():
                 # CANCELLABLE, BETWEEN CHUNKS. `render_many` is a generator, so
                 # closing it is the whole of the stop: `break` drops the last
@@ -2331,7 +2555,21 @@ class OrpheusStreamServer:
                     })
             send_response('batch_done', {'count': len(items)})
 
-    def generate_batch(self, items, language: str = 'en'):
+    def _refuse_batch(self, items, message: str) -> None:
+        """One refusal, answered on EVERY row of the batch, then `batch_done`.
+
+        The shape this door has always refused a whole batch in ("Model not
+        loaded", a language num2words cannot speak): the caller gets a
+        `batch_item` for every `i` it sent and then `batch_done`, because that
+        is this method's contract and a caller waiting on 400 rows must not be
+        left waiting on one.
+        """
+        for it in items:
+            send_response('batch_item', {'i': it.get('i'), 'message': message})
+        send_response('batch_done', {'count': len(items)})
+
+    def generate_batch(self, items, language: str = 'en', retake=None,
+                       band=None, width=None):
         """Generate a batch of sentences (read-ahead). Emits one 'batch_item' per
         item (keyed by its caller-supplied index `i`) then a 'batch_done'. A failure
         is reported per item so one bad sentence never sinks the batch.
@@ -2362,17 +2600,27 @@ class OrpheusStreamServer:
         extension's default "Buffer before playing" produces - nothing below this
         line is reached and the batch takes the code that was already here.
 
-        AN ENGINE THAT GUARDS ITS OWN BATCH takes _emit_guarded_batch instead of
-        the sequential dispatch, and its items carry `guard` - the verdict its
-        retake ladder reached. This is the NON-STREAMING door only, which is the
-        one Crucible's render job drives; the interactive Listen paths
-        (`generate`, `_generate_batch_streaming`) are deliberately left alone,
-        because a retake doubles the latency a listener is already waiting on and
-        whether they should pay it is Owen's call, not this change's."""
+        `retake` and `band` are BATCH-level and decide whether anything JUDGES
+        these rows (Owen, 2026-09-19 - see `parse_retake` and `batch_tracker`).
+        `retake: true` takes `_emit_guarded_batch`, the engine's own ladder,
+        judged against the band THIS BATCH carried, and its items come back
+        with `guard` - the verdict the ladder reached. `retake: false` or
+        absent takes the sequential dispatch below: one take per row, rendered
+        exactly as sent, and no `guard` key at all, because nobody judged it.
+        Both arms measure (`capped`).
+
+        THIS IS THE NON-STREAMING DOOR ONLY, which is the one Crucible's render
+        job drives; the interactive Listen paths (`generate`,
+        `_generate_batch_streaming`) judge nothing and are deliberately left
+        alone, because a retake doubles the latency a listener is already
+        waiting on and whether they should pay it is Owen's call, not this
+        change's.
+
+        `width` is also batch-level: how many rows narrator may keep in flight
+        for THIS batch, at most the width the engine was started with
+        (`parse_width`). Absent means that serving width."""
         if self.orph is None:
-            for it in items:
-                send_response('batch_item', {'i': it.get('i'), 'message': 'Model not loaded'})
-            send_response('batch_done', {'count': len(items)})
+            self._refuse_batch(items, 'Model not loaded')
             return
 
         # ONE language check for the whole batch, before any audio. Without it a
@@ -2383,13 +2631,30 @@ class OrpheusStreamServer:
         try:
             check_language(language)
         except ValueError as exc:
-            for it in items:
-                send_response('batch_item',
-                              {'i': it.get('i'), 'message': str(exc)})
-            send_response('batch_done', {'count': len(items)})
+            self._refuse_batch(items, str(exc))
             return
 
-        if any(it.get('stream') is True for it in items):
+        # WHETHER ANYTHING JUDGES THIS BATCH, decided once, before a row
+        # renders. A refusal here is the whole batch's: the flag and the band
+        # are the batch's own, so answering some rows and refusing others would
+        # be two answers to one question.
+        streaming = any(it.get('stream') is True for it in items)
+        try:
+            retake = parse_retake(retake)
+            if retake and streaming:
+                raise BatchRefused(
+                    'retake_with_stream',
+                    'a streaming batch cannot be judged: `_generate_batch_streaming` '
+                    'emits a row as it generates, so there is nothing left to '
+                    're-roll by the time the ladder could decide. Send the rows '
+                    'that must be judged without `stream`.')
+            tracker = batch_tracker(retake, band, self.orph)
+            width = parse_width(width, self.orph)
+        except BatchRefused as refused:
+            self._refuse_batch(items, str(refused))
+            return
+
+        if streaming:
             self._generate_batch_streaming(items, language)
             return
 
@@ -2406,16 +2671,34 @@ class OrpheusStreamServer:
             # this engine (or this backend) cannot serve. A single unservable voice
             # must not sink the batch: the rest are ordinary sentences in a voice that
             # is right there.
-            # WHICH DOOR THIS BATCH IS, decided once and from the same fact that
-            # picks the arm below: an engine that guards its own batch is the one
-            # Crucible's `tts` render job drives (an assembler follows it), and
-            # everything else on this path is Listen (a player follows it). The
-            # arms already said so in prose; the gap field needs it as a value.
-            door = FOR_RENDER if _guards_its_own_batch(self.orph) else FOR_STREAM
+            # WHICH DOOR THIS BATCH IS - who follows the rows, an assembler
+            # or a player. It is the ENGINE's answer and NOT `retake`'s: a
+            # Higgs batch on this path is Crucible's `tts` render job whether
+            # or not it asked to be judged (an assembler follows it, and
+            # `gaps.json` owns the silence), while Orpheus's non-streaming
+            # batch is the extension's buffered Listen (a player follows, and
+            # is told `gapSec`). Judging and assembling are two questions; this
+            # is the second one.
+            door = FOR_RENDER if _can_guard_its_own_batch(self.orph) else FOR_STREAM
             rows = []   # (item, normalized text, voice token, sampling, take)
             for it in items:
                 try:
                     v, rung, take = self._resolve_row(it)
+                    if door == FOR_RENDER:
+                        # THE INDEX SEEDS THE RENDER behind this door, on both
+                        # arms (`seed + i`), so an unusable one cannot be
+                        # carried along and sorted out by the client - it would
+                        # silently render at some other chunk's draw. The
+                        # guarded arm refuses it at its own door too; this
+                        # catches it one step earlier and for both arms.
+                        try:
+                            int(it.get('i'))
+                        except (TypeError, ValueError):
+                            raise ValueError(
+                                f'generate_batch row carries i={it.get("i")!r}, '
+                                'which is not an integer index. A render uses `i` '
+                                'to seed the chunk, so there is nothing to render '
+                                'this row as.') from None
                     if door == FOR_STREAM:
                         # Refused before anything renders: `row_gap_sec` rejects a
                         # row whose gap LEADS, which this door cannot carry, and a
@@ -2428,28 +2711,42 @@ class OrpheusStreamServer:
                 rows.append((it, normalize_for_tts(it.get('text', ''), language),
                              v, rung, take))
 
-            if rows and door == FOR_RENDER:
-                # THE GUARDED ARM (Owen's ruling, 2026-09-13). An engine that
-                # offers `render_many` runs its own PaceTracker, re-roll and split
-                # ladder over the whole batch and yields each chunk with the
-                # verdict it reached; this worker ships the audio and forwards the
-                # verdict. Detected by the CAPABILITY - see _guards_its_own_batch -
-                # so Orpheus, which has no render_many and whose own older guard
-                # already runs on the arms below, is untouched.
-                self._emit_guarded_batch(rows, emitted)
+            if rows and retake:
+                # THE GUARDED ARM (Owen, 2026-09-13, and asked for per batch
+                # since 2026-09-19). The engine runs its own PaceTracker,
+                # re-roll and split ladder over the whole batch - against the
+                # band THIS batch carried - and yields each chunk with the
+                # verdict it reached; this worker ships the audio and forwards
+                # the verdict. The engine was checked for `render_many` when
+                # the tracker was built (`retake_unsupported`), so reaching
+                # here means the ladder exists.
+                self._emit_guarded_batch(rows, emitted, tracker, width)
             elif rows:
-                audios = self._generate_audio_batch(
+                # THE BARE ARM: one take per row, exactly as sent. No verdict
+                # is attached because none was reached - a `guard` key here
+                # would be narrator claiming to have judged a row it was told
+                # not to judge.
+                rendered = self._generate_audio_batch(
                     [t for _, t, _, _, _ in rows],
                     [v for _, _, v, _, _ in rows],
                     [g for _, _, _, g, _ in rows],
-                    [k for _, _, _, _, k in rows])
-                for (it, _text, _v, _g, _k), audio in zip(rows, audios):
+                    [k for _, _, _, _, k in rows],
+                    # THE CALLER'S INDEX SEEDS THE ROW on the render door -
+                    # see `_generate_audio_batch`. On the Listen door the `i`
+                    # is a label the player resolves by, the engine is Orpheus
+                    # (whose seeding is not `seed + index` at all), and the
+                    # position is what that door has always rendered at.
+                    indexes=([int(it.get('i')) for it, _t, _v, _g, _k in rows]
+                             if door == FOR_RENDER else None),
+                    door=door)
+                for (it, _text, _v, _g, _k), (audio, measure) in zip(rows, rendered):
                     emitted.add(id(it))
-                    # Through the ONE emitter, which is also where `gapSec` is
-                    # attached. This arm used to write the same five fields out
-                    # by hand - a second copy of the per-item shape, which is how
-                    # a field lands on three arms and not on the fourth.
-                    self._emit_batch_item(it, audio, door)
+                    # Through the ONE emitter, which is also where `gapSec` and
+                    # the measurement are attached. This arm used to write the
+                    # same five fields out by hand - a second copy of the
+                    # per-item shape, which is how a field lands on three arms
+                    # and not on the fourth.
+                    self._emit_batch_item(it, audio, door, measure=measure)
         except Exception as e:
             import traceback
             traceback.print_exc(file=sys.stderr)
@@ -2511,8 +2808,9 @@ class OrpheusStreamServer:
             rung_take = self._item_take(take, 'generate')
             raw_text = text
             text = normalize_for_tts(text, language)
-            audio = self._generate_audio(text, voice, sampling=rung,
-                                         take=rung_take)
+            audio, _measure = self._generate_audio(text, voice, sampling=rung,
+                                                   take=rung_take,
+                                                   door=FOR_STREAM)
             if audio is None or len(audio) == 0:
                 send_response('error', {'message': 'No audio generated'})
                 return
@@ -2702,9 +3000,18 @@ class OrpheusStreamServer:
                     take=request.get('take'),
                 )
             elif action == 'generate_batch':
+                # `retake` and `band` are the BATCH's, not an item's: whether
+                # narrator judges these rows, and what it judges them against,
+                # are one decision for the whole call. Read with `.get` and
+                # None-meaning-absent, then parsed - `parse_retake` refuses a
+                # non-boolean rather than coercing it, and `batch_tracker`
+                # refuses `retake` with no band by name.
                 self.generate_batch(
                     request.get('items', []),
                     language=request.get('language', 'en'),
+                    retake=request.get('retake'),
+                    band=request.get('band'),
+                    width=request.get('width'),
                 )
             elif action in ('cancel', 'stop'):
                 # The reader thread already SET the flag when this line arrived -

@@ -161,7 +161,17 @@ def main() -> int:
             # narrator's engine log goes to the host's chosen stream; stderr is
             # the default and is what the GUARD_EVENT lines ride on.
             with redirect_stderr(captured):
-                out = list(engine.render_many(iter(CHUNKS)))
+                # THE BAND IS THE CALLER'S since 2026-09-19 - the voice
+                # carries it for the CLIENT to read, and the client states it
+                # on the call. This keeper IS that client, and `band` is the
+                # pair it set out to compare.
+                out = list(engine.render_many(
+                    iter(CHUNKS),
+                    tracker=truncation.tracker_for({
+                        'paceCharsPerSec': truncation.expected_chars_per_sec(
+                            band[0], band[1]),
+                        'maxCharsPerSec': band[0],
+                        'minCharsPerSec': band[1]})))
         except Exception as exc:                 # noqa: BLE001 — a keeper reports
             sys.stderr.write(captured.getvalue())
             fail(f'[{label}] render_many raised {type(exc).__name__}: {exc}')
@@ -211,7 +221,7 @@ def main() -> int:
     produced, log, elapsed = render(band, label)
 
     rates = []
-    for index, audio, _verdict in produced:
+    for index, audio, _verdict, _measure in produced:
         seconds = len(np.asarray(audio)) / float(HiggsV3Engine.SAMPLE_RATE)
         chars = len(dict(CHUNKS)[index].strip())
         if seconds > 0:
@@ -231,7 +241,7 @@ def main() -> int:
     print(f'ok   {len(got)} chunk(s), each exactly once, in {elapsed:.1f}s')
 
     # -- 4. the audio is sane ------------------------------------------------
-    for index, audio, _verdict in produced:
+    for index, audio, _verdict, _measure in produced:
         if audio is None or len(audio) == 0:
             fail(f'chunk {index} came back with no audio')
         array = np.asarray(audio)
@@ -245,7 +255,7 @@ def main() -> int:
     from_log = records_in(log)
 
     from_verdicts: list[dict] = []
-    for _index, _audio, verdict in produced:
+    for _index, _audio, verdict, _measure in produced:
         if verdict is not None:
             from_verdicts.extend(verdict['takes'])
 

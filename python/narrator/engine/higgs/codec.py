@@ -46,6 +46,9 @@ bare speech and the gaps are the assembler's (`Engine.pads` is False).
 Steps 1-5 are pure numpy and are unit-tested with a FAKE decoder; only step 6
 needs the model.
 """
+from dataclasses import dataclass
+from typing import Optional, Sequence
+
 import numpy as np
 
 from .prompt import (AUDIO_STREAM_BOS_ID, AUDIO_STREAM_EOS_ID, NUM_CODEBOOKS,
@@ -56,6 +59,91 @@ FRAMES_PER_SECOND = 25.0
 SAMPLES_PER_FRAME = int(SAMPLE_RATE / FRAMES_PER_SECOND)   # 960
 # The delay pattern's diagonal: reverting it costs num_codebooks - 1 frames.
 DELAY_TRIM_FRAMES = NUM_CODEBOOKS - 1                      # 7
+
+
+@dataclass(frozen=True)
+class FrameMeasure:
+    """What one render SPENT, against the ceiling it was given.
+
+    THE MEASUREMENT IS UNCONDITIONAL (Owen's ruling, 2026-09-19): a row that
+    nobody judged is still a row somebody measured, so this travels on both
+    arms of `serve/worker.py`'s `generate_batch` - the guarded one and the bare
+    one - and reaches the wire as `capped` (and `tokens`, when the count is a
+    count). It is a FACT about a render, never a verdict on it: `capped` says
+    the generation stopped because it ran out of budget rather than because the
+    model was finished, which is the difference between a chunk that ended and
+    a chunk that was cut off. Crucible publishes both and reads `null` as
+    "narrator did not say" - never as `false` (crucible/docs/PHASE18-UNCERTIFIED.md).
+
+      frames   the audio frames this measure accounts for.
+      cap      the per-chunk frame ceiling the render was sized at, which is
+               `HiggsBudget.cap_frames(text)` clamped by the stack
+               (`sgl_served.frame_cap`). The engine's own arithmetic over the
+               text length and `CHARS_PER_SEC` - not the voice's `maxChars`.
+      capped   `frames` reached `cap`.
+      counted  whether `frames` is COUNTED from the model's own output (the
+               MLX arm, which generates in this process and can see the matrix)
+               or INFERRED from the decoded audio (the served arms, where the
+               only thing that crosses the HTTP boundary is a WAV). An inferred
+               count is a LOWER BOUND - the delay trim and the sentinel run are
+               already gone from it - so only a counted one is reported as
+               `tokens`.
+
+    WHY AN INFERRED `capped` IS STILL HONEST. A generation that hit the cap
+    emitted no EOS, so its tail carries no sentinel run for step 4a to strip
+    and the delay trim (`DELAY_TRIM_FRAMES`, 7) is the whole of what was
+    removed: the decoded audio is exactly `cap - 7` frames. A generation that
+    stopped on EOS is nowhere near - `cap_frames` is 1.8-2.0x the expected
+    duration plus 100-150 frames of slack, measured never to be reached across
+    the nine-chunk audition. So `frames + DELAY_TRIM_FRAMES >= cap` separates
+    the two with frames to spare; `from_audio` is where that rule lives, once.
+    """
+    frames: int
+    cap: int
+    capped: bool
+    counted: bool
+
+    @property
+    def tokens(self) -> Optional[int]:
+        """The frame count to REPORT, or None when narrator only has a bound.
+
+        `max_new_tokens` counts frames, so frames is the unit the cap and the
+        wire's `tokens` share. A served render's count is short by the trims
+        and stating it would be stating a number nobody generated."""
+        return int(self.frames) if self.counted else None
+
+    @classmethod
+    def counted_frames(cls, frames: int, cap: int) -> 'FrameMeasure':
+        """The model's own frame count, against the cap it was given."""
+        frames, cap = int(frames), int(cap)
+        return cls(frames=frames, cap=cap, capped=frames >= cap, counted=True)
+
+    @classmethod
+    def from_audio(cls, audio, cap: int, sample_rate: int = SAMPLE_RATE) -> 'FrameMeasure':
+        """The frames a DECODED waveform accounts for - see the class docstring
+        for why the cap-hit is still decidable from it."""
+        cap = int(cap)
+        samples = 0 if audio is None else int(len(audio))
+        frames = samples // int(sample_rate / FRAMES_PER_SECOND)
+        return cls(frames=frames, cap=cap,
+                   capped=frames + DELAY_TRIM_FRAMES >= cap, counted=False)
+
+    @classmethod
+    def joined(cls, parts: Sequence['FrameMeasure']) -> Optional['FrameMeasure']:
+        """The measure of a chunk the ladder SPLIT and joined back.
+
+        `capped` is ANY part's - one half cut off is a chunk cut off - and the
+        frames and the caps both add, because what shipped is every part. None
+        when no part was measured, and `counted` only when every part was: a
+        sum of one counted and one inferred number is neither.
+        """
+        parts = [p for p in parts if p is not None]
+        if not parts:
+            return None
+        return cls(frames=sum(int(p.frames) for p in parts),
+                   cap=sum(int(p.cap) for p in parts),
+                   capped=any(bool(p.capped) for p in parts),
+                   counted=all(bool(p.counted) for p in parts))
 
 
 class HiggsStreamMisaligned(ValueError):

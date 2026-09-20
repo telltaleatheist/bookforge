@@ -703,6 +703,12 @@ def _loaded_server(engine):
     return server
 
 
+#: The Listen contract, for the three direct `_generate_audio` calls below.
+#: `door` has no default (`finalize_audio` requires the caller to decide), and
+#: these are single renders with nothing assembling them.
+from narrator.serve.worker import FOR_STREAM as W_FOR_STREAM
+
+
 class WorkerRenderRoutingTest(unittest.TestCase):
     """`backend == 'mlx'` is a RUNTIME name, not an engine.
 
@@ -727,7 +733,8 @@ class WorkerRenderRoutingTest(unittest.TestCase):
         from narrator.serve.worker import OrpheusStreamServer
         server = _loaded_server(_StubEngine('higgs-v3', 'mlx'))
         engine = server.orph
-        audio = server._generate_audio('Hello there.', index=4)
+        audio, _m = server._generate_audio('Hello there.', index=4,
+                                          door=W_FOR_STREAM)
         self.assertEqual(engine.calls, [('Hello there.', 4)])
         self.assertGreater(len(audio), 0)
 
@@ -738,7 +745,7 @@ class WorkerRenderRoutingTest(unittest.TestCase):
         server = _loaded_server(_StubEngine('higgs-v3', 'mlx'))
         engine = server.orph
         for i in (0, 1, 17):
-            server._generate_audio('A line.', index=i)
+            server._generate_audio('A line.', index=i, door=W_FOR_STREAM)
         self.assertEqual([index for _text, index in engine.calls], [0, 1, 17])
 
     def test_an_engine_that_is_neither_orpheus_nor_renderable_is_a_named_error(self):
@@ -753,7 +760,7 @@ class WorkerRenderRoutingTest(unittest.TestCase):
 
         server = _loaded_server(_NoRender('higgs-v3', 'mlx'))
         with self.assertRaises(RuntimeError) as caught:
-            server._generate_audio('Hello.')
+            server._generate_audio('Hello.', door=W_FOR_STREAM)
         self.assertIn('render_audio', str(caught.exception))
 
     def test_the_batch_dispatcher_does_not_send_higgs_down_orpheuss_mlx_path(self):
@@ -805,6 +812,129 @@ class LazyImportTest(unittest.TestCase):
                              capture_output=True, text=True, check=True)
         self.assertEqual(out.stdout.strip(), '',
                          'narrator.engine.higgs.mlx_backend must import no mlx')
+
+
+class MlxServingEnvTest(unittest.TestCase):
+    """The two spawn-env knobs this backend had no answer for.
+
+    `HIGGS_CONTEXT_LENGTH` is the one external name for the model window across
+    all three Higgs backends. On this arm there is no server to launch, so it
+    lands straight on `HiggsV3MlxConfig.context_tokens`, which is what
+    `max_total_tokens` bounds a prompt against.
+
+    `HIGGS_SGL_MEM_FRACTION` is the fraction-of-the-device name the CUDA stack
+    takes. The Mac is unified memory, so the same fraction is a real number
+    here - of the WHOLE machine, which is what `mx.metal.device_info()`
+    reports. The backend's own budget has always been absolute GB; narrator
+    converts, and refuses when both names are set and disagree.
+    """
+
+    NAMES = ('HIGGS_CONTEXT_LENGTH', 'HIGGS_SGL_MEM_FRACTION',
+             'NARRATOR_HIGGS3_MLX_MEM_BUDGET_GB')
+
+    def setUp(self):
+        for name in self.NAMES:
+            os.environ.pop(name, None)
+            self.addCleanup(os.environ.pop, name, None)
+
+    def _config(self):
+        """A config built the way a LOAD builds one - through the registry's
+        factory, which is where the window is wired."""
+        import json
+        import shutil
+        import tempfile
+        from narrator.engine.higgs.mlx_backend import (
+            higgs_v3_mlx_config_from_worker_kwargs)
+        root = tempfile.mkdtemp(prefix='narrator-mlx-env-')
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        path = os.path.join(root, 'voices.json')
+        with open(path, 'w', encoding='utf-8') as handle:
+            json.dump({'ds': {'kind': 'default', 'maxChars': 500}}, handle)
+        os.environ['NARRATOR_HIGGS_VOICES'] = path
+        self.addCleanup(os.environ.pop, 'NARRATOR_HIGGS_VOICES', None)
+        # The weights this arm would load. A directory is all the factory
+        # wants; nothing here opens it.
+        os.environ['NARRATOR_HIGGS3_MLX_MODEL'] = root
+        self.addCleanup(os.environ.pop, 'NARRATOR_HIGGS3_MLX_MODEL', None)
+        return higgs_v3_mlx_config_from_worker_kwargs(voice='ds')
+
+    def test_the_context_defaults_to_this_backends_own_window(self):
+        from narrator.engine.higgs.v3_engine import HiggsV3Defaults
+        self.assertEqual(self._config().context_tokens,
+                         HiggsV3Defaults.CONTEXT_TOKENS)
+
+    def test_the_context_follows_the_env(self):
+        from narrator.engine.higgs import HiggsV3MlxBudget
+        os.environ['HIGGS_CONTEXT_LENGTH'] = '4096'
+        config = self._config()
+        self.assertEqual(config.context_tokens, 4096)
+        budget = HiggsV3MlxBudget(config)
+        self.assertEqual(budget.max_total_tokens(0), 4096)
+        with self.assertRaises(ValueError):
+            budget.max_total_tokens(4096)
+
+    def test_a_context_that_is_not_a_positive_int_is_refused_by_name(self):
+        for raw in ('0', '-1', '8192.0', 'eight thousand'):
+            with self.subTest(raw=raw):
+                os.environ['HIGGS_CONTEXT_LENGTH'] = raw
+                with self.assertRaises(ValueError) as caught:
+                    self._config()
+                self.assertIn('HIGGS_CONTEXT_LENGTH', str(caught.exception))
+
+    def _with_device(self, gb):
+        """Metal's answer, stubbed - the tests run on Windows, where there is
+        no Metal to ask."""
+        from narrator.engine.higgs import mlx_backend as M
+        original = M.mlx_device_memory_gb
+        M.mlx_device_memory_gb = lambda: gb
+        self.addCleanup(setattr, M, 'mlx_device_memory_gb', original)
+        return M
+
+    def test_the_absolute_budget_is_unchanged_when_no_fraction_is_set(self):
+        from narrator.engine.higgs import mlx_backend as M
+        self.assertEqual(M.mlx_mem_budget_gb(), 42.0)
+        os.environ['NARRATOR_HIGGS3_MLX_MEM_BUDGET_GB'] = '24'
+        self.assertEqual(M.mlx_mem_budget_gb(), 24.0)
+
+    def test_a_fraction_becomes_a_fraction_OF_THE_DEVICE(self):
+        M = self._with_device(64.0)
+        os.environ['HIGGS_SGL_MEM_FRACTION'] = '0.60'
+        self.assertAlmostEqual(M.mlx_mem_budget_gb(), 38.4, places=3)
+
+    def test_a_fraction_and_an_absolute_budget_that_AGREE_are_fine(self):
+        M = self._with_device(64.0)
+        os.environ['HIGGS_SGL_MEM_FRACTION'] = '0.50'
+        os.environ['NARRATOR_HIGGS3_MLX_MEM_BUDGET_GB'] = '32'
+        self.assertAlmostEqual(M.mlx_mem_budget_gb(), 32.0, places=3)
+
+    def test_a_fraction_and_an_absolute_budget_that_DISAGREE_are_refused(self):
+        """Never let one silently win: the batch would run at a width nobody
+        chose and the only symptom is a number in a log nobody compares."""
+        M = self._with_device(64.0)
+        os.environ['HIGGS_SGL_MEM_FRACTION'] = '0.60'
+        os.environ['NARRATOR_HIGGS3_MLX_MEM_BUDGET_GB'] = '24'
+        with self.assertRaises(ValueError) as caught:
+            M.mlx_mem_budget_gb()
+        message = str(caught.exception)
+        self.assertIn('HIGGS_SGL_MEM_FRACTION', message)
+        self.assertIn('NARRATOR_HIGGS3_MLX_MEM_BUDGET_GB', message)
+
+    def test_a_fraction_outside_0_to_1_is_refused_by_name(self):
+        self._with_device(64.0)
+        from narrator.engine.higgs import mlx_backend as M
+        for raw in ('0', '1', '1.5'):
+            with self.subTest(raw=raw):
+                os.environ['HIGGS_SGL_MEM_FRACTION'] = raw
+                with self.assertRaises(ValueError) as caught:
+                    M.mlx_mem_budget_gb()
+                self.assertIn('HIGGS_SGL_MEM_FRACTION', str(caught.exception))
+
+    def test_the_pinned_cache_does_NOT_follow_the_fraction(self):
+        """It is a cap on a cache that lives INSIDE the budget and is already
+        subtracted by the headroom math; scaling both would take it off twice."""
+        M = self._with_device(64.0)
+        os.environ['HIGGS_SGL_MEM_FRACTION'] = '0.25'
+        self.assertEqual(M.mlx_cache_limit_gb(), M.CACHE_LIMIT_DEFAULT_GB)
 
 
 if __name__ == '__main__':
