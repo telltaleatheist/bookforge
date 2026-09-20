@@ -2167,10 +2167,35 @@ export async function returnToPending(jobId: string): Promise<void> {
     step.completionNotes = undefined;
     step.startedAt = undefined;
     step.finishedAt = undefined;
+    /*
+     * A RETURN TO PENDING IS "START OVER", SO THE RESUME FLAG COMES OFF.
+     *
+     * `wasInterrupted` is not decoration — it is what tells TTS to pick the
+     * session up from sentence N instead of rendering from zero. Left standing
+     * on a returned run it turned Owen's *"start over with exact same
+     * settings"* into a resume of the very attempt he just took out of the
+     * queue: an inline-prep chain re-adopts the old session and the book comes
+     * out of the machine he changed his mind about. Everything else of the
+     * stopped attempt is cleared two lines up; this is the one field that
+     * would have made the clearing pointless.
+     *
+     * `lastError` goes with it, and for the opposite reason to P6's: that
+     * field is *the account of the attempt before this one*, kept so a reason
+     * survives a Stop or a Retry — but a run sent back to Pending has no
+     * attempt before this one any more. A "Last time: …" line under a staged
+     * row is history the run no longer owns.
+     */
+    step.wasInterrupted = undefined;
+    step.lastError = undefined;
     // The machine this step was PENCILLED IN for, which is now a decision the
     // operator is about to make again. Left standing it would have the bench
     // naming a server the book is no longer going to.
     step.venue = undefined;
+    // The per-step park bookkeeping (cool-offs, the consecutive-refusal count
+    // Q6 escalates on) is about the attempt that just ended, and the step id
+    // does not change here — so without this a returned run starts its next
+    // life one refusal from `failed`.
+    forgetStepParks(step.id);
   }
   job.finishedAt = undefined;
   job.waitForResolved = undefined;

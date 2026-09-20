@@ -174,6 +174,69 @@ function chainModules() {
   };
 }
 
+// ── PK7 · A return to Pending is a START OVER ───────────────────────────────
+
+/*
+ * THE FINDING (bug hunt round 2). `returnToPending` clears output, metrics,
+ * progress, notes, timestamps and the venue — and left `wasInterrupted`
+ * standing. That flag is not decoration: it is what tells TTS to resume the
+ * cached session instead of rendering from sentence zero. So Owen's *"move it
+ * back to the queue to start over with exact same settings"* re-adopted the
+ * session of the very attempt he had just pulled out of the queue, on whatever
+ * machine he then picked. `lastError` goes with it: a staged run has no
+ * "attempt before this one" to account for.
+ */
+test('PK7: a run sent back to Pending resumes NOTHING', async () => {
+  const prep = fakeModule('prepare', { resource: () => 'cpu' });
+  const tts = fakeModule('tts-conversion', { travels: true, stopIsResumable: true });
+  await fresh('return-to-pending', [prep, tts], {
+    host: routingHost([{ name: 'the-mac', enabled: true }], 'the-mac'),
+    seam: leaseSeam().host,
+    ranked: [{ name: 'the-mac' }],
+  });
+  const job = sendChain('Deathstalker', [
+    { type: 'prepare', label: 'Prepare', config: {}, sourceRef: { kind: 'epub', path: '/a.epub' } },
+    { type: 'tts-conversion', label: 'Narrate', config: {}, parentIndex: 0 },
+  ]);
+  engine.start();
+  await settle();
+  prep.runs[0].resolve({ kind: 'prepared-session', path: '/out/prepared' });
+  await settle();
+  assert.ok(tts.runs[0], 'precondition: the narration is on the card');
+
+  // The exact state the hunt found live: a resumable Stop, which is what sets
+  // the resume flag AND (P6) parks the runner's last words in `lastError`.
+  await engine.cancel({ stepId: stepAt(job.id, 1).id }, 'Foundry stopped this job.',
+    { resumable: true });
+  await settle();
+  assert.strictEqual(stepAt(job.id, 1).wasInterrupted, true,
+    'precondition: a resumable stop is exactly what promises a resume');
+  assert.ok(typeof stepAt(job.id, 1).lastError === 'string',
+    'precondition (P6): and the account of it is kept');
+
+  await engine.returnToPending(job.id);
+
+  assert.strictEqual(jobOf(job.id).pending, true);
+  // The row the finding is about, named before the sweep, so a failure here
+  // reads as itself rather than as whichever step the loop reached first.
+  assert.strictEqual(stepAt(job.id, 1).wasInterrupted, undefined,
+    'THE FINDING: the narration still said "interrupted", so the next press RESUMED the session '
+    + 'of the attempt Owen had just pulled out of the queue to start over');
+  assert.strictEqual(stepAt(job.id, 1).lastError, undefined,
+    'and a staged run has no attempt before this one to account for');
+
+  for (const step of jobOf(job.id).steps) {
+    assert.strictEqual(step.status, 'held', step.label);
+    assert.strictEqual(step.wasInterrupted, undefined,
+      `${step.label}: THE FINDING — a returned run that still says "interrupted" is resumed by `
+      + 'the next press, so "start over" restarts nothing and the old session is re-adopted');
+    assert.strictEqual(step.lastError, undefined,
+      `${step.label}: a staged run has no attempt before this one to account for`);
+    assert.strictEqual(step.error, undefined, step.label);
+    assert.strictEqual(step.venue, undefined, step.label);
+  }
+});
+
 // ── Q2/F6 · Retry revives the whole subtree ─────────────────────────────────
 
 test('Q2/F6: retrying a failed step revives its GRANDCHILDREN too', async () => {
