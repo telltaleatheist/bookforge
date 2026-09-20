@@ -10,10 +10,22 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\<user>\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **cc5fc5b** — *Merge Crucible 1.0.11 (6b7a95d) into fix/cancelled-placement-unloads* — PK12 landed on `main`, carrying `7b98004` (the cancelled-placement fix) and `6b7a95d` (the 1.0.11 adoption) |
+| Source sha | **93010d8** — *Adopt Crucible 1.0.12: a failed load cannot strand an engine nothing can see* |
 | Engine | **NOT VENDORED AND NOT KNOWABLE FROM THIS FILE** — it is a spawned CLI resolved at RUNTIME (`FOUNDRY_BIN`, else `resolveFoundryPath`, `electron/main.ts`), so which build executes is a property of the machine and not of this copy. On a developer's Mac that resolves to Foundry's own checkout at `/Volumes/Callisto/Projects/foundry/dist/foundry-darwin-arm64`, which is whatever was last built there — `foundry 2.0.2 (1c1eaa3)` as of 2026-09-18. **Ask the binary: `$FOUNDRY_BIN --version`.** See *The engine this file named was not the engine that ran* below. |
 | Copied on | 2026-09-19 (five times: 3738c01, 3436fc5, 806d44b, f349771, ca4754c) and 2026-09-20 (98a4344, 9e0b27d, dccc144, 7b98004, cc5fc5b) |
 | Copied by | Mechanical source sync, verified against Foundry `cc5fc5b:app/` (`diff -rq`, clean but for this file, `IPC-CHANNELS.md` and `.gitignore` — see below); details below |
+
+## The `cc5fc5b → 93010d8` re-vendor — four files, the 1.0.12 SDK adoption (2026-09-20, afternoon)
+
+Foundry 93010d8 is cc5fc5b plus `tools/adopt-crucible-release.mjs 1.0.12` (`app/package.json`,
+`app/package-lock.json`, the two `-1.0.12.tgz` tarballs; the 1.0.11 pair deleted — a rename
+arrives from `tar -x` as an ADD, so the stale pair was `git rm`'d by hand, the rule the previous
+entry wrote down). 1.0.12 is Crucible's `Residency._start` teardown net widened to `BaseException`
+(a load that dies with anything but `EngineError` no longer orphans an engine in no slot — S15 in
+BookForge's `docs/BUG-HUNT-2026-09-20.md`) plus `tests/test_misbehaving_clients.py`. Foundry's own
+code unchanged from cc5fc5b (PK12: a cancelled placement releases the load it submitted). Staged
+build verified: `dist/electron/crucible-dispatch.js` carries the five `cancelled placement:` lines
+and `dist/electron/job-queue.js` `materializeAtSpawn`.
 
 ## The `7b98004 → cc5fc5b` re-vendor — the two halves of 1.0.11 meet (2026-09-20)
 
