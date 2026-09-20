@@ -923,6 +923,89 @@ test('THE HAND-OVER NO LONGER FREES THE CARD, and cancelling the book does', asy
   assert.strictEqual(render.runs[1].job.title, 'Wool');
 });
 
+/*
+ * OWEN'S FIVE BOOKS (2026-09-20). He queued five books as "Any" while a sixth
+ * rendered on the Mac, and watched the pre-hold scheduler clean book one on the
+ * PC, hand the PC to book two's Clean during book one's six-second Prepare, and
+ * only then render book one. Ruling 9 says the card is the BOOK's from its first
+ * GPU act to its last, so this pins every gap in that exact shape — the landing,
+ * the Prepare, and the render→align hand-off — and the dual-card half of it: a
+ * second card free means a second book, never a second STEP of the same book's
+ * neighbour on the first.
+ */
+function book(title) {
+  return {
+    title, waitFor: 'any',
+    steps: [
+      { type: 'foundry-job', label: 'Clean', config: {}, sourceRef: { kind: 'epub', path: `/${title}.epub` } },
+      { type: 'foundry-export-landing', label: 'Land', config: {}, parentIndex: 0 },
+      { type: 'prepare', label: 'Prepare', config: {}, parentIndex: 1 },
+      { type: 'tts-conversion', label: 'Narrate', config: {}, parentIndex: 2 },
+      { type: 'align', label: 'Align', config: {}, parentIndex: 3 },
+    ],
+  };
+}
+const runningOf = (mod) => mod.runs.filter((r) => !r.settled).map((r) => r.job.title);
+const stepOf = (jobId, i) => jobOf(jobId).steps[i];
+
+test("OWEN'S FIVE BOOKS: one book holds its card from Clean through Align; the next Clean waits", async () => {
+  const clean = fakeModule('foundry-job');
+  const land = fakeModule('foundry-export-landing', { travels: false, resource: () => 'cpu' });
+  const prep = fakeModule('prepare', { travels: false, resource: () => 'cpu' });
+  const render = fakeModule('tts-conversion');
+  const align = fakeModule('align');
+  const host = fakeHost({
+    ranked: [{ name: 'mac', enabled: true }, { name: 'pc', enabled: true }],
+    defaultWaitFor: 'any',
+    reach: { mac: { reachable: true }, pc: { reachable: true } },
+  });
+  await fresh('five-books', [clean, land, prep, render, align], host, null);
+
+  const shift = enqueueSent({ title: 'Shift', waitFor: 'mac', steps: [
+    { type: 'tts-conversion', label: 'Narrate', config: {}, sourceRef: { kind: 'epub', path: '/shift.epub' } }] });
+  const books = ['Conspiracies', 'People', 'Pursuit', 'Memory', 'Lying'].map((t) => enqueueSent(book(t)));
+  engine.start();
+  await settle();
+
+  assert.deepStrictEqual(runningOf(render), ['Shift'], 'Shift renders on the Mac');
+  assert.deepStrictEqual(runningOf(clean), ['Conspiracies'], 'the first Clean takes the PC');
+  assert.strictEqual(jobOf(books[0].id).waitForResolved, 'pc');
+  assert.strictEqual(stepOf(books[1].id, 0).status, 'queued', 'the second Clean waits: both cards taken');
+
+  clean.runs[0].resolve({ kind: 'epub', path: '/out/conspiracies' });
+  await settle();
+  assert.deepStrictEqual(runningOf(land), ['Conspiracies'], 'the landing runs on the CPU');
+  assert.strictEqual(runningOf(clean).length, 0, 'GAP 1 (landing): no other Clean took the PC');
+
+  land.runs[0].resolve({ kind: 'epub', path: '/out/conspiracies.landed' });
+  await settle();
+  assert.deepStrictEqual(runningOf(prep), ['Conspiracies'], 'Prepare runs on the CPU');
+  assert.strictEqual(runningOf(clean).length, 0, 'GAP 2 (prepare): no other Clean took the PC — this is the hole Owen watched');
+
+  prep.runs[0].resolve({ kind: 'prepared-session', path: '/out/prepared' });
+  await settle();
+  assert.deepStrictEqual(runningOf(render).sort(), ['Conspiracies', 'Shift'], 'the render follows on the PC');
+  assert.strictEqual(runningOf(clean).length, 0);
+
+  render.runs.find((r) => r.job.title === 'Conspiracies').resolve({ kind: 'epub', path: '/out/c.render' });
+  await settle();
+  assert.deepStrictEqual(runningOf(align), ['Conspiracies'], 'Align follows, same card');
+  assert.strictEqual(runningOf(clean).length, 0, 'GAP 3 (render→align): still nobody else');
+
+  align.runs[0].resolve({ kind: 'epub', path: '/out/c.aligned' });
+  await settle();
+  assert.strictEqual(jobOf(books[0].id).steps.every((s) => s.status === 'done'), true, 'book one is finished');
+  assert.deepStrictEqual(runningOf(clean), ['People'], 'ONLY NOW does the second book take the PC');
+  assert.strictEqual(jobOf(books[1].id).waitForResolved, 'pc');
+
+  // The Mac frees up: the THIRD book takes it while the second still holds the PC.
+  render.runs.find((r) => r.job.title === 'Shift').resolve({ kind: 'epub', path: '/out/shift' });
+  await settle();
+  assert.deepStrictEqual(runningOf(clean).sort(), ['People', 'Pursuit'], 'two books, two cards — dual rendering');
+  assert.strictEqual(jobOf(books[2].id).waitForResolved, 'mac');
+  assert.strictEqual(stepOf(books[3].id, 0).status, 'queued', 'the fourth waits for a card');
+});
+
 // ── Runner ──────────────────────────────────────────────────────────────────
 
 (async () => {
