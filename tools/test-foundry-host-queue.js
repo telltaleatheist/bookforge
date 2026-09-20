@@ -198,7 +198,7 @@ async function fresh(name) {
    * The venue DECISION is `tools/test-crucible-text-acts.js`'s subject.
    */
   engine.setCrucibleRoutingHost({
-    routing: () => ({ ranked: [{ name: 'hostq', enabled: true }], serversOnThisMachine: [] }),
+    routing: () => ({ ranked: [{ name: 'hostq', enabled: true }] }),
     defaultWaitFor: () => 'hostq',
     reach: async () => ({ reachable: true }),
   });
@@ -1231,7 +1231,7 @@ test('with no runJob the row FAILS WITH A SENTENCE — it does not fall back to 
    * own setup rather than calling it, so it says so itself.
    */
   engine.setCrucibleRoutingHost({
-    routing: () => ({ ranked: [{ name: 'hostq', enabled: true }], serversOnThisMachine: [] }),
+    routing: () => ({ ranked: [{ name: 'hostq', enabled: true }] }),
     defaultWaitFor: () => 'hostq',
     reach: async () => ({ reachable: true }),
   });

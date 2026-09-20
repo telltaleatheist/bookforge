@@ -49,7 +49,7 @@ import {
 import { JOB_GERUND } from './job-words';
 import {
   LOCAL_WORK_SET, LONGFORM_ALIGN_SET, serverOfCloudLane, slotSetForStep, slotSetOccupancy,
-  slotsOf, thisMachineSetId,
+  slotsOf,
 } from './slot-sets';
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -151,7 +151,7 @@ function occupantWords(
   for (const job of snapshot.jobs) {
     for (const step of job.steps) {
       if (step.status !== 'running' || step.resource !== resource) continue;
-      if (slotSetForStep(job, step, thisMachineSetId(snapshot)) !== setId) continue;
+      if (slotSetForStep(job, step) !== setId) continue;
       words.push(`${JOB_GERUND[step.type]} ${job.title}`);
     }
   }
@@ -252,7 +252,7 @@ export function stillReason(
    * the row, which the `admission` branch below reads, so skipping the test
    * here cannot leave a row with no reason.
    */
-  const setId = slotSetForStep(job, step, thisMachineSetId(snapshot));
+  const setId = slotSetForStep(job, step);
   if (setId !== null) {
     const occupancy = slotSetOccupancy(snapshot).get(setId) ?? { gpu: 0, cpu: 0 };
     const inUse = step.resource === 'gpu' ? occupancy.gpu : occupancy.cpu;
@@ -534,10 +534,6 @@ export function benchLanes(snapshot: QueueSnapshot): BenchLane[] {
    * leave the tray chip with nothing to say about a queue that is stuck).
    */
   let unrouted = unroutedHold(snapshot);
-  // Derived once for the whole sweep: `slotSetForStep` files a non-travelling
-  // GPU step on this machine's own set, so a lane's occupants are found with the
-  // same answer the scheduler allocated with.
-  const onThisMachine = thisMachineSetId(snapshot);
 
   for (const set of snapshot.slotSets) {
     for (const resource of ['gpu', 'cpu'] as const) {
@@ -548,7 +544,7 @@ export function benchLanes(snapshot: QueueSnapshot): BenchLane[] {
       for (const job of snapshot.jobs) {
         for (const step of job.steps) {
           if (step.status !== 'running' || step.resource !== resource) continue;
-          if (slotSetForStep(job, step, onThisMachine) !== set.id) continue;
+          if (slotSetForStep(job, step) !== set.id) continue;
           occupants.push(occupantOf(job, step));
         }
       }
@@ -585,7 +581,7 @@ export function benchLanes(snapshot: QueueSnapshot): BenchLane[] {
            * BookForge has never asked for it. Drawing it on the Mac's lane
            * would be this PC's fan speed labelled as somebody else's.
            */
-          thermal: resource === 'gpu' && isThisMachine(set.id, snapshot)
+          thermal: resource === 'gpu' && isThisMachine(set.id)
             ? (snapshot.gpuThermal ?? null)
             : null,
         });
@@ -748,44 +744,25 @@ export function benchSections(snapshot: QueueSnapshot): BenchSection[] {
 }
 
 /**
- * Does this slot set run on the machine BookForge is on?
+ * Does this slot set run on the card BookForge itself drives?
  *
- * The in-app long-form aligner always does. A SERVER might — one that answers
- * on this machine's loopback is the same card — but the snapshot does not carry
- * which names those are. Since Owen's ruling of 2026-09-15 there is no reserved
- * word to spell either: the question is about ADDRESSES, which only the registry
- * holds (`electron/crucible/servers.ts serversOnThisMachine`). So a server's
- * lane carries no temperature at all, which is the honest answer for every
- * server somewhere else and a missing decoration for one here.
+ * {@link LONGFORM_ALIGN_SET} alone, and that is the whole answer since Owen's
+ * ruling of 2026-09-19: *"Crucible is configured to be system agnostic … it
+ * should effectively be treated the same locally or otherwise."* A Crucible
+ * server is scheduled — and drawn — identically whether it answers on this
+ * machine's loopback or across the tailnet, so no server's lane claims this
+ * PC's thermal reading. A registered engine reports its own card through its
+ * own door or not at all; nvidia-smi run HERE knows nothing about the Mac, and
+ * a reading labelled with somebody else's hardware is a number a person acts
+ * on.
  *
- * CONSEQUENCE OF THE IN-APP ROW BECOMING CONDITIONAL (2026-09-15), and WIDENED
- * when the legacy narrator was deleted the same day: the reading is drawn only
- * while {@link LONGFORM_ALIGN_SET} is on the bench, and that row now appears
- * only while an `epub-align` step is queued. So the card's temperature — a fact
- * about THIS MACHINE, not about that step — is usually not drawn at all. That is
- * a missing decoration rather than a lie, and it is deliberately left that way:
- * what would fix it is the snapshot carrying which server names answer on this
- * machine's loopback — the scheduler already asks that question for its one-card
- * rule — and that is a RULING about what a bench row shows, not a bench change
- * (docs/LEGACY-REMOVAL.md).
+ * So the reading is drawn only while the in-app aligner's row is on the bench,
+ * and that row appears only while an `epub-align` step is charged. The card's
+ * temperature is therefore usually not drawn at all — a missing decoration
+ * rather than a lie, and deliberately left that way.
  */
-function isThisMachine(setId: string, snapshot: QueueSnapshot): boolean {
-  /*
-   * READ OFF THE SET, not guessed from its id. This tested `setId ===
-   * LONGFORM_ALIGN_SET` until 2026-09-15 and ignored the snapshot it was handed
-   * — so the nvidia-smi reading appeared on the long-form aligner's row, which
-   * is usually empty, and NOT on the registered server that actually renders
-   * books on this card (the WSL engine on this PC answers on loopback and is
-   * every bit as local as the aligner).
-   *
-   * The registry is what knows, and `shared/` cannot reach it, so the fact rides
-   * on the set — `SlotSet.onThisMachine`, set where `slotSets` is built from
-   * `serversOnThisMachine()`. One owner, which is also what `gpuHeldElsewhere`
-   * reads, so the bench and the scheduler cannot disagree about which machine a
-   * row is on.
-   */
-  const set = snapshot.slotSets.find((candidate) => candidate.id === setId);
-  return set?.onThisMachine === true;
+function isThisMachine(setId: string): boolean {
+  return setId === LONGFORM_ALIGN_SET;
 }
 
 /**
@@ -805,7 +782,7 @@ function admissionHoldFor(
   for (const job of snapshot.jobs) {
     for (const step of job.steps) {
       if (step.status !== 'queued' || step.resource !== resource) continue;
-      if (slotSetForStep(job, step, thisMachineSetId(snapshot)) !== setId) continue;
+      if (slotSetForStep(job, step) !== setId) continue;
       if (step.progress.admissionHold !== undefined) return step.progress.admissionHold;
     }
   }
@@ -817,7 +794,7 @@ function unroutedHold(snapshot: QueueSnapshot): string | null {
   for (const job of snapshot.jobs) {
     for (const step of job.steps) {
       if (step.status !== 'queued' || step.resource !== 'gpu') continue;
-      if (slotSetForStep(job, step, thisMachineSetId(snapshot)) !== null) continue;
+      if (slotSetForStep(job, step) !== null) continue;
       if (step.progress.admissionHold !== undefined) return step.progress.admissionHold;
     }
   }

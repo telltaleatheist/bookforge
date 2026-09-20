@@ -110,7 +110,7 @@ function fakeModule(type) {
 
 function routingHost(ranked) {
   return {
-    routing: () => ({ ranked: ranked.map((r) => ({ ...r })), serversOnThisMachine: [] }),
+    routing: () => ({ ranked: ranked.map((r) => ({ ...r })) }),
     defaultWaitFor: () => 'mac',
     dial: () => 'any',
     async reach() { return { reachable: true }; },

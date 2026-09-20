@@ -1291,7 +1291,7 @@ async function failedOnAServer(name, extraSteps = []) {
   const asm = fakeModule('reassembly', { produces: 'm4b' });
   await fresh(name, [tts, asm]);
   engine.setCrucibleRoutingHost({
-    routing: () => ({ ranked: [{ name: 'pc', enabled: true }], serversOnThisMachine: [] }),
+    routing: () => ({ ranked: [{ name: 'pc', enabled: true }] }),
     defaultWaitFor: () => 'pc',
     reach: async () => ({ reachable: true }),
   });
@@ -1849,7 +1849,7 @@ async function reasonAfter(name, press) {
    * keeper's subject; which reason the abort carries is.
    */
   engine.setCrucibleRoutingHost({
-    routing: () => ({ ranked: [{ name: 'hostq', enabled: true }], serversOnThisMachine: [] }),
+    routing: () => ({ ranked: [{ name: 'hostq', enabled: true }] }),
     defaultWaitFor: () => 'hostq',
     reach: async () => ({ reachable: true }),
   });

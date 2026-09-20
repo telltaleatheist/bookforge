@@ -72,7 +72,6 @@ import { app } from 'electron';
 import * as fs from 'fs';
 import * as path from 'path';
 import { CrucibleClient } from '@crucible/client';
-import { isLoopbackUrl } from './discovery';
 import { announceCrucibleRecordChanged, forgetCrucibleRoutes } from './routes';
 import { engineClientFor, forgetResolvedEngine } from './engine-resolve';
 import { LOCAL_WORK_SET, LONGFORM_ALIGN_SET } from '../../shared/queue/slot-sets';
@@ -623,19 +622,6 @@ export function removeServer(name: string): CrucibleServerListing {
    */
   announceCrucibleRecordChanged();
   return after;
-}
-
-/**
- * WHICH REGISTERED SERVERS ANSWER ON THIS MACHINE'S LOOPBACK.
- *
- * Not a second kind of server and not a property of the entry — see
- * `discovery.ts`'s {@link isLoopbackUrl} for the one question this answers and
- * the one caller that asks it (the scheduler's one-card interlock, which exists
- * because BookForge still runs the long-form aligner on this machine's GPU
- * itself).
- */
-export function serversOnThisMachine(): string[] {
-  return listServers().filter((entry) => isLoopbackUrl(entry.url)).map((entry) => entry.name);
 }
 
 /**

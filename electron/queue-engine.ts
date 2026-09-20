@@ -107,14 +107,12 @@ import {
   cloudLaneOf,
   isCloudLane,
   longformAlignCharged,
-  thisMachineSetId,
   LONGFORM_ALIGN_SET,
   slotSetForStep,
   serverOfCloudLane,
   slotSetOccupancy,
   slotSets,
   slotsOf,
-  thisMachinesCardHeldBy,
   LOCAL_WORK_SET,
   WAIT_STEP_CAP,
   type EngineUpstreams,
@@ -560,11 +558,6 @@ function currentSlotSets(): SlotSet[] {
   for (const job of jobs) {
     for (const step of job.steps) {
       if (step.status !== 'running') continue;
-      // Unqualified for `longformAlignCharged`'s reason: this list is an INPUT
-      // to `slotSets`, so the sets it would be asked about do not exist yet. A
-      // running aligner therefore names the fallback here even on a machine that
-      // has its own row, and `slotSets` marks that id seen rather than reviving
-      // it as a retiring server.
       const id = slotSetForStep(job, step);
       if (id !== null && !occupied.includes(id)) occupied.push(id);
     }
@@ -574,15 +567,6 @@ function currentSlotSets(): SlotSet[] {
   //: Still derived, for the upstream and role reads below — those are asked of
   //: the servers the queue may actually use.
   let enabledServers: string[] = [];
-  /*
-   * Which of them answer on THIS box. Read from the same `host.routing()` call
-   * as the ranked list so the two cannot come from different moments, and left
-   * EMPTY when that record is unreadable — the catch below draws the sets that
-   * need no record, and a set that cannot prove it is here simply shows no
-   * temperature. The other way round would put this PC's fan speed on the Mac's
-   * row, which is a number somebody would act on.
-   */
-  let serversHere: readonly string[] = [];
   const host = crucibleHost;
   if (host !== null) {
     try {
@@ -592,7 +576,6 @@ function currentSlotSets(): SlotSet[] {
       // interleave, so every disabled row landed after every enabled one.
       rankedServers = record.ranked.map((row) => ({ name: row.name, enabled: row.enabled }));
       enabledServers = rankedServers.filter((row) => row.enabled).map((row) => row.name);
-      serversHere = record.serversOnThisMachine;
     } catch {
       /*
        * A CORRUPT ROUTING RECORD IS REFUSED AT ADMISSION, in `routing.ts`'s own
@@ -650,11 +633,6 @@ function currentSlotSets(): SlotSet[] {
     roles,
     occupied,
     alignerCharged: longformAlignCharged({ jobs }),
-    // Which registered servers answer on THIS box. The bench draws the
-    // nvidia-smi thermal reading on their rows and on no others, and
-    // `gpuHeldElsewhere` reads the same fact — so it is supplied once, here,
-    // rather than re-derived by either.
-    serversOnThisMachine: serversHere,
   });
 }
 
@@ -2388,21 +2366,19 @@ export function setGpuLockProbe(probe: () => string | null): void {
 // record and a real `ping`; the keeper drives every branch with a scripted
 // record and a scripted prober.
 
-/** What the scheduler needs to know about this machine's Crucible servers. */
+/** What the scheduler needs to know about the registered Crucible servers. */
 export interface CrucibleRoutingHost {
   /**
-   * Every server in rank order (disabled ones included), and which of those
-   * ANSWER ON THIS MACHINE'S LOOPBACK.
+   * Every server in rank order, disabled ones included.
    *
-   * The second half is not a kind of server — since Owen's ruling of
-   * 2026-09-15 there is only one kind, and this engine cannot tell them apart
-   * by anything but the address. It is asked for rather than worked out here
-   * because the registry is the thing with the addresses and this file has no
-   * registry in it. It decides one thing: whether this machine's GPU lock and
-   * arbiter have anything to say about a step, and whether the one-card rule
-   * below applies. Work bound for the Mac must not wait on either.
+   * ONE LIST AND ONE KIND OF SERVER. It carried a second half — which of these
+   * answer on this machine's loopback — until Owen's ruling of 2026-09-19:
+   * *"Crucible is configured to be system agnostic … it should effectively be
+   * treated the same locally or otherwise."* Nothing in this scheduler asks
+   * where a registered server is any more, so there is nothing for the record
+   * to say about it.
    */
-  routing(): { ranked: WaitForServer[]; serversOnThisMachine: readonly string[] };
+  routing(): { ranked: WaitForServer[] };
   /**
    * What a NEW row's `waitFor` is written as — the top-ranked server's NAME, or
    * `any` (crucible `docs/PHASE7-LANES.md` §4.2.1a).
@@ -2857,12 +2833,6 @@ type CrucibleAdmission =
   | {
       ok: true;
       venue: string;
-      /**
-       * The work lands on THIS machine's card — the local Crucible, or the
-       * legacy narrator spawn. It is what decides whether the external GPU lock
-       * and the arbiter are asked about this step at all.
-       */
-      onThisMachine: boolean;
     }
   | { ok: false; reason: string };
 
@@ -2878,7 +2848,7 @@ function crucibleAdmission(job: QueueJob): CrucibleAdmission {
     };
   }
 
-  let record: { ranked: WaitForServer[]; serversOnThisMachine: readonly string[] };
+  let record: { ranked: WaitForServer[] };
   try {
     record = host.routing();
   } catch (err) {
@@ -2901,11 +2871,7 @@ function crucibleAdmission(job: QueueJob): CrucibleAdmission {
 
   switch (verdict.kind) {
     case 'run':
-      return {
-        ok: true,
-        venue: verdict.server,
-        onThisMachine: record.serversOnThisMachine.includes(verdict.server),
-      };
+      return { ok: true, venue: verdict.server };
     case 'ask':
       askReach(verdict.server);
       return { ok: false, reason: verdict.sentence };
@@ -2929,10 +2895,9 @@ function engineLaneId(server: string): string {
   if (crucibleHost === null) return server;
   const cloudServer = serverOfCloudLane(server);
   const named = cloudServer === null ? server : cloudServer;
-  const onThisMachine = thisMachineSetId({ slotSets: currentSlotSets() });
   const occupied = jobs.flatMap((job) => job.steps
     .filter((step) => step.status === 'running')
-    .map((step) => slotSetForStep(job, step, onThisMachine))
+    .map((step) => slotSetForStep(job, step))
     .filter((id): id is string => id !== null)
     .map((id) => serverOfCloudLane(id) ?? id));
   const lanes = engineLanes(crucibleHost.routing().ranked, undefined, occupied);
@@ -2970,7 +2935,7 @@ function gpuAdmission(): { ok: true } | { ok: false; reason: string } {
 //
 //   the server is free (polled)  →  the LOCAL gates  →  the lease  →  the slot
 //
-// The local gates — the venue's own slot, this machine's one-card rule, the
+// The local gates — the venue's own slot, and for this app's OWN GPU work the
 // external training lock and the GPU arbiter — are asked BEFORE the reserve so
 // that a lease is never taken for a row something here was going to stop
 // anyway; a reserved lease held while a training chain finishes is somebody
@@ -3224,11 +3189,7 @@ function clearAdmissionHold(step: QueueStep): void {
  * polled, never a model of a server's capacity (see `slot-sets.ts`).
  */
 function currentOccupancy(): Map<string, SetOccupancy> {
-  // THE SETS TRAVEL WITH THE JOBS (2026-09-18). A non-travelling GPU step is
-  // filed on this machine's own set when there is one, and `slotSetOccupancy`
-  // derives which that is — so counting without them would charge the fallback
-  // row and leave this machine's GPU slots reading free under a live alignment.
-  return slotSetOccupancy({ jobs, slotSets: currentSlotSets() });
+  return slotSetOccupancy({ jobs });
 }
 
 /**
@@ -3263,25 +3224,6 @@ function gpuSlotHolder(setId: string, sets: readonly SlotSet[]): string | null {
   // Non-null by construction: `occupantPhrase` reads the same running steps
   // `inUse` counted, so a positive count always has an occupant to name.
   return occupantPhrase(setId, 'gpu');
-}
-
-/**
- * WHICH REGISTERED SERVERS ANSWER ON THIS MACHINE'S LOOPBACK, for the one-card
- * rule below. Never worked out here — this file has no registry in it, so the
- * host is asked (crucible `docs/ARCHITECTURE.md` R1).
- */
-function serversOnThisMachine(): readonly string[] {
-  const host = crucibleHost;
-  if (host === null) return [];
-  try {
-    return host.routing().serversOnThisMachine;
-  } catch {
-    // The record is unreadable; admission has already refused every travelling
-    // row in `routing.ts`'s own words. Naming no server here leaves the
-    // one-card rule with the in-app aligner alone, which is the set the only
-    // work that can still start belongs to.
-    return [];
-  }
 }
 
 /**
@@ -3320,11 +3262,10 @@ function assignRunVenue(job: QueueJob, step: QueueStep, server: string): void {
  * *"BookForge is already narrating Mistborn there."*
  */
 function occupantPhrase(setId: string, resource: StepResource): string | null {
-  const onThisMachine = thisMachineSetId({ slotSets: currentSlotSets() });
   for (const job of jobs) {
     for (const step of job.steps) {
       if (step.status !== 'running' || step.resource !== resource) continue;
-      if (slotSetForStep(job, step, onThisMachine) !== setId) continue;
+      if (slotSetForStep(job, step) !== setId) continue;
       return `${JOB_GERUND[step.type].toLowerCase()} ${job.title}`;
     }
   }
@@ -3377,14 +3318,6 @@ export function pump(): void {
    * row in turn.
    */
   const sets = currentSlotSets();
-  /*
-   * WHICH SET IS THIS MACHINE, derived once for the whole pass (2026-09-18).
-   * `slotSetForStep` files a non-travelling GPU step — the long-form aligner —
-   * into this machine's own GPU row rather than a third one of its own, so the
-   * ALLOCATOR has to ask with the same fact the bench draws with, or it would
-   * charge a set nobody is looking at.
-   */
-  const onThisMachine = thisMachineSetId({ slotSets: sets });
 
   // A `waiting` step whose parent has landed becomes runnable. Done here rather
   // than at completion so there is ONE place that decides what is runnable.
@@ -3418,7 +3351,7 @@ export function pump(): void {
          * a `cpu` step is work BookForge does itself and a `wait` step is on no
          * bench at all (`shared/queue/slot-sets.ts`).
          */
-        const setId = slotSetForStep(job, step, onThisMachine);
+        const setId = slotSetForStep(job, step);
         const cap = setId === null ? WAIT_STEP_CAP : slotsOf(sets, setId, step.resource);
         if (slotsInUse(setId ?? LOCAL_WORK_SET, step.resource) >= cap) {
           // The pool being full IS this row's reason, and it outranks whatever
@@ -3444,21 +3377,12 @@ export function pump(): void {
          *
          * The SET is where the slot question is answered, and `decideWaitFor`
          * answers it for a server (it owns the sentence that names what
-         * BookForge already has there). Two things it cannot answer are handled
-         * below: the legacy spawn's own slot, and the fact that this machine has
-         * one card behind two venues.
-         *
-         * RULING OWED, A4: for work landing HERE the queue still asks
-         * `external-gpu-job.lock` and the GPU arbiter after Crucible admission.
-         * With a local Crucible its 409 and its accelerator probe are the truth
-         * about the card, and the lock file is how a TRAINING CHAIN — not a
-         * Crucible client — says the card is taken. Whether the fine-tune should
-         * instead take a Crucible lease is Owen's
-         * (`docs/CRUCIBLE_ROLLOUT_PLAN.md` §0b A4).
+         * BookForge already has there). The one thing it cannot answer is the
+         * in-app aligner's own slot, handled below.
          */
         const routed = step.travels === true
           ? crucibleAdmission(job)
-          : { ok: true as const, venue: LONGFORM_ALIGN_SET, onThisMachine: true };
+          : { ok: true as const, venue: LONGFORM_ALIGN_SET };
         if (!routed.ok) {
           admissionBlocked = true;
           if (step.progress.admissionHold !== routed.reason) {
@@ -3633,80 +3557,80 @@ export function pump(): void {
         if (reservingElsewhereAt(routed.venue, step.id)) continue;
 
         /*
-         * THIS MACHINE HAS ONE CARD AND MORE THAN ONE VENUE OVER IT — the
-         * in-app long-form aligner, and any Crucible that answers on this
-         * machine's loopback. Separate sets, so nothing above would stop both
-         * starting at once; the single global `gpu: 1` used to prevent that by
-         * accident, and it is stated here now rather than rediscovered on a card
-         * running two models.
+         * ── THIS APP'S OWN CARD, AND ONLY THIS APP'S OWN WORK ASKS ABOUT IT ──
+         *
+         * Owen, 2026-09-19: *"Crucible is configured to be system agnostic.
+         * Doesn't matter if it's on this system or on a rented DigitalOcean GPU,
+         * it should effectively be treated the same locally or otherwise. Like
+         * Ollama — the user connects to it the same way whether local or
+         * remote."* So EVERY Crucible venue takes the same road from here: the
+         * venue's slot, the lease, the launch. A server that answers on
+         * loopback is scheduled exactly like the Mac across the tailnet, and the
+         * queue no longer has a notion of one being "here" at all.
+         *
+         * `external-gpu-job.lock` and the GPU arbiter are about the card THIS
+         * PROCESS drives, so they are asked for the work this process runs
+         * itself — a non-travelling GPU step, which is {@link LONGFORM_ALIGN_SET}
+         * by construction two screens up — and for nothing else.
+         *
+         * THE ONE CONSEQUENCE, stated so nobody rediscovers it: a training
+         * chain holding `external-gpu-job.lock` on this box no longer holds
+         * back a Crucible render placed on a Crucible that is also on this box,
+         * and (`parallel-tts-bridge.ts`, `acquireGpuForJob`) the resident Ollama
+         * models are no longer evicted before one. Crucible owns its card's
+         * memory — it has its own lease and its own accelerator probe, and that
+         * is the truth about the card it is on, wherever that is.
+         *
+         * GONE WITH THE SAME RULING: the one-card interlock that used to stand
+         * here (`thisMachinesCardHeldBy`), which stopped the in-app aligner and
+         * a loopback Crucible starting together. Two venues over one card is
+         * now Crucible's own business, the same as it is for two venues over the
+         * Mac's card.
          */
-        const alsoHere = thisMachinesCardHeldBy({
-          venue,
-          serversOnThisMachine: serversOnThisMachine(),
-          occupancy: currentOccupancy(),
-        });
-        const alsoWhat = alsoHere === null ? null : occupantPhrase(alsoHere, 'gpu');
-        if (alsoHere !== null && alsoWhat !== null) {
-          holdStep(step, `Waiting for this machine's graphics card: ${alsoHere} is already `
-            + `${alsoWhat} on it. One card, one job — this run starts as soon as that `
-            + 'finishes.');
-          admissionBlocked = true;
-          continue;
-        }
-
-        if (!routed.onThisMachine) {
-          /*
-           * THE LEASE, AND THEN THE CARD. Anything but `go` leaves the row in
-           * the queue — a reserve is in flight, or one came back refused and
-           * the row is parked on its sentence. See `reserveBeforeLaunch`.
-           *
-           * ASKED BEFORE THE HOLD IS CLEARED, and the order is load-bearing:
-           * a reserve refused for a REASON writes its sentence onto
-           * `admissionHold`, and clearing first would wipe it on the very next
-           * pass — leaving a row parked with nothing on it saying why, which
-           * is the one thing every sentence in this file exists to prevent.
-           */
-          const reserved = reserveBeforeLaunch(job, step, routed.venue);
-          if (reserved !== 'go') {
-            if (reserved === 'recheck') admissionBlocked = true;
+        if (step.travels !== true) {
+          const admission = gpuAdmission();
+          if (!admission.ok) {
+            // Said on the row, not swallowed. A queue that appears to be doing
+            // nothing is indistinguishable from a broken one.
+            //
+            // Written to BOTH fields: `message` because every existing readout
+            // shows it, and `admissionHold` because a surface has to be able to
+            // ask "is this row being held off the card?" without guessing at
+            // prose. See StepProgress.admissionHold.
+            admissionBlocked = true;
+            if (step.progress.admissionHold !== admission.reason) {
+              step.progress = {
+                ...step.progress,
+                message: admission.reason,
+                admissionHold: admission.reason,
+              };
+              touchProgress();
+            }
             continue;
           }
-          clearAdmissionHold(step);
-          assignRunVenue(job, step, routed.venue);
-          void launch(job, step);
+        }
+
+        /*
+         * THE LEASE, AND THEN THE CARD. Anything but `go` leaves the row in the
+         * queue — a reserve is in flight, or one came back refused and the row
+         * is parked on its sentence. See `reserveBeforeLaunch`.
+         *
+         * ASKED BEFORE THE HOLD IS CLEARED, and the order is load-bearing: a
+         * reserve refused for a REASON writes its sentence onto
+         * `admissionHold`, and clearing first would wipe it on the very next
+         * pass — leaving a row parked with nothing on it saying why, which is
+         * the one thing every sentence in this file exists to prevent.
+         *
+         * AND AFTER the local gate above, never before it: a lease taken and
+         * then held while a training chain finishes on this card is somebody
+         * else's machine claimed for nothing.
+         */
+        const reserved = reserveBeforeLaunch(job, step, routed.venue);
+        if (reserved !== 'go') {
+          if (reserved === 'recheck') admissionBlocked = true;
           continue;
         }
-        const admission = gpuAdmission();
-        if (!admission.ok) {
-          // Said on the row, not swallowed. A queue that appears to be doing
-          // nothing is indistinguishable from a broken one.
-          //
-          // Written to BOTH fields: `message` because every existing readout
-          // shows it, and `admissionHold` because a surface has to be able to
-          // ask "is this row being held off the card?" without guessing at
-          // prose. See StepProgress.admissionHold.
-          admissionBlocked = true;
-          if (step.progress.admissionHold !== admission.reason) {
-            step.progress = {
-              ...step.progress,
-              message: admission.reason,
-              admissionHold: admission.reason,
-            };
-            touchProgress();
-          }
-          continue;
-        }
-        // THE LOCAL GATES HAVE ALL PASSED, so the lease is worth taking: a
-        // reserve fired before them could be held while a training chain
-        // finishes on this card, which is somebody else's machine claimed for
-        // nothing. See `reserveBeforeLaunch`.
-        const reservedHere = reserveBeforeLaunch(job, step, routed.venue);
-        if (reservedHere !== 'go') {
-          if (reservedHere === 'recheck') admissionBlocked = true;
-          continue;
-        }
-        // Admission passed and a slot is free, so this step launches on the next
-        // line and `launch` blanks its progress wholesale. Nothing to clear.
+        clearAdmissionHold(step);
         assignRunVenue(job, step, routed.venue);
       }
       void launch(job, step);

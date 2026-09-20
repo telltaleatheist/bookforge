@@ -30,7 +30,6 @@ import { startGpuThermalSampler } from './gpu-thermal-sampler';
 import * as engine from './queue-engine';
 import { registerAllStepModules } from './queue-steps';
 import type { AppendStepSpec, JobSpec } from './queue-engine';
-import { serversOnThisMachine } from './crucible/servers';
 import { readRouting } from './crucible/routing';
 import { activityOf, pingServer } from './crucible/probe';
 import { crucibleLeaseSeam } from './crucible/lease';
@@ -50,8 +49,7 @@ let registered = false;
  *
  * ── What was here ───────────────────────────────────────────────────────────
  *
- * A ten-second memo over `readRouting()` + `serversOnThisMachine()`, and a
- * second one over the GPU dial. Until 2026-09-15 the first was not an
+ * A ten-second memo over `readRouting()` and a second one over the GPU dial. Until 2026-09-15 the first was not an
  * optimisation at all but a necessity: `readRouting()` resolved the reserved
  * name `local` through a SYNCHRONOUS `wsl.exe` spawn of a few hundred
  * milliseconds. That name is gone and so is the spawn. What was left was a
@@ -88,16 +86,7 @@ function crucibleRoutingHost(): engine.CrucibleRoutingHost {
         name: row.name,
         enabled: row.enabled,
       }));
-      return {
-        ranked,
-        /*
-         * NOT A KIND OF SERVER — the one question about "here" that survived
-         * the ruling, asked of the ADDRESS and answered for the scheduler's
-         * one-card rule alone. `electron/crucible/discovery.ts`'s
-         * `isLoopbackUrl` says what that reading promises and what it does not.
-         */
-        serversOnThisMachine: serversOnThisMachine(),
-      };
+      return { ranked };
     },
     defaultWaitFor() {
       const view = readRouting();
