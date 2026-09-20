@@ -1480,13 +1480,17 @@ class EngineTest(V3TestCase):
         here = os.path.dirname(v3_served.__file__)
         #: The methods that must end up stripping. `render_many` is the door for
         #: both engines now; the others are the paths that do not go through it.
-        wanted = {'v3_engine.py': {'render_audio', 'render_many'},
-                  'mlx_backend.py': {'render_audio', 'render_many',
-                                     'generate_batch_stream'}}
+        wanted = {'v3_engine.py': {'render_audio', 'render_audio_measured',
+                                   'render_many'},
+                  'mlx_backend.py': {'render_audio', 'render_audio_measured',
+                                     'render_many', 'generate_batch_stream'}}
         #: A method that reaches the door instead of stripping itself. Kept as a
         #: NAMED set rather than "any call to anything": delegating to something
         #: this test does not also check would be how the guarantee goes quiet.
-        delegates_to = {'render_many'}
+        #: `render_audio` is the one-value face of `render_audio_measured`
+        #: on both engines since 2026-09-19 (the measurement is taken where the
+        #: frame cap is known), so it reaches the strip through that.
+        delegates_to = {'render_many', 'render_audio_measured'}
         for filename, methods in wanted.items():
             with open(os.path.join(here, filename), encoding='utf-8') as handle:
                 tree = ast.parse(handle.read())
@@ -2456,19 +2460,25 @@ class VoiceTuningTest(V3TestCase):
         self.assertEqual(budget.max_chars(), 420)
         self.assertEqual(budget.max_chars_source(), 'catalog')
 
-    def test_a_checkpoint_voice_without_maxChars_is_refused_at_load(self):
-        """A fine-tune's safe chunk length is a measured property of THAT
-        model; the base placeholder is not it."""
+    def test_a_checkpoint_voice_without_maxChars_LOADS(self):
+        """RETIRED REFUSAL (Owen, 2026-09-19). A fine-tune's safe chunk
+        length is still a measured property of THAT model - what changed is
+        that it is the CLIENT's number, and the screening render of an
+        unmeasured checkpoint is the render that produces it. Refusing the
+        load made the first render of every new checkpoint impossible.
+
+        The placeholder is not passed off as the model's: `max_chars_source`
+        says 'placeholder', and that is what the prep log and the manifest
+        carry."""
         from narrator.engine.higgs.config import load_voices
         path = self._voices_file({'ds-ft': {
             'kind': 'checkpoint', 'checkpointDir': '/models/ds-merged',
             'clips': [{'path': self.clip, 'transcript': X2_TEXT,
                        'seconds': 27.42}]}})
-        with self.assertRaises(ValueError) as caught:
-            load_voices(path, placeholder_max_chars=600)
-        message = str(caught.exception)
-        self.assertIn('maxChars', message)
-        self.assertIn('refusing to guess', message.lower())
+        voice = load_voices(path, placeholder_max_chars=600)['ds-ft']
+        self.assertEqual(voice.max_chars, 600)
+        self.assertEqual(voice.max_chars_source, 'placeholder')
+        self.assertEqual(voice.checkpoint_dir, '/models/ds-merged')
 
     def test_a_checkpoint_voice_with_maxChars_loads(self):
         from narrator.engine.higgs.config import load_voice
@@ -2481,15 +2491,19 @@ class VoiceTuningTest(V3TestCase):
         self.assertEqual(voice.max_chars, 500)
         self.assertEqual(voice.checkpoint_dir, '/models/ds-merged')
 
-    def test_the_budget_refuses_a_checkpoint_voice_assembled_in_code(self):
+    def test_the_budget_answers_for_a_checkpoint_voice_assembled_in_code(self):
+        """The belt retires with the load gate it belted (2026-09-19): a
+        fine-tune with no declared cap packs at the engine placeholder and
+        `max_chars_source` says so. Nothing narrator does per chunk reads this
+        number - the frame ceiling is `cap_frames(text)` over the text it was
+        sent - so there is nothing left for the refusal to protect."""
         bare = ClipsVoice(clips=(ReferenceClip(self.clip, X2_TEXT, seconds=14.0),),
                           name='ds-ft',
                           checkpoint_dir=self.merged_checkpoint())
-        budget = HiggsV3Budget(HiggsV3Config(voice=bare,
-                                             base_url=self.server.base_url))
-        with self.assertRaises(ValueError) as caught:
-            budget.max_chars()
-        self.assertIn('maxChars', str(caught.exception))
+        config = HiggsV3Config(voice=bare, base_url=self.server.base_url)
+        budget = HiggsV3Budget(config)
+        self.assertEqual(budget.max_chars(), int(config.max_chars))
+        self.assertEqual(budget.max_chars_source(), 'placeholder')
 
 
 class SeedRuleTest(V3TestCase):
@@ -3152,11 +3166,13 @@ class VoiceDocumentShapesTest(V3TestCase):
         self.assertNotIn('references', body,
                          'a fine-tune is prompted with text alone')
 
-    def test_a_checkpoint_still_needs_its_maxChars(self):
-        with self.assertRaises(ValueError) as caught:
-            self._load({'ds-ft': {'kind': 'checkpoint',
-                                  'checkpointDir': '/models/ds-merged'}})
-        self.assertIn('maxChars', str(caught.exception))
+    def test_a_checkpoint_no_longer_needs_its_maxChars(self):
+        """Owen, 2026-09-19: `maxChars` is the CLIENT's packing size, so a
+        checkpoint that declares none loads and packs at the placeholder."""
+        voice = self._load({'ds-ft': {'kind': 'checkpoint',
+                                      'checkpointDir': '/models/ds-merged'}})['ds-ft']
+        self.assertEqual(voice.checkpoint_dir, '/models/ds-merged')
+        self.assertEqual(voice.max_chars_source, 'placeholder')
 
     def test_a_checkpoint_kind_without_a_directory_is_refused(self):
         with self.assertRaises(ValueError) as caught:
@@ -3245,6 +3261,14 @@ class ConvertManyTest(unittest.TestCase):
                                      min_chars_per_sec=14.5)
         eng.voice_ref = SimpleNamespace()
         eng.render_audio = render_audio
+        # THE DRIVER CALLS THE MEASURED DOOR. `render_audio` is its one-value
+        # face, so a stub that replaced only that would leave the real one
+        # talking to a server these tests do not have. The measure is None -
+        # nothing here asserts `capped`, and inventing one would be a fake
+        # measurement, which is worse than no measurement.
+        eng.render_audio_measured = (
+            lambda text, seed=None, index=0, **kw:
+            (render_audio(text, seed=seed, index=index, **kw), None))
         eng.written = []
         eng._write_sentence = lambda index, audio: eng.written.append(index) or True
         return eng
@@ -3301,6 +3325,62 @@ class ConvertManyTest(unittest.TestCase):
         self.assertEqual(sorted(i for i, _ in done), list(range(8)))
         self.assertEqual(in_flight, [])
         self.assertEqual(sorted(eng.written), list(range(8)), 'every chunk written once')
+
+    def test_a_job_may_render_NARROWER_than_the_serving_width(self):
+        """`render_many(width=)`: the job's own ceiling on rows in flight.
+
+        MEASURED, 2026-09-19: a server started 16 wide at SGLang
+        `mem_fraction_static` 0.60 summed to 24.2 GB on a 24 GB card and WDDM
+        paged the excess to host RAM - 4 to 10 times slower, with no error and
+        no log line anywhere. The fine-tuning ladder renders 4 wide on voices
+        whose manifest says 16, and restarting the server to say so is not
+        something a job can do. So the width is a per-CALL ceiling under the
+        width the server was started with, and nothing here reconfigures
+        anything.
+
+        The engine below is started 6 wide and asked for 2: what must hold is
+        that only 2 rows are ever pulled and rendered at once.
+        """
+        lock = threading.Lock()
+        active, peak = [0], [0]
+        release = threading.Event()
+
+        def render_audio(text, seed=None, index=0, sampling=None, take=0):
+            with lock:
+                active[0] += 1
+                peak[0] = max(peak[0], active[0])
+            release.wait(5)
+            with lock:
+                active[0] -= 1
+            return self.audio(len(text))
+
+        eng = self.engine(6, render_audio)
+        out = []
+
+        def drain():
+            out.extend(eng.render_many(
+                ((i, self.TEXT) for i in range(6)),
+                tracker=truncation.tracker_for(truncation.engine_band(20.0, 14.5)),
+                width=2))
+
+        t = threading.Thread(target=drain)
+        t.start()
+        tick = threading.Event()
+        for _ in range(100):
+            if peak[0] >= 2:
+                break
+            tick.wait(0.02)
+        tick.wait(0.15)          # long enough for a third to have started
+        self.assertEqual(peak[0], 2,
+                         'the call asked for width 2; a wider engine must not '
+                         'put a third row in flight')
+        release.set()
+        t.join(10)
+        self.assertFalse(t.is_alive())
+        self.assertEqual(sorted(i for i, _a, _v, _m in out), list(range(6)),
+                         'every row still renders - the width is a ceiling on '
+                         'what is in flight, not on what is rendered')
+        self.assertEqual(peak[0], 2)
 
     def test_a_reroll_re_enters_the_pool_instead_of_holding_its_slot(self):
         """THE POINT OF THE CHANGE. Chunk 0's take 0 is off-length, so the guard
@@ -3390,3 +3470,57 @@ class ConvertManyTest(unittest.TestCase):
         self.assertEqual(len(pulled), seen, 'nothing is pulled after the exception')
         self.assertIn(1, in_flight)
 
+
+class ContextLengthNamesTest(unittest.TestCase):
+    """ONE external name for the context window, translated per stack.
+
+    Crucible sets `HIGGS_CONTEXT_LENGTH` per voice in the spawn environment for
+    every backend (a voice change is a full engine restart, so per-voice IS
+    per-spawn). vllm-omni's launcher has always read `HIGGS_MAX_MODEL_LEN`
+    (`serve_higgs_v3.sh:123` -> `--max-model-len`), and renaming it would break
+    every launch line and campaign script that sets it - so narrator keeps both
+    and refuses a disagreement rather than picking a winner nobody can see.
+    """
+
+    def setUp(self):
+        for name in ('HIGGS_CONTEXT_LENGTH', 'HIGGS_MAX_MODEL_LEN'):
+            os.environ.pop(name, None)
+            self.addCleanup(os.environ.pop, name, None)
+
+    def test_unset_is_the_stacks_own_window(self):
+        self.assertEqual(v3_served.context_tokens(),
+                         v3_served.DEFAULT_CONTEXT_TOKENS)
+
+    def test_the_external_name_alone_decides_it(self):
+        os.environ['HIGGS_CONTEXT_LENGTH'] = '4096'
+        self.assertEqual(v3_served.context_tokens(), 4096)
+
+    def test_the_launchers_own_name_alone_still_decides_it(self):
+        os.environ['HIGGS_MAX_MODEL_LEN'] = '16384'
+        self.assertEqual(v3_served.context_tokens(), 16384)
+
+    def test_the_two_names_AGREEING_is_fine(self):
+        os.environ['HIGGS_CONTEXT_LENGTH'] = '4096'
+        os.environ['HIGGS_MAX_MODEL_LEN'] = '4096'
+        self.assertEqual(v3_served.context_tokens(), 4096)
+
+    def test_the_two_names_DISAGREEING_is_refused_by_name(self):
+        """The loser would be invisible: the server comes up clean either way
+        and the fault shows as an HTTP 500 hundreds of chunks later."""
+        os.environ['HIGGS_CONTEXT_LENGTH'] = '8192'
+        os.environ['HIGGS_MAX_MODEL_LEN'] = '4096'
+        with self.assertRaises(ValueError) as caught:
+            v3_served.context_tokens()
+        message = str(caught.exception)
+        self.assertIn('HIGGS_CONTEXT_LENGTH', message)
+        self.assertIn('HIGGS_MAX_MODEL_LEN', message)
+
+    def test_the_launch_exports_the_window_it_is_starting_with(self):
+        os.environ['HIGGS_CONTEXT_LENGTH'] = '4096'
+        backend = HiggsV3ServedBackend.__new__(HiggsV3ServedBackend)
+        backend.base_url = 'http://127.0.0.1:8095'
+        backend.concurrency = 4
+        backend.checkpoint_dir = None
+        backend.sentinel_report = '/tmp/report.json'
+        backend.owner_id = lambda: 'keeper'
+        self.assertIn('HIGGS_MAX_MODEL_LEN=4096', backend._launch_exports())

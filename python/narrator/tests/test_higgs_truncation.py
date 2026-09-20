@@ -275,19 +275,60 @@ class VoiceBandTest(unittest.TestCase):
             json.dump({'v': {'kind': 'default', **entry}}, h)
         return load_voices(p)['v']
 
-    def test_a_band_in_the_document_lands_on_the_voice_and_seeds_the_tracker(self):
+    def test_a_band_in_the_document_lands_on_the_voice_for_the_CLIENT(self):
+        """The document's three keys still reach the voice - and NOTHING in
+        narrator builds a tracker from them (Owen, 2026-09-19).
+
+        They are parsed and checked because they are what the CLIENT reads off
+        the voice row and sends back as a batch's `band`; the band has one
+        owner and it is the caller. `tracker_for` takes the band explicitly,
+        so the voice object is not even an argument it would accept."""
         v = self._load({'maxCharsPerSec': 21.7, 'minCharsPerSec': 13.6, 'paceCharsPerSec': 17.2})
         self.assertEqual((v.max_chars_per_sec, v.min_chars_per_sec, v.pace_chars_per_sec),
                          (21.7, 13.6, 17.2))
-        tracker = truncation.tracker_for(v, 20.0, 14.5)
-        self.assertEqual(tracker.seed_pace, 17.2)
-        self.assertEqual(tracker.band(), {'max_chars_per_sec': 21.7, 'min_chars_per_sec': 13.6})
         bare = self._load({})
         self.assertIsNone(bare.max_chars_per_sec)
         self.assertIsNone(bare.pace_chars_per_sec)
-        default = truncation.tracker_for(bare, 20.0, 14.5)
-        self.assertEqual(default.band(), {'max_chars_per_sec': 20.0, 'min_chars_per_sec': 14.5})
-        self.assertAlmostEqual(default.seed_pace, truncation.expected_chars_per_sec(20.0, 14.5))
+        for voice in (v, bare):
+            with self.subTest(voice=voice.name):
+                with self.assertRaises(ValueError) as caught:
+                    truncation.tracker_for(voice, 'VoiceBandTest')
+                self.assertIn('must be an object', str(caught.exception))
+
+    def test_the_tracker_is_built_from_the_band_it_is_GIVEN(self):
+        """The band is an argument, and the only one. A tracker seeded from a
+        band that belongs to a different voice - or to the engine, when the
+        voice had none - is the defect this signature exists to make
+        impossible: 15.0 against a 17.2 chars/s book re-rolled healthy chunks
+        to MAX_DEPTH."""
+        tracker = truncation.tracker_for(
+            {'paceCharsPerSec': 17.2, 'maxCharsPerSec': 21.7,
+             'minCharsPerSec': 13.6})
+        self.assertEqual(tracker.seed_pace, 17.2)
+        self.assertEqual(tracker.band(),
+                         {'max_chars_per_sec': 21.7, 'min_chars_per_sec': 13.6})
+        engine = truncation.tracker_for(truncation.engine_band(20.0, 14.5))
+        self.assertEqual(engine.band(),
+                         {'max_chars_per_sec': 20.0, 'min_chars_per_sec': 14.5})
+        self.assertAlmostEqual(engine.seed_pace,
+                               truncation.expected_chars_per_sec(20.0, 14.5))
+
+    def test_a_band_off_the_wire_is_refused_by_name(self):
+        """`parse_band` is the one door, so the batch door and the engines
+        cannot disagree about what a band is."""
+        good = {'paceCharsPerSec': 17.2, 'maxCharsPerSec': 21.7,
+                'minCharsPerSec': 13.6}
+        for band, why in (
+                ({k: v for k, v in good.items() if k != 'paceCharsPerSec'},
+                 'paceCharsPerSec'),
+                ({**good, 'minCharsPerSec': 0}, 'positive'),
+                ({**good, 'maxCharsPerSec': True}, 'positive'),
+                ({**good, 'paceCharsPerSec': 30.0}, 'min < pace < max'),
+                ('17.2', 'must be an object')):
+            with self.subTest(band=band):
+                with self.assertRaises(ValueError) as caught:
+                    truncation.parse_band(band, 'where')
+                self.assertIn(why, str(caught.exception))
 
     def test_a_partial_band_or_an_inverted_one_is_refused_by_name(self):
         for entry, why in (({'maxCharsPerSec': 21.7}, 'all three or none'),

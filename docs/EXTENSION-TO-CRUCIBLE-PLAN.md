@@ -120,7 +120,11 @@ engine's (per-voice config, PHASE3 §3), and a third rung, if one is ever measur
 default, take 1 = the one measured alternative (0.7, with its written reason) — and the
 division-of-knowledge ruling says tuning is engine config, never a wire field. Correct
 Sentences then asks for `take: 1..N` across its N candidates (N ≤ the ladder's length,
-`unknown_take` past it), and the audition list says which rung each take came from. **The one
+refused `crucible_reroll_ladder_too_short` past it — BY THIS APP, since 2026-09-19: crucible
+retired `unknown_take` and now renders a rung above the ladder at the voice's OWN sampling in
+that rung's seed lane, which is what a screening sweep wants and what an audition must never be
+given, because it is the settings the rejected reading already used), and the audition list says
+which rung each take came from. **The one
 thing owed before that works (ASSIGNED 2026-09-14 evening, Opus agent): narrator's sampling channel on `generate`/`generate_batch`**
 (PHASE3 §4: "a take above 0 on a voice that declares a ladder is refused `sampling_not_wired`"
 until narrator carries it) — that is BookForge's `python/narrator`, not Crucible. Then

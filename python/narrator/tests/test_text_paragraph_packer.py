@@ -182,7 +182,9 @@ class FloorTest(unittest.TestCase):
 
     def test_the_lead_token_counts_against_the_cap_because_the_wire_counts_it(self):
         """Owen's Mac render, 2026-09-15, chunk 21 of 77: raw 801, spoken 794,
-        cap 800 - refused `chunk_too_long` before a second of audio, because
+        cap 800 - refused `chunk_too_long` before a second of audio (that
+        server-side refusal was retired on 2026-09-19; BookForge still refuses
+        such a chunk itself, so the packer's job is unchanged), because
         Crucible measures `len(chunk.text)` and this packer measured
         `spoken(text)`. The `[break]` lead is 7 characters that ride in the
         chunk, so they come out of the chunk's budget."""

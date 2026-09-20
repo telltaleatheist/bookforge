@@ -145,6 +145,15 @@ function voiceRow(id, resident, over) {
     // False here: a checkpoint's voice is in its weights, and loading one WITH
     // a clip is `reference_not_allowed`.
     needs_reference: false,
+    // `[voice.serving]` — what the server under narrator is sized by. Required
+    // on every row since 2026-09-19 (crucible docs/PHASE18-UNCERTIFIED.md 4.0):
+    // `max_num_seqs` is the ceiling a render's `width` must not exceed, and the
+    // SDK refuses a row without the block rather than inventing one.
+    serving: {
+      max_num_seqs: 4, max_num_seqs_note: 'measured 2026-09-19 on a 24 GB card',
+      mem_fraction: 0.6, mem_fraction_note: 'measured beside it',
+      context_length: 4096, context_length_note: 'the engine was started at it',
+    },
     pace: FAKE_PACE,
   }, over || {});
 }
@@ -1031,11 +1040,16 @@ async function bandChecks() {
 async function describeChecks() {
   const { CrucibleRefused, CrucibleUnreachable } = require('@crucible/client');
   await checkQuiet('describeCrucibleStreamRefusal keeps the server\'s code in front and returns foreign errors unchanged', () => {
+    // The code is the SERVER's and travels in front of the sentence; this
+    // fixture used `chunk_too_long`, which crucible retired on both doors on
+    // 2026-09-19 (docs/PHASE18-UNCERTIFIED.md 4.0.2). A keeper that formats a
+    // refusal nobody can receive any more proves the formatting against a
+    // fiction, so it now uses one the streaming door really answers.
     const refused = streamMod.describeCrucibleStreamRefusal(
-      new CrucibleRefused(409, 'chunk_too_long', 'this row is 900 characters', { max_chars: 800 }), 'mac');
+      new CrucibleRefused(409, 'voice_kind_unsupported', 'zeroshot needs a reference clip', { kind: 'zeroshot' }), 'mac');
     assert.ok(refused instanceof streamMod.CrucibleStreamRefused);
-    assert.strictEqual(refused.code, 'chunk_too_long');
-    assert.match(refused.message, /^chunk_too_long: crucible "mac" refused this Listen \(HTTP 409\)/);
+    assert.strictEqual(refused.code, 'voice_kind_unsupported');
+    assert.match(refused.message, /^voice_kind_unsupported: crucible "mac" refused this Listen \(HTTP 409\)/);
     const unreachable = streamMod.describeCrucibleStreamRefusal(new CrucibleUnreachable('http://x', 'ECONNREFUSED', null), 'mac');
     assert.strictEqual(unreachable.code, 'crucible_unreachable');
     const foreign = new TypeError('not the SDK\'s');

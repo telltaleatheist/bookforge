@@ -153,6 +153,85 @@ function provenanceFor(name, jobType, model) {
 }
 
 /**
+ * THE PHASE-18 RENDER DOOR'S TWO REFUSALS, so a fake refuses what a real server
+ * refuses (2026-09-19, crucible `docs/PHASE18-UNCERTIFIED.md` §4.0 and §9).
+ *
+ * A `tts` render request may now carry `retake` (which ARM renders the batch:
+ * true is narrator's guarded driver, absent/false is the bare arm), `band` (the
+ * three rates that arm measures against — the CALLER states them and the server
+ * never looks them up), and `width` (the in-flight cap). The two ways a client
+ * can get that wrong are refused whole:
+ *
+ *  - `retake_without_band` — asked to be guarded and said against what. It is
+ *    NOT filled in from the voice and NOT downgraded to the bare arm, "because a
+ *    client that asked to be guarded and was not would read every clean row as a
+ *    verdict".
+ *  - `band_malformed` — a band that is not one. One code for all of them,
+ *    because a band is one statement.
+ *
+ * Checked even when `retake` is absent, exactly as the server does: "a malformed
+ * band is a client mistake whether or not this run would have used it."
+ *
+ * Returns null when the params are fine, or `{status, code, message}` to send.
+ * A fake that accepted anything would let "BookForge always states the band"
+ * pass as a comment rather than as a measurement.
+ */
+function refuseRenderParams(params) {
+  const band = params.band;
+  if (band !== undefined && band !== null) {
+    const rates = ['pace_chars_per_sec', 'max_chars_per_sec', 'min_chars_per_sec'];
+    const bad = rates.find((k) => typeof band[k] !== 'number' || !(band[k] > 0));
+    const ordered = !bad && band.min_chars_per_sec < band.pace_chars_per_sec
+      && band.pace_chars_per_sec < band.max_chars_per_sec;
+    if (bad || !ordered) {
+      return {
+        status: 400,
+        code: 'band_malformed',
+        message: `band is not a band (${JSON.stringify(band)}): all three rates must be positive `
+          + 'numbers with min < pace < max',
+      };
+    }
+  }
+  if (params.retake === true && (band === undefined || band === null)) {
+    return {
+      status: 400,
+      code: 'retake_without_band',
+      message: 'retake: true states no band. The band is the caller\'s and is never looked up '
+        + 'here; a guarded render with no band would be guarded against nothing.',
+    };
+  }
+  if (params.width !== undefined && params.width !== null
+    && (!Number.isInteger(params.width) || params.width < 1)) {
+    return {
+      status: 400,
+      code: 'width_malformed',
+      message: `width is ${JSON.stringify(params.width)}; it is a whole number of chunks in flight`,
+    };
+  }
+  return null;
+}
+
+/**
+ * The THREE fields a `tts` `done` gained on 2026-09-19, which the SDK reads
+ * STRICTLY — `sampling` and `voice` are protocol errors when absent, and `width`
+ * must be present even to be null (crucible `docs/PHASE18-UNCERTIFIED.md`
+ * §4.0.1: "a record that cannot say what it ran at is comparable to nothing").
+ *
+ * `sampling` is the FULL triple as applied — the voice's take-0 numbers with
+ * this take's rung laid over them — so a fake that echoed only an override
+ * would be modelling a server that does not exist.
+ */
+function renderDoneProvenance(voice, take, width) {
+  return {
+    sampling: take === 0
+      ? { temperature: 0.8, top_p: 0.95, top_k: 50 }
+      : { temperature: 0.7, top_p: 0.95, top_k: 50 },
+    voice: { id: voice, identity: 'abc1234'.padEnd(40, '0'), identity_basis: 'verified' },
+    width: width === undefined ? 4 : width,
+  };
+}
+
+/**
  * Start a fake on 127.0.0.1. `route(req, res, ctx)` is the keeper's own
  * behaviour; it returns true when it handled the request. What every keeper
  * needs — uploads recorded and answered, DELETE recorded — is handled here
@@ -887,6 +966,7 @@ function unknownLeaseRefusal(leaseId, why) {
 
 module.exports = {
   REPO, installElectronStub, makeChecker, startFakeCrucible, fakeNamer, provenanceFor,
+  refuseRenderParams, renderDoneProvenance,
   crucibleHost, noServerHost, send,
   leaseRoutes, modelLeasedRefusal, unknownLeaseRefusal,
   settingsRoutes, LLM_CLASSES, UPSTREAM_NAMES, WSL_ONLY_CLASSES, WSL_ONLY_REASON,

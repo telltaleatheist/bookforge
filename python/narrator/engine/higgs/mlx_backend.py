@@ -116,7 +116,8 @@ from ...env import env_number
 from ..log import log
 from ..protocol import (EMPTY_SENTENCE_SILENCE_SEC, BackendSpec, ClipsVoice,
                         DefaultVoice, StopPolicy)
-from . import truncation, v3_served
+from . import served_common, truncation, v3_served
+from .codec import FrameMeasure
 from .prompt import clean_text
 from .v3_engine import HiggsV3Defaults, apply_v3_voice_defaults
 
@@ -160,6 +161,16 @@ MEM_BUDGET_ENV = 'NARRATOR_HIGGS3_MLX_MEM_BUDGET_GB'
 CACHE_LIMIT_ENV = 'HIGGS_MLX_CACHE_LIMIT_GB'
 CACHE_LIMIT_DEFAULT_GB = 8.0
 
+#: THE FRACTION NAME, shared with the CUDA stack on purpose - the same variable
+#: Crucible sets per voice in the spawn environment, and the same one
+#: `sgl_served` exports into its launcher. Here it means a fraction of the
+#: machine's UNIFIED memory, and `mlx_mem_budget_gb` turns it into the absolute
+#: GB this backend's headroom math has always worked in. The pinned buffer
+#: cache (`CACHE_LIMIT_ENV`) does NOT follow it: it is a cap on a cache that
+#: lives inside the budget, already subtracted by `_mlx_kv_headroom_gb`, and
+#: scaling both would take it off twice.
+SERVE_MEM_FRACTION_ENV = 'HIGGS_SGL_MEM_FRACTION'
+
 
 # `_env_number` USED TO BE DEFINED HERE. It moved to `narrator/env.py` on
 # 2026-09-13, unchanged, because it states a POLICY - garbage is refused by
@@ -177,10 +188,73 @@ def mlx_batch_ceiling() -> int:
                           'the widest Higgs MLX batch, in rows'))
 
 
+def mlx_device_memory_gb() -> float:
+    """The machine's PHYSICAL unified memory, in GB, as Metal reports it.
+
+    `mx.metal.device_info()['memory_size']` is bytes of device memory - on
+    Apple silicon that is the unified pool the whole machine shares, which is
+    what a FRACTION has to be a fraction of. Imported here rather than at module
+    scope: this module is imported on Windows (where there is no mlx) by tests
+    and by the registry, and only a caller that asked for a fraction needs an
+    answer.
+
+    NO GUESS. A machine whose Metal cannot say is a machine narrator cannot turn
+    a fraction into gigabytes on, and it says so rather than assuming 64.
+    """
+    try:
+        import mlx.core as mx
+        info = mx.metal.device_info()
+        size = info['memory_size']
+    except Exception as exc:                        # noqa: BLE001 - reported whole
+        raise ValueError(
+            f'{SERVE_MEM_FRACTION_ENV} was set, but narrator cannot read this '
+            f"device's memory size from Metal ({type(exc).__name__}: {exc}), so "
+            'it has nothing to take a fraction OF. Set '
+            f'{MEM_BUDGET_ENV} in gigabytes instead.') from exc
+    return float(size) / 1e9
+
+
 def mlx_mem_budget_gb() -> float:
-    """`MLX_MEM_BUDGET_GB`: the whole batch's unified-memory budget."""
-    return float(env_number(MEM_BUDGET_ENV, 42.0, float, 1.0,
-                            'the Higgs MLX batch memory budget, in GB'))
+    """`MLX_MEM_BUDGET_GB`: the whole batch's unified-memory budget.
+
+    TWO WAYS TO SAY IT, AND THEY MAY NOT DISAGREE (Owen, 2026-09-19).
+    `HIGGS_SGL_MEM_FRACTION` is the fraction-of-the-card name the CUDA stack
+    already takes, and Crucible sets it per voice in the spawn environment for
+    every backend; the Mac is 64 GB unified, so the same fraction is a real
+    number here too - `fraction x mlx_device_memory_gb()`. `MEM_BUDGET_ENV` is
+    the absolute-GB name this backend has always had.
+
+    A value set BOTH ways that does not agree is refused by name rather than
+    letting one silently win: the loser would be invisible - the batch simply
+    runs narrower or wider than the operator believes, and the only symptom is
+    a number in a log nobody compares.
+    """
+    absolute = (os.environ.get(MEM_BUDGET_ENV) or '').strip()
+    fraction = (os.environ.get(SERVE_MEM_FRACTION_ENV) or '').strip()
+    if not fraction:
+        return float(env_number(MEM_BUDGET_ENV, 42.0, float, 1.0,
+                                'the Higgs MLX batch memory budget, in GB'))
+    share = float(env_number(SERVE_MEM_FRACTION_ENV, 0.0, float, 0.0,
+                             "the Higgs MLX batch's share of unified memory"))
+    if not (0.0 < share < 1.0):
+        raise ValueError(
+            f'{SERVE_MEM_FRACTION_ENV}={fraction!r} is out of range: it is a '
+            'FRACTION of the device, strictly between 0 and 1.')
+    derived = share * mlx_device_memory_gb()
+    if absolute:
+        stated = float(env_number(MEM_BUDGET_ENV, 42.0, float, 1.0,
+                                  'the Higgs MLX batch memory budget, in GB'))
+        # A tenth of a gigabyte: the two are the same statement rounded
+        # differently, not two different budgets.
+        if abs(stated - derived) > 0.1:
+            raise ValueError(
+                f'{SERVE_MEM_FRACTION_ENV}={share:g} of this device\'s '
+                f'{mlx_device_memory_gb():.1f} GB is {derived:.1f} GB, but '
+                f'{MEM_BUDGET_ENV}={stated:g} GB says otherwise. They are two '
+                'ways of stating ONE budget and narrator will not pick between '
+                'them - the loser is invisible, and the batch would run at a '
+                'width nobody chose. Set one, or make them agree.')
+    return derived
 
 
 def mlx_cache_limit_gb() -> float:
@@ -598,19 +672,18 @@ class HiggsV3MlxBudget:
         return self._config.voice
 
     def max_chars(self, voice=None) -> int:
-        """THE VOICE's chunk size, or the engine placeholder for a base-weights
-        voice. A FINE-TUNE with no `maxChars` is REFUSED, by the same rule as
-        `OrpheusBudget.max_chars` and `HiggsV3Budget.max_chars`: a fine-tune's
-        safe chunk length is a measured property of THAT model."""
+        """THE VOICE's chunk size, or the engine placeholder when the document
+        declared none; `max_chars_source` says which answered.
+
+        A FINE-TUNE WITH NO `maxChars` IS NO LONGER REFUSED (Owen, 2026-09-19)
+        - see `HiggsV3Budget.max_chars` for the whole reasoning. In short:
+        `maxChars` is the CLIENT's packing size, the screening render of a new
+        checkpoint is what MEASURES it, and nothing narrator does per chunk
+        reads it (the frame ceiling is `cap_frames(text)` over the text it was
+        actually sent).
+        """
         ref = self._voice(voice)
         if ref.max_chars is None:
-            if ref.checkpoint_dir:
-                raise ValueError(
-                    f"Higgs v3 voice '{ref.name}' is a fine-tune "
-                    f'({ref.checkpoint_dir}) and has no maxChars. Measure the safe '
-                    'chunk length for THAT model and declare it in the voice document '
-                    f"- refusing to pack a book at the base model's "
-                    f'{self._config.max_chars}-char placeholder.')
             return int(self._config.max_chars)
         return int(ref.max_chars)
 
@@ -1217,7 +1290,7 @@ class HiggsV3MlxEngine:
                 'render one row at a time.')
         return headroom
 
-    def _mlx_width_for_depth(self, depth: int) -> int:
+    def _mlx_width_for_depth(self, depth: int, ceiling=None) -> int:
         """Widest batch whose KV stays inside the budget when every row may run
         to `depth` positions (its prompt plus its own frame cap):
 
@@ -1231,14 +1304,19 @@ class HiggsV3MlxEngine:
         depth 2000): headroom 25.5 GB; per-row KV = 2000 x 0.140625 / 1024 =
         0.2747 GB; width = min(ceiling, 92).
         """
+        # `ceiling` is ONE CALL'S width when a job asked for a narrower one
+        # (`render_many(width=)`), never wider: the serving ceiling is what the
+        # process was started under and a request cannot raise it.
         width = max(1, int(self.BATCH_SIZE or 1))
+        if ceiling is not None:
+            width = max(1, min(width, int(ceiling)))
         if depth <= 0:
             return width
         headroom = self._mlx_kv_headroom_gb()
         kv_gb_per_row = depth * self.MLX_KV_MB_PER_TOKEN_ROW / 1024.0
         return max(1, min(width, int(headroom / kv_gb_per_row)))
 
-    def _mlx_batch_groups(self, entries: list) -> list:
+    def _mlx_batch_groups(self, entries: list, ceiling=None) -> list:
         """entries: `(index, text, prompt_positions, cap_frames, sampling,
         take)` in BOOK ORDER. Returns `(bucket, depth)` pairs, each bucket a
         CONSECUTIVE slice whose rows all render at the SAME sampling AND the
@@ -1331,7 +1409,7 @@ class HiggsV3MlxEngine:
             while True:
                 window = entries[i:i + take]
                 depth = _depth(window)
-                allowed = self._mlx_width_for_depth(depth)
+                allowed = self._mlx_width_for_depth(depth, ceiling)
                 if allowed >= take or take <= 1:
                     break
                 take = allowed
@@ -1610,6 +1688,24 @@ class HiggsV3MlxEngine:
         (`_request_seed`) - so a rung that declares no sampling override is
         still a different draw. 0 changes nothing.
         """
+        return self.render_audio_measured(
+            text, seed=seed, index=index, should_stop=should_stop,
+            sampling=sampling, take=take)[0]
+
+    def render_audio_measured(self, text: str, seed=None, index: int = 0,
+                              should_stop=None, sampling=None, take: int = 0):
+        """`render_audio`, with the `FrameMeasure` it spent - `(audio, measure)`.
+
+        COUNTED, not inferred, on this arm: the loop runs in THIS process, so
+        the frames the model generated are the rows it handed back and the cap
+        is the number they were generated against. That is the engine's own
+        stop reason, read from its own output, which is why this arm reports
+        `tokens` and the served arm cannot (see
+        `HiggsV3Engine.render_audio_measured`).
+
+        A stop mid-generation returns `(None, None)`: nothing was decided and
+        nothing is claimed about the cap.
+        """
         # THE MODEL BOUNDARY STRIPS THE MARKUP - once, for every caller. See
         # HiggsV3Engine.render_audio: this path only trimmed whitespace, so the
         # packer's `[break]` / `[heading]` reached the prompt and were READ
@@ -1623,13 +1719,14 @@ class HiggsV3MlxEngine:
         # The 45-token allowlist. An UNKNOWN control token is not ignored: the
         # model reads it out loud as words and the chunk collapses.
         v3_served.validate_control_tokens(clean)
+        cap = self._budget.cap_frames(clean)
         rows = self._generate_delayed_rows(
-            clean, self._budget.cap_frames(clean),
-            self._request_seed(seed, index, take),
+            clean, cap, self._request_seed(seed, index, take),
             should_stop=should_stop, sampling=self._sampling_for(sampling))
         if rows is None:
-            return None
-        return self.codec().decode(rows)
+            return None, None
+        return (self.codec().decode(rows),
+                FrameMeasure.counted_frames(len(rows), cap))
 
     def _sentence_file(self, sentence_number: int) -> str:
         if not self.config.sentences_dir:
@@ -1683,22 +1780,31 @@ class HiggsV3MlxEngine:
             lambda part, seed: self.render_audio(part, seed=seed, index=index),
             clean, index, sample_rate=self.SAMPLE_RATE,
             # THE BAND FOLLOWS THE BOOK (Owen, 2026-09-08): one tracker per
-            # engine, seeded from the voice's recorded pace and band when the
-            # catalog measured them, else from the engine default band - itself
-            # a measurement (Fuhrer, deathstalker), not a guess - and re-centred
-            # on the shipped takes' own median. `truncation.tracker_for`.
+            # engine, seeded from the ENGINE's own measured band (Fuhrer,
+            # deathstalker) and re-centred on the shipped takes' own median.
+            # This is narrator's own audiobook path; the serve door is given
+            # its band by the batch instead (`_pace_tracker`).
             tracker=self._pace_tracker(),
             base_seed=self.config.seed, first_take=first_take)
 
     def _pace_tracker(self):
-        """The engine's ONE `PaceTracker`, made on first use so the running
-        pace spans the whole book and a test that builds the engine without
-        `__init__` still gets one."""
+        """The engine's ONE `PaceTracker` for ITS OWN audiobook path, made on
+        first use so the running pace spans the whole book and a test that
+        builds the engine without `__init__` still gets one.
+
+        ON THE ENGINE'S OWN BAND (`truncation.engine_band`), never on the voice
+        entry's: the band has ONE owner, and on the serve door that owner is
+        the batch (Owen, 2026-09-19 - `truncation.tracker_for`). `convert` /
+        `convert_batch` are narrator rendering a book itself, with no caller to
+        be given a band by, which is why the engine's measured pair is the
+        honest source here and is read in this one place.
+        """
         tracker = getattr(self, '_pace', None)
         if tracker is None:
             tracker = truncation.tracker_for(
-                self.voice_ref, float(self.config.max_chars_per_sec),
-                float(self.config.min_chars_per_sec))
+                truncation.engine_band(float(self.config.max_chars_per_sec),
+                                       float(self.config.min_chars_per_sec)),
+                'HiggsV3MlxEngine._pace_tracker')
             self._pace = tracker
         return tracker
 
@@ -1745,17 +1851,37 @@ class HiggsV3MlxEngine:
         # until something pulls on it and the LAST slice's retake rounds only
         # run because this loop runs to exhaustion - the same "every row of
         # `items` is decided before this returns" the method has always kept.
-        for index, audio, _verdict in self.render_many(items):
+        for index, audio, _verdict, _measure in self.render_many(
+                items, tracker=self._pace_tracker()):
+            # No `width`: `convert_batch` IS the engine's own book render, so
+            # the engine's own ceiling is the right one and there is no job to
+            # have asked for another.
             results[index] = self._write_sentence(index, audio)
         return [results.get(index, False) for index, _text in items]
 
     # -- the driver, above the files ----------------------------------------
 
     def render_many(self, rows, in_flight=None, sampling_by_index=None,
-                    take_by_index=None):
+                    take_by_index=None, *, tracker, width=None):
         """THE GUARDED DRIVER, AND NOT ONE FILE WRITTEN: `(index, audio,
-        verdict)` for every chunk in `rows`, yielded the moment the ladder
-        decides it.
+        verdict, measure)` for every chunk in `rows`, yielded the moment the
+        ladder decides it.
+
+        `tracker` is the `PaceTracker` this call judges against, and it is
+        REQUIRED - the band has one owner per call and no default (Owen,
+        2026-09-19). The serve door builds it from the band on the batch;
+        `convert_batch` passes the engine's own (`_pace_tracker`). `measure` is
+        the shipped take's `FrameMeasure`, joined across the parts when the
+        ladder split the chunk: a measurement, taken whether or not anything
+        judged the chunk.
+
+        `width` is how many rows this CALL may keep in flight, at most this
+        engine's `BATCH_SIZE` ceiling (`NARRATOR_HIGGS3_MLX_BATCH`). Absent
+        means that ceiling - the engine's own configuration, not a default. It
+        rides down to `_mlx_batch_groups`, so a narrower call really does build
+        narrower slabs rather than merely being asked to: the KV of a slab is
+        `width x depth`, and the measurement that produced this argument is a
+        card that paged rather than failed when the sum went over.
 
         Owen's ruling of 2026-09-13 - the model and its inference own the guard
         and the retake decision, and the chunks have to be able to travel back
@@ -1891,12 +2017,16 @@ class HiggsV3MlxEngine:
         # book's own pace away between every sentence.
         plan = truncation.GuardPlan(sample_rate=self.SAMPLE_RATE,
                                     base_seed=self.config.seed,
-                                    tracker=self._pace_tracker())
-        if int(self.BATCH_SIZE or 1) <= 1:
+                                    tracker=tracker)
+        ceiling = int(self.BATCH_SIZE or 1) if width is None else int(width)
+        if ceiling < 1:
+            raise ValueError(f'render_many needs a width >= 1; got {ceiling}.')
+        if ceiling <= 1:
             yield from self._render_many_serial(plan, cleaned, held, rung_for,
                                                 take_for)
             return
-        yield from self._render_many_rounds(plan, cleaned, held, rung_for, take_for)
+        yield from self._render_many_rounds(plan, cleaned, held, rung_for,
+                                            take_for, ceiling)
 
     def _render_many_serial(self, plan, cleaned, held, rung_for, take_for):
         """`render_many` at the shipped default width of 1: one chunk at a
@@ -1941,10 +2071,11 @@ class HiggsV3MlxEngine:
                 if request is None:
                     break
                 try:
-                    take = self.render_audio(request.text, seed=request.seed,
-                                             index=request.index,
-                                             sampling=rung_for(request.index),
-                                             take=take_for(request.index))
+                    take, measure = self.render_audio_measured(
+                        request.text, seed=request.seed,
+                        index=request.index,
+                        sampling=rung_for(request.index),
+                        take=take_for(request.index))
                 except Exception as exc:
                     # NAMED on the host's log stream first, the way the served
                     # arm names it: the tuple tells a caller THAT the chunk
@@ -1954,15 +2085,16 @@ class HiggsV3MlxEngine:
                     failed = plan.abandon(request)
                     if failed in held:
                         held.remove(failed)
-                    yield failed, None, None
+                    yield failed, None, None, None
                     # The abandoned chunk's whole tree is gone from the plan, so
                     # the next `next_request()` is ASKED - and answers None -
                     # rather than assumed. Nothing else is in flight on this arm.
                     continue
-                plan.offer(request, take)
+                plan.offer(request, take, measure)
             yield from self._decided(plan, held)
 
-    def _render_many_rounds(self, plan, cleaned, held, rung_for, take_for):
+    def _render_many_rounds(self, plan, cleaned, held, rung_for, take_for,
+                            ceiling=None):
         """`render_many` above width 1: consecutive memory-budgeted slices
         (`_mlx_batch_groups`), each generated in one left-padded batch and
         decoded per row, then the guard's retakes a ROUND at a time. `cleaned`
@@ -1998,7 +2130,7 @@ class HiggsV3MlxEngine:
         # solo re-roll costs a whole batch: his Shift slice had 4 re-rolls in
         # ~28 chunks. The ladder is unchanged - `GuardPlan` is the same policy,
         # driven a round at a time (truncation.py, "ONE POLICY, THREE DRIVERS").
-        groups = self._mlx_batch_groups(entries)
+        groups = self._mlx_batch_groups(entries, ceiling)
         for group_no, (bucket, depth) in enumerate(groups, 1):
             texts = [e[1] for e in bucket]
             caps = [e[3] for e in bucket]
@@ -2020,9 +2152,17 @@ class HiggsV3MlxEngine:
                 # The batched take is take 0 of the ladder: a row inside the
                 # band is shipped as decoded, a row that stopped early or ran on
                 # is RECORDED and rendered with the rest of this call's retakes.
-                plan.add(entry[0], entry[1], first_take=self.codec().decode(codes))
+                # MEASURED from the row's OWN frames against the row's OWN cap
+                # (`entry[3]`) - a slab is generated to the deepest cap in its
+                # bucket, so measuring against the bucket's depth would call
+                # every short row in it capped.
+                plan.add(entry[0], entry[1],
+                         first_take=self.codec().decode(codes),
+                         first_measure=FrameMeasure.counted_frames(len(codes),
+                                                                   entry[3]))
             yield from self._decided(plan, held)
-        yield from self._render_retake_rounds(plan, held, rung_for, take_for)
+        yield from self._render_retake_rounds(plan, held, rung_for, take_for,
+                                              ceiling)
 
     def _decided(self, plan, held):
         """Every chunk the ladder has decided since the last call, with the
@@ -2035,14 +2175,15 @@ class HiggsV3MlxEngine:
         for index, audio, _clean in plan.finished():
             if index in held:
                 held.remove(index)
-            yield index, audio, plan.verdict(index)
+            yield index, audio, plan.verdict(index), plan.measure(index)
 
     #: A round advances every waiting chunk one rung, and the ladder is at most
     #: two rungs deep at each of `MAX_DEPTH` + 1 levels. A run past this is a
     #: ladder that does not terminate, which is a bug to see, not to survive.
     MAX_RETAKE_ROUNDS = 2 * (truncation.MAX_DEPTH + 1)
 
-    def _render_retake_rounds(self, plan, held, rung_for, take_for):
+    def _render_retake_rounds(self, plan, held, rung_for, take_for,
+                              ceiling=None):
         """The guard's retakes for this call, a ROUND at a time, each round in
         one batch; every chunk a round decides is yielded as
         `(index, audio, verdict)`.
@@ -2061,18 +2202,20 @@ class HiggsV3MlxEngine:
                 return
             _log(f'length guard: retake round {round_no}, {len(requests)} take(s) '
                  f'for chunk(s) {sorted({request.index for request in requests})}')
-            audio = self._render_requests(requests, rung_for, take_for)
-            for request, take in zip(requests, audio):
-                plan.offer(request, take)
+            rendered = self._render_requests(requests, rung_for, take_for,
+                                             ceiling)
+            for request, (take, measure) in zip(requests, rendered):
+                plan.offer(request, take, measure)
             yield from self._decided(plan, held)
         raise RuntimeError(
             f'Higgs v3 MLX: the length guard asked for a {self.MAX_RETAKE_ROUNDS + 1}th '
             f'retake round ({plan.pending} chunk(s) still on the ladder); the ladder '
             'is meant to terminate at MAX_DEPTH.')
 
-    def _render_requests(self, requests: list, rung_for, take_for) -> list:
-        """`truncation.RenderRequest`s rendered as batches; the audio, aligned
-        to `requests`.
+    def _render_requests(self, requests: list, rung_for, take_for,
+                         ceiling=None) -> list:
+        """`truncation.RenderRequest`s rendered as batches; `(audio, measure)`
+        per request, aligned to `requests`.
 
         ONE SEED PER BUCKET, as everywhere on this backend (`mx.random.seed` is
         drawn per batch): the bucket takes its first request's seed, which for a
@@ -2083,12 +2226,13 @@ class HiggsV3MlxEngine:
         the take changes. The text differs from take 0's either way, so the
         draw does too.
         """
-        width = max(1, int(self.BATCH_SIZE or 1))
+        width = max(1, int(self.BATCH_SIZE or 1) if ceiling is None else int(ceiling))
         if width <= 1 or len(requests) == 1:
-            return [self.render_audio(request.text, seed=request.seed,
-                                      index=request.index,
-                                      sampling=rung_for(request.index),
-                                      take=take_for(request.index))
+            return [self.render_audio_measured(
+                        request.text, seed=request.seed,
+                        index=request.index,
+                        sampling=rung_for(request.index),
+                        take=take_for(request.index))
                     for request in requests]
         # Keyed by POSITION, not by chunk index: the two halves of one chunk are
         # two requests carrying the same index, and they render side by side.
@@ -2104,7 +2248,7 @@ class HiggsV3MlxEngine:
                    for position, (request, (_embeds, positions))
                    in enumerate(zip(requests, prompts))]
         out = [None] * len(requests)
-        groups = self._mlx_batch_groups(entries)
+        groups = self._mlx_batch_groups(entries, ceiling)
         for group_no, (bucket, depth) in enumerate(groups, 1):
             first = requests[bucket[0][0]]
             seed = self._request_seed(first.seed, first.index, bucket[0][5])
@@ -2119,7 +2263,10 @@ class HiggsV3MlxEngine:
                 named = [(requests[entry[0]].index,) + tuple(entry[1:]) for entry in bucket]
                 raise self._batch_failure(named, depth, bucket_err) from bucket_err
             for entry, rows in zip(bucket, rows_per_row):
-                out[entry[0]] = self.codec().decode(rows)
+                # Against the ROW's own cap (`entry[3]`), not the bucket's
+                # depth - see the same note on the take-0 slab above.
+                out[entry[0]] = (self.codec().decode(rows),
+                                 FrameMeasure.counted_frames(len(rows), entry[3]))
         return out
 
     @staticmethod
@@ -2358,4 +2505,13 @@ def higgs_v3_mlx_config_from_worker_kwargs(voice=None, model_dir=None,
     # checkpoint file's - see `mlx_sampling`. None keeps the file's values.
     return HiggsV3MlxConfig(voice=resolved,
                             model_dir=named or model_dir_from_env(),
+                            # THE WINDOW THIS LOAD ASKS FOR. One external name
+                            # across all three backends (`HIGGS_CONTEXT_LENGTH`,
+                            # set per voice in the spawn env); on this arm there
+                            # is no server to launch, so it lands straight on
+                            # the config the engine bounds prompts against.
+                            # Unset = HiggsV3Defaults.CONTEXT_TOKENS, exactly
+                            # what this factory produced before.
+                            context_tokens=served_common.context_length(
+                                HiggsV3Defaults.CONTEXT_TOKENS),
                             sampling=getattr(resolved, 'sampling', None))

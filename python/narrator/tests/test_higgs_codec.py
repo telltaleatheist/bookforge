@@ -25,6 +25,7 @@ if _PYTHON_ROOT not in sys.path:
     sys.path.insert(0, _PYTHON_ROOT)
 
 from narrator.engine.higgs.codec import (DELAY_TRIM_FRAMES,          # noqa: E402
+                                         FrameMeasure,
                                          HiggsCodec, HiggsStreamMisaligned,
                                          SAMPLES_PER_FRAME, clip_codes,
                                          generated_span,
@@ -242,6 +243,62 @@ class CodecTest(unittest.TestCase):
 
     def test_there_is_no_windowed_decoder(self):
         self.assertIsNone(self.codec.streaming_decoder(lambda a, b: None))
+
+
+class FrameMeasureTest(unittest.TestCase):
+    """What a render SPENT, against the ceiling it was given.
+
+    THE MEASUREMENT IS UNCONDITIONAL (Owen, 2026-09-19): it rides both arms of
+    the serve worker's batch door, because whether a generation ran out of
+    frame budget is a fact about the render and not a verdict on it. Crucible
+    publishes `capped` and reads a missing one as "narrator did not say" -
+    never as `false`, because a runaway reported as "not capped" is exactly the
+    failure the field exists to prevent.
+    """
+
+    def test_a_counted_frame_count_decides_the_cap_hit_exactly(self):
+        """The MLX arm generates in this process, so the frames the model
+        produced ARE the rows it handed back."""
+        self.assertFalse(FrameMeasure.counted_frames(999, 1000).capped)
+        self.assertTrue(FrameMeasure.counted_frames(1000, 1000).capped)
+        self.assertTrue(FrameMeasure.counted_frames(1200, 1000).capped)
+        self.assertEqual(FrameMeasure.counted_frames(1000, 1000).tokens, 1000)
+
+    def test_an_INFERRED_count_decides_the_cap_hit_and_reports_no_tokens(self):
+        """The served stack returns a WAV and nothing else - no token count, no
+        stop reason - so the frames narrator can see are a LOWER BOUND and are
+        not reported as `tokens`. The cap hit is still decidable: a generation
+        that reached the cap emitted no EOS, so no sentinel run was stripped
+        and only the delay diagonal (7 frames) was, leaving exactly `cap - 7`.
+        """
+        cap = 1000
+        at_cap = np.zeros((cap - DELAY_TRIM_FRAMES) * SAMPLES_PER_FRAME,
+                          dtype=np.float32)
+        measure = FrameMeasure.from_audio(at_cap, cap)
+        self.assertTrue(measure.capped)
+        self.assertFalse(measure.counted)
+        self.assertIsNone(measure.tokens,
+                          'a lower bound must not be reported as a count')
+        short = np.zeros((cap - DELAY_TRIM_FRAMES - 1) * SAMPLES_PER_FRAME,
+                         dtype=np.float32)
+        self.assertFalse(FrameMeasure.from_audio(short, cap).capped)
+
+    def test_a_SPLIT_chunk_is_capped_when_any_part_was(self):
+        """One half cut off is a chunk cut off. `counted` survives only if
+        every part was counted - a sum of a count and a bound is neither."""
+        counted = FrameMeasure.counted_frames(10, 100)
+        hit = FrameMeasure.counted_frames(100, 100)
+        joined = FrameMeasure.joined([counted, hit])
+        self.assertTrue(joined.capped)
+        self.assertEqual(joined.frames, 110)
+        self.assertEqual(joined.cap, 200)
+        self.assertTrue(joined.counted)
+        mixed = FrameMeasure.joined(
+            [counted, FrameMeasure(frames=5, cap=100, capped=False, counted=False)])
+        self.assertFalse(mixed.counted)
+        self.assertIsNone(mixed.tokens)
+        self.assertIsNone(FrameMeasure.joined([None, None]),
+                          'nothing measured is None, not a zero')
 
 
 if __name__ == '__main__':

@@ -45,11 +45,23 @@ silently wrong:
      (`--generation-config auto`). Hence `HiggsV3Config.served_sampling` branches
      on the stack, and `build_request_body` here REFUSES an empty mapping.
   2. THE FRAME CAP FIELD IS `max_new_tokens`, not `max_tokens`.
-  3. THE CONTEXT IS 4096 AND IT IS HARD-CODED.
-     `models/higgs_tts/engine_builder.py:HiggsTtsEngineBuilder.context_length =
-     4096`; there is no flag. Prompt tokens + `max_new_tokens` must fit it or the
-     request is an HTTP 500. See `frame_cap`, which refuses BY NAME before
+  3. THE CONTEXT IS A CLASS ATTRIBUTE, NOT A FLAG, and 4096 by default.
+     `models/higgs_tts/engine_builder.py:29`:
+     `class HiggsTtsEngineBuilder: context_length = 4096`. Three flag spellings
+     were tried and recorded as failures (2026-09-09), so narrator launches the
+     server through its own entry module, which ASSIGNS that attribute from
+     `HIGGS_CONTEXT_LENGTH` in the server process before the engine is built
+     (`launch/sgl_omni_entry.py`). `context_tokens()` here reads the same
+     variable, so the client sizes requests against the window the server is
+     actually serving. Prompt tokens + `max_new_tokens` must fit it or the
+     request is an HTTP 500 - see `frame_cap`, which refuses BY NAME before
      anything is sent.
+
+     SGLANG'S OTHER LENGTH REFUSAL IS NOT THIS ONE AND IS LEFT ALONE:
+     `sglang_omni/serve/speech_service.py:58` caps the request TEXT at
+     `MAX_SPEECH_INPUT_CHARS = 4096` and answers HTTP 400 before generation. It
+     is a character count on the input, not a token window, and it is the
+     server's to own.
   4. THE REFERENCE RIDES IN THE BODY, AS BASE64. `CreateSpeechRequest
      .references[]` is a `SpeechReference` with a `data` field (raw base64, no
      `data:` prefix) beside `media_type` and `text`; `speech_service.py
@@ -213,16 +225,35 @@ COLD_START_SECONDS = 110
 # to send to
 # ---------------------------------------------------------------------------
 
-#: THE HARD CONTEXT. `sglang_omni/models/higgs_tts/engine_builder.py`:
-#: `class HiggsTtsEngineBuilder: context_length = 4096`. It is a class attribute
-#: with no CLI flag and no config path - the value cannot be raised from here,
-#: from the launcher, or from a request.
-CONTEXT_TOKENS = 4096
+#: THE BUILDER'S OWN CONTEXT. `sglang_omni/models/higgs_tts/engine_builder.py:29`:
+#: `class HiggsTtsEngineBuilder: context_length = 4096`. A class attribute with
+#: no CLI flag and no config path - three flag spellings were tried and recorded
+#: as failures (2026-09-09), and the only thing that reaches it is an
+#: ASSIGNMENT in the server process. narrator's launch entry does exactly that
+#: (`launch/sgl_omni_entry.py`), which is why this is now a DEFAULT and not a
+#: hard limit: unset `HIGGS_CONTEXT_LENGTH` serves this number, and a launch
+#: that set one serves that.
+BUILDER_DEFAULT_CONTEXT_TOKENS = 4096
 
-#: Prompt tokens + `max_new_tokens` must be at most this, or the request is an
-#: HTTP 500 from inside the scheduler. One position is reserved for the position
-#: the last generated token occupies.
-MAX_CONTEXT_POSITIONS = CONTEXT_TOKENS - 1
+
+def context_tokens() -> int:
+    """THE CONTEXT THIS PROCESS'S SERVER WAS LAUNCHED WITH.
+
+    A FUNCTION, not a constant, since 2026-09-19. It used to be `CONTEXT_TOKENS
+    = 4096` and every request in the book was sized against that literal; when
+    the entry module made the window settable, a constant would have gone on
+    sizing chunks for a 4096-token server while an 8192-token one was running -
+    the client under-filling every chunk and nobody able to see why. One
+    variable (`HIGGS_CONTEXT_LENGTH`), one reader, both sides of the launch.
+    """
+    return served_common.context_length(BUILDER_DEFAULT_CONTEXT_TOKENS)
+
+
+def max_context_positions() -> int:
+    """Prompt tokens + `max_new_tokens` must be at most this, or the request is
+    an HTTP 500 from inside the scheduler. One position is reserved for the
+    position the last generated token occupies."""
+    return context_tokens() - 1
 
 #: THE PROMPT'S FIXED SCAFFOLD, EXACTLY THREE TOKENS, read off
 #: `sglang_omni/models/higgs_tts/text_tokenizer.py:HiggsTokenizerAdapter
@@ -338,7 +369,7 @@ def frame_cap(text: str, voice=None) -> int:
     `voice` is charged for its reference, when it carries one.
 
     THE TWO CEILINGS. `v3_served.cap_frames(text)` is narrator's own generous one
-    (2.0x expected + 150). `MAX_CONTEXT_POSITIONS - prompt_token_bound(text)` is
+    (2.0x expected + 150). `max_context_positions() - prompt_token_bound(text)` is
     the stack's, and it is hard: prompt + `max_new_tokens` over 4,095 is an HTTP
     500 from inside the scheduler, not a shorter render. The smaller applies.
 
@@ -352,15 +383,15 @@ def frame_cap(text: str, voice=None) -> int:
     if not (text or '').strip():
         raise ValueError('Higgs SGLang: no text to size a frame cap for.')
     bound = prompt_token_bound(text, voice)
-    headroom = MAX_CONTEXT_POSITIONS - bound
+    headroom = max_context_positions() - bound
     expected = expected_frames(text)
     if headroom < expected * MIN_CAP_SLACK:
         reference = reference_token_bound(voice)
         raise ValueError(
             f'Higgs SGLang-Omni: a {len(text)}-character chunk does not fit this '
             f"stack's context. SGLang-Omni's Higgs builder hard-codes "
-            f'context_length {CONTEXT_TOKENS} (engine_builder.py, no flag), so '
-            f'prompt + max_new_tokens must be at most {MAX_CONTEXT_POSITIONS}; '
+            f'context_length {context_tokens()} (engine_builder.py, no flag), so '
+            f'prompt + max_new_tokens must be at most {max_context_positions()}; '
             f'this prompt is at most {bound} tokens'
             + (f' ({reference} of them the reference clip and its transcript)'
                if reference else '')
@@ -663,6 +694,42 @@ class HiggsSglServedBackend(GuestOwnedServer):
 
     # -- launch --------------------------------------------------------------
 
+    @staticmethod
+    def _mem_fraction():
+        """SGLang's `mem_fraction_static`, as THIS process was told it, or None.
+
+        `HIGGS_SGL_MEM_FRACTION` is the launch script's own knob
+        (`serve_higgs_sgl.sh`: `--mem-fraction-static`, default 0.60). It used
+        to reach the script only by being inherited through the `bash` exec -
+        which works, and which nothing states, so a launch could not say what
+        fraction it started the server at. narrator now EXPORTS the value it
+        was given, like every other knob it has an opinion about, and refuses a
+        nonsense one here rather than letting the script discover it: the
+        script's own check aborts a launch narrator has already reported as
+        started.
+
+        MEASURED, 2026-09-19: 16 concurrent requests at 0.60 summed to 24.2 GB
+        on a 24 GB card and WDDM paged the excess to host RAM - 4 to 10 times
+        slower, with no error anywhere. The fraction and the width are one
+        budget, which is why both are stated at launch.
+        """
+        raw = (os.environ.get(SERVE_MEM_FRACTION_ENV) or '').strip()
+        if not raw:
+            return None
+        try:
+            value = float(raw)
+        except ValueError:
+            raise ValueError(
+                f'{SERVE_MEM_FRACTION_ENV}={raw!r} is not a number. It is '
+                "SGLang's mem_fraction_static and must be between 0 and 1 "
+                '(exclusive).') from None
+        if not (0.0 < value < 1.0):
+            raise ValueError(
+                f'{SERVE_MEM_FRACTION_ENV}={raw!r} is out of range: '
+                'mem_fraction_static is a FRACTION of the card, strictly '
+                'between 0 and 1.')
+        return value
+
     def _launch_exports(self) -> str:
         """The `export ...` prefix of the wrapper: every launch-script knob
         narrator has an opinion about, stated explicitly.
@@ -682,6 +749,19 @@ class HiggsSglServedBackend(GuestOwnedServer):
             f'{SERVE_MAX_NUM_SEQS_ENV}={self.concurrency}',
             f'{served_common.OWNER_ENV}={shlex.quote(self.owner_id())}',
         ]
+        # THE CONTEXT IS STATED TOO, and it is the one knob on this stack the
+        # launcher cannot pass as a flag: `sgl_omni_entry.py` reads this
+        # variable inside the server process and assigns the builder's class
+        # attribute from it. Exported unconditionally - `context_tokens()` is
+        # either the launch's own value or the builder's 4096, and writing the
+        # number down is what makes the server log say which window is up.
+        exports.append(f'{served_common.CONTEXT_LENGTH_ENV}={context_tokens()}')
+        fraction = self._mem_fraction()
+        if fraction is not None:
+            # STATED, not inherited - see `_mem_fraction`. Absent means the
+            # script's own documented default (0.60), which is the script's
+            # number to own and not one narrator invents a second copy of.
+            exports.append(f'{SERVE_MEM_FRACTION_ENV}={fraction}')
         if self.checkpoint_dir:
             exports.append(
                 f'{SERVE_MODEL_DIR_ENV}={shlex.quote(_guest_form(self.checkpoint_dir))}')
@@ -895,12 +975,12 @@ class HiggsSglServedBackend(GuestOwnedServer):
         reference, when it has one, is part of the prompt."""
         bound = prompt_token_bound(text, voice)
         total = bound + int(max_new_tokens)
-        if total > MAX_CONTEXT_POSITIONS:
+        if total > max_context_positions():
             raise ValueError(
                 f'Higgs SGLang-Omni: this request would need at most {bound} '
                 f'prompt tokens plus a {int(max_new_tokens)}-frame cap = {total} '
-                f'positions, over the {MAX_CONTEXT_POSITIONS} SGLang-Omni\'s '
-                f'Higgs builder allows (context_length {CONTEXT_TOKENS}, '
+                f'positions, over the {max_context_positions()} SGLang-Omni\'s '
+                f'Higgs builder allows (context_length {context_tokens()}, '
                 'hard-coded in engine_builder.py). The server answers HTTP 500 '
                 'for this, not a shorter render. Size the cap with '
                 'sgl_served.frame_cap(), which is what the engine uses.')
@@ -926,8 +1006,8 @@ class HiggsSglServedBackend(GuestOwnedServer):
                 raise HiggsServerError(
                     f'Higgs SGLang HTTP 500: {detail}\n'
                     'THE USUAL CAUSE IS THE CONTEXT: SGLang-Omni\'s Higgs builder '
-                    f'hard-codes context_length {CONTEXT_TOKENS}, and prompt '
-                    f'tokens + max_new_tokens over {MAX_CONTEXT_POSITIONS} fail '
+                    f'hard-codes context_length {context_tokens()}, and prompt '
+                    f'tokens + max_new_tokens over {max_context_positions()} fail '
                     'inside the scheduler rather than rendering short. '
                     'sgl_served.frame_cap() sizes a request to fit and refuses by '
                     'name when a chunk cannot; a 500 reaching here means the cap '

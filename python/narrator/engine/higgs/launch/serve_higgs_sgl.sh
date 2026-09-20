@@ -70,6 +70,15 @@ HIGGS_SGL_CUDA_GRAPH_MAX_BS="${HIGGS_SGL_CUDA_GRAPH_MAX_BS:-$HIGGS_MAX_NUM_SEQS}
 # on this stack is the hard-coded 4096-token context (prompt + max_new_tokens),
 # which narrator sizes every request against (sgl_served.frame_cap).
 HIGGS_SGL_MAX_NEW_TOKENS="${HIGGS_SGL_MAX_NEW_TOKENS:-7500}"
+# THE CONTEXT WINDOW, and the one thing on this stack that is not a flag.
+# sglang_omni's Higgs builder hard-codes it as a class attribute
+# (models/higgs_tts/engine_builder.py:29, `context_length = 4096`); the three
+# flag spellings that look like they should work were tried and recorded as
+# failures on 2026-09-09. narrator therefore starts the server through its own
+# entry module, which ASSIGNS that attribute in the server process and then
+# calls sgl-omni's own CLI - see sgl_omni_entry.py. Unset = 4096, the builder's
+# own value, so an unset variable changes not one byte of this launch.
+HIGGS_CONTEXT_LENGTH="${HIGGS_CONTEXT_LENGTH:-4096}"
 
 # WHICH STACK THE CALLER THINKS IT IS STARTING, asserted rather than assumed —
 # the mirror of the same guard in serve_higgs_v3.sh. BookForge sets HIGGS_STACK
@@ -132,11 +141,25 @@ case "$HIGGS_SGL_MEM_FRACTION" in
 esac
 for pair in "HIGGS_MAX_NUM_SEQS=$HIGGS_MAX_NUM_SEQS" \
             "HIGGS_SGL_CUDA_GRAPH_MAX_BS=$HIGGS_SGL_CUDA_GRAPH_MAX_BS" \
+            "HIGGS_CONTEXT_LENGTH=$HIGGS_CONTEXT_LENGTH" \
             "HIGGS_SGL_MAX_NEW_TOKENS=$HIGGS_SGL_MAX_NEW_TOKENS"; do
   case "${pair#*=}" in
     ''|*[!0-9]*|0) echo "${pair%%=*} must be a positive integer; got '${pair#*=}'" >&2; exit 4 ;;
   esac
 done
+
+# narrator's OWN entry module, beside this script wherever this script is -
+# the packaged launch directory, or the copy an installer made. There is NO
+# fallback to `$HIGGS_SGL_ENV/bin/sgl-omni`: without the entry the builder
+# keeps its built-in 4096 and the server would serve a window nobody asked
+# for while reporting a clean start.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SGL_ENTRY="$SCRIPT_DIR/sgl_omni_entry.py"
+if [ ! -f "$SGL_ENTRY" ]; then
+  echo "narrator's SGLang entry module is missing: $SGL_ENTRY" >&2
+  echo "It sets HiggsTtsEngineBuilder.context_length, which has no flag." >&2
+  exit 7
+fi
 
 if [ ! -x "$HIGGS_SGL_ENV/bin/sgl-omni" ]; then
   echo "There is no sgl-omni at $HIGGS_SGL_ENV/bin/sgl-omni." >&2
@@ -150,12 +173,13 @@ echo "BIND=$HIGGS_SGL_HOST:$HIGGS_SGL_PORT"
 echo "MEM_FRACTION_STATIC=$HIGGS_SGL_MEM_FRACTION"
 echo "MAX_RUNNING_REQUESTS=$HIGGS_MAX_NUM_SEQS CUDA_GRAPH_MAX_BS=$HIGGS_SGL_CUDA_GRAPH_MAX_BS"
 echo "FACTORY_MAX_NEW_TOKENS=$HIGGS_SGL_MAX_NEW_TOKENS"
+echo "CONTEXT_LENGTH=$HIGGS_CONTEXT_LENGTH"
 
 # --model-name higgs-v3-ds, DELIBERATELY NOT vllm-omni's higgs-v3: it is the
 # `model` field of every request and the id /v1/models reports, so a name that
 # differs is one more way a leftover server on the wrong port is caught before a
 # book is rendered against it.
-exec "$HIGGS_SGL_ENV/bin/sgl-omni" serve \
+exec "$HIGGS_SGL_ENV/bin/python" "$SGL_ENTRY" serve \
   --model-path "$MODEL" \
   --model-name higgs-v3-ds \
   --host "$HIGGS_SGL_HOST" --port "$HIGGS_SGL_PORT" \

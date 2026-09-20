@@ -501,8 +501,11 @@ export interface GenerateCandidatesParams {
    *
    * Absent is the ordinary case and is not "3": the default is the voice's own
    * take ladder minus one (`crucible/voice-ladder.ts`), because a candidate is
-   * only a different reading if it sits on a different rung and a rung past the
-   * end of the ladder is refused `unknown_take`.
+   * only a different reading if it sits on a different rung, and a rung past
+   * the end of the ladder is one this app refuses (`reroll.ts`) — the server
+   * would render it at the voice's own sampling, which is the settings the
+   * reading being corrected already used. (Until 2026-09-19 the server refused
+   * it too, `unknown_take`; that refusal is retired.)
    */
   takes?: number;
   /** Optional per-index replacement text (edited sentences). Long edits get a single take. */
@@ -593,9 +596,11 @@ export async function generateCandidates(params: GenerateCandidatesParams): Prom
    * candidates two readings is that they sit on two RUNGS. narrator seeds chunk
    * i in the take's own lane (`seed + index + TAKE_SEED_STRIDE * take`, crucible
    * `docs/PHASE3-TTS.md` §2), which is why: two renders at one take are
-   * byte-identical by design. A take past the end of the ladder is refused
-   * `unknown_take` and never clamped, so the count IS the ladder's length minus
-   * one — take 0 being the reading already in the book.
+   * byte-identical by design. A take past the end of the ladder is refused by
+   * this app and never clamped, so the count IS the ladder's length minus one —
+   * take 0 being the reading already in the book. (The SERVER stopped refusing
+   * it on 2026-09-19: rung N above the ladder is a seed lane at the voice's own
+   * sampling, which a screening sweep wants and an audition must not be given.)
    *
    * The ladder read decides the venue on the way past, and that decision is
    * handed to `rerollAtVenue` as `crucible` so the two halves of one pass cannot
@@ -633,9 +638,11 @@ export async function generateCandidates(params: GenerateCandidatesParams): Prom
   if (takes < 1) {
     // A one-rung voice has nothing above take 0 to offer, and `higgs-default`
     // and the zero-shot rows are exactly that today. Saying so is the whole of
-    // the right answer: submitting anyway asks for rung 1 and is refused
-    // `unknown_take` a round trip later, and clamping to take 0 would hand a
-    // person a byte-identical copy of the sentence they are trying to replace.
+    // the right answer: submitting anyway asks for rung 1, which `reroll.ts`
+    // refuses a moment later (`crucible_reroll_ladder_too_short`) because the
+    // server would render it at the voice's own sampling — the settings the
+    // sentence already has — and clamping to take 0 would hand a person a
+    // byte-identical copy of the sentence they are trying to replace.
     return {
       success: false,
       candidates: [],

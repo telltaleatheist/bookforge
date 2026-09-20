@@ -42,7 +42,8 @@ import numpy as np
 from ..engine.log import log
 from ..engine.orpheus.prompt import PromptMixin
 from ..engine.protocol import EdgeFade
-from ..engine.higgs import truncation
+from ..engine.higgs import truncation, v3_served
+from ..engine.higgs.codec import FrameMeasure
 from ..engine.orpheus.snac import PAYLOAD_FRAMES, SAMPLES_PER_FRAME
 
 SAMPLE_RATE = 24000
@@ -512,7 +513,10 @@ class FakeHiggsEngine(FakeEngine):
         test asked for a file - appended to it."""
         row = {'index': None if index is None else int(index),
                'text': text, 'sampling': sampling, 'take': int(take),
-               'seed': None if seed is None else int(seed)}
+               'seed': None if seed is None else int(seed),
+               # The WIDTH the guarded driver was called with, or null for a
+               # render outside it (Listen, the bare arm). See `render_many`.
+               'width': getattr(self, '_call_width', None)}
         if not hasattr(self, 'renders_seen'):
             self.renders_seen = []
         self.renders_seen.append(row)
@@ -561,9 +565,41 @@ class FakeHiggsEngine(FakeEngine):
         item rendered under"."""
         return None if item_sampling is None else dict(item_sampling)
 
+    def cap_frames(self, text: str) -> int:
+        """The per-chunk frame ceiling, by the REAL formula
+        (`v3_served.cap_frames`) over the real text.
+
+        The fake fakes the audio, never the arithmetic: `capped` is a fact
+        about a render against its budget, and a fake cap would make every
+        assertion about it a test of this file rather than of the engine
+        contract. A test bends the AUDIO (`NARRATOR_FAKE_HIGGS_RATE`) and this
+        ceiling answers honestly.
+        """
+        return v3_served.cap_frames(text)
+
+    def measure_of(self, text: str, audio) -> FrameMeasure:
+        """What one fake render spent, COUNTED: this engine generates in
+        process, so the frames it produced are the frames it produced."""
+        frames = 0 if audio is None else int(len(audio)) // HIGGS_SAMPLES_PER_FRAME
+        return FrameMeasure.counted_frames(frames, self.cap_frames(text))
+
     def render_many(self, rows, in_flight=None, sampling_by_index=None,
-                    take_by_index=None):
-        """THE GUARDED DRIVER, serial - `(index, audio, verdict)` per chunk.
+                    take_by_index=None, *, tracker, width=None):
+        """THE GUARDED DRIVER, serial - `(index, audio, verdict, measure)` per
+        chunk.
+
+        `tracker` is REQUIRED and is the band this call judges against, exactly
+        as on both real engines (Owen, 2026-09-19): on the serve door it is
+        built from the band the BATCH carried, and there is no other source for
+        it. This fake used to build its own from its class constants, which was
+        the second owner the ruling removed.
+
+        `width` is how many rows this call may keep in flight. This driver is
+        SERIAL, so what it actually keeps in flight is one - inside any width a
+        caller can ask for - and the number is written onto every render this
+        call makes (`_record_render`'s `width`) rather than pretended about, so
+        a test can assert that the door passed the job's width down to the
+        driver that would honour it on a real engine.
 
         The same contract the real engines offer (`HiggsV3Engine.render_many`,
         `HiggsV3MlxEngine.render_many`) and the reason this fake can stand in
@@ -608,12 +644,15 @@ class FakeHiggsEngine(FakeEngine):
                     'sampling_by_index.')
             return rungs[int(index)]
 
+        # RECORDED, not pretended about - see the docstring. It rides on
+        # every render this call makes so a test driving the worker as a
+        # SUBPROCESS can read it back out of the render log.
+        self._call_width = None if width is None else int(width)
         self._full_text = {}
         self._attempts = {}
         plan = truncation.GuardPlan(
             sample_rate=self.SAMPLE_RATE, base_seed=getattr(self.config, 'seed', None),
-            tracker=truncation.tracker_for(None, self.MAX_CHARS_PER_SEC,
-                                           self.MIN_CHARS_PER_SEC))
+            tracker=tracker)
         for index, text in rows:
             self._full_text[int(index)] = text
             rung_for(index)     # refuse an unnamed row at the door, not mid-ladder
@@ -625,14 +664,32 @@ class FakeHiggsEngine(FakeEngine):
                     break
                 if request.index not in held:
                     held.append(request.index)
-                plan.offer(request, self.render_audio(
+                take = self.render_audio(
                     request.text, seed=request.seed, index=request.index,
                     sampling=rung_for(request.index),
-                    take=take_for(request.index)))
+                    take=take_for(request.index))
+                plan.offer(request, take,
+                           self.measure_of(request.text, take))
             for done_index, audio, _clean in plan.finished():
                 if done_index in held:
                     held.remove(done_index)
-                yield done_index, audio, plan.verdict(done_index)
+                yield (done_index, audio, plan.verdict(done_index),
+                       plan.measure(done_index))
+
+    def render_audio_measured(self, text: str, seed=None, index: int = 0,
+                              should_stop=None, sampling=None, take: int = 0):
+        """`render_audio` with the `FrameMeasure` it spent, as BOTH real Higgs
+        engines offer it: `(audio, measure)`.
+
+        This is the door the worker's BARE arm calls, and it is why the fake
+        has one - the measurement rides both arms (Owen, 2026-09-19), and a
+        fake that only had the one-value face would let a test of `capped` on
+        the unguarded arm pass by reporting nothing at all.
+        """
+        audio = self.render_audio(text, seed=seed, index=index,
+                                  should_stop=should_stop, sampling=sampling,
+                                  take=take)
+        return audio, self.measure_of(text, audio)
 
     def render_audio(self, text: str, seed=None, index: int = 0,
                      should_stop=None, sampling=None, take: int = 0) -> np.ndarray:
@@ -659,6 +716,15 @@ class FakeHiggsEngine(FakeEngine):
         row_ms = (os.environ.get(self.ROW_MS_ENV) or '').strip()
         if row_ms:
             time.sleep(float(row_ms) / 1000.0)
+        # THE FIRST TEXT SEEN FOR AN INDEX IS THAT CHUNK'S OWN, whichever arm
+        # rendered it. `render_many` records them up front (that is how a split
+        # HALF is told from its parent and never bent), but the BARE arm has no
+        # ladder to record anything, and without this line a test of the
+        # unguarded arm could not bend a duration at all - it would assert
+        # against audio the knob never touched.
+        if not hasattr(self, '_full_text'):
+            self._full_text, self._attempts = {}, {}
+        self._full_text.setdefault(index, text)
         audio = self.audio_for(text)
         rate = self._rate_for(index, text)
         if rate == 1.0:

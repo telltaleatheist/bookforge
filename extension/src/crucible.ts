@@ -188,9 +188,12 @@ export interface ResidentClip {
  *
  * ── WHY THIS IS A `fetch` AND NOT `client.activity()` ─────────────────────
  *
- * The 0.6.0 SDK's activity reader builds its `resident` out of four named
+ * The SDK's activity reader builds its `resident` out of four named
  * fields — `kind`, `id`, `since`, `memory_bytes_estimate` — and silently
- * drops everything else, `reference` included. The field IS on the wire and
+ * drops everything else, `reference` included. Written against 0.6.0 and
+ * STILL TRUE at the 1.0.6 tarball in `vendor/` (checked 2026-09-19:
+ * `AcceleratorResident` in `dist/esm/types.d.ts` carries those four and no
+ * fifth), which is why this is still here. The field IS on the wire and
  * IS in the contract; what is missing is a line in the SDK's shaper. This is
  * the same situation, and the same treatment, as
  * `electron/crucible/settings-wire.ts` before the phase-15 re-pack: BookForge

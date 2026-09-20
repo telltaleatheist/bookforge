@@ -275,7 +275,7 @@ check('KEPT: the tab-recording rows are untouched', () => {
 // and §2 carries another: Correct Sentences spreads its candidates across the
 // take ladder. It said so in two incompatible ways at once — "with a two-rung
 // ladder and N = 3 that is takes 1, 0, 1", and, four lines later, that a take
-// past the ladder's length is refused `unknown_take`. A rung repeated is not a
+// past the ladder's length is refused by name. A rung repeated is not a
 // second reading: narrator seeds per chunk (`_seed_for` returns `seed + index`,
 // `HiggsConfig.seed` defaults to 1234), so the same rung renders the same bytes
 // and the third candidate of that cycle is a copy of the first — which is the
@@ -309,7 +309,10 @@ check('§2 states the ladder rule: a rung per candidate, refused by name past it
   if (!/candidate k \(0-based\) is asked at `take: k \+ 1`/.test(plan)) {
     throw new Error('§2 no longer states which rung a candidate is asked at');
   }
-  if (!/unknown_take/.test(plan)) {
+  // The refusal is BookForge's own since 2026-09-19: crucible retired
+  // `unknown_take` and renders a rung above the ladder at the voice's own
+  // sampling, so the plan must name the door that still says no.
+  if (!/crucible_reroll_ladder_too_short/.test(plan)) {
     throw new Error('§2 no longer names the refusal for a take past the ladder\'s length');
   }
 });

@@ -47,6 +47,10 @@ const os = require('os');
 const path = require('path');
 const Module = require('module');
 const { skipLine } = require('./keeper-skip.js');
+// The render door's own two refusals and the three provenance fields a `done`
+// carries since 2026-09-19, declared once in the shared fake so three keepers do
+// not carry three copies of one server's contract.
+const { refuseRenderParams, renderDoneProvenance } = require('./fake-crucible');
 
 const REPO = path.resolve(__dirname, '..');
 const RENDER = path.join(REPO, 'dist', 'electron', 'crucible', 'render.js');
@@ -150,6 +154,15 @@ function voiceRow(id, over) {
     // false for a checkpoint, whose voice is in its weights, true for the
     // `zeroshot` row, which is the base weights plus somebody's clip.
     needs_reference: false,
+    // `[voice.serving]` — what the server under narrator is sized by. Required
+    // on every row since 2026-09-19 (crucible docs/PHASE18-UNCERTIFIED.md 4.0):
+    // `max_num_seqs` is the ceiling a render's `width` must not exceed, and the
+    // SDK refuses a row without the block rather than inventing one.
+    serving: {
+      max_num_seqs: 4, max_num_seqs_note: 'measured 2026-09-19 on a 24 GB card',
+      mem_fraction: 0.6, mem_fraction_note: 'measured beside it',
+      context_length: 4096, context_length_note: 'the engine was started at it',
+    },
     pace: FAKE_PACE,
   }, over || {});
 }
@@ -189,7 +202,7 @@ function provenanceFor(name, voice) {
  *   'leased' — 409 leased: a CLIENT is mid-run on what is on the card
  *   'cancel' — streams two chunks, then waits for DELETE and ends `cancelled`
  */
-function startFakeCrucible(behaviour) {
+function startFakeCrucible(behaviour, rows) {
   const state = {
     submitted: [],          // every POST /v1/jobs body
     cancelled: [],          // every DELETE /v1/jobs/<id>
@@ -210,7 +223,11 @@ function startFakeCrucible(behaviour) {
 
     if (route === '/v1/voices' && req.method === 'GET') {
       state.voicesAsked += 1;
-      return send(res, 200, [voiceRow('mistborn'), voiceRow('deathstalker')]);
+      // `rows` lets a check serve a row this fake does not otherwise produce —
+      // an UNMEASURED voice, whose pace rates are null. Since 2026-09-19 that is
+      // a real row a real server sends (a screening checkpoint: absence
+      // propagates as absence, never as an inherited number).
+      return send(res, 200, rows || [voiceRow('mistborn'), voiceRow('deathstalker')]);
     }
 
     if (route === '/v1/jobs' && req.method === 'POST') {
@@ -219,6 +236,14 @@ function startFakeCrucible(behaviour) {
       req.on('end', () => {
         const body = JSON.parse(raw);
         state.submitted.push(body);
+        // THE DOOR REFUSES WHAT THE REAL DOOR REFUSES. A fake that swallowed
+        // `retake: true` with no band would let the claim below ("a book render
+        // is always guarded, against the row's own rates") pass as a comment.
+        const badParams = refuseRenderParams(body.params);
+        if (badParams) {
+          return send(res, badParams.status,
+            { error: { code: badParams.code, message: badParams.message } });
+        }
         if (behaviour === 'busy') {
           return send(res, 409, {
             error: {
@@ -330,6 +355,11 @@ function startFakeCrucible(behaviour) {
         failed: [],
         take: 0,
         sample_rate: 24000,
+        // WHAT RAN, asserted by the server (2026-09-19). The SDK reads
+        // `sampling` and `voice` strictly and requires `width` to be present
+        // even when it is null, so a fake that omitted them would be a fake of a
+        // server nobody can build.
+        ...renderDoneProvenance(job.voice, 0),
       });
       res.end();
       return undefined;
@@ -510,6 +540,44 @@ async function happyPathChecks() {
     assert.deepStrictEqual(body.params.chunks, CHUNKS,
       'every chunk, with its own index and text, unchanged');
     assert.deepStrictEqual(body.inputs, {}, 'a render carries no uploaded inputs');
+  });
+
+  // ── A BOOK RENDER IS ALWAYS GUARDED, AND SAYS AGAINST WHAT ─────────────────
+  //
+  // Owen, 2026-09-19: BookForge renders audiobooks and always wants the guard.
+  // Since the same day the server chooses the ARM by what the REQUEST says —
+  // absent `retake` is the BARE arm, every chunk rendered once as sent, nothing
+  // judged and nothing retaken — so a door that stopped sending this flag would
+  // quietly stop guarding books and nothing would fail. That is precisely the
+  // shape this file exists to catch, and it is invisible in the audio until
+  // somebody listens to a runaway.
+  //
+  // The band is the one the server just stated for this voice, ECHOED BACK:
+  // Crucible never looks one up, because a band with two owners is how
+  // deathstalker inherited pace 16.64 onto weights that measured 15.91.
+  await check('the book render asks to be GUARDED, against the voice row\'s own three rates', () => {
+    const { params } = fake.state.submitted[0];
+    assert.strictEqual(params.retake, true,
+      'a book render sends retake: true — absent is the bare arm, which judges nothing');
+    assert.deepStrictEqual(params.band, {
+      pace_chars_per_sec: FAKE_PACE.pace_chars_per_sec,
+      max_chars_per_sec: FAKE_PACE.max_chars_per_sec,
+      min_chars_per_sec: FAKE_PACE.min_chars_per_sec,
+    }, 'the band is the voice row\'s three rates verbatim, not a number from this machine');
+    // `width` is deliberately NOT sent: absent means the resident voice's own
+    // [voice.serving].max_num_seqs, which is the width the engine was actually
+    // started at. Sending a guess would report a throughput nobody can reproduce.
+    assert.ok(!('width' in params),
+      'BookForge states no width — absence is the engine\'s own serving width, with an owner');
+  });
+
+  await check('the done frame\'s provenance — sampling, voice, width — reaches the outcome', () => {
+    assert.deepStrictEqual(outcome.result.sampling, { temperature: 0.8, top_p: 0.95, top_k: 50 },
+      'the FULL triple as applied, so two runs at "take 0" are comparable');
+    assert.strictEqual(outcome.result.voice.id, 'mistborn');
+    assert.strictEqual(outcome.result.voice.identityBasis, 'verified',
+      'a directory somebody pointed at must not read like a commit somebody fetched');
+    assert.strictEqual(outcome.result.width, 4, 'how many chunks were in flight, for throughput');
   });
 
   await check('a render keeps following the submitting engine after its registered address changes', () => {
@@ -812,6 +880,46 @@ async function refusalChecks() {
       });
       assert.strictEqual(fake.state.submitted.length, 0,
         'the book must not be POSTed to a server that cannot render it');
+    } finally {
+      await fake.close();
+    }
+  });
+
+  // A VOICE NOBODY HAS MEASURED IS REFUSED, AND NOT RENDERED UNGUARDED.
+  //
+  // Since 2026-09-19 a `/v1/voices` row may state `pace: null`-rates, meaning
+  // NOTHING WAS MEASURED for those weights — a screening checkpoint, whose pace
+  // its own renders exist to discover. Two wrong answers are available and both
+  // are silent: invent a band (a real book then judged against numbers nobody
+  // measured, which is how healthy chunks become run-ons and re-roll to the
+  // bottom of the ladder), or drop `retake` and render the book on the bare arm
+  // (nothing judged, and every clean-looking row a verdict nobody reached).
+  // BookForge does neither, and it says so before the book crosses the wire.
+  await check('a voice with no MEASURED band is refused by name, before any job is submitted', async () => {
+    const unmeasured = voiceRow('mistborn', {
+      pace: {
+        ...FAKE_PACE,
+        pace_chars_per_sec: null, max_chars_per_sec: null, min_chars_per_sec: null,
+      },
+    });
+    const fake = await startFakeCrucible('render', [unmeasured]);
+    const server = registerFake(fake.url);
+    try {
+      await assert.rejects(() => render.runCrucibleRender({
+        server,
+        renderId: 'r',
+        voice: 'mistborn',
+        language: 'en',
+        chunks: CHUNKS,
+        sentencesDir: freshSentencesDir(),
+      }), (err) => {
+        assert.strictEqual(err.code, 'crucible_voice_states_no_band');
+        assert.ok(/NOTHING WAS MEASURED/.test(err.message),
+          'the refusal says a null rate is an unmeasured voice, not a missing field');
+        return true;
+      });
+      assert.strictEqual(fake.state.submitted.length, 0,
+        'nothing is submitted: an unguarded book render is a decision, not a fallback');
     } finally {
       await fake.close();
     }

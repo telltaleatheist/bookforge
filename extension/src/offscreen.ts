@@ -62,12 +62,12 @@ import {
   speedGuardRefusal
 } from '../../shared/audio/tab-recording';
 import {
-  listenBandFromCaps,
   packListenChunks,
   speakableListenText,
   splitForTts,
   type ListenChunkBand
 } from '../../shared/listen-text/index';
+import { bandFromVoiceRow, isReadable } from './voice-band';
 import {
   CRUCIBLE_STREAM_IN_FLIGHT,
   CRUCIBLE_STREAM_RAMP_WIDTH,
@@ -933,8 +933,6 @@ async function refreshServer(): Promise<boolean> {
     residentKind = health.residentKind;
     serverVoice = health.residentKind === 'tts' ? (health.residentModels[0] ?? null) : null;
     const rows = await bound.voices();
-    voiceCaps.clear();
-    for (const v of rows) voiceCaps.set(v.id, v.maxChars);
     voiceRows = rows.map((v: VoiceInfo): VoiceRow => ({
       id: v.id,
       display: v.display,
@@ -946,6 +944,15 @@ async function refreshServer(): Promise<boolean> {
       // call a zero-shot voice anything it likes, and a picker that guessed
       // from the name would hide the clip list on the day it was renamed.
       needsReference: v.needsReference,
+      // VERBATIM, NULLS AND ALL. `pace` is always an object on the wire and
+      // its members are what go null (crucible `voices.py` `Pace.to_dict`), so
+      // there is nothing to guard here — and nothing to substitute either:
+      // `voice-band.ts` is the one place a null becomes a decision.
+      lengths: {
+        maxChars: v.maxChars,
+        safeMinChars: v.pace.safeMinChars,
+        safeMaxChars: v.pace.safeMaxChars,
+      },
     }));
     voices = voiceRows.map((v) => v.id);
     await readResidentClip(named);
@@ -953,7 +960,17 @@ async function refreshServer(): Promise<boolean> {
     // app's: what is on the card is the truth, and a stored choice that names
     // something else is a choice, not a claim about the server.
     if (serverVoice !== null && !switchingVoice) chosenVoice = serverVoice;
-    if (chosenVoice === null && voices.length > 0) chosenVoice = voices[0];
+    // The opening pick is the first voice this extension can actually READ
+    // with, not simply the first row. Since 2026-09-19 a server may list a
+    // screening checkpoint that states no measured length (PHASE18 §4), and
+    // landing on one by alphabetical accident would hand the user a voice that
+    // loads, shows green, and refuses at the moment they press play. It is not
+    // a fallback: nothing is substituted, and when NO row is readable
+    // `chosenVoice` stays null and the speak door says so by name.
+    if (chosenVoice === null) {
+      const readable = voiceRows.find((v) => isReadable(v.lengths));
+      if (readable !== undefined) chosenVoice = readable.id;
+    }
     connectionError = null;
     return true;
   } catch (err) {
@@ -963,30 +980,28 @@ async function refreshServer(): Promise<boolean> {
 }
 
 /**
- * The band one row of this voice may occupy, from the SERVER's own cap.
+ * The band one row of this voice may occupy, from the SERVER's own numbers.
  *
- * `VoiceInfo.maxChars` is the (voice, backend) cap certificate, in CHARACTERS
- * — nothing in `tts` carries a token cap on the wire. A voice whose row does
- * not state one is refused by name rather than packed to a number from
- * somewhere else: both catalogs ship a `deathstalker`, and the other engine's
- * number for this voice would be a real number for the wrong engine.
+ * The lengths live ON the row (`VoiceRow.lengths`) and the decision lives in
+ * `voice-band.ts`, so the popup offers exactly the voices this can answer for.
+ * There was a second `voiceCaps` map here until 2026-09-19 holding a private
+ * copy of `maxChars`; it is gone, because a fact with two owners is this
+ * system's recurring defect and the popup could not see that one at all.
+ *
+ * The lengths are the (voice, backend) certificate in CHARACTERS — nothing in
+ * `tts` carries a token cap on the wire. A voice whose row states no length in
+ * EITHER spelling is refused by name rather than packed to a number from
+ * somewhere else; there is no local catalog in a browser extension to reach
+ * for, and there would be nothing right in it if there were.
  */
 function bandFor(voice: string): ListenChunkBand {
-  if (!voiceRows.some((v) => v.id === voice)) {
-    throw new Error(`Crucible "${server?.name ?? '?'}" does not list a voice called "${voice}".`);
+  const named = server?.name ?? '?';
+  const row = voiceRows.find((v) => v.id === voice);
+  if (row === undefined) {
+    throw new Error(`Crucible "${named}" does not list a voice called "${voice}".`);
   }
-  if (!voiceCaps.has(voice)) {
-    throw new Error(`No length cap was read for "${voice}" — refresh the server in the popup.`);
-  }
-  // `listenBandFromCaps` refuses a voice that declares no cap BY NAME. There is
-  // no `safeMaxChars` on the wire: the server's `maxChars` IS the cap
-  // certificate for this (voice, backend), and there is no local catalog to
-  // reach for instead — both catalogs ship a `deathstalker`.
-  return listenBandFromCaps(voice, { maxChars: voiceCaps.get(voice) ?? null });
+  return bandFromVoiceRow(voice, named, row.lengths);
 }
-
-/** `VoiceInfo.maxChars` per voice, beside the rows the pickers draw. */
-const voiceCaps = new Map<string, number | null>();
 
 /**
  * Open the streaming session, or say why not.
@@ -1734,8 +1749,9 @@ function fillPrefetch(): void {
  *
  *   1. the deterministic normalizer — glyph strip, punctuation, number rules,
  *      number expansion, caps fold;
- *   2. sentences, capped at THIS voice's `maxChars` (the server's own cap
- *      certificate, in characters);
+ *   2. sentences, capped at THIS voice's ceiling — its measured safe band when
+ *      the row states one and its truncation cap otherwise, in characters,
+ *      resolved once by `voice-band.ts` and carried in `band.maxChars`;
  *   3. ramped chunks: a short opener so the first word is fast, widening to the
  *      band so the model reads whole paragraphs and the seams go away.
  *

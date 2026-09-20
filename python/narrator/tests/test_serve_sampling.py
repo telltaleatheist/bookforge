@@ -55,7 +55,7 @@ if _PYTHON_ROOT not in sys.path:
 
 from narrator.engine import item_sampling as S                       # noqa: E402
 from narrator.tests.test_engine_serve_protocol import (         # noqa: E402
-    Worker, _WorkerCase)
+    Worker, _WorkerCase, fake_higgs_band)
 
 
 # ---------------------------------------------------------------------------
@@ -232,16 +232,35 @@ class _SamplingWorkerCase(_WorkerCase):
             out[index] = row['sampling']
         return out
 
-    def batch(self, items, voice=None):
+    #: Whether this case's batches ask to be JUDGED. The guarded class turns
+    #: it on; every other class here is about a per-ITEM refusal on the bare
+    #: arm, where nothing judges and no band is needed (Owen, 2026-09-19).
+    RETAKE = False
+
+    def batch(self, items, voice=None, **extra):
         self._ready()
         self._load(voice or self.VOICE)
-        self.w.send(action='generate_batch', items=items)
+        request = dict(extra)
+        if self.RETAKE and 'retake' not in request:
+            # `retake` and `band` travel together or the batch is refused by
+            # name - the band has one owner and it is the caller.
+            request['retake'] = True
+            request['band'] = fake_higgs_band()
+        self.w.send(action='generate_batch', items=items, **request)
         msgs = self.w.read_until('batch_done')
         return self._assert_batch_closed(msgs, [it['i'] for it in items])
 
 
 class GuardedBatchSamplingTest(_SamplingWorkerCase):
-    """The NON-STREAMING door - the one Crucible's render job drives."""
+    """The NON-STREAMING door - the one Crucible's render job drives.
+
+    JUDGED, because that is what this class is about: the rung must survive
+    every take of a chunk, and a chunk only has more than one take when the
+    ladder runs. `RETAKE` puts `retake: true` and the fake's own band on every
+    batch below.
+    """
+
+    RETAKE = True
 
     def test_the_worker_really_built_the_higgs_fake(self):
         """If this fails, every other test in the class is testing Orpheus."""
@@ -658,12 +677,14 @@ class TakeOnTheWireTest(_SamplingWorkerCase):
         env = dict(self.WORKER_ENV)
         env['NARRATOR_FAKE_HIGGS_RATE'] = json.dumps({'1': 0.4})
         self.w = Worker(extra_env=env)
+        # JUDGED - a re-roll only happens on the guarded arm, and that arm
+        # is asked for per batch and carries the band it is judged against.
         by_i = self.batch([
             {'i': 0, 'text': 'An ordinary opening chunk of the chapter.'},
             {'i': 1, 'text': 'The chunk whose first take comes back far too '
                              'short for its text, so the guard re-rolls it.',
              'take': 2},
-        ])
+        ], retake=True, band=fake_higgs_band())
         self.assertIn('data', by_i[1], by_i[1])
         seeds = [r['seed'] for r in self.rendered() if r['index'] == 1]
         self.assertGreater(len(seeds), 1,

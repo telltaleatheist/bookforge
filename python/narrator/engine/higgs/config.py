@@ -190,20 +190,22 @@ class HiggsBudget:
 
     def max_chars(self, voice=None) -> int:
         """The VOICE's chunk size when the document declared one, else the
-        engine placeholder (900 - the audition's proven ceiling). An adapter
-        voice with none is refused at load by `load_voices`; this is the belt
-        for a config assembled in code, and it mirrors OrpheusBudget."""
+        engine placeholder (900 - the audition's proven ceiling).
+
+        A FINE-TUNE WITH NO `maxChars` IS NO LONGER REFUSED (Owen, 2026-09-19).
+        It used to be, here and at load, and the reasoning - a fine-tune's safe
+        chunk length is measured on THAT model - has not changed; what changed
+        is whose number it is. `maxChars` is the CLIENT's packing size, and the
+        screening render of an unmeasured checkpoint is what produces it. See
+        `HiggsV3Budget.max_chars`, where the ruling is written out in full;
+        this is the v2 scaffold's copy of the same rule, kept identical so the
+        two cannot drift.
+        """
         ref = self._config.voice
         if voice is not None and voice != ref.name:
             raise ValueError(
                 f"HiggsBudget: this engine serves '{ref.name}', not '{voice}'.")
         if ref.max_chars is None:
-            if ref.checkpoint_dir:
-                raise ValueError(
-                    f"Higgs voice '{ref.name}' is a fine-tune ({ref.checkpoint_dir}) "
-                    'and has no maxChars. Declare it in the voice document - '
-                    "refusing to pack a book at the base model's "
-                    f'{self._config.max_chars}-char default.')
             return int(self._config.max_chars)
         return int(ref.max_chars)
 
@@ -365,13 +367,18 @@ def load_voices(path: str = None, *, allowed_controls=None,
     the ENGINE'S defaults for entries that declare none - v2 and v3 pass
     different ones, which is why they are arguments and not constants here.
 
-    AN ADAPTER VOICE WITHOUT `maxChars` IS REFUSED. A fine-tune is tuned: its
-    safe chunk length is a measured property of THAT model, and packing it at
-    the base model's placeholder is a whole book packed for a model that no
-    longer exists. This mirrors `OrpheusBudget.max_chars`, which refuses a
-    catalog payload with no `maxChars` for the same reason. A plain clips voice
-    (zero-shot, base weights) may use the engine's placeholder, and says so
-    through `max_chars_source`.
+    AN ADAPTER VOICE WITHOUT `maxChars` IS ACCEPTED (Owen, 2026-09-19), and
+    packs at the engine's placeholder, saying so through `max_chars_source`.
+    Until then a `kind: checkpoint` entry with none was refused here, on the
+    ground that a fine-tune's safe chunk length is a measured property of THAT
+    model and the base model's placeholder is not it. Both halves of that are
+    still true - and it is still worth measuring and declaring - but the
+    refusal was in the wrong place: `maxChars` IS THE CLIENT'S PACKING SIZE,
+    the client packs the book and sends narrator the chunks, and the render
+    that MEASURES a new checkpoint is precisely the render this refusal made
+    impossible. Nothing narrator does per chunk reads the number: the frame
+    ceiling is `cap_frames(text)` over the text it was actually sent, and the
+    stop policy's `max_new_tokens` is the ENGINE's own `config.max_chars`.
     """
     path = path or voices_path()
     if max_reference_seconds is ...:
@@ -467,31 +474,34 @@ def load_voices(path: str = None, *, allowed_controls=None,
                 'mean.')
         declared = entry.get('maxChars')
         if declared is None:
-            if kind == 'checkpoint':
-                raise ValueError(
-                    f"{path}: voice '{name}' is a fine-tune (kind 'checkpoint'"
-                    + (f", checkpointDir {checkpoint_dir}" if checkpoint_dir else '')
-                    + ") and carries no 'maxChars'. A fine-tune's safe chunk length "
-                    'is a measured property of THAT model; packing it at the base '
-                    "model's default is a whole book packed for a model that no "
-                    'longer exists. Measure it and put it in this document - '
-                    'refusing to guess.')
+            # A fine-tune with no `maxChars` lands here too, since 2026-09-19 -
+            # see this function's docstring. `source` is what keeps that
+            # honest: 'placeholder' says the number is the ENGINE's and not
+            # this model's, and it reaches the prep log and the manifest.
             max_chars, source = placeholder_max_chars, 'placeholder'
         else:
             max_chars, source = int(declared), entry.get('maxCharsSource', 'catalog')
+        #: THE MODEL'S STATED LIMIT, or None when this document states none -
+        #: which is a different thing from the placeholder narrator packs at.
+        #: The two cross-checks below compare against the STATED one: since the
+        #: no-maxChars refusal retired (2026-09-19) a fine-tune may load with
+        #: none, and refusing its measured safe band for exceeding a
+        #: placeholder the voice never claimed would be refusing it against
+        #: another model's number.
+        stated_max = None if declared is None else int(declared)
         target = entry.get('targetChars')
         if target is not None:
             if isinstance(target, bool) or not isinstance(target, int) or target <= 0:
                 raise ValueError(
                     f"{path}: voice '{name}' declares targetChars {target!r}, which "
                     'is not a positive whole number of characters.')
-            if max_chars is not None and target > int(max_chars):
+            if stated_max is not None and target > stated_max:
                 raise ValueError(
                     f"{path}: voice '{name}' declares targetChars {target} above its "
-                    f'maxChars {max_chars}. The cap is the MEASURED safe chunk '
+                    f'maxChars {stated_max}. The cap is the MEASURED safe chunk '
                     'length; a target above it asks for chunks the length sweep '
                     'refused. Lower the target or re-certify the cap.')
-        safe_min, safe_max = _safe_band(path, name, entry, max_chars)
+        safe_min, safe_max = _safe_band(path, name, entry, stated_max)
         band = _length_band(path, name, entry)
         sampling = _voice_sampling(path, name, entry)
         if not clips:
@@ -616,7 +626,15 @@ def _length_band(path: str, name: str, entry: dict):
     (max, min, pace) triple of floats or Nones. ALL THREE OR NONE: a band with
     an edge missing, or a band with no pace to re-centre from, is a pace
     nobody finished writing, and is refused by name. Positive, and
-    min < pace < max."""
+    min < pace < max.
+
+    NOTHING IN NARRATOR BUILDS A PACE TRACKER FROM THESE (Owen, 2026-09-19).
+    They are still parsed, still checked and still reach `ClipsVoice`, because
+    they are what the CLIENT reads off the voice row and sends back as a
+    batch's `band` - the band has one owner and it is the caller. What was
+    removed is the other reader: `truncation.tracker_for` used to take a voice
+    and fall back to the engine's default band when the entry carried none,
+    which judged a 17.2 chars/s book against a 15.0 centre."""
     hi = entry.get('maxCharsPerSec')
     lo = entry.get('minCharsPerSec')
     pace = entry.get('paceCharsPerSec')

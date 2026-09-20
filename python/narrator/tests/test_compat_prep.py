@@ -368,8 +368,11 @@ class HiggsEngineTest(_PrepDoorTest):
     SAFE_MIN = 600
     SAFE_MAX = 900
     #: The model's STATED limit, which is not the packing cap: the band sits
-    #: inside it. `maxChars` is what `load_voice` refuses a fine-tune for
-    #: omitting, and what a safe cap may never exceed.
+    #: inside it. A safe cap may never exceed it. (`load_voice` no longer
+    #: refuses a fine-tune that omits `maxChars` - Owen, 2026-09-19: it is the
+    #: CLIENT's packing size, and the screening render of an unmeasured
+    #: checkpoint is what produces it. The SAFE BAND is a different
+    #: declaration and prep still refuses a fine-tune without one.)
     STATED_MAX = 1200
 
     def setUp(self):
@@ -595,13 +598,23 @@ class HiggsEngineTest(_PrepDoorTest):
         self.assertEqual(record['budget']['max_chars'], self.SAFE_MAX)
         self.assertEqual(record['floor_chars'], self.SAFE_MIN)
 
-    def test_a_fine_tune_with_no_cap_is_refused_before_any_chunk(self):
+    def test_a_fine_tune_with_a_BAND_and_no_maxChars_preps(self):
+        """RETIRED REFUSAL (Owen, 2026-09-19). A fine-tune that declares no
+        `maxChars` used to be refused before any chunk was packed; it now
+        preps, because `maxChars` is the CLIENT's packing size and the safe
+        BAND - which this voice does declare - is what prep actually packs to.
+
+        The refusal that remains is the band's, and it is a different
+        declaration: `test_a_fine_tune_with_no_safe_band_is_refused_at_prep`
+        holds that one."""
         self.write_voices({'ds_ad4l': {'kind': 'checkpoint',
-                                       'checkpointDir': self.checkpoint}})
+                                       'checkpointDir': self.checkpoint,
+                                       'safeMinChars': self.SAFE_MIN,
+                                       'safeMaxChars': self.SAFE_MAX}})
         code, out = self._run(self._higgs_argv())
-        self.assertNotEqual(code, 0)
-        self.assertIn('maxChars', out)
-        self.assertIn('ds_ad4l', out)
+        self.assertEqual(code, 0, out)
+        record = self._read_state_the_way_the_bridge_does()[1]['bookforge_chunking']
+        self.assertEqual(record['budget']['max_chars'], self.SAFE_MAX)
 
     def test_a_higgs_prep_without_a_voice_is_refused_by_name(self):
         argv = [a for a in self._higgs_argv() if a not in ('--higgs_voice', 'ds_ad4l')]
