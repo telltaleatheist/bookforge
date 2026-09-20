@@ -197,8 +197,50 @@ export interface MergeReport {
   readonly failures: MergeFailure[];
 }
 
+/**
+ * MOVE one file into the cache, or copy it when a move cannot reach.
+ *
+ * ── Why this exists (measured, 2026-09-20) ────────────────────────────────
+ *
+ * The scratch session and the project cache are the SAME FILESYSTEM whenever
+ * the scratch root is derived from the library root, which is every ordinary
+ * install — and that has nothing to do with which machine rendered the book:
+ * a Crucible's artifacts are downloaded into this machine's scratch wherever
+ * they were generated. So publishing *Shift* dragged 2.5 GB across SMB to land
+ * it a few directories away. Measured on the live share that evening:
+ *
+ *   one 20 MB file, copied          27.9 MB/s
+ *   100 chunk-sized files, copied    4.7 files/s   (0.21 s each — round trips)
+ *   a directory of 100, renamed      0.05 s
+ *
+ * The cost is the per-file round trip, so the fix is not to copy faster; it is
+ * not to copy. `rename` either succeeds — the two paths are one filesystem — or
+ * fails `EXDEV`, which is the operating system stating a fact rather than this
+ * code guessing one. No probe, no configuration, and no branch on which server
+ * rendered the book.
+ *
+ * `rename` is atomic by itself, so unlike {@link copyFileAtomic} there is no
+ * `.tmp-` dance: a reader either sees the old file or the new one.
+ */
+export async function moveFileAtomic(sourcePath: string, destPath: string): Promise<void> {
+  await fs.mkdir(path.dirname(destPath), { recursive: true });
+  try {
+    await fs.rename(sourcePath, destPath);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'EXDEV') throw err;
+    // Different filesystems: the only way across is through this process.
+    await copyFileAtomic(sourcePath, destPath);
+  }
+}
+
 export interface MergeOptions {
-  /** Injected by the keeper to make one copy throw; production uses the atomic copy. */
+  /**
+   * How one file gets into the cache. Defaults to the atomic COPY, which leaves
+   * the source where it is — the right answer for a caller that still needs it.
+   * The render's own publish passes {@link moveFileAtomic}: it is handing the
+   * session over, not lending it. Also the keeper's seam for making one file
+   * fail.
+   */
   readonly copyFile?: (sourcePath: string, destPath: string) => Promise<void>;
 }
 

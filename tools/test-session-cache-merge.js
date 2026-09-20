@@ -65,9 +65,10 @@ process.env.BOOKFORGE_USER_DATA = USER_DATA;
 process.env.BOOKFORGE_USERDATA_DIR = USER_DATA;
 require(path.join(REPO, 'cli', 'electron-stub.js'));
 
-const merge = require(path.join(DIST, 'session-cache-merge.js'));
+const cacheMerge = require(path.join(DIST, 'session-cache-merge.js'));
 const bridge = require(path.join(DIST, 'parallel-tts-bridge.js'));
 
+const merge = require(path.join(DIST, 'session-cache-merge.js'));
 const BRIDGE_TS = fs.readFileSync(path.join(REPO, 'electron', 'parallel-tts-bridge.ts'), 'utf8');
 const TTS_STEP_TS = fs.readFileSync(
   path.join(REPO, 'electron', 'queue-steps', 'tts-conversion.ts'), 'utf8');
@@ -423,8 +424,11 @@ const caseDir = (tag) => {
     // a shape check passes over code it never read.
     const freshArm = BRIDGE_TS.slice(BRIDGE_TS.indexOf('// THE SET IS CHECKED ON THIS BRANCH TOO'));
     assert.ok(freshArm.length > 200, 'the fresh arm must be found before it is read');
-    assert.ok(/const fresh = await publishPlan\(/.test(freshArm),
-      'the fresh publish must verify the chunk set after the rename');
+    assert.ok(/const cacheNow = await renderedChunkSet\(destSentencesDir\)/.test(freshArm)
+      && /missingFrom\(cacheNow, renderedSet\)/.test(freshArm),
+      'the fresh publish must verify the cache against the set the render MADE — captured '
+      + 'before anything moved, because a hand-over empties the source and a comparison '
+      + 'against an empty source passes over every hole');
     assert.ok(freshArm.indexOf('missingChunksSentence(fresh.missing')
       < freshArm.indexOf('success: true'),
       'and it must be able to refuse BEFORE it reports success');
@@ -511,6 +515,146 @@ const caseDir = (tag) => {
     assert.strictEqual(result.success, false, 'the publish could not land the session');
     assert.ok(!seen.some((p) => p.copied === p.total && p.total > 0),
       'and it never showed a full bar for a cache that does not hold the render');
+  });
+
+  // ── 9. HANDING THE SESSION OVER MOVES IT ───────────────────────────────────
+  //
+  // Measured on the live library share, 2026-09-20: chunk-sized files copy at
+  // 4.7 files/s (0.21 s of round trip each), while renaming a directory of 100
+  // takes 0.05 s. The scratch session and the project cache are the same
+  // filesystem on every ordinary install — the scratch root is derived from the
+  // library root, whichever machine rendered the book — so publishing *Shift*
+  // spent six minutes dragging 2.5 GB across SMB to land it a few directories
+  // away.
+  //
+  // So a caller that has finished with the session says so, and the publish
+  // MOVES it. What must stay true either way: the cache is the union, the
+  // success is a set comparison, and a chunk that cannot be placed is still
+  // wherever it was.
+
+  await check('a hand-over moves the session — the cache holds it, scratch is gone', async () => {
+    const root = caseDir('handover-fresh');
+    const project = path.join(root, 'project');
+    const scratch = path.join(root, 'scratch');
+    const source = makeSession(path.join(scratch, 'ebook-aa11bb22'), { chunks: [0, 1, 2] });
+
+    const result = await bridge.cacheSessionToProject(source.sessionDir, project, 'en', {
+      consumeSource: true,
+    });
+    assert.strictEqual(result.success, true, result.error);
+
+    const sentences = path.join(
+      cacheDirFor(project, 'en', 'ebook-aa11bb22'), HASH, 'chapters', 'sentences');
+    for (const i of [0, 1, 2]) {
+      assert.ok(fs.existsSync(path.join(sentences, `${pad(i)}.flac`)), `chunk ${i} is in the cache`);
+    }
+    assert.ok(!fs.existsSync(source.sessionDir),
+      'the scratch session was handed over, not copied — nothing is left behind to sweep');
+  });
+
+  await check('a hand-over merge still keeps the cache’s newer render of a chunk', async () => {
+    const root = caseDir('handover-merge');
+    const project = path.join(root, 'project');
+    const scratch = path.join(root, 'scratch');
+    const NAME = 'ebook-bb22cc33';
+    // The cache's chunk 0 is the NEWER render; the source's 1 and 2 are new.
+    const source = makeSession(path.join(scratch, NAME), {
+      chunks: [0, 1, 2], body: 'SRC', ageSeconds: 600,
+    });
+    const cache = makeSession(cacheDirFor(project, 'en', NAME), { chunks: [0], body: 'CACHE' });
+
+    const result = await bridge.cacheSessionToProject(source.sessionDir, project, 'en', {
+      consumeSource: true,
+    });
+    assert.strictEqual(result.success, true, result.error);
+
+    assert.strictEqual(fs.readFileSync(path.join(cache.sentences, '0000.flac'), 'utf8'), 'CACHE-0',
+      'ADD, NEVER REMOVE survives the move: the newer cached render is untouched');
+    assert.strictEqual(fs.readFileSync(path.join(cache.sentences, '0001.flac'), 'utf8'), 'SRC-1');
+    assert.strictEqual(fs.readFileSync(path.join(cache.sentences, '0002.flac'), 'utf8'), 'SRC-2');
+    assert.ok(!fs.existsSync(path.join(source.sentences, '0001.flac')),
+      'and the chunks that moved are no longer in scratch');
+  });
+
+  await check('a hand-over that cannot place a chunk fails, and that chunk is still in scratch', async () => {
+    const root = caseDir('handover-hole');
+    const project = path.join(root, 'project');
+    const scratch = path.join(root, 'scratch');
+    const NAME = 'ebook-cc33ee44';
+    const source = makeSession(path.join(scratch, NAME), {
+      chunks: [0, 1, 2, 3], body: 'SRC', ageSeconds: 600,
+    });
+    const cache = makeSession(cacheDirFor(project, 'en', NAME), { chunks: [0], body: 'CACHE' });
+    // A DIRECTORY where chunk 3 belongs: a rename onto it fails exactly as a
+    // copy onto it does.
+    fs.mkdirSync(path.join(cache.sentences, '0003.flac'));
+
+    const result = await bridge.cacheSessionToProject(source.sessionDir, project, 'en', {
+      consumeSource: true,
+    });
+    assert.strictEqual(result.success, false, 'a publish over a hole is never a success');
+    assert.ok(/missing 1 of the 4 rendered chunk/.test(result.error),
+      `the count is measured against what the render MADE, not against a source the move `
+      + `emptied; got: ${result.error}`);
+    assert.ok(fs.existsSync(path.join(source.sentences, '0003.flac')),
+      'and the chunk that could not be placed is still in scratch — a failed move loses nothing');
+  });
+
+  await check('without a hand-over the source is left exactly where it is', async () => {
+    const root = caseDir('no-handover');
+    const project = path.join(root, 'project');
+    const scratch = path.join(root, 'scratch');
+    const source = makeSession(path.join(scratch, 'ebook-dd44ff55'), { chunks: [0, 1] });
+
+    const result = await bridge.cacheSessionToProject(source.sessionDir, project, 'en');
+    assert.strictEqual(result.success, true, result.error);
+    for (const i of [0, 1]) {
+      assert.ok(fs.existsSync(path.join(source.sentences, `${pad(i)}.flac`)),
+        `chunk ${i} is still in scratch — the interrupt flush and the startup rescue both `
+        + 'publish a session other things still read');
+    }
+  });
+
+  await check('moveFileAtomic moves a file, making the directory it lands in', async () => {
+    const root = caseDir('move-primitive');
+    const from = path.join(root, 'from', 'x.flac');
+    const to = path.join(root, 'to', 'deeper', 'x.flac');
+    fs.mkdirSync(path.dirname(from), { recursive: true });
+    fs.writeFileSync(from, 'AUDIO');
+    await cacheMerge.moveFileAtomic(from, to);
+    assert.strictEqual(fs.readFileSync(to, 'utf8'), 'AUDIO');
+    assert.ok(!fs.existsSync(from), 'a move does not leave the source behind');
+    assert.ok(!fs.existsSync(path.join(path.dirname(to), '.tmp-x.flac')),
+      'and it needs no .tmp- sibling: rename is atomic by itself');
+  });
+
+  await check('the render hands its session over; the flush and the rescue do not', () => {
+    const completion = BRIDGE_TS.slice(
+      BRIDGE_TS.indexOf('// Cache TTS session to project BEFORE assembly'));
+    assert.ok(/consumeSource: true/.test(completion.slice(0, 3000)),
+      "the render's own publish hands the session over");
+    assert.ok(/repointSessionAtCache\(session, cacheResult\)/.test(completion.slice(0, 4000)),
+      'and re-points the session at the cache, because the scratch paths are gone');
+    // The other three callers publish a session something else still reads: the
+    // interrupt flush (the resume reads it back), the startup rescue, and the
+    // IPC door. Each is asserted on its own call, not on a slice of the file —
+    // `consumeSource` is declared in this module and appears above them all.
+    for (const call of [
+      /cacheSessionToProject\(sessionDir, owner\.bfpPath, language\)/,
+      /const r = await cacheSessionToProject\(sessionDir, bfpPath, language\)/,
+    ]) {
+      assert.ok(call.test(BRIDGE_TS),
+        `this caller must still publish by COPY, leaving the source: ${call}`);
+    }
+  });
+
+  await check('the chapter closer finishes BEFORE the session is published', () => {
+    const closer = BRIDGE_TS.indexOf('const closerManifest = await stopChapterCloser');
+    const publish = BRIDGE_TS.indexOf('// Cache TTS session to project BEFORE assembly');
+    assert.ok(closer > 0 && publish > 0, 'both landmarks are present');
+    assert.ok(closer < publish,
+      'a chapter closed after the publish never reaches the cache the assembly reads — '
+      + 'and with the publish MOVING the session, it would be closing into a directory that had gone');
   });
 
   await check('tts-conversion throws on a publish that did not succeed', () => {

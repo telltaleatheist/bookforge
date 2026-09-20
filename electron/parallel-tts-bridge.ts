@@ -38,6 +38,7 @@ import {
   mergeSessionTree,
   missingChunksSentence,
   missingFrom,
+  moveFileAtomic,
   publishPlan,
   renderedChunkSet,
 } from './session-cache-merge';
@@ -875,8 +876,23 @@ export async function cacheSessionToProject(
   sessionDir: string,
   projectDir: string,
   language: string,
-  /** Told how many chunks have landed, about every two seconds. */
-  opts?: { onProgress?: (p: PublishProgress) => void },
+  opts?: {
+    /** Told how many chunks have landed, about every two seconds. */
+    onProgress?: (p: PublishProgress) => void;
+    /**
+     * THIS CALLER IS HANDING THE SESSION OVER, not lending it.
+     *
+     * The publish then MOVES the render into the cache instead of copying it —
+     * `rename` where the two paths are one filesystem, which is every ordinary
+     * install (see `moveFileAtomic` for the measurements). Six minutes of SMB
+     * round trips become a fraction of a second, and the source is gone
+     * afterwards, which is why only a caller that has finished with it may ask.
+     *
+     * Default false: the interrupt flush, the startup rescue and the IPC door
+     * all publish a session that other things still read.
+     */
+    consumeSource?: boolean;
+  },
 ): Promise<{
   success: boolean;
   cachedSentencesDir?: string;
@@ -944,12 +960,28 @@ export async function cacheSessionToProject(
     // started before the first byte moves, so a copy that is slow says so from
     // its first second. See `watchPublish`.
     const owed = await chunkFileCount(sourceSentencesDir);
+    /*
+     * WHAT THE RENDER MADE, read BEFORE anything moves.
+     *
+     * The publish's success has always been `cache ⊇ source`, and a MOVE empties
+     * the source — so a comparison made afterwards would be comparing the cache
+     * against nothing and passing over any hole. The set is therefore captured
+     * here, once, and it is what both branches are judged against.
+     */
+    const renderedSet = await renderedChunkSet(sourceSentencesDir);
+    const handingOver = opts?.consumeSource === true;
+    // One file's journey into the cache — a move when this caller is handing the
+    // session over, a copy when it still needs it. `moveFileAtomic` falls back to
+    // the copy by itself when the two paths are not one filesystem.
+    const placeFile = handingOver ? moveFileAtomic : undefined;
 
     const existing = await findCachedSessionLayout(destDir).catch(() => null);
     if (existing) {
       const before = await publishPlan(sourceSentencesDir, destSentencesDir);
       const stopWatching = watchPublish(destSentencesDir, owed, opts?.onProgress);
-      const merge = await mergeSessionTree(sessionDir, destDir).finally(stopWatching);
+      const merge = await mergeSessionTree(
+        sessionDir, destDir, placeFile === undefined ? {} : { copyFile: placeFile },
+      ).finally(stopWatching);
 
       if (!merge.samePath) {
         // The state file the cache now holds names the scratch dir it was
@@ -958,7 +990,9 @@ export async function cacheSessionToProject(
         await rewriteSessionStatePaths(destDir, destDir);
       }
 
-      const after = await publishPlan(sourceSentencesDir, destSentencesDir);
+      const cacheNow = await renderedChunkSet(destSentencesDir);
+      const stillMissing = missingFrom(cacheNow, renderedSet);
+      const after = { cached: cacheNow.size, source: renderedSet.size };
       const numbers = {
         jobLanguage: language, destDir,
         cacheHadChunks: before.cached, sourceChunks: before.source,
@@ -966,18 +1000,19 @@ export async function cacheSessionToProject(
         newerInSource: before.newerInSource.length,
         filesCopied: merge.copied.length, filesKept: merge.kept,
         cacheNowHasChunks: after.cached,
+        handedOver: handingOver,
         failures: merge.failures.length,
       };
 
-      if (after.missing.length > 0) {
+      if (stillMissing.length > 0) {
         const error = `Failed to publish the session into the project cache: ${
-          missingChunksSentence(after.missing, after, { source: sourceSentencesDir, cache: destSentencesDir })}${
+          missingChunksSentence(stillMissing, after, { source: sourceSentencesDir, cache: destSentencesDir })}${
           merge.failures.length
             ? ` First copy failure: ${merge.failures[0].relPath} — ${merge.failures[0].error}.`
             : ''}`;
         console.error(`[PARALLEL-TTS] ${error}`);
         publishLog.error('Session publish INCOMPLETE — the cache is missing rendered chunks', {
-          ...numbers, missingFirst: after.missing.slice(0, 10), error,
+          ...numbers, missingFirst: stillMissing.slice(0, 10), error,
         });
         return { success: false, error };
       }
@@ -1022,7 +1057,29 @@ export async function cacheSessionToProject(
     const stopWatching = watchPublish(
       path.join(tempDestDir, processRel, 'chapters', 'sentences'), owed, opts?.onProgress);
     try {
-      if (isWslSession && process.platform === 'win32') {
+      /*
+       * THE WHOLE TREE IN ONE DIRECTORY ENTRY, when this caller is handing the
+       * session over and the two paths are one filesystem. That is the ordinary
+       * install — the scratch root is derived from the library root — and it
+       * turns a six-minute publish into a fraction of a second (measurements in
+       * `moveFileAtomic`). `EXDEV` is the filesystem saying the move cannot
+       * reach, and then the copy below is the only way across.
+       */
+      let moved = false;
+      if (handingOver && !(isWslSession && process.platform === 'win32')) {
+        try {
+          await fs.rename(sessionDir, tempDestDir);
+          moved = true;
+        } catch (err) {
+          if ((err as NodeJS.ErrnoException).code !== 'EXDEV') throw err;
+          console.log(
+            `[PARALLEL-TTS] The session cannot be moved into the library (${sessionDir} and `
+            + `${tempDestDir} are different filesystems); copying it instead`);
+        }
+      }
+      if (moved) {
+        // Nothing else to do: the tree is already where the copy would have put it.
+      } else if (isWslSession && process.platform === 'win32') {
         // Routed copy-out: guest-side to a mounted drive, \\wsl$ read on the
         // Windows side to a drive the guest cannot see (network drives never
         // appear under /mnt — the NAS library's Z: is the live case).
@@ -1088,14 +1145,17 @@ export async function cacheSessionToProject(
     // halfway can still leave a directory that answers the layout probe — and a
     // publish that reports success over a hole is the entire finding of
     // 2026-09-20. Same comparison, same sentence, whichever branch ran.
-    const fresh = await publishPlan(sourceSentencesDir, destSentencesDir);
-    if (fresh.missing.length > 0) {
+    // Against the set captured before anything moved — see `renderedSet`.
+    const cacheNow = await renderedChunkSet(destSentencesDir);
+    const dropped = missingFrom(cacheNow, renderedSet);
+    const fresh = { cached: cacheNow.size, source: renderedSet.size };
+    if (dropped.length > 0) {
       const error = `Failed to publish the session into the project cache: ${
-        missingChunksSentence(fresh.missing, fresh, { source: sourceSentencesDir, cache: destSentencesDir })}`;
+        missingChunksSentence(dropped, fresh, { source: sourceSentencesDir, cache: destSentencesDir })}`;
       console.error(`[PARALLEL-TTS] ${error}`);
       publishLog.error('Fresh session publish INCOMPLETE — the copy dropped chunks', {
         jobLanguage: language, destDir, sourceChunks: fresh.source,
-        cacheNowHasChunks: fresh.cached, missingFirst: fresh.missing.slice(0, 10),
+        cacheNowHasChunks: fresh.cached, missingFirst: dropped.slice(0, 10),
       });
       return { success: false, error };
     }
@@ -1109,6 +1169,7 @@ export async function cacheSessionToProject(
     publishLog.info('Session published to the project cache (fresh)', {
       jobLanguage: language, destDir, cacheHadChunks: 0,
       sourceChunks: fresh.source, cacheNowHasChunks: fresh.cached,
+      handedOver: handingOver,
     });
 
     return {
@@ -5174,6 +5235,28 @@ async function completeAfterWorkers(session: ConversionSession): Promise<void> {
         'the render has settled, and this run aligns and assembles on their own rows');
     }
 
+    /*
+     * FINISH CLOSING CHAPTERS BEFORE THE SESSION IS PUBLISHED.
+     *
+     * The closer has been reading the sentences at their render-time location
+     * and its last sweep picks up the chapters that only completed in the final
+     * minutes, so running it here means the work happens once, on the paths it
+     * was already watching — and, since 2026-09-20, that the chapters it closes
+     * are IN the session the publish hands to the library. It ran after the
+     * publish until then, which on a chained run left its last chapters in
+     * scratch and out of the cache the assembly reads; with the publish now
+     * MOVING the session, running it after would be reading a directory that
+     * had gone.
+     */
+    const closerManifest = await stopChapterCloser(session.jobId);
+    if (closerManifest) {
+      await logger.log('INFO', session.jobId, 'Chapter closer finished', {
+        complete: closerManifest.complete,
+        closed: closerManifest.closedChapters.length,
+        totalChapters: closerManifest.totalChapters,
+      });
+    }
+
     // Cache TTS session to project BEFORE assembly or skipAssembly return,
     // because e2a's headless mode deletes the process dir (sentence files)
     // after successful assembly, and skipAssembly callers still need cached sessions.
@@ -5191,10 +5274,32 @@ async function completeAfterWorkers(session: ConversionSession): Promise<void> {
       try {
         const cacheResult = await cacheSessionToProject(
           session.prepInfo.sessionDir, session.config.bfpPath, language,
-          { onProgress: (p) => notePublishProgress(session, p) },
+          {
+            onProgress: (p) => notePublishProgress(session, p),
+            /*
+             * THE RENDER IS HANDING ITS SESSION OVER. Everything that still
+             * reads it — the completeness gate, the enhancement passes, the
+             * assembly — is re-pointed at the cache below, and the scratch copy
+             * has no reader left. See `moveFileAtomic` for what that buys: on
+             * *Shift*, six minutes of SMB round trips to move 2.5 GB a few
+             * directories sideways.
+             */
+            consumeSource: true,
+          },
         );
         if (cacheResult.success) {
           cachedSentencesDir = cacheResult.cachedSentencesDir;
+          /*
+           * THE SESSION NOW LIVES IN THE CACHE, and this is what says so.
+           *
+           * A published session was already allowed to be the live one — a
+           * resume renders straight into the cache and the publish reports
+           * "the source IS the cache" — so this is that same state, reached by
+           * a different road. Re-pointing is not optional after a hand-over:
+           * the scratch paths no longer exist, and the gate, the passes and the
+           * assembly all read `prepInfo`.
+           */
+          repointSessionAtCache(session, cacheResult);
           console.log(`[PARALLEL-TTS] Session cached: ${cacheResult.cachedSentencesDir}`);
           completionTtsLog.info('Session cached to project on completion', {
             jobId: session.jobId, bfpPath: session.config.bfpPath, language,
@@ -5227,19 +5332,6 @@ async function completeAfterWorkers(session: ConversionSession): Promise<void> {
         jobId: session.jobId,
         reason: session.config.bfpPath ? 'no session dir' : 'job config has no bfpPath',
         sessionDir: session.prepInfo?.sessionDir || null,
-      });
-    }
-
-    // Finish closing chapters BEFORE the session moves. The closer has been reading
-    // the sentences at their render-time location, and its last sweep picks up the
-    // chapters that only completed in the final minutes; running it here means the
-    // work happens once, on the paths it was already watching.
-    const closerManifest = await stopChapterCloser(session.jobId);
-    if (closerManifest) {
-      await logger.log('INFO', session.jobId, 'Chapter closer finished', {
-        complete: closerManifest.complete,
-        closed: closerManifest.closedChapters.length,
-        totalChapters: closerManifest.totalChapters,
       });
     }
 
@@ -6326,6 +6418,42 @@ function buildTtsStages(
   }
 
   return stages;
+}
+
+/**
+ * THE SESSION HAS MOVED INTO THE CACHE — point everything that reads it there.
+ *
+ * `PrepInfo` carries four paths and they are all under the session dir, so a
+ * publish that HANDED THE SESSION OVER (`consumeSource`) leaves every one of
+ * them naming a directory that no longer exists. The readers are the
+ * completeness gate, the denoise and RVC passes, the assembly and the
+ * completion event.
+ *
+ * The three names come from the publish itself — `cachedSessionDir`,
+ * `cachedProcessDir`, `cachedSentencesDir` — never from string surgery on each
+ * other: `session-cache-layout.ts` is what knows whether a session keeps its
+ * `chapters/` directly under `ebook-<uuid>/` or one content-hash level down.
+ * A publish that answered only the sentences path is an older answer and not a
+ * licence to guess, so nothing moves unless all three came back.
+ */
+function repointSessionAtCache(
+  session: ConversionSession,
+  published: { cachedSessionDir?: string; cachedProcessDir?: string; cachedSentencesDir?: string },
+): void {
+  const { cachedSessionDir, cachedProcessDir, cachedSentencesDir } = published;
+  if (!session.prepInfo || !cachedSessionDir || !cachedProcessDir || !cachedSentencesDir) return;
+  session.prepInfo = {
+    ...session.prepInfo,
+    sessionDir: cachedSessionDir,
+    processDir: cachedProcessDir,
+    chaptersDir: path.join(cachedProcessDir, 'chapters'),
+    chaptersDirSentences: cachedSentencesDir,
+  };
+  getTTSLogger().info('The session now lives in the project cache', {
+    jobId: session.jobId,
+    sessionDir: cachedSessionDir,
+    sentencesDir: cachedSentencesDir,
+  });
 }
 
 /**
