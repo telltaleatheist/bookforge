@@ -147,6 +147,7 @@ import { uniqueOutputPath, uniqueOutputStem } from './output-naming';
 import { destroyWslGuestProcesses, wslPkillGraceful, isWslAliveCached, type WslPkillOutcome } from './wsl-lifecycle';
 import { assertRunnableTtsEngine } from '../shared/tts/engine-caps';
 import { resolveChapterGap } from '../shared/audio/chapter-gap';
+import { stopAnalyticsError, stopSentence, type StopReason } from '../shared/queue/stop-reason';
 import { externalGpuJobLock } from '../shared/gpu/external-job-lock';
 /* The text server's own command line, so the global `|vllm` sweep spares it. */
 import { TEXT_SERVER_PROTECT_RE } from './text-server';
@@ -3666,9 +3667,26 @@ export async function cancelAllRemoteRendersOnQuit(
 }
 
 /**
- * Kill all active worker processes (called on app quit)
+ * Kill all active worker processes (called on app quit).
+ *
+ * `opts.reason` is the quit STATING WHAT IT IS — `'closed'` from `before-quit`
+ * (electron/main.ts), which is the only caller that means it. It is not a
+ * parameter this function acts on directly: nothing here words a row. It sets
+ * {@link appIsClosing}, so that every stop door in this module reached from
+ * here on — the queue's own module cancel racing the teardown, a WSL session
+ * torn down after its worker died, a late IPC press from a window that has not
+ * closed yet — words itself as the app closing rather than as the person who
+ * did not press anything (bug hunt 2026-09-20, S12).
+ *
+ * Deliberately ambient rather than an argument threaded into six call sites:
+ * "this process is quitting" is a fact about the PROCESS, and the quit chain
+ * cannot enumerate who will ask.
  */
-export async function killAllWorkers(clearSessions = true): Promise<void> {
+export async function killAllWorkers(
+  clearSessions = true,
+  opts?: { reason?: StopReason },
+): Promise<void> {
+  if (opts?.reason === 'closed') appIsClosing = true;
   console.log('[PARALLEL-TTS] Killing all workers on app shutdown...');
   stopPowerBlock();
 
@@ -8589,9 +8607,35 @@ export async function renderRangeHeadless(
 }
 
 /**
- * Stop a parallel conversion
+ * IS THIS PROCESS ON ITS WAY OUT — the ambient half of the stop reason.
+ *
+ * Set by {@link killAllWorkers} when the quit hands it `reason: 'closed'`, and
+ * read by {@link stopParallelConversion} when its caller did not state one.
+ * Both halves exist for the same reason: a stop that arrives DURING the quit —
+ * the queue's own module cancel racing the teardown, a WSL session torn down
+ * after its worker died — is the app closing, whoever pressed the button, and a
+ * default of `'user'` is what put *"Stopped by user"* on two renders Owen never
+ * touched (bug hunt 2026-09-20, S12).
+ *
+ * One-way: nothing un-closes a quitting app.
  */
-export async function stopParallelConversion(jobId: string): Promise<boolean> {
+let appIsClosing = false;
+
+/**
+ * Stop a parallel conversion.
+ *
+ * `opts.reason` is WHOSE GESTURE this is, and it decides the sentence the row
+ * ends up wearing (`shared/queue/stop-reason.ts`). Stated by the caller, never
+ * derived from the state of the session: the session cannot tell a Stop press
+ * from a quit, and those are the two facts a reader needs kept apart. Absent
+ * means the ambient answer — `'closed'` once the quit has begun, `'user'`
+ * otherwise, which is what every IPC press is.
+ */
+export async function stopParallelConversion(
+  jobId: string,
+  opts?: { reason?: StopReason },
+): Promise<boolean> {
+  const reason: StopReason = opts?.reason ?? (appIsClosing ? 'closed' : 'user');
   /*
    * A RENDER THAT IS STILL PREPPING IS STOPPED HERE TOO (2026-09-19).
    *
@@ -8613,7 +8657,9 @@ export async function stopParallelConversion(jobId: string): Promise<boolean> {
   if (!session) return stoppedPrep;
 
   console.log(`[PARALLEL-TTS] Stopping conversion for job ${jobId}`);
-  logger.log('WARN', jobId, 'Conversion stopped by user').catch(() => {});
+  logger.log('WARN', jobId, reason === 'closed'
+    ? 'Conversion interrupted — BookForge is closing'
+    : 'Conversion stopped by user').catch(() => {});
 
   // Flag FIRST: close handlers fire as workers exit, and checkAllWorkersComplete must
   // see cancelled=true so the retry loop can never fight the stop (it once respawned a
@@ -8719,8 +8765,9 @@ export async function stopParallelConversion(jobId: string): Promise<boolean> {
   // job's worker can never be hit.
   cleanupWslOrphanedProcesses(session.prepInfo?.sessionId);
 
-  // Emit cancelled analytics before cleanup
-  emitCancelledAnalytics(session);
+  // Emit cancelled analytics before cleanup — worded by the reason, which is
+  // the one thing about a stop that is not readable off the session.
+  emitCancelledAnalytics(session, reason);
 
   // Clean up progress history
   progressHistory.delete(jobId);
@@ -8812,9 +8859,12 @@ async function flushPartialSessionToCache(session: ConversionSession): Promise<v
  * the session ref first. Used by the stop IPC handler so a user-stopped job can be
  * resumed later.
  */
-export async function stopAndCacheParallelConversion(jobId: string): Promise<boolean> {
+export async function stopAndCacheParallelConversion(
+  jobId: string,
+  opts?: { reason?: StopReason },
+): Promise<boolean> {
   const session = activeSessions.get(jobId);
-  const stopped = await stopParallelConversion(jobId);
+  const stopped = await stopParallelConversion(jobId, opts);
   if (session) await flushPartialSessionToCache(session);
   return stopped;
 }
@@ -8835,14 +8885,21 @@ export async function flushActiveSessionsToCache(timeoutMs = 25000): Promise<voi
 }
 
 /**
- * Emit analytics for a cancelled job
+ * Emit analytics for a cancelled job.
+ *
+ * `reason` is the only thing this function cannot read off the session, and it
+ * is what both of its sentences are derived from — the progress line a person
+ * reads on the queue row, and the `error` string that goes into the durable
+ * analytics ledger. Neither is spelt here: `shared/queue/stop-reason.ts` owns
+ * both, so the quit and the hard-kill revive cannot describe one event two ways
+ * again (bug hunt 2026-09-20, S12).
  */
-function emitCancelledAnalytics(session: ConversionSession): void {
+function emitCancelledAnalytics(session: ConversionSession, reason: StopReason): void {
   if (!mainWindow || !session.prepInfo) return;
 
   // Stop state save timer and finalize state
   stopStateSaveTimer(session);
-  finalizeRunState(session, 'cancelled', 'Cancelled by user').catch(err => {
+  finalizeRunState(session, 'cancelled', stopAnalyticsError(reason)).catch(err => {
     console.error('[PARALLEL-TTS] Failed to finalize cancelled state:', err);
   });
 
@@ -8905,7 +8962,7 @@ function emitCancelledAnalytics(session: ConversionSession): void {
       fineTuned: session.config.settings.fineTuned || undefined
     },
     success: false,
-    error: 'Cancelled by user',
+    error: stopAnalyticsError(reason),
     isResumeJob: session.isResumeJob || false,
     sentencesProcessedInSession: sessionDone,
     wasCancelled: true,
@@ -8940,18 +8997,18 @@ function emitCancelledAnalytics(session: ConversionSession): void {
     activeWorkers: 0,
     workers: serializeWorkers(session.workers) as WorkerState[],
     estimatedRemaining: 0,
-    message: 'Stopped by user — press Start to resume'
+    message: stopSentence(reason)
   };
 
   rendererSend('parallel-tts:progress', { jobId: session.jobId, progress });
   rendererSend('parallel-tts:complete', {
     jobId: session.jobId,
     success: false,
-    error: 'Stopped by user',
+    error: stopAnalyticsError(reason),
     duration,
     analytics,
-    // Flag to indicate this was a user-initiated stop (can be resumed)
-    // The session files remain on disk and can be continued later
+    // Flag to indicate this stop is RESUMABLE — both reasons are: the session
+    // files remain on disk and can be continued later.
     wasStopped: true,
     stopInfo: {
       sessionId: session.prepInfo?.sessionId,

@@ -179,6 +179,70 @@ test('a travelling GPU step with no assignment yet answers NULL, not a guess', (
     'nothing can say which card it wants, and admission says so in its own words');
 });
 
+// ── S12 · A NAMED row waits in the set it names ─────────────────────────────
+
+/*
+ * THE FINDING (bug hunt round 2, 2026-09-20). "Clean text — Lying About Hitler"
+ * was NAMED for the PC by its own picker, had no venue and no `waitForResolved`,
+ * and this function answered `null` for it. `unroutedHold` then drew its
+ * admission hold — *"Waiting for crucible@<the PC>: busy … align …"* — on the
+ * FIRST free GPU lane on the bench, which was the MAC's, under the heading
+ * "Waiting for the card". The Mac was never waiting on the PC.
+ */
+
+test('S12: a row NAMED for a server waits in that server\'s set, venue or not', () => {
+  const step = stepOf({ travels: true, status: 'queued' });
+  assert.strictEqual(slots.slotSetForStep(jobOfSteps([step], { waitFor: 'the-pc' }), step),
+    'the-pc',
+    'nothing will ever admit this row anywhere else, so that is the set it waits in');
+});
+
+test('S12: the ASSIGNMENT still outranks the ask', () => {
+  const step = stepOf({ travels: true, status: 'queued' });
+  const job = jobOfSteps([step], { waitFor: 'the-pc', waitForResolved: 'mac' });
+  assert.strictEqual(slots.slotSetForStep(job, step), 'mac',
+    '§4.3: the run was assigned, and what the operator asked for is history');
+});
+
+test('S12: "any" is not a machine, and neither is the retired narrator spawn', () => {
+  const step = stepOf({ travels: true, status: 'queued' });
+  assert.strictEqual(
+    slots.slotSetForStep(jobOfSteps([step], { waitFor: waitFor.WAIT_FOR_ANY }), step), null,
+    'an Any row genuinely has no machine to be drawn under — that is what unroutedHold is for');
+  assert.strictEqual(
+    slots.slotSetForStep(
+      jobOfSteps([step], { waitFor: waitFor.RETIRED_LOCAL_NARRATOR_VENUE }), step), null,
+    'a venue this app no longer has is not a set either');
+});
+
+test('S12: a QUEUED named row charges NOTHING — it has not been admitted', () => {
+  /*
+   * The consequence that had to be checked before the fallback could be added:
+   * `slotSetForStep` is read by the occupancy count, and a row that started
+   * charging the PC's one GPU slot just for NAMING it would lock every other
+   * book out of that card for as long as it sat in the queue.
+   *
+   * It cannot. Occupancy counts `running` steps — and a running step carries a
+   * venue, so it never reaches the new line — plus each job's GPU hold, which is
+   * derived from `waitForResolved` alone and is null for a run that has never
+   * been on a card.
+   */
+  const queued = stepOf({ id: 'q', travels: true, status: 'queued' });
+  const job = jobOfSteps([queued], { waitFor: 'the-pc' });
+  assert.strictEqual(slots.slotSetForStep(job, queued), 'the-pc', 'precondition: it is in the set');
+  assert.strictEqual(slots.gpuHoldOf(job), null, 'and it holds no card: it has never been on one');
+
+  const counts = slots.slotSetOccupancy({ jobs: [job] });
+  assert.strictEqual(counts.get('the-pc'), undefined,
+    'THE CONSEQUENCE: naming a machine is not taking its slot');
+
+  // And the moment it IS admitted, it counts — through the venue, as always.
+  const admitted = jobOfSteps(
+    [stepOf({ id: 'q', travels: true, status: 'running', venue: 'the-pc' })],
+    { waitFor: 'the-pc', waitForResolved: 'the-pc' });
+  assert.strictEqual(slots.slotSetOccupancy({ jobs: [admitted] }).get('the-pc').gpu, 1);
+});
+
 test('every enabled server brings [gpu] AND its cloud lane; a charged legacy spawn [gpu]; local-work [cpu][cpu]', () => {
   const sets = slots.slotSets(factsOf({
     servers: ['local', 'mac'], jobs: [jobOfSteps([epubAlignStep()])],

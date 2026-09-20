@@ -14410,7 +14410,14 @@ app.on('before-quit', async (event) => {
       // so the flush found nothing and quitting mid-job lost the checkpoint.)
       // AWAITED: per-session cooperative SIGTERM → verified wait → VM terminate for a
       // survivor (never SIGKILL — the WSL wedge trigger).
-      await killAllWorkers(false);
+      // AND THE TEARDOWN SAYS WHAT IT IS. `reason: 'closed'` is not a knob: it
+      // is this chain telling the bridge that every stop from here on is the
+      // APP ENDING, not a person pressing Stop. Without it the bridge's one
+      // stop door wore the Stop button's sentence for both, and Owen came back
+      // on 2026-09-20 to two renders aimed at idle cards reading "Stopped by
+      // user — press Start to resume" about a stop he never made. One fact,
+      // one sentence (shared/queue/stop-reason.ts).
+      await killAllWorkers(false, { reason: 'closed' });
       // Also run aggressive cleanup to catch any orphans
       forceKillAllNarratorBatchProcesses();
       // Global sweep for anything the session-scoped teardowns missed. Quitting without

@@ -46,6 +46,7 @@ import {
 import { getTTSLogger } from '../rolling-logger';
 import type { StepModule, StepRunContext, StepReport } from '../queue-engine';
 import type { ArtifactRef } from '../../shared/queue/engine-types';
+import type { StopReason } from '../../shared/queue/stop-reason';
 import { projectDirForStep, queueMainWindow, stepFailure } from './runtime';
 import { runVenueOfRow } from '../crucible/step-venue';
 
@@ -716,10 +717,16 @@ export const ttsConversionStep: StepModule = {
     }
   },
 
-  async cancel(stepId: string): Promise<void> {
+  async cancel(stepId: string, _step, opts?: { reason: StopReason }): Promise<void> {
     // The CACHING stop, deliberately: it promotes the sentences rendered so far
     // to the durable project cache, which is what makes the step resumable. The
     // plain stop would leave them in scratch for the next sweep to delete.
-    await stopAndCacheParallelConversion(stepId);
+    //
+    // AND IT IS TOLD WHOSE GESTURE IT IS. This bridge words the stop for the
+    // user — the progress line it emits is what the row keeps — so a quit that
+    // did not say so had the bridge telling Owen he had stopped two renders he
+    // never touched (bug hunt 2026-09-20, S12). Forwarded, never re-derived:
+    // the engine is the only thing that knows which door was pressed.
+    await stopAndCacheParallelConversion(stepId, opts === undefined ? undefined : { reason: opts.reason });
   },
 };

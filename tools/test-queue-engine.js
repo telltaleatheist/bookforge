@@ -974,10 +974,25 @@ test('stopping a RESUMABLE step leaves it held and interrupted, not cancelled', 
   assert.strictEqual(step.status, 'held', 'nothing revives a cancelled step; held is revivable');
   assert.strictEqual(step.wasInterrupted, true);
   assert.strictEqual(step.error, undefined, 'a stop is not a failure and must not read as one');
+  assert.strictEqual(step.stopReason, 'user', 'and whose gesture it was is on the row (S12)');
 
+  /*
+   * AND ITS OWN PRESS IS WHAT PICKS IT UP — bug hunt 2026-09-20, S12.
+   *
+   * The untargeted Start used to sweep this row up with everything else, which
+   * made `StepStatus`' promise about `held` ("needs an explicit gesture to run
+   * again") false of the only row it was written about: you stopped a render to
+   * get the card back, and the next press of Running put it straight back on.
+   * A TARGETED press — the per-row ▶ — is the gesture, and it still releases it.
+   */
   engine.start();
   await settle();
-  assert.strictEqual(tts.runs.length, 2, 'Start picks it up again');
+  assert.strictEqual(tts.runs.length, 1,
+    'the toolbar Start is about the QUEUE; a row somebody stopped by hand is not in it');
+
+  engine.start({ stepId: step.id });
+  await settle();
+  assert.strictEqual(tts.runs.length, 2, 'the row\'s own Start picks it up again');
   assert.strictEqual(tts.runs[1].ctx.step.wasInterrupted, true,
     'and the runner is told to resume rather than render from zero');
 });

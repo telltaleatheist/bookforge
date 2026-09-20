@@ -234,7 +234,8 @@ test('a held step behind another held step names the one in front', () => {
 
 test('a stopped step reports how far it got, and that the work is kept', () => {
   const stopped = step({
-    id: 's_s', status: 'held', wasInterrupted: true, progress: { percent: 41.4 },
+    id: 's_s', status: 'held', wasInterrupted: true, stopReason: 'user',
+    progress: { percent: 41.4 },
   });
   const j = job([stopped]);
   const r = reasonOf(snap([j]), j, stopped);
@@ -243,11 +244,34 @@ test('a stopped step reports how far it got, and that the work is kept', () => {
 });
 
 test('a stopped step that measured nothing still says it is resumable', () => {
-  const stopped = step({ id: 's_s', status: 'held', wasInterrupted: true });
+  const stopped = step({
+    id: 's_s', status: 'held', wasInterrupted: true, stopReason: 'user',
+  });
   const j = job([stopped]);
   assert.strictEqual(
     reasonOf(snap([j]), j, stopped).sentence,
     'Stopped — it picks up where it left off.');
+});
+
+test('S12: a row the CLOSE interrupted is not described as stopped', () => {
+  /*
+   * Same `kind` — both resume, and the ▶ says *Resume* for both — but the
+   * sentence names what actually happened. "Stopped" names a gesture, and Owen
+   * came back on 2026-09-20 to two renders aimed at idle cards described as
+   * stopped when he had touched neither.
+   */
+  for (const over of [
+    { stopReason: 'closed' },
+    // An OLD row: interrupted, with no reason recorded. See `closedInterrupted`.
+    {},
+  ]) {
+    const cut = step({ id: 's_c', status: 'held', wasInterrupted: true, ...over });
+    const j = job([cut]);
+    const r = reasonOf(snap([j]), j, cut);
+    assert.strictEqual(r.kind, 'stopped', 'the ▶ still says Resume');
+    assert.strictEqual(r.sentence,
+      'Interrupted when BookForge closed — it picks up where it left off.');
+  }
 });
 
 // ── The refusals ────────────────────────────────────────────────────────────
@@ -327,6 +351,48 @@ test('a hold shows on the free GPU slot, and never on a CPU slot', () => {
   assert.strictEqual(lanes[0].hold, hold);
   assert.strictEqual(lanes[1].hold, null);
   assert.strictEqual(lanes[2].hold, null);
+});
+
+// ── S12 · A NAMED row's wait is drawn on the card it names ─────────────────
+
+/*
+ * THE FINDING (bug hunt round 2, 2026-09-20, 14:25 ET). "Clean text — Lying
+ * About Hitler" was named for the PC by its own picker and was waiting for the
+ * PC's engine to load. It had no venue and no `waitForResolved`, so
+ * `slotSetForStep` filed it under "no machine" and `unroutedHold` drew its
+ * sentence on the FIRST free GPU lane on the bench — the MAC's, under the
+ * heading "Waiting for the card". The Mac was never waiting on the PC.
+ */
+
+test('S12: a named row\'s hold is drawn on ITS card and on no other', () => {
+  const hold = 'Waiting for crucible@the-pc: busy — loading the model.';
+  const named = job([step({
+    id: 's_named', label: 'Clean text', travels: true, status: 'queued',
+    progress: { admissionHold: hold },
+  })], { id: 'job_named', title: 'Lying About Hitler', waitFor: 'the-pc' });
+
+  const lanes = bench.benchLanes(snap([named], true, ['mac', 'the-pc']));
+  const gpuOf = (setId) => lanes.find((l) => l.setId === setId && l.resource === 'gpu');
+
+  assert.strictEqual(gpuOf('the-pc').hold, hold,
+    'the row is bound to that machine by its own picker, so that is where its wait is drawn');
+  assert.strictEqual(gpuOf('mac').hold, null,
+    'THE FINDING: the Mac carried the PC\'s sentence under "Waiting for the card"');
+});
+
+test('S12: an "Any" row still draws once, on the first free GPU lane', () => {
+  // The case `unroutedHold` is actually for, and the reason it survives: a row
+  // that has named no machine genuinely has none to be drawn under, and
+  // repeating its sentence on every card would read as every machine blocked.
+  const hold = 'Waiting for a server: every enabled one is busy.';
+  const any = job([step({
+    id: 's_any', travels: true, status: 'queued', progress: { admissionHold: hold },
+  })], { id: 'job_any', waitFor: 'any' });
+
+  const lanes = bench.benchLanes(snap([any], true, ['mac', 'the-pc']));
+  const held = lanes.filter((l) => l.hold === hold);
+  assert.strictEqual(held.length, 1, 'once, not once per machine');
+  assert.strictEqual(held[0].resource, 'gpu');
 });
 
 test('an occupied GPU slot carries no hold, so a busy card never reads as blocked', () => {
