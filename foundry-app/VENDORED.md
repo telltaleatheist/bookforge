@@ -10,10 +10,21 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\<user>\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **ca4754c** — *Adopt Crucible 1.0.7: the render door with retake, band and width, and serving levers on the voice row* |
+| Source sha | **98a4344** — *Adopt Crucible 1.0.8: one retry for a reset socket, and a render forwards only the width it was given* |
 | Engine | **NOT VENDORED AND NOT KNOWABLE FROM THIS FILE** — it is a spawned CLI resolved at RUNTIME (`FOUNDRY_BIN`, else `resolveFoundryPath`, `electron/main.ts`), so which build executes is a property of the machine and not of this copy. On a developer's Mac that resolves to Foundry's own checkout at `/Volumes/Callisto/Projects/foundry/dist/foundry-darwin-arm64`, which is whatever was last built there — `foundry 2.0.2 (1c1eaa3)` as of 2026-09-18. **Ask the binary: `$FOUNDRY_BIN --version`.** See *The engine this file named was not the engine that ran* below. |
-| Copied on | 2026-09-19 (five times: 3738c01, 3436fc5, 806d44b, f349771, ca4754c) |
-| Copied by | Mechanical source sync, verified against Foundry `ca4754c:app/`; details below |
+| Copied on | 2026-09-19 (five times: 3738c01, 3436fc5, 806d44b, f349771, ca4754c) and 2026-09-20 (98a4344) |
+| Copied by | Mechanical source sync, verified against Foundry `98a4344:app/`; details below |
+
+## The `ca4754c → 98a4344` re-vendor — four files, the 1.0.8 SDK adoption (2026-09-20)
+
+Same shape as the entry below it: Foundry 98a4344 is ca4754c plus
+`tools/adopt-crucible-release.mjs 1.0.8` (`app/package.json`, `app/package-lock.json`,
+the two `-1.0.8.tgz` tarballs; the 1.0.7 pair deleted), each checked by blob id against
+`98a4344:app/<path>` (all four MATCH). 1.0.8 is Crucible `fix/mlx-width-and-keepalive`: a
+render forwards only the width the client stated (the MLX arm had been capped at the CUDA
+manifest's 16 — 12.9x → 5.5x realtime on the Mac, measured 2026-09-20), the server's
+keep-alive outlives Node's ~4 s idle pool, and `@crucible/client` retries an idempotent GET
+once on a socket reset before any response byte. Foundry's own code unchanged. IPC unchanged.
 
 ## The `f349771 → ca4754c` re-vendor — four files, the 1.0.7 SDK adoption (2026-09-19, late night)
 
