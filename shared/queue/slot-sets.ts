@@ -130,7 +130,7 @@
  * no engine and no network. No I/O, no clock, no Electron.
  */
 
-import { RETIRED_LOCAL_NARRATOR_VENUE } from './wait-for';
+import { RETIRED_LOCAL_NARRATOR_VENUE, WAIT_FOR_ANY } from './wait-for';
 import { TERMINAL_STEP_STATUSES } from './engine-types';
 import type { QueueJob, QueueStep, StepResource, StepStatus } from './engine-types';
 
@@ -331,7 +331,9 @@ function labelFor(id: string): string {
  *  5. A GPU step of a run already assigned follows the run (§4.4, one book one
  *     GPU), which is what lets the bench say why a queued row is waiting before
  *     the pump has admitted it.
- *  6. Otherwise nothing can say. `null` is a real answer and not an error: the
+ *  6. A GPU step of a run whose picker NAMES a machine waits in that machine's
+ *     set — see below.
+ *  7. Otherwise nothing can say. `null` is a real answer and not an error: the
  *     row has not been routed yet, and admission will say so in its own words
  *     rather than this guessing at a machine.
  */
@@ -368,7 +370,39 @@ export function slotSetForStep(
   }
   if (step.resource === 'cpu') return LOCAL_WORK_SET;
   if (step.travels !== true) return LONGFORM_ALIGN_SET;
-  return job.waitForResolved ?? null;
+  /*
+   * A ROW BOUND TO A MACHINE BY ITS OWN PICKER WAITS IN THAT MACHINE'S SET —
+   * bug hunt 2026-09-20, and the second finding of that afternoon.
+   *
+   * `waitForResolved` is what the run was ASSIGNED, written at the moment a
+   * card was taken. `waitFor` is what the operator ASKED FOR, and when it names
+   * a server it is every bit as binding on where the row can wait: nothing will
+   * ever admit this step anywhere else. Answering `null` for it filed the row
+   * under "not routed yet", and `unroutedHold` (shared/queue/bench.ts) draws
+   * such a row's admission hold on the FIRST FREE GPU LANE ON THE BENCH — so
+   * Owen's "Clean text — Lying About Hitler", named for the PC and waiting for
+   * the PC's engine to load, wrote *"Waiting for crucible@<the PC>: busy …"*
+   * under the MAC's card, beneath the heading "Waiting for the card". The Mac
+   * was never waiting on anything.
+   *
+   * With the row in its own machine's set, `admissionHoldFor` draws the
+   * sentence there and `unroutedHold` fires only for a genuine *Any* row, which
+   * is the one case that really has no machine to be drawn under.
+   *
+   * THIS CANNOT CHARGE A SLOT THE ROW HAS NOT BEEN ADMITTED TO.
+   * `slotSetOccupancy` counts `running` steps (a running step has a venue, so
+   * it never reaches this line) plus each job's GPU hold, which is derived from
+   * `waitForResolved` alone. A `queued` row counts nowhere, before this change
+   * or after it — which is what `tools/test-queue-slot-sets.js` pins.
+   *
+   * `any` is not a machine and neither is the retired narrator spawn: the first
+   * is the absence of a choice, the second is a venue the app no longer has.
+   */
+  if (job.waitForResolved !== undefined) return job.waitForResolved;
+  const named = job.waitFor;
+  if (named === undefined) return null;
+  if (named === WAIT_FOR_ANY || named === RETIRED_LOCAL_NARRATOR_VENUE) return null;
+  return named;
 }
 
 // ────────────────────────────────────────────────────────────────────────────

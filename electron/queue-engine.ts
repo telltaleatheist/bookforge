@@ -126,6 +126,7 @@ import {
 import { crucibleRouteOf, crucibleUpstreamsOf, onCrucibleRecordChanged } from './crucible/routes';
 import { engineLanes } from './crucible/engine-lanes';
 import { JOB_GERUND } from '../shared/queue/job-words';
+import { stopSentence, userStopped, type StopReason } from '../shared/queue/stop-reason';
 /*
  * THE ONE RULE FOR "WHICH PROJECT IS THIS ROW ABOUT", borrowed from the step
  * modules rather than restated here. It is a pure function over a config and an
@@ -368,8 +369,14 @@ export interface StepModule {
    * by job id: a document stage is claimed by PROJECT, and the project is on the
    * config. A module that had only the id would have to keep a registry of its
    * own to find it again.
+   *
+   * `opts.reason` is WHOSE GESTURE this is — a person, or the app closing — and
+   * it is passed down because a module's own bridge words the stop for the user
+   * (`stopParallelConversion` emits the progress line the row keeps). A module
+   * that does not word anything ignores it; absent means the same thing it did
+   * before this argument existed, a user Stop.
    */
-  cancel(stepId: string, step: QueueStep): void | Promise<void>;
+  cancel(stepId: string, step: QueueStep, opts?: { reason: StopReason }): void | Promise<void>;
 }
 
 const modules = new Map<JobType, StepModule>();
@@ -477,6 +484,19 @@ interface EngineConfig {
 let config: EngineConfig | null = null;
 let jobs: QueueJob[] = [];
 let running = false;
+/**
+ * IS THE APP ON ITS WAY OUT — set once by {@link shutdown} and never cleared.
+ *
+ * It is the default half of {@link StopReason}: from the moment `before-quit`
+ * has told this engine the app is closing, a stop that reaches `cancel()`
+ * without naming a reason is the CLOSE, not a person. Nothing in the quit chain
+ * can enumerate every door a stop might come through in the seconds that
+ * follow — the renderer is still alive and its window still has buttons — so
+ * the fact lives on the process rather than being threaded through callers
+ * (bug hunt 2026-09-20, S12; the bridge keeps the twin of this flag for the
+ * same reason).
+ */
+let closing = false;
 let listeners: Array<(snapshot: QueueSnapshot) => void> = [];
 
 /** One entry per RUNNING step. The whole cancel story, in one place. */
@@ -488,6 +508,12 @@ interface RunningStep {
   resource: StepResource;
   /** Set when the user asked for this to stop, so the outcome is read as a stop. */
   stopRequested: boolean;
+  /**
+   * WHOSE GESTURE the stop above was, carried from the door that asked for it
+   * to `settleStep`, which is where the step records it. Absent until something
+   * asks to stop.
+   */
+  stopReason?: StopReason;
 }
 const runningSteps = new Map<string, RunningStep>();
 
@@ -1586,6 +1612,28 @@ function findStep(stepId: string): { job: QueueJob; step: QueueStep } | null {
  * Releases everything held AT THIS MOMENT and nothing else — a run added after
  * the press is held again, because Start means "run what is here" and a button
  * that silently also armed the future would make the next enqueue a surprise.
+ *
+ * ── WHAT AN UNTARGETED PRESS PICKS UP, AND WHY (2026-09-20, S12) ────────────
+ *
+ * A row the APP'S CLOSING interrupted is released; a row a PERSON stopped is
+ * not. The two look identical on disk — both `held`, both `wasInterrupted` —
+ * and telling them apart is the whole of {@link QueueStep.stopReason}.
+ *
+ * The Sep 19 ruling that a launch must not restore `running` ("coming back up
+ * claiming the GPU is the app deciding for the user") is about THE APP'S OWN
+ * LAUNCH, and it is untouched: nothing here runs at startup. This is the
+ * opposite moment. The person pressing Running IS the decision the ruling
+ * reserves for them, and a row the close interrupted is one they never asked to
+ * stop — so leaving it held made Running a button that started the queue and
+ * skipped the two books in it, which is what Owen met on 2026-09-20: *"I
+ * started the queue again … it isn't accepting anything even though some in the
+ * queue are assigned to it."*
+ *
+ * A row they stopped BY HAND is the other half of the same respect: they took
+ * the card back on purpose, and its own ▶ (a targeted press, which releases
+ * whatever it names) is the gesture that undoes that. `StepStatus`' words for
+ * `held` — *needs an explicit gesture to run again* — are finally true of the
+ * only row they were ever written about.
  */
 export function start(target?: { jobId?: string; stepId?: string }): void {
   release(target);
@@ -1611,6 +1659,14 @@ export function start(target?: { jobId?: string; stepId?: string }): void {
  *  - TARGETED (Start pressed on one book or one step): REFUSED BY NAME. Silently
  *    doing nothing to a book somebody pressed Start on is the failure this whole
  *    page exists to remove.
+ *
+ * ── AND A ROW SOMEBODY STOPPED BY HAND IS NOT "WHAT IS HERE" EITHER ────────
+ *
+ * Same shape, same reason, one band further in: an untargeted press is a
+ * statement about the QUEUE, and a row the user stopped is one they took out of
+ * it deliberately. A TARGETED press releases it — that is the explicit gesture
+ * `StepStatus` promises — which is why the test is inside the loop rather than
+ * on the whole call. See {@link start} for the ruling this reads against.
  */
 export function release(target?: { jobId?: string; stepId?: string }): void {
   if (target?.jobId !== undefined || target?.stepId !== undefined) {
@@ -1625,6 +1681,7 @@ export function release(target?: { jobId?: string; stepId?: string }): void {
       );
     }
   }
+  const untargeted = target?.jobId === undefined && target?.stepId === undefined;
   const affected: QueueStep[] = [];
   for (const job of jobs) {
     if (isPending(job)) continue;
@@ -1632,6 +1689,9 @@ export function release(target?: { jobId?: string; stepId?: string }): void {
     for (const step of job.steps) {
       if (target?.stepId && step.id !== target.stepId) continue;
       if (step.status !== 'held') continue;
+      // See the second note above: a hand-stopped row waits for its own press.
+      // A row the CLOSE interrupted is not one of these and is swept up here.
+      if (untargeted && userStopped(step)) continue;
       affected.push(step);
     }
   }
@@ -1688,8 +1748,19 @@ export async function cancel(
    * Defaults to FALSE for the reason stated on {@link setResumableStopReason}:
    * absent means cancel, on both sides of the seam.
    */
-  opts?: { resumable?: boolean },
+  opts?: {
+    resumable?: boolean;
+    /**
+     * WHOSE GESTURE THIS IS — `'user'` for every button, `'closed'` when the
+     * app is ending. Absent means {@link closing}'s answer, which is `'user'`
+     * for the whole of a normal session and `'closed'` from the moment
+     * `shutdown()` has run. It decides the SENTENCE the row wears and whether
+     * an untargeted Start will pick the row back up (`release`).
+     */
+    stopReason?: StopReason;
+  },
 ): Promise<void> {
+  const stopReason: StopReason = opts?.stopReason ?? (closing ? 'closed' : 'user');
   const targets: Array<{ job: QueueJob; step: QueueStep }> = [];
   if (target.stepId) {
     const found = findStep(target.stepId);
@@ -1710,8 +1781,11 @@ export async function cancel(
       const live = runningSteps.get(step.id);
       if (live) {
         live.stopRequested = true;
+        // Recorded BEFORE the module is asked to stop: the module's own bridge
+        // can settle the step inside that await, and `settleStep` reads this.
+        live.stopReason = stopReason;
         try {
-          await moduleFor(step.type).cancel(step.id, step);
+          await moduleFor(step.type).cancel(step.id, step, { reason: stopReason });
         } catch (err) {
           console.error(`[QUEUE-ENGINE] ${step.label} did not stop cleanly:`, err);
         }
@@ -2186,6 +2260,10 @@ export async function returnToPending(jobId: string): Promise<void> {
      * row is history the run no longer owns.
      */
     step.wasInterrupted = undefined;
+    // With it, WHOSE gesture that was: a staged run has no stop to remember,
+    // and a stale `'user'` here would have the row skipped by the untargeted
+    // Start for ever after it was sent back to the queue (`release`).
+    step.stopReason = undefined;
     step.lastError = undefined;
     // The machine this step was PENCILLED IN for, which is now a decision the
     // operator is about to make again. Left standing it would have the bench
@@ -2408,6 +2486,14 @@ export function retry(target: { jobId?: string; stepId?: string }): void {
      */
     if (step.error !== undefined) step.lastError = step.error;
     step.error = undefined;
+    /*
+     * PRESSING RETRY IS THE GESTURE, so the row is no longer waiting for one.
+     * A step that was stopped by hand, released, run and then failed would
+     * otherwise carry `'user'` into its retry and be stepped over by the next
+     * untargeted Start — a row somebody had just pressed Retry on, sitting
+     * held while the queue ran past it.
+     */
+    step.stopReason = undefined;
     step.progress = {};
     step.metrics = {};
     step.output = undefined;
@@ -4452,6 +4538,13 @@ function settleStep(job: QueueJob, step: QueueStep, outcome: StepOutcome): void 
   const live = runningSteps.get(step.id);
   const stopped = live?.stopRequested === true;
   /*
+   * WHOSE GESTURE, read HERE because the live entry is deleted below and the
+   * resumable branch that needs it runs after that (bug hunt 2026-09-20, S12).
+   * Read beside the flag it qualifies for the same reason the flag is read
+   * here: they are one fact about the attempt that has just ended.
+   */
+  const stopAskedBy: StopReason = live?.stopReason ?? (closing ? 'closed' : 'user');
+  /*
    * WAS THIS A WAIT? ONE READER, ONE FIELD — the line the refusal carried.
    *
    * It used to be read off the LIVE ENTRY, which a module had to fill through
@@ -4644,6 +4737,10 @@ function settleStep(job: QueueJob, step: QueueStep, outcome: StepOutcome): void 
     step.progress = { ...step.progress, percent: 100 };
     step.error = undefined;
     step.wasInterrupted = false;
+    // Nothing stopped it: the account of the last stop goes with the flag it
+    // qualifies, so a row that was interrupted once and then finished does not
+    // carry a reason for a stop that is no longer true of it.
+    step.stopReason = undefined;
     /*
      * THE RUN LEARNS ITS PROJECT FROM THE STEP THAT MINTS IT.
      *
@@ -4678,6 +4775,31 @@ function settleStep(job: QueueJob, step: QueueStep, outcome: StepOutcome): void 
     // makes a stopped narration resumable — nothing revives `cancelled`.
     step.status = 'held';
     step.wasInterrupted = true;
+    /*
+     * AND WHOSE GESTURE IT WAS, which is the half `wasInterrupted` never said
+     * (bug hunt 2026-09-20, S12). It decides two things a reader acts on: the
+     * sentence on the row, and whether pressing Running picks this back up. A
+     * runner that stopped ITSELF arrives here with nothing asked of it — the
+     * `stopped` test above is satisfied by `live.stopRequested`, so there is
+     * always a door — and `cancel` writes the reason before it awaits the
+     * module, so the value is here however fast the module settled.
+     */
+    const askedBy = stopAskedBy;
+    step.stopReason = askedBy;
+    /*
+     * A CLOSE IS WORDED HERE, AND IT KEEPS NO PERCENT — the settling twin of
+     * what `reviveInterrupted` writes for a step the process never got to
+     * settle at all, so the two ends of one fact say one sentence.
+     *
+     * The percent goes for Q9's reason: it was measured against a session this
+     * process is losing, and nothing knows what fraction of it survived on disk
+     * until the step runs again and reads it. A USER stop is the opposite case
+     * and is left exactly as it was — its bridge has just flushed the rendered
+     * chunks to the durable cache, so *"Stopped at 42% — it picks up where it
+     * left off"* is true, and its sentence was written by the same owner
+     * (`shared/queue/stop-reason.ts`) one door down.
+     */
+    if (askedBy === 'closed') step.progress = { message: stopSentence('closed') };
     /*
      * AND THE REASON IT WAS CARRYING IS KEPT — P6/F7, bug hunt 2026-09-20.
      *
@@ -5034,6 +5156,14 @@ function reviveInterrupted(): void {
         step.status = 'held';
         step.wasInterrupted = true;
         /*
+         * THE SAME FACT THE ORDERLY QUIT RECORDS, written by the path that
+         * handles the DISORDERLY one (bug hunt 2026-09-20, S12). A kill gives
+         * `shutdown()` no chance to stamp the row, so this is where the row
+         * learns what ended it — and it is the same value, so `start()` cannot
+         * treat a hard kill and a clean quit differently.
+         */
+        step.stopReason = 'closed';
+        /*
          * THE PERCENT GOES WITH THE RUN THAT EARNED IT (bug hunt 2026-09-20,
          * Q9). This spread `...step.progress` and replaced only `message`, so
          * a render killed during its session copy came back saying 100% — and
@@ -5268,13 +5398,18 @@ function migrateStep(row: LegacyJob, parentStepId: string, job: QueueJob): Queue
       // Interrupted: the process that was running it is gone.
       step.status = 'held';
       step.wasInterrupted = true;
-      step.progress = {
-        message: 'Interrupted when BookForge closed. Press Start to pick it up from where it got to.',
-      };
+      // Same fact, same sentence, same owner as `reviveInterrupted` — the
+      // ancient `queue.json` said "processing" for exactly this shape.
+      step.stopReason = 'closed';
+      step.progress = { message: stopSentence('closed') };
       break;
     case 'stopped':
       step.status = 'held';
       step.wasInterrupted = true;
+      // The one legacy status that is a PERSON: `stopped` was written by the
+      // old queue's Stop button and by nothing else, so it stays held through
+      // an untargeted Start, exactly as a Stop does today.
+      step.stopReason = 'user';
       break;
     default:
       step.status = 'held';
@@ -5288,8 +5423,27 @@ function migrateStep(row: LegacyJob, parentStepId: string, job: QueueJob): Queue
 // Shutdown
 // ────────────────────────────────────────────────────────────────────────────
 
-/** Stop claiming, and write what is on the board. Called on app quit. */
+/**
+ * Stop claiming, and write what is on the board. Called on app quit.
+ *
+ * AND IT STAMPS WHAT IT IS ON THE WORK IT IS ENDING (bug hunt 2026-09-20, S12).
+ * Every step still `running` when this is called is about to be interrupted by
+ * the app closing, whichever door reaches it first: the teardown kills its
+ * worker, or the process simply goes and `reviveInterrupted` finds it `running`
+ * on the next load. Both ends now agree in advance — `stopReason: 'closed'` is
+ * on the row before the board is written, so a settle that lands during the
+ * quit and a revive that happens a launch later say the same thing.
+ *
+ * {@link closing} is set first, and it is the part that covers everything this
+ * loop cannot see: a step that starts stopping a second from now.
+ */
 export async function shutdown(): Promise<void> {
+  closing = true;
+  for (const job of jobs) {
+    for (const step of job.steps) {
+      if (step.status === 'running') step.stopReason = 'closed';
+    }
+  }
   running = false;
   if (progressTimer) { clearTimeout(progressTimer); progressTimer = null; }
   if (persistTimer) { clearTimeout(persistTimer); persistTimer = null; }

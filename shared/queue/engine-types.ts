@@ -41,6 +41,7 @@
 // vocabulary and imports the queue's shapes from here, so the back-reference
 // must erase. It does — nothing below imports a VALUE from that module.
 import type { SlotSet } from './slot-sets';
+import type { StopReason } from './stop-reason';
 
 /** Job types this queue can run. Retired vocabulary is listed separately below. */
 export type JobType =
@@ -228,7 +229,9 @@ export const STAGED_JOB_TYPES: ReadonlySet<JobType> = new Set<JobType>([
  *            pressed Start for it. A user STOP also lands here: a stopped step is
  *            precisely one that is present, will not be auto-picked, and needs an
  *            explicit gesture to run again. (It carries `wasInterrupted`, so the
- *            renderer can say "stopped" rather than "not started yet".)
+ *            renderer can say "stopped" rather than "not started yet", and
+ *            {@link QueueStep.stopReason}, which says WHOSE gesture it was —
+ *            only a user's keeps the row here through an untargeted Start.)
  * `queued` — released; runnable the moment its parent is done and a slot frees.
  * `waiting`— released, but its parent has not produced the thing it reads.
  * `running`— holding a resource slot right now.
@@ -663,6 +666,24 @@ export interface QueueStep {
    * than render from sentence zero.
    */
   wasInterrupted?: boolean;
+  /**
+   * WHOSE GESTURE STOPPED IT — `'user'` (Stop was pressed) or `'closed'` (the
+   * app ended while it was running). Present exactly when `wasInterrupted` is.
+   *
+   * ── Why the flag was not enough (bug hunt 2026-09-20, S12) ────────────────
+   *
+   * `wasInterrupted` says the work can be picked up; it does not say who ended
+   * it, and the two answers are treated differently at both ends of the row.
+   * The SENTENCE differs — a quit that borrowed the Stop button's words told
+   * Owen he had stopped two renders he had not touched — and so does what
+   * pressing Running means: a row the close interrupted is one nobody asked to
+   * stop, so the person pressing Running is asking for it back, while a row
+   * they stopped by hand stays held until they press its own ▶.
+   *
+   * ABSENT ON AN OLD ROW, and `closedInterrupted` (shared/queue/stop-reason.ts)
+   * reads that as `'closed'` — see its docstring for why that is the safe half.
+   */
+  stopReason?: StopReason;
   /** Whatever the run produced for the analytics ledger, verbatim. */
   analytics?: unknown;
   /** The output path, as a string, for rows whose artifact is a file. */

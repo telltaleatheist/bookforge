@@ -47,6 +47,7 @@ import {
   type StepStatus,
 } from './engine-types';
 import { JOB_GERUND } from './job-words';
+import { closedInterrupted } from './stop-reason';
 import {
   LOCAL_WORK_SET, LONGFORM_ALIGN_SET, gpuHoldCharges, gpuHoldStep, gpuHoldWords,
   serverOfCloudLane, slotSetForStep, slotSetOccupancy, slotsOf,
@@ -234,6 +235,23 @@ export function stillReason(
   if (step.status === 'held') {
     if (step.wasInterrupted) {
       const percent = step.progress.percent;
+      /*
+       * WHO ENDED IT IS PART OF THE SENTENCE — bug hunt 2026-09-20, S12.
+       *
+       * The `kind` stays `stopped`, because that is what the surfaces derive
+       * the ▶ *Resume* label from and both gestures resume the same way. Only
+       * the words change, and they have to: *"Stopped"* names a gesture, and
+       * Owen came back on 2026-09-20 to two renders aimed at idle cards being
+       * described as stopped when nobody had touched them. A close has no
+       * percent to report either (see `reviveInterrupted`), so this branch is
+       * the whole of what it can say.
+       */
+      if (closedInterrupted(step)) {
+        return {
+          kind: 'stopped',
+          sentence: 'Interrupted when BookForge closed — it picks up where it left off.',
+        };
+      }
       return {
         kind: 'stopped',
         sentence: percent === undefined

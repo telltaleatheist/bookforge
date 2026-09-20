@@ -84,7 +84,12 @@ function fakeModule(type, opts = {}) {
       runs.push(record);
       return record.promise;
     },
-    cancel(stepId) {
+    // WHAT THE ENGINE TOLD THIS MODULE, kept so S12 can read it: a module's own
+    // bridge is what words a stop for the user, so the reason has to arrive here
+    // or the sentence on the row is written by a door that does not know.
+    cancelledWith: [],
+    cancel(stepId, _step, opts) {
+      mod.cancelledWith.push(opts === undefined ? null : { ...opts });
       const live = runs.find((r) => r.ctx.stepId === stepId && !r.settled);
       if (live) live.reject(new Error('Stopped by the user.'));
     },
@@ -520,6 +525,198 @@ test('Q10: an UNREADABLE queue is an empty queue and a sentence, never a dead ap
   const report = engine.waitForMigrationReport();
   assert.ok(report !== null && /could not be read/.test(report),
     `the reason is carried out rather than thrown; got: ${report}`);
+});
+
+// ── S12 · One fact, one sentence; and Running picks up what the close cut ───
+
+/*
+ * THE FINDING (bug hunt round 2, S12). Owen relaunched on 2026-09-20 and found
+ * two narration rows aimed at two IDLE Crucible servers reading *"Stopped by
+ * user — press Start to resume"*. He had stopped neither; the quit had. The
+ * bridge's one stop door wore the Stop button's sentence for both gestures,
+ * while the hard-kill revive wrote a different sentence for the same fact. Then
+ * he pressed Running and the two books did not move: *"it isn't accepting
+ * anything even though some in the queue are assigned to it."*
+ *
+ * Both halves are one field — `QueueStep.stopReason` — and these four checks
+ * are what it is for.
+ */
+
+const STOP_REASON = require(path.join(DIST, '..', 'shared', 'queue', 'stop-reason.js'));
+
+test('S12: a stop that is the APP CLOSING does not blame the user', async () => {
+  const mods = chainModules();
+  mods.tts.stopIsResumable = true;
+  await fresh('s12-closed-sentence', Object.values(mods));
+  const job = narrationChain('Shift - Book 2');
+  engine.start();
+  await settle();
+  mods.prep.runs[0].resolve({ kind: 'prepared-session', path: '/out/prepared' });
+  await settle();
+  assert.ok(mods.tts.runs[0], 'precondition: the narration is on the card');
+
+  await engine.cancel({ stepId: stepAt(job.id, 1).id }, 'BookForge is closing.',
+    { resumable: true, stopReason: 'closed' });
+  await settle();
+
+  const step = stepAt(job.id, 1);
+  assert.strictEqual(step.status, 'held', 'a close is resumable, exactly like a stop');
+  assert.strictEqual(step.wasInterrupted, true);
+  assert.strictEqual(step.stopReason, 'closed', 'THE FINDING: whose gesture it was is recorded');
+  assert.strictEqual(step.progress.message,
+    STOP_REASON.stopSentence('closed'),
+    'and the row wears the SAME sentence the hard-kill revive writes — one fact, one sentence');
+  assert.strictEqual(step.progress.percent, undefined,
+    'with no percent: it was measured against a session this process is losing (Q9)');
+  // The module was told, because ITS bridge is what words the stop for the user.
+  assert.deepStrictEqual(mods.tts.cancelledWith, [{ reason: 'closed' }],
+    'the reason reaches the module, which is where the bridge writes its own line');
+});
+
+test('S12: a USER stop keeps its own sentence and its percent', async () => {
+  const mods = chainModules();
+  mods.tts.stopIsResumable = true;
+  await fresh('s12-user-sentence', Object.values(mods));
+  const job = narrationChain('Wool');
+  engine.start();
+  await settle();
+  mods.prep.runs[0].resolve({ kind: 'prepared-session', path: '/out/prepared' });
+  await settle();
+  // What the bridge reports for a live render, so the percent has somewhere to
+  // come from — a user stop has just flushed those chunks to the durable cache,
+  // which is why "Stopped at 61%" is true of it and not of a close.
+  mods.tts.runs[0].ctx.report({ percent: 61 });
+
+  await engine.cancel({ stepId: stepAt(job.id, 1).id }, 'Stopped by the user.',
+    { resumable: true });
+  await settle();
+
+  const step = stepAt(job.id, 1);
+  assert.strictEqual(step.stopReason, 'user', 'the default gesture is a person');
+  assert.strictEqual(step.progress.percent, 61,
+    'a user stop keeps what it rendered: the cache has it and the row may say so');
+  assert.deepStrictEqual(mods.tts.cancelledWith, [{ reason: 'user' }]);
+});
+
+test('S12: Running releases what the CLOSE interrupted and leaves a user stop held', async () => {
+  const mods = chainModules();
+  mods.tts.stopIsResumable = true;
+  await fresh('s12-running-releases', Object.values(mods));
+  const closed = narrationChain('Shift - Book 2');
+  const stopped = narrationChain('Wool');
+  engine.start();
+  await settle();
+  for (const job of [closed, stopped]) {
+    const prep = mods.prep.runs.find((r) => r.ctx.jobId === job.id);
+    prep.resolve({ kind: 'prepared-session', path: '/out/prepared' });
+  }
+  await settle();
+
+  await engine.cancel({ stepId: stepAt(closed.id, 1).id }, 'BookForge is closing.',
+    { resumable: true, stopReason: 'closed' });
+  await engine.cancel({ stepId: stepAt(stopped.id, 1).id }, 'Stopped by the user.',
+    { resumable: true });
+  await settle();
+  assert.strictEqual(stepAt(closed.id, 1).status, 'held', 'precondition');
+  assert.strictEqual(stepAt(stopped.id, 1).status, 'held', 'precondition');
+
+  // The press Owen made: the toolbar's Running, which is `start()` with no target.
+  engine.start();
+  await settle();
+
+  assert.notStrictEqual(stepAt(closed.id, 1).status, 'held',
+    'THE FINDING: Running skipped the very books it was pressed for — a row the close '
+    + 'interrupted is one nobody asked to stop');
+  assert.strictEqual(stepAt(stopped.id, 1).status, 'held',
+    'and a row somebody stopped BY HAND waits for its own press: they took the card back '
+    + 'on purpose (StepStatus: "needs an explicit gesture")');
+
+  // …which the per-row ▶ is. A TARGETED press releases it.
+  engine.start({ stepId: stepAt(stopped.id, 1).id });
+  await settle();
+  assert.notStrictEqual(stepAt(stopped.id, 1).status, 'held',
+    'the explicit gesture releases the row it names');
+});
+
+test('S12: a closed-interrupted step behind an unfinished parent stays WAITING', async () => {
+  /*
+   * The shape Owen's own queue was in: a `tts-conversion` the close interrupted,
+   * with `align` and `reassembly` behind it. RELEASED is not RUNNABLE — the row
+   * Running picks back up is the one whose parent has landed, and the rest of
+   * the chain goes back to waiting on it, which is what it was doing before
+   * anybody quit.
+   *
+   * Built through a persist and a reload, because that is the only door that
+   * mints this state: a kill leaves the row `running` on disk and
+   * `reviveInterrupted` is what reads it as a close.
+   */
+  const mods = chainModules();
+  const dir = await fresh('s12-waiting-parent', Object.values(mods));
+  const job = narrationChain('Hitler\'s People');
+  engine.start();
+  await settle();
+  mods.prep.runs[0].resolve({ kind: 'prepared-session', path: '/out/prepared' });
+  await settle();
+  assert.strictEqual(stepAt(job.id, 1).status, 'running', 'precondition: the render is on the card');
+  await engine.persist();
+
+  // A new process reads the file the kill left behind.
+  await fresh('s12-waiting-parent', Object.values(mods), { configure: { stateDir: dir } });
+  assert.strictEqual(stepAt(job.id, 1).stopReason, 'closed',
+    'the revive agrees with the orderly quit about what ended it');
+  assert.strictEqual(stepAt(job.id, 2).status, 'waiting', 'Align was released before the kill');
+
+  engine.start();
+  await settle();
+
+  assert.notStrictEqual(stepAt(job.id, 1).status, 'held',
+    'the row the close cut is back in play — its parent landed before the kill, so it is '
+    + 'released and (nothing else wanting the card) straight onto it');
+  assert.strictEqual(stepAt(job.id, 2).status, 'waiting',
+    'and the step behind it waits on it, exactly as it did before the app went');
+});
+
+test('S12: `shutdown` stamps what it is on the work it is ending', async () => {
+  const mods = chainModules();
+  mods.tts.stopIsResumable = true;
+  await fresh('s12-shutdown-stamp', Object.values(mods));
+  const job = narrationChain('Pursuit of Power');
+  engine.start();
+  await settle();
+  mods.prep.runs[0].resolve({ kind: 'prepared-session', path: '/out/prepared' });
+  await settle();
+  assert.strictEqual(stepAt(job.id, 1).status, 'running', 'precondition');
+
+  await engine.shutdown();
+
+  assert.strictEqual(stepAt(job.id, 1).stopReason, 'closed',
+    'a row still running when the app quits is interrupted by the close, whichever door '
+    + 'reaches it — the teardown, or the process simply going');
+
+  // And from that moment a stop that does not name a reason is the CLOSE: the
+  // renderer is still alive during the quit and nothing can enumerate its doors.
+  await engine.cancel({ stepId: stepAt(job.id, 1).id }, 'torn down', { resumable: true });
+  await settle();
+  assert.strictEqual(stepAt(job.id, 1).stopReason, 'closed',
+    'the ambient fact answers for every door the quit chain cannot name');
+});
+
+test('S12: `closedInterrupted` reads an OLD row — no reason, interrupted — as a close', () => {
+  // Every queue written before the field existed looks like this, and it was
+  // written overwhelmingly by the revive path, which is a close. See the
+  // predicate's own docstring for what the other reading would have cost.
+  assert.strictEqual(
+    STOP_REASON.closedInterrupted({ status: 'held', wasInterrupted: true }), true);
+  assert.strictEqual(
+    STOP_REASON.closedInterrupted({ status: 'held', wasInterrupted: true, stopReason: 'user' }),
+    false, 'a stated user stop is never read as a close');
+  assert.strictEqual(
+    STOP_REASON.closedInterrupted({ status: 'queued', wasInterrupted: true }), false,
+    'only a HELD row is waiting for a gesture');
+  assert.strictEqual(STOP_REASON.userStopped({ status: 'held', stopReason: 'user' }), true);
+  assert.strictEqual(STOP_REASON.userStopped({ status: 'held', wasInterrupted: true }), false);
+  assert.notStrictEqual(STOP_REASON.stopSentence('user'), STOP_REASON.stopSentence('closed'),
+    'two gestures, two sentences — and exactly one copy of each in the tree');
 });
 
 // ── The per-step maps ───────────────────────────────────────────────────────
