@@ -135,6 +135,39 @@ export interface WaitForFacts {
    * waits on the slot here rather than being submitted and 409'd there.
    */
   readonly gpuSlotTaken: (server: string) => string | null;
+  /**
+   * THIS BOOK IS ALREADY HOLDING {@link resolved}'S CARD — Owen's ruling of
+   * 2026-09-20, *"i want books to be atomic actions … they shouldnt lose their
+   * GPU slot because theyre doing a quick step."*
+   *
+   * ── What it changes, and only what it changes ──────────────────────────────
+   *
+   * ONE rung, the resolved one, and TWO states on it: `busy` and `unknown`.
+   *
+   *  - `busy` is the server's activity line, polled or refused. It answers
+   *    *"somebody holds that card"* — and when this book holds it, that somebody
+   *    is this book. Owen watched *Mistborn* park on exactly that:
+   *    *"Waiting for crucible@<the Mac>: busy: bookforge
+   *    crucible-client/1.0.6, tts mistborn, 99% done"*, its own render's tail
+   *    read back to it as a stranger's.
+   *  - `unknown` means nobody has a current answer about reachability, and the
+   *    honest thing for a row with nothing on that machine is to ask before it
+   *    commits. A book whose own act just ran there has the answer already: the
+   *    machine answered, for minutes. Waiting a round trip for the sweep to say
+   *    so again is the same lost slot by a different door.
+   *
+   * `disabled`, `unreachable` and an unregistered name are NOT affected, and
+   * that is deliberate: those are facts about the MACHINE, not about this
+   * book's tail, and a row that goes on regardless would launch into a machine
+   * the operator switched off or that has stopped answering, instead of parking
+   * with the sentence that names it.
+   *
+   * FALSE FOR EVERY OTHER ROW. A book that does not hold the card is told about
+   * a busy server exactly as it always was — the rung is not weakened, it is
+   * told who is asking. The engine derives it with `gpuHoldOf`
+   * (`shared/queue/slot-sets.ts`), off the run's own steps.
+   */
+  readonly holdsThisCard: boolean;
 }
 
 export type WaitForVerdict =
@@ -345,7 +378,11 @@ function asking(server: string): string {
  *  1. **This book is already assigned.** §4.3 — a job that started on a machine
  *     finishes on that machine. That outranks the record, because the record can
  *     change under a book that is half rendered. The one assignment that is not
- *     a machine is {@link RETIRED_LOCAL_NARRATOR_VENUE}, which HOLDS.
+ *     a machine is {@link RETIRED_LOCAL_NARRATOR_VENUE}, which HOLDS. A run
+ *     that is HOLDING that machine's card between its GPU steps reads the
+ *     machine's `busy` and `unknown` differently — see
+ *     {@link WaitForFacts.holdsThisCard}; every other answer on this rung is
+ *     unchanged.
  *  2. **The row names a server.** It runs there if it is enabled and reachable,
  *     and otherwise HOLDS AND SAYS WHICH. It is never re-routed: a named server
  *     is an instruction, and the queue-level enable switch is about availability
@@ -443,6 +480,19 @@ function forOneServer(
    * CHOICE: which of the enabled servers to try.
    */
   const state = facts.state(server);
+  /*
+   * THE BOOK ON THE CARD DOES NOT QUEUE FOR IT — {@link WaitForFacts.holdsThisCard}.
+   *
+   * Asked here, before the state is read, because the two states it overrides
+   * (`busy`, `unknown`) are both statements about whether SOMEBODY ELSE can be
+   * said to have the machine, and this book is not somebody else. `resolved` is
+   * required with it: a hold is a fact about an ASSIGNED run, and the row-named
+   * rung has no card yet by definition.
+   */
+  if (source === 'resolved' && facts.holdsThisCard
+    && (state.kind === 'busy' || state.kind === 'unknown')) {
+    return { kind: 'run', server };
+  }
   switch (state.kind) {
     case 'unknown': return { kind: 'ask', server, sentence: asking(server) };
     case 'ready': return { kind: 'run', server };

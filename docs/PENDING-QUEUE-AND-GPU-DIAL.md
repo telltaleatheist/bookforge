@@ -109,6 +109,54 @@ server holds ONE, so the second is refused `409 leased`, by us, naming us.
 slot is open and an item enters the active (and unpaused) queue"* — it does not wait
 for a server. The lease and the GPU slot are asked for only once the chunks exist.
 
+### A book is atomic on the card
+
+Owen, **2026-09-20**, after watching *Mistborn* finish its render, move to the CPU for
+the session copy, and then queue for the card it had just been on — *"busy: bookforge
+crucible-client/1.0.6, tts mistborn, 99% done"*, its own tail read back to it:
+
+> i want books to be atomic actions, ideally, where they keep the GPU until all of
+> their GPU steps are complete. they can run the preparation step locally before going
+> to the GPU, but CPU steps that might take place between GPU steps are very small and
+> fast. they shouldnt lose their GPU slot because theyre doing a quick step.
+
+So the unit that occupies a card is the **run**, not the step. From the moment one of a
+run's travelling GPU steps starts until the last of them is terminal, that run holds
+`waitForResolved`'s GPU slot — through the render's CPU tail, through the gap while the
+next act's lease is reserved, through a local pass in between. It is **derived** from
+the run's own steps (`gpuHoldOf`, `shared/queue/slot-sets.ts`), never a stored flag: a
+flag would be a second owner of what the statuses already say, and it could not survive
+a crash or a restore of `queue.json` without going stale.
+
+What that changes at the door, and nothing else:
+
+- **The occupancy count charges the hold** when no running step of that run is already
+  charging a GPU there, so the slot is never double-charged and never released in a gap.
+- **The busy poll is not asked about a machine this book is holding.** `busy` and
+  `unknown` on the resolved rung mean *somebody else has it* / *nobody has asked*, and
+  neither is true of the book that is on it (`WaitForFacts.holdsThisCard`). `disabled`,
+  `unreachable` and an unregistered name still park the row with their own sentence:
+  those are facts about the machine, not about this book's tail.
+- **The venue's slot gate skips the run's own hold**, so a book never waits for a card
+  it is holding — while a second book still sees the slot as taken and is told who has
+  it and that the wait is a short one (*"holding the card for Mistborn between GPU
+  steps — waiting to start Align"*, one composer: `gpuHoldWords`).
+- **A `409` from the held server is this book's own previous act still closing.** It
+  parks the step for `heldJobRecheckMs` (~2 s), keeps the venue and the hold, and writes
+  no server-wide `busyHolds` entry — our tail is not a fact about the machine for
+  anybody else.
+- **The hold ends by derivation**: the last travelling GPU step lands, fails or is
+  cancelled; the book is stopped (a `held` step is one the queue will not start on its
+  own, so the card goes back); or it is sent back to Pending, which clears
+  `waitForResolved` outright. A paused queue KEEPS the hold — it starts nothing, and
+  the book is still mid-flight.
+
+`handOverGpuSlot` is unchanged and still fires the moment the last chunk lands: the
+session copy is CPU work, and the bench and the `local-work` count must say so. What it
+no longer does is free the card. Keepers: `tools/test-queue-slot-sets.js` (*A BOOK IS
+ATOMIC ON THE CARD*), `tools/test-queue-admission.js` (§8),
+`tools/test-queue-bench.js`.
+
 ## A narration is THREE rows — prepare → narrate → align
 
 Owen, **2026-09-19**. Shipped the same evening; the plan is

@@ -708,11 +708,30 @@ elsewhere this week):
   wrapper (`invokeFoundryNarrate`, electron/main.ts): `sayToUser` → `jobs:notice`
   in BookForge's renderer, the throw back over the mount to Foundry's notice
   strip, and the log line. Every throw happens before the dialog is raised.
-- **Ruling 9 (job-level GPU hold) — in progress (2026-09-20).** Files:
-  `shared/queue/slot-sets.ts` (`gpuHoldOf(job)`, occupancy counts a hold),
-  `electron/queue-engine.ts` (admission of a step in a held job), `shared/queue/bench.ts`
-  (the held slot's occupant phrase), keepers `test-queue-slot-sets`,
-  `test-queue-admission`, `test-queue-engine`, `test-queue-bench`.
+- **Ruling 9 (a book is atomic on the card) — LANDED (2026-09-20).** The slot is
+  charged to the RUN, derived from its steps: `gpuHoldOf` /
+  `gpuHoldCharges` / `gpuHoldStep` / `gpuHoldWords` in `shared/queue/slot-sets.ts`
+  (started = a travelling GPU step `running` or `done`; outstanding = one
+  `queued`/`waiting`/`running` — `held` is NOT outstanding, so a Stop gives the card
+  back), and `slotSetOccupancy` charges it wherever no running step of that run
+  already charges a GPU there. At the door (`electron/queue-engine.ts`):
+  `crucibleAdmission` takes `cardHeld` and passes `WaitForFacts.holdsThisCard`, on
+  which `forOneServer`'s resolved rung reads `busy` and `unknown` as `run` (disabled
+  and unreachable are untouched); `gpuSlotHolder` takes the asking job and subtracts
+  its own hold; a `409` from the held server goes to `parkOnOwnTail` —
+  `heldJobRecheckMs` (2 s, configurable), venue and hold kept, no `busyHolds` entry.
+  `shared/queue/bench.ts` draws the held slot (`verb: 'Holding the card'`, the step
+  the book is actually doing) and `stillReason` subtracts the asker's own hold, so a
+  book is never told it is waiting for its own card. `handOverGpuSlot`,
+  `StepRunContext.releaseGpu` and the `TTS_GPU_PHASE_OVER` subscription in
+  `tts-conversion.ts` now say they hand back the POOL entry, not the machine.
+  Contract: `docs/PENDING-QUEUE-AND-GPU-DIAL.md` §*A book is atomic on the card*.
+  Keepers: `test-queue-slot-sets` (11 new checks), `test-queue-admission` §8 (4),
+  `test-queue-bench` (4). **Known scope**: a run assigned to an ORCHESTRATOR ALIAS
+  keeps `waitForResolved` as the registered name while its steps carry the engine's
+  folded lane (`engineLaneId`), so the hold is charged to a row the bench does not
+  draw and the ruling does not bite on such a machine — never wrong, just inert, and
+  the same mismatch a queued travelling row of that run has always had.
 - **A9 → ruling 7 LANDED (2026-09-20, 2052af58):** `isLoopbackUrl`,
   `serversOnThisMachine`, `thisMachinesCardHeldBy`, `SlotSet.onThisMachine`,
   `thisMachineSetId` and `slotSetForStep`'s third parameter are gone; the pump

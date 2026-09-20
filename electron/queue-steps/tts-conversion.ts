@@ -546,8 +546,8 @@ export const ttsConversionStep: StepModule = {
       ctx.report(mapProgress(event.progress));
     });
     /*
-     * THE GPU SLOT GOES BACK MID-STEP — see `StepRunContext.releaseGpu` for the
-     * 7 m 38 s Owen measured on 2026-09-19.
+     * THE ROW IS RECHARGED TO THE CPU POOL MID-STEP — see
+     * `StepRunContext.releaseGpu` for the 7 m 38 s Owen measured on 2026-09-19.
      *
      * This row is a GPU row because the RENDER is, and the render is over well
      * before the row is: the bridge still has a session to publish into the
@@ -555,6 +555,15 @@ export const ttsConversionStep: StepModule = {
      * the only thing that knows when its last GPU act settled, so it says so and
      * this listens — the queue is told by the work, never by a guess about how
      * long a tail lasts.
+     *
+     * IT DOES NOT HAND THE CARD TO THE NEXT BOOK (Owen, 2026-09-20: *"i want
+     * books to be atomic actions … they shouldnt lose their GPU slot because
+     * theyre doing a quick step"*). The run keeps this machine's slot until its
+     * last GPU step is terminal — `gpuHoldOf`, `shared/queue/slot-sets.ts` —
+     * because the alignment that follows this copy is a GPU act of the same
+     * book, and a book that gave the card away here queued behind its own
+     * render's activity line to get it back. What this hand-over settles is
+     * the POOL: the copy is CPU work, and the bench and the CPU count say so.
      *
      * THE STEP BOUNDARY IS NOT A SUBSTITUTE FOR THIS, and that is a
      * measurement. Taking the alignment out of this step (2026-09-19) shortened

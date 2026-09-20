@@ -48,8 +48,8 @@ import {
 } from './engine-types';
 import { JOB_GERUND } from './job-words';
 import {
-  LOCAL_WORK_SET, LONGFORM_ALIGN_SET, serverOfCloudLane, slotSetForStep, slotSetOccupancy,
-  slotsOf,
+  LOCAL_WORK_SET, LONGFORM_ALIGN_SET, gpuHoldCharges, gpuHoldStep, gpuHoldWords,
+  serverOfCloudLane, slotSetForStep, slotSetOccupancy, slotsOf,
 } from './slot-sets';
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -155,6 +155,26 @@ function occupantWords(
       words.push(`${JOB_GERUND[step.type]} ${job.title}`);
     }
   }
+  /*
+   * A CARD CAN BE HELD BY A BOOK WITH NOTHING RUNNING ON IT — Owen's ruling of
+   * 2026-09-20, `gpuHoldOf`. The slot is charged, so the row behind it is
+   * genuinely waiting, and it must be told by WHOM and that the wait is a short
+   * one: "holding the card for Mistborn between GPU steps — Narrate is
+   * finishing on the CPU" reads very differently from a nine-hour render.
+   *
+   * Composed by {@link gpuHoldWords} rather than here, because the scheduler
+   * says the same thing to an `any` row it steers elsewhere and two composers
+   * for one fact drift (crucible `docs/ARCHITECTURE.md` R1). Capitalised to
+   * match the running entries beside it, which start with a gerund.
+   */
+  if (resource === 'gpu') {
+    for (const job of snapshot.jobs) {
+      if (!gpuHoldCharges(job, setId)) continue;
+      const held = gpuHoldWords(job);
+      if (held === null) continue;
+      words.push(held.charAt(0).toUpperCase() + held.slice(1));
+    }
+  }
   return words;
 }
 
@@ -255,7 +275,18 @@ export function stillReason(
   const setId = slotSetForStep(job, step);
   if (setId !== null) {
     const occupancy = slotSetOccupancy(snapshot).get(setId) ?? { gpu: 0, cpu: 0 };
-    const inUse = step.resource === 'gpu' ? occupancy.gpu : occupancy.cpu;
+    /*
+     * A BOOK NEVER WAITS FOR ITS OWN HELD CARD (Owen, 2026-09-20).
+     *
+     * The hold charges this set precisely so nobody else takes the slot while
+     * this run is between GPU acts — so counting it against this run's own next
+     * act would produce the sentence Owen read on Mistborn: *"Waiting for
+     * crucible@<the Mac>: busy … tts mistborn, 99% done"*, the book
+     * queued behind itself. One slot, one owner, and the owner does not queue
+     * for it.
+     */
+    const ownHold = step.resource === 'gpu' && gpuHoldCharges(job, setId) ? 1 : 0;
+    const inUse = (step.resource === 'gpu' ? occupancy.gpu : occupancy.cpu) - ownHold;
     if (inUse >= slotsOf(snapshot.slotSets, setId, step.resource)) {
       const label = snapshot.slotSets.find((set) => set.id === setId)?.label ?? setId;
       const busy = occupantWords(snapshot, setId, step.resource);
@@ -511,6 +542,38 @@ function occupantOf(job: QueueJob, step: QueueStep): LaneOccupant {
 }
 
 /**
+ * THE BOOK KEEPING A CARD BETWEEN ITS GPU STEPS, drawn in the slot it is
+ * charged (Owen, 2026-09-20 — `gpuHoldOf`).
+ *
+ * A charged slot with an empty lane would be the bench contradicting its own
+ * count, and the row waiting for that card would be told it is waiting for
+ * nobody. The step it names is the one the book is actually doing —
+ * {@link gpuHoldStep} — so the lane's Stop button acts on something real: on
+ * the render's CPU tail while it copies, and otherwise on the GPU act the book
+ * is holding the card for, which is precisely the gesture that gives the card
+ * back (a stopped step is `held`, and a held step ends the hold).
+ */
+function heldOccupant(job: QueueJob): LaneOccupant | null {
+  const step = gpuHoldStep(job);
+  const words = gpuHoldWords(job);
+  if (step === null || words === null) return null;
+  return {
+    jobId: job.id,
+    stepId: step.id,
+    // NOT the step's gerund: the step is not what the card is doing. A lane
+    // reading "Narrating Mistborn" while the render is copying files would be
+    // the exact wrong answer to "why is my card busy".
+    verb: 'Holding the card',
+    title: job.title,
+    label: step.label,
+    percent: step.progress.percent ?? null,
+    message: words,
+    ...(step.progress.detail === undefined ? {} : { detail: step.progress.detail }),
+    stages: step.progress.stages ?? [],
+  };
+}
+
+/**
  * Every slot of every machine, occupied or not, in a stable order: the sets in
  * the order the engine listed them (servers by rank, then the legacy spawn,
  * then BookForge's own work), and within each set the GPU before the CPU pool.
@@ -546,6 +609,16 @@ export function benchLanes(snapshot: QueueSnapshot): BenchLane[] {
           if (step.status !== 'running' || step.resource !== resource) continue;
           if (slotSetForStep(job, step) !== set.id) continue;
           occupants.push(occupantOf(job, step));
+        }
+      }
+      // The held card, after the running work and never instead of it: the
+      // hold exists only in the gaps (`gpuHoldCharges`), so these two can
+      // never name the same book on the same card.
+      if (resource === 'gpu') {
+        for (const job of snapshot.jobs) {
+          if (!gpuHoldCharges(job, set.id)) continue;
+          const held = heldOccupant(job);
+          if (held !== null) occupants.push(held);
         }
       }
 

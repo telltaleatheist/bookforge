@@ -616,6 +616,138 @@ test('occupancy counts only what is RUNNING, per set', () => {
   assert.strictEqual(counts.get(slots.LOCAL_WORK_SET).cpu, 1);
 });
 
+// ── A BOOK IS ATOMIC ON THE CARD (Owen, 2026-09-20) ────────────────────────
+//
+// > i want books to be atomic actions, ideally, where they keep the GPU until
+// > all of their GPU steps are complete. they can run the preparation step
+// > locally before going to the GPU, but CPU steps that might take place
+// > between GPU steps are very small and fast. they shouldnt lose their GPU
+// > slot because theyre doing a quick step.
+//
+// What he watched: Mistborn finished its render, moved to the CPU for the
+// session copy, and then queued for the card it had just been on — behind its
+// own render's activity line. So the slot is charged to the RUN, derived from
+// the steps (`gpuHoldOf`), from the first GPU act starting to the last landing.
+
+/**
+ * The narration plan as the scheduler sees it: a local prepare, then two
+ * travelling GPU acts. Every case below is one arrangement of its statuses.
+ */
+const narration = (render, align, over = {}) => jobOfSteps([
+  stepOf({ id: 'prep', type: 'prepare', label: 'Prepare', resource: 'cpu', status: 'done' }),
+  stepOf({ id: 'render', type: 'tts-conversion', label: 'Narrate', travels: true, ...render }),
+  stepOf({ id: 'align', type: 'align', label: 'Align', travels: true, ...align }),
+], { waitForResolved: 'mac', ...over });
+
+const gpuOn = (job, setId) =>
+  (slots.slotSetOccupancy({ jobs: [job] }).get(setId) ?? { gpu: 0 }).gpu;
+
+test("THE RENDER'S CPU TAIL KEEPS THE CARD — the hand-over frees the pool, not the machine", () => {
+  // `handOverGpuSlot` writes exactly this pair: recharged to cpu, venue cleared.
+  const job = narration(
+    { status: 'running', resource: 'cpu', venue: undefined },
+    { status: 'waiting' });
+  assert.deepStrictEqual(slots.gpuHoldOf(job), { server: 'mac' });
+  assert.strictEqual(gpuOn(job, 'mac'), 1, "the copy is CPU work; the card is still this book's");
+  assert.strictEqual(
+    (slots.slotSetOccupancy({ jobs: [job] }).get(slots.LOCAL_WORK_SET) ?? { cpu: 0 }).cpu, 1,
+    'and the copy is still counted where it is actually happening');
+});
+
+test('RENDER DONE, ALIGN QUEUED: the card is held across the gap with nothing running', () => {
+  const job = narration({ status: 'done', venue: undefined }, { status: 'queued' });
+  assert.deepStrictEqual(slots.gpuHoldOf(job), { server: 'mac' });
+  assert.strictEqual(gpuOn(job, 'mac'), 1,
+    'this is the moment the book used to queue behind its own tail');
+});
+
+test('the hold does not DOUBLE-charge a card the run is already running on', () => {
+  const job = narration({ status: 'running', venue: 'mac' }, { status: 'waiting' });
+  assert.deepStrictEqual(slots.gpuHoldOf(job), { server: 'mac' });
+  assert.strictEqual(gpuOn(job, 'mac'), 1, 'one book, one slot — the hold covers the GAPS');
+  assert.strictEqual(slots.gpuHoldCharges(job, 'mac'), false);
+});
+
+test('THE HOLD ENDS WHEN THE LAST TRAVELLING GPU STEP SETTLES', () => {
+  const landed = narration({ status: 'done', venue: undefined }, { status: 'done', venue: 'mac' });
+  assert.strictEqual(slots.gpuHoldOf(landed), null, 'the assembly that follows holds no card');
+  assert.strictEqual(gpuOn(landed, 'mac'), 0);
+  const failed = narration({ status: 'done', venue: undefined }, { status: 'failed' });
+  assert.strictEqual(slots.gpuHoldOf(failed), null,
+    'a failed act will never run: there is nothing left to hold the card for');
+  const cancelled = narration({ status: 'cancelled' }, { status: 'cancelled' });
+  assert.strictEqual(slots.gpuHoldOf(cancelled), null,
+    'a cancelled book never started, whatever it was in the middle of');
+});
+
+test("A STOPPED NEXT STEP GIVES THE CARD BACK — a held step is nobody's order", () => {
+  // A user Stop lands a step at `held`, and the queue will not start a held
+  // step on its own. A card kept for it would be kept for an act nobody has
+  // ordered, with nothing on screen counting down.
+  const job = narration({ status: 'done', venue: undefined }, { status: 'held' });
+  assert.strictEqual(slots.gpuHoldOf(job), null);
+  assert.strictEqual(gpuOn(job, 'mac'), 0);
+});
+
+test('PREPARE ALONE HOLDS NOTHING — "they can run the preparation step locally"', () => {
+  const job = narration({ status: 'queued' }, { status: 'waiting' });
+  assert.strictEqual(slots.gpuHoldOf(job), null, 'no GPU act of this book has started');
+  assert.strictEqual(gpuOn(job, 'mac'), 0);
+  const unassigned = narration({ status: 'running', venue: 'mac' }, { status: 'waiting' },
+    { waitForResolved: undefined });
+  assert.strictEqual(slots.gpuHoldOf(unassigned), null, 'and a run with no machine holds none');
+});
+
+test('A NON-TRAVELLING GPU STEP NEITHER STARTS NOR EXTENDS A HOLD', () => {
+  // A local RVC or denoise pass is on `local-longform-align`, this machine's
+  // own row. It has never been on the server's card.
+  const started = jobOfSteps([
+    stepOf({ id: 'rvc', type: 'rvc-enhancement', label: 'Convert voice', status: 'running' }),
+    stepOf({ id: 'align', type: 'align', label: 'Align', travels: true, status: 'queued' }),
+  ], { waitForResolved: 'mac' });
+  assert.strictEqual(slots.gpuHoldOf(started), null, 'nothing of this book has been on the server');
+  const extended = jobOfSteps([
+    stepOf({ id: 'render', type: 'tts-conversion', label: 'Narrate', travels: true,
+      status: 'done' }),
+    stepOf({ id: 'rvc', type: 'rvc-enhancement', label: 'Convert voice', status: 'queued' }),
+  ], { waitForResolved: 'mac' });
+  assert.strictEqual(slots.gpuHoldOf(extended), null,
+    "the local pass is not an act the server's card is kept for");
+  assert.strictEqual(gpuOn(extended, 'mac'), 0);
+});
+
+test('AN UPSTREAM-ROUTED ACT HOLDS NO CARD, because it is never on one', () => {
+  const job = jobOfSteps([
+    stepOf({ id: 'clean', type: 'pass', label: 'Simplify', travels: true,
+      resource: 'cpu', venue: slots.cloudLaneOf('mac'), status: 'running' }),
+    stepOf({ id: 'clean2', type: 'pass', label: 'Translate', travels: true,
+      resource: 'cpu', venue: slots.cloudLaneOf('mac'), status: 'queued' }),
+  ], { waitForResolved: 'mac' });
+  assert.strictEqual(slots.gpuHoldOf(job), null, 'it costs the engine a socket, not its card');
+  assert.strictEqual(gpuOn(job, 'mac'), 0);
+});
+
+test('a row assigned to the RETIRED narrator holds nothing — it is not a machine', () => {
+  const job = narration({ status: 'done' }, { status: 'queued' },
+    { waitForResolved: waitFor.RETIRED_LOCAL_NARRATOR_VENUE });
+  assert.strictEqual(slots.gpuHoldOf(job), null);
+});
+
+test('THE HELD CARD SAYS WHOSE IT IS, and that the wait is a short one', () => {
+  const copying = narration(
+    { status: 'running', resource: 'cpu', venue: undefined }, { status: 'waiting' });
+  assert.strictEqual(slots.gpuHoldWords(copying),
+    'holding the card for Mistborn between GPU steps — Narrate is finishing on the CPU');
+  assert.strictEqual(slots.gpuHoldStep(copying).id, 'render');
+  const waiting = narration({ status: 'done', venue: undefined }, { status: 'queued' });
+  assert.strictEqual(slots.gpuHoldWords(waiting),
+    'holding the card for Mistborn between GPU steps — waiting to start Align');
+  assert.strictEqual(slots.gpuHoldStep(waiting).id, 'align');
+  const none = narration({ status: 'queued' }, { status: 'waiting' });
+  assert.strictEqual(slots.gpuHoldWords(none), null, 'no hold, nothing to say');
+  assert.strictEqual(slots.gpuHoldStep(none), null);
+});
+
 test('a step that cannot travel is charged to the in-app row, never to a server', () => {
   // Owen, 2026-09-19. A registered server's lane is reached through a VENUE the
   // step carries and no other way, so no server — loopback or across the

@@ -371,6 +371,185 @@ export function slotSetForStep(
   return job.waitForResolved ?? null;
 }
 
+// ────────────────────────────────────────────────────────────────────────────
+// A BOOK IS ATOMIC ON THE CARD
+// ────────────────────────────────────────────────────────────────────────────
+
+/**
+ * THE SERVER A BOOK IS HOLDING BETWEEN ITS GPU STEPS — Owen's ruling of
+ * 2026-09-20, in one derived fact.
+ *
+ * ── What he watched ────────────────────────────────────────────────────────
+ *
+ * *Mistborn* finished its render, moved to the CPU for the session copy, and
+ * then queued for the card it had just been on: *"Waiting for
+ * crucible@<the Mac>: busy: bookforge crucible-client/1.0.6, tts
+ * mistborn, 99% done — 80 of 81 chunk(s) rendered"*. The book was parked on its
+ * OWN render's tail. The ruling:
+ *
+ * > i want books to be atomic actions, ideally, where they keep the GPU until
+ * > all of their GPU steps are complete. they can run the preparation step
+ * > locally before going to the GPU, but CPU steps that might take place
+ * > between GPU steps are very small and fast. they shouldnt lose their GPU
+ * > slot because theyre doing a quick step.
+ *
+ * So the unit that occupies a card is the BOOK, not the step: from the moment
+ * one travelling GPU step of a run has started until the last of them is
+ * terminal, that run holds {@link QueueJob.waitForResolved}'s slot — through
+ * the render's CPU tail, through the gap between one GPU step settling and the
+ * next launching, through a local pass in between. `handOverGpuSlot`
+ * (electron/queue-engine.ts) is unchanged and still fires: it is POOL
+ * bookkeeping, because the session copy is CPU work and the bench must say so.
+ * What it no longer does is free the card.
+ *
+ * ── Why it is DERIVED and never stored ─────────────────────────────────────
+ *
+ * A `holdsGpu` flag on the job would be a second owner of what the steps
+ * already say (crucible `docs/ARCHITECTURE.md` R1), and the two would disagree
+ * the first moment anything settled a step without remembering to clear it: a
+ * crash between the last step landing and the flag being cleared would strand a
+ * card until the app was restarted, and `queue.json` restored from disk would
+ * carry the stale flag straight back. Derived, the hold cannot be stale — it is
+ * read off the same statuses the pump and the bench read, and every door that
+ * ends a run (settle, cancel, retry, return-to-Pending, remove) ends the hold
+ * by doing what it already does.
+ *
+ * ── The two halves, and what each rules out ────────────────────────────────
+ *
+ * (a) STARTED — a travelling GPU step of this run is `running` or `done`. A run
+ *     whose render has not begun holds nothing: `prepare` is local work and
+ *     Owen's ruling says so in as many words ("they can run the preparation
+ *     step locally before going to the GPU"). `failed` and `cancelled` are not
+ *     starts either — the run is over, and a hold that survived a failure would
+ *     be a card held for work that will never run.
+ * (b) OUTSTANDING — a travelling GPU step of this run is RELEASED and not
+ *     terminal (`queued`, `waiting`, `running`). `held` is deliberately not
+ *     outstanding: a held step is one the queue will not start on its own (a
+ *     user Stop lands there), so a card kept for it would be a card kept for an
+ *     act nobody has ordered, with nothing on screen counting down. Pause is
+ *     the opposite case and KEEPS the hold — a paused queue starts nothing but
+ *     its steps are still `queued`, and the book is still mid-flight.
+ *
+ * A NON-TRAVELLING GPU STEP NEITHER STARTS NOR EXTENDS A HOLD. A local RVC or
+ * denoise pass runs on {@link LONGFORM_ALIGN_SET}, this machine's own row; it
+ * has never been on the server's card and claiming its slot for one would be
+ * this app holding somebody's engine for work it is doing itself.
+ *
+ * The set charged is the run's ASSIGNED SERVER — the same id
+ * {@link slotSetForStep} answers for a travelling step of this run that has no
+ * venue yet, so the hold and the queued row it covers are counted on one row.
+ *
+ * ── The one shape this does not reach, stated so nobody rediscovers it ─────
+ *
+ * A run assigned to an ORCHESTRATOR ALIAS. `waitForResolved` is the registered
+ * name the operator chose; the step's `venue` is that name folded onto the
+ * engine's own lane (`engineLaneId`, electron/queue-engine.ts), and the two
+ * differ only there. The hold is then charged to a row the bench does not draw,
+ * so on such a machine the ruling simply does not bite — the book behaves as it
+ * did before 2026-09-20. It is never WRONG (nothing else is charged either),
+ * and it is the same mismatch a queued travelling row of that run has always
+ * had, which is why it is not fixed here: folding a name onto a lane is the
+ * engine's knowledge, and this module is pure by design.
+ */
+export function gpuHoldOf(job: QueueJob): { readonly server: string } | null {
+  const server = job.waitForResolved;
+  if (server === undefined) return null;
+  /*
+   * NOT A SERVER, so there is no card to hold. A row assigned to the deleted
+   * narrator spawn holds with its own sentence (`wait-for.ts`); reading it as a
+   * machine name here would charge a slot set nothing is on.
+   */
+  if (server === RETIRED_LOCAL_NARRATOR_VENUE) return null;
+  let started = false;
+  let outstanding = false;
+  for (const step of job.steps) {
+    if (!isTravellingGpuStep(step)) continue;
+    if (step.status === 'running' || step.status === 'done') started = true;
+    if (step.status === 'queued' || step.status === 'waiting' || step.status === 'running') {
+      outstanding = true;
+    }
+  }
+  return started && outstanding ? { server } : null;
+}
+
+/**
+ * IS THIS STEP ONE OF THE RUN'S GPU ACTS ON A SERVER?
+ *
+ * `travels` is the whole answer, because a travelling step is GPU work BY
+ * CONSTRUCTION: no module declares travelling CPU work ({@link
+ * SERVER_CPU_SLOTS}), and the one that could have — a Foundry rendering —
+ * declares `local` precisely when its resource is `cpu`
+ * (`electron/queue-steps/foundry-job.ts`).
+ *
+ * So `resource` is NOT asked, and that is the point: the render's hand-over
+ * recharges the step to `cpu` the moment its last chunk lands, and a hold that
+ * read `resource` would end exactly where Owen's ruling says it must not. The
+ * ONE case where a travelling step is genuinely not on a card is an
+ * upstream-routed act (crucible `docs/PHASE15-HOST.md` §5.3), which is written
+ * with its engine's cloud lane as its venue — it costs the engine a socket, so
+ * it holds no card and cannot hold one for the book either.
+ */
+function isTravellingGpuStep(step: QueueStep): boolean {
+  if (step.travels !== true) return false;
+  if (step.venue !== undefined && isCloudLane(step.venue)) return false;
+  return true;
+}
+
+/**
+ * DOES THIS RUN'S HOLD CHARGE THIS SET'S CARD RIGHT NOW — the one owner of the
+ * question, asked by the occupancy count, the bench and the pump alike.
+ *
+ * False when one of the run's own steps is ALREADY charging a GPU there: the
+ * hold covers the GAPS, and a book cannot take one server's single slot twice.
+ * That is also what keeps the hand-over honest — while the render is on the
+ * card the render is the charge, and from the instant it gives the slot back
+ * (`handOverGpuSlot`) the hold is.
+ */
+export function gpuHoldCharges(job: QueueJob, setId: string): boolean {
+  const hold = gpuHoldOf(job);
+  if (hold === null || hold.server !== setId) return false;
+  return !job.steps.some((step) => step.status === 'running' && step.resource === 'gpu'
+    && slotSetForStep(job, step) === setId);
+}
+
+/**
+ * WHAT THE BOOK IS DOING WHILE IT HOLDS THE CARD — the step the phrase names,
+ * or null when this run holds nothing.
+ *
+ * The running CPU step first, because that is the thing actually happening (the
+ * render's session copy, an assembly between two GPU acts); otherwise the next
+ * GPU act it is waiting to start, which is the honest answer for the gap
+ * between one step settling and the next being admitted.
+ */
+export function gpuHoldStep(job: QueueJob): QueueStep | null {
+  if (gpuHoldOf(job) === null) return null;
+  const onCpu = job.steps.find((s) => s.status === 'running' && s.resource === 'cpu');
+  if (onCpu !== undefined) return onCpu;
+  return job.steps.find((s) => isTravellingGpuStep(s)
+    && (s.status === 'queued' || s.status === 'waiting' || s.status === 'running')) ?? null;
+}
+
+/**
+ * THE HELD CARD, AS THE ONE PHRASE EVERY SURFACE SAYS IT WITH — mid-sentence,
+ * lower case, or null when this run holds nothing.
+ *
+ * ONE composer for two readers (crucible `docs/ARCHITECTURE.md` R1): the
+ * bench's lane and its "waiting for the card" sentence, and the scheduler's own
+ * `occupantPhrase`, which is what a SECOND book bound for the same machine is
+ * told. A slot charged to something with no name on it is the unreadable bench
+ * this whole layer exists to prevent — and the reader must be able to tell a
+ * card that is rendering from a card that is being kept between steps, because
+ * the second one frees itself in seconds.
+ */
+export function gpuHoldWords(job: QueueJob): string | null {
+  const step = gpuHoldStep(job);
+  if (step === null) return null;
+  const what = step.resource === 'cpu'
+    ? `${step.label} is finishing on the CPU`
+    : `waiting to start ${step.label}`;
+  return `holding the card for ${job.title} between GPU steps — ${what}`;
+}
+
 /** What BookForge has in flight, per set. Counted, never polled. */
 export interface SetOccupancy {
   gpu: number;
@@ -405,6 +584,25 @@ export function slotSetOccupancy(
       if (step.resource === 'gpu') entry.gpu += 1;
       else if (step.resource === 'cpu') entry.cpu += 1;
       counts.set(id, entry);
+    }
+    /*
+     * A BOOK IS ATOMIC ON THE CARD (Owen, 2026-09-20) — see {@link gpuHoldOf}.
+     *
+     * Counted per JOB rather than per step, because between two GPU acts there
+     * is no step to count: the render is copying its session on the CPU, or
+     * nothing of the run is running at all while the next act's lease is being
+     * reserved. Those are exactly the moments the book used to lose its slot
+     * and then queue behind its own tail.
+     *
+     * {@link gpuHoldCharges} is asked rather than re-derived here, so the count,
+     * the bench and the pump cannot disagree about whether this run's hold is
+     * on that card.
+     */
+    const hold = gpuHoldOf(job);
+    if (hold !== null && gpuHoldCharges(job, hold.server)) {
+      const entry = counts.get(hold.server) ?? { gpu: 0, cpu: 0 };
+      entry.gpu += 1;
+      counts.set(hold.server, entry);
     }
   }
   return counts;

@@ -335,6 +335,71 @@ test('an occupied GPU slot carries no hold, so a busy card never reads as blocke
   assert.strictEqual(lanes[0].hold, null);
 });
 
+// ── A book is atomic on the card (Owen, 2026-09-20) ────────────────────────
+//
+// The slot is charged to the RUN between its GPU steps (`gpuHoldOf`), so the
+// bench has to draw a busy card with nothing running on it — and say whose it
+// is and why, or it is a card the reader cannot account for.
+
+/** A render and the alignment behind it, on `mac`. */
+function heldBook(render, align, over = {}) {
+  return job([
+    step({ id: 's_render', label: 'Narrate', travels: true, ...render }),
+    step({ id: 's_align', type: 'align', label: 'Align', travels: true, ...align }),
+  ], { waitForResolved: 'mac', ...over });
+}
+
+test('A CARD HELD BETWEEN TWO GPU STEPS DRAWS THE BOOK HOLDING IT', () => {
+  const j = heldBook({ status: 'done' }, { status: 'queued' });
+  const lanes = bench.benchLanes(snap([j], true, ['mac']));
+  const gpu = lanes.find((l) => l.setId === 'mac' && l.resource === 'gpu');
+  assert.ok(gpu.occupant, 'a charged slot with an empty lane is a card nobody can account for');
+  assert.strictEqual(gpu.occupant.verb, 'Holding the card',
+    'not "Narrating": the render is over, and the card is being kept, not used');
+  assert.strictEqual(gpu.occupant.stepId, 's_align',
+    'the Stop button acts on the act the card is held for — stopping it gives the card back');
+  assert.strictEqual(gpu.occupant.message,
+    'holding the card for Flashpoint of Revival between GPU steps — waiting to start Align');
+  assert.strictEqual(gpu.hold, null, 'an occupied lane is not also a blocked one');
+});
+
+test("THE RENDER'S CPU TAIL IS DRAWN ON BOTH ROWS AT ONCE, and neither is a lie", () => {
+  // `handOverGpuSlot`: recharged to the CPU pool, venue cleared, still running.
+  const j = heldBook(
+    { status: 'running', resource: 'cpu', venue: undefined, progress: { percent: 99 } },
+    { status: 'waiting' });
+  const lanes = bench.benchLanes(snap([j], true, ['mac']));
+  const gpu = lanes.find((l) => l.setId === 'mac' && l.resource === 'gpu');
+  assert.strictEqual(gpu.occupant.message,
+    'holding the card for Flashpoint of Revival between GPU steps — Narrate is finishing on '
+    + 'the CPU');
+  assert.strictEqual(gpu.occupant.percent, 99, "the held lane carries the step's own measurement");
+  const cpu = lanes.filter((l) => l.setId === slots.LOCAL_WORK_SET && l.occupant !== null);
+  assert.strictEqual(cpu.length, 1, 'the copy is counted where it is actually happening');
+  assert.strictEqual(cpu[0].occupant.verb, 'Narrating');
+});
+
+test('A SECOND BOOK IS TOLD WHO HOLDS THE CARD, AND THAT IT IS BETWEEN STEPS', () => {
+  const held = heldBook({ status: 'done' }, { status: 'queued' });
+  const next = job([step({ id: 's_next', label: 'Narrate', status: 'queued', travels: true })],
+    { id: 'job_2', title: 'Wool', waitForResolved: 'mac' });
+  const snapshot = snap([held, next], true, ['mac']);
+  const reason = reasonOf(snapshot, next, next.steps[0]);
+  assert.strictEqual(reason.kind, 'no-slot', 'the slot IS taken — by a book between its GPU acts');
+  assert.match(reason.sentence, /mac to become free/);
+  assert.match(reason.sentence,
+    /Holding the card for Flashpoint of Revival between GPU steps — waiting to start Align/);
+});
+
+test('THE HOLDER IS NEVER TOLD IT IS WAITING FOR ITS OWN CARD', () => {
+  // The defect in one sentence: Owen watched Mistborn park on its own render's
+  // activity line, 99% done, one second before it was re-admitted.
+  const j = heldBook({ status: 'done' }, { status: 'queued' });
+  const reason = reasonOf(snap([j], true, ['mac']), j, j.steps[1]);
+  assert.notStrictEqual(reason.kind, 'no-slot');
+  assert.strictEqual(reason.kind, 'ready', 'nothing is between this book and the card it holds');
+});
+
 test('the GPU lane carries the thermal reading; CPU lanes never do', () => {
   const running = step({ id: 's_r', status: 'running' });
   const s = snap([job([running])]);

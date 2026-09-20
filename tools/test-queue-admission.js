@@ -57,6 +57,8 @@ if (!fs.existsSync(path.join(DIST, 'queue-engine.js'))) {
 
 const engine = require(path.join(DIST, 'queue-engine.js'));
 const waitFor = require(path.join(REPO, 'dist', 'shared', 'queue', 'wait-for.js'));
+// The bench composes the sentence a second book reads off the same snapshot.
+const bench = require(path.join(REPO, 'dist', 'shared', 'queue', 'bench.js'));
 /*
  * WHICH ENGINE RUNS WHICH CLASS, and why this file has to say so.
  *
@@ -734,6 +736,191 @@ test('a book REMOVED while its lease is being reserved does not keep the card ei
 
   assert.strictEqual(gpu.runs.length, 0);
   assert.ok(seam.closed.includes(job.id));
+});
+
+// ── 8 · A book is atomic on the card (Owen, 2026-09-20) ────────────────────
+//
+// > i want books to be atomic actions, ideally, where they keep the GPU until
+// > all of their GPU steps are complete … they shouldnt lose their GPU slot
+// > because theyre doing a quick step.
+//
+// He watched Mistborn finish its render, move to the CPU for the session copy,
+// and then park on its OWN render's activity line: "Waiting for crucible@<the
+// Mac>: busy: bookforge crucible-client/1.0.6, tts mistborn, 99% done — 80 of
+// 81 chunk(s) rendered". The hold (`gpuHoldOf`) is what stops that, and these
+// are the four things it has to get right at the door.
+
+/** A narration: two travelling GPU acts, the second reading the first. */
+function narrateThenAlign(title, waitForRow) {
+  return {
+    title,
+    ...(waitForRow === undefined ? {} : { waitFor: waitForRow }),
+    steps: [
+      { type: 'tts-conversion', label: 'Narrate', config: {},
+        sourceRef: { kind: 'epub', path: '/a.epub' } },
+      { type: 'align', label: 'Align', config: {}, parentIndex: 0 },
+    ],
+  };
+}
+
+test('A HELD BOOK IS ADMITTED THOUGH THE POLL SAYS ITS SERVER IS BUSY — and a second book is not',
+  async () => {
+    const render = fakeModule('tts-conversion');
+    const align = fakeModule('align');
+    const host = fakeHost({
+      ranked: [{ name: 'mac', enabled: true }],
+      defaultWaitFor: 'mac',
+      reach: { mac: { reachable: true } },
+    });
+    await fresh('atomic-busy-poll', [render, align], host, null);
+
+    const book = enqueueSent(narrateThenAlign('Mistborn', 'mac'));
+    const second = enqueueSent(narrate('Wool', 'tts-conversion'));
+    engine.start();
+    await settle();
+    assert.strictEqual(render.runs.length, 1, 'the render took the card');
+    assert.strictEqual(jobOf(book.id).waitForResolved, 'mac');
+
+    /*
+     * THE POLL NOW SAYS THE CARD IS BUSY — which is true, and it is OUR OWN
+     * render holding it. The second book asks, so the answer lands in the reach
+     * cache; the first book's cached `ready` ages out on the recheck cadence.
+     */
+    host.reach.mac = { reachable: true, busy: { line: BUSY_LINE } };
+    await wait(60);
+    engine.pump();
+    await settle();
+    assert.strictEqual(firstStep(second.id).status, 'queued', 'the second book waits, correctly');
+
+    // The render lands. Its alignment is the SAME book's next GPU act.
+    render.runs[0].resolve({ kind: 'epub', path: '/out/render' });
+    await settle();
+
+    assert.strictEqual(align.runs.length, 1,
+      'the book kept its card: it is not parked on its own render\'s activity line');
+    assert.strictEqual(jobOf(book.id).waitForResolved, 'mac', 'and it is still that machine\'s');
+    assert.strictEqual(render.runs.length, 1, 'the second book did NOT take the card');
+    const snap = engine.snapshot();
+    const waiting = snap.jobs.find((j) => j.id === second.id);
+    const reason = bench.stillReason(snap, waiting, waiting.steps[0]);
+    assert.strictEqual(reason.kind, 'no-slot');
+    assert.match(reason.sentence, /Aligning Mistborn|Holding the card for Mistborn/,
+      'the second book is told which book has the card');
+  });
+
+test('THE GAP BETWEEN TWO GPU ACTS IS THE HOLDER\'S, and it says so on the bench', async () => {
+  const render = fakeModule('tts-conversion');
+  const align = fakeModule('align', { leases: true, act: 'clean' });
+  const host = fakeHost({
+    ranked: [{ name: 'mac', enabled: true }],
+    defaultWaitFor: 'mac',
+    reach: { mac: { reachable: true } },
+  });
+  // The reserve is held open, so the queue sits in the gap the ruling is about:
+  // the render is done, the alignment has not started, and nothing is running.
+  const seam = fakeLeaseSeam({ holdOpen: true });
+  await fresh('atomic-gap', [render, align], host, seam);
+
+  const book = enqueueSent(narrateThenAlign('Mistborn', 'mac'));
+  const second = enqueueSent(narrate('Wool', 'tts-conversion'));
+  engine.start();
+  await settle();
+  render.runs[0].resolve({ kind: 'epub', path: '/out/render' });
+  await settle();
+
+  assert.strictEqual(align.runs.length, 0, 'still reserving — nothing of this book is running');
+  const snap = engine.snapshot();
+  const lane = bench.benchLanes(snap).find((l) => l.setId === 'mac' && l.resource === 'gpu');
+  assert.ok(lane.occupant, 'the card is charged, so the bench must draw who has it');
+  assert.strictEqual(lane.occupant.verb, 'Holding the card');
+  assert.match(lane.occupant.message, /waiting to start Align/);
+  assert.strictEqual(render.runs.length, 1, 'and the next book cannot slip into the gap');
+  assert.strictEqual(firstStep(second.id).status, 'queued');
+
+  seam.pending[0].grant();
+  await settle();
+  assert.strictEqual(align.runs.length, 1, 'the lease landed and the book went on');
+});
+
+test("A 409 DURING THE HOLD IS THIS BOOK'S OWN TAIL: parked for seconds, venue kept", async () => {
+  const render = fakeModule('tts-conversion');
+  const align = fakeModule('align');
+  const host = fakeHost({
+    ranked: TWO, defaultWaitFor: 'mac', reach: { pc: { reachable: true }, mac: { reachable: true } },
+  });
+  /*
+   * The two cadences are deliberately far apart, because which one re-asks is
+   * the whole assertion: a stranger's 409 is held off for `admissionRecheckMs`
+   * and keyed by SERVER, and this is neither.
+   */
+  await fresh('atomic-own-tail', [render, align], host, null,
+    { admissionRecheckMs: 5_000, heldJobRecheckMs: 300 });
+
+  const book = enqueueSent(narrateThenAlign('Mistborn', 'mac'));
+  engine.start();
+  await settle();
+  render.runs[0].resolve({ kind: 'epub', path: '/out/render' });
+  await settle();
+  assert.strictEqual(align.runs.length, 1);
+
+  align.runs[0].reject(refusedBusy(BUSY_LINE));
+  await settle();
+
+  const step = jobOf(book.id).steps[1];
+  assert.strictEqual(step.status, 'queued', 'a 409 is a wait, not a failure');
+  assert.strictEqual(jobOf(book.id).waitForResolved, 'mac',
+    'THE VENUE STANDS: half this book is rendered on that machine, and it still holds its card');
+  assert.match(step.progress.admissionHold, /previous step is still closing/);
+  assert.ok(!/It takes one job at a time/.test(step.progress.admissionHold),
+    'that is the sentence for a STRANGER holding the machine, and nobody else is here');
+  assert.strictEqual(align.runs.length, 1, 'it does not hammer the door in the same tick');
+
+  await wait(400);
+  await settle();
+  assert.strictEqual(align.runs.length, 2,
+    'and it is re-asked on the SHORT cadence — the 15 s one belongs to a busy server');
+});
+
+test('THE HAND-OVER NO LONGER FREES THE CARD, and cancelling the book does', async () => {
+  const render = fakeModule('tts-conversion');
+  const align = fakeModule('align');
+  const host = fakeHost({
+    ranked: [{ name: 'mac', enabled: true }],
+    defaultWaitFor: 'mac',
+    reach: { mac: { reachable: true } },
+  });
+  await fresh('atomic-handover', [render, align], host, null);
+
+  const book = enqueueSent(narrateThenAlign('Mistborn', 'mac'));
+  const second = enqueueSent(narrate('Wool', 'tts-conversion'));
+  engine.start();
+  await settle();
+
+  // The bridge says its last chunk has landed: the rest of this step is a
+  // session copy on this machine's CPU (`StepRunContext.releaseGpu`).
+  render.runs[0].ctx.releaseGpu('the render has settled');
+  await settle();
+
+  const tail = jobOf(book.id).steps[0];
+  assert.strictEqual(tail.resource, 'cpu', 'the pool entry was handed back');
+  assert.strictEqual(tail.venue, undefined);
+  assert.strictEqual(render.runs.length, 1,
+    'but the CARD was not: Wool must not take a machine this book is mid-flight on');
+  assert.strictEqual(firstStep(second.id).status, 'queued');
+
+  /*
+   * The user stops the book. A stop idles the queue by design — you stop a GPU
+   * job to get the card back — so Start is pressed again, which is the gesture
+   * a person makes and the one that proves the card is genuinely free.
+   */
+  await engine.cancel({ jobId: book.id });
+  render.runs[0].reject(new Error('Stopped by the user.'));
+  await settle();
+  engine.start();
+  await settle();
+
+  assert.strictEqual(render.runs.length, 2, 'the run ended, so the hold did');
+  assert.strictEqual(render.runs[1].job.title, 'Wool');
 });
 
 // ── Runner ──────────────────────────────────────────────────────────────────

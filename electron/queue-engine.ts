@@ -105,6 +105,9 @@ import {
  */
 import {
   cloudLaneOf,
+  gpuHoldCharges,
+  gpuHoldOf,
+  gpuHoldWords,
   isCloudLane,
   longformAlignCharged,
   LONGFORM_ALIGN_SET,
@@ -219,11 +222,16 @@ export interface StepRunContext {
    *
    * WHAT IT DOES: the step is recharged to this machine's CPU pool (its
    * `venue` is cleared with its `resource` — see {@link QueueStep.venue}) and
-   * the pump runs, so a queued render claims the freed slot in the same tick.
-   * The step keeps running and settles exactly as it would have. It is
-   * RECORDED into the CPU pool rather than admitted to it: the work is already
-   * happening, and the count is what stops the pump starting a third CPU job on
-   * top of it.
+   * the pump runs. The step keeps running and settles exactly as it would have.
+   * It is RECORDED into the CPU pool rather than admitted to it: the work is
+   * already happening, and the count is what stops the pump starting a third
+   * CPU job on top of it.
+   *
+   * WHAT IT NO LONGER DOES (Owen, 2026-09-20): free the card for another book.
+   * A book is atomic on the card — `gpuHoldOf` keeps the run's slot charged
+   * until its last GPU step is terminal — so what this hands back is the POOL
+   * ENTRY, not the machine. A run of two GPU steps used to give the card away
+   * here and then queue for it again behind its own tail; see `handOverGpuSlot`.
    *
    * `reason` is said in the log and is the step's own words for why the card is
    * free — "the render and the alignment have settled".
@@ -562,6 +570,20 @@ function currentSlotSets(): SlotSet[] {
       if (id !== null && !occupied.includes(id)) occupied.push(id);
     }
   }
+  /*
+   * A HELD CARD IS NOT ADDED TO `occupied`, and that is deliberate (2026-09-20).
+   *
+   * `occupied` keeps a switched-off server's set on the bench while something of
+   * ours is still there (§4.3), and it is keyed by the SET a step is charged to.
+   * A hold is keyed by the run's assigned SERVER NAME (`gpuHoldOf`), and the two
+   * are the same string for every ordinary registration but not for an
+   * orchestrator alias, where `engineLaneId` folds the name onto the engine's
+   * lane. Pushing the raw name here would draw a second, empty row for the same
+   * card — which is exactly what `slot-sets`' own keeper caught. The gap it
+   * leaves is the pre-existing one: a server switched off in the seconds between
+   * two of a book's GPU acts loses its row until the next act starts, the same
+   * as a queued travelling row of that run has always behaved.
+   */
 
   let rankedServers: { name: string; enabled: boolean }[] = [];
   //: Still derived, for the upstream and role reads below — those are asked of
@@ -731,6 +753,26 @@ let persistTimer: ReturnType<typeof setTimeout> | null = null;
  */
 let admissionRecheckMs = 15_000;
 let admissionRecheckTimer: ReturnType<typeof setTimeout> | null = null;
+
+/**
+ * THE BOOK'S OWN PREVIOUS ACT IS STILL CLOSING — a cool-off of seconds, and it
+ * is emphatically not the 15 s one above.
+ *
+ * Owen's ruling of 2026-09-20 keeps a book's card across its GPU steps
+ * (`gpuHoldOf`), so the only thing that can refuse the next act on that machine
+ * is the act before it, on the same book, finishing its teardown — Crucible
+ * unloading a voice, a row lease closing. That is seconds away and nothing
+ * about the server is wrong, so the row is re-asked on a short cadence.
+ *
+ * NOTHING SERVER-WIDE IS WRITTEN FOR IT. `busyHolds` is keyed by server and
+ * means *somebody holds that machine*; our own tail is not somebody, and
+ * recording it there would hold every OTHER book off a card that is about to be
+ * free — and for fifteen seconds rather than two.
+ */
+let heldJobRecheckMs = 2_000;
+let heldTailRecheckTimer: ReturnType<typeof setTimeout> | null = null;
+/** stepId → the moment it may be tried again. Cleared when it is. */
+const heldTailParks = new Map<string, number>();
 
 /**
  * THE BENCH IS COMPOSED FROM A RECORD THAT LEARNS, SO IT REPUBLISHES WHEN IT
@@ -2798,6 +2840,34 @@ function holdServerBusyAt(server: string, busyLine: string): void {
   busyHolds.set(server, { line: busyLine, until: Date.now() + admissionRecheckMs });
 }
 
+/**
+ * A BUSY ANSWER FROM THE MACHINE THIS BOOK IS HOLDING — parked on its own tail,
+ * and named as such.
+ *
+ * Owen, 2026-09-20: a book keeps its card across its GPU steps, so the only
+ * thing that can refuse the next act there is the previous act of the SAME book
+ * finishing its teardown. Three things follow, and each is the opposite of what
+ * a stranger's 409 does:
+ *
+ *  - NOTHING SERVER-WIDE IS RECORDED. `busyHolds` means *somebody holds that
+ *    machine*, and every other book bound for it reads that. Our own tail is
+ *    not a fact about the server.
+ *  - THE VENUE AND THE HOLD STAND. §4.3 already keeps the run on the machine it
+ *    started on, and the hold is what keeps the slot charged for it; releasing
+ *    either would hand the card away in the one moment the ruling says it must
+ *    not be handed away.
+ *  - IT IS RE-ASKED IN SECONDS (`heldJobRecheckMs`), not in fifteen.
+ *
+ * The sentence says all of that, because a row that reads "busy" with no other
+ * words is the row Owen read as the queue being stuck behind a stranger.
+ */
+function parkOnOwnTail(step: QueueStep, server: string, busyLine: string): void {
+  heldTailParks.set(step.id, Date.now() + heldJobRecheckMs);
+  holdStep(step, `Waiting for ${server}: this book's previous step is still closing there `
+    + `— ${busyLine} The card is held for this book, not queued behind another; it goes on in a `
+    + 'moment.');
+}
+
 /** Does this run carry a step that can be sent to a Crucible server? */
 function jobTravels(job: QueueJob): boolean {
   return job.steps.some((step) => step.travels === true);
@@ -2836,7 +2906,16 @@ type CrucibleAdmission =
     }
   | { ok: false; reason: string };
 
-function crucibleAdmission(job: QueueJob): CrucibleAdmission {
+function crucibleAdmission(
+  job: QueueJob,
+  /*
+   * THIS RUN IS HOLDING THE CARD IT IS ASKING FOR (`gpuHoldOf`, Owen
+   * 2026-09-20). Passed in rather than re-derived here because the pump has
+   * already asked — one owner of the question, and a second derivation could
+   * answer differently in the same tick.
+   */
+  cardHeld: boolean,
+): CrucibleAdmission {
   const host = crucibleHost;
   if (host === null) {
     // NOT a fallback to the local card: a build whose queue cannot ask where a
@@ -2862,6 +2941,9 @@ function crucibleAdmission(job: QueueJob): CrucibleAdmission {
     resolved: job.waitForResolved,
     ranked: record.ranked,
     state: serverState,
+    // A BOOK IS ATOMIC ON THE CARD (Owen, 2026-09-20). See `WaitForFacts.holdsThisCard`:
+    // it is what stops this run being parked on its own render's activity line.
+    holdsThisCard: cardHeld,
     // OUR OWN bookkeeping, never the server's state: how many GPU steps
     // BookForge already has in flight there (crucible
     // `docs/PHASE7-LANES.md` §2.4). It is what lets two books render on two
@@ -3095,6 +3177,19 @@ function settleReserve(
     const busyLine = busyLineOf(outcome.err);
     if (busyLine !== undefined) {
       /*
+       * OUR OWN PREVIOUS ACT IS STILL CLOSING — not a busy server (Owen,
+       * 2026-09-20). A run that holds this card asked for the next act on it
+       * and was refused by the teardown of the act before: nothing about the
+       * machine is wrong, no other book may be held off it, and the wait is
+       * seconds. So the row parks on its own sentence with the SHORT cool-off
+       * and keeps everything — its venue, its hold, its place.
+       */
+      if (gpuHoldOf(found.job) !== null) {
+        parkOnOwnTail(step, server, busyLine);
+        pump();
+        return;
+      }
+      /*
        * `409 leased` / `409 server_busy` ON THE RESERVE — the same wait a
        * submit's 409 is, learnt one round trip earlier and without a prep
        * behind it. The row keeps its place, the door is remembered as shut for
@@ -3216,10 +3311,22 @@ function slotsInUse(setId: string, resource: StepResource): number {
  * between them is not representable: a caller cannot be told the slot is taken
  * and then find nothing to name.
  */
-function gpuSlotHolder(setId: string, sets: readonly SlotSet[]): string | null {
-  const inUse = slotsInUse(setId, 'gpu');
+function gpuSlotHolder(
+  setId: string,
+  sets: readonly SlotSet[],
+  /*
+   * THE RUN ASKING, when one is — so a book is never told it is waiting for a
+   * card it is holding itself (Owen, 2026-09-20 — `gpuHoldOf`). Its own hold is
+   * subtracted and nothing else is: another book's work on that set still
+   * counts, and this run's own RUNNING step still counts, because a run may not
+   * have two GPU steps on one card at once.
+   */
+  forJob?: QueueJob,
+): string | null {
+  const own = forJob !== undefined && gpuHoldCharges(forJob, setId) ? 1 : 0;
+  const inUse = slotsInUse(setId, 'gpu') - own;
   // Nothing of ours there: free, and there would be nothing to name anyway.
-  if (inUse === 0) return null;
+  if (inUse <= 0) return null;
   if (inUse < slotsOf(sets, setId, 'gpu')) return null;
   // Non-null by construction: `occupantPhrase` reads the same running steps
   // `inUse` counted, so a positive count always has an occupant to name.
@@ -3269,6 +3376,21 @@ function occupantPhrase(setId: string, resource: StepResource): string | null {
       return `${JOB_GERUND[step.type].toLowerCase()} ${job.title}`;
     }
   }
+  /*
+   * A CARD HELD BETWEEN TWO GPU STEPS IS STILL HELD, and the book waiting for
+   * it must be told which book has it and that the wait is a short one (Owen,
+   * 2026-09-20 — `gpuHoldOf`). Asked AFTER the running steps because a hold
+   * only ever exists in the gaps, and said with {@link gpuHoldWords}, the same
+   * composer the bench draws with, so a second book reads one sentence about
+   * one fact.
+   */
+  if (resource === 'gpu') {
+    for (const job of jobs) {
+      if (!gpuHoldCharges(job, setId)) continue;
+      const held = gpuHoldWords(job);
+      if (held !== null) return held;
+    }
+  }
   return null;
 }
 
@@ -3311,6 +3433,12 @@ export function onAfterPump(listener: () => void): () => void {
 export function pump(): void {
   if (!running) return;
   let admissionBlocked = false;
+  /*
+   * A row parked on its OWN book's tail, which nothing else will re-trigger:
+   * the act it is waiting on has already settled, so no step will land and pump
+   * again. It gets its own short timer — see `heldJobRecheckMs`.
+   */
+  let heldTailParked = false;
   /*
    * THE SLOT SETS, read ONCE for the whole pass. A pass that re-read them
    * between two rows could allocate against two different capacity models in
@@ -3380,8 +3508,32 @@ export function pump(): void {
          * BookForge already has there). The one thing it cannot answer is the
          * in-app aligner's own slot, handled below.
          */
+        /*
+         * ── THIS BOOK IS ALREADY ON A CARD ──────────────────────────────────
+         *
+         * Owen, 2026-09-20: *"i want books to be atomic actions … they
+         * shouldnt lose their GPU slot because theyre doing a quick step."*
+         * `gpuHoldOf` is that hold, derived from the run's own steps, and it
+         * changes TWO answers below — the busy poll (here) and the venue's slot
+         * (further down). Everything else about admission is unchanged: a
+         * server that was switched off or has stopped answering still parks the
+         * row with its own sentence, because those are facts about the machine
+         * rather than about this book's tail.
+         */
+        const cardHeld = step.travels === true && gpuHoldOf(job) !== null;
+        /*
+         * A STEP PARKED ON ITS OWN BOOK'S TAIL, re-asked on the short cadence.
+         * See `heldTailParks`: the previous act of THIS run was still closing
+         * on the server, which is seconds away, not the 15 s a stranger's 409
+         * is held off for.
+         */
+        const parkedUntil = heldTailParks.get(step.id);
+        if (parkedUntil !== undefined) {
+          if (parkedUntil > Date.now()) { heldTailParked = true; continue; }
+          heldTailParks.delete(step.id);
+        }
         const routed = step.travels === true
-          ? crucibleAdmission(job)
+          ? crucibleAdmission(job, cardHeld)
           : { ok: true as const, venue: LONGFORM_ALIGN_SET };
         if (!routed.ok) {
           admissionBlocked = true;
@@ -3535,7 +3687,7 @@ export function pump(): void {
          * unread. `admissionBlocked` is not set either: a slot frees when a
          * step settles, and settling pumps.
          */
-        if (gpuSlotHolder(venue, sets) !== null) {
+        if (gpuSlotHolder(venue, sets, job) !== null) {
           clearAdmissionHold(step);
           continue;
         }
@@ -3651,6 +3803,21 @@ export function pump(): void {
     admissionRecheckTimer = null;
   }
 
+  // The book's own tail: seconds, not the admission cadence. Armed only while
+  // a row is actually parked on one, and disarmed the moment none is.
+  if (heldTailParked) {
+    if (!heldTailRecheckTimer) {
+      heldTailRecheckTimer = setTimeout(() => {
+        heldTailRecheckTimer = null;
+        pump();
+      }, heldJobRecheckMs);
+      if (typeof heldTailRecheckTimer.unref === 'function') heldTailRecheckTimer.unref();
+    }
+  } else if (heldTailRecheckTimer) {
+    clearTimeout(heldTailRecheckTimer);
+    heldTailRecheckTimer = null;
+  }
+
   /*
    * The decision is made; anyone who needs to read "what is running now" may.
    * Each listener is isolated — one watcher's throw is not another's, and none of
@@ -3699,13 +3866,29 @@ function resolveInput(step: QueueStep): ArtifactRef {
 }
 
 /**
- * GIVE THE GPU SLOT BACK WHILE THE STEP RUNS ON — the one writer of that move.
+ * RECHARGE THE STEP TO THE CPU POOL WHILE IT RUNS ON — the one writer of that
+ * move.
  *
  * See {@link StepRunContext.releaseGpu} for the measurement this exists for. The
  * pair written here is the pair admission writes (`step.venue`, `step.resource`)
  * and for the same reason: the step has stopped being work on the machine that
  * rendered it, so charging that engine's pool for the copy that follows would
  * name a lane nothing of this row is on any more.
+ *
+ * ── IT DOES NOT FREE THE CARD FOR THE NEXT BOOK (Owen, 2026-09-20) ─────────
+ *
+ * It used to, and that was the whole of the defect: *Mistborn* handed the slot
+ * back when its last chunk landed, went to the CPU for the session copy, and
+ * then queued for the card it had just been on — behind its own render's
+ * activity line. The ruling is that a book is atomic on the card, so the SLOT
+ * is now charged to the RUN (`gpuHoldOf`, `shared/queue/slot-sets.ts`) until
+ * the last of its GPU steps is terminal.
+ *
+ * What this still does, and why it stays: the accounting. The session copy is
+ * CPU work, the bench must draw it as CPU work, and the `local-work` count is
+ * what stops the pump starting a third CPU job on top of it. One fact about
+ * where this STEP's work is happening; a different fact about what the BOOK is
+ * holding.
  *
  * IT NEVER THROWS. Every call is bookkeeping about work that is already in
  * flight, and failing a nine-hour render over an accounting call would be the
@@ -3739,14 +3922,18 @@ function handOverGpuSlot(job: QueueJob, step: QueueStep, reason: string): void {
     live.resource = 'cpu';
   }
   console.log(
-    `[queue] ${job.title} — ${step.label}: ${reason}. The GPU slot is free; the rest of this `
-    + 'step is charged to the CPU pool.');
+    `[queue] ${job.title} — ${step.label}: ${reason}. The rest of this step is charged to the `
+    + 'CPU pool; the card stays held for this book until its last GPU step lands.');
   changed();
   pump();
 }
 
 async function launch(job: QueueJob, step: QueueStep): Promise<void> {
   const mod = moduleFor(step.type);
+  // Whatever park this row was carrying is answered by it starting. Left
+  // standing it would be a stale entry keyed by a step nothing will look at
+  // again.
+  heldTailParks.delete(step.id);
   const abort = new AbortController();
   runningSteps.set(step.id, {
     jobId: job.id,
@@ -3975,6 +4162,29 @@ function settleStep(job: QueueJob, step: QueueStep, outcome: StepOutcome): void 
    * because this is the one outcome that is not an ending.
    */
   if (!outcome.ok && busyLine !== undefined && !stopped) {
+    takeThermalSummary(step.id);
+    step.status = 'queued';
+    step.finishedAt = undefined;
+    step.startedAt = undefined;
+    step.error = undefined;
+    /*
+     * REFUSED BY THIS BOOK'S OWN TAIL — see {@link parkOnOwnTail} (Owen,
+     * 2026-09-20).
+     *
+     * ASKED WITH THIS STEP ALREADY BACK IN THE QUEUE, and the order is
+     * load-bearing: `gpuHoldOf` counts a `running` step as one that STARTED,
+     * and the step just refused never started at all. Re-queued first, the
+     * question it answers is the right one — has any OTHER act of this book
+     * been on that card? A first submit refused by a stranger answers no and
+     * takes the branch below, exactly as it always has.
+     */
+    if (gpuHoldOf(job) !== null) {
+      step.progress = { ...step.progress, percent: undefined };
+      parkOnOwnTail(step, job.waitForResolved ?? 'that server', busyLine);
+      changed();
+      pump();
+      return;
+    }
     /*
      * THE SERVER IS HELD OFF FOR ONE ADMISSION TICK, RECORDED HERE.
      *
@@ -3985,11 +4195,6 @@ function settleStep(job: QueueJob, step: QueueStep, outcome: StepOutcome): void 
      * each caller that learns it (A5, 2026-09-19).
      */
     holdServerBusy(job, busyLine);
-    takeThermalSummary(step.id);
-    step.status = 'queued';
-    step.finishedAt = undefined;
-    step.startedAt = undefined;
-    step.error = undefined;
     /*
      * THE SENTENCE IS COMPOSED BEFORE THE VENUE IS GIVEN BACK, because it names
      * the machine that refused and `releaseVenueIfNothingStands` is about to
@@ -4206,6 +4411,13 @@ export interface ConfigureOptions extends EngineConfig {
   /** How often a pump refused on admission re-checks. Tests shorten it. */
   admissionRecheckMs?: number;
   /**
+   * How long a row parked on its OWN book's tail waits before it is asked
+   * again — see {@link heldJobRecheckMs}. Seconds by design, and separate from
+   * the admission cadence because it is a different wait: the book already has
+   * the card. Tests shorten it.
+   */
+  heldJobRecheckMs?: number;
+  /**
    * How often every ENABLED Crucible server is asked whether it answers, with
    * nobody waiting on the reply — see {@link reachSweepMs}. Omitted means the
    * admission recheck cadence; `0` turns the sweep off, which is what the
@@ -4227,6 +4439,7 @@ export async function configure(options: ConfigureOptions): Promise<void> {
   config = { stateDir: options.stateDir, legacyQueueFile: options.legacyQueueFile };
   if (options.gpuHolder) gpuHolderProbe = options.gpuHolder;
   if (options.admissionRecheckMs !== undefined) admissionRecheckMs = options.admissionRecheckMs;
+  if (options.heldJobRecheckMs !== undefined) heldJobRecheckMs = options.heldJobRecheckMs;
   reachSweepMs = options.reachSweepMs === undefined ? null : options.reachSweepMs;
   jobs = [];
   running = false;
@@ -4241,6 +4454,9 @@ export async function configure(options: ConfigureOptions): Promise<void> {
   // `before-quit`; this map is only the in-flight guard.
   reservingSteps.clear();
   reserveHolds.clear();
+  // A park belongs to the pass that wrote it, like a reserve: the act it was
+  // waiting on is long settled by the time a process configures again.
+  heldTailParks.clear();
   // ...so the sweep starts again from nothing, on whatever cadence this
   // configuration asked for. THE ONE PLACE IT IS ARMED, and it re-arms rather
   // than adds, for the same reason the record watcher does: a second
