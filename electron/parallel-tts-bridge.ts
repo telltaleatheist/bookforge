@@ -34,6 +34,9 @@ import type { NarrationTextCleanupChoice } from '../shared/queue/narration-run';
 // used, like every other crucible door here: a render that never asks must not
 // pull the registry (and its bearer tokens) into the process.
 import type { GenerationVenue } from './crucible/generation-venue';
+import type {
+  PrepAssignedServer, PrepPackedBecause, PrepPacking,
+} from './crucible/prep-band';
 // Relative, never `@shared/*`: that alias resolves at compile time and breaks the
 // main process at RUNTIME (memory `shared-alias-runtime-trap`).
 
@@ -2068,8 +2071,13 @@ export interface PrepInfo {
    * safe; one whose ceiling is LOWER would have its chunks refused by the
    * server, and the render step says so by name before it submits
    * (`packingTravelsTo`). Absent for a session prepped before this date.
+   *
+   * `because` is which rung of `crucible/prep-band.ts` chose that machine — the
+   * card the book holds, the server its row named, or the tightest of the
+   * enabled ones. It is provenance, not an input to any rule, so it is absent on
+   * a session read back off disk from a build that did not record it.
    */
-  packedFor?: { server: string; ceilingChars: number };
+  packedFor?: { server: string; ceilingChars: number; because?: PrepPackedBecause };
 }
 
 /**
@@ -2132,6 +2140,22 @@ export interface ParallelConversionConfig {
    * the one field this door trusts.
    */
   textCleanup?: NarrationTextCleanupChoice;
+  /**
+   * THE MACHINE THIS BOOK IS ALREADY BOUND TO, when the queue row has one.
+   *
+   * The card the book HOLDS (`waitForResolved` under ruling 9 — a book is atomic
+   * on the card, `shared/queue/slot-sets.ts`) or the server its row NAMED
+   * (`waitFor`). Prep packs to the rendering machine's own band, so a book that
+   * is not free to go anywhere else must be packed for the machine it is bound
+   * to — and until 2026-09-19 it was not: prep asked the venue DECISION, which
+   * answers "where does unassigned work go", and packed a PC-held book to the
+   * Mac's 700-character band (bug hunt §H).
+   *
+   * Absent is an `any` row with no card held, which packs to the tightest band
+   * among the enabled servers (`crucible/prep-band.ts`). Absent is NOT "decide
+   * for me": nothing here picks a machine.
+   */
+  packFor?: PrepAssignedServer;
   // Clean session - delete any existing e2a sessions for this epub before starting
   // Used for language learning jobs which should always start fresh (no resume)
   cleanSession?: boolean;
@@ -3514,32 +3538,66 @@ async function venueBandForPrep(
 }
 
 /**
- * WHERE THIS BOOK WOULD BE READ, AND THE LENGTHS THAT MACHINE PACKS TO — asked
- * ONCE, before a prep does anything, and answered before a copy is cut.
+ * WHOSE NUMBERS THIS BOOK IS PACKED TO — asked ONCE, before a prep does
+ * anything, and answered before a copy is cut.
  *
- * The RULE about what to do when nobody answers is not here: it is
- * `crucible/prep-band.ts`, because "wait for a machine" and "name a
- * misconfiguration" is the distinction Owen ruled on (2026-09-19) and it needs
- * one place and one keeper. This is the half that knows where the three answers
+ * The RULE is not here: it is `crucible/prep-band.ts` — which machine's band a
+ * book takes (the card it holds, the server its row named, or the tightest of
+ * the enabled ones), and whether "nobody answered" is a wait or a
+ * misconfiguration. Both are distinctions Owen ruled on (2026-09-19) and each
+ * needs one place and one keeper. This is the half that knows where the answers
  * come from on a real machine.
  *
  * `crucibleVoiceFor` is asked HERE, outside that rule, on purpose: a voice with
  * no Crucible id at all is a misconfiguration of this app's own catalog and
  * nothing about a server's availability changes it, so it refuses by name
- * before any machine is pinged.
+ * before any machine is asked.
  */
 async function bandThisPrepPacksTo(
   settings: ParallelTtsSettings,
-): Promise<{ venue: GenerationVenue; band: CrucibleStatedBand }> {
+  assigned: PrepAssignedServer | undefined,
+): Promise<PrepPacking<GenerationVenue>> {
   const { crucibleVoiceFor } = await import('./crucible/render.js');
   const { bandForPrep } = await import('./crucible/prep-band.js');
-  const { readRouting } = await import('./crucible/routing.js');
+  const { readRouting, rankedServers } = await import('./crucible/routing.js');
   const voice = crucibleVoiceFor(settings.ttsEngine, higgsModelForJob(settings).id);
-  return bandForPrep<GenerationVenue>(voice, {
-    decide: () => decideGenerationVenue(settings),
+  return bandForPrep<GenerationVenue>(voice, assigned, {
+    enabled: () => rankedServers(),
+    /*
+     * MINTED, NOT DECIDED: the rule has already named the machine, so this
+     * takes `generation-venue.ts`'s caller-named arm — which pings nothing and
+     * second-guesses nothing — rather than building a `GenerationVenue`
+     * literal here, where a second spelling of that shape could drift.
+     */
+    venueFor: (server) => decideGenerationVenue({ ...settings, crucible: { server } }),
     band: (server) => venueBandForPrep(settings, server),
     roster: () => readRouting().ranked,
   });
+}
+
+/**
+ * THE MACHINE THIS BOOK IS NOT FREE TO LEAVE, as the two doors state it.
+ *
+ * `packFor` is the queue row's answer — the card the book holds under ruling 9,
+ * or the server the row named (`queue-steps/prepare.ts`). `settings.crucible`
+ * is the same instruction from the CLI's `--crucible-server` and from any
+ * inline door that was handed a server. They are two spellings of one fact, so
+ * a disagreement between them is REFUSED rather than ranked: packing to one
+ * machine's numbers for a book bound to the other is precisely the defect this
+ * rung exists to end.
+ */
+function prepAssignedServer(config: ParallelConversionConfig): PrepAssignedServer | undefined {
+  const row = config.packFor;
+  const named = config.settings.crucible?.server?.trim();
+  if (row !== undefined && named !== undefined && named !== '' && named !== row.server) {
+    throw new Error(
+      `prep_pack_server_disagrees: this run is bound to crucible "${row.server}" (${row.because}) `
+      + `but its settings name crucible "${named}". One book, one machine — the two records are `
+      + 'compared, never ranked.');
+  }
+  if (row !== undefined) return row;
+  if (named === undefined || named === '') return undefined;
+  return { server: named, because: 'the server this row named' };
 }
 
 export async function prepareSession(
@@ -3554,7 +3612,8 @@ export async function prepareSession(
   venue: GenerationVenue,
   /**
    * THE NUMBERS THIS BOOK IS PACKED TO — that server's own `max_chars` and pace
-   * block, read by the CALLER before any of this run's expensive work started.
+   * block, read by the CALLER before any of this run's expensive work started,
+   * with the rung that chose whose numbers they are (`crucible/prep-band.ts`).
    *
    * It was read here until 2026-09-19, three phases in: after the narration copy
    * had been cut and the scratch sessions swept. That order cost a whole cut
@@ -3563,7 +3622,7 @@ export async function prepareSession(
    * is once per queue pass for as long as the machines are off. The availability
    * question is asked first now, and the answer is handed in.
    */
-  venueBand: CrucibleStatedBand,
+  packed: { band: CrucibleStatedBand; because: PrepPackedBecause },
   /** What a stop can reach — the spawn and the session dir are noted on it. */
   handle: PrepHandle,
   prepJobId?: string  // Used only to address first-run model-download progress notes
@@ -3754,7 +3813,7 @@ export async function prepareSession(
       // WSL toggle says — the render is on another machine. See prepRunsInWsl.
       onHost: venue.where === 'crucible',
       // AND IT PACKS TO THAT MACHINE'S NUMBERS, not to this arm's catalog block.
-      venueBand,
+      venueBand: packed.band,
       // ORPHEUS_MAX_CHARS is consumed HERE (prep packs sentences), not in the
       // worker. Precedence: an explicit user env override wins, else the selected
       // voice's declared packing cap, else nothing — NO invented default.
@@ -3988,7 +4047,11 @@ export async function prepareSession(
     metadata: state.metadata,
     // WHOSE CEILING THESE CHUNKS RESPECT — see `PrepInfo.packedFor`. Written
     // from the band this prep was handed, never re-derived later.
-    packedFor: { server: venue.server, ceilingChars: venueBand.ceilingChars },
+    packedFor: {
+      server: venue.server,
+      ceilingChars: packed.band.ceilingChars,
+      because: packed.because,
+    },
   };
 
   console.log('[PARALLEL-TTS] Prep complete:', prepInfo.totalSentences, 'sentences');
@@ -7243,7 +7306,7 @@ export interface PreparedSessionRef {
   readonly totalSentences: number;
   readonly totalChapters: number;
   /** See {@link PrepInfo.packedFor}. Absent when nothing stated a band. */
-  readonly packedFor?: { server: string; ceilingChars: number };
+  readonly packedFor?: { server: string; ceilingChars: number; because?: PrepPackedBecause };
 }
 
 /** What {@link prepareNarrationSession} answers. Never throws; see the header. */
@@ -7409,7 +7472,8 @@ async function packWithHandle(
    * Refuses a MISCONFIGURATION by name and parks on AVAILABILITY — the line
    * between the two is `crucible/prep-band.ts`, not here.
    */
-  const { venue, band } = await bandThisPrepPacksTo(config.settings);
+  const { venue, band, because } = await bandThisPrepPacksTo(
+    config.settings, prepAssignedServer(config));
   handle.throwIfCancelled('while a machine was being asked for the band');
 
   // The captions out, before anything downstream sees the path: the session,
@@ -7455,7 +7519,8 @@ async function packWithHandle(
   handle.throwIfCancelled('before narrator was spawned');
   let prepInfo: PrepInfo;
   try {
-    prepInfo = await prepareSession(config.epubPath, config.settings, venue, band, handle, jobId);
+    prepInfo = await prepareSession(
+      config.epubPath, config.settings, venue, { band, because }, handle, jobId);
   } catch (err) {
     // A STOP IS NOT A FAILURE, and it keeps its own sentence. Wrapping it in
     // "Preparation failed:" would file the user's own press as an error on the
@@ -8014,7 +8079,8 @@ export async function renderRangeHeadless(
   const prepHandle = beginPrepare(jobId);
   let prepInfo: PrepInfo;
   try {
-    prepInfo = await prepareSession(inputPath, settings, venue, band, prepHandle, jobId);
+    prepInfo = await prepareSession(
+      inputPath, settings, venue, { band, because: venue.because }, prepHandle, jobId);
   } finally {
     prepHandle.release();
   }

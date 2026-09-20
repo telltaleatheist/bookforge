@@ -35,18 +35,21 @@
  *
  * The chunk boundaries are the rendering machine's numbers — `max_chars` and
  * the pace block off `GET /v1/voices`, never this machine's catalog
- * (`electron/crucible/voice-band.ts`). So the prep door reads ONE band from ONE
- * server. A busy server answers in milliseconds, so this is not waiting for a
- * free card — but a server that is asleep or switched off answers nothing, and
- * until 2026-09-19 that FAILED the row. Owen: a book *"would just sit there in
- * the queue until it's free"*, and *"it should only fail because of a
- * misconfiguration, which can be repaired."* So this row PARKS on availability
- * and fails only on something a person repairs; the line between the two is
- * `electron/crucible/prep-band.ts`.
+ * (`electron/crucible/voice-band.ts`). So the prep door reads a band off a
+ * server before it packs anything. A busy server answers in milliseconds, so
+ * this is not waiting for a free card — but a server that is asleep or switched
+ * off answers nothing, and until 2026-09-19 that FAILED the row. Owen: a book
+ * *"would just sit there in the queue until it's free"*, and *"it should only
+ * fail because of a misconfiguration, which can be repaired."* So this row PARKS
+ * on availability and fails only on something a person repairs; the line between
+ * the two is `electron/crucible/prep-band.ts`.
  *
- * Which server's band it read is recorded on the session and travels to the
- * render, which refuses by name if it is admitted somewhere with a tighter
- * ceiling (`parallel-tts-bridge.packingTravelsTo`).
+ * WHICH server's is {@link assignedServerOf}'s half of that rule: the card this
+ * book already holds, the server its row named, or — for a row bound to nothing
+ * — the tightest band among the enabled machines. Whichever it was is recorded
+ * on the session and travels to the render, which refuses by name if it is
+ * admitted somewhere with a tighter ceiling
+ * (`parallel-tts-bridge.packingTravelsTo`).
  *
  * ── A PARKED CPU ROW IS RE-ADMITTED AT ONCE, so the cool-off is HERE ───────
  *
@@ -74,6 +77,8 @@ import {
   detectRecommendedWorkerCount,
 } from '../parallel-tts-bridge';
 import { beginPrepare, cancelPrepare, waitUnlessStopped } from '../prep-handles';
+import { runVenueOfRow } from '../crucible/step-venue';
+import type { PrepAssignedServer } from '../crucible/prep-band';
 import type { StepModule, StepRunContext, StepReport } from '../queue-engine';
 import type { ArtifactRef } from '../../shared/queue/engine-types';
 import { projectDirForStep, queueMainWindow, stepFailure } from './runtime';
@@ -139,6 +144,51 @@ interface PrepareConfig {
   isArticle?: boolean;
 }
 
+/**
+ * THE MACHINE THIS BOOK IS ALREADY BOUND TO, read off the row — or `undefined`
+ * for a book that is free to run anywhere.
+ *
+ * ── The bug (measured 2026-09-19) ──────────────────────────────────────────
+ *
+ * A row whose foundry step resolved the job's venue to one machine held THAT
+ * card for the rest of the chain (ruling 9: a book is atomic on the card,
+ * `shared/queue/slot-sets.ts`). Prepare packed it for a DIFFERENT one — because
+ * it asked the venue DECISION, whose rule is "the first enabled server that
+ * answers, in rank order", a rule about work that has not been placed yet. The
+ * render then ran on the held card against chunks cut to the other machine's
+ * band: an over-cap refusal on one book that night, and on another the quiet
+ * version — a whole book rendered in chunks half the size the card would have
+ * taken.
+ *
+ * So the ROW is asked, not the decision:
+ *
+ *  - `waitForResolved` names the card this book HOLDS. It is taken with no
+ *    reachability poll and no thought about whether the server is busy: the book
+ *    holds this card, and a 409 from its own server during the hold is the
+ *    hold's own tail rule.
+ *  - `waitFor` names the server the OPERATOR chose, for a row not yet admitted
+ *    anywhere. Naming a machine means waiting for it.
+ *  - `any` with no card held is `undefined`, and `crucible/prep-band.ts` packs
+ *    to the TIGHTEST enabled band so the chunks fit whichever machine the pump
+ *    later admits the render to.
+ *
+ * `runVenueOfRow` is the one reader of those two fields
+ * (`crucible/step-venue.ts`): it answers `undefined` for `any` and REFUSES BY
+ * NAME for a row assigned to the deleted local narrator, which is the answer
+ * every other step gives such a row rather than re-deciding it.
+ *
+ * Nothing here WRITES a venue. Admission is the pump's (ruling 7) and a 409
+ * releases it; a prep that pinned an `any` book to the machine it packed for
+ * would be a second scheduler with less information than the first.
+ */
+function assignedServerOf(ctx: StepRunContext): PrepAssignedServer | undefined {
+  const held = runVenueOfRow(ctx.job.waitForResolved);
+  if (held !== undefined) return { server: held.server, because: 'the card this book holds' };
+  const named = runVenueOfRow(ctx.job.waitFor);
+  if (named !== undefined) return { server: named.server, because: 'the server this row named' };
+  return undefined;
+}
+
 export const prepareStep: StepModule = {
   type: 'prepare',
   consumes: 'epub',
@@ -158,6 +208,7 @@ export const prepareStep: StepModule = {
 
   async run(ctx: StepRunContext): Promise<ArtifactRef> {
     const config = (ctx.step.config ?? {}) as unknown as PrepareConfig;
+    const packFor = assignedServerOf(ctx);
     setMainWindow(queueMainWindow());
 
     const epubPath = ctx.input.path;
@@ -192,6 +243,14 @@ export const prepareStep: StepModule = {
       // Carried, never invented: absent reaches the door as absent and is
       // refused by name rather than read as either answer.
       textCleanup: config.textCleanup,
+      /*
+       * WHOSE BAND THIS BOOK IS PACKED TO, when the row has already settled it
+       * — see {@link assignedServerOf}. Spread rather than sent as `undefined`,
+       * because absent means "this book is free to run anywhere" and the packer
+       * answers that case by taking the TIGHTEST enabled band; a field that
+       * carried `undefined` as an answer would be a third state nobody reads.
+       */
+      ...(packFor === undefined ? {} : { packFor }),
       bfpPath: projectDir || undefined,
       isArticle: config.isArticle,
       /*
@@ -279,7 +338,11 @@ export const prepareStep: StepModule = {
           + (prepared.packedFor === undefined
             ? ''
             : ` — packed to ${prepared.packedFor.ceilingChars} characters, `
-              + `crucible "${prepared.packedFor.server}"'s number for this voice`),
+              + `crucible "${prepared.packedFor.server}"'s number for this voice`
+              // WHY that machine: the card the book holds, the server its row
+              // named, or the tightest of the enabled ones.
+              + `${prepared.packedFor.because === undefined
+                ? '' : ` — ${prepared.packedFor.because}`}`),
       });
       return {
         kind: 'prepared-session',
@@ -304,6 +367,14 @@ export const prepareStep: StepModule = {
           ...(prepared.packedFor === undefined ? {} : {
             packedForServer: prepared.packedFor.server,
             packedCeilingChars: prepared.packedFor.ceilingChars,
+            /*
+             * WHY THAT MACHINE'S NUMBERS — provenance, beside the numbers. The
+             * render reads the other two (`packingTravelsTo`); this one is for
+             * the person asking six weeks later why a book is in 700-character
+             * chunks, and the three answers are three different bugs.
+             */
+            ...(prepared.packedFor.because === undefined
+              ? {} : { packedForBecause: prepared.packedFor.because }),
           }),
         },
       };

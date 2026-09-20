@@ -40,6 +40,16 @@
  * 7. **Prepare PARKS when no machine will state the band**, and fails only on
  *    something a person repairs. *"It should only fail because of a
  *    misconfiguration, which can be repaired."*
+ *
+ * ── And WHOSE band it packs to (2026-09-19, second pass) ──────────────────
+ *
+ * The same section pins the rule that question needed. A book that HOLDS a card
+ * (ruling 9) is packed for that card, a row that NAMED a server is packed for
+ * that server, and only a book bound to nothing compares machines — taking the
+ * TIGHTEST enabled band, so its chunks fit wherever the pump later admits the
+ * render. The venue DECISION is never asked about a book whose machine is
+ * settled: asking it is what packed a card-holding book to the ranked-first
+ * machine's 700-character band and rendered it somewhere else.
  */
 'use strict';
 const assert = require('assert');
@@ -547,7 +557,7 @@ function narrationRun(title, epubPath = '/a.epub') {
     handle.release();
   });
 
-  console.log('7. prepare PARKS when no machine will state the band');
+  console.log('7. whose band prep packs to — and parking when nobody will state one');
 
   /*
    * Owen, 2026-09-19: a book *"would just sit there in the queue until it's
@@ -565,11 +575,48 @@ function narrationRun(title, epubPath = '/a.epub') {
     Object.assign(new Error(`${code}: ${message}`), { code, ...extra });
 
   const ROSTER = [{ name: 'M1 Ultra', enabled: true }, { name: '3090 Ti', enabled: false }];
+  /** Both switched on, the Mac ranked FIRST — the shape Owen's case needs. */
+  const BOTH_ON = [{ name: 'M1 Ultra', enabled: true }, { name: '3090 Ti', enabled: true }];
   const BAND = { server: 'M1 Ultra', voice: 'deathstalker', maxChars: 800, ceilingChars: 700 };
+  const bandOf = (server, ceiling) =>
+    ({ server, voice: 'deathstalker', maxChars: ceiling + 100, ceilingChars: ceiling });
 
-  async function askedFor(host) {
+  /** The card this book holds, and the machine its row named — the two rungs. */
+  const HELD = (server) => ({ server, because: 'the card this book holds' });
+  const NAMED = (server) => ({ server, because: 'the server this row named' });
+
+  /**
+   * A host, with every method this rule may reach RECORDED.
+   *
+   * `decide` is on it and it THROWS: the venue decision — "where does
+   * unassigned work go" — is the rule that packed a PC-held book to the Mac's
+   * band, and a book whose machine is already settled must never reach it. The
+   * property is asserted by the rule not having it to call.
+   */
+  function prepHost(parts) {
+    const asked = [];
+    return {
+      asked,
+      decide: () => {
+        throw new Error('the venue decision must not be asked about a book whose machine '
+          + 'is already settled');
+      },
+      enabled: () => {
+        asked.push('enabled');
+        return parts.enabled === undefined ? ROSTER.filter((row) => row.enabled) : parts.enabled();
+      },
+      band: (server) => { asked.push(`band:${server}`); return parts.band(server); },
+      venueFor: async (server) => {
+        asked.push(`venueFor:${server}`);
+        return { where: 'crucible', server, because: 'the caller named it' };
+      },
+      roster: () => (parts.roster === undefined ? ROSTER : parts.roster()),
+    };
+  }
+
+  async function askedFor(host, assigned) {
     try {
-      return { threw: null, got: await bandForPrep('deathstalker', host) };
+      return { threw: null, got: await bandForPrep('deathstalker', assigned, host) };
     } catch (err) {
       return { threw: err, got: null };
     }
@@ -577,37 +624,36 @@ function narrationRun(title, epubPath = '/a.epub') {
 
   await check('NO SERVER ANSWERS → PARKED, naming every machine asked and every one switched off',
     async () => {
-      const { threw } = await askedFor({
-        decide: async () => {
-          throw refusal('no_reachable_server',
-            'not one enabled Crucible server answered: M1 Ultra (unreachable: connect ECONNREFUSED).',
-            { tried: ['M1 Ultra (unreachable: connect ECONNREFUSED 192.0.2.10:8760)'] });
+      // `any`, and not one enabled machine will state a band: the park case,
+      // now reached through the tightest-band rung rather than a venue ping.
+      const { threw } = await askedFor(prepHost({
+        band: async (server) => {
+          throw refusal('crucible_unreachable',
+            `crucible "${server}" could not be reached: connect ECONNREFUSED.`);
         },
-        band: async () => { throw new Error('the band must not be asked for'); },
-        roster: () => ROSTER,
-      });
+      }), undefined);
       assert.ok(threw instanceof PrepBandUnavailable,
         `an absent machine is availability, not a misconfiguration; got: ${threw && threw.message}`);
       assert.strictEqual(runtime.busyLineOf(threw), threw.busyLine,
         'the line must ride on the throw under the name `busyLine` — that duck-type is the ONE '
         + 'rule that decides whether settleStep parks the row or fails it');
       assert.match(threw.busyLine, /deathstalker/, 'the voice it could not get numbers for');
-      assert.match(threw.busyLine, /M1 Ultra \(unreachable: connect ECONNREFUSED/,
-        'each machine that was asked, and what it said');
+      assert.match(threw.busyLine, /M1 Ultra did not answer/,
+        'each machine that was asked for the band and would not state one');
       assert.match(threw.busyLine, /switched off: 3090 Ti/,
         'and the machine that was never asked because its switch is off — half of why nothing '
         + 'answered, and invisible in a list of what was tried');
     });
 
   await check('EVERY SERVER SWITCHED OFF → parked, naming the switch', async () => {
-    const { threw } = await askedFor({
-      decide: async () => {
+    const { threw } = await askedFor(prepHost({
+      enabled: () => {
         throw refusal('no_enabled_server',
           'every Crucible server is disabled (M1 Ultra, 3090 Ti). Enable one in Settings.');
       },
       band: async () => { throw new Error('the band must not be asked for'); },
       roster: () => [{ name: 'M1 Ultra', enabled: false }, { name: '3090 Ti', enabled: false }],
-    });
+    }), undefined);
     assert.ok(threw instanceof PrepBandUnavailable,
       'a switch somebody flicked is exactly the wait docs/PENDING-QUEUE-AND-GPU-DIAL.md files '
       + 'under "a parked row says what would unblock it"');
@@ -615,15 +661,15 @@ function narrationRun(title, epubPath = '/a.epub') {
   });
 
   await check('NO SERVER REGISTERED AT ALL → failed, in routing\'s own words', async () => {
-    const { threw } = await askedFor({
-      decide: async () => {
+    const { threw } = await askedFor(prepHost({
+      enabled: () => {
         throw refusal('no_enabled_server',
           'no Crucible server is available to the queue: this machine has none, and none is '
           + 'registered. Add one in Settings → Crucible Servers.');
       },
       band: async () => { throw new Error('the band must not be asked for'); },
       roster: () => [],
-    });
+    }), undefined);
     assert.ok(!(threw instanceof PrepBandUnavailable),
       'nothing is coming: parking would be a row waiting for ever on an act nobody is going '
       + 'to perform');
@@ -631,27 +677,29 @@ function narrationRun(title, epubPath = '/a.epub') {
     assert.match(threw.message, /Add one in Settings/);
   });
 
-  await check('A SERVER ANSWERS → the band comes back and the book is packed', async () => {
-    const { threw, got } = await askedFor({
-      decide: async () => ({ where: 'crucible', server: 'M1 Ultra', because: 'the caller named it' }),
-      band: async (server) => { assert.strictEqual(server, 'M1 Ultra'); return BAND; },
-      roster: () => ROSTER,
-    });
+  await check('THE ROW NAMED A SERVER → the band comes back and the book is packed', async () => {
+    const host = prepHost({ band: async (server) => {
+      assert.strictEqual(server, 'M1 Ultra'); return BAND;
+    } });
+    const { threw, got } = await askedFor(host, NAMED('M1 Ultra'));
     assert.strictEqual(threw, null, 'nothing is wrong when a machine answers');
     assert.strictEqual(got.venue.server, 'M1 Ultra');
     assert.strictEqual(got.band.ceilingChars, 700,
       'and the WHOLE venue travels back, because prepareSession derives the session home from it');
+    assert.strictEqual(got.because, 'the server this row named',
+      'and the row says WHY those numbers, because the three answers are three different bugs '
+      + 'when the chunks turn out wrong');
+    assert.ok(!host.asked.includes('enabled'),
+      'naming a machine means waiting for it: no other server is asked, and none is compared');
   });
 
   await check('A VOICE NOBODY SERVES, while the servers ANSWERED → failed by name', async () => {
-    const { threw } = await askedFor({
-      decide: async () => ({ where: 'crucible', server: 'M1 Ultra', because: 'the caller named it' }),
+    const { threw } = await askedFor(prepHost({
       band: async () => {
         throw refusal('crucible_unknown_voice',
           'crucible "M1 Ultra" has no voice "deathstalker" (known: belinda, tara).');
       },
-      roster: () => ROSTER,
-    });
+    }), NAMED('M1 Ultra'));
     assert.ok(!(threw instanceof PrepBandUnavailable),
       'the machine answered — waiting for it to change its mind about which voices it has is '
       + 'waiting for nothing');
@@ -659,17 +707,15 @@ function narrationRun(title, epubPath = '/a.epub') {
     assert.match(threw.message, /no voice "deathstalker"/);
   });
 
-  await check('THE CHOSEN MACHINE STOPS ANSWERING between the ping and the voices call → parked',
+  await check('THE MACHINE THE ROW IS BOUND TO STOPS ANSWERING → parked',
     async () => {
-      const { threw } = await askedFor({
-        decide: async () => ({ where: 'crucible', server: 'M1 Ultra', because: 'the caller named it' }),
+      const { threw } = await askedFor(prepHost({
         band: async () => {
           throw refusal('crucible_unreachable',
             'crucible "M1 Ultra" could not be reached: socket hang up. A render is not retried '
             + 'here — start the server and queue the book again, or pick another one.');
         },
-        roster: () => ROSTER,
-      });
+      }), NAMED('M1 Ultra'));
       assert.ok(threw instanceof PrepBandUnavailable);
       assert.ok(!/queue the book again/.test(threw.busyLine),
         'the render\'s advice is about a thing the queue is already doing — a parked row must '
@@ -677,16 +723,121 @@ function narrationRun(title, epubPath = '/a.epub') {
       assert.match(threw.busyLine, /M1 Ultra did not answer/);
     });
 
-  await check('a HELD card still parks on the holder\'s own line, untouched', async () => {
+  await check('a HELD lane still parks on the holder\'s own line, untouched', async () => {
     const held = 'GPU busy: foundry, tts 62% done';
-    const { threw } = await askedFor({
-      decide: async () => ({ where: 'crucible', server: 'M1 Ultra', because: 'the caller named it' }),
+    const { threw } = await askedFor(prepHost({
       band: async () => { throw refusal('crucible_server_busy', 'held.', { busyLine: held }); },
-      roster: () => ROSTER,
-    });
+    }), NAMED('M1 Ultra'));
     assert.strictEqual(runtime.busyLineOf(threw), held,
       'a refusal that already names a holder takes the road every other module takes; '
       + 're-dressing it would lose the holder and the progress');
+  });
+
+  /*
+   * ── WHICH MACHINE'S BAND (the bug measured 2026-09-19) ────────────────────
+   *
+   * A row whose foundry step resolved the job's venue to one machine holds THAT
+   * card for the rest of the chain (ruling 9: a book is atomic on the card).
+   * Prepare packed it for a DIFFERENT one, because it asked the venue DECISION
+   * — "the first enabled server that answers, in rank order", which is the rule
+   * for work that has not been placed. The render then ran on the held card
+   * against chunks cut to the other machine's band.
+   */
+  await check('A BOOK THAT HOLDS A CARD IS PACKED FOR THAT CARD, never for the ranked-first one',
+    async () => {
+      const host = prepHost({
+        enabled: () => BOTH_ON,
+        band: async (server) => {
+          assert.notStrictEqual(server, 'M1 Ultra',
+            'the ranked-first machine was asked for a band for a book that cannot go there');
+          return bandOf('3090 Ti', 1000);
+        },
+        roster: () => BOTH_ON,
+      });
+      const { threw, got } = await askedFor(host, HELD('3090 Ti'));
+      assert.strictEqual(threw, null);
+      assert.strictEqual(got.venue.server, '3090 Ti',
+        'the book holds this card; packing it to anyone else\'s numbers is an hour of GPU '
+        + 'judged against a band the book was never cut to');
+      assert.strictEqual(got.band.ceilingChars, 1000);
+      assert.strictEqual(got.because, 'the card this book holds');
+      assert.deepStrictEqual(host.asked, ['band:3090 Ti', 'venueFor:3090 Ti'],
+        'and nothing else was asked: no roster scan, no comparison, and above all not the '
+        + 'venue decision, which answers a question about UNASSIGNED work');
+    });
+
+  await check('A HELD CARD IS NOT POLLED — a busy server still states the band it packs to',
+    async () => {
+      /*
+       * There is no reachability poll and no activity read in this seam at all,
+       * which is the property: the book holds the card, so "is it busy" is
+       * answered by the hold's own tail rule (a 409 from its own server during
+       * the hold is re-asked), not by packing somewhere else. The host proves it
+       * by having nothing else to answer with — `enabled` throws.
+       */
+      const host = prepHost({
+        enabled: () => { throw new Error('a held card is never compared with another'); },
+        band: async (server) => bandOf(server, 700),
+      });
+      const { threw, got } = await askedFor(host, HELD('M1 Ultra'));
+      assert.strictEqual(threw, null, 'a busy card is still this book\'s card');
+      assert.strictEqual(got.band.ceilingChars, 700);
+      assert.ok(!host.asked.includes('enabled'));
+    });
+
+  await check('`any` WITH NO CARD HELD PACKS TO THE TIGHTEST BAND, so the chunks travel',
+    async () => {
+      const ceilings = { 'M1 Ultra': 1000, '3090 Ti': 700 };
+      const { threw, got } = await askedFor(prepHost({
+        enabled: () => BOTH_ON,
+        band: async (server) => bandOf(server, ceilings[server]),
+        roster: () => BOTH_ON,
+      }), undefined);
+      assert.strictEqual(threw, null);
+      assert.strictEqual(got.band.ceilingChars, 700,
+        'the render is admitted by the pump, not by this rule, so the only length that fits '
+        + 'every machine the book might land on is the smallest ceiling any of them states '
+        + '(`packingTravelsTo`)');
+      assert.strictEqual(got.venue.server, '3090 Ti');
+      assert.strictEqual(got.because, 'the tightest of 2 enabled servers');
+    });
+
+  await check('`any` WITH ONE MACHINE ASLEEP PACKS TO THE ONE THAT ANSWERED', async () => {
+    const { threw, got } = await askedFor(prepHost({
+      enabled: () => BOTH_ON,
+      band: async (server) => {
+        if (server === 'M1 Ultra') {
+          throw refusal('crucible_unreachable', 'crucible "M1 Ultra" could not be reached.');
+        }
+        return bandOf(server, 800);
+      },
+      roster: () => BOTH_ON,
+    }), undefined);
+    assert.strictEqual(threw, null,
+      'a machine that is off states no ceiling, and a ceiling nobody stated is not a number '
+      + 'to pack to');
+    assert.strictEqual(got.venue.server, '3090 Ti');
+    assert.strictEqual(got.band.ceilingChars, 800);
+    assert.strictEqual(got.because, 'the only enabled server that stated a band');
+  });
+
+  await check('`any` WHERE ONLY ONE MACHINE SERVES THE VOICE PACKS TO THAT ONE', async () => {
+    const { threw, got } = await askedFor(prepHost({
+      enabled: () => BOTH_ON,
+      band: async (server) => {
+        if (server === 'M1 Ultra') {
+          throw refusal('crucible_unknown_voice',
+            'crucible "M1 Ultra" has no voice "deathstalker" (known: belinda, tara).');
+        }
+        return bandOf(server, 640);
+      },
+      roster: () => BOTH_ON,
+    }), undefined);
+    assert.strictEqual(threw, null,
+      'one machine not having the voice is not a misconfiguration of the book — the render '
+      + 'goes where the voice is, and that machine stated its numbers');
+    assert.strictEqual(got.venue.server, '3090 Ti');
+    assert.strictEqual(got.band.ceilingChars, 640);
   });
 
   await check('A PARKED PREPARE ROW GOES BACK TO QUEUED AND IS ASKED AGAIN', async () => {

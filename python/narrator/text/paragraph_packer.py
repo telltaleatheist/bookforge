@@ -79,13 +79,27 @@ module is ASCII on disk. The text it produces is not.) Two independent
 detectors, because tables reach this module by two roads:
 
   MARKUP LINEAGE (authoritative, `extract_blocks`). A `<table>` becomes one
-  TABLE block per `<tr>`, built with ebook2audiobook's own cell recipe
-  (core.py:1461-1481 at 9daab0ba): the first row supplies the headers, each
-  later row becomes `header: cell` pairs joined by `TABLE_CELL_JOIN`, or the
-  cells joined by it when the widths disagree. narrator's only change is that each ROW is
-  its own block - e2a appended the same lines into the running text and the
-  character-window packer then packed several of them into one generation, which
-  is precisely what point 2 forbids.
+  TABLE block per DATA `<tr>`: a row becomes `header: cell` pairs joined by
+  `TABLE_CELL_JOIN`, or the cells joined by it when the table has no headers or
+  the widths disagree. Each ROW is its own block - e2a appended the same lines
+  into the running text and the character-window packer then packed several of
+  them into one generation, which is precisely what point 2 forbids.
+
+  TWO PARTS OF e2a's CELL RECIPE WERE WRONG AND ARE GONE (2026-09-19, measured
+  on Hitler's People, Evans 2024, whose Prologue is a Nuremberg transcript
+  typeset as a `role="presentation"` table of speaker and speech):
+
+    - HEADERS COME FROM MARKUP, NOT FROM POSITION. e2a took `rows[0]` whatever
+      it held, so the witness's name and her entire first answer became "the
+      headers" and were prefixed to every later row (one reached 2,894
+      characters) while the first row spoke nothing at all. Now only a `<th>`
+      row or a `<thead>` makes headers, and `role="presentation"` has none.
+      `table_header_row` states the order.
+    - A CELL'S SPANS ARE JOINED BY `markup_text`, not welded by
+      `get_text(strip=True)`. Kobo wraps every sentence of a cell in its own
+      span, so "out of them. " + "We then" came out "them.We" - one word to the
+      ear and, worse, ONE SENTENCE to `split_sentences`, which is why a
+      1,200-character answer offered the cap no boundary to cut at.
 
   TEXT SHAPE (`looks_table_like`). A PDF-derived conversion, where the layout
   model emits a table as plain blocks, carries the table only in its shape:
@@ -818,9 +832,13 @@ def split_sentences(text: str) -> list:
 #     ends in ';' or ',' rather than in a full stop, which is what the book says
 #     and is the only honest thing to hand the model.
 #   - MEASURED THE WAY THE WIRE MEASURES. The budget a piece is checked against is
-#     the one `emit_prose` will actually pay for it: the first piece of a group
-#     carries the lead `[break]` (and a heading's marker) and the rest do not -
-#     the reading commit 268c26e7 settled.
+#     the one `_emit_bounded` will actually pay for it: the first piece of a
+#     group carries the lead `[break]` (and a heading's or a row's marker) and
+#     the rest do not - the reading commit 268c26e7 settled.
+#   - IT APPLIES TO EVERY KIND OF BLOCK (2026-09-19). Prose reached it from the
+#     start; a TABLE ROW and a lone HEADING did not reach it at all, and were
+#     appended whole. `_emit_bounded` is now the one door, so the cap bounds the
+#     whole book rather than most of it.
 #   - NO BOUNDARY, NO SPLIT, NO CUT. If nothing yields pieces that all fit, the
 #     book is REFUSED BY NAME (`SentenceOverCapUnsplittable`). Cutting mid-clause
 #     or truncating would ship a chunk nobody wrote.
@@ -1013,6 +1031,137 @@ def _closed_block_text(block: Block) -> str:
     return text
 
 
+def _cut_to_fit(text: str, prefix: str, cap: int, report: PackReport) -> list:
+    """`text` - which does NOT fit under `cap` with `prefix` - cut into the
+    fewest parts that do, or as close as its punctuation allows.
+
+    Sentence boundaries first, greedily refilled to the cap; then, for a single
+    sentence that alone exceeds the cap, Owen's last resort of 2026-09-15 at
+    clause boundaries (`split_over_cap_sentence`). ONLY THE FIRST part carries
+    `prefix`, so only its budget pays for it.
+
+    A part that still does not fit is returned AS IT IS: this function reports
+    what the punctuation allows and the CALLER refuses by name, because only the
+    caller knows the chunk index the refusal must quote.
+    """
+    report.paragraphs_sentence_split += 1
+    pieces = split_sentences(text)
+
+    # THE LAST RESORT, BEFORE THE FILL (Owen, 2026-09-15). A sentence that
+    # alone exceeds the budget is cut at clause boundaries, because no
+    # arrangement of whole sentences can hold it and the render door refuses
+    # the whole book for one over-long row. Every sentence that FITS goes
+    # through untouched, so this changes nothing about how a book without one
+    # is packed. See `split_over_cap_sentence` for the discipline; the
+    # refusal for a sentence with no usable boundary is raised by the caller,
+    # where the chunk INDEX is exact.
+    first_budget = cap - len(prefix)
+    expanded: list = []
+    for n, piece in enumerate(pieces):
+        budget_here = first_budget if n == 0 else cap
+        if len(spoken(piece)) <= budget_here:
+            expanded.append(piece)
+            continue
+        split = split_over_cap_sentence(piece, cap, first_budget=budget_here)
+        if split is None:
+            # Left whole. The caller refuses it by name and can say which
+            # chunk index it is, which this pass cannot.
+            expanded.append(piece)
+            continue
+        report.sentences_clause_split += 1
+        print(f'pack_paragraphs: chunk {len(report.chunks)} of this document is ONE '
+              f'SENTENCE of {len(spoken(piece))} chars against a {budget_here}-char '
+              f'budget, so no chunk can hold it. LAST RESORT (Owen, 2026-09-15): cut '
+              f'at '
+              + ' then '.join(CLAUSE_TIER_LABEL[b] for b in split.boundaries)
+              + f' into {len(split.pieces)} piece(s) of '
+              + ', '.join(str(len(spoken(p))) for p in split.pieces)
+              + f' chars: {spoken(piece)[:80]!r}...')
+        expanded.extend(split.pieces)
+
+    parts: list = []
+    for piece in expanded:
+        limit = cap - len(prefix) if len(parts) <= 1 else cap
+        if parts and len(spoken(parts[-1])) + 1 + len(spoken(piece)) <= limit:
+            parts[-1] = parts[-1] + ' ' + piece
+        else:
+            parts.append(piece)
+    return parts
+
+
+def _emit_bounded(report: PackReport, *, text: str, prefix: str, kind: str,
+                  blocks: tuple, cap: int, split_over_cap: bool,
+                  dropped_join_tokens: int = 0) -> None:
+    """Append `text` to `report.chunks` as chunks that each FIT `cap` AS WRITTEN.
+
+    THE ONE DOOR EVERY CHUNK LEAVES BY, and that is the point of it. Prose went
+    through the sentence/clause splitter from the start, but a TABLE ROW and a
+    lone HEADING were appended straight to `report.chunks` with no length check
+    at all - so the cap bound three quarters of a book and the other quarter
+    sailed past it. Measured 2026-09-19 on Hitler's People (Evans 2024): twelve
+    Prologue table rows, up to 2,894 characters, were refused by Crucible's
+    render door (`crucible_chunk_over_venue_cap`) after the book had already
+    been packed, staged and handed a GPU. Prep is where a book that cannot be
+    rendered must stop.
+
+    `prefix` is the unspoken lead the FIRST chunk carries (`[break]`, and a
+    `[heading]`/`[item]` marker where the kind has one); later parts carry none,
+    exactly as the prose splitter has always written them, and the cap is
+    measured against `len(prefix) + len(spoken(part))` - the length of the chunk
+    ON THE WIRE, which is what the render door measures.
+
+    `split_over_cap=False` keeps the part whole and counts it in
+    `over_cap_chunks`; see `pack_paragraphs` for whose row that is and why.
+    Otherwise a part that no boundary divides is REFUSED BY NAME
+    (`SentenceOverCapUnsplittable`) with the chunk index Crucible would quote.
+    """
+    if not text:
+        return
+    if len(prefix) + len(spoken(text)) <= cap:
+        report.chunks.append(Chunk(text=f'{prefix}{text}', kind=kind,
+                                   blocks=blocks,
+                                   dropped_join_tokens=dropped_join_tokens))
+        return
+    if not split_over_cap:
+        # THE OPERATOR'S ROW, KEPT. Counted and printed, never trimmed.
+        report.over_cap_chunks += 1
+        print(f'pack_paragraphs: a chunk is {len(spoken(text))} chars against '
+              f'a {cap}-char cap and is kept WHOLE - the caller packs one chunk '
+              f'per source row, so the row is the chunk that was asked for; the '
+              f"engine's truncation guard answers for it at render time.")
+        report.chunks.append(Chunk(text=f'{prefix}{text}', kind=kind,
+                                   blocks=blocks,
+                                   dropped_join_tokens=dropped_join_tokens))
+        return
+
+    parts = _cut_to_fit(text, prefix, cap, report)
+    for n, part in enumerate(parts):
+        carried = len(prefix) if n == 0 else 0
+        if carried + len(spoken(part)) > cap:
+            # NO BOUNDARY, SO NO CHUNK. The clause splitter has already tried
+            # every real boundary in this sentence and none of them divides it
+            # into pieces that fit; the alternatives left are cutting mid-clause
+            # and truncating, and neither of those is a thing this packer may
+            # do. Refused by name, with the chunk index and the length - the two
+            # facts Crucible's own `crucible_chunk_over_venue_cap` names - so the
+            # two refusals read as one story rather than two.
+            report.over_budget_sentences += 1
+            raise SentenceOverCapUnsplittable(
+                f'sentence_over_cap_unsplittable: chunk {len(report.chunks)} of this '
+                f'document is ONE SENTENCE of {carried + len(spoken(part))} characters '
+                f'(the lead marker included) against a {cap}-character cap, and it '
+                f'carries no clause boundary - no ";", no ":", no em/en dash and no '
+                f'comma - that divides it into pieces that fit. This packer never cuts '
+                f'mid-clause and never truncates, so the book stops here rather than '
+                f'rendering a chunk nobody wrote. Break the sentence in the text pass, '
+                f'or render on a machine whose cap covers it. The sentence: '
+                f'{spoken(part)!r}')
+        report.chunks.append(Chunk(
+            text=f'{prefix if n == 0 else ""}{part}',
+            kind=kind, blocks=blocks, sentence_split=True,
+            dropped_join_tokens=dropped_join_tokens if n == 0 else 0))
+
+
 def pack_paragraphs(blocks: Sequence[Block], budget, *,
                     floor_chars: int = DEFAULT_FLOOR_CHARS,
                     walls: Iterable[str] = DEFAULT_WALLS,
@@ -1042,7 +1191,12 @@ def pack_paragraphs(blocks: Sequence[Block], budget, *,
     dropped on 2026-09-09; `flush` carries why.
 
     THE WALLS: every kind in `walls` flushes the run in progress. A table row
-    then becomes a chunk of its own carrying its `[item]` marker; a scene break
+    then becomes a chunk of its own carrying its `[item]` marker - and IS HELD
+    TO THE CAP, sentence boundaries first and then the clause tiers, with the
+    marker on the first piece only (2026-09-19; before that a row was appended
+    whole however long it was, which is how twelve Evans Prologue rows of up to
+    2,894 characters reached a render door that refused the book). Every piece
+    of a cut row is still its own chunk and still a wall. A scene break
     or a chapter start speaks nothing and emits no chunk - it exists to stop the
     merge reaching across it. A HEADING walls BACKWARD only: it flushes what came
     before, then leads the next group, so the prose behind it merges in and a
@@ -1148,11 +1302,16 @@ def pack_paragraphs(blocks: Sequence[Block], budget, *,
             return
         indices = tuple(b.index for b in group)
         if head is not None and len(group) == 1:
-            # Alone: the standalone wall chunk, unchanged - never sentence-split,
-            # because a heading over the cap was always emitted whole.
-            report.chunks.append(Chunk(text=f'{lead}{marker}{text}',
-                                       kind=_chunk_kind(HEADING),
-                                       blocks=indices))
+            # Alone: the standalone wall chunk. It goes through `_emit_bounded`
+            # like everything else - it used to be appended whole, on the reading
+            # that "a heading over the cap was always emitted whole", which was
+            # true of the code and not a rule anyone chose. A heading long enough
+            # to break the cap is refused by the render door exactly like a
+            # paragraph, so it is cut here exactly like a paragraph; every piece
+            # keeps kind 'heading' because every piece is the heading's own words.
+            _emit_bounded(report, text=text, prefix=f'{lead}{marker}',
+                          kind=_chunk_kind(HEADING), blocks=indices, cap=cap,
+                          split_over_cap=split_over_cap)
             return
         # Every join past the first drops the boundary token that would have sat
         # between the two paragraphs - counted, never carried, because a token in
@@ -1163,97 +1322,9 @@ def pack_paragraphs(blocks: Sequence[Block], budget, *,
         report.dropped_join_tokens += dropped
 
         # THE CHUNK AS IT WILL BE WRITTEN, prefix included - see `lead` above.
-        prefix = f'{lead}{marker}'
-        if len(prefix) + len(spoken(text)) <= cap:
-            report.chunks.append(Chunk(text=f'{prefix}{text}', kind='prose',
-                                       blocks=indices,
-                                       dropped_join_tokens=dropped))
-            return
-
-        if not split_over_cap:
-            # THE OPERATOR'S ROW, KEPT. Counted and printed, never trimmed.
-            report.over_cap_chunks += 1
-            print(f'pack_paragraphs: a chunk is {len(spoken(text))} chars against '
-                  f'a {cap}-char cap and is kept WHOLE - the caller packs one chunk '
-                  f'per source row, so the row is the chunk that was asked for; the '
-                  f"engine's truncation guard answers for it at render time.")
-            report.chunks.append(Chunk(text=f'{prefix}{text}', kind='prose',
-                                       blocks=indices,
-                                       dropped_join_tokens=dropped))
-            return
-
-        # Over budget: sentence-split, greedily filling to the cap. Only the
-        # FIRST part carries the prefix, so only its budget pays for it.
-        report.paragraphs_sentence_split += 1
-        pieces = split_sentences(text)
-
-        # THE LAST RESORT, BEFORE THE FILL (Owen, 2026-09-15). A sentence that
-        # alone exceeds the budget is cut at clause boundaries, because no
-        # arrangement of whole sentences can hold it and the render door refuses
-        # the whole book for one over-long row. Every sentence that FITS goes
-        # through untouched, so this changes nothing about how a book without one
-        # is packed. See `split_over_cap_sentence` for the discipline; the
-        # refusal for a sentence with no usable boundary is raised below, in the
-        # emit loop, where the chunk INDEX is exact.
-        first_budget = cap - len(prefix)
-        expanded: list = []
-        for n, piece in enumerate(pieces):
-            budget_here = first_budget if n == 0 else cap
-            if len(spoken(piece)) <= budget_here:
-                expanded.append(piece)
-                continue
-            split = split_over_cap_sentence(piece, cap, first_budget=budget_here)
-            if split is None:
-                # Left whole. The emit loop refuses it by name and can say which
-                # chunk index it is, which this pre-pass cannot.
-                expanded.append(piece)
-                continue
-            report.sentences_clause_split += 1
-            print(f'pack_paragraphs: chunk {len(report.chunks)} of this document is ONE '
-                  f'SENTENCE of {len(spoken(piece))} chars against a {budget_here}-char '
-                  f'budget, so no chunk can hold it. LAST RESORT (Owen, 2026-09-15): cut '
-                  f'at '
-                  + ' then '.join(CLAUSE_TIER_LABEL[b] for b in split.boundaries)
-                  + f' into {len(split.pieces)} piece(s) of '
-                  + ', '.join(str(len(spoken(p))) for p in split.pieces)
-                  + f' chars: {spoken(piece)[:80]!r}...')
-            expanded.extend(split.pieces)
-        pieces = expanded
-
-        parts: list = []
-        for piece in pieces:
-            limit = cap - len(prefix) if len(parts) <= 1 else cap
-            if parts and len(spoken(parts[-1])) + 1 + len(spoken(piece)) <= limit:
-                parts[-1] = parts[-1] + ' ' + piece
-            else:
-                parts.append(piece)
-        for n, part in enumerate(parts):
-            carried = len(prefix) if n == 0 else 0
-            if carried + len(spoken(part)) > cap:
-                # NO BOUNDARY, SO NO CHUNK. The clause splitter above has already
-                # tried every real boundary in this sentence and none of them
-                # divides it into pieces that fit; the alternatives left are
-                # cutting mid-clause and truncating, and neither of those is a
-                # thing this packer may do. Refused by name, with the chunk index
-                # and the length - the two facts Crucible's own
-                # `crucible_chunk_over_venue_cap` names - so the two refusals read
-                # as one story rather than two.
-                report.over_budget_sentences += 1
-                raise SentenceOverCapUnsplittable(
-                    f'sentence_over_cap_unsplittable: chunk {len(report.chunks)} of this '
-                    f'document is ONE SENTENCE of {carried + len(spoken(part))} characters '
-                    f'(the lead marker included) against a {cap}-character cap, and it '
-                    f'carries no clause boundary - no ";", no ":", no em/en dash and no '
-                    f'comma - that divides it into pieces that fit. This packer never cuts '
-                    f'mid-clause and never truncates, so the book stops here rather than '
-                    f'rendering a chunk nobody wrote. Break the sentence in the text pass, '
-                    f'or render on a machine whose cap covers it. The sentence: '
-                    f'{spoken(part)!r}')
-            report.chunks.append(Chunk(
-                text=f'{prefix if n == 0 else ""}{part}',
-                kind='prose',
-                blocks=indices, sentence_split=True,
-                dropped_join_tokens=dropped if n == 0 else 0))
+        _emit_bounded(report, text=text, prefix=f'{lead}{marker}', kind='prose',
+                      blocks=indices, cap=cap, split_over_cap=split_over_cap,
+                      dropped_join_tokens=dropped)
 
     def flush() -> None:
         nonlocal run
@@ -1324,11 +1395,22 @@ def pack_paragraphs(blocks: Sequence[Block], budget, *,
             # it a wall; by default (2026-09-09) it never gets here at all and
             # is handled below, with the paragraphs. TABLE always does.
             if block.kind in (ITEM, TABLE) and block.text.strip():
-                marker = _marker_for(block.kind)
-                lead = sml_token('break') if lead_break else ''
-                report.chunks.append(Chunk(
-                    text=f'{lead}{marker}{_closed_block_text(block)}',
-                    kind=_chunk_kind(block.kind), blocks=(block.index,)))
+                # A ROW IS HELD TO THE CAP LIKE ANY OTHER CHUNK (2026-09-19).
+                # It was appended whole here, on no rule at all: a row was
+                # assumed short because a grid cell is short. A dialogue table -
+                # the Evans Prologue, a Nuremberg transcript typeset as
+                # speaker/speech columns - has rows of several hundred words, and
+                # twelve of them were refused by Crucible AFTER the book took a
+                # GPU. So the row goes through the same door prose goes through:
+                # sentence boundaries first, then the clause tiers, `[item]` on
+                # the first piece only. Every piece is still its own chunk and
+                # still a wall - nothing merges with a row, before or after the
+                # cut - and a row no boundary divides is refused here, at prep.
+                _emit_bounded(report, text=_closed_block_text(block),
+                              prefix=f'{lead}{_marker_for(block.kind)}',
+                              kind=_chunk_kind(block.kind),
+                              blocks=(block.index,), cap=cap,
+                              split_over_cap=split_over_cap)
             continue
         if block.kind == ITEM:
             # AN ITEM GETS ITS CLOSING PERIOD ON THE WAY INTO THE RUN
@@ -1369,36 +1451,139 @@ _PARAGRAPH_TAGS = {'p', 'div', 'blockquote', 'pre'}
 TABLE_CELL_JOIN = ' — '
 
 
-def collapse_cell(text: str) -> str:
-    """A table cell's text with the unspoken glyphs dropped and its whitespace
-    (nbsp included - it is in `chars_remove`) collapsed."""
-    return re.sub(r'\s+', ' ', strip_unspoken_glyphs(text)).strip()
+def markup_text(tag) -> str:
+    """A tag's text with its LINE BREAKS READ AS SPACES, and nothing else joined.
+
+    THE ONE SPACING RULE BOTH TEXT PATHS USE. It began life as
+    `chapters.heading_text` (2026-08-28) and lives here now because a table cell
+    needs exactly the same answer - `chapters.heading_text` delegates to it, so
+    the two recipes cannot drift.
+
+    `get_text(strip=True)` joins the strings with NOTHING, so a title typeset
+    across four lines came out as 'God Will Not ProtectChildren When Parents...' -
+    fused in the text, therefore fused in the audio and in the transcript cue.
+    A blanket `get_text(' ')` is the same defect in the other direction:
+    `<span class="dropcap">I</span>ntroduction` is ONE word and reads as
+    'I ntroduction'.
+
+    So the markup's OWN whitespace is kept, and a space is inserted at a piece
+    boundary only where the markup means a new word: a <br> (always - that IS a
+    line break), or a boundary where the text so far ends in a word character
+    and the next piece opens with a capital or a digit. A SPACE and never a
+    period: these breaks fall INSIDE one sentence.
+    """
+    from bs4 import NavigableString, Tag
+
+    out = []
+    last_char = ''
+    for node in tag.descendants:
+        if isinstance(node, Tag):
+            if node.name.lower() == 'br':
+                out.append(' ')
+                last_char = ' '
+            continue
+        if not isinstance(node, NavigableString):
+            continue
+        piece = str(node)
+        if not piece:
+            continue
+        if (last_char and not last_char.isspace() and not piece[:1].isspace()
+                and last_char.isalnum() and (piece[0].isupper() or piece[0].isdigit())):
+            out.append(' ')
+        out.append(piece)
+        last_char = piece[-1]
+    return re.sub(r'\s+', ' ', ''.join(out)).strip()
+
+
+def collapse_cell(cell) -> str:
+    """One `<td>`/`<th>` element -> its spoken text.
+
+    `markup_text` FOR THE JOIN, not `get_text(strip=True)` - measured 2026-09-19
+    on Hitler's People (Evans 2024), whose Nuremberg-transcript Prologue is a
+    table of Kobo-span cells: `<span>... out of them. </span><span>We then
+    witnessed ...</span>` came out `them.We`, which is one word to the eye, one
+    word to the model, and - the expensive part - ONE SENTENCE to
+    `split_sentences`, so a 1,200-character answer had no boundary the cap could
+    cut at and the render was refused for twelve chunks.
+
+    On top of the join: the unspoken glyphs are dropped and the whitespace (nbsp
+    included - it is in `chars_remove`) collapsed.
+    """
+    return re.sub(r'\s+', ' ', strip_unspoken_glyphs(markup_text(cell))).strip()
+
+
+def table_header_row(table):
+    """The `<tr>` whose cells are COLUMN HEADERS, or None when the table has none.
+
+    HEADERS COME FROM MARKUP THAT SAYS "HEADER", never from position. e2a's
+    recipe (lib/core.py:1461-1481 at 9daab0ba, ported verbatim until 2026-09-19)
+    took `rows[0]` as the headers whatever it held, and that is wrong for every
+    table that is a layout rather than a grid. Measured on Hitler's People
+    (Evans 2024): the Prologue is a Nuremberg trial transcript typeset as a
+    two-column `<table role="presentation">` of speaker and speech, all `<td>`.
+    Under e2a's rule the witness's name and her whole first answer became "the
+    headers" - so the first answer was prefixed to EVERY later row (one row
+    reached 2,894 characters) and the first row spoke no line at all.
+
+    The rule, in order:
+      - `role="presentation"` says the table is layout, so it has NO headers,
+        `<th>` or not. The author has already told us the grid means nothing.
+      - a `<thead>` names its first row the header row.
+      - otherwise the first row is the header row only when it actually carries
+        a `<th>`.
+      - otherwise the table has no headers and EVERY row is a data row that
+        speaks its own line.
+    """
+    if (table.get('role') or '').strip().lower() == 'presentation':
+        return None
+    head = table.find('thead')
+    if head is not None:
+        return head.find('tr')
+    first = table.find('tr')
+    if first is not None and first.find_all('th'):
+        return first
+    return None
+
+
+def table_headers(table) -> list:
+    """The header cell texts of `table`, or [] when it has none."""
+    row = table_header_row(table)
+    if row is None:
+        return []
+    return [collapse_cell(c) for c in row.find_all(['td', 'th'])]
 
 
 def table_rows(table) -> list:
     """One `<table>` element -> one spoken line per DATA row.
 
-    Ported from ebook2audiobook@9daab0ba lib/core.py:1461-1481, cell recipe
-    unchanged: the FIRST row supplies the headers and speaks no line of its own,
-    and every later row becomes `header: cell` pairs joined by an em dash, or -
-    when the row's width does not match the header's, or there are no headers -
-    the cells joined by the same dash. A row with no `<td>` at all is skipped,
-    exactly as e2a skips it.
+    A data row becomes `header: cell` pairs joined by an em dash when the table
+    HAS headers (`table_header_row` decides, and a first row of `<td>` is not
+    one) and the row's width matches theirs; otherwise the cells joined by the
+    same dash. A row with no `<td>` at all is skipped, exactly as e2a skips it,
+    so a stray all-`<th>` row speaks nothing.
 
-    THE ONE CHANGE narrator makes is structural, not textual: e2a appended these
-    lines into the running text of the chapter and let the character-window
-    packer pack several of them into one generation. Here each line is its own
-    BLOCK, so each becomes its own chunk - `docs/NARRATOR_PLAN.md` "Higgs v3
-    path design points" point 2.
+    TWO CHANGES FROM THE e2a PORT (both 2026-09-19, both measured on the Evans
+    Prologue): headers are read from markup rather than from position - see
+    `table_header_row` - and a cell's spans are joined by `markup_text` rather
+    than welded together by `get_text(strip=True)` - see `collapse_cell`.
+
+    THE ONE CHANGE narrator made from the start is structural, not textual: e2a
+    appended these lines into the running text of the chapter and let the
+    character-window packer pack several of them into one generation. Here each
+    line is its own BLOCK, so each becomes its own chunk -
+    `docs/NARRATOR_PLAN.md` "Higgs v3 path design points" point 2.
     """
     rows = table.find_all('tr')
     if not rows:
         return []
-    headers = [collapse_cell(c.get_text(strip=True)) for c in rows[0].find_all(['td', 'th'])]
+    header_row = table_header_row(table)
+    headers = ([collapse_cell(c) for c in header_row.find_all(['td', 'th'])]
+               if header_row is not None else [])
     lines = []
-    for row in rows[1:]:
-        cells = [collapse_cell(c.get_text(strip=True))
-                 for c in row.find_all('td')]
+    for row in rows:
+        if row is header_row:
+            continue
+        cells = [collapse_cell(c) for c in row.find_all('td')]
         if not cells:
             continue
         if len(cells) == len(headers) and headers:

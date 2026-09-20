@@ -3020,88 +3020,29 @@ function applyNarratorScratchRoot(): void {
  * triggered restarted the book at sentence 0.
  */
 async function sweepDirContents(dir: string): Promise<void> {
-  // Snapshot BEFORE the rescue: promoting a large session is a real copy that can take
-  // minutes, and a TTS job submitted meanwhile writes a brand-new ebook-{uuid} here.
-  // Deleting only what existed at snapshot time keeps the sweep from eating a live run.
-  let names: string[];
-  try {
-    names = (await fs.readdir(dir, { withFileTypes: true })).map((e) => e.name);
-  } catch {
-    return; /* dir doesn't exist yet / volume offline — nothing to clean */
-  }
-
   /*
-   * WORK THAT IS STILL COMING BACK IS NOT A LEFTOVER.
+   * THE RULE IS IN `electron/scratch-sweep.ts`, and only the part that needs
+   * the queue is here.
    *
-   * This sweep's whole licence was "nothing is converting yet at startup, so
-   * everything here is from a dead run". That premise died when assembly moved
-   * off the GPU pool: a CPU-lane assembly survives differently, and the queue
-   * persists steps that are held-and-interrupted precisely so they can be
-   * picked up from what is on disk. Deleting their scratch is deleting the
-   * thing Start was going to read.
+   * What it balances, and what each fact cost to learn, is in that module's
+   * header. What makes the queue exception work is the line `await
+   * startQueueEngine()` earlier in startup: the engine has loaded and revived
+   * its persisted state by the time this runs, so `liveStepIds` has something
+   * true to answer with. Stated because the two sites are hundreds of lines
+   * apart and an ordering nobody names is an ordering somebody moves
+   * (bookforge-mac-2's review, 2026-08-20).
    *
-   * It bit for real on 2026-08-19: a gap-normalised sentence set
-   * (`gap-<stepId>`) was swept out from under a running assembly, and e2a
-   * answered "Sentences directory not found" for a path we had written 90
-   * seconds earlier.
-   *
-   * So anything NAMED FOR a step the queue still has plans for is kept. The
-   * queue's own persisted state is the authority — asked here rather than
-   * inferred from mtimes, because "recent" is not the same fact as "wanted".
+   * The plan is taken BEFORE the rescue for the same reason it always was:
+   * promoting a large session is a real copy that can take minutes, and a TTS
+   * job submitted meanwhile writes a brand-new `ebook-<uuid>` here. Removing
+   * only what was on the list at plan time keeps the sweep from eating a live
+   * run.
    */
-  const live = await liveStepIds();
-  if (live.size > 0) {
-    const kept = names.filter((name) => [...live].some((id) => name.includes(id)));
-    if (kept.length > 0) {
-      console.log(`[MAIN] Keeping ${kept.length} scratch item(s) belonging to unfinished queue steps.`);
-      names = names.filter((name) => !kept.includes(name));
-    }
-  }
-
-  /*
-   * A RENDER ON THE OTHER MACHINE IS NOT A LEFTOVER EITHER.
-   *
-   * The scratch dir is `<library>/tmp`, and the library is a share both machines
-   * mount (Z: on Windows, /Volumes/<share> on the Mac). "Nothing is converting yet at
-   * startup" is a fact about THIS computer; it says nothing about the Mac, which
-   * may be eight minutes into a book.
-   *
-   * MEASURED, 2026-09-05: this sweep deleted `Z:\<library>\tmp\ebook-83fa5cb8-…`
-   * while the Mac was rendering into it. The FLACs its workers held open survived,
-   * `session-state.json` and the ownership sidecar did not — and the render went
-   * on to publish a project cache with audio and no text, over a complete one.
-   *
-   * Each scratch session says which host owns it (`bookforge-session.json`'s
-   * `host`). Sessions belonging to another machine are left entirely alone: not
-   * rescued (that would publish a partial render), and not deleted.
-   */
-  // Not wrapped in a try: if ownership cannot be established at all, the sweep must
-  // not run. Deleting everything because we could not tell whose it was is the
-  // failure this block exists to prevent.
-  const { rescueOrphanedScratchSessions, foreignSessionHost } = await import('./parallel-tts-bridge.js');
-  const foreign: string[] = [];
-  for (const name of names) {
-    if (!name.startsWith('ebook-')) continue;
-    const host = await foreignSessionHost(path.join(dir, name));
-    if (host) {
-      foreign.push(name);
-      console.log(`[MAIN] Scratch session ${name} is owned by ${host} — not sweeping it.`);
-    }
-  }
-  if (foreign.length) names = names.filter((name) => !foreign.includes(name));
-
-  try {
-    await rescueOrphanedScratchSessions(dir);
-  } catch (err) {
-    console.error('[MAIN] Scratch rescue failed before sweep (continuing):', err);
-  }
-
-  await Promise.all(
-    names.map((name) =>
-      fs.rm(path.join(dir, name), { recursive: true, force: true }).catch(() => {})
-    )
-  );
-  if (names.length) console.log(`[MAIN] Cleaned ${names.length} item(s) from e2a tmp: ${dir}`);
+  const { foreignSessionHost, rescueOrphanedScratchSessions } = await import('./parallel-tts-bridge.js');
+  const { planScratchSweepOf, runScratchSweep } = await import('./scratch-sweep.js');
+  const plan = await planScratchSweepOf(dir, await liveStepIds(), foreignSessionHost);
+  if (plan === null) return; /* dir doesn't exist yet / volume offline */
+  await runScratchSweep(dir, plan, rescueOrphanedScratchSessions);
 }
 
 /**
@@ -13443,7 +13384,43 @@ app.whenReady().then(async () => {
    * sites are seventy lines apart and an ordering nobody names is an ordering
    * somebody moves (bookforge-mac-2's review, 2026-08-20).
    */
-  void cleanNarratorScratchRoot();
+  /*
+   * THE SWEEP FOR THE QUIT THAT NEVER RAN — and it comes FIRST.
+   *
+   * A hard kill (ctrl-C on `electron:dev`, jetsam, power loss) skips
+   * `before-quit` entirely, so the Crucible sweep there never happened and this
+   * app's jobs are still running on other machines: holding the lane, holding
+   * the claim, holding a 12 GB voice resident. `<userData>/crucible-in-flight.json`
+   * is the only thing that still knows their ids (in-flight-ledger.ts).
+   *
+   * BEFORE the scratch sweep, and awaited, for two reasons. A job still
+   * rendering into `<scratch>/ebook-<uuid>` is a job whose session must not be
+   * removed or promoted while it writes — cancelling first makes the scratch
+   * dead before anything decides what to do with it. And the scratch each
+   * cancelled job owned is then swept by the same rescue-first rule as
+   * everything else in that root, rather than by a second one here.
+   *
+   * Chained rather than raced with `cleanNarratorScratchRoot` for that ordering;
+   * the pair is still `void`ed, because startup does not wait on another
+   * machine.
+   */
+  void (async () => {
+    try {
+      const { sweepCrucibleInFlight } = await import('./crucible/in-flight-sweep.js');
+      const report = await sweepCrucibleInFlight({ reason: 'the last run did not quit cleanly' });
+      if (report.scratchOwned.length > 0) {
+        // THE HANDOVER, SAID OUT LOUD. These paths are not deleted here: the
+        // sweep below owns that decision, and it is the one that rescues an
+        // interrupted render's sentences into the project cache before removing
+        // anything. Naming them is what makes the two halves one act in the log.
+        console.log('[Startup] Scratch owned by the cancelled crucible job(s), left to the scratch '
+          + `sweep below: ${report.scratchOwned.join(', ')}`);
+      }
+    } catch (err) {
+      console.error('[Startup] The Crucible in-flight sweep failed:', (err as Error).message);
+    }
+    await cleanNarratorScratchRoot();
+  })();
 
   // ── Mount the hosted Foundry ─────────────────────────────────────────────
   //
@@ -14276,6 +14253,35 @@ app.on('before-quit', async (event) => {
       }
     } catch (err) {
       console.error('[MAIN] Failed to close the Crucible Listen session:', err);
+    }
+  });
+
+  // ── GIVE BACK EVERY CRUCIBLE CARD THIS APP IS STILL HOLDING ──────────────
+  //
+  // HERE, and the position is the whole of its correctness. Above this line
+  // every door that owns a LIVE handle has had its chance: `killAllWorkers`
+  // called `cancelRemoteRenderOnQuit` for each render, and the Listen step
+  // closed its streaming session. Each of those settles its own row in the
+  // in-flight ledger when the job's terminal frame arrives. What is left in
+  // that ledger by now is exactly what no handle reached — an align, an rvc, a
+  // denoise, or a render whose stream died before its `cancelled` frame — and
+  // nothing else in this process knows those job ids.
+  //
+  // Below this line the loggers close, so this is also the last step that can
+  // say anything a person will read afterwards.
+  //
+  // Owen, 2026-09-19, after a ctrl-C left a `tts` job at 70% on a Crucible for
+  // an hour with the voice resident: *"send the model kill command to crucible
+  // servers before actually closing so that doesn't happen again."* Cancelling
+  // IS that kill — Crucible unloads what nothing holds — and the explicit
+  // `unload-*` covers only a card still carrying a resident nobody claims.
+  // See electron/crucible/in-flight-sweep.ts.
+  await quitStepWithDeadline('cancel crucible jobs and clear the cards', 30_000, async () => {
+    try {
+      const { sweepCrucibleInFlight } = await import('./crucible/in-flight-sweep.js');
+      await sweepCrucibleInFlight({ reason: 'BookForge is quitting' });
+    } catch (err) {
+      console.error('[MAIN] The Crucible in-flight sweep failed on quit:', (err as Error).message);
     }
   });
 

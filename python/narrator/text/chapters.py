@@ -42,7 +42,7 @@ from .epub import UnsupportedInput
 from .normalize import (BOOK_EXACT_ENGINES, ORPHEUS, UnsupportedEngine,
                         _refuse_engine, normalize_text)
 from .packer import get_sentences, orpheus_max_chars
-from .paragraph_packer import ends_a_thought
+from .paragraph_packer import ends_a_thought, markup_text, table_rows
 from .sml import (
     escape_sml,
     normalize_sml_tags,
@@ -216,37 +216,13 @@ def _edge_chars(tag) -> tuple:
 def heading_text(tag) -> str:
     """A heading's text, with its LINE BREAKS READ AS SPACES (2026-08-28).
 
-    `get_text(strip=True)` joins the strings with NOTHING, so a title typeset
-    across four lines came out as 'God Will Not ProtectChildren When Parents...' -
-    fused in the text, therefore fused in the audio and in the transcript cue.
-    A blanket `get_text(' ')` is the same defect in the other direction:
-    `<span class="dropcap">I</span>ntroduction` is ONE word and reads as
-    'I ntroduction'.
-
-    So a space is inserted at a piece boundary only where the markup means a new
-    word: a <br> (always - that IS a line break), or a boundary where the text so
-    far ends in a word character and the next piece opens with a capital or a
-    digit. A SPACE and never a period: these breaks fall INSIDE one sentence.
+    THE RULE ITSELF MOVED to `paragraph_packer.markup_text` on 2026-09-19,
+    unchanged, because a table cell needs the same answer and two copies of a
+    spacing rule drift. This function stays because it is the name the walker
+    calls and the name the port notes point at; it is the rule's first caller,
+    not its owner.
     """
-    out = []
-    last_char = ''
-    for node in tag.descendants:
-        if isinstance(node, Tag):
-            if node.name.lower() == 'br':
-                out.append(' ')
-                last_char = ' '
-            continue
-        if not isinstance(node, NavigableString):
-            continue
-        piece = str(node)
-        if not piece:
-            continue
-        if (last_char and not last_char.isspace() and not piece[:1].isspace()
-                and last_char.isalnum() and (piece[0].isupper() or piece[0].isdigit())):
-            out.append(' ')
-        out.append(piece)
-        last_char = piece[-1]
-    return re.sub(r'\s+', ' ', ''.join(out)).strip()
+    return markup_text(tag)
 
 
 def _collapse_glue(rows: list) -> list:
@@ -594,24 +570,18 @@ def filter_chapter(idx: int, doc, ctx: ChapterContext) -> list | None:
                     prev_typ = typ
                     continue
                 handled_tables.add(table)
-                rows = table.find_all('tr')
-                if not rows:
-                    prev_typ = typ
-                    continue
-                headers = [c.get_text(strip=True)
-                           for c in rows[0].find_all(['td', 'th'])]
-                for row in rows[1:]:
-                    cells = [c.get_text(strip=True).replace('\xa0', ' ')
-                             for c in row.find_all('td')]
-                    if not cells:
-                        continue
-                    if len(cells) == len(headers) and headers:
-                        line = ' — '.join(f'{h}: {c}'
-                                          for h, c in zip(headers, cells))
-                    else:
-                        line = ' — '.join(cells)
-                    if line:
-                        text_list.append(line.strip())
+                # ONE TABLE RECIPE, SHARED WITH THE BLOCK POLICY (2026-09-19).
+                # This branch was e2a's recipe copied out (core.py:1461-1481 at
+                # 9daab0ba) and it carried both of e2a's defects: `rows[0]` taken
+                # as headers whatever it held, and a cell's spans welded by
+                # `get_text(strip=True)`. On a dialogue table - the Evans
+                # Prologue, a Nuremberg transcript in speaker/speech columns -
+                # that prefixed the witness's whole first answer to every later
+                # row and fused "out of them." to "We then". `table_rows` is now
+                # the one place either path reads a table, so the twins cannot
+                # drift apart again.
+                for line in table_rows(table):
+                    text_list.append(line)
             else:
                 text = payload.strip()
                 if text:

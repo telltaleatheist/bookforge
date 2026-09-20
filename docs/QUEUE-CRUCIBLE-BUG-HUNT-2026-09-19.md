@@ -744,3 +744,155 @@ elsewhere this week):
   differently, so ruling 7 overrides it. Keeper: `test-queue-admission` "A SERVER
   AT http://127.0.0.1:7100 TAKES THE RESERVE ROAD, like any other". The
   training-lock consequence stands as stated in ruling 7.
+- **Prepare packed for the wrong machine — FIXED (2026-09-19, night).** A row
+  whose Foundry step resolved the job's venue held THAT card for the rest of the
+  chain (ruling 9), but Prepare asked the venue DECISION which machine to pack
+  for and got "the first enabled server that answers, in rank order" — a rule
+  about work that has not been placed. Two books that night were packed to one
+  machine's 700-character band and rendered on the card the book was holding:
+  one surfaced as `crucible_chunk_over_venue_cap`, the other silently as a whole
+  book cut to chunks smaller than its card would have taken. The rule is now
+  `electron/crucible/prep-band.ts`, fed by the ROW (`queue-steps/prepare.ts`,
+  `assignedServerOf` over `waitForResolved` then `waitFor`, both read through
+  `runVenueOfRow`): a book that HOLDS a card packs for that card, with no
+  reachability poll and no "is it busy" — the hold's own tail rule answers that;
+  a row that NAMED a server packs for it, and parks when it does not answer; and
+  only an `any` row with no card held compares machines, asking every ENABLED
+  server for the voice's band and taking the SMALLEST packing ceiling (ties by
+  rank order), so the chunks fit wherever the pump later admits the render
+  (`packingTravelsTo`). Nothing is shrunk below the tightest server's own
+  numbers, and Prepare does NOT pin an `any` job to the machine it packed for —
+  admission stays the pump's and a 409 releases the venue. Which rung chose the
+  machine rides on the session (`PrepInfo.packedFor.because`), in the step's
+  `output.detail` (`packedForBecause`) and in the row's progress line. The venue
+  decision is no longer reachable from this seam at all, and with it went the
+  reachability ping it used to pay for before the voices call. Keeper:
+  `tools/test-queue-narration-plan.js` §7 (12 checks, incl. the held-card case
+  against a ranked-first other machine).
+
+
+## I. Cleanup at quit and at start (landed 2026-09-20)
+
+Owen hard-killed `electron:dev` with ctrl-C on the night of the hunt. The log
+has zero "cleanup before quit" lines, so `before-quit` never ran. An hour later
+the Mac's Crucible still reported this app's `tts` job for a custom voice
+**running at 70%**, holding the lane, the claim and 12 GB of resident voice for
+a process that no longer existed; the library scratch root held five
+`ebook-<uuid>/` render sessions and nine `implied-<uuid>/` landing EPUBs.
+
+> *"update bookforge to send the model kill command to crucible servers before
+> actually closing so that doesn't happen again … it should clean up rendered
+> files as well. and any other incomplete jobs. it should try to place them so it
+> can recover them, or delete them. maybe we aren't ready to build in a continue
+> function for all of these jobs. that's fine. just clean it up so nothing sits
+> around afterward."* — Owen, 2026-09-19
+
+### Why nothing could have cancelled that job
+
+Every cancel in the app was a CLOSURE over a live stream —
+`cancelRemoteRenderOnQuit` says so in its own docstring: *"Nothing persists
+`session.crucibleJobId` either, so a relaunch cannot DELETE it."* A quit that
+runs uses those handles and they work. A quit that does not run takes the only
+copy of every job id with it.
+
+### The record: `<userData>/crucible-in-flight.json`
+
+`electron/crucible/in-flight-ledger.ts`. One row per submitted job — server
+NAME, Crucible job id, job type, the model/voice that is on the card, this
+app's own step id, the scratch paths the run owns, and `submittedAt` — written
+**synchronously, temp-and-rename, before the caller does anything else with the
+job**, and removed at the job's terminal frame (`done`/`failed`/`cancelled`) and
+nowhere else. A broken event stream is not a job that stopped, so it does not
+settle a row.
+
+Two seams write it, because there are two submit sites in the app:
+`runCrucibleJob` (align, align-longform, asr, rvc, denoise) and `render.ts`
+(`tts`), which settles through `render-artifacts.ts` where its terminal frame
+is read. A resume (`attachTo`) records too — an attached job is as much ours to
+cancel as a fresh one, and this process has no row for it otherwise.
+
+### The sweep: cancel, confirm, and only then unload
+
+`electron/crucible/in-flight-sweep.ts`, run at two moments with the same code:
+
+- **Quit** — `before-quit`, the step named *"cancel crucible jobs and clear the
+  cards"*, after *"end streaming TTS sessions"* and before *"release AI models"*.
+  That position is load-bearing: above it every door with a live handle has had
+  its chance (`killAllWorkers` → `cancelRemoteRenderOnQuit`, the Listen session
+  close), and each of those settles its own row; below it the loggers close. 30 s
+  deadline through `quitStepWithDeadline`, so a sleeping machine cannot hang the
+  quit.
+- **Start** — before the scratch sweep and awaited, so a job still rendering into
+  `<scratch>/ebook-<uuid>` is dead before anything decides what to do with that
+  directory.
+
+Per server: DELETE every recorded job, then poll `/v1/activity` (6 s, 500 ms
+apart) until none of our ids is in `running`/`queued`. Then, **only if nothing at
+all holds the card** — no foreign job running or queued, no claim, no lease, no
+stream, no chat in flight, no stop already under way — submit the matching
+unload for what is still resident: `llm → unload-model`, `tts → unload-voice`,
+`align → unload-aligner`, `denoise → unload-denoiser` (a table, never
+`unload-${kind}` spelled out; an unknown kind is logged, not guessed).
+
+**Cancelling IS the model kill.** Crucible unloads the resident the moment
+nothing holds it (Owen's 2026-09-14 ruling, `Settlement`), so the DELETE usually
+clears the card before the poll finishes. The explicit unload covers only a
+settlement that did not fire.
+
+**It never unloads a card somebody else is using.** Every BookForge install
+reports the same `client` string, so a server cannot tell this Mac's app from
+the PC's — and neither can this. The only claim this app can honestly make is a
+job id it wrote down itself; anything else holding the card gets one named log
+line and nothing more. A refusal (`leased`, `server_busy`, `*_not_resident`) is
+named once and never retried.
+
+**An unreachable server keeps its ledger row.** The machine may be asleep, the
+tailnet down, the token rotated. Forgetting the job would be a card held
+forever; keeping the row makes it a delay until the next start. Only a job the
+server confirmed cancelled, or no longer has, is forgotten — and only then is
+its scratch handed on to the sweep below.
+
+### The scratch root
+
+`electron/scratch-sweep.ts` — the rule that used to be inline in `main.ts`'s
+`sweepDirContents`, now a pure `planScratchSweep` a keeper can state back. It
+did not change: another machine's session is untouchable first, what the queue
+still names is kept second, and everything left is rescued (if it is an
+`ebook-*` session) and then removed. What changed is that it can be driven, and
+that deletions are logged **by name**.
+
+**Why the five sessions were still there.** Four were this Mac's own, made
+between 21:03 and 22:58 in the session the ctrl-C ended — the sweep is
+START-only, and the app had not been relaunched. The fifth (from Sep 18) belongs
+to the other machine: its sidecar names another host, so this Mac deliberately
+neither rescues nor removes it (measured 2026-09-05: sweeping a live foreign
+session published audio with no text over a complete cache), and the owning
+machine only sweeps at ITS next start. Not a bug — but it is why the root can
+look uncleaned after a clean start, and it is worth knowing before blaming the
+sweep.
+
+### Keepers
+
+`tools/test-crucible-in-flight-ledger.js` (12 checks, including a child process
+that SIGKILLs itself to prove the row outlives the process that wrote it) and
+`tools/test-crucible-quit-sweep.js` (10 checks: two servers both swept and both
+unloaded, a card another client holds left alone with one named line, an
+unreachable server logged with its row kept, the door's own record/settle
+wiring, and the scratch rules — rescued-then-removed, held-and-kept,
+foreign-and-untouched).
+
+### Still owed
+
+- **A `tts` render cancelled at quit is not resumable from the ledger.** The row
+  is removed once the server confirms the cancel, and the sentences already
+  rendered are rescued into the project cache by the scratch sweep — which is
+  the resume checkpoint the queue reads. But nothing re-attaches to a Crucible
+  job across a restart; Owen ruled that acceptable for now (*"maybe we aren't
+  ready to build in a continue function for all of these jobs. that's fine"*).
+- **A scratch session with rendered sentences and NO ownership sidecar is warned
+  about and then deleted.** Pre-existing behaviour, and within Owen's *"recover
+  them, or delete them"* — but it is the one path where audio is lost without a
+  project to put it in.
+- **A foreign machine's leftovers are nobody's to clean but that machine's.** If
+  the PC is off for a month its sessions sit in the shared scratch root for a
+  month.
