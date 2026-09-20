@@ -39,9 +39,21 @@ import type { StepModule, StepRunContext } from '../queue-engine';
 import type { ArtifactRef, StepResource } from '../../shared/queue/engine-types';
 import {
   FOUNDRY_VERSION_FOR_CLEAN_TEXT, foundryRowFailure, foundryRunner, foundryTooOldForCleanText,
-  hostedCrucibleServerNotOffered, parseFoundryProgressLine,
+  parseFoundryProgressLine,
 } from '../foundry-host-queue';
-import type { FoundryJobRow, FoundryJobStepConfig } from '../foundry-host-queue';
+import type { FoundryJobStepConfig, FoundryRunOutcome } from '../foundry-host-queue';
+/*
+ * ── THE LEASE THIS RUN TAKES IS WRITTEN DOWN WHERE A SWEEP CAN FIND IT ──────
+ *
+ * The same ledger `crucible/job.ts` and `crucible/render.ts` write to, and the
+ * same one the startup sweep reads. Foundry's lease was the one claim on a card
+ * this app could make and not record (P8), and a ledger with two writers is
+ * better than a second file: one sweep, one rule, one place a person looks after
+ * a hard kill. See `onPlaced` below for what a `foundry-lease` row means.
+ */
+import { recordInFlight, settleInFlight } from '../crucible/in-flight-ledger';
+import { FOUNDRY_LEASE_JOB_TYPE } from '../crucible/in-flight-sweep';
+import { stepFailure } from './runtime';
 import { foundryVersion } from '../foundry-bridge';
 /*
  * `foundryVersionAtLeast` lives beside the readings-bank flags because that is
@@ -349,7 +361,7 @@ export const foundryJobStep: StepModule = {
      * local one must not be able to land on different machines for the same
      * book. One record, one decision, two doors into it.
      */
-    let waitFor: string | null = null;
+    let venueServer: string | null = null;
     const placed: 'clean' | 'translate' | 'simplify' | 'read' | null =
       act ?? (kind === 'read' ? 'read' : null);
     if (placed !== null) {
@@ -358,7 +370,6 @@ export const foundryJobStep: StepModule = {
       const { decideWherePagesRun, processPagesVenueHost } =
         await import('../crucible/pages.js');
       const { runVenueOfRow } = await import('../crucible/step-venue.js');
-      const { hostCrucibleServers } = await import('../crucible/host-registry.js');
       /*
        * `runVenueOfRow` IS THE ONE READER of `waitForResolved`'s three shapes,
        * and reading it raw here was a latent defect: the string `any` means
@@ -378,63 +389,28 @@ export const foundryJobStep: StepModule = {
         ? await decideWherePagesRun(processPagesVenueHost(), undefined, assigned)
         : await decideWhereTextActRuns(assigned?.server, processTextVenueHost());
       /*
-       * ── THE ONE CHECK THIS SIDE MAKES, AND WHY IT IS NOT A SECOND REGISTRY ──
+       * ── AND THE PRE-CHECK IS GONE (PK6) ─────────────────────────────────────
        *
-       * Their `placedBy` takes the name VERBATIM and their `slotNamed` matches
-       * it against the derived slot list **case-sensitively and exactly**. A
-       * name that does not match is a `wait` over there — and a detached
-       * `runJob` holds no pump slot to give back, so `placeRun`'s `for(;;)`
-       * retries it with a backoff FOR EVER and the promise never settles. A row
-       * that never fails and never finishes is the worst of the outcomes
-       * available, so it is refused here first.
+       * What stood here read this machine's registry snapshot and REFUSED, by
+       * name, when the venue was not on it — because a name that window could not
+       * match was a `wait` over there, and a detached `runJob` had no pump slot to
+       * give up, so `placeRun`'s `for (;;)` retried it with a backoff FOR EVER and
+       * the promise never settled. *"A row that never fails and never finishes is
+       * worse than either."*
        *
-       * THIS IS NARROWER THAN IT WAS, and the remaining half is the real one.
-       * When this seam was built, EVERY hosted wait parked: a capability row
-       * switched off, an unconfigured upstream, an orchestrator with no engine.
-       * Foundry agreed that was theirs and split the wait arm at `1ce539a` —
-       * `standing` is required at all sixteen sites, through explicit
-       * constructors rather than an optional flag, so "nobody thought about it"
-       * and "this is transient" cannot be the same value — and a PINNED slot
-       * that answers with a standing wait now REFUSES, carrying the server's own
-       * reason. Those cases are closed and nothing here duplicates them.
+       * THAT SPIN IS DELETED. A wait now comes back the moment the placement says
+       * it, typed and carrying `standing` — and a slot missing from the window's
+       * list is exactly the case their own doc calls transient, so it arrives here
+       * as a `wait` this engine PARKS and the reach sweep re-asks. The check is
+       * therefore no longer the difference between a park and a hang; it is a
+       * second registry with a second opinion, refusing a row for a reason the
+       * seam can now state for itself.
        *
-       * What is still transient, deliberately, is a slot that is not in the
-       * list AT ALL — switched off, renamed, removed. Their argument is sound
-       * for THEIR queue (somebody is about to flip the switch back, and failing
-       * would throw the row's place away) and fatal for a detached `runJob`,
-       * which has no place to keep. That gap is exactly this check, which is
-       * why it is not redundant with their fix.
-       *
-       * The list asked is the SAME snapshot this app hands that window through
-       * `FoundryHost.servers()` — one registry, one owner (Owen, 2026-09-14) —
-       * read one moment earlier. `hostCrucibleServers()` refuses by name
-       * (`registry_snapshot_not_taken`) if no reading has been taken, and that
-       * throw propagates: it is a startup bug in this app, and a row must say
-       * so rather than wear "you have no servers".
-       *
-       * The name SENT is the row's own `name` rather than the venue string, so
-       * what crosses is byte-identical to what the window derives its slot name
-       * from.
+       * The NAME still crosses verbatim, and it is still the row's own spelling
+       * out of the one registry (Owen, 2026-09-14) — see `venue` above.
        */
-      const offered = hostCrucibleServers();
-      const row = offered.find((entry) => entry.name.trim() === venue.server);
-      if (row === undefined) {
-        throw new Error(hostedCrucibleServerNotOffered(
-          placed, venue.server, offered.map((entry) => entry.name),
-          'this machine\'s Crucible registry has no entry by that name.',
-        ));
-      }
-      if (!row.enabled) {
-        // Their `slotsFrom` filters disabled entries out before a slot exists,
-        // so "switched off" and "not registered" are the same park over there
-        // and must be the same refusal here — with the true reason on it.
-        throw new Error(hostedCrucibleServerNotOffered(
-          placed, venue.server, offered.filter((entry) => entry.enabled).map((entry) => entry.name),
-          'that server is switched off, and a disabled entry is not a slot in that window.',
-        ));
-      }
-      waitFor = row.name.trim();
-      const line = `[foundry-job] ${placed} goes to crucible "${waitFor}" (${venue.because}); the `
+      venueServer = venue.server;
+      const line = `[foundry-job] ${placed} goes to crucible "${venueServer}" (${venue.because}); the `
         + 'hosted Foundry window composes the endpoint, model, credential and lease';
       console.log(line);
       ctx.report({ message: line, detail: line });
@@ -447,7 +423,7 @@ export const foundryJobStep: StepModule = {
      * fall back to Foundry's own queue, which is the exact thing the ruling
      * removed. `foundryRunner()` throws that sentence.
      */
-    let row: FoundryJobRow;
+
     /*
      * NO CREDENTIAL TRAVELS FROM HERE, AND THAT IS STILL TRUE AFTER THE
      * RE-VENDOR — it is true for a better reason now. What crosses is a NAME,
@@ -460,53 +436,48 @@ export const foundryJobStep: StepModule = {
      *
      * `request` is the row's, UNTOUCHED: see the venue block above.
      */
-    const run = async (): Promise<FoundryJobRow> => foundryRunner()(config.request, {
+    /*
+     * THE LEASE THIS RUN TOOK, remembered so the settle can clear it from the
+     * ledger — whichever way the run ends, and whether or not the row survives.
+     *
+     * A LIST OF AT MOST ONE, because `onPlaced` fires once and a list is what the
+     * compiler can read honestly: a `let` written only inside a callback keeps
+     * its initializer's narrowing, so a nullable would be `never` by the time the
+     * `finally` asks. The shape says the truth either way — nothing recorded, or
+     * the one placement this run was given.
+     */
+    const recorded: { server: string; jobId: string }[] = [];
+    const run = async (): Promise<FoundryRunOutcome> => foundryRunner()(config.request, {
       parentStep: config.parentStep,
       signal: ctx.signal,
       /*
        * THE MACHINE, AND THE ONLY THING THIS SIDE DECIDES ABOUT THE ACT.
        *
-       * `null` ONLY for a RENDERING now — and it is STATED rather than omitted,
+       * `null` ONLY for a RENDERING — and it is STATED rather than omitted,
        * because "this kind does not travel" is a fact about the kind
        * (`machines()`, via `resourceFor`: a rendering is `cpu`) and not an
-       * absence. The mount translates it into leaving their optional `waitFor`
-       * off, which lets their own `waitForOfNewJob()` decide.
+       * absence. The mount turns it into an absent key, which lets the window's
+       * own default decide for a run that places on no slot over there.
        *
        * ── AND THAT FALLBACK IS WHY A READ MAY NEVER SEND `null` AGAIN ────────
        *
-       * Their `placedBy` (foundry-app/electron/job-queue.ts) argues this side's
-       * case against itself. When the host DID name a machine its docblock says:
-       * *"Hosted, the person picked a machine on the HOST's row, and this app's
-       * default is not an answer to that question — it is an answer to a
-       * question nobody asked."* Four lines on, with nothing named, it calls
-       * `waitForOfNewJob()` and does exactly that. On 2026-09-18 that put a read
-       * on one registered engine while this queue drew it on another — one the
-       * operator had switched off.
+       * Their `placedBy` argues this side's case against itself. When the host
+       * DID name a machine its docblock says: *"Hosted, the person picked a
+       * machine on the HOST's row, and this app's default is not an answer to
+       * that question — it is an answer to a question nobody asked."* Four lines
+       * on, with nothing named, it called `waitForOfNewJob()` and did exactly
+       * that. On 2026-09-18 that put a read on one registered engine while this
+       * queue drew it on another — one the operator had switched off.
        *
-       * A rendering is safe in that hole because it places on no slot over there
-       * (no capability class, no lease) — the fallback resolves a name nothing
-       * then uses. A read is not, which is what the arm above now closes.
+       * ── AND SINCE PK6 IT IS A VENUE RATHER THAN A PREFERENCE ──────────────
        *
-       * ── AND THE HOLE ITSELF IS CLOSED ON THEIR SIDE TOO (foundry `5fe3e0f`) ─
-       *
-       * I asked them to make a hosted silence a REFUSAL. Owen ruled otherwise,
-       * and his reading is better than mine was: *"the server is chosen when
-       * it's in the queue. if it isnt chosen or cant be for some reason, it
-       * should be 'any'."* A refusal would make the host's silence an ERROR, and
-       * it is not one — it is the absence of a choice, and `any` is the word
-       * that already means exactly that. So `placedBy` answers `ANY_SLOT` when a
-       * host is registered and named nothing; the run goes wherever is free and
-       * `ranOn` records where, which fixes the whole of the original defect (a
-       * board claiming a machine the run is not on) without anything failing.
-       *
-       * What that buys THIS side is a floor, not a licence: a read reaching the
-       * mount with no name — a path not covered here, a race, a gesture that
-       * skips the Pending band — now lands as `any` rather than being filed
-       * silently on the vendored window's own `newJobsWaitFor`. The arm above
-       * still names a machine for every read it can, because `any` is a worse
-       * answer than the operator's, only never a wrong one.
+       * The field was `waitFor`, which the placement was free to re-decide. This
+       * engine polled the server, reserved the row's lease and charged the slot
+       * before this call (§G rulings 7 and 9), so what crosses is a DECISION: the
+       * runner places there and nowhere else, with no `ANY_SLOT` walk left to
+       * disagree with the bench.
        */
-      waitFor,
+      venue: venueServer === null ? null : { server: venueServer },
       /*
        * ONE RAW LINE OF THE ENGINE'S STDERR, and the parse is ours to do.
        *
@@ -554,6 +525,47 @@ export const foundryJobStep: StepModule = {
           metrics: { chunksCompletedInJob: counted.page, totalChunksInJob: counted.total },
         });
       },
+      /*
+       * THE LOG'S COPY — filled by `foundryRunner()`, which is the one door every
+       * hosted run goes through and therefore the one place the tee belongs. It
+       * is declared here because the seam requires it; nothing in this step reads
+       * a line twice.
+       */
+      onLine: () => undefined,
+      /*
+       * ── WHERE IT WENT, INTO THE IN-FLIGHT LEDGER, BEFORE IT RUNS ───────────
+       *
+       * P8's hosted half. The startup sweep reads
+       * `<userData>/crucible-in-flight.json` and cancels or releases what a hard
+       * kill left behind — and it covered only what THIS app submits, because
+       * Foundry takes its own Crucible lease inside the vendored dispatcher and
+       * recorded it nowhere. So a ctrl-C during a hosted clean left a lease held
+       * by a process that no longer existed, with nothing on disk naming it.
+       *
+       * `jobId` IS THE LEASE ID, and `jobType` says so by name: the sweep reads
+       * `foundry-lease` and sends `DELETE /v1/leases/{id}` rather than
+       * `DELETE /v1/jobs/{id}`, because a lease is not a job (see
+       * `in-flight-sweep.ts`). A placement that took no lease — an act that meets
+       * no model — records nothing, because there is nothing for a sweep to do.
+       *
+       * `owns` IS EMPTY AND THAT IS DELIBERATE: the scratch a hosted run makes is
+       * Foundry's `derived/` book, which its own settle sweeps and which the
+       * scratch sweep has never owned. Naming it here would invite this app to
+       * delete a file inside somebody else's project.
+       */
+      onPlaced: (placement) => {
+        if (placement.leaseId === null || placement.server.length === 0) return;
+        recorded.push({ server: placement.server, jobId: placement.leaseId });
+        recordInFlight({
+          server: placement.server,
+          jobId: placement.leaseId,
+          jobType: FOUNDRY_LEASE_JOB_TYPE,
+          model: placement.model.length > 0 ? placement.model : null,
+          localId: ctx.stepId,
+          owns: [],
+          submittedAt: new Date().toISOString(),
+        });
+      },
     });
     /*
      * NOTHING TO BRACKET ANY MORE, AND THAT IS THE POINT. This used to sit
@@ -565,7 +577,38 @@ export const foundryJobStep: StepModule = {
      * ours. A `finally` here would be this app disposing of somebody else's
      * claim.
      */
-    row = await run();
+    let outcome: FoundryRunOutcome;
+    try {
+      outcome = await run();
+    } finally {
+      /*
+       * AND THE LEDGER IS CLEARED ON EVERY WAY OUT, including a throw. The
+       * record exists to survive a KILL; a row left in it after the run is over
+       * would send the next startup sweep at a lease Foundry has already given
+       * back, which is a DELETE against a stranger's claim.
+       */
+      for (const held of recorded) settleInFlight(held.server, held.jobId);
+    }
+
+    /*
+     * ── A BUSY CARD PARKS, IT DOES NOT REDDEN (Q4, Contract 2) ──────────────
+     *
+     * Foundry takes its own Crucible lease, so a `409 leased` / `409 server_busy`
+     * used to arrive as a `failed` row carrying prose and turned RED in *Needs
+     * you* for something nobody did wrong. It is typed now: `stepFailure(line,
+     * line)` is a `StepParked`, which PK1's engine re-queues on the holder's line
+     * with the admission cool-off, and the reach sweep asks again.
+     *
+     * A `standing` WAIT PARKS TOO, and that is the change PK6 made deliberately.
+     * A server switched off or a class that card cannot serve is a wait only a
+     * person can clear — so it waits for the person, on a row that says whose
+     * card it is waiting for, instead of being refused here by a second reading
+     * of this machine's registry. The sentence is the server's own.
+     */
+    if (outcome.outcome === 'wait') {
+      throw stepFailure(outcome.busyLine, outcome.busyLine);
+    }
+    const row = outcome.row;
 
     /*
      * A STOP IS NOT A FAILURE, and the row is what lets this side tell them
@@ -580,11 +623,11 @@ export const foundryJobStep: StepModule = {
      * button puts it. Without the note it would land `failed`, wearing an error
      * for something nobody did wrong, and be eligible for `retry()`.
      */
-    if (row.state === 'cancelled') {
+    if (outcome.outcome === 'cancelled') {
       noteStepStopped(ctx.stepId);
       throw new Error(`${config.label} was stopped.`);
     }
-    if (row.state === 'failed') {
+    if (outcome.outcome === 'failed') {
       /*
        * Foundry's own sentence, verbatim — this side knows less about why the
        * engine stopped than the engine's words do — AND its `busyLine` when the
@@ -593,7 +636,7 @@ export const foundryJobStep: StepModule = {
        * `409 leased` came across this seam as prose and reddened a row over a
        * card that was merely held. `foundryRowFailure` is where the rule lives.
        */
-      throw foundryRowFailure(row, config.label);
+      throw foundryRowFailure(outcome, config.label);
     }
 
     /*

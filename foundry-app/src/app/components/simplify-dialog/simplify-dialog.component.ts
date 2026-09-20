@@ -596,7 +596,6 @@ export class SimplifyDialogComponent {
         // The position's own book file with every applied change replayed into it,
         // written by main when the plan was made. This window has no opinion about it.
         // ABSENT FOR A DEFERRED PLAN — the queue materialises it at spawn.
-        ...(plan.bookPath !== undefined ? { bookPath: plan.bookPath } : {}),
         // BOTH ENDS, OR NEITHER. They are one fact and the queue fills both in at
         // spawn when the promised chain could not say it — see above.
         ...(to.length === 0 ? {} : { to, from: to }),
@@ -622,13 +621,18 @@ export class SimplifyDialogComponent {
         // the mode as well as the language, so a plain-terms rewrite and an
         // easy-language one of one book are two files and two rows.
         recordsPath: plan.recordsPath,
-        ...(plan.seedRecords !== undefined ? { seedRecords: plan.seedRecords } : {}),
         // THE ADMISSION THAT THIS IS MADE FROM SOMETHING THAT HAS NOT HAPPENED,
         // carried verbatim — the queue reads it, nothing here interprets it.
         ...(plan.deferred !== undefined ? { deferred: plan.deferred } : {}),
-        ...(plan.generation !== undefined ? { generation: plan.generation } : {}),
         // Minted by the plan and carried back to the landing, so the row and the
         // file agree about which rewrite this is. Never read here.
+        /*
+         * THE ROW THIS PASS IS MADE FROM, as main resolved it at the press. It
+         * is what the run materialises its book out of when it starts, and it
+         * travels as an ID because a path under `derived/` is swept at every
+         * settle — see `TranslateRequest.at`. Never read here.
+         */
+        at: plan.at ?? null,
         stepId: plan.stepId,
       };
       const instructions = this.instructions().trim();

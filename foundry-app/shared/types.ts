@@ -137,7 +137,7 @@ export type ConversionKind = 'epub' | 'txt' | 'pdf';
  * A deferred request is not a special kind of run. When its `after` row lands, the
  * step named here is a step of the ledger, and the same plan function is asked the
  * same question with the real row in hand; what comes back is merged in and the job
- * proceeds as an ordinary one (`materializeDeferred`, electron/job-queue.ts). If
+ * proceeds as an ordinary one (`materializeAtSpawn`, electron/job-queue.ts). If
  * the step never lands the job fails by name, which is the last line of the
  * cascade — a promise whose parent was lost must not quietly run against the
  * position instead.
@@ -487,6 +487,34 @@ export interface GenerateRequest {
    */
   bookPath?: string;
   /**
+   * THE LEDGER ROW THIS RUN IS MADE FROM, pinned AT THE PRESS — and the whole of
+   * what a spawn needs in order to make the book itself.
+   *
+   * ── Why an id crosses where a PATH used to ─────────────────────────────────
+   *
+   * Until PK6 the plan materialised the book at the press and put the PATH on the
+   * request (`bookPath`). The file's lifetime is spawn → settle
+   * (`sweepDerivedBook` unlinks it at EVERY ending) and the request's lifetime is
+   * press → terminal → across restarts, so a Retry or a resume replayed a path the
+   * settle had already deleted — the 2026-09-20 hunt's F1, and F5 is the same
+   * defect met through Start. An id cannot rot: the step either exists at spawn,
+   * in which case the book is made from it, or it does not, and that is a refusal
+   * with a name on it.
+   *
+   * ── AND IT IS NOT "THE POSITION" ───────────────────────────────────────────
+   *
+   * Resolving it at the press is what keeps the family's standing rule true: *a
+   * pointer move made while the job waited must not silently produce a different
+   * book*. So the press writes the id down, even when the person was simply
+   * standing on it.
+   *
+   * `null` means the project held NO steps when the button was pressed — the
+   * reading's own book file, which is `materializeBook`'s own default. Absent
+   * means either this request predates the field or it is DEFERRED, in which case
+   * `deferred.from` is the row and this would have nothing to say.
+   */
+  at?: string | null;
+  /**
    * `--narration-stamp` — THE RECEIPT SAYING THESE WORDS WERE CLEANED FOR A
    * NARRATOR, put into the EPUB's OPF as `bookforge:narration-text`.
    *
@@ -747,6 +775,34 @@ export interface TranslateRequest {
    */
   bookPath?: string;
   /**
+   * THE LEDGER ROW THIS RUN IS MADE FROM, pinned AT THE PRESS — and the whole of
+   * what a spawn needs in order to make the book itself.
+   *
+   * ── Why an id crosses where a PATH used to ─────────────────────────────────
+   *
+   * Until PK6 the plan materialised the book at the press and put the PATH on the
+   * request (`bookPath`). The file's lifetime is spawn → settle
+   * (`sweepDerivedBook` unlinks it at EVERY ending) and the request's lifetime is
+   * press → terminal → across restarts, so a Retry or a resume replayed a path the
+   * settle had already deleted — the 2026-09-20 hunt's F1, and F5 is the same
+   * defect met through Start. An id cannot rot: the step either exists at spawn,
+   * in which case the book is made from it, or it does not, and that is a refusal
+   * with a name on it.
+   *
+   * ── AND IT IS NOT "THE POSITION" ───────────────────────────────────────────
+   *
+   * Resolving it at the press is what keeps the family's standing rule true: *a
+   * pointer move made while the job waited must not silently produce a different
+   * book*. So the press writes the id down, even when the person was simply
+   * standing on it.
+   *
+   * `null` means the project held NO steps when the button was pressed — the
+   * reading's own book file, which is `materializeBook`'s own default. Absent
+   * means either this request predates the field or it is DEFERRED, in which case
+   * `deferred.from` is the row and this would have nothing to say.
+   */
+  at?: string | null;
+  /**
    * `--records`: WHERE THE ANSWERS GO, and the whole product of this job.
    *
    * ── The output path that used to be here, and why it is gone ────────────────
@@ -956,7 +1012,7 @@ export interface SimplifyRequest extends Omit<TranslateRequest, 'kind' | 'to' | 
    * together logically and work."*
    *
    * SO IT IS ABSENT FOR EXACTLY AS LONG AS THE PROMISE IS A PROMISE, on
-   * `bookPath`'s own rule one shape up, and `materializeDeferred` fills BOTH ends
+   * `bookPath`'s own rule one shape up, and `materializeAtSpawn` fills BOTH ends
    * in at spawn out of the re-plan's `from` — the same value, because a rewrite's
    * two ends are one fact. `argsFor` refuses a rewrite that reaches the command
    * line without it, by name, because a `--rewrite` with no `--to` is a run with
@@ -1024,6 +1080,34 @@ export interface CleanRequest {
    * when the step is real. See `TranslateRequest.bookPath`.
    */
   bookPath?: string;
+  /**
+   * THE LEDGER ROW THIS RUN IS MADE FROM, pinned AT THE PRESS — and the whole of
+   * what a spawn needs in order to make the book itself.
+   *
+   * ── Why an id crosses where a PATH used to ─────────────────────────────────
+   *
+   * Until PK6 the plan materialised the book at the press and put the PATH on the
+   * request (`bookPath`). The file's lifetime is spawn → settle
+   * (`sweepDerivedBook` unlinks it at EVERY ending) and the request's lifetime is
+   * press → terminal → across restarts, so a Retry or a resume replayed a path the
+   * settle had already deleted — the 2026-09-20 hunt's F1, and F5 is the same
+   * defect met through Start. An id cannot rot: the step either exists at spawn,
+   * in which case the book is made from it, or it does not, and that is a refusal
+   * with a name on it.
+   *
+   * ── AND IT IS NOT "THE POSITION" ───────────────────────────────────────────
+   *
+   * Resolving it at the press is what keeps the family's standing rule true: *a
+   * pointer move made while the job waited must not silently produce a different
+   * book*. So the press writes the id down, even when the person was simply
+   * standing on it.
+   *
+   * `null` means the project held NO steps when the button was pressed — the
+   * reading's own book file, which is `materializeBook`'s own default. Absent
+   * means either this request predates the field or it is DEFERRED, in which case
+   * `deferred.from` is the row and this would have nothing to say.
+   */
+  at?: string | null;
   /**
    * `--records`: where the cleaned paragraphs go, and the whole product of this
    * job. It is the step's payload when this lands and it is also the job's
@@ -1179,8 +1263,42 @@ export interface AnalyzeRequest {
    * SCRATCH, AND THE QUEUE'S TO SWEEP: a uuid in the OS temp directory, made when
    * the button was pressed and remade for nothing whenever it is wanted again
    * (`sweepDerivedBook`, electron/job-queue.ts).
+   *
+   * ── MADE AT SPAWN, WHICH IS WHY IT IS OPTIONAL (PK6) ──────────────────────
+   *
+   * The plan names the report and the step; the BOOK is made when the run starts,
+   * from `at` below. See `TranslateRequest.bookPath` for the whole argument — a
+   * path minted at the press outlives its own file.
    */
-  bookPath: string;
+  bookPath?: string;
+  /**
+   * THE LEDGER ROW THIS RUN IS MADE FROM, pinned AT THE PRESS — and the whole of
+   * what a spawn needs in order to make the book itself.
+   *
+   * ── Why an id crosses where a PATH used to ─────────────────────────────────
+   *
+   * Until PK6 the plan materialised the book at the press and put the PATH on the
+   * request (`bookPath`). The file's lifetime is spawn → settle
+   * (`sweepDerivedBook` unlinks it at EVERY ending) and the request's lifetime is
+   * press → terminal → across restarts, so a Retry or a resume replayed a path the
+   * settle had already deleted — the 2026-09-20 hunt's F1, and F5 is the same
+   * defect met through Start. An id cannot rot: the step either exists at spawn,
+   * in which case the book is made from it, or it does not, and that is a refusal
+   * with a name on it.
+   *
+   * ── AND IT IS NOT "THE POSITION" ───────────────────────────────────────────
+   *
+   * Resolving it at the press is what keeps the family's standing rule true: *a
+   * pointer move made while the job waited must not silently produce a different
+   * book*. So the press writes the id down, even when the person was simply
+   * standing on it.
+   *
+   * `null` means the project held NO steps when the button was pressed — the
+   * reading's own book file, which is `materializeBook`'s own default. Absent
+   * means either this request predates the field or it is DEFERRED, in which case
+   * `deferred.from` is the row and this would have nothing to say.
+   */
+  at?: string | null;
   /**
    * `--out`: WHERE THE REPORT GOES, and the whole product of this job —
    * `analysis/<stepId>.jsonl` under the project.
@@ -1259,12 +1377,24 @@ export interface AnalysisPlan {
   key: string;
   /** The document the person had open — how main resolved the project. */
   sourcePath: string;
-  /** The book the engine reads. See `AnalyzeRequest.bookPath`. */
-  bookPath: string;
+  /**
+   * The book the engine reads — made at the SPAWN and therefore absent from a
+   * press plan (PK6). See `AnalyzeRequest.bookPath` and `at` below.
+   */
+  bookPath?: string;
   /** Where the report goes. See `AnalyzeRequest.outputPath`. */
   outputPath: string;
   /** The step the report is named after. See `AnalyzeRequest.stepId`. */
   stepId: string;
+  /**
+   * THE ROW THIS PLAN IS ABOUT, as an id — resolved AT THE PRESS and carried onto
+   * the request, where the spawn makes the book out of it.
+   *
+   * See `TranslateRequest.at`, which is where it goes and where the argument
+   * lives. `null` is a project with no steps; a DEFERRED plan leaves it out,
+   * because `deferred.from` is the row it is about.
+   */
+  at?: string | null;
 }
 
 /**
@@ -1719,6 +1849,92 @@ export interface JobUsage {
  * the list.
  */
 export type FoundryJobRow = Job;
+
+/**
+ * WHERE A HOSTED RUN GOES — the card the host's own queue already admitted it to.
+ *
+ * ONE FIELD, AND IT IS NOT A PREFERENCE. The host's scheduler polled the server,
+ * reserved the row's lease and charged the slot before it called (BookForge
+ * `docs/QUEUE-CRUCIBLE-BUG-HUNT-2026-09-19.md` §G, rulings 7 and 9), so this app
+ * is being TOLD where the work goes, not asked. `placeJob` places on that server
+ * and nowhere else — no `ANY_SLOT` walk, no second opinion — because a re-decision
+ * here is the shape that put a read on one engine while the host's bench drew it
+ * on another (2026-09-18).
+ *
+ * NULL IS A STATED ANSWER: this act does not travel (a rendering, a compile, a
+ * mint), so the host has no machine to name and this app's own default decides.
+ */
+export interface RunVenue {
+  /** A slot NAME, exactly as the host's registry spells it. Matched verbatim. */
+  server: string;
+}
+
+/**
+ * WHAT ONE HOSTED RUN ENDED AS — the typed answer `runJob` resolves with.
+ *
+ * ── Why a typed outcome replaced "the settled row" (PK6) ───────────────────
+ *
+ * The row said `done | failed | cancelled` and said everything else in PROSE, in
+ * `error`. Two things a scheduler has to act on were therefore only readable by
+ * parsing a sentence: a card that is merely BUSY (which parks and retries itself)
+ * and the engine's last words (which a Stop then erased). BookForge's bug hunt
+ * found both — Q4 reddened a row over a `409 leased`, P5/F7 left a night of
+ * failures with nothing on disk — and the fix is that the seam states them.
+ *
+ * `wait` IS RETURNED THE MOMENT THE PLACEMENT SAYS SO. Nothing spins in here any
+ * more: this app has no queue when it is hosted, and a backoff loop inside a
+ * detached run was a second scheduler with a 30-second opinion. `standing` is
+ * `PlacementWait.standing` — a server switched off, a class its card cannot serve
+ * — and it is still a wait, because only a person moves it and the host's reach
+ * sweep is what asks again.
+ *
+ * `cancelled` IS NOT `failed`, which is the distinction the row carried and this
+ * keeps: somebody spent GPU and took it back, and filing that as a failure is how
+ * a retry restarts work a person just stopped.
+ */
+export type RunOutcome =
+  | { outcome: 'done'; row: FoundryJobRow }
+  | {
+    outcome: 'failed';
+    row: FoundryJobRow;
+    /** The engine's own sentence — never this app's paraphrase of it. */
+    error: string;
+    /**
+     * The last of the engine's stderr, for the host's log. Empty when the run
+     * failed before a child existed (a plan that could not be made).
+     */
+    stderrTail: string;
+  }
+  | {
+    outcome: 'wait';
+    /**
+     * THE HOLDER'S OWN LINE — what is in the way and whose it is. It is what the
+     * host puts on the parked row, so it is a sentence a person reads.
+     */
+    busyLine: string;
+    /** True when only a person can clear it. See the type header. */
+    standing: boolean;
+  }
+  | { outcome: 'cancelled'; row: FoundryJobRow };
+
+/**
+ * WHERE THIS RUN WAS PLACED, announced ONCE before the engine is spawned.
+ *
+ * The host writes it into its own in-flight ledger, so a hard kill has something
+ * to release the lease with (BookForge P8: a ctrl-C left Foundry's Crucible lease
+ * held by a process that no longer existed, recorded nowhere). Settled by the
+ * outcome, whichever one arrives.
+ */
+export interface RunPlacement {
+  /** The slot's name, or `''` for a run that was never placed on a machine. */
+  server: string;
+  /** The model the placement selected, or `''` for a run that meets none. */
+  model: string;
+  /** The Crucible lease id this run holds, or null when it holds none. */
+  leaseId: string | null;
+  /** Blocks in flight the engine was told to keep. See `Placement.concurrency`. */
+  concurrency: number;
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // `foundry doctor --json` — the engine's contract, version 1
@@ -2413,6 +2629,14 @@ export interface WorkspacePlan {
    * about the one fact this whole feature was built for.
    */
   deferred?: DeferredPlan;
+  /**
+   * THE ROW THIS RENDERING IS MADE FROM, as an id — resolved AT THE PRESS and
+   * carried onto the request, where the spawn makes the book out of it.
+   *
+   * See `GenerateRequest.at`. `null` is a project with no steps; a DEFERRED plan
+   * leaves it out, because `deferred.from` is the row it is about.
+   */
+  at?: string | null;
 }
 
 /**
@@ -2496,8 +2720,15 @@ export interface TranslationPlan {
   sourcePath: string;
   /**
    * THE BOOK THE ENGINE TRANSLATES — the position's book file with its whole
-   * chain replayed into it, written into the OS temp directory at plan time
-   * (`planTranslation`, electron/workspace.ts).
+   * chain replayed into it, written into the OS temp directory.
+   *
+   * ── NEVER ON A PRESS PLAN (PK6) ────────────────────────────────────────────
+   *
+   * `identifyTranslation` and its two siblings do not make it; `materializeX`
+   * does, at the SPAWN, and this shape is what both of them answer with so the
+   * seeding rule and the materialise rule have one implementation. A press plan
+   * carries `at` instead — see it below, and `TranslateRequest.at` for why a path
+   * minted at the press cannot survive its own settle.
    *
    * A struck row is not in it, a retyped paragraph is in it as the person left
    * it, and under a translation it is that translation's derived book — so a
@@ -2589,6 +2820,15 @@ export interface TranslationPlan {
    * Absent is every plan this app composed before this wave, and absent means the
    * step the plan is about is one the ledger holds.
    */
+  /**
+   * THE ROW THIS PLAN IS ABOUT, as an id — resolved AT THE PRESS and carried onto
+   * the request, where the spawn makes the book out of it.
+   *
+   * See `TranslateRequest.at`, which is where it goes and where the argument
+   * lives. `null` is a project with no steps; a DEFERRED plan leaves it out,
+   * because `deferred.from` is the row it is about.
+   */
+  at?: string | null;
   deferred?: DeferredPlan;
 }
 

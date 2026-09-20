@@ -620,6 +620,63 @@ export function openCrucibleLeaseCount(): number {
  *
  * Prefer {@link withCrucibleLease}, which cannot leak one.
  */
+/**
+ * GIVE BACK A LEASE THIS PROCESS NEVER TOOK — the startup sweep's door.
+ *
+ * ── The hole it closes (P8, the hosted half) ───────────────────────────────
+ *
+ * Every other claim in this app is either a PROCESS (killed with it) or a
+ * Crucible JOB (cancelled by id from the in-flight ledger). The hosted Foundry's
+ * lease is neither: the vendored dispatcher takes it in this same process and
+ * releases it in its own settle, so a ctrl-C — which cannot run `before-quit` —
+ * leaves a lease on somebody's card with nothing on this side holding a
+ * {@link CrucibleLease} to release. `foundry-job.ts` writes the lease id into the
+ * in-flight ledger as a `foundry-lease` row, and this is what the sweep sends at
+ * it: `DELETE /v1/leases/{id}`, which is the same route {@link CrucibleLease
+ * .release} uses and the only one that means "stop holding the card".
+ *
+ * IT IS NOT `client.cancel(id)`. A lease is not a job; the jobs route would
+ * answer 404 for a lease id and the card would stay held for its whole TTL.
+ *
+ * `unknown_lease` IS SUCCESS, on `release`'s own rule: released or expired both
+ * mean nothing is held, which is the state a release wanted.
+ */
+export async function releaseCrucibleLeaseById(
+  server: string,
+  leaseId: string,
+): Promise<{ outcome: 'released' | 'gone' | 'unreachable' | 'refused'; detail: string }> {
+  let engine: { url: string };
+  let token: string;
+  try {
+    engine = await crucibleClientFor(server, CRUCIBLE_CLIENT_NAME);
+    token = getServer(server).token;
+  } catch (err) {
+    // An unknown server name: the entry was removed while a lease of ours was on
+    // it. Named, kept in the ledger, and not retried in a loop.
+    return { outcome: 'refused', detail: err instanceof Error ? err.message : String(err) };
+  }
+  try {
+    await leaseRequest(
+      { url: engine.url, token },
+      `/v1/leases/${encodeURIComponent(leaseId)}`,
+      { method: 'DELETE' },
+    );
+    return { outcome: 'released', detail: `crucible "${server}" released lease ${leaseId}` };
+  } catch (err) {
+    if (err instanceof CrucibleUnreachable) {
+      return { outcome: 'unreachable', detail: `nothing answered at ${err.url}` };
+    }
+    if (err instanceof CrucibleRefused
+      && (err.code === 'unknown_lease' || err.status === 404)) {
+      return { outcome: 'gone', detail: `crucible "${server}" no longer holds lease ${leaseId}` };
+    }
+    return {
+      outcome: 'refused',
+      detail: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
 export async function takeCrucibleLease(options: CrucibleLeaseOptions): Promise<CrucibleLease> {
   const { server, kind, id: leased, act } = options;
   const takeRoute = leaseRoute(leased);

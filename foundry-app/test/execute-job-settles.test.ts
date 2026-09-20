@@ -80,6 +80,7 @@ mock.module('electron', () => ({
 
 const dispatch = await import('../electron/crucible-dispatch');
 const engine = await import('../electron/engine');
+const workspace = await import('../electron/workspace');
 const appSettings = await import('../electron/app-settings');
 const projects = await import('../electron/projects');
 const queue = await import('../electron/job-queue');
@@ -120,6 +121,39 @@ function placedWithALease(release: () => Promise<void>): void {
   });
 }
 
+/**
+ * THE ROW, OUT OF THE TYPED OUTCOME `runJob` ANSWERS WITH (PK6).
+ *
+ * `done`, `failed` and `cancelled` all carry the settled row; `wait` carries no
+ * row at all, because nothing ran — so a wait arriving in a test about endings is
+ * the test's own premise failing and is raised by name rather than read as
+ * `undefined.state`.
+ */
+async function ran(...asked: Parameters<typeof queue.runJob>): Promise<Job> {
+  const outcome = await queue.runJob(...asked);
+  if (outcome.outcome === 'wait') {
+    throw new Error(`this run was never placed: ${outcome.busyLine}`);
+  }
+  return outcome.row;
+}
+
+/**
+ * THE BOOK A RENDERING READS, ANSWERED WITHOUT A LEDGER (PK6).
+ *
+ * Since the identify/materialise split the run makes its own derived book at the
+ * spawn (`materializeAtSpawn` → `materializeExport`), which needs a project with a
+ * finished reading in it. Every test in this file is about what happens AROUND
+ * that — the settle, the rotation, the one ending — and its fixture is a file in
+ * the temp directory outside any project at all. So the materialise is answered
+ * here, with the book the test wrote itself, which is exactly what the real one
+ * would have handed back.
+ */
+function materialising(bookPath?: string): void {
+  spyOn(workspace, 'materializeExport').mockResolvedValue(
+    bookPath === undefined ? {} : { bookPath },
+  );
+}
+
 /** Every ending this test heard, in the order it heard them. */
 function listening(): { endings: Job[]; stop: () => void } {
   const endings: Job[] = [];
@@ -137,7 +171,7 @@ test('a run that throws after its placement fails the row, settles it once, and 
   });
   const { endings, stop } = listening();
   try {
-    const row = await queue.runJob({
+    const row = await ran({
       kind: 'read', inputPath: SCAN, readingsPath: BANK, stepId: 'throws-after-placement',
     });
     expect(row.state).toBe('failed');
@@ -161,7 +195,7 @@ test('a reading whose landing succeeds settles, so its lease and its waiter are 
   spyOn(projects, 'recordReading').mockResolvedValue(undefined);
   const { endings, stop } = listening();
   try {
-    const row = await queue.runJob({
+    const row = await ran({
       kind: 'read', inputPath: SCAN, readingsPath: BANK, stepId: 'landing-that-worked',
     });
     expect(row.state).toBe('done');
@@ -222,6 +256,7 @@ async function archivesIn(generated: string): Promise<string[]> {
 test('a run that throws after rotating the previous output puts the rotation back', async () => {
   const { output, generated } = await projectHoldingAPreviousBook();
   placedWithALease(async () => {});
+  materialising();
   // The same refusal as the first test: a hosted Foundry with no FOUNDRY_BIN,
   // which throws out of `runEngine` — one statement after the rotation.
   spyOn(engine, 'runEngine').mockImplementation(() => {
@@ -229,7 +264,7 @@ test('a run that throws after rotating the previous output puts the rotation bac
   });
   const { endings, stop } = listening();
   try {
-    const row = await queue.runJob({
+    const row = await ran({
       kind: 'epub', inputPath: SCAN, outputPath: output, readingsPath: BANK,
     });
     expect(row.state).toBe('failed');
@@ -244,6 +279,7 @@ test('a run that throws after rotating the previous output puts the rotation bac
 });
 
 test('a landing does not put its rotation back, because the product is filed', async () => {
+  materialising();
   const { output, generated } = await projectHoldingAPreviousBook();
   placedWithALease(async () => {});
   // The engine writes where it was aimed, which is what makes this a landing
@@ -258,7 +294,7 @@ test('a landing does not put its rotation back, because the product is filed', a
   const restore = spyOn(projects, 'restoreRotation');
   const { endings, stop } = listening();
   try {
-    const row = await queue.runJob({
+    const row = await ran({
       kind: 'epub', inputPath: SCAN, outputPath: output, readingsPath: BANK,
     });
     expect(row.state).toBe('done');
@@ -287,6 +323,7 @@ test('a landing does not put its rotation back, because the product is filed', a
  * passed on a slow morning.
  */
 test('two rotations in one project in one instant both land, because the folder is named after the run', async () => {
+  materialising();
   const { output, generated } = await projectHoldingAPreviousBook();
   const text = path.join(generated, 'keeper.txt');
   await fsp.writeFile(text, 'the text emission that was already there', 'utf8');
@@ -305,11 +342,11 @@ test('two rotations in one project in one instant both land, because the folder 
   const { endings, stop } = listening();
   try {
     aimedAt(output, 'the rendering this run made');
-    const first = await queue.runJob({
+    const first = await ran({
       kind: 'epub', inputPath: SCAN, outputPath: output, readingsPath: BANK,
     });
     aimedAt(text, 'the text this run made');
-    const second = await queue.runJob({
+    const second = await ran({
       kind: 'txt', inputPath: SCAN, outputPath: text, readingsPath: BANK,
     });
     // THE WHOLE POINT: the second run is not refused by the first run's folder.
@@ -355,11 +392,23 @@ test('two rotations in one project in one instant both land, because the folder 
 test('a ✕ that arrives while the landing is in flight is refused, so one ending is published', async () => {
   const release = mock(async () => {});
   placedWithALease(release);
+  /*
+   * IN A PROJECT, BECAUSE SINCE PK6 A BOOK IS ONLY MADE FOR A RUN THAT IS IN ONE.
+   * The materialise is still answered by the fixture below — this test is about
+   * the sweep's own await and not about a replay — but a request outside every
+   * project materialises nothing at all, and a run with no derived book has no
+   * `rm` for the ✕ to arrive inside of.
+   */
+  const { output } = await projectHoldingAPreviousBook();
   // The book this run compiles, materialised for it and swept the moment the
   // engine is done with it — `sweepDerivedBook`, which is where the ✕ lands.
   const derived = path.join(os.tmpdir(), 'foundry-execute-job-settles-test', 'derived-book.jsonl');
   await fsp.mkdir(path.dirname(derived), { recursive: true });
   await fsp.writeFile(derived, 'the position this run was compiled from', 'utf8');
+  // MADE AT THE SPAWN SINCE PK6, which is what puts it on the request at all —
+  // and therefore what `sweepDerivedBook` unlinks, which is the await this whole
+  // test presses its ✕ inside of.
+  materialising(derived);
   spyOn(engine, 'runEngine').mockReturnValue({
     done: Promise.resolve({ code: 0, stdout: '', stderr: '' }),
     cancel: () => {},
@@ -387,8 +436,8 @@ test('a ✕ that arrives while the landing is in flight is refused, so one endin
   });
   const { endings, stop } = listening();
   try {
-    const row = await queue.runJob({
-      kind: 'epub', inputPath: SCAN, outputPath: BOOK, readingsPath: BANK, bookPath: derived,
+    const row = await ran({
+      kind: 'epub', inputPath: SCAN, outputPath: output, readingsPath: BANK,
     });
     // The ✕ was pressed on this row, mid-landing, and the ending that was
     // published is still the run's own — once, with the lease given back once.

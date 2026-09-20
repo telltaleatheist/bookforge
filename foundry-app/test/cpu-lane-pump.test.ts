@@ -4,9 +4,11 @@
  * heap out of memory within the minute.
  *
  * `pump` chooses rows in a synchronous `for (;;)`; nothing it awaits runs inside
- * that loop. `runInSlot` claims a slot and — since Wave 56 — awaits
- * `materializeDeferred` before anything marked the row running, so the picker
- * saw the same queued row with the same free lane and chose it again, forever.
+ * that loop. `runInSlot` claims a slot and — for one wave in 2026-09 — awaited the
+ * deferred re-plan before anything marked the row running, so the picker saw the
+ * same queued row with the same free lane and chose it again, forever. (The
+ * materialise moved inside the run in PK6; the mark stays where it is, and this
+ * test is why.)
  * The GPU lane has one slot and could not spin; the CPU lane has two and did.
  *
  * Both halves of the repair are asserted: the row is published RUNNING exactly
@@ -87,7 +89,15 @@ test('a cpu-lane row whose start awaits is picked once, marked running once, and
   const rows = queue.listJobs().filter((row) => row.id === job.id);
   expect(rows).toHaveLength(1);
   expect(rows[0]!.state).toBe('failed');
-  expect(seen.filter((state) => state === 'running')).toHaveLength(1);
+  /*
+   * ONE TRANSITION INTO RUNNING, not one publication of it: a live run publishes
+   * itself repeatedly while it is running — the placement says where it is going,
+   * the engine says what it is doing — and counting those would be counting the
+   * row's own progress. What a second PICK would look like is a second entry into
+   * the state, which is what this counts.
+   */
+  const started = seen.filter((state, index) => state === 'running' && seen[index - 1] !== 'running');
+  expect(started).toHaveLength(1);
   // And once running it was never published queued again — the second pick
   // would have shown up as exactly that. (The settled publication is not
   // asserted: a hosted shelf does not draw a failed row of ours, and whether

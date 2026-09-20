@@ -104,7 +104,7 @@ import {
 import { connectLocalEngine, registerIpc } from './ipc';
 import * as queue from './job-queue';
 import { ledgerOf, listProjects, onImportLanded, projectDirOf, readManifest } from './projects';
-import { planExport } from './workspace';
+import { identifyExport } from './workspace';
 import { foundryWindow, isDev, openWindow, whenRendererReady } from './window';
 import { stepOf } from '../shared/ledger';
 import { deferralFor } from '../shared/pending';
@@ -217,14 +217,23 @@ export { RESUMABLE_STOP } from '../shared/types';
  * bookforge."* A host that registers `hostQueue` on the mount does the DECIDING;
  * these three are what Foundry offers back.
  *
- *     runJob(request, {parentStep, onProgress, signal})   execute one, now
+ *     runJob(request, {parentStep, signal, venue, onLine, onProgress, onPlaced})
  *     setHostQueueRows(projectDir, rows)                  what your queue holds
  *     hostQueueDrained()                                  and when it is empty
  *
- * `runJob` resolves with the settled `Job` ROW — `state` says `done`, `failed` or
- * `cancelled` and `error` carries the engine's own words. The row rather than a
- * result type, because a result type cannot say cancelled, and a cancel filed as
- * a failure is how a host's retry restarts work a person just stopped.
+ * `runJob` resolves with a typed {@link RunOutcome} — `done`, `failed`, `wait` or
+ * `cancelled`. The three that ran carry the settled `Job` ROW, because a result
+ * type that could not say CANCELLED was the first thing this seam got wrong: a
+ * cancel filed as a failure is how a host's retry restarts work a person just
+ * stopped. `wait` carries no row, because nothing ran — it is the holder's own
+ * sentence plus whether time alone will ever clear it, and the host parks.
+ *
+ * THE REQUEST THAT CROSSES IS IDENTITY ONLY. It names the row this work is made
+ * from (`at`, or `deferred.from`) and never a path under `derived/`: the book, the
+ * seed and the generation are made when the run starts, because a derived book is
+ * swept at every settle and a request outlives its row's first attempt. A host may
+ * therefore persist a request, restore it after a restart and hand it back, which
+ * is exactly what BookForge's Retry and Start do.
  *
  * `setHostQueueRows` is in the `setHost*` family by shape and by purpose, and it
  * comes from the queue rather than from `host-ops.ts` because the module that
@@ -237,7 +246,8 @@ export { RESUMABLE_STOP } from '../shared/types';
 export { hostQueueDrained, runJob, setHostQueueRows } from './job-queue';
 export type { FoundryHostQueue } from './host';
 export type {
-  CleanRequest, FoundryJobRow, Job, JobRequest, SimplifyRequest, TextPassRequest, TranslateRequest,
+  CleanRequest, FoundryJobRow, Job, JobRequest, RunOutcome, RunPlacement, RunVenue, SimplifyRequest,
+  TextPassRequest, TranslateRequest,
 } from '../shared/types';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -887,7 +897,7 @@ export async function exportEpubFromStep(
   // The refusal, unchanged and in the ledger's own words, for an id that is neither
   // a step nor a promise.
   const step = landed ?? (deferral === null ? stepOf(ledger, stepId) : null);
-  const plan = await planExport(
+  const plan = await identifyExport(
     original.path,
     'epub',
     deferral !== null ? deferral.landed : step,
@@ -1101,11 +1111,25 @@ let stopping: Promise<void> | null = null;
 
 export function stopFoundry(): Promise<void> {
   if (stopping !== null) return stopping;
+  /*
+   * TWO HALVES, AND THE SECOND ONE IS WHY THIS RETURNS A PROMISE AT ALL.
+   *
+   * `shutdown()` is the gesture: every live child kill-treed, on this app's own
+   * board and on a host's detached runs alike. It is synchronous and it does not
+   * wait for anything.
+   *
+   * `drained()` is the WAITING: every run's settle, and every Crucible LEASE those
+   * settles are giving back. Until 2026-09-20 this function answered
+   * `Promise.resolve()` and the host's 45-second budget therefore bounded nothing
+   * — the app exited while the DELETE that releases the card was still a
+   * continuation nobody held, leaving a lease that no other client could load
+   * past until its TTL ran out (BookForge's P9).
+   *
+   * The reading server this used to stop was the local page reader's, and there
+   * is no local page reader (2026-09-17).
+   */
   queue.shutdown();
-  // The reading server this used to stop was the local page reader's, and there
-  // is no local page reader (2026-09-17). Shutting the queue down, above, is the
-  // whole of what quitting has left to do.
-  stopping = Promise.resolve();
+  stopping = queue.drained();
   return stopping;
 }
 

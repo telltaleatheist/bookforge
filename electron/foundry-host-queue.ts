@@ -376,35 +376,29 @@ export interface FoundryRunJobOptions {
   parentStep: string | null;
   signal: AbortSignal;
   /**
-   * THE MACHINE THIS ROW WAS ADMITTED TO — a Crucible server's name, exactly as
-   * `FoundryHost.servers()` spells it.
+   * THE CARD THIS ROW WAS ADMITTED TO — a Crucible server's name, exactly as
+   * `FoundryHost.servers()` spells it, or NULL for an act that does not travel.
    *
-   * Their `RunOptions.waitFor` (foundry `f300fc6`, in this subtree since
-   * `4e0a4cb`), and it is REQUIRED here although it is optional there. Absent,
-   * their `placedBy` falls back to the vendored window's OWN `newJobsWaitFor`
-   * setting — so a machine chosen on BookForge's queue row would be answered by
-   * a setting on a screen nobody opened, which is the exact defect the field
-   * was added to close. This engine always has an answer (`machines()` makes
-   * every text act travel, so the row carries a resolved venue), so it always
-   * sends one.
+   * ── It was `waitFor`, and the word was the defect (PK6) ──────────────────
    *
-   * It is taken VERBATIM over there and matched case-sensitively against the
-   * derived slot list; a name that does not match parks the job for ever. The
-   * hosted step therefore checks it against this machine's registry snapshot
-   * first — see {@link hostedCrucibleServerNotOffered}.
+   * `waitFor` was a PREFERENCE over there: the placement was free to re-decide,
+   * and with nothing named it fell through to the vendored window's own
+   * `newJobsWaitFor` — a machine chosen on a screen nobody opened, which on
+   * 2026-09-18 put a read on one engine while this bench drew it on another.
+   * A VENUE is a decision already taken. This engine polled the server, reserved
+   * the row's lease and charged the slot before the call (§G rulings 7 and 9), so
+   * the runner places THERE and takes no second opinion.
    *
-   * ── `null` IS A STATED ANSWER, NOT AN ABSENCE ─────────────────────────────
+   * ── `null` IS A STATED ANSWER, NOT AN ABSENCE ────────────────────────────
    *
-   * A `read` and a `render` do not travel (`foundryJobStep.machines()` says
-   * `local` for both), so there is no machine for this side to name and the
-   * window's own default is the right one. That is a FACT ABOUT THE KIND and it
-   * is stated, because "this does not travel" and "I forgot to say" must not
-   * look the same at the seam — which is exactly how a choice made on one
-   * screen came to be answered by a setting on another, the defect their field
-   * was added to close. The mount turns `null` into an absent key; see the
-   * `runJob` adapter in `main.ts`.
+   * A rendering does not travel (`foundryJobStep.machines()` says `local` via
+   * `resourceFor`), so there is no machine for this side to name and the window's
+   * own default is the right one. That is a FACT ABOUT THE KIND and it is stated,
+   * because "this does not travel" and "I forgot to say" must not look the same
+   * at the seam — which is exactly how a choice made on one screen came to be
+   * answered by a setting on another.
    */
-  waitFor: string | null;
+  venue: { server: string } | null;
   /**
    * EVERY LINE THE ENGINE WRITES, AS A STRING. Not a parsed object.
    *
@@ -423,6 +417,40 @@ export interface FoundryRunJobOptions {
    * mount, which is where the mirror is actually crossed.
    */
   onProgress: (line: string) => void;
+  /**
+   * THE SAME LINES AGAIN, FOR THE LOG — and it is not a duplicate of the one
+   * above.
+   *
+   * `onProgress` is this app's PARSER: it reads counts out of the line and draws
+   * a bar, and a parser has bugs. `onLine` is the copy that goes to a FILE, and
+   * Foundry calls it in the parser's own `finally` — so a reporter that throws
+   * cannot cost the log the line that explains the failure, which is the shape of
+   * the night that left `grep -c '[job]'` answering 0 over every log (P5/F7).
+   */
+  onLine: (line: string) => void;
+  /**
+   * WHERE THE RUN WAS PLACED, once, BEFORE the engine is spawned.
+   *
+   * Foundry takes its own Crucible lease (`crucible-dispatch.ts`) and until PK6
+   * recorded it nowhere this side could read — so a hard kill left a lease held
+   * by a process that no longer existed, and the startup sweep, which reads this
+   * app's own in-flight ledger, had nothing to find (P8). This is the hook that
+   * closes it: `foundry-job.ts` writes the placement into that same ledger and
+   * settles it when the outcome arrives.
+   */
+  onPlaced: (placement: FoundryRunPlacement) => void;
+}
+
+/** What {@link FoundryRunJobOptions.onPlaced} carries. Their `RunPlacement`. */
+export interface FoundryRunPlacement {
+  /** The slot's name, or `''` for a run that was never placed on a machine. */
+  server: string;
+  /** The model the placement selected, or `''` for a run that meets none. */
+  model: string;
+  /** The Crucible lease id the run holds, or null when it holds none. */
+  leaseId: string | null;
+  /** Blocks in flight the engine was told to keep. Ruling 4's four, normally. */
+  concurrency: number;
 }
 
 /**
@@ -442,7 +470,41 @@ export interface FoundryRunJobOptions {
  * can drift.
  */
 export type FoundryRunner =
-  (request: FoundryJobRequest, opts: FoundryRunJobOptions) => Promise<FoundryJobRow>;
+  (request: FoundryJobRequest, opts: FoundryRunJobOptions) => Promise<FoundryRunOutcome>;
+
+/**
+ * WHAT ONE HOSTED RUN ENDED AS — their `RunOutcome`, mirrored arm for arm.
+ *
+ * ── Why a typed outcome replaced "the settled row" (PK6) ──────────────────
+ *
+ * The row said `done | failed | cancelled` and said everything else in PROSE, in
+ * `error`. Two things this scheduler has to act on were therefore only readable
+ * by parsing a sentence:
+ *
+ *   A CARD THAT IS MERELY BUSY. Foundry takes its own lease, so a
+ *   `409 leased` / `409 server_busy` arrived here as a `failed` row carrying
+ *   words — and a row that should have parked and retried itself turned RED in
+ *   *Needs you*, waiting for a person to press Retry for something nobody did
+ *   wrong (Q4). Contract 2 of the hunt: this is that answer, typed.
+ *
+ *   THE ENGINE'S LAST WORDS. `row.error` is one overwrite from gone — a
+ *   resumable Stop clears it (P6) — so the stderr travels beside the row, for
+ *   the log rather than for the row.
+ *
+ * `wait` CARRIES NO ROW, because nothing ran: no engine, no lease, no product.
+ * `standing` is Foundry's own word for a wait only a person can clear (a server
+ * switched off, a class that card cannot serve), and it is still a wait — this
+ * engine parks and the reach sweep re-asks.
+ *
+ * CANCELLED IS NOT FAILED, which is the distinction the row carried and this
+ * keeps: somebody spent GPU and took it back, and filing that as a failure is
+ * how `retry()` restarts work a person just stopped.
+ */
+export type FoundryRunOutcome =
+  | { outcome: 'done'; row: FoundryJobRow }
+  | { outcome: 'failed'; row: FoundryJobRow; error: string; stderrTail: string }
+  | { outcome: 'wait'; busyLine: string; standing: boolean }
+  | { outcome: 'cancelled'; row: FoundryJobRow };
 
 // ─────────────────────────────────────────────────────────────────────────────
 // The seam, injected
@@ -500,30 +562,42 @@ export function foundryRunner(): FoundryRunner {
       } catch { /* the log is never worth a row */ }
     };
     said(`START ${request.kind} ${request.inputPath}`);
-    const row = await run(request, {
-      ...opts,
-      onProgress: (line) => {
-        try {
-          opts.onProgress(line);
-        } finally {
-          said(line);
-        }
-      },
-    });
+    /*
+     * THE TEE IS `onLine` NOW, AND THAT IS THE WHOLE IMPROVEMENT. PK4 wrapped
+     * `onProgress` here in a try/finally to guarantee the log got the line even
+     * when the row's reporter threw; PK6 moved that guarantee INTO the seam, so
+     * the sink is Foundry's own `finally` and this side simply declares where the
+     * lines go. Both callbacks still cross, because they are two different
+     * listeners: one parses counts, one writes a file.
+     */
+    const outcome = await run(request, { ...opts, onLine: said });
     /*
      * THE LAST THING THE ENGINE SAID, on the way out and only when it went
-     * wrong. `row.error` is where the vendored engine puts the CLI's final
-     * stderr, and it is the one sentence that explains a failed book — the
-     * exact thing a stopped row deletes on this side. Written at ERROR so it
-     * is findable without knowing the job id.
+     * wrong — written at ERROR so it is findable without knowing the job id.
+     *
+     * `stderrTail` IS WHY THIS IS NOT JUST `row.error`. The row's error is one
+     * sentence and a Stop erases it (P6); the tail is the engine's own output,
+     * handed over separately for exactly this copy. Both are written: the
+     * sentence explains the failure, the tail is what somebody debugs from.
      */
-    if (row.state === 'failed') {
-      log.error(`FAILED ${request.kind}: ${row.error ?? 'Foundry did not say why.'}`,
-        { kind: request.kind, input: request.inputPath, busyLine: row.busyLine });
+    if (outcome.outcome === 'failed') {
+      log.error(`FAILED ${request.kind}: ${outcome.error}`,
+        { kind: request.kind, input: request.inputPath, busyLine: outcome.row.busyLine });
+      if (outcome.stderrTail.trim().length > 0) {
+        log.error(`STDERR ${request.kind}:\n${outcome.stderrTail.trim()}`,
+          { kind: request.kind, input: request.inputPath });
+      }
+    } else if (outcome.outcome === 'wait') {
+      /*
+       * A WAIT IS NOT A FAILURE AND IS LOGGED AS ITSELF. It is the ordinary
+       * shape of a shared card and it is what a person reading the log needs in
+       * order to tell "the Mac was busy for an hour" from "the run broke".
+       */
+      said(`WAIT ${request.kind}: ${outcome.busyLine}${outcome.standing ? ' (standing)' : ''}`);
     } else {
-      said(`${row.state.toUpperCase()} ${request.kind}`);
+      said(`${outcome.outcome.toUpperCase()} ${request.kind}`);
     }
-    return row;
+    return outcome;
   };
 }
 
@@ -540,8 +614,14 @@ export function foundryRunner(): FoundryRunner {
  * nothing at all — their sentence always wins, because the engine knows more
  * about why it stopped than we do.
  */
-export function foundryRowFailure(row: FoundryJobRow, label: string): Error {
-  return stepFailure(row.error ?? `${label} failed, and Foundry did not say why.`, row.busyLine);
+export function foundryRowFailure(
+  outcome: { row?: FoundryJobRow; error?: string; busyLine?: string },
+  label: string,
+): Error {
+  return stepFailure(
+    outcome.error ?? outcome.row?.error ?? `${label} failed, and Foundry did not say why.`,
+    outcome.busyLine ?? outcome.row?.busyLine,
+  );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

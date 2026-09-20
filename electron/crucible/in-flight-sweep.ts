@@ -61,6 +61,7 @@ import type { Activity, CrucibleClient } from '@crucible/client';
 import { CrucibleUnreachable } from '@crucible/client';
 import { CRUCIBLE_CLIENT_NAME, crucibleClientFor } from './servers';
 import { cancelCrucibleJobById, describeCrucibleJobRefusal } from './job';
+import { releaseCrucibleLeaseById } from './lease';
 import {
   readInFlightLedger,
   settleInFlight,
@@ -79,6 +80,26 @@ import {
  * at by string-munging `unload-${kind}`: the set grows on the server's schedule,
  * and a manufactured job type would be a 400 from a sweep that is quitting.
  */
+/**
+ * THE `jobType` A HOSTED FOUNDRY LEASE WEARS IN THE LEDGER.
+ *
+ * ── Why a lease is in a ledger of jobs at all (P8) ─────────────────────────
+ *
+ * Because it is the same fact: *this app is holding somebody's card and a hard
+ * kill can lose the handle*. The hosted Foundry takes its own Crucible lease
+ * inside the vendored dispatcher (`crucible-dispatch.ts`) and releases it in its
+ * own settle, so a ctrl-C — which cannot run `before-quit` — left a claim with
+ * nothing on this side able to name it. One ledger, one sweep, one place a person
+ * looks after a crash is better than a second file with a second lifetime.
+ *
+ * WHAT IT CHANGES IS THE ROUTE, and that is why it is a NAME rather than a flag:
+ * a lease is not a job, so `DELETE /v1/jobs/{id}` would answer 404 and the card
+ * would stay held for its whole TTL. A row of this type goes to
+ * {@link releaseCrucibleLeaseById} instead. Every other row is a job and is
+ * cancelled exactly as it always was.
+ */
+export const FOUNDRY_LEASE_JOB_TYPE = 'foundry-lease';
+
 export function unloadJobTypeForResidentKind(kind: string): string | null {
   switch (kind) {
     case 'llm': return 'unload-model';
@@ -152,7 +173,14 @@ export const QUIT_SWEEP_TIMING: SweepTiming = { confirmForMs: 6_000, pollEveryMs
 /** What happened to one ledger row. */
 export interface SweptJob {
   readonly entry: CrucibleInFlightEntry;
-  readonly outcome: 'cancelled' | 'gone' | 'unreachable' | 'refused';
+  /**
+   * `released` IS A LEASE ROW'S `cancelled`, and it is spelled differently on
+   * purpose: the two routes do different things to different objects, and a
+   * report that called a lease release a cancellation would be this module
+   * paraphrasing what it did. Both mean "the card is no longer held by us", and
+   * both settle the row (see the sweep loop).
+   */
+  readonly outcome: 'cancelled' | 'released' | 'gone' | 'unreachable' | 'refused';
   readonly detail: string;
 }
 
@@ -263,9 +291,17 @@ async function sweep(options: {
   for (const [server, rows] of byServer) {
     const ours = new Set<string>();
     for (const row of rows) {
-      const result = await cancelCrucibleJobById(server, row.jobId);
+      /*
+       * TWO ROUTES, ONE LEDGER. A `foundry-lease` row names a LEASE, which is
+       * released; everything else names a JOB, which is cancelled. See
+       * {@link FOUNDRY_LEASE_JOB_TYPE} for why they share a file.
+       */
+      const result = row.jobType === FOUNDRY_LEASE_JOB_TYPE
+        ? await releaseCrucibleLeaseById(server, row.jobId)
+        : await cancelCrucibleJobById(server, row.jobId);
       jobs.push({ entry: row, outcome: result.outcome, detail: result.detail });
-      if (result.outcome === 'cancelled' || result.outcome === 'gone') {
+      if (result.outcome === 'cancelled' || result.outcome === 'gone'
+        || result.outcome === 'released') {
         log(`${row.jobType} ${row.jobId} (${row.localId}) on "${server}": ${result.detail}`);
         settleInFlight(server, row.jobId);
         scratchOwned.push(...row.owns);

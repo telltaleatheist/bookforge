@@ -4479,7 +4479,7 @@ export async function recordsForTextPass(
    *
    * A deferred pass is planned TWICE — once at the press, where the id is minted
    * and the tree draws a card with it, and once at spawn, where the real name is
-   * composed off the landed ledger (`materializeDeferred`, electron/job-queue.ts).
+   * composed off the landed ledger (`materializeAtSpawn`, electron/job-queue.ts).
    * Left to itself the second asking would mint a SECOND uuid, and a branch named
    * `<key>.<tag>.<id8>` would take its `id8` from an id nothing on screen ever
    * carried. So the spawn hands back the id the press promised, and the file and

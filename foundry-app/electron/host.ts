@@ -109,6 +109,29 @@ export interface FoundryHostQueue {
    * drawn only hosted, and only a host that wanted the feature ships it), and the
    * handoff doc carries the note so the re-vendor is deliberate.
    */
+  /*
+   * ── AND WHAT IT CARRIES IS IDENTITY ONLY, SINCE PK6 ───────────────────────
+   *
+   * The shape is the same union and the arity is unchanged; what moved is what
+   * is IN it. A text pass, an analysis and an export used to arrive with the
+   * plan already made — `bookPath` (a `derived/<uuid>.book.jsonl` in the OS temp
+   * directory), `seedRecords` and `generation`. A host persists this request:
+   * BookForge stores it on its own queue step and re-sends it on Retry, on Start
+   * after a stop, and after a restart. That outlives the file, which this app's
+   * own settle unlinks at EVERY ending — so the host was faithfully replaying a
+   * path that had been deleted, and the engine answered ENOENT.
+   *
+   * SO WHAT CROSSES IS THE ROW: `at` (or `deferred.from`), plus the records
+   * file, the step id and the stamp — everything composed from the project's
+   * catalogue and nothing composed from a disk. The book, the seed and the
+   * generation are made when the run starts (`materializeAtSpawn`,
+   * electron/job-queue.ts), out of the row the press pinned, so a pointer moved
+   * while the row waited still cannot change which book is read.
+   *
+   * A HOST NEED DO NOTHING ABOUT THIS except keep storing the request whole, as
+   * it always has. It is written down because a host reading `bookPath` on an
+   * older snapshot and helpfully filling it in would be re-creating the defect.
+   */
   enqueue(request: JobRequest | TextPassRequest, parentStep: string | null): FoundryJobRow;
   /**
    * The gestures the shelf makes, forwarded by id — the host's id, off the host's

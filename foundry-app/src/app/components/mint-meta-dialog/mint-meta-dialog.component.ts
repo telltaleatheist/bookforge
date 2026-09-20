@@ -567,7 +567,7 @@ export class MintMetaDialogComponent {
        * does: it waits behind the step it is made from (`Job.after`), the tree
        * draws it greyed under that promise, and the person is told so rather
        * than shown a proof sheet of nothing. The name they confirmed survives
-       * the spawn — `materializeDeferred` re-plans the words and the receipt
+       * the spawn — `materializeAtSpawn` re-plans the words and the receipt
        * and keeps the request's own outputPath.
        */
       if (plan.deferred !== undefined) {

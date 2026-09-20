@@ -437,11 +437,9 @@ export class CleanDialogComponent {
       const request: CleanRequest = {
         kind: 'clean',
         inputPath: plan.inputPath,
-        // The position's own book file with every applied change replayed into it,
-        // written by main when the plan was made. This window has no opinion about it.
-        // ABSENT FOR A DEFERRED PLAN, and the queue materialises it at spawn by
-        // re-asking the same plan with the landed row (`materializeDeferred`).
-        ...(plan.bookPath !== undefined ? { bookPath: plan.bookPath } : {}),
+        // WHERE THE ANSWERS GO, and the whole of what this run makes. The BOOK it
+        // reads is made when the run starts, out of `at` below — no path under
+        // `derived/` crosses this seam any more (`TranslateRequest.at`).
         recordsPath: plan.recordsPath,
         stampPath: plan.stampPath,
         // THE ADMISSION THAT THIS IS MADE FROM SOMETHING THAT HAS NOT HAPPENED,
@@ -464,10 +462,15 @@ export class CleanDialogComponent {
          */
         model: DEFAULT_MODEL,
         ollama: DEFAULT_OLLAMA,
-        ...(plan.seedRecords !== undefined ? { seedRecords: plan.seedRecords } : {}),
-        ...(plan.generation !== undefined ? { generation: plan.generation } : {}),
         // Minted by the plan and carried back to the landing, so the row and the
         // file agree about which cleanup this is. Never read here.
+        /*
+         * THE ROW THIS PASS IS MADE FROM, as main resolved it at the press. It
+         * is what the run materialises its book out of when it starts, and it
+         * travels as an ID because a path under `derived/` is swept at every
+         * settle — see `TranslateRequest.at`. Never read here.
+         */
+        at: plan.at ?? null,
         stepId: plan.stepId,
       };
 

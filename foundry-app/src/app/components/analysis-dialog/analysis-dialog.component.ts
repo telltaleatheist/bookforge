@@ -839,7 +839,6 @@ export class AnalysisDialogComponent {
       const request: AnalyzeRequest = {
         kind: 'analysis',
         inputPath: plan.inputPath,
-        bookPath: plan.bookPath,
         outputPath: plan.outputPath,
         /*
          * THE WHOLE SET, WITH THE UNTICKED ONES MARKED rather than a shorter
@@ -884,6 +883,13 @@ export class AnalysisDialogComponent {
         ollama: DEFAULT_OLLAMA,
         // Main's answer travelling back to main: the step the report is named
         // after, minted at the plan so the file and the row agree hours later.
+        /*
+         * THE ROW THIS PASS IS MADE FROM, as main resolved it at the press. It
+         * is what the run materialises its book out of when it starts, and it
+         * travels as an ID because a path under `derived/` is swept at every
+         * settle — see `TranslateRequest.at`. Never read here.
+         */
+        at: plan.at ?? null,
         stepId: plan.stepId,
       };
 

@@ -55,7 +55,14 @@ for (const verdict of ['go', 'wait', 'refuse'] as const) {
       : verdict === 'wait'
         ? { verdict, reason: 'busy', standing: false }
         : { verdict, reason: 'refused' });
-    expect((await result).state).toBe('cancelled');
+    /*
+     * THE TYPED OUTCOME (PK6): a cancel is its own arm, carrying the settled row,
+     * and it is the one thing a result type had to be able to say — a cancel filed
+     * as a failure is how a host's retry restarts work a person just stopped.
+     */
+    const outcome = await result;
+    expect(outcome.outcome).toBe('cancelled');
+    expect(outcome.outcome === 'cancelled' && outcome.row.state).toBe('cancelled');
     expect(spawned).not.toHaveBeenCalled();
     expect(release).toHaveBeenCalledTimes(verdict === 'go' ? 1 : 0);
   });

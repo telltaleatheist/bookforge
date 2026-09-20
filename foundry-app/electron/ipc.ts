@@ -179,7 +179,8 @@ import {
 import { readSettings, writeSettings } from './settings';
 import { answerLetGo, broadcast, foundryWindow } from './window';
 import {
-  planAnalysis, planCleanup, planExport, planReading, planSimplification, planTranslation,
+  identifyAnalysis, identifyCleanup, identifyExport, identifySimplification,
+  identifyTranslation, planReading,
 } from './workspace';
 import { fold, isBook } from '../shared/original';
 import {
@@ -1667,7 +1668,7 @@ export function registerIpc(): void {
     'workspace:plan-export',
     async (_event, inputPath: string, kind: ConversionKind, from?: string) => {
       const aim = await aimedAt(inputPath, from);
-      return planExport(inputPath, kind, aim.deferral === undefined ? aim.at : aim.deferral.landed, aim.deferral);
+      return identifyExport(inputPath, kind, aim.deferral === undefined ? aim.at : aim.deferral.landed, aim.deferral);
     },
   );
   /*
@@ -1701,7 +1702,7 @@ export function registerIpc(): void {
       // or a promise. See `aimedAt` and the export door above, where the widening
       // is argued in full.
       const aim = await aimedAt(source, from);
-      const plan = await planTranslation(source, targetLanguage, aim.at, aim.deferral);
+      const plan = await identifyTranslation(source, targetLanguage, aim.at, aim.deferral);
       return { ...plan, inputPath: plan.sourcePath };
     },
   );
@@ -1720,7 +1721,7 @@ export function registerIpc(): void {
       const source = admitted(inputPath);
       if (source === null) throw new Error(`${inputPath} was never opened in this app.`);
       const aim = await aimedAt(source, from);
-      const plan = await planSimplification(source, mode, aim.at, aim.deferral);
+      const plan = await identifySimplification(source, mode, aim.at, aim.deferral);
       return { ...plan, inputPath: plan.sourcePath };
     },
   );
@@ -1750,7 +1751,7 @@ export function registerIpc(): void {
     const source = admitted(inputPath);
     if (source === null) throw new Error(`${inputPath} was never opened in this app.`);
     const aim = await aimedAt(source, from);
-    const plan = await planCleanup(source, aim.at, aim.deferral);
+    const plan = await identifyCleanup(source, aim.at, aim.deferral);
     return { ...plan, inputPath: plan.sourcePath };
   });
 
@@ -1807,7 +1808,7 @@ export function registerIpc(): void {
     if (ordered.length === 0) {
       throw new Error('Pick at least one category — an analysis with nothing to look for finds nothing.');
     }
-    const plan = await planAnalysis(source, ordered);
+    const plan = await identifyAnalysis(source, ordered);
     return { ...plan, inputPath: plan.sourcePath };
   });
 

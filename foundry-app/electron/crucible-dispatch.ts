@@ -276,6 +276,42 @@ export interface Placement {
    * after "on <server>".
    */
   via: string | null;
+  /**
+   * `--concurrency`: HOW MANY BLOCKS THE ENGINE MAY HAVE IN FLIGHT AT ONCE, stated
+   * by the PLACEMENT because it is a property of the server that answered.
+   *
+   * ── The night this closes (BookForge's hunt, F3a) ──────────────────────────
+   *
+   * Nothing set it. The request's field was optional and no door on either side
+   * filled it, so every text act took the ENGINE's own default —
+   * `DEFAULT_TEXT_CONCURRENCY = 12` (src/translate/model-server.ts), whose own
+   * docblock states the assumption that makes twelve safe: *"the server admits
+   * what fits in its KV cache and QUEUES the rest"*. That is false against a
+   * Crucible chat proxy fronting a serial `mlx_lm`: the twelfth request's
+   * 300-second clock is armed at SEND and covers the eleven ahead of it, so any
+   * per-block time over ~27 s times the tail out. The failure was the queueing,
+   * never the model.
+   *
+   * ── Why the placement and not the request ─────────────────────────────────
+   *
+   * `crucible-dispatch.ts` is the only module that knows WHICH server answered,
+   * and depth is a fact about that machine — the page reader has always taken its
+   * number from the server that serves the pages. A number on the request would be
+   * a person's preference about somebody else's backend.
+   *
+   * ── FOUR, UNTIL A SERVER STATES ONE ───────────────────────────────────────
+   *
+   * Owen's ruling 4 of 2026-09-20, off the Mac's 2026-09-08 measurement: the knee
+   * is at 4 on a Crucible chat door. `GET /v1/capability`'s rows do not carry a
+   * depth today (`CapabilityRow`, shared/engine-settings.ts, mirrors every field
+   * the SDK publishes); the day one does, {@link CRUCIBLE_CHAT_CONCURRENCY} is the
+   * one line that reads it, and the placement still overrides the engine's default.
+   *
+   * NULL IS "THE REQUEST'S OWN", exactly as `endpoint` and `model` are null on
+   * {@link UNPLACED}: a job that never meets a model states no depth, and a dry run
+   * prints the request's own number or no flag at all.
+   */
+  concurrency: number | null;
 }
 
 /**
@@ -304,7 +340,25 @@ export const UNPLACED: Placement = {
   env: {},
   lease: null,
   via: null,
+  // NOTHING TO SAY: this job meets no model, so there is no server whose depth
+  // this could be. `doorArgs` then falls back to the request's own number, which
+  // is what a dry run prints.
+  concurrency: null,
 };
+
+/**
+ * HOW MANY BLOCKS IN FLIGHT ON A CRUCIBLE CHAT DOOR — Owen's ruling 4, 2026-09-20.
+ *
+ * *"4 in flight on the Crucible chat door until the server states a number (Sep 8
+ * measurement: knee at 4)."* It is a ceiling on OUR side of a proxy that serves
+ * one request at a time on the card behind it; the engine's own twelve was
+ * measured against a vLLM that batches, and a number measured on one backend is
+ * not a number about another.
+ *
+ * THE ONE PLACE. When a capability row starts stating a depth, it is read here and
+ * nowhere else — see `Placement.concurrency`.
+ */
+export const CRUCIBLE_CHAT_CONCURRENCY = 4;
 
 export type PlacementOutcome =
   | { verdict: 'go'; placement: Placement }
@@ -896,6 +950,13 @@ function placeOnCloud(slot: ComputeSlot, capability: CapabilityClass): Placement
       env: { FOUNDRY_ENDPOINT_HEADERS: cloudHeaderMapFor(entry) },
       lease: null,
       /*
+       * A PROVIDER RATIONS BY AN ACCOUNT'S RATE LIMIT, not by a card, and nobody
+       * has measured a number for one — so this states the same four the Crucible
+       * chat door states (ruling 4) rather than letting the engine's twelve, which
+       * was measured against a batching vLLM, decide for somebody's billing.
+       */
+      concurrency: CRUCIBLE_CHAT_CONCURRENCY,
+      /*
        * NULL, AND THAT IS NOT THE SAME SHAPE AS AN UPSTREAM ROUTE. `via` says
        * "a Crucible forwarded this on the operator's account" and puts the run
        * in that server's `[cloud]` lane. This slot IS the provider — it has a
@@ -1026,6 +1087,10 @@ async function placeOnCrucible(
         lease: null,
         via,
         door: 'openai',
+        // The depth this app keeps against a door it does not own. An upstream
+        // rations by an account's rate limit rather than by a card, and four is
+        // still the number nobody has measured a better one for (ruling 4).
+        concurrency: capability === 'pages' ? null : CRUCIBLE_CHAT_CONCURRENCY,
         // THE ENGINE'S ADDRESS, not the registered one — see the hop at the top
         // of this function. A `<orchestrator>/openai` would be a spawn pointed
         // at a process with no route to serve it.
@@ -1116,6 +1181,16 @@ async function placeOnCrucible(
     placement: {
       slot,
       lease,
+      /*
+       * HOW DEEP TO GO ON THIS CARD — the server's number when it states one, and
+       * four when it does not. See `Placement.concurrency`, which carries the whole
+       * argument and the night it is about.
+       *
+       * A READING STATES NONE HERE: `--vlm-concurrency` is the page reader's own
+       * flag and the engine takes it from the server that serves the pages, so a
+       * chat depth on a `pages` placement would be a number about the wrong door.
+       */
+      concurrency: capability === 'pages' ? null : CRUCIBLE_CHAT_CONCURRENCY,
       /*
        * `openai` IS THE ENGINE'S DEFAULT AND IS LEFT UNSPELLED on the command
        * line — see `doorArgs` in job-queue.ts. It is named here anyway, because a

@@ -718,7 +718,6 @@ export class TranslateDialogComponent {
          * translated at all, and why this window has no opinion about it.
          */
         // ABSENT FOR A DEFERRED PLAN — the queue materialises it at spawn.
-        ...(plan.bookPath !== undefined ? { bookPath: plan.bookPath } : {}),
         to,
         /*
          * ── THE MODEL AND THE ENDPOINT ARE DECLARED CONSTANTS NOW ───────────
@@ -753,15 +752,20 @@ export class TranslateDialogComponent {
          * (`sourceLanguage` below), which is a fact about somebody's history and
          * is still decided where the history lives.
          */
-        ...(plan.seedRecords !== undefined ? { seedRecords: plan.seedRecords } : {}),
         // THE ADMISSION THAT THIS IS MADE FROM SOMETHING THAT HAS NOT HAPPENED,
         // carried verbatim — the queue reads it, nothing here interprets it.
         ...(plan.deferred !== undefined ? { deferred: plan.deferred } : {}),
-        ...(plan.generation !== undefined ? { generation: plan.generation } : {}),
         // The step the file is named after, minted by the plan and carried to the
         // landing so the row and the file agree about which translation this is.
         // Never read here — this dialog does not know what a step is, and it is
         // main's answer travelling back to main.
+        /*
+         * THE ROW THIS PASS IS MADE FROM, as main resolved it at the press. It
+         * is what the run materialises its book out of when it starts, and it
+         * travels as an ID because a path under `derived/` is swept at every
+         * settle — see `TranslateRequest.at`. Never read here.
+         */
+        at: plan.at ?? null,
         stepId: plan.stepId,
       };
       /*

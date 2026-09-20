@@ -102,6 +102,7 @@ import {
   editsInEffect,
   facsimileFile,
   languageTagFor,
+  positionOf,
   readingInEffect,
   textPassInEffect,
   translationInEffect,
@@ -315,7 +316,7 @@ export async function planFacsimile(
  * under a translation can only be exported as an EPUB, because there is no version
  * of `vlm-convert --format pdf` that reprints the scan's own pages in Hungarian.
  */
-export async function planExport(
+export async function identifyExport(
   inputPath: string,
   kind: ConversionKind = 'epub',
   /**
@@ -378,62 +379,95 @@ export async function planExport(
       deferred: { from: deferral.from },
     };
   }
-  if (!planned.compiles) return planned.plan;
   /*
-   * ── THE BOOK WITH THE CHANGES IN IT, WRITTEN OUT FOR THE ENGINE ────────────
+   * ── AND THE BOOK IS NOT MADE HERE ANY MORE (PK6) ──────────────────────────
    *
-   * *"Export → materialize (replay) → engine compiles EPUB/txt."*
-   * (docs/RENDERER.md §6.) `planRendering` has just decided that this export both
-   * CAN and MUST carry changes — the layer, the format, the absence of a
-   * translation and the presence of applied changes are what that turns on — so
-   * here is the other half: the position's book file with its whole chain
-   * replayed into it, as a book file of its own, which is the only language main
-   * and the engine both speak.
+   * *"Export → materialize (replay) → engine compiles EPUB/txt."* (docs/RENDERER.md
+   * §6.) The materialise half is `materializeExport` below, run at the SPAWN, for
+   * `TranslateRequest.at`'s reason: a derived book is unlinked at every settle, so
+   * a path minted at the press is a path that outlives its own file the moment a
+   * row is retried, resumed or restored.
    *
-   * AT PLAN TIME, on `readingsPath`'s rule one function down: which state of the
-   * book this is is the state the person chose when they pressed the button, and
-   * materialising at spawn would let a pointer move made while the job waited
-   * export a different book than the dialog said it would.
-   *
-   * INTO THE OS TEMP DIRECTORY, under a folder of foundry's own — the same place
-   * the metadata stage puts the file it stamps (electron/job-queue.ts), and for
-   * the same reason: it is scratch, it belongs to one job, nothing catalogues it
-   * and the queue removes it when the job settles. `generated/` was the other
-   * candidate and is worse: everything in there is drawn, swept and reasoned
-   * about by the ledger, and a file nobody can name would be the one exception.
+   * WHAT THAT COSTS IS NOTHING A PERSON CAN SEE, because the answer is the same
+   * answer: the row is pinned here (`at`), so the spawn replays the chain of the
+   * row the person pressed on, not of wherever the pointer has since moved to.
    */
-  const derived = await materializeBook(planned.dir, from);
+  return { ...planned.plan, at: from?.id ?? planned.at };
+}
+
+/**
+ * THE SAME EXPORT, AT THE SPAWN — the book, and the stamp narrowed over it.
+ *
+ * ── The two things only this moment can do ─────────────────────────────────
+ *
+ * THE BOOK. The row's own book file with its whole chain replayed into it, as a
+ * book file of its own, which is the only language main and the engine both
+ * speak. Into the OS temp directory under a folder of foundry's own — the same
+ * place the metadata stage puts the file it stamps — because it is scratch: it
+ * belongs to one job, nothing catalogues it, and the queue removes it when the
+ * job settles. `generated/` was the other candidate and is worse: everything in
+ * there is drawn, swept and reasoned about by the ledger, and a file nobody can
+ * name would be the one exception.
+ *
+ * THE NARROWED STAMP. This is the single place in the app that holds a cleanup's
+ * claim and the derived book the claim is about to be checked against, at the
+ * same moment (see `narrowedStamp`) — so the narrowing cannot be done earlier
+ * and must not be done twice.
+ *
+ * A NON-COMPILING RENDERING ANSWERS NOTHING, and that is not a refusal: a
+ * facsimile reprints the scan's own photographed lines from the raw bank and has
+ * no book to read. `renderingCompiles` is the one test, asked here and by
+ * `planRendering`, so the press and the spawn cannot disagree about whether this
+ * export was ever going to carry a replay.
+ */
+export async function materializeExport(
+  projectDir: string,
+  kind: ConversionKind,
+  /** The row this export is made from, resolved from the request's `at`. */
+  at: LedgerStep | null,
+  /** The cleanup's own stamp as the press named it, or undefined for no claim. */
+  claimedStamp?: string,
+): Promise<{ bookPath?: string; narrationStamp?: string }> {
+  if (!renderingCompiles(kind)) return {};
+  const derived = await materializeBook(projectDir, at);
   /*
    * A REFUSAL HERE IS THE PERSON'S OWN SENTENCE. `materializeBook` answers in
    * words for everything a person can be told about — a book file whose bank has
-   * moved, a step whose payload will not read — and the export dialog shows main's
-   * sentences verbatim, which is where those belong. What it will not do is queue
-   * a job over a book it could not read: an export that ran anyway would be the
-   * cast of an unedited book filed as an edition, which is the silence this whole
-   * wave exists to end.
+   * moved, a step whose payload will not read — and the shelf shows main's
+   * sentences verbatim, which is where those belong. What it will not do is
+   * compile over a book it could not read: an export that ran anyway would be the
+   * cast of an unedited book filed as an edition.
    */
   if (!derived.ok) throw new ProjectError(derived.reason);
-  /*
-   * AND THE STAMP IS NARROWED TO WHAT IS STILL TRUE OF THAT BOOK, which is the one
-   * thing that can only be decided here: this is the single place in the app that
-   * holds a cleanup's claim and the derived book the claim is about to be checked
-   * against, at the same moment. See `narrowedStamp`.
-   */
-  const narrowed = planned.plan.narrationStamp === undefined
+  const narrowed = claimedStamp === undefined
     ? undefined
-    : await narrowedStamp(planned.plan.narrationStamp, derived.path, derived.restructured);
+    : await narrowedStamp(claimedStamp, derived.path, derived.restructured);
   /*
-   * AN EMPTY ANSWER IS AN ABSENT FLAG, `narrationStampFor`'s rule one screen down
-   * restated for the one narrowing that can leave nothing behind: the field is
-   * dropped rather than carried as a path of no characters, so no reader of a
-   * `GenerateRequest` has to know that the empty string means anything.
+   * AN EMPTY ANSWER IS AN ABSENT FLAG, `narrationStampFor`'s rule restated for the
+   * one narrowing that can leave nothing behind: the field is dropped rather than
+   * carried as a path of no characters, so no reader of a `GenerateRequest` has to
+   * know that the empty string means anything.
    */
-  const { narrationStamp: _claimed, ...rest } = planned.plan;
   return {
-    ...rest,
     bookPath: derived.path,
     ...(narrowed === undefined || narrowed.length === 0 ? {} : { narrationStamp: narrowed }),
   };
+}
+
+/**
+ * DOES THIS RENDERING READ A BOOK FILE, or does it replay a raw bank?
+ *
+ * ONE TEST, TWO ASKINGS. `planRendering` asks it to decide whether the export may
+ * carry a person's changes at all; `materializeExport` asks it to decide whether
+ * there is a book to make. Written twice they would be one `kind` apart from a
+ * facsimile handed a book file it cannot read.
+ *
+ * EPUB AND TXT COMPILE; `--format pdf` reprints the scan's own photographed lines
+ * from the raw bank (docs/RENDERER.md §6) and there is nothing about an edit for
+ * it to carry.
+ */
+export function renderingCompiles(kind: ConversionKind): boolean {
+  return kind === 'epub' || kind === 'txt';
 }
 
 /**
@@ -659,6 +693,16 @@ interface PlannedRendering {
   plan: WorkspacePlan;
   dir: string;
   compiles: boolean;
+  /**
+   * THE ROW THIS RENDERING IS ABOUT, as an id — the caller's `forStep` when it
+   * named one, and the POSITION AT THE PRESS when it did not.
+   *
+   * Resolved here because this is where the ledger is already open, and pinned
+   * because the spawn makes the book out of it: `null` would mean "wherever the
+   * pointer is when the row finally runs", which is the pointer-move hazard every
+   * plan in this file is written against.
+   */
+  at: string | null;
 }
 
 async function planRendering(
@@ -758,7 +802,7 @@ async function planRendering(
    * serve the case where it makes no difference. EVERY epub and txt export
    * materialises and compiles now, edited or not, in either language.
    */
-  const compiles = kind === 'epub' || kind === 'txt';
+  const compiles = renderingCompiles(kind);
   /*
    * WHICH LEAVES THE FACSIMILE, and it is the only rendering that still comes
    * here. `--format pdf` reprints the scan's own photographed lines from the raw
@@ -961,6 +1005,7 @@ async function planRendering(
   return {
     dir,
     compiles,
+    at: (forStep ?? positionOf(ledger))?.id ?? null,
     plan: {
     key: manifest.key,
     sourcePath,
@@ -1160,7 +1205,7 @@ function translatedWords(
  * language taken from a mirror is a prompt that can be told the wrong thing about
  * what it is holding.
  */
-export async function planTranslation(
+export async function identifyTranslation(
   inputPath: string,
   targetLanguage: string,
   /**
@@ -1195,7 +1240,7 @@ export async function planTranslation(
    * `recordsForTextPass`'s own parameter, carried through the three plan doors so
    * that a deferred pass planned twice is planned about ONE step both times. See
    * that function (electron/projects.ts) for the whole argument, and
-   * `materializeDeferred` (electron/job-queue.ts) for the only caller that passes
+   * `materializeAtSpawn` (electron/job-queue.ts) for the only caller that passes
    * it. Absent is every press.
    */
   minted?: string,
@@ -1214,7 +1259,7 @@ export async function planTranslation(
    *
    * NO BOOK, NO SEED, NO GENERATION, NO `--from`. Every one of those is read off a
    * chain or a file that will not exist until the parent lands, and every one is
-   * composed by this same function at spawn (`materializeDeferred`,
+   * composed by this act's `materialize*` at spawn (`materializeAtSpawn`,
    * electron/job-queue.ts).
    *
    * AND NO SAME-LANGUAGE REFUSAL, which is the one guard this branch loses. It
@@ -1244,7 +1289,7 @@ export async function planTranslation(
        * a re-run target that could not match at press (nothing is parented to a
        * promise) can match once the parent lands, and then this run aims at the step
        * that already exists and takes ITS path. That is replace semantics arriving
-       * late rather than a placeholder being resolved, and `materializeDeferred`
+       * late rather than a placeholder being resolved, and `materializeAtSpawn`
        * handles the two in one line.
        */
       deferred: { from: deferral.from },
@@ -1337,14 +1382,7 @@ export async function planTranslation(
    * on the step it was made FROM and ask for that language again, which
    * `reRunTarget` resolves to the row that already exists and fills its own file.
    */
-  if (parentLanguage.length > 0 && sameTag(parentLanguage, targetLanguage)) {
-    throw new ProjectError(
-      `“${parent?.label ?? 'That step'}” is already in ${parentLanguage}, so translating it into `
-      + `${targetLanguage} would ask the model to say the same thing again. To make that `
-      + 'translation afresh, stand on the step it was made from and translate there — that '
-      + 'replaces the one you have rather than adding a second.',
-    );
-  }
+  refuseSameLanguage(parent, parentLanguage, targetLanguage);
   const source = parentLanguage.length > 0 ? parentLanguage : null;
   /*
    * ── `--source-records` IS GONE FROM THIS PLAN, AND THE CHAIN IS NOT ────────
@@ -1400,74 +1438,210 @@ export async function planTranslation(
    * invisible to the sweep, forever. A replace never spends it — its own file is
    * already there, holding its own answers, and the copy is skipped by existence.
    */
-  const seed = source !== null ? null : newestRecordsInto(ledger, targetLanguage, planned.records);
+  await fsp.mkdir(path.join(dir, 'readings'), { recursive: true });
   /*
-   * SO THE PLAN'S SOURCE IS THE INPUT, VERBATIM, and it stays a field rather than
-   * becoming an identity because it is the answer to a different question than it
-   * used to be. It was "which copy of this book will the engine read" — a fact
-   * about a rotation that no longer happens. It is now "which file did this plan
-   * admit", which is what main's allow-list adds and what the queue re-checks
-   * (`queue:enqueue-translate`).
+   * ── AND THAT IS THE WHOLE OF A PRESS (PK6) ────────────────────────────────
    *
-   * IT IS NO LONGER WHAT THE ENGINE READS, and that is worth stating rather than
-   * quietly leaving true-looking. The run is handed a materialised BOOK FILE
-   * (below); the document this names is the one the person had open, which is how
-   * main resolved the project and what the allow-list is about. The cast dies in
-   * R6 with everything else in §7, and this field goes with it.
+   * What used to follow — the seed, the generation and the materialised book —
+   * are all SPAWN answers now and live in `materializeTranslation` below. The
+   * argument is `TranslateRequest.at`'s: a derived book's lifetime is spawn →
+   * settle, and a path minted here outlives the file it names the moment a row is
+   * retried, resumed or restored (BookForge's F1/F5). What crosses is the ROW.
+   *
+   * `sourcePath` IS THE INPUT, VERBATIM, and it stays a field because it is the
+   * answer to "which file did this plan admit" — what main's allow-list added and
+   * what the queue re-checks (`queue:enqueue-translate`), not what the engine reads.
    */
-  const sourcePath = inputPath;
+  return {
+    key,
+    sourcePath: inputPath,
+    recordsPath: planned.recordsPath,
+    stepId: planned.stepId,
+    // THE ROW THIS PASS IS MADE FROM, pinned here so a pointer moved while the job
+    // waits cannot change which book the spawn makes. See `TranslationPlan.at`.
+    at: at?.id ?? positionOf(ledger)?.id ?? null,
+    // The language the words are IN, said for any parent translation. Where they
+    // come OUT of is the book the spawn materialises.
+    ...(source !== null ? { from: source } : {}),
+  };
+}
+
+/**
+ * THE SAME TRANSLATION, AT THE SPAWN — the book, the seed and the generation.
+ *
+ * ── Why the plan is in two halves (PK6, BookForge's F1/F5/F8) ──────────────
+ *
+ * Everything above is IDENTITY: which file the answers go in, which step they
+ * land under, which language they come out of. All of it is composed from the
+ * project's catalogue and a ledger walk, none of it touches a byte of scratch,
+ * and it has to be settled at the press because it is what the person chose and
+ * what the tree draws a card for.
+ *
+ * Everything here is a FILE OR A FACT ABOUT ONE, and each has a lifetime shorter
+ * than the row's:
+ *
+ *   THE BOOK — `derived/<uuid>.book.jsonl`, unlinked by `sweepDerivedBook` at
+ *   EVERY ending and by `sweepStaleDerived` after a day. Minted at the press it
+ *   was gone before half the rows that name it ever ran: Retry, Start after a
+ *   stop, and a queue restored from disk all replayed a path the settle had
+ *   deleted, and the engine said `--book … (ENOENT)`.
+ *
+ *   THE SEED — the newest other records file into this language. Resolved at the
+ *   press it could name a file a Start-over or a deleted step had since removed,
+ *   and the copy silently did nothing: a full re-translation at full price, which
+ *   is the exact defect the seed exists to prevent (F8). Resolved here it is true
+ *   at the moment it is spent, and an absent one is said out loud.
+ *
+ *   THE GENERATION — read off the reading step in effect. It is cheap, it is a
+ *   fact about the chain, and it belongs with the two above for one reason: they
+ *   are the answers a DEFERRED plan could never make, and having one function that
+ *   makes all three is what stopped the deferred path being a second plan
+ *   (`materializeDeferred`, deleted with this).
+ *
+ * IT IS THE SAME FUNCTION FOR BOTH PATHS. A deferral is an `at` that did not
+ * exist at the press, so the spawn resolves the row and asks this — which is why
+ * the seeding rule and the same-language refusal have one implementation and
+ * cannot drift between the two askings.
+ *
+ * `minted` IS THE PRESS'S OWN STEP ID, always. `recordsForTextPass` spends it on
+ * a branch, so the second asking mints nothing new and the file, the row and the
+ * card on the tree go on agreeing about which translation this is.
+ */
+export async function materializeTranslation(
+  inputPath: string,
+  targetLanguage: string,
+  /** The row this pass is made from, resolved from the request's `at`. */
+  at: LedgerStep | null,
+  /** The step id the press promised. See `recordsForTextPass`'s own parameter. */
+  minted?: string,
+): Promise<TranslationPlan> {
+  const { dir, key } = await importDocument(inputPath, 'epub');
+  const manifest = await readManifest(dir);
+  const ledger = ledgerOf(manifest);
+  /*
+   * THE SAME-LANGUAGE REFUSAL, ASKED AGAIN — and for a DEFERRED pass this is the
+   * first time it can be asked at all: nothing is parented to a promise, so the
+   * press had no parent to compare against. `refuseSameLanguage` is the one
+   * comparison; the press makes it too, where a refusal is worth more.
+   */
+  const parent = translationInEffect(ledger, at);
+  const parentLanguage = parent?.params?.language?.trim() ?? '';
+  refuseSameLanguage(parent, parentLanguage, targetLanguage);
+  const source = parentLanguage.length > 0 ? parentLanguage : null;
+  const planned = await recordsForTextPass(
+    dir, 'translate', targetLanguage, undefined, at === null ? undefined : at.id, minted,
+  );
+  /*
+   * ── THE SEED: WHAT THIS RUN STARTS LIFE HOLDING ───────────────────────────
+   *
+   * A BRANCH IS A SECOND TRANSLATION INTO ONE LANGUAGE FROM A DIFFERENT STEP, and
+   * an EMPTY file there would make it a full re-translation of a book that is
+   * already translated. So the seed is the newest other translation into this
+   * language, wherever it hangs, and NOT the parent — a records row is keyed by
+   * the block's own text, so a sibling's answer about page 12 block 3 is the same
+   * true answer about the same paragraph.
+   *
+   * NEVER WHEN THIS RUN IS ASKED OF ANOTHER LANGUAGE: a chain's questions are
+   * asked of the PARENT'S words, so a sibling's answers are keyed to questions
+   * this run will not ask and every one of them would be re-asked anyway.
+   *
+   * IT IS A PATH AND NOT A COPY. The copy happens beside the spawn
+   * (`executeJob`), because a row that never commits must leave `readings/`
+   * exactly as it found it.
+   */
+  const seed = source !== null ? null : seedRecordsPath(
+    dir, newestRecordsInto(ledger, targetLanguage, planned.records), 'translation',
+  );
   const generation = readingGenerationOf(ledger, manifest);
   await fsp.mkdir(path.join(dir, 'readings'), { recursive: true });
-
   /*
-   * ── THE BOOK THE ENGINE ACTUALLY TRANSLATES ────────────────────────────────
-   *
-   * The position's book file with its whole chain replayed into it — the nearest
-   * ancestor book file, which under a translation is that translation's derived
-   * one, plus every edit made since (`openBookAtPosition`, electron/book.ts). So a
+   * THE BOOK THE ENGINE ACTUALLY TRANSLATES — the row's own book file with its
+   * whole chain replayed into it (`openBookAtPosition`, electron/book.ts). A
    * struck row is not in it, a retyped paragraph is in it as the person left it,
-   * and a chain's parent words are in it because they are what that file holds.
-   *
-   * AT PLAN TIME, on `planExport`'s rule and for its reason: which state of the
-   * book this is is the state the person chose when they pressed the button, and
-   * materialising at spawn would let a pointer move made while the job waited
-   * translate a different book than the dialog said it would.
-   *
-   * INTO THE OS TEMP DIRECTORY under a folder of foundry's own — the same place
-   * an export's derived book goes, and swept by the same hand when the job
-   * settles (`sweepDerivedBook`, electron/job-queue.ts). It is scratch: a pure
-   * function of a file on disk and a chain in the ledger.
+   * and under a translation it is that translation's derived book, which is how a
+   * chain's parent words reach the model without a second path on the line.
    */
   const derived = await materializeBook(dir, at);
   /*
-   * A REFUSAL HERE IS THE PERSON'S OWN SENTENCE, `planExport`'s rule again:
-   * `materializeBook` answers in words for everything somebody can be told about,
-   * and what it will not do is queue hours of GPU against a book it could not
-   * read. A translation of a book this app could not assemble would be answers
-   * keyed to blocks nobody can put back.
+   * A REFUSAL HERE IS THE PERSON'S OWN SENTENCE: `materializeBook` answers in
+   * words for everything somebody can be told about, and what it will not do is
+   * spend hours of GPU on a book it could not assemble — answers keyed to blocks
+   * nobody can put back.
    */
   if (!derived.ok) throw new ProjectError(derived.reason);
-
   return {
     key,
-    sourcePath,
+    sourcePath: inputPath,
     bookPath: derived.path,
     recordsPath: planned.recordsPath,
     stepId: planned.stepId,
-    // The language the words are IN, said for any parent translation. Where they
-    // come OUT of is the book file above — see the note on `--source-records`.
+    at: at?.id ?? null,
     ...(source !== null ? { from: source } : {}),
-    ...(seed !== null ? { seedRecords: path.join(dir, ...seed.split('/')) } : {}),
+    ...(seed !== null ? { seedRecords: seed } : {}),
     /*
      * THE READING THESE ANSWERS ARE ABOUT, carried into every row and interpreted
      * by nobody — `Overlay.generation`'s contract, one folder over. Read off the
-     * step rather than minted: this is a plan, and minting a generation is
-     * something a LANDING does (`generationForLanding`). A project whose reading
-     * predates recorded generations says nothing, which is the honest answer and
-     * costs the rows a field they never had.
+     * step rather than minted: minting a generation is something a LANDING does.
      */
     ...(generation !== null ? { generation } : {}),
   };
+}
+
+/**
+ * ASKING FOR THE PARENT'S OWN LANGUAGE IS NOT A TRANSLATION — the refusal, once.
+ *
+ * It would spend hours asking a model to say an English book in English, and file
+ * the result as a row that means nothing. The dialog says so before the button
+ * (`sameLanguage`), the PRESS says it wherever it has a parent to compare, and the
+ * SPAWN says it for a pass ordered from a row that had not landed — where nothing
+ * was parented to a promise, so no comparison was possible. One fold on one pair,
+ * so the three cannot come to different answers about what was pressed.
+ *
+ * REDOING A TRANSLATION IS A DIFFERENT GESTURE and the sentence names it: stand on
+ * the step it was made FROM and ask for that language again, which `reRunTarget`
+ * resolves to the row that already exists and fills its own file.
+ */
+function refuseSameLanguage(
+  parent: LedgerStep | null,
+  parentLanguage: string,
+  targetLanguage: string,
+): void {
+  if (parentLanguage.length === 0 || !sameTag(parentLanguage, targetLanguage)) return;
+  throw new ProjectError(
+    `“${parent?.label ?? 'That step'}” is already in ${parentLanguage}, so translating it into `
+    + `${targetLanguage} would ask the model to say the same thing again. To make that `
+    + 'translation afresh, stand on the step it was made from and translate there — that '
+    + 'replaces the one you have rather than adding a second.',
+  );
+}
+
+/**
+ * THE SEED, AS AN ABSOLUTE PATH — or null, WITH THE REASON SAID OUT LOUD.
+ *
+ * ── F8, which cost a full book's model time in silence ─────────────────────
+ *
+ * The copy at the spawn is guarded by `existsSync` on both ends, so a seed the
+ * ledger names and the disk no longer holds was a silent no-op: the run started
+ * empty and paid full price, which is verbatim the defect the seed was added to
+ * end. Nothing said anything, because "no seed" and "a seed that has gone" were
+ * the same absent field.
+ *
+ * They are not the same fact and this is where they stop looking alike. A ledger
+ * that names no sibling answers null quietly — the ordinary first pass. A ledger
+ * that NAMES one whose file is gone (a Start over, a deleted step, a library that
+ * moved) is logged by name and then answers null, so the row still runs and the
+ * terminal says what it is about to pay for.
+ */
+function seedRecordsPath(dir: string, relative: string | null, what: string): string | null {
+  if (relative === null) return null;
+  const absolute = path.join(dir, ...relative.split('/'));
+  if (existsSync(absolute)) return absolute;
+  console.warn(
+    `[workspace] this ${what} named ${absolute} as its seed and that file is not there, so it `
+    + 'starts with no answers and pays the model for every block. A Start over, a deleted step '
+    + 'or a moved library removes a seed the ledger still remembers.',
+  );
+  return null;
 }
 
 /**
@@ -1515,7 +1689,7 @@ export async function planTranslation(
  * with no language in it — and it is written out because "close to" is where the
  * expensive failures live.
  */
-export async function planSimplification(
+export async function identifySimplification(
   inputPath: string,
   mode: RewriteMode,
   /** The row this pass is made from. `planTranslation`'s own argument, verbatim. */
@@ -1559,7 +1733,7 @@ export async function planSimplification(
    * mintable now (it is a uuid), the parent is in hand, the mode was chosen, the
    * seed and the book were always going to be composed at spawn. So the plan admits
    * the one thing it cannot say, wears a placeholder keyed to its own minted id
-   * (`pendingRecordsForTextPass`), and `materializeDeferred` asks THIS FUNCTION
+   * (`pendingRecordsForTextPass`), and `materializeAtSpawn` asks `materializeSimplification`
    * AGAIN at spawn with the landed row and that same id — where the language is a
    * fact and the name composes itself.
    *
@@ -1588,22 +1762,7 @@ export async function planSimplification(
         deferred: { from: deferral.from, namesAtSpawn: true },
       };
     }
-    const standing = translationInEffect(ledger, deferral.landed)?.params?.language?.trim() ?? '';
-    let language = standing;
-    if (language.length === 0) {
-      const read = await materializeBook(dir, deferral.landed);
-      if (!read.ok) throw new ProjectError(read.reason);
-      language = await declaredLanguageOf(read.path);
-      await fsp.rm(read.path, { force: true }).catch(() => undefined);
-    }
-    if (language.length === 0) {
-      throw new ProjectError(
-        'This book has never said what language it is in, and a rewrite happens IN a language — so '
-        + 'there is nothing to tell the model to write. Read the pages again with the language '
-        + 'declared, or translate the book into a language you name, and the rewrite has an answer '
-        + 'to work from.',
-      );
-    }
+    const language = await rewriteLanguage(dir, ledger, deferral.landed);
     const promised = await recordsForTextPass(dir, 'simplify', language, mode, deferral.from);
     await fsp.mkdir(path.join(dir, 'readings'), { recursive: true });
     return {
@@ -1631,49 +1790,17 @@ export async function planSimplification(
    * a pointer moved while the job waits cannot change which book was meant, into
    * the OS temp directory and swept by the hand that settles the job.
    */
-  const derived = await materializeBook(dir, at);
-  if (!derived.ok) throw new ProjectError(derived.reason);
-
-  const standing = translationInEffect(ledger, at)?.params?.language?.trim() ?? '';
-  const language = standing.length > 0 ? standing : await declaredLanguageOf(derived.path);
-  if (language.length === 0) {
-    throw new ProjectError(
-      'This book has never said what language it is in, and a rewrite happens IN a language — so '
-      + 'there is nothing to tell the model to write. Read the pages again with the language '
-      + 'declared, or translate the book into a language you name, and the rewrite has an answer '
-      + 'to work from.',
-    );
-  }
-
+  const language = await rewriteLanguage(dir, ledger, at);
   const planned = await recordsForTextPass(
     dir, 'simplify', language, mode, at === null ? undefined : at.id, minted,
   );
-  /*
-   * ── THE SEED, WHICH A REWRITE SPENDS WHERE A CHAIN WOULD NOT ───────────────
-   *
-   * `planTranslation` refuses to seed a CHAIN: its questions are asked of the
-   * parent's words, so a sibling's answers about the book's own words are keyed to
-   * questions that run will never ask. A rewrite is never a chain in that sense.
-   * It reads the book at the position and asks about the paragraphs in front of
-   * it, exactly as a first translation does, so a sibling rewrite of the same
-   * language in the same mode holds true answers about the same paragraphs and is
-   * worth every block it saves.
-   *
-   * SAME LANGUAGE AND SAME MODE, and the mode is the half that is new. See
-   * `newestRecordsInto`: the keys hash the source paragraph and not the prompt, so
-   * a plain-terms file seeded into an easy-language run would answer the whole
-   * book with somebody else's rewrite and never ask.
-   */
-  const seed = newestRecordsInto(ledger, language, planned.records, mode);
-  const generation = readingGenerationOf(ledger, manifest);
   await fsp.mkdir(path.join(dir, 'readings'), { recursive: true });
-
   return {
     key,
     sourcePath: inputPath,
-    bookPath: derived.path,
     recordsPath: planned.recordsPath,
     stepId: planned.stepId,
+    at: at?.id ?? positionOf(ledger)?.id ?? null,
     /*
      * BOTH ENDS ARE THE SAME LANGUAGE AND BOTH ARE SAID. `from` is what the words
      * in that book file are in and `to` is what they are to come back as, and for
@@ -1683,9 +1810,115 @@ export async function planSimplification(
      * a guess about a fact the ledger recorded.
      */
     from: language,
-    ...(seed !== null ? { seedRecords: path.join(dir, ...seed.split('/')) } : {}),
+  };
+}
+
+/**
+ * THE SAME REWRITE, AT THE SPAWN — `materializeTranslation`'s half, one act over.
+ *
+ * Everything that function's header argues applies here unchanged: the book, the
+ * seed and the generation are files or facts about files, and each has a lifetime
+ * shorter than the row that names it. What is different is the seed's RULE, and
+ * it is the difference between a rewrite and a chain.
+ */
+export async function materializeSimplification(
+  inputPath: string,
+  mode: RewriteMode,
+  at: LedgerStep | null,
+  minted?: string,
+): Promise<TranslationPlan> {
+  const { dir, key } = await importDocument(inputPath, 'epub');
+  const manifest = await readManifest(dir);
+  const ledger = ledgerOf(manifest);
+  const language = await rewriteLanguage(dir, ledger, at);
+  const planned = await recordsForTextPass(
+    dir, 'simplify', language, mode, at === null ? undefined : at.id, minted,
+  );
+  /*
+   * ── THE SEED, WHICH A REWRITE SPENDS WHERE A CHAIN WOULD NOT ───────────────
+   *
+   * `materializeTranslation` refuses to seed a CHAIN: its questions are asked of
+   * the parent's words, so a sibling's answers about the book's own words are
+   * keyed to questions that run will never ask. A rewrite is never a chain in
+   * that sense. It reads the book at the row and asks about the paragraphs in
+   * front of it, exactly as a first translation does, so a sibling rewrite of the
+   * same language in the same mode holds true answers about the same paragraphs
+   * and is worth every block it saves.
+   *
+   * SAME LANGUAGE AND SAME MODE, and the mode is the half that is easy to lose.
+   * See `newestRecordsInto`: the keys hash the source paragraph and not the
+   * prompt, so a plain-terms file seeded into an easy-language run would answer
+   * the whole book with somebody else's rewrite and never ask.
+   */
+  const seed = seedRecordsPath(
+    dir, newestRecordsInto(ledger, language, planned.records, mode), 'rewrite',
+  );
+  const generation = readingGenerationOf(ledger, manifest);
+  await fsp.mkdir(path.join(dir, 'readings'), { recursive: true });
+  const derived = await materializeBook(dir, at);
+  if (!derived.ok) throw new ProjectError(derived.reason);
+  return {
+    key,
+    sourcePath: inputPath,
+    bookPath: derived.path,
+    recordsPath: planned.recordsPath,
+    stepId: planned.stepId,
+    at: at?.id ?? null,
+    from: language,
+    ...(seed !== null ? { seedRecords: seed } : {}),
     ...(generation !== null ? { generation } : {}),
   };
+}
+
+/**
+ * WHAT LANGUAGE A REWRITE HAPPENS IN — the ledger's answer, else the book's own.
+ *
+ * ── Two places can honestly say it, in this order ──────────────────────────
+ *
+ * THE TRANSLATION IN EFFECT, when the row stands under one. The words there are
+ * that row's and the row recorded what language it made them in. Nothing else can
+ * know it: a derived book's header carries the READ's declared language, because
+ * a derived book is materialised from the source book's header and its rows are
+ * the only thing the records replaced.
+ *
+ * THE BOOK'S OWN HEADER otherwise — `--language` as it was declared to the
+ * reading, which is this app's one recorded answer to "what language is this book
+ * in" and is declared, never detected (shared/book.ts).
+ *
+ * AND THE BOOK MADE TO READ IT IS THROWN AWAY. That is a real cost — one
+ * materialise for one header field — and it is the cheapest honest answer:
+ * `declaredLanguageOf` reads a book file, the only book file that can be made on
+ * this chain is this row's, and inventing a way to read a header without
+ * assembling the book would be a second implementation of the materialise. The
+ * deferred branch has always paid it; since PK6 the press pays it too, because a
+ * book made at the press is a path that outlives its file (`TranslateRequest.at`).
+ *
+ * IF NEITHER SAYS ANYTHING, THIS REFUSES IN WORDS. A book that never declared its
+ * language cannot say what to rewrite it in, and the honest answer is a sentence
+ * naming the gap rather than a guess that spends six hours proving itself wrong.
+ */
+async function rewriteLanguage(
+  dir: string,
+  ledger: ProjectLedger,
+  at: LedgerStep | null,
+): Promise<string> {
+  const standing = translationInEffect(ledger, at)?.params?.language?.trim() ?? '';
+  let language = standing;
+  if (language.length === 0) {
+    const read = await materializeBook(dir, at);
+    if (!read.ok) throw new ProjectError(read.reason);
+    language = await declaredLanguageOf(read.path);
+    await fsp.rm(read.path, { force: true }).catch(() => undefined);
+  }
+  if (language.length === 0) {
+    throw new ProjectError(
+      'This book has never said what language it is in, and a rewrite happens IN a language — so '
+      + 'there is nothing to tell the model to write. Read the pages again with the language '
+      + 'declared, or translate the book into a language you name, and the rewrite has an answer '
+      + 'to work from.',
+    );
+  }
+  return language;
 }
 
 /**
@@ -1735,7 +1968,7 @@ export async function planSimplification(
  * seed is looked for among cleanups of the same book and nowhere wider
  * (`newestCleanRecords`).
  */
-export async function planCleanup(
+export async function identifyCleanup(
   inputPath: string,
   /** The row this pass is made from. `planTranslation`'s own argument, verbatim. */
   at: LedgerStep | null = null,
@@ -1771,22 +2004,49 @@ export async function planCleanup(
     };
   }
 
-  /*
-   * The position's own book file with every op on the way to it replayed in,
-   * materialised AT PLAN TIME so a pointer moved while the job waits cannot change
-   * which book was meant, into the OS temp directory and swept by the hand that
-   * settles the job. `planTranslation`'s rule, verbatim and for its reasons.
-   */
-  const derived = await materializeBook(dir, at);
-  if (!derived.ok) throw new ProjectError(derived.reason);
-
   const planned = await recordsForTextPass(
     dir, 'clean', '', undefined, at === null ? undefined : at.id, minted,
   );
-  const seed = newestCleanRecords(ledger, planned.records);
+  await fsp.mkdir(path.join(dir, 'readings'), { recursive: true });
+  return {
+    key,
+    sourcePath: inputPath,
+    recordsPath: planned.recordsPath,
+    // NAMED FROM THE RECORDS FILE, so it is as deterministic as the records are
+    // (`narrationStampFileFor`) — identity, not scratch, and it crosses at the press.
+    stampPath: narrationStampFileFor(planned.recordsPath),
+    stepId: planned.stepId,
+    at: at?.id ?? positionOf(ledger)?.id ?? null,
+  };
+}
+
+/**
+ * THE SAME CLEANUP, AT THE SPAWN — `materializeTranslation`'s half, one act over
+ * and with nothing about a language in it.
+ *
+ * THE SEED IS LOOKED FOR AMONG CLEANUPS OF THIS BOOK AND NOWHERE WIDER. A cleanup
+ * is never a chain: it reads the book at the row and asks about the paragraphs in
+ * front of it, so a sibling cleanup's answers are true answers about the same
+ * paragraphs. The keys hash the source paragraph, which is why a cleanup made of a
+ * GERMAN book seeded into a cleanup of the HUNGARIAN translation of it would miss
+ * on every block (`newestCleanRecords`).
+ */
+export async function materializeCleanup(
+  inputPath: string,
+  at: LedgerStep | null,
+  minted?: string,
+): Promise<TranslationPlan> {
+  const { dir, key } = await importDocument(inputPath, 'epub');
+  const manifest = await readManifest(dir);
+  const ledger = ledgerOf(manifest);
+  const planned = await recordsForTextPass(
+    dir, 'clean', '', undefined, at === null ? undefined : at.id, minted,
+  );
+  const seed = seedRecordsPath(dir, newestCleanRecords(ledger, planned.records), 'cleanup');
   const generation = readingGenerationOf(ledger, manifest);
   await fsp.mkdir(path.join(dir, 'readings'), { recursive: true });
-
+  const derived = await materializeBook(dir, at);
+  if (!derived.ok) throw new ProjectError(derived.reason);
   return {
     key,
     sourcePath: inputPath,
@@ -1794,7 +2054,8 @@ export async function planCleanup(
     recordsPath: planned.recordsPath,
     stampPath: narrationStampFileFor(planned.recordsPath),
     stepId: planned.stepId,
-    ...(seed !== null ? { seedRecords: path.join(dir, ...seed.split('/')) } : {}),
+    at: at?.id ?? null,
+    ...(seed !== null ? { seedRecords: seed } : {}),
     ...(generation !== null ? { generation } : {}),
   };
 }
@@ -1839,7 +2100,7 @@ export async function planCleanup(
  * run reads the book and writes a report beside it, consuming no rendering and
  * moving no pointer — the sweep's rule, decided explicitly.
  */
-export async function planAnalysis(
+export async function identifyAnalysis(
   inputPath: string,
   /** The categories that were ticked, in plan order. See `AnalysisAsk`. */
   categories: readonly string[],
@@ -1853,21 +2114,46 @@ export async function planAnalysis(
    * different checklist mints a step and a file of its own (`analysisTarget`).
    */
   const planned = await reportForAnalysis(dir, categories);
-  const derived = await materializeBook(dir);
   /*
-   * A REFUSAL HERE IS THE PERSON'S OWN SENTENCE, `planTranslation`'s rule: what
-   * this will not do is queue an hour of GPU against a book it could not
-   * assemble, because findings keyed to blocks nobody can put back are findings
-   * about nothing.
+   * ── AND THE BOOK IS MADE AT THE SPAWN (PK6) ───────────────────────────────
+   *
+   * `materializeAnalysis` below. The row is pinned here, so the offsets in the
+   * report are still offsets into the book the person pressed on — see
+   * `TranslateRequest.at` for why the PATH may not cross and the ROW must.
    */
-  if (!derived.ok) throw new ProjectError(derived.reason);
+  const ledger = ledgerOf(await readManifest(dir));
   return {
     key,
     sourcePath: inputPath,
-    bookPath: derived.path,
     outputPath: planned.outputPath,
     stepId: planned.stepId,
+    at: positionOf(ledger)?.id ?? null,
   };
+}
+
+/**
+ * THE BOOK AN ANALYSIS READS, MADE AT THE SPAWN.
+ *
+ * A report's rows are `[start, end)` offsets into a block's text
+ * (docs/ANALYSIS.md §6), so the file the run reads decides what those offsets are
+ * offsets INTO. Handed the reading's own book file, every finding inside a block
+ * somebody had edited would be drawn in the wrong place — silently, because an
+ * offset that lands somewhere is indistinguishable from one that lands correctly.
+ * Handed the row's materialised book, the offsets agree with the paper at the
+ * instant the button was pressed, and the only drift left is an edit made
+ * afterwards, which the panel reports as an unplaced hit.
+ *
+ * A REFUSAL HERE IS THE PERSON'S OWN SENTENCE, `materializeTranslation`'s rule:
+ * what this will not do is spend an hour of GPU on a book it could not assemble,
+ * because findings keyed to blocks nobody can put back are findings about nothing.
+ */
+export async function materializeAnalysis(
+  projectDir: string,
+  at: LedgerStep | null,
+): Promise<{ bookPath: string }> {
+  const derived = await materializeBook(projectDir, at);
+  if (!derived.ok) throw new ProjectError(derived.reason);
+  return { bookPath: derived.path };
 }
 
 /**

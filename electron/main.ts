@@ -21,7 +21,9 @@ import { loadBuiltinPlugins } from './plugins/plugin-loader';
 import { bookshelfServer } from './bookshelf-server';
 import * as ebookLibrary from './ebook-library';
 import { importEpubProject } from './import-epub-project';
-import { initializeLoggers, getMainLogger, getTTSLogger, closeLoggers } from './rolling-logger';
+import {
+  initializeLoggers, getMainLogger, getTTSLogger, closeLoggers, machineLogDirectory,
+} from './rolling-logger';
 import { startupFailureHtml, startupFailureLine } from './startup-failure';
 import { Quire } from '../packages/quire/src';
 import {
@@ -131,7 +133,7 @@ import { hostStatusOf, type HostStatus } from './foundry-host-status';
 // reason they do.
 import {
   foundryHostQueue, projectDirFromRequest, setFoundrySeam, watchFoundryQueue,
-  type FoundryJobRequest, type FoundryJobRow, type FoundryRunJobOptions,
+  type FoundryJobRequest, type FoundryJobRow, type FoundryRunJobOptions, type FoundryRunOutcome,
 } from './foundry-host-queue';
 // This machine's Crucible servers, as the hosted window receives them — Owen's
 // ruling of 2026-09-14 that there is ONE registry and it is BookForge's. The
@@ -592,7 +594,11 @@ interface FoundryMountModule {
    * Open lands on the file, not on the proof sheet beside it.
    */
   openFoundryWindow(projectDir?: string, opts?: { document?: string }): void;
-  /** Stop the queue and the reading server. Idempotent; awaited on quit. */
+  /**
+   * Kill every live engine child, then WAIT for the settles and the lease
+   * releases. Idempotent; awaited on quit with a deadline that is real since
+   * PK6 — see the call site.
+   */
   stopFoundry(): Promise<void>;
   /** The library root Foundry is answering with, or null when unmounted. */
   hostedLibraryDir(): string | null;
@@ -747,20 +753,28 @@ interface FoundryMountModule {
    * rather than falling back to Foundry's own queue, which is the thing the
    * ruling removed.
    *
-   * ── `waitFor` IS DECLARED THEIR WAY HERE, NOT OURS ────────────────────────
+   * ── `venue` IS DECLARED THEIR WAY HERE, NOT OURS ──────────────────────────
    *
    * This is the MOUNT's shape — what the vendored subtree actually publishes
-   * (`RunOptions` in `foundry-app/electron/job-queue.ts`, since foundry
-   * `f300fc6`) — and over there the field is OPTIONAL, where absent means
-   * *that window's own `newJobsWaitFor` setting decides*. Ours is
-   * `string | null` and required, because a caller must STATE whether its kind
+   * (`RunOptions` in `foundry-app/electron/job-queue.ts`) — and over there the
+   * field is OPTIONAL, where absent means *that window's own default decides*.
+   * Ours is required and nullable, because a caller must STATE whether its kind
    * travels. The translation between the two happens once, at the adapter that
    * calls this, and the reason it must is written there.
+   *
+   * ── AND THE ANSWER IS A TYPED OUTCOME SINCE PK6 ──────────────────────────
+   *
+   * It resolved with the settled ROW, which could say `done`, `failed` and
+   * `cancelled` and had to say everything else in PROSE. Two things this
+   * scheduler acts on were therefore only readable by parsing a sentence: a card
+   * that is merely BUSY (which parks and retries itself — Q4) and the engine's
+   * last words (which a Stop then erased — P6/F7). `FoundryRunOutcome` states
+   * both, and its `wait` arm carries no row because nothing ran.
    */
   runJob?(
     request: FoundryJobRequest,
-    opts: Omit<FoundryRunJobOptions, 'waitFor'> & { waitFor?: string },
-  ): Promise<FoundryJobRow>;
+    opts: Omit<FoundryRunJobOptions, 'venue'> & { venue?: { server: string } },
+  ): Promise<FoundryRunOutcome>;
   /**
    * The rows for one project, pushed — their shelf's mirror of OUR queue.
    *
@@ -5446,7 +5460,11 @@ function setupIpcHandlers(): void {
       }
     } else if (process.platform === 'darwin') {
       const home = app.getPath('home');
-      extras.push(path.join(home, 'Library', 'Logs', 'BookForge'));
+      // ASKED OF THE LOGGER, never composed here: `machineLogDirectory` is where
+      // this app actually writes (`rolling-logger.ts`), and a second spelling of
+      // it in the uninstaller is a directory that stops being removed the day the
+      // logger's own answer changes.
+      extras.push(machineLogDirectory());
       extras.push(path.join(home, 'Library', 'Logs', 'BookForgeApp')); // old logs
       // Old pre-normalization userData (named after package "bookforge-app"), now
       // orphaned by app.setName('BookForge') — same cleanup Windows does.
@@ -13773,25 +13791,30 @@ app.whenReady().then(async () => {
    */
   setFoundrySeam({
     /*
-     * THE ONE PLACE THE TWO SHAPES OF `waitFor` MEET, and it is a translation
+     * THE ONE PLACE THE TWO SHAPES OF THE VENUE MEET, and it is a translation
      * rather than a pass-through.
      *
-     * Ours is `string | null` and REQUIRED — every caller must state whether
+     * Ours is `{ server } | null` and REQUIRED — every caller must state whether
      * this kind of job travels, because "did not say" and "does not travel" are
      * different facts and only one of them is true of a render. Theirs is
-     * `waitFor?: string` and OPTIONAL, where absent means *this app's own
-     * `newJobsWaitFor` decides*.
+     * OPTIONAL, where absent means *that window's own default decides*.
      *
      * So null must become an ABSENT KEY, not a null value: their `placedBy`
      * branches on `chosen !== undefined`, so a literal `null` would be taken as
-     * a pinned slot named null, `slotNamed` would never match it, and the row
-     * would park for ever on a name nobody typed.
+     * a pinned slot named null, nothing would ever match it, and the row would
+     * park for ever on a name nobody typed.
+     *
+     * NOTHING ELSE IS ADAPTED. `onLine` and `onPlaced` cross verbatim, and the
+     * outcome comes back typed — this adapter deliberately does not read it,
+     * because a host that interpreted the answer on the way past would be a
+     * second opinion about a run it did not make (`queue-steps/foundry-job.ts`
+     * is the one reader).
      */
     runJob: typeof foundryMount.runJob === 'function'
       ? (request, opts) => {
-        const { waitFor, ...rest } = opts;
+        const { venue, ...rest } = opts;
         return foundryMount.runJob!(
-          request, waitFor === null ? rest : { ...rest, waitFor });
+          request, venue === null ? rest : { ...rest, venue });
       }
       : null,
     setQueueRows: typeof foundryMount.setHostQueueRows === 'function'
@@ -14305,20 +14328,28 @@ app.on('before-quit', async (event) => {
 
   // ── The hosted Foundry goes first ────────────────────────────────────────
   //
-  // FIRST in the chain, and that order is load-bearing. `stopFoundry()` drains
-  // Foundry's queue and SIGTERMs its reading server — a vLLM process inside WSL
-  // holding ~20 GB of the card — then waits for the CUDA device to come back.
+  // WHAT IT ACTUALLY DOES, since PK6 (P9): `stopFoundry()` kill-trees every live
+  // engine child — the pump's rows and the ones OUR queue scheduled through
+  // `runJob` alike — and then RETURNS THE SETTLE PROMISE: every run's ending,
+  // and every Crucible LEASE those endings are giving back. It used to answer
+  // `Promise.resolve()`, so the 45 seconds below bounded nothing and this app
+  // exited while the DELETE that releases somebody's card was still a
+  // continuation nobody held.
+  //
+  // THE READING SERVER IT USED TO STOP IS GONE. Foundry has had no local page
+  // reader since 2026-09-17 — every act that meets a model runs on a Crucible —
+  // so there is no WSL vLLM here to SIGTERM and no CUDA device to wait for.
+  //
+  // FIRST in the chain all the same, and that order is still load-bearing:
   // BookForge's own TTS block below ends with `gracefulWslShutdown()`, a GLOBAL
-  // sweep of the same distro; running that first would kill Foundry's server out
-  // from under its own cooperative stop, which is exactly the SIGKILL-a-guest-
-  // GPU-process shape that wedges the WSL VM until a reboot. Foundry stops its
-  // own process, cleanly, and only then does the sweep run.
+  // sweep of the same distro, and letting it take a CUDA-holding process out from
+  // under a cooperative stop is the shape that wedges the WSL VM until a reboot.
   //
   // Deadlined like every other step, for this file's own reason: a stop that
   // never settles must become a named log line rather than an invisible
-  // windowless process. `stopFoundry` is idempotent, so an abandoned wait
-  // leaves nothing half-done — the SIGTERM was sent either way.
-  await quitStepWithDeadline('stop the hosted Foundry (queue + reading server)', 45_000, async () => {
+  // windowless process. `stopFoundry` is idempotent, so an abandoned wait leaves
+  // nothing half-done — the children were killed either way.
+  await quitStepWithDeadline('stop the hosted Foundry (queue + leases)', 45_000, async () => {
     try {
       await foundryMount.stopFoundry();
     } catch (err) {

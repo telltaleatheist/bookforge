@@ -10,10 +10,72 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\<user>\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **98a4344** — *Adopt Crucible 1.0.8: one retry for a reset socket, and a render forwards only the width it was given* |
+| Source sha | **9e0b27d** — *host.ts: say what the enqueue's request carries now* — PK6's runner rewrite (`4ff96a3`) merged with `d3a44a1` (Crucible 1.0.10) |
 | Engine | **NOT VENDORED AND NOT KNOWABLE FROM THIS FILE** — it is a spawned CLI resolved at RUNTIME (`FOUNDRY_BIN`, else `resolveFoundryPath`, `electron/main.ts`), so which build executes is a property of the machine and not of this copy. On a developer's Mac that resolves to Foundry's own checkout at `/Volumes/Callisto/Projects/foundry/dist/foundry-darwin-arm64`, which is whatever was last built there — `foundry 2.0.2 (1c1eaa3)` as of 2026-09-18. **Ask the binary: `$FOUNDRY_BIN --version`.** See *The engine this file named was not the engine that ran* below. |
-| Copied on | 2026-09-19 (five times: 3738c01, 3436fc5, 806d44b, f349771, ca4754c) and 2026-09-20 (98a4344) |
-| Copied by | Mechanical source sync, verified against Foundry `98a4344:app/`; details below |
+| Copied on | 2026-09-19 (five times: 3738c01, 3436fc5, 806d44b, f349771, ca4754c) and 2026-09-20 (98a4344, 9e0b27d) |
+| Copied by | Mechanical source sync, verified against Foundry `9e0b27d:app/` (`diff -rq`, clean but for this file, `IPC-CHANNELS.md` and `.gitignore` — see below); details below |
+
+## The `98a4344 → 9e0b27d` re-vendor — PK6, Foundry becomes a runner (2026-09-20)
+
+**The biggest change this subtree has taken since it was vendored, and it is a
+CONTRACT change**: `docs/BUG-HUNT-2026-09-20.md` §H, Owen's ruling 1. Hosted,
+Foundry stops being a second queue — it is handed a DESCRIPTION of one act and a
+VENUE, and it plans, places, spawns and answers with a typed outcome. It stores
+nothing across calls and decides nothing about when.
+
+What moved, and what each move closes:
+
+- **`workspace.ts` split every plan in two.** `identify*` runs at the press and
+  composes IDENTITY only — the records file, the step, the stamp. `materialize*`
+  runs at the spawn and makes the book, resolves the seed and reads the
+  generation. The old shape put a `derived/<uuid>.book.jsonl` PATH on the
+  request, and that file's lifetime is spawn → settle while a request outlives
+  its row's first attempt: Retry, Start after a stop and a queue restored from
+  disk all replayed a path the settle had unlinked (F1; F5 is the same defect met
+  through Start). What crosses now is the ROW (`at`), pinned at the press so a
+  pointer moved while the job waited still cannot change which book is made.
+- **`job-queue.ts` materialises inside the run.** `materializeDeferred` is gone:
+  a deferral is just an `at` that did not exist yet, so ONE function
+  (`materializeAtSpawn`) makes every row's book, beside the seed copy and the
+  analysis checklist — after the placement, so a row that parks leaves the
+  project as it found it. `runJob` answers a typed `RunOutcome`
+  (done | failed{error, stderrTail} | wait{busyLine, standing} | cancelled) and
+  `placeRun` returns a detached run's wait the moment the placement says it: the
+  30-second spin inside a function whose contract is that somebody else decides
+  when is deleted (Q4, and the hang this side used to pre-check against).
+  `onLine` tees every line to the host's log in the reporter's own `finally`
+  (P5/F7); `onPlaced` announces server, model, lease and depth once before the
+  spawn (P8).
+- **`crucible-dispatch.ts` states the depth.** `Placement.concurrency` — 4 on a
+  Crucible chat door, Owen's ruling 4 — and `doorArgs` now emits `--concurrency`
+  for every text act. It was spelled on the clean line alone and nowhere else, so
+  translate and simplify ran twelve deep against a proxy that serves one request
+  at a time (F3a).
+- **`mount.ts` `stopFoundry()` returns `queue.drained()`** — every live run's
+  settle and every lease release — so this host's 45-second quit budget bounds
+  something (P9).
+- **`shared/types.ts`** carries `at` on the four request shapes, `RunOutcome`,
+  `RunVenue` and `RunPlacement`.
+
+**The BookForge side moved with it** and is not optional: `FoundryRunner` takes
+`{venue, onLine, onPlaced}` and answers `FoundryRunOutcome`;
+`queue-steps/foundry-job.ts` parks a `wait`, fails a `failed` with Foundry's own
+sentence, records the lease in `crucible/in-flight-ledger.ts` as a
+`foundry-lease` row and clears it on the outcome. An OLDER vendored subtree
+cannot run against this host and the reverse is also true — the seam's shape
+changed, not just its fields. Keeper: `tools/test-foundry-runner-seam.js`.
+
+Also in this copy, from `origin/main`: Crucible **1.0.9** and **1.0.10**
+(`app/package.json`, `app/package-lock.json`, the `-1.0.10.tgz` pair; the 1.0.8
+pair deleted here by hand, because `tar -x` adds and overwrites but never
+deletes). IPC unchanged — `IPC-CHANNELS.md` is still true.
+
+**Two files in this directory are BookForge's and are not overwritten by the
+copy**: this one and `IPC-CHANNELS.md`. `.gitignore` is a third and it is a
+DIFFERENCE rather than an addition — it carries one extra line for the
+`node_modules` SYMLINK this checkout uses (17643042), which the upstream copy has
+no reason to have. A re-vendor restores it (`git checkout foundry-app/.gitignore`)
+after the extract.
 
 ## The `ca4754c → 98a4344` re-vendor — four files, the 1.0.8 SDK adoption (2026-09-20)
 

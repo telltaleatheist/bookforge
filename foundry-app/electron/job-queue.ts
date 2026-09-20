@@ -199,7 +199,7 @@ import {
   type Rotation,
 } from './projects';
 /*
- * THE PLANS, FOR THE RE-PLAN AT SPAWN AND FOR NOTHING ELSE (`materializeDeferred`).
+ * THE PLANS' SPAWN HALVES, FOR THE MATERIALISE AND FOR NOTHING ELSE (`materializeAtSpawn`).
  *
  * A one-way edge: `electron/workspace.ts` composes plans out of the project's
  * catalogue and has never heard of a queue, so importing it here adds no cycle and
@@ -207,7 +207,14 @@ import {
  * already runs in — it holds both — and the alternative was a third module whose
  * only content would be four `await` lines.
  */
-import { planCleanup, planExport, planSimplification, planTranslation } from './workspace';
+import {
+  identifyExport,
+  materializeAnalysis,
+  materializeCleanup,
+  materializeExport,
+  materializeSimplification,
+  materializeTranslation,
+} from './workspace';
 import { exportNodeId, type HostMintMeta } from '../shared/host-ops';
 import { ancestry, REWRITE_LABELS } from '../shared/ledger';
 import { inheritMintMeta, type MintMeta } from '../shared/mint-meta';
@@ -219,7 +226,8 @@ import {
 } from '../shared/queue-board';
 import type {
   AnalyzeRequest, ConversionKind, DeferredPlan, EnvInstallRequest, ExportLanding, ExportMintMetadata,
-  FoundryJobRow, Job, JobKind, JobRequest, SimplifyRequest, TextPassRequest, TranslateRequest,
+  FoundryJobRow, Job, JobKind, JobRequest, RunOutcome, RunPlacement, RunVenue, SimplifyRequest,
+  TextPassRequest, TranslateRequest,
 } from '../shared/types';
 import { isResumableStop } from '../shared/types';
 /*
@@ -231,7 +239,7 @@ import { isResumableStop } from '../shared/types';
 import { computeSlots, waitForOfNewJob } from './crucible-registry';
 import {
   capabilityClassOf, placeJob, placesOnASlot, CRUCIBLE_READS, UNPLACED,
-  type LaneClaim, type Lease, type Placement,
+  type LaneClaim, type Lease, type Placement, type PlacementWait,
 } from './crucible-dispatch';
 import { ANY_SLOT } from '../shared/slots';
 
@@ -572,7 +580,7 @@ function withoutDeferral<T extends { deferred?: DeferredPlan }>(request: T): T {
  * up *"from the last step after it finishes"*. Some of what a records file is named
  * after is not knowable until then: the language a rewrite happens in, and whether
  * this ask turns out to be a re-run of a step that only exists once the parent
- * lands. See `materializeDeferred`.
+ * lands. See `materializeAtSpawn`.
  *
  * ── THE DEDUPE IS ASKED AGAIN, AND IT IS THE WHOLE POINT OF THE FUNCTION ────
  *
@@ -611,107 +619,110 @@ function renameProduct(job: Job, resolved: EngineRequest): void {
 }
 
 /**
- * THE RE-PLAN AT SPAWN — a promise turned into an ordinary request, or a refusal
- * naming the step that never landed.
+ * THE MATERIALISE AT SPAWN — the request as the engine will be handed it, or a
+ * refusal naming the step it was to be made from.
  *
- * ── Why the plan is made twice rather than once, late ───────────────────────
+ * ── What this replaced, and why (PK6) ──────────────────────────────────────
  *
- * The whole family's standing rule is that a plan is made AT THE PRESS, because
- * *"a pointer move made while the job waited must not silently produce a different
- * language"* (`GenerateRequest.records`, and four other fields say it in the same
- * words). That rule protects against the POINTER MOVING, and it is untouched here:
- * everything a promised run is ABOUT was settled at the press and travels on the
- * request — the parent step, the records file, the language, the mode, the export's
- * name. What could not be settled is everything that had to be READ OFF A CHAIN
- * that did not exist yet, and no amount of planning early produces those.
+ * It was `materializeDeferred`, and it ran for exactly one kind of row: a pass
+ * ordered from a step that had not landed. Every other row's book, seed and
+ * generation were composed AT THE PRESS and persisted on the request.
  *
- * So the second plan is asked exactly one new question — *what does this chain look
- * like now that the row has landed* — and it is asked with the row NAMED
- * (`deferred.from`) rather than with the position, so a pointer that moved while the
- * job waited changes nothing. The re-plan is the same function the press called, so
- * the seeding rule, the stamp rule and the materialise rule have one implementation
- * and cannot drift between the two askings.
+ * That split had the lifetimes backwards. A derived book is unlinked by
+ * `sweepDerivedBook` at EVERY ending and by `sweepStaleDerived` after a day; a
+ * request outlives its row's first run — Retry re-sends it byte for byte, a
+ * resumable Stop leaves it on the step, and hosted it is persisted in somebody
+ * else's queue file across restarts. So the path was always the shorter-lived
+ * half, and `--book … (ENOENT)` was the reliable consequence (BookForge's
+ * 2026-09-20 hunt, F1; F5 is the same defect met through Start). The seed had the
+ * same shape with a quieter failure: a file the press named and a Start-over
+ * removed was copied by nobody and the run silently paid full price (F8).
  *
- * ── THE IDENTITY IS KEPT AND THE NAME IS TAKEN ──────────────────────────────
+ * SO EVERY ROW MATERIALISES HERE, AND A DEFERRAL IS NO LONGER A SPECIAL CASE: it
+ * is simply an `at` that did not exist when the button was pressed. One function,
+ * one seeding rule, one same-language refusal, one place that can fail by name.
  *
- * `stepId` is KEPT, always, and that is the one field this function must never
- * take from the re-plan. The tree drew a card with that id on it and a person
- * chained work behind it (`Job.mints`, `Job.parentStep`); landing under the id the
- * second asking happened to mint would orphan every child in the chain at the
- * moment its parent succeeded. So the press-time id is handed BACK INTO the plan
- * (`recordsForTextPass`'s `minted`), which is what makes the two askings agree
- * about one step rather than merely about one path.
+ * ── AND IT IS STILL NOT "THE POSITION" ─────────────────────────────────────
  *
- * THE RECORDS PATH IS TAKEN, and Wave 56 kept it. That was right while the press
- * could always name the file and is wrong now that it cannot always. Owen,
- * 2026-09-07: *"I'd like to make it possible to chain anything and have it pick up
- * required settings from the last step after it finishes."* Two things move it:
+ * The family's standing rule is untouched: *a pointer move made while the job
+ * waited must not silently produce a different book*. The row is pinned at the
+ * press (`request.at`, or `deferred.from` for a promise) and this resolves THAT
+ * id. What is re-asked at spawn is only what had to be read off a chain.
  *
- *   A PLACEHOLDER RESOLVING. A deferred rewrite under a promised translation could
- *   not say which language it was happening in, so it wore
- *   `<key>.simplify.<mode>.pending-<id8>.records.jsonl` and said so
- *   (`DeferredPlan.namesAtSpawn`). Here the language is a fact and the real name
- *   composes itself.
- *
- *   A RE-RUN RESOLVING LATE. `reRunTarget` compares the PARENT first, and at the
- *   press no step is parented to a promise — so every deferred pass planned as a
- *   branch, however exactly it repeated a pass that already existed under the row
- *   about to land. With the parent landed the comparison can match, and Owen ruled
- *   the landing should honour it: this run then aims at the step that already
- *   exists and writes into ITS records, which is what makes a re-run nearly free.
- *   `recordLanding` (shared/ledger.ts) already swaps rather than appends for exactly
- *   this ask, so the two halves agree without either being told about the other.
- *
- * THE ROW'S `outputPath` MOVES WITH IT, because that path is three things at once
- * (`productOf`): the file Reveal shows, the identity `pendingFor` dedupes on, and
- * what `recordTextPass` files as the step's payload. A row left pointing at a
- * placeholder would land a step whose payload is a file nobody ever wrote.
- *
- * AND THE DEDUPE IS ASKED AGAIN AGAINST THE REAL NAME, which is the check the
- * press could not make: two rewrites ordered from one promise are two placeholders
- * and dedupe apart, and may resolve to one file. The second fails by name rather
- * than two engines appending to one records file for six hours.
- *
- * ── AND WHAT IS MERGED IS WHAT WAS MISSING ──────────────────────────────────
- *
- * `bookPath`, `seedRecords`, `generation` and the language — each of them an
- * answer read off a book or a ledger walk that could not be made at the press, and
- * each named at its own plan.
- *
- * ── AND THE REFUSAL IS THE CASCADE'S LAST LINE ──────────────────────────────
+ * ── THE REFUSAL IS THE CASCADE'S LAST LINE ─────────────────────────────────
  *
  * *"if i then remove the cleanup step from the queue, or it otherwise gets lost
  * along the way, everything under that grayed out chain also gets removed."* The
- * queue's own cascade catches the removals and the failures it can see
+ * queue's own cascade catches the removals and failures it can see
  * (`cascadeFrom`); this catches everything else — a row that succeeded without
  * landing, a step deleted between the landing and this spawn, a host that ran a
  * chained row out of order. Running against the position instead would be the
- * silent wrong answer this whole wave exists to prevent: an export of the book
- * WITHOUT the cleanup, filed under the name the cleaned one was going to have.
+ * silent wrong answer: an export of the book WITHOUT the cleanup, filed under the
+ * name the cleaned one was going to have.
+ *
+ * ── AND THE DEFERRED HALF IT KEPT ──────────────────────────────────────────
+ *
+ * `stepId` is KEPT, always, and is the one field this never takes from the
+ * re-plan: the tree drew a card with that id and a person chained work behind it,
+ * so landing under a freshly minted id would orphan every child at the moment its
+ * parent succeeded. It is handed BACK IN (`recordsForTextPass`'s `minted`), which
+ * is what makes the two askings agree about one step rather than merely one path.
+ * The RECORDS PATH is taken from the re-plan for a deferred row only — a
+ * placeholder resolving, or a re-run that could not match at the press because
+ * nothing is parented to a promise — and `renameProduct` moves the row with it.
  */
-async function materializeDeferred(
+async function materializeAtSpawn(
   request: EngineRequest,
   /**
-   * THE ROW THIS REQUEST BELONGS TO, because the name is not only a fact about a
+   * THE ROW THIS REQUEST BELONGS TO, because a name is not only a fact about a
    * request. `Job.outputPath` is what the shelf reveals, what the dedupe compares
    * and what the landing files as a payload, so a re-plan that moves the file has
-   * to move the row with it and say so (`changed()`). Both doors onto this function
-   * hold the row already.
+   * to move the row with it and say so (`changed()`).
    */
   job: Job,
 ): Promise<EngineRequest> {
+  /*
+   * A READING MAKES NO BOOK, and it is the one kind that never did: it puts pages
+   * in front of a model and fills a bank. Nothing here has anything to say about
+   * it, and asking the ledger about a project mid-import would be work for an
+   * answer nobody reads.
+   */
+  if (request.kind === 'read') return request;
   const deferred = deferralOf(request);
-  if (deferred === undefined) return request;
   const dir = homeOf(request) ?? projectDirOf(productOf(request));
+  /*
+   * WHICH ROW, AND THE TWO WAYS A REQUEST NAMES ONE. `deferred.from` is the
+   * promise's parent — the row that had to land first — and `at` is the row the
+   * press was standing on or clicked. Both are ids; neither is "the position now".
+   *
+   * NULL IS AN ANSWER AND NOT AN ABSENCE: a project that held no steps when the
+   * button was pressed has the reading's own book file, which is exactly what
+   * `materializeBook` answers for a null row.
+   */
+  const named = deferred !== undefined ? deferred.from : request.at ?? null;
   if (dir === null) {
+    /*
+     * ── A FILE OUTSIDE EVERY PROJECT, AND THE TWO THINGS THAT CAN MEAN ───────
+     *
+     * NOTHING WAS NAMED. There is no chain to replay and nothing that was ever
+     * going to be replayed: a rendering aimed at a path this library does not
+     * hold, which the landing already says so about (`landReadProducts`) and
+     * which the CLI's own doors reach. The request stands as it is, and a run
+     * that needed a book meets `bookOf`'s refusal at its command line.
+     *
+     * A ROW WAS NAMED AND CANNOT BE FOUND. That is a claim about a project, made
+     * by a request that outlived it, and it is refused here rather than run
+     * against whatever is nearest.
+     */
+    if (named === null) return request;
     throw new Error(
-      'This work was to be made from a step that had not finished yet, and it no longer belongs to '
-      + 'any project in this library — so there is nothing to make it from.',
+      'This work was to be made from a step in a project this library no longer holds — so the '
+      + 'book it was to read cannot be made, and there is nothing to run it against.',
     );
   }
   const ledger = ledgerOf(await readManifest(dir));
-  const step = ledger.steps.find((row) => row.id === deferred.from) ?? null;
-  if (step === null) {
+  const step = named === null ? null : ledger.steps.find((row) => row.id === named) ?? null;
+  if (named !== null && step === null) {
     throw new Error(
       'The step this was to be made from never landed, so there is nothing to make it out of. '
       + 'Whatever was going to produce it left the queue — order this again from a step that exists.',
@@ -719,61 +730,89 @@ async function materializeDeferred(
   }
   if (isTextPassRequest(request)) {
     /*
-     * THE SAME PLAN, WITH THE ROW IN HAND. `planSimplification` is the one that can
-     * still refuse here (a book that never declared a language) and
-     * `planTranslation` is the one whose same-language refusal was DEFERRED to this
-     * moment on purpose — see its own branch. Either way the throw becomes a failed
-     * row wearing main's own sentence, which is what the shelf has always shown for
-     * a run that could not be made.
+     * THE SAME THREE MAKERS THE PRESS'S THREE IDENTIFIERS ARE PAIRED WITH.
+     * `materializeSimplification` can still refuse here (a book that never declared
+     * a language) and `materializeTranslation` carries the same-language refusal
+     * that a deferred pass could not be given at the press. Either way the throw
+     * becomes a failed row wearing main's own sentence.
      */
     const plan = request.kind === 'translate'
-      ? await planTranslation(request.inputPath, request.to, step, undefined, request.stepId)
+      ? await materializeTranslation(request.inputPath, request.to, step, request.stepId)
       : request.kind === 'simplify'
-        ? await planSimplification(request.inputPath, request.rewrite, step, undefined, request.stepId)
-        : await planCleanup(request.inputPath, step, undefined, request.stepId);
+        ? await materializeSimplification(request.inputPath, request.rewrite, step, request.stepId)
+        : await materializeCleanup(request.inputPath, step, request.stepId);
     const next = withoutDeferral(request);
-    if (plan.bookPath !== undefined) next.bookPath = plan.bookPath;
+    next.bookPath = plan.bookPath;
+    /*
+     * THE SEED IS TAKEN WHOLE, PRESENT OR ABSENT. A stale one left on the request
+     * would be a path the copy skips in silence, which is the defect (F8) this
+     * whole move exists to end — so an absent answer DELETES rather than leaving
+     * what the press believed.
+     */
     if (plan.seedRecords !== undefined) next.seedRecords = plan.seedRecords;
+    else delete next.seedRecords;
     if (plan.generation !== undefined) next.generation = plan.generation;
-    /*
-     * ── THE NAME THE CHAIN CAN FINALLY SAY ────────────────────────────────────
-     *
-     * Taken whole, and the row moved with it — see this function's header for the
-     * two ways the re-plan legitimately moves a records file, and why keeping the
-     * press's answer instead would file a step pointing at nothing.
-     *
-     * THE STAMP TRAVELS WITH IT, because a cleanup's stamp is NAMED FROM the
-     * records file (`narrationStampFileFor`) and nothing else. Leaving it behind
-     * would put a `.stamp.json` beside a placeholder that never existed and hand
-     * the compile a receipt for the wrong file.
-     */
-    next.recordsPath = plan.recordsPath;
-    if (next.kind === 'clean' && plan.stampPath !== undefined) next.stampPath = plan.stampPath;
-    /*
-     * ── AND THE LANGUAGE, WHICH FOR A REWRITE IS BOTH ENDS ────────────────────
-     *
-     * `--from` is the chain's source language, and a cleanup has none to carry —
-     * `CleanRequest` does not declare the field, which is why this is asked of the
-     * two shapes that do rather than spread blindly.
-     *
-     * A REWRITE ALSO TAKES ITS `to` FROM HERE, and that is the half Owen's ruling
-     * added. Both ends of a rewrite are one fact (`SimplifyRequest.to`), the plan
-     * resolves it off the landed ledger exactly as an ordinary press would, and a
-     * deferred rewrite under a promised translation had no way to state it at the
-     * press. A translation's `to` was typed by a person and is never touched.
-     */
-    if (next.kind !== 'clean' && plan.from !== undefined) next.from = plan.from;
-    if (next.kind === 'simplify' && plan.from !== undefined) next.to = plan.from;
-    renameProduct(job, next);
+    if (deferred !== undefined) {
+      /*
+       * ── THE NAME THE CHAIN CAN FINALLY SAY ──────────────────────────────────
+       *
+       * Only for a promise, because only a promise's name was provisional. See the
+       * header: a placeholder resolving, or a re-run that can match now that the
+       * parent exists. The STAMP travels with it — a cleanup's stamp is NAMED FROM
+       * the records file and nothing else, so leaving it behind would hand the
+       * compile a receipt for a file nobody wrote.
+       */
+      next.recordsPath = plan.recordsPath;
+      if (next.kind === 'clean' && plan.stampPath !== undefined) next.stampPath = plan.stampPath;
+      /*
+       * AND THE LANGUAGE, WHICH FOR A REWRITE IS BOTH ENDS. `--from` is the chain's
+       * source language and a cleanup has none to carry. A rewrite also takes its
+       * `to` from here, which is the half Owen's chain-anything ruling added: both
+       * ends of a rewrite are one fact and a deferred one had no way to state it.
+       * A translation's `to` was typed by a person and is never touched.
+       */
+      if (next.kind !== 'clean' && plan.from !== undefined) next.from = plan.from;
+      if (next.kind === 'simplify' && plan.from !== undefined) next.to = plan.from;
+      renameProduct(job, next);
+    }
     return next;
   }
-  if (request.kind === 'read' || request.kind === 'analysis') return request;
-  const plan = await planExport(request.inputPath, request.kind, step);
+  if (request.kind === 'analysis') {
+    // AN ANALYSIS IS NEVER DEFERRED — `analysis` has no `deferred` field at all
+    // (`AnalyzeRequest`), because no tile in this app chains one behind a promise.
+    // So the copy is a plain one and the row's name never moves.
+    const next = { ...request };
+    next.bookPath = (await materializeAnalysis(dir, step)).bookPath;
+    return next;
+  }
+  /*
+   * A RENDERING, AND THE ONE EXTRA ASKING A PROMISED ONE NEEDS. The chain facts an
+   * export reads — which records, which language, whose stamp — could not be
+   * composed at the press of a promise, so they are composed now at the landed row
+   * before the book is made from it. An ordinary export composed them at the press
+   * and keeps them; only the BOOK and the narrowing were ever spawn work.
+   */
   const next = withoutDeferral(request);
-  if (plan.bookPath !== undefined) next.bookPath = plan.bookPath;
-  if (plan.narrationStamp !== undefined) next.narrationStamp = plan.narrationStamp;
-  if (plan.records !== undefined) next.records = plan.records;
-  if (plan.language !== undefined) next.language = plan.language;
+  let claimed = request.narrationStamp;
+  if (deferred !== undefined) {
+    const plan = await identifyExport(request.inputPath, request.kind, step);
+    if (plan.narrationStamp !== undefined) next.narrationStamp = plan.narrationStamp;
+    if (plan.records !== undefined) next.records = plan.records;
+    if (plan.language !== undefined) next.language = plan.language;
+    claimed = plan.narrationStamp;
+  }
+  const made = await materializeExport(dir, request.kind, step, claimed);
+  if (made.bookPath !== undefined) next.bookPath = made.bookPath;
+  /*
+   * AND THE CLAIM IS NARROWED OR WITHDRAWN. An empty narrowing drops the field
+   * rather than carrying a path of no characters, exactly as the plan did when it
+   * owned this: no reader of a `GenerateRequest` has to know that the empty string
+   * means anything.
+   */
+  if (claimed !== undefined) {
+    if (made.narrationStamp !== undefined) next.narrationStamp = made.narrationStamp;
+    else delete next.narrationStamp;
+  }
   return next;
 }
 
@@ -1137,7 +1176,15 @@ function settled(
   const lease = leases.get(job.id);
   if (lease !== undefined) {
     leases.delete(job.id);
-    void lease.release();
+    /*
+     * HELD, THOUGH STILL NOT AWAITED. The settle goes on without it — a run must
+     * not wait on somebody else's server to be over — but the promise is kept in
+     * `releasing` so a QUIT can wait for it, which is the one moment the DELETE
+     * landing matters more than this row finishing (BookForge P9).
+     */
+    const given = lease.release();
+    releasing.add(given);
+    void given.finally(() => { releasing.delete(given); });
   }
   /*
    * AND THE GESTURE THAT ENDED IT IS FORGOTTEN HERE, for the lease's own reason
@@ -3033,6 +3080,50 @@ export function shutdown(): void {
 }
 
 /**
+ * EVERY LIVE RUN, AND EVERY LEASE IT IS GIVING BACK — the promise a quit can wait on.
+ *
+ * ── The deadline that was never used (BookForge P9) ────────────────────────
+ *
+ * `shutdown()` above is synchronous: it kill-trees the children and returns. The
+ * host's quit chain wraps `stopFoundry()` in a 45-second budget, and
+ * `stopFoundry` answered `Promise.resolve()` — so the budget bounded nothing, and
+ * the app went on to exit while the settle that RELEASES THE CRUCIBLE LEASE was
+ * still a continuation nobody was holding. A lease left behind is a card no other
+ * client can load onto until its TTL expires.
+ *
+ * ── What it waits for, and why it is two sets ──────────────────────────────
+ *
+ * THE RUNS. One entry per `executeJob`, added at the top and removed in its
+ * `finally`, so it covers the pump's rows and a host's detached ones with one
+ * rule — the same reason `executeJob` is one function.
+ *
+ * THE RELEASES. `settled` fires the DELETE and does not await it, deliberately:
+ * a settle must not wait on somebody else's server. That is right while the app
+ * is alive and wrong at the moment it exits, which is the only moment this
+ * function is called — so the release promises are held here and awaited too.
+ *
+ * NEVER THROWS, and it is a loop rather than one `Promise.all` because a run that
+ * settles may start nothing but may still ADD a release. Settling is what both
+ * sets do, so the loop terminates; the caller's own deadline is what bounds a
+ * machine that has stopped answering.
+ */
+export async function drained(): Promise<void> {
+  while (liveRuns.size > 0 || releasing.size > 0) {
+    await Promise.allSettled([...liveRuns, ...releasing]);
+  }
+}
+
+/**
+ * ONE PROMISE PER LIVE RUN, and one per lease still being given back.
+ *
+ * Sets of promises rather than counters because `drained()` has to WAIT, and a
+ * counter can only be polled. Both are self-emptying: the entry is deleted in the
+ * `finally` that put it there.
+ */
+const liveRuns = new Set<Promise<void>>();
+const releasing = new Set<Promise<void>>();
+
+/**
  * WHERE AN ANALYSIS RUN'S CHECKLIST IS WRITTEN — the report's own path plus a
  * suffix, and never a rename of it.
  *
@@ -3066,27 +3157,29 @@ function categoriesFileFor(request: AnalyzeRequest): string {
  * here was a second opinion about a decision that has one owner.
  */
 /**
- * THE BOOK A TEXT PASS READS, or a refusal naming what is missing.
+ * THE BOOK ON THE COMMAND LINE, or a refusal naming what is missing — the LAST
+ * line, not the maker.
  *
- * ── Why the field can be absent at all, and why this is the last line ───────
+ * ── Why the field can be absent at all, and why this guard exists ──────────
  *
- * `TranslateRequest.bookPath` became optional when a pass could be ordered from a
- * step that had not landed: there is no chain to replay and no book to write out
- * until the parent lands, so a deferred plan leaves it out and `materializeDeferred`
- * fills it in at spawn. By the time a command line is being assembled it is
- * therefore always there — and "always" is where this codebase's expensive failures
- * live. A `translate` spelled with no `--book` is a job about no book at all, and
- * the engine's own refusal would name a flag rather than the promise that never
- * arrived.
+ * Since PK6 NO plan makes the book: `materializeAtSpawn` does, inside the run,
+ * because a derived book's lifetime is spawn → settle and a path minted at the
+ * press outlives its file the moment a row is retried or restored (BookForge's
+ * F1/F5, and `TranslateRequest.at` carries the argument). By the time a command
+ * line is being assembled the field is therefore always there — and "always" is
+ * where this codebase's expensive failures live. A `translate` spelled with no
+ * `--book` is a job about no book at all, and the engine's own refusal would name
+ * a flag rather than the materialise that never ran.
  *
  * IT THROWS, AND THE CALLER TURNS THAT INTO A FAILED ROW with this sentence on it
  * — the same ending every unmakeable plan in this app has always had.
  */
-function bookOf(request: TextPassRequest): string {
+function bookOf(request: { bookPath?: string }): string {
   if (request.bookPath === undefined) {
     throw new Error(
-      'This run was ordered from a step that had not finished yet, and the book it was to read was '
-      + 'never made — so there is nothing to hand the model. Order it again from a step that exists.',
+      'The book this run was to read was never made, so there is nothing to hand the model. That '
+      + 'is a fault in this app rather than in the book: the run reached its command line without '
+      + 'the materialise that happens the moment it starts.',
     );
   }
   return request.bookPath;
@@ -3099,7 +3192,7 @@ function bookOf(request: TextPassRequest): string {
  * A translation's `--to` was typed by a person and is required on the shape. A
  * REWRITE's is read off the chain (`SimplifyRequest.to`), and a rewrite ordered
  * from a promised translation cannot read it until that translation lands — so
- * `materializeDeferred` fills it in at spawn, and this is the guard that says so if
+ * `materializeAtSpawn` fills it in when the run starts, and this is the guard that says so if
  * it ever did not. A `--rewrite` with a blank `--to` is a run with nothing to tell
  * the model to write in, which is six hours of a model being asked the wrong
  * question rather than a crash.
@@ -3174,13 +3267,49 @@ function languageOf(request: TranslateRequest | SimplifyRequest): string {
  * the terminal by `executeJob`, pasted into bug reports, and listed by the
  * process table.
  */
-function doorArgs(request: { model: string; ollama: string }, placement: Placement): string[] {
+function doorArgs(
+  request: { model: string; ollama: string; concurrency?: number },
+  placement: Placement,
+): string[] {
   const model = (placement.model ?? request.model).trim();
   return [
     ...(model.length > 0 ? ['--model', model] : []),
     ...serverArgs(placement.door),
     '--endpoint', placement.endpoint ?? request.ollama,
+    ...concurrencyArgs(request, placement),
   ];
+}
+
+/**
+ * `--concurrency`, ON EVERY TEXT ACT THAT MEETS A PLACED SERVER.
+ *
+ * ── Why it is here and not on three command lines ──────────────────────────
+ *
+ * It was on ONE: the clean branch pushed it from `request.concurrency`, and
+ * translate, simplify and analyse never spelled it at all — so the two longest
+ * runs in the app took the engine's own default of twelve, against a Crucible
+ * chat door that serves one request at a time. That is BookForge's F3a, and the
+ * fix is that the answer travels with the PLACEMENT (see `Placement.concurrency`)
+ * through the one function every act's door already goes through.
+ *
+ * THE PLACEMENT WINS. A depth stated by the server that answered is a fact about
+ * that machine; a number on the request is a preference about somebody else's
+ * backend, and it survives only where there is no placement to overrule it —
+ * which is a dry run (`argsFor` defaults to {@link UNPLACED}) and nothing else.
+ *
+ * A NON-INTEGER OR A ZERO IS NOT A DEPTH, so it is dropped rather than passed on
+ * for the engine to argue with; with neither side saying anything the flag is off
+ * the line entirely and the engine's own default stands, which is exactly what a
+ * `--dry-run` with no server should print.
+ */
+function concurrencyArgs(
+  request: { concurrency?: number },
+  placement: Placement,
+): string[] {
+  const said = placement.concurrency ?? request.concurrency;
+  return typeof said === 'number' && Number.isInteger(said) && said > 0
+    ? ['--concurrency', String(said)]
+    : [];
 }
 
 /** `--server`, or nothing at all for the engine's default. See `doorArgs`. */
@@ -3260,7 +3389,7 @@ export function argsFor(
        * is what makes the report's character offsets agree with the paper the
        * panel draws them over.
        */
-      '--book', request.bookPath,
+      '--book', bookOf(request),
       '--out', request.outputPath,
       ...doorArgs(request, placement),
     ];
@@ -3328,20 +3457,11 @@ export function argsFor(
       ...doorArgs(request, placement),
     ];
     /*
-     * `--concurrency` ONLY WHEN SOMEBODY SAID A NUMBER. Absent, the flag is not on
-     * the line at all and the engine uses its own default — this file never spells
-     * that default, because a copy of it here is a second place it lives and the
-     * day the engine changes one they disagree. A non-integer or a zero is simply
-     * not a number of blocks in flight, so it is dropped rather than passed on for
-     * the engine to argue with.
+     * `--concurrency` IS `doorArgs`' NOW, with the endpoint and the model it
+     * belongs beside — see `concurrencyArgs`. It was pushed here and on no other
+     * text line, which is how translate and simplify came to run twelve deep
+     * against a serial door.
      */
-    if (
-      typeof request.concurrency === 'number'
-      && Number.isInteger(request.concurrency)
-      && request.concurrency > 0
-    ) {
-      args.push('--concurrency', String(request.concurrency));
-    }
     /*
      * NO `--keep-model` ANY MORE. The engine neither loads nor unloads a model
      * since Owen's ruling of 2026-09-13 — the operator owns what is resident —
@@ -4153,7 +4273,41 @@ interface RunWires {
   release(): void;
   /** Every line the engine wrote, for a caller watching from outside the row. */
   watch?(line: string): void;
+  /**
+   * THE SAME LINES, FOR THE LOG — and it is not a duplicate of `watch`.
+   *
+   * `watch` is the row's reporter: a host parses counts out of it and draws a
+   * bar, and a reporter with a bug in it throws. `line` is the copy that goes to
+   * a FILE, called in the reporter's `finally`, so a listener's throw cannot cost
+   * the log the line that explains the failure — which is exactly what happened
+   * on 2026-09-19, when a night of hosted failures left `grep -c '[job]'` over
+   * every log answering 0 (BookForge P5/F7).
+   */
+  line?(line: string): void;
+  /**
+   * WHERE THIS RUN WAS PLACED, once, BEFORE the engine is spawned.
+   *
+   * The host writes it into its own in-flight ledger so a hard kill has something
+   * to release the Crucible LEASE with — the one thing the startup sweep could not
+   * cover, because the lease is taken in here and recorded nowhere (BookForge P8).
+   * Announced before the spawn for that reason: a record written after the child
+   * exists is a record that can be missed by the kill it is for.
+   */
+  placed?(placement: RunPlacement): void;
 }
+
+/**
+ * THE ENGINE'S LAST WORDS, kept for the one caller that is not the row.
+ *
+ * `next.error` carries the whole stderr for a failed run and always has; what it
+ * cannot carry is the case where the row is then STOPPED, which erases it
+ * (BookForge P6). A host's outcome is handed the tail separately so its own log
+ * has a copy that nothing on this side can overwrite. Keyed by job id, written at
+ * the one arm that knows the stderr, and consumed by `runDetached` — a map rather
+ * than a field on the row because it is not a fact about the row, it is a fact
+ * about the child that has just exited.
+ */
+const lastEngineStderr = new Map<string, string>();
 
 /**
  * THE SCHEDULER: fill every slot that can be filled, then say whether the board
@@ -4365,20 +4519,19 @@ async function runInSlot(job: Job, slot: Slot): Promise<void> {
     job.startedAt = Date.now();
     job.message = `Starting ${path.basename(job.inputPath)}…`;
     changed();
-    let request = held;
-    try {
-      request = await materializeDeferred(held, job);
-      if (request !== held) requests.set(job.id, request);
-    } catch (err) {
-      if (jobs.find((row) => row.id === job.id)?.state === 'cancelled') return;
-      job.state = 'failed';
-      job.error = err instanceof Error ? err.message : String(err);
-      job.finishedAt = Date.now();
-      changed();
-      settled(job);
-      return;
-    }
-    await executeJob(job, request, {
+    /*
+     * ── AND THE MATERIALISE IS NOT HERE ANY MORE (PK6) ──────────────────────
+     *
+     * It was: `materializeDeferred(held, job)` ran between the mark and
+     * `executeJob`, and its throw was caught and filed here — in BOTH doors, which
+     * is two copies of one ending. It has moved inside the run (`carry`, beside the
+     * seed copy and the checklist) for the rule those two state about themselves: a
+     * row that turns out to be waiting for a busy card must leave the project
+     * exactly as it found it, and a book materialised before the placement is a
+     * file written on the way to a wait. `executeJob`'s own boundary files the
+     * throw now, which is the ending every other unmakeable plan already had.
+     */
+    await executeJob(job, held, {
       claim: (cancel) => { slot.cancel = cancel; },
       release: () => { slot.cancel = null; },
     });
@@ -4482,6 +4635,45 @@ function forgetPark(id: string): void {
  * second-guessed it would be holding the host's row against a board the host
  * cannot see (see `detachedRuns`, which argues the whole posture).
  */
+/**
+ * ONE LINE, OUT TO WHOEVER IS LISTENING — the row's reporter, then the log.
+ *
+ * ── Why the log is in the reporter's `finally` ─────────────────────────────
+ *
+ * They are the same lines and they are not the same listener. `watch` is a
+ * caller's PARSER — a host reads counts out of it and draws a bar — and a parser
+ * has bugs; `line` is a copy going to a FILE. Called in sequence, a throw from
+ * the first would take the second with it, and the line that explains the failure
+ * is exactly the line a broken parser is most likely to throw on.
+ *
+ * So the log is written whatever the reporter does, and the reporter's throw is
+ * logged rather than raised: `settled`'s rule, one listener's bug is not another's
+ * engine.
+ */
+function sayOutward(line: string, about: string, wires: RunWires): void {
+  try {
+    wires.watch?.(line);
+  } catch (err) {
+    console.error(
+      `[queue] a progress listener threw for ${about}: `
+      + `${err instanceof Error ? err.message : String(err)}`,
+    );
+  } finally {
+    try {
+      wires.line?.(line);
+    } catch { /* a log that throws is never worth a run */ }
+  }
+}
+
+type Placed =
+  | { go: true; placement: Placement }
+  /**
+   * NOT THIS CALL'S ANY MORE. `wait` is non-null only for a run NOBODY HERE
+   * SCHEDULED — a host's row, which has a scheduler of its own to hand it back
+   * to. For a row on this board the park has already happened and this is null.
+   */
+  | { go: false; wait: PlacementWait | null };
+
 async function placeRun(
   next: Job,
   request: EngineRequest,
@@ -4493,7 +4685,7 @@ async function placeRun(
    * catch one function out has to know whether it has already happened.
    */
   settle: () => void,
-): Promise<Placement | null> {
+): Promise<Placed> {
   const held = slots.get(next.id) ?? null;
   /*
    * ONE LANE PER RUN, so taking the next candidate gives the last one back: the
@@ -4533,16 +4725,27 @@ async function placeRun(
     if (next.state === 'cancelled') return;
     next.message = line;
     changed();
-    if (wires.watch !== undefined) {
-      try {
-        wires.watch(line);
-      } catch {
-        // A listener's throw is not this run's problem — `settled`'s rule, and
-        // the same catch the progress pump one function down already makes.
-      }
-    }
+    // The placement's own lines go out with the engine's: "Loading dots-ocr on
+    // <server>" is a thing this run said, and a log that only has the engine's
+    // half cannot explain the twenty minutes before it spawned.
+    sayOutward(line, next.outputPath, wires);
   };
-  for (;;) {
+  /*
+   * ── ONE ASKING, AND NO LOOP (PK6) ─────────────────────────────────────────
+   *
+   * This was `for (;;)` with a backoff inside it, and for a row on this board it
+   * still parks and is re-picked — that part is the pump's and is unchanged. What
+   * it also did was SPIN for a run nobody here scheduled: a detached `runJob`
+   * holds no lane to give back, so the loop re-asked with a growing delay, capped
+   * at 30 s, for as long as the card stayed busy, and the host's row sat in
+   * `running` with no way to say why.
+   *
+   * That is a second scheduler with a 30-second opinion, inside a function whose
+   * whole contract is that somebody else decides when. So a detached run's wait
+   * is RETURNED, typed, the moment the placement says it — and the host parks its
+   * own row, on its own clock, with the holder's own sentence on it.
+   */
+  {
     const placementAbort = new AbortController();
     wires.claim(() => {
       placementAbort.abort();
@@ -4564,7 +4767,7 @@ async function placeRun(
       if (outcome.verdict === 'go' && outcome.placement.lease !== null) {
         await outcome.placement.lease.release();
       }
-      return null;
+      return { go: false, wait: null };
     }
     if (outcome.verdict === 'go') {
       forgetPark(next.id);
@@ -4603,7 +4806,7 @@ async function placeRun(
        */
       if (outcome.placement.lease !== null) leases.set(next.id, outcome.placement.lease);
       changed();
-      return outcome.placement;
+      return { go: true, placement: outcome.placement };
     }
     if (outcome.verdict === 'refuse') {
       forgetPark(next.id);
@@ -4612,7 +4815,7 @@ async function placeRun(
       next.finishedAt = Date.now();
       changed();
       settle();
-      return null;
+      return { go: false, wait: null };
     }
     const delay = parkDelay(next.id);
     if (held !== null) {
@@ -4636,14 +4839,21 @@ async function placeRun(
        */
       const timer = setTimeout(() => { void pump(); }, delay);
       timer.unref?.();
-      return null;
+      return { go: false, wait: null };
     }
+    /*
+     * A RUN NOBODY HERE SCHEDULED HANDS THE WAIT BACK. The sentence is the
+     * holder's own and `standing` says whether time alone will ever fix it, which
+     * is the difference between a card somebody is using and a class this machine
+     * cannot serve. Both are waits; only one of them is worth re-asking on a clock.
+     *
+     * `forgetPark` because this row is not parked HERE: the backoff ledger belongs
+     * to the board, and a count left behind would be handed to the next attempt as
+     * though this one had been waiting on our own clock.
+     */
+    forgetPark(next.id);
     say(outcome.reason);
-    await new Promise<void>((resolve) => {
-      const timer = setTimeout(resolve, delay);
-      timer.unref?.();
-    });
-    if (jobs.find((job) => job.id === next.id)?.state === 'cancelled') return null;
+    return { go: false, wait: outcome };
   }
 }
 
@@ -4694,7 +4904,11 @@ async function placeRun(
  * stack survives — and the row gets the error's own message, which is the shape
  * every deliberate failure arm in `carry` already uses.
  */
-async function executeJob(next: Job, request: EngineRequest, wires: RunWires): Promise<void> {
+async function executeJob(
+  next: Job,
+  request: EngineRequest,
+  wires: RunWires,
+): Promise<PlacementWait | null> {
   /*
    * ── THE ONE ENDING, SAID ONCE, WHOEVER SAYS IT ────────────────────────────
    *
@@ -4710,14 +4924,22 @@ async function executeJob(next: Job, request: EngineRequest, wires: RunWires): P
    * that has already settled `done` must not be rewritten to `failed` behind the
    * back of the listeners that were handed it.
    */
+  /*
+   * THIS RUN, WRITTEN DOWN WHILE IT IS ALIVE — see `drained`, which is what a
+   * quit waits on. Registered before the first await and dropped in the `finally`
+   * below, so the set is exactly the runs that have not finished.
+   */
   let over = false;
+  let ended = (): void => undefined;
+  const live = new Promise<void>((resolve) => { ended = resolve; });
+  liveRuns.add(live);
   const settle = (): void => {
     if (over) return;
     over = true;
     settled(next);
   };
   try {
-    await carry(next, request, wires, settle);
+    return await carry(next, request, wires, settle);
   } catch (err) {
     const said = err instanceof Error ? err.message : String(err);
     /*
@@ -4758,6 +4980,9 @@ async function executeJob(next: Job, request: EngineRequest, wires: RunWires): P
       changed();
       settle();
     }
+    // A THROW IS NOT A WAIT. The row has its ending; there is nothing for a
+    // scheduler to re-ask.
+    return null;
   } finally {
     /*
      * AND THE LANDING MARK GOES, ON EVERY WAY OUT — the rotation's `finally` one
@@ -4767,6 +4992,8 @@ async function executeJob(next: Job, request: EngineRequest, wires: RunWires): P
      * `wires.release()`; this is the one place it can be left from.
      */
     landings.delete(next.id);
+    liveRuns.delete(live);
+    ended();
   }
 }
 
@@ -4780,11 +5007,18 @@ async function executeJob(next: Job, request: EngineRequest, wires: RunWires): P
  */
 async function carry(
   next: Job,
+  /**
+   * THE REQUEST AS IT WAS STORED — identity only. The book, the seed and the
+   * generation are made from it INSIDE this function (`materializeAtSpawn`), which
+   * is why this is a `let` in all but name: what the engine is handed is the
+   * resolved copy, and `requests` is updated to it so the settle sweeps the file
+   * this run actually made.
+   */
   request: EngineRequest,
   wires: RunWires,
   settle: () => void,
-): Promise<void> {
-  if (next.state === 'cancelled') return;
+): Promise<PlacementWait | null> {
+  if (next.state === 'cancelled') return null;
   /*
    * ── THE JOB THAT LANDS IN THE TRAY INSTEAD OF THE WORKSHOP ────────────────
    *
@@ -4799,7 +5033,7 @@ async function carry(
    * which would rotate the project's cast book aside to make room for a file that
    * is not going anywhere near it.
    */
-  const exporting = request.kind !== 'read'
+  const rendering: ConversionKind | null = request.kind !== 'read'
     // NO TEXT PASS IS EVER AN EXPORT — the family, where this named the
     // translation alone: none of the three writes a document, so there is
     // nothing to file in the tray and nothing to rotate aside for.
@@ -4810,7 +5044,20 @@ async function carry(
     // is filed in the tray, no metadata is stamped onto it and no document is
     // rotated aside for it.
     && request.kind !== 'analysis'
-    && request.export === true;
+    && request.export === true
+    ? request.kind
+    : null;
+  /*
+   * ── ONE EXPRESSION, TWO FACTS: IS THIS AN EXPORT, AND IN WHAT FORMAT ──────
+   *
+   * It was a boolean, and the narrowing it performed was what every reader below
+   * depended on. The materialise further down replaces `request` with the resolved
+   * copy, and an assignment ends the compiler's narrowing — so the FORMAT is taken
+   * here, while the shape is still narrow, and the boolean is derived from it.
+   * Null is every kind that has no format at all: a reading, the three text passes,
+   * an analysis, and a rendering nobody asked to export.
+   */
+  const exporting = rendering !== null;
 
   next.state = 'running';
   next.startedAt = Date.now();
@@ -4899,8 +5146,32 @@ async function carry(
    * NULL MEANS THE ROW IS NO LONGER THIS CALL'S — parked back in the queue, or
    * failed with the reason on it. `placeRun` has already said so and published.
    */
-  const placement = await placeRun(next, request, wires, settle);
-  if (placement === null) return;
+  const placed = await placeRun(next, request, wires, settle);
+  if (!placed.go) return placed.wait;
+  const { placement } = placed;
+  /*
+   * ── AND WHERE IT WENT IS ANNOUNCED, ONCE, BEFORE ANYTHING SPAWNS ─────────
+   *
+   * See `RunWires.placed`: the host writes this into its in-flight ledger so a
+   * hard kill has something to release the LEASE with. Before the spawn, because
+   * a record written after the child exists can be missed by the kill it is for;
+   * and its throw is not this run's problem, on `settled`'s rule.
+   */
+  if (wires.placed !== undefined) {
+    try {
+      wires.placed({
+        server: placement.slot?.name ?? '',
+        model: placement.model ?? '',
+        leaseId: placement.lease?.id ?? null,
+        concurrency: placement.concurrency ?? 0,
+      });
+    } catch (err) {
+      console.error(
+        `[queue] a placement listener threw for ${next.outputPath}: `
+        + `${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
 
   /*
    * ── A READING WITH NOWHERE TO READ REFUSES, AND SAYS SO ─────────────────
@@ -4929,8 +5200,31 @@ async function carry(
     next.finishedAt = Date.now();
     changed();
     settle();
-    return;
+    return null;
   }
+
+  /*
+   * ── THE BOOK, THE SEED AND THE GENERATION, MADE NOW ──────────────────────
+   *
+   * HERE — after the placement and before the rotation — and the position is the
+   * whole argument. `materializeAtSpawn` writes a derived book into the OS temp
+   * directory and resolves a seed off the ledger, and both are work on this row's
+   * behalf: a row that turns out to be waiting for a busy card must leave the
+   * project, and the temp directory, exactly as it found it. It is also before the
+   * rotation, because a deferred pass may RENAME its product here and the rotation
+   * moves the file that name points at.
+   *
+   * THE STORED REQUEST IS REPLACED, because `sweepDerivedBook` at the settle reads
+   * `requests` to find the file to unlink, and a sweep that looked at the press's
+   * copy would leave the book this run actually made lying in the temp directory
+   * for a day.
+   *
+   * A THROW IS `executeJob`'s BOUNDARY, which is the ending every unmakeable plan
+   * in this app already has: the row lands `failed` wearing main's own sentence —
+   * "the step this was to be made from never landed" — and nothing is spawned.
+   */
+  request = await materializeAtSpawn(request, next);
+  requests.set(next.id, request);
 
   /*
    * ── THE TWO INTERMEDIATES THAT USED TO BE HERE, AND WHY THEY ARE GONE ──────
@@ -4996,10 +5290,10 @@ async function carry(
    * to carry a corrected title before this. One read of the ledger, two consumers,
    * and neither of them re-derives the other's answer.
    */
-  const merged = exporting
-    ? await recordFor(next.outputPath, request.kind, next.parentStep ?? null, homeOf(request))
+  const merged = rendering !== null
+    ? await recordFor(next.outputPath, rendering, next.parentStep ?? null, homeOf(request))
     : {};
-  const record = exporting && request.kind !== 'txt'
+  const record = rendering !== null && rendering !== 'txt'
     ? {
       // The command follows the PRODUCT and not the position: a facsimile export
       // takes the Info dictionary's four fields whatever kind of document the
@@ -5028,7 +5322,7 @@ async function carry(
       next.finishedAt = Date.now();
       changed();
       settle();
-      return;
+      return null;
     }
   }
 
@@ -5129,7 +5423,7 @@ async function carry(
           next.finishedAt = Date.now();
           changed();
           settle();
-          return;
+          return null;
         }
       }
     }
@@ -5328,16 +5622,7 @@ async function carry(
        * mirror has not been told about — and its throw is not this run's problem,
        * on `settled`'s rule: one listener's bug is not another's engine.
        */
-      if (wires.watch !== undefined) {
-        try {
-          wires.watch(line);
-        } catch (err) {
-          console.error(
-            `[queue] a progress listener threw for ${next.outputPath}: `
-            + `${err instanceof Error ? err.message : String(err)}`,
-          );
-        }
-      }
+      sayOutward(line, next.outputPath, wires);
     };
 
     /*
@@ -5368,7 +5653,7 @@ async function carry(
       next.finishedAt = Date.now();
       changed();
       settle();
-      return;
+      return null;
     }
     /*
      * THE LINE IS SAFE TO PRINT AND THAT IS A PROPERTY OF THE DESIGN, not luck. A
@@ -5392,7 +5677,7 @@ async function carry(
      */
     // File preparation above also awaits. Cancelling before the child exists
     // must never turn into a late spawn after the cancellation was acknowledged.
-    if (jobs.find((job) => job.id === next.id)?.state === 'cancelled') return;
+    if (jobs.find((job) => job.id === next.id)?.state === 'cancelled') return null;
     console.log(`[job] ${next.kind} ${args.join(' ')}`);
     let handle = runEngine(args, watch, placement.env);
     /*
@@ -5599,7 +5884,7 @@ async function carry(
          * with nothing in it.
          */
         settle();
-        return;
+        return null;
       }
       /*
        * ── A TRANSLATION LANDED, AND WHAT IT LEFT IS ANSWERS ────────────────────
@@ -5665,7 +5950,7 @@ async function carry(
         next.message = `Analysed ${path.basename(next.inputPath)} — the report is on its step.`;
         changed();
         settle();
-        return;
+        return null;
       }
       if (isTextPassRequest(request)) {
         /*
@@ -5728,7 +6013,7 @@ async function carry(
          */
         await materializeTextPass(next.outputPath);
         settle();
-        return;
+        return null;
       }
       /*
        * ── AN EXPORT IS FILED AND NOTHING ELSE HAPPENS TO IT ─────────────────────
@@ -5887,7 +6172,7 @@ async function carry(
          * successful export as an ending with nothing in it.
          */
         settle();
-        return;
+        return null;
       }
       /*
        * ── A STEP'S OWN DOCUMENT IS FILED NOWHERE, AND THAT IS THE POINT ────────
@@ -5921,7 +6206,7 @@ async function carry(
           : 'The book at that step is ready.';
         changed();
         settle();
-        return;
+        return null;
       }
       /*
        * The catalogue learns about the origin HERE, when it exists.
@@ -6022,6 +6307,14 @@ async function carry(
       // paraphrased, and never replaced with an exit code.
       next.error = result.stderr.trim() || `The engine exited ${result.code} with nothing to say.`;
       /*
+       * AND A COPY THE ROW CANNOT LOSE. `next.error` is erased by a resumable stop
+       * on the host's side (BookForge P6), and a host's log is the only place a
+       * night of failures survives the window being reloaded. Consumed by
+       * `runDetached`; a row nobody detached simply leaves it and the next line
+       * clears it.
+       */
+      lastEngineStderr.set(next.id, result.stderr);
+      /*
        * AND IT GOES TO THE CONSOLE, WHOLE.
        *
        * Until now a failure existed in exactly one place a person could reach: a
@@ -6095,6 +6388,9 @@ async function carry(
   // after whatever that landing produced; what reaches here is a cancel, a
   // failure, and the rendering whose landing is a catalogue row.
   settle();
+  // NOTHING WAS WAITED FOR: this run ran. See `Placed`, and `runDetached`, which
+  // is the only caller that can do anything with the other answer.
+  return null;
 }
 
 /**
@@ -6137,7 +6433,7 @@ async function carry(
  * exception here: it is a fact about a row, reported the way this queue has always
  * reported it.
  */
-export async function runJob(request: EngineRequest, opts: RunOptions = {}): Promise<Job> {
+export async function runJob(request: EngineRequest, opts: RunOptions = {}): Promise<RunOutcome> {
   /*
    * EVERY CALLER OF THIS DOOR IS THE HOST, BY CONSTRUCTION, and that is what
    * lets the row below be marked as the host's twin without anybody being asked.
@@ -6146,7 +6442,37 @@ export async function runJob(request: EngineRequest, opts: RunOptions = {}): Pro
    * there that its run is nobody's twin. So "a host scheduled this" is a fact
    * about WHICH DOOR WAS OPENED rather than a claim passed in and trusted.
    */
-  return runDetached(request, opts, true);
+  const { job, wait, stderrTail } = await runDetached(request, opts, true);
+  /*
+   * ── THE FOUR ANSWERS, AND WHY THEY ARE FOUR ───────────────────────────────
+   *
+   * A WAIT IS NOT A ROW. Nothing ran, nothing was spent, and the row minted for
+   * the attempt has already been discarded (`runDetached`) — so handing one back
+   * would be handing over residue and inviting the host to draw it. What the host
+   * needs is the holder's own sentence and whether time alone will fix it.
+   *
+   * THE OTHER THREE ARE THE ROW, exactly as this door has always answered, and
+   * `cancelled` stays distinct from `failed` for the reason it always was:
+   * somebody spent GPU and took it back, and filing that as a failure is how a
+   * retry restarts work a person just stopped.
+   *
+   * THE STDERR TRAVELS SEPARATELY on a failure. `row.error` is the engine's own
+   * sentence and the host puts it on the row; the tail is for the host's LOG,
+   * which is the copy that survives a Stop erasing the row's error (BookForge P6).
+   */
+  if (wait !== null) {
+    return { outcome: 'wait', busyLine: wait.reason, standing: wait.standing };
+  }
+  if (job.state === 'cancelled') return { outcome: 'cancelled', row: job };
+  if (job.state === 'failed') {
+    return {
+      outcome: 'failed',
+      row: job,
+      error: job.error ?? 'Foundry did not say why this run failed.',
+      stderrTail,
+    };
+  }
+  return { outcome: 'done', row: job };
 }
 
 /**
@@ -6165,6 +6491,20 @@ interface RunOptions {
   /** Every line the engine writes, as it writes it. The row gets them too. */
   onProgress?: (line: string) => void;
   /**
+   * THE SAME LINES, FOR THE CALLER'S LOG — see `RunWires.line`.
+   *
+   * It is called in `onProgress`'s own `finally`, so a reporter that throws
+   * cannot cost the log the line that explains the failure. A host that tees this
+   * to a file is the reason a hosted run's words survive the window being
+   * reloaded and the row being stopped (BookForge P5/F7).
+   */
+  onLine?: (line: string) => void;
+  /**
+   * WHERE THIS RUN WAS PLACED, once, before the spawn — see `RunWires.placed` and
+   * `RunPlacement`. The host records it so a hard kill can release the lease.
+   */
+  onPlaced?: (placement: RunPlacement) => void;
+  /**
    * STOP THIS RUN — mapped onto exactly what the ✕ does to a running job.
    *
    * It is `cancelHere` and not `cancel`, deliberately: this row is Foundry's
@@ -6176,21 +6516,21 @@ interface RunOptions {
    */
   signal?: AbortSignal;
   /**
-   * THE MACHINE THE SCHEDULER'S OWN ROW CHOSE — a slot name, or `any`.
+   * THE CARD THE SCHEDULER ALREADY ADMITTED THIS RUN TO — see {@link RunVenue}.
    *
-   * Hosted, the person picked it on the HOST's queue row, and without this it
-   * never crossed: the row was stamped with THIS app's default
-   * (`waitForOfNewJob`), so a choice made on one screen was answered by a
-   * setting on another. Found by BookForge's session reading the seam,
-   * 2026-09-14, before anybody had pressed it.
+   * It was `waitFor?: string`, and the change is what the word means rather than
+   * what it carries. `waitFor` was a PREFERENCE that the placement was free to
+   * re-decide; a venue is a DECISION already taken, with a poll, a lease
+   * reservation and a slot charged behind it (BookForge's rulings 7 and 9 of
+   * 2026-09-20). So the placement places there and nowhere else.
    *
-   * Absent means the caller has no opinion and this app's own default decides,
-   * which is what `runNow` wants and what a host that does not offer a picker
-   * wants. The name is not validated here: a slot that has gone is a wait with
-   * a sentence at the placement (`placeOnSlot`), which is where a name can be
+   * Absent or null means the caller has no machine to name — a rendering, a
+   * compile, an install — and this app's own default decides, which is what
+   * `runNow` wants. The name is not validated here: a slot that has gone is a
+   * wait with the placement's own sentence on it, which is where a name can be
    * checked against a list that is current.
    */
-  waitFor?: string;
+  venue?: RunVenue | null;
 }
 
 /**
@@ -6216,7 +6556,7 @@ async function runDetached(
    * so it is marked nothing and stays drawn for as long as it lasts.
    */
   viaHost: boolean,
-): Promise<Job> {
+): Promise<{ job: Job; wait: PlacementWait | null; stderrTail: string }> {
   const parentStep = opts.parentStep ?? null;
   /*
    * THE ROW, BORN RUNNING. Every field is composed exactly as `enqueueHere` and
@@ -6259,10 +6599,10 @@ async function runDetached(
      * calling this the host has already decided that now is the moment, exactly as
      * `runJob`'s no-dedupe paragraph argues. Foundry does not second-guess a
      * scheduler; what it does is refuse to RUN work whose parent never landed, and
-     * that refusal is `materializeDeferred`'s, one function down, where it can name
+     * that refusal is `materializeAtSpawn`'s, inside the run, where it can name
      * the step rather than the row.
      */
-    ...placedBy(request.kind, opts.waitFor),
+    ...placedBy(request.kind, opts.venue?.server),
     ...promisedBy(request),
     createdAt: Date.now(),
   };
@@ -6308,44 +6648,23 @@ async function runDetached(
   if (opts.signal?.aborted === true) {
     abort();
     opts.signal.removeEventListener('abort', abort);
-    return copyOf(job);
+    return { job: copyOf(job), wait: null, stderrTail: '' };
   }
 
   /*
-   * ── THE PROMISE BECOMES A REQUEST — the host's door onto the same re-plan ───
+   * ── AND THE MATERIALISE IS NOT HERE ANY MORE (PK6) ─────────────────────────
    *
-   * `runInSlot` does this for the queue this app schedules; this does it for the
-   * queue somebody else schedules, and it is the same function for the reason every
-   * other line in here is shared: a hosted run and a standalone run are the same
-   * run.
-   *
-   * IT IS ALSO THE REFUSAL THIS SEAM OWES. A host's pump may run a chained row out
-   * of order — it is not obliged to honour `after`, and a host that predates the
-   * field cannot — so this is where a run whose parent never landed is stopped by
-   * name rather than allowed to export the uncleaned book. The row settles `failed`
-   * with main's sentence on it, which is exactly the answer `runJob` promises to
-   * resolve with rather than throw.
+   * `materializeDeferred` used to run between the mint and `executeJob`, in BOTH
+   * doors, each with its own copy of the failed-row ending. It has moved inside
+   * the run (`carry`), which is where the seed copy and the analysis checklist
+   * already were and for their rule: a row that turns out to be waiting for a busy
+   * card must leave the project exactly as it found it. Its refusal — a chained
+   * row whose parent never landed — is unchanged and still lands as a failed row
+   * with main's sentence on it, through `executeJob`'s own boundary.
    */
-  let spawning = request;
+  let waited: PlacementWait | null = null;
   try {
-    spawning = await materializeDeferred(request, job);
-    if (spawning !== request) requests.set(job.id, spawning);
-  } catch (err) {
-    if (jobs.find((row) => row.id === job.id)?.state === 'cancelled') {
-      opts.signal?.removeEventListener('abort', abort);
-      return copyOf(job);
-    }
-    job.state = 'failed';
-    job.error = err instanceof Error ? err.message : String(err);
-    job.finishedAt = Date.now();
-    opts.signal?.removeEventListener('abort', abort);
-    changed();
-    settled(job);
-    return copyOf(job);
-  }
-
-  try {
-    await executeJob(job, spawning, {
+    waited = await executeJob(job, request, {
       /*
        * OFF THE BOARD, which is `detachedRuns`' whole argument: this run was
        * scheduled by somebody who cannot see the board, so it must neither wait
@@ -6357,11 +6676,27 @@ async function runDetached(
       claim: (cancel) => { detachedRuns.set(job.id, cancel); },
       release: () => { detachedRuns.delete(job.id); },
       ...(opts.onProgress !== undefined ? { watch: opts.onProgress } : {}),
+      ...(opts.onLine !== undefined ? { line: opts.onLine } : {}),
+      ...(opts.onPlaced !== undefined ? { placed: opts.onPlaced } : {}),
     });
   } finally {
     opts.signal?.removeEventListener('abort', abort);
     detachedRuns.delete(job.id);
   }
+  /*
+   * ── A WAIT LEAVES NO ROW BEHIND ───────────────────────────────────────────
+   *
+   * `remove`'s own rule, applied to a row that never started: *"a job that never
+   * started spent nothing and produced nothing, and a `cancelled` row for it is
+   * residue."* The scheduler that called will ask again when the card is free, and
+   * that asking mints its own row; leaving this one would accumulate one grey row
+   * per re-ask for the life of the process, in a list the hosted window cannot
+   * even reach.
+   *
+   * NOT `settled`, deliberately: nothing ended. A settle would publish an ending
+   * to every listener and cascade this row's chain away over a card being busy.
+   */
+  if (waited !== null) discardUnrun(job);
   /*
    * ── AND IT DOES NOT PUMP, WHICH IS THE LINE THE READING SERVER LIVES ON ────
    *
@@ -6379,7 +6714,31 @@ async function runDetached(
    * the host's to declare, once, when its own pump has nothing left
    * (`hostQueueDrained`).
    */
-  return copyOf(job);
+  /*
+   * THE STDERR IS CONSUMED HERE, so the map holds at most the rows that are
+   * between their engine's exit and this line. Left to accumulate it would be a
+   * copy of every failed run's output for the life of the process.
+   */
+  const stderrTail = lastEngineStderr.get(job.id) ?? '';
+  lastEngineStderr.delete(job.id);
+  return { job: copyOf(job), wait: waited, stderrTail };
+}
+
+/**
+ * TAKE A ROW OUT OF THE LIST WITHOUT ENDING IT — for the one case that is neither.
+ *
+ * A detached run that met a busy card never started: no engine, no lease, no
+ * product, nothing to sweep. `settled` is the wrong door (it publishes an ending
+ * and cascades the chain away) and so is leaving the row (it accumulates). This
+ * is the third thing, and it exists exactly once.
+ */
+function discardUnrun(job: Job): void {
+  const index = jobs.indexOf(job);
+  if (index >= 0) jobs.splice(index, 1);
+  requests.delete(job.id);
+  hostScheduled.delete(job);
+  forgetPark(job.id);
+  changed();
 }
 
 /**
@@ -6468,7 +6827,26 @@ export async function runNow(
   // NOT `runJob`: that door is the seam's and marks its row as a host's twin.
   // This run was decided here, at the button, and nothing anywhere else holds a
   // row for it — see the paragraph above and `hostScheduled`.
-  const job = await runDetached(request, { parentStep }, false);
+  const { job, wait } = await runDetached(request, { parentStep }, false);
+  /*
+   * ── A WAIT HERE IS A FAILED EXPORT, BY NAME ───────────────────────────────
+   *
+   * This door has no queue behind it: the person is standing in front of the
+   * dialog waiting for a file, and there is nobody to park the row for. It is also
+   * close to unreachable — an export, a compile and a mint all take {@link
+   * UNPLACED} (`capabilityClassOf` says they meet no model), so no placement of
+   * theirs can wait — and "close to" is where the expensive failures live. So the
+   * holder's own sentence becomes the dialog's answer rather than a promise that
+   * never resolves.
+   */
+  if (wait !== null) {
+    return {
+      ...job,
+      state: 'failed',
+      error: wait.reason,
+      finishedAt: Date.now(),
+    };
+  }
 
   /*
    * OUT OF THE LIST, NOW THAT EVERYTHING READ FROM IT. The landings, the
