@@ -336,6 +336,23 @@ function startFakeCrucible(behaviour, rows) {
         });
       }
 
+      if (behaviour === 'goes-quiet') {
+        /*
+         * THE WEDGED SERVER (bug hunt C2). The socket stays OPEN and nothing
+         * more is written — no terminal frame, no end() — which is what a live
+         * uvicorn in front of a stuck worker looks like to a client. When the
+         * DELETE arrives it answers the way a real one does.
+         */
+        const waitForQuietCancel = setInterval(() => {
+          if (state.cancelled.length === 0) return;
+          clearInterval(waitForQuietCancel);
+          frame('cancelled', { status: 'cancelled' });
+          res.end();
+        }, 10);
+        req.on('close', () => clearInterval(waitForQuietCancel));
+        return undefined;
+      }
+
       if (behaviour === 'cancel') {
         // Hold the stream open until the DELETE arrives, then end `cancelled` —
         // which is exactly what a real Crucible does with a running job.
@@ -1037,6 +1054,54 @@ async function bridgeSeamChecks() {
 
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * A SERVER THAT STOPS TALKING MID-RENDER — bug hunt C2, Owen's ruling 3.
+ *
+ * Nothing measured the gap between progress frames, so a Crucible whose worker
+ * wedged held the socket, the row, the GPU slot and the book's hold on that
+ * card until somebody pressed Stop. The clock is `crucible/stream-stall.ts`;
+ * here it is driven at milliseconds against a real socket that goes silent.
+ */
+async function wentQuietChecks() {
+  const fake = await startFakeCrucible('goes-quiet');
+  const server = registerFake(fake.url);
+  const sentencesDir = freshSentencesDir();
+  let thrown = null;
+  try {
+    await render.runCrucibleRender({
+      server,
+      renderId: 'test-render-quiet',
+      voice: 'mistborn',
+      language: 'en',
+      chunks: CHUNKS,
+      sentencesDir,
+      onLog: () => {},
+      // Milliseconds, never the shipped ten minutes: the behaviour under test
+      // is what happens when the window runs out.
+      stallClock: { stallMs: 150, graceMs: 400 },
+    });
+  } catch (err) {
+    thrown = err;
+  } finally {
+    await fake.close();
+  }
+
+  await check('a render whose server goes quiet is cancelled and refused by name', () => {
+    assert.ok(thrown !== null, 'a stream that stops must not resolve as a finished render');
+    assert.strictEqual(thrown.name, 'CrucibleRenderRefused');
+    assert.strictEqual(thrown.code, 'crucible_went_quiet');
+    assert.strictEqual(fake.state.cancelled.length, 1,
+      'a CANCEL, not a hang-up: abandoning the stream leaves the book rendering on that card');
+  });
+
+  await check('and it is TRANSIENT, so the row parks instead of going red', () => {
+    assert.strictEqual(thrown.transient, true);
+    assert.ok(/silent for 150 ms/.test(thrown.transientLine), thrown.transientLine);
+    assert.ok(/already downloaded are on disk/.test(thrown.message),
+      'it says what survives — a resume asks only for the rest (R6)');
+  });
+}
+
 (async () => {
   await voiceMapChecks();
   await bridgeSeamChecks();
@@ -1044,6 +1109,7 @@ async function bridgeSeamChecks() {
   await busyChecks();
   await leasedChecks();
   await cancelChecks();
+  await wentQuietChecks();
   await refusalChecks();
 
   try {

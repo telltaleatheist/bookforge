@@ -268,6 +268,27 @@ const SUITES = [
   // card is somebody else's, and the scratch it may rescue but must not delete.
   'test-crucible-in-flight-ledger',
   'test-crucible-quit-sweep',
+  // THE THREE WAYS A CRUCIBLE STOPS ANSWERING (bug hunt 2026-09-20, §C).
+  //
+  // `stall-clock` — a server whose uvicorn is alive and whose worker has wedged
+  // holds the SSE socket open forever. Nothing measured the gap between frames,
+  // so the row sat at processing, the GPU slot stayed charged, the book stayed
+  // atomic on that card, and Stop was the only exit. Ten minutes of silence
+  // (Owen's ruling 3) now DELETEs the job and parks the row.
+  //
+  // `transient-refusals` — Contract 1. A step parks only on `busyLine`, and
+  // every door minted `crucible_unreachable` without one, so a Crucible that
+  // was merely ASLEEP reddened the row while the identical wait on a BUSY card
+  // parked and came back. The pair `transient`/`transientLine` is the flag half
+  // (the reader half is `queue-steps/runtime.ts`).
+  //
+  // `host-registry-refresh` — the hosted Foundry's snapshot of this machine's
+  // servers was refreshed from ten IPC handlers while the scheduler was told
+  // INSIDE `addServer`/`setServerEnabled`, so a non-IPC writer (auto-connect,
+  // pairing, the CLI) moved the list and the window never heard.
+  'test-crucible-stall-clock',
+  'test-crucible-transient-refusals',
+  'test-crucible-host-registry-refresh',
   // The LEASE (Owen, 2026-09-14: "Models should always be unloaded when we're
   // done with them. Every time."). A Crucible now clears the card the moment no
   // job, no lease, no session and no chat hold it — and a chat holds NOTHING, so

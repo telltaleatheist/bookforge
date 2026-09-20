@@ -207,6 +207,37 @@ export function crucibleHeartbeatIntervalMs(ttlSeconds: number): number {
   return Math.round((ttlSeconds / 3) * 1000);
 }
 
+/**
+ * HOW LONG ONE LEASE CALL MAY TAKE BEFORE IT IS A FAILURE — bug hunt C7,
+ * 2026-09-20.
+ *
+ * {@link leaseRequest} was a bare `fetch` with no signal and no timeout (the
+ * SDK's stale-socket retry does not reach it — this route is hand-rolled),
+ * and the timer above skips a tick while one is in flight
+ * (`if (released || heartbeat !== null) return;`). So a heartbeat POST to a
+ * wedged server that never settles made **every later tick a no-op**: the
+ * lease lapsed at its 120 s ttl with NO log line (the `catch` runs only if the
+ * promise settles) and the resident model could be evicted at chunk 400 of
+ * 2000 — the exact failure this module exists to prevent.
+ *
+ * Shorter than the beat (40 s at the default ttl) on purpose: a hung request
+ * must be OVER before the next tick, so that tick actually goes out. Three
+ * beats still fit inside one ttl, which is what makes two consecutive losses
+ * survivable.
+ */
+export const CRUCIBLE_LEASE_REQUEST_TIMEOUT_MS = 10_000;
+
+/**
+ * How long `release()` waits for an in-flight heartbeat before giving the card
+ * back under the id it already has.
+ *
+ * Short: the only thing the wait buys is the NEW id a re-lease may be taking,
+ * and naming the old one is a `404 unknown_lease` that this module already
+ * treats as the state a release wanted. Against that, `release()` is on the
+ * quit path, and a quit that waits on another machine is a quit that hangs.
+ */
+export const CRUCIBLE_LEASE_RELEASE_GRACE_MS = 2_000;
+
 const API_HEADER = 'X-Crucible-Api';
 const API_VERSION = '1';
 
@@ -275,8 +306,9 @@ export { CrucibleLeased } from '@crucible/client';
 async function leaseRequest(
   where: { url: string; token: string },
   route: string,
-  options: { method: string; body?: unknown },
+  options: { method: string; body?: unknown; timeoutMs?: number },
 ): Promise<unknown> {
+  const timeoutMs = options.timeoutMs ?? CRUCIBLE_LEASE_REQUEST_TIMEOUT_MS;
   let response: Response;
   try {
     response = await fetch(`${where.url}${route}`, {
@@ -288,10 +320,23 @@ async function leaseRequest(
         ...(options.body === undefined ? {} : { 'Content-Type': 'application/json' }),
       },
       ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
+      // A CLOCK, BECAUSE THE BEAT HAS ONE — see the constant's own note. A
+      // request that outlives it aborts, this throws, and the NEXT tick goes
+      // out; without it one wedged POST silenced the heartbeat for the rest of
+      // the book.
+      signal: AbortSignal.timeout(timeoutMs),
     });
   } catch (cause) {
+    // Named as a timeout rather than left as "The operation was aborted",
+    // which reads like this side cancelled something.
+    const timedOut = cause instanceof Error
+      && (cause.name === 'TimeoutError' || cause.name === 'AbortError');
     throw new CrucibleUnreachable(
-      where.url, cause instanceof Error ? cause.message : String(cause), cause,
+      where.url,
+      timedOut
+        ? `did not answer ${options.method} ${route} within ${timeoutMs} ms`
+        : (cause instanceof Error ? cause.message : String(cause)),
+      cause,
     );
   }
 
@@ -498,6 +543,14 @@ export interface CrucibleLeaseOptions {
    * seconds per check watching a real heartbeat arrive.
    */
   readonly heartbeatMs?: number;
+  /**
+   * OVERRIDES {@link CRUCIBLE_LEASE_REQUEST_TIMEOUT_MS} for this lease's calls.
+   *
+   * **Only a keeper passes this**, for `heartbeatMs`'s reason exactly: the
+   * behaviour worth pinning is what happens when a heartbeat NEVER answers, and
+   * a suite must not spend ten seconds per check proving it.
+   */
+  readonly requestTimeoutMs?: number;
   /** Free text for the run's log. */
   readonly onLog?: (line: string) => void;
 }
@@ -571,6 +624,7 @@ export async function takeCrucibleLease(options: CrucibleLeaseOptions): Promise<
   const { server, kind, id: leased, act } = options;
   const takeRoute = leaseRoute(leased);
   const ttlSeconds = options.ttlSeconds ?? CRUCIBLE_LEASE_TTL_SECONDS;
+  const timeoutMs = options.requestTimeoutMs ?? CRUCIBLE_LEASE_REQUEST_TIMEOUT_MS;
   const log = options.onLog ?? ((line: string) => console.log(`[CRUCIBLE-LEASE] ${line}`));
   const engine = await crucibleClientFor(server, CRUCIBLE_CLIENT_NAME);
 
@@ -584,7 +638,7 @@ export async function takeCrucibleLease(options: CrucibleLeaseOptions): Promise<
 
   const acquire = async (): Promise<string> => {
     const body = await leaseRequest(
-      where(), takeRoute, { method: 'POST', body: { act, ttl_seconds: ttlSeconds } },
+      where(), takeRoute, { method: 'POST', body: { act, ttl_seconds: ttlSeconds }, timeoutMs },
     );
     const granted = (body as { lease_id?: unknown } | null)?.lease_id;
     if (typeof granted !== 'string' || granted === '') {
@@ -610,11 +664,20 @@ export async function takeCrucibleLease(options: CrucibleLeaseOptions): Promise<
 
   let released = false;
   let heartbeat: Promise<void> | null = null;
+  /**
+   * Whether the named "a beat timed out and the next one still goes out" line
+   * has been printed for this lease. ONCE: the rule is worth stating the first
+   * time it fires and is noise on every later tick, where the generic failure
+   * line below already carries the server's own words.
+   */
+  let saidBeatsCanTimeOut = false;
   const beat = options.heartbeatMs ?? crucibleHeartbeatIntervalMs(ttlSeconds);
   const timer = setInterval(() => {
     if (released || heartbeat !== null) return;
     heartbeat = Promise.resolve()
-      .then(() => leaseRequest(where(), `/v1/leases/${encodeURIComponent(id)}/heartbeat`, { method: 'POST' }))
+      .then(() => leaseRequest(
+        where(), `/v1/leases/${encodeURIComponent(id)}/heartbeat`, { method: 'POST', timeoutMs },
+      ))
       .then(() => undefined)
       .catch(async (err: unknown) => {
         /*
@@ -678,6 +741,23 @@ export async function takeCrucibleLease(options: CrucibleLeaseOptions): Promise<
          * is silent — an eviction later in the book gets a visible cause here
          * instead of looking like the server misbehaving.
          */
+        /*
+         * AND A BEAT THAT TIMED OUT IS NAMED AS ONE, ONCE (bug hunt C7).
+         *
+         * Before the clock on {@link leaseRequest} this branch could not be
+         * reached at all: a POST that never settled left `heartbeat` non-null
+         * forever, so every later tick returned at the guard and the lease
+         * lapsed at its ttl with nothing in any log. The line says the rule out
+         * loud the first time, so a reader of a later eviction knows the beats
+         * were still going out.
+         */
+        if (!saidBeatsCanTimeOut && failure instanceof CrucibleUnreachable
+          && /within \d+ ms/.test(failure.message)) {
+          saidBeatsCanTimeOut = true;
+          log(`a lease heartbeat for ${leased} on crucible "${server}" timed out after `
+            + `${timeoutMs} ms. It is ABANDONED rather than waited on, so the next beat goes out `
+            + `in ${beat} ms; the ttl is ${ttlSeconds}s, which is three beats.`);
+        }
         log(`the lease heartbeat for ${leased} on crucible "${server}" failed: `
           + `${failure instanceof Error ? failure.message : String(failure)}`);
       }).finally(() => { heartbeat = null; });
@@ -697,11 +777,35 @@ export async function takeCrucibleLease(options: CrucibleLeaseOptions): Promise<
       released = true;
       clearInterval(timer);
       openLeases.delete(lease);
-      // A heartbeat may already be replacing a lease forgotten by a restarted
-      // engine. Wait for that receipt before choosing the id to release.
-      await heartbeat;
+      /*
+       * A heartbeat may already be replacing a lease forgotten by a restarted
+       * engine, and the id it takes is the id this release must name. So it is
+       * WAITED FOR — but only for a moment.
+       *
+       * It used to be awaited unconditionally, and that is a hang (bug hunt
+       * C7): the in-flight beat is exactly the request that does not settle
+       * against a wedged server, and `release()` is on the quit path and on
+       * every `withCrucibleLease` exit. A clock on {@link leaseRequest} bounds
+       * the beat itself, and this bounds the wait on it independently — a
+       * release that gave a card back a moment late is nothing; one that never
+       * returns stops a quit.
+       *
+       * Releasing the id we have is the right answer when the grace runs out:
+       * the id only changes on a re-lease, a re-lease only happens after
+       * `unknown_lease`, and `unknown_lease` on the DELETE below is already a
+       * no-op because nothing is held.
+       */
+      await Promise.race([
+        heartbeat ?? Promise.resolve(),
+        new Promise<void>((resolve) => {
+          const grace = setTimeout(resolve, CRUCIBLE_LEASE_RELEASE_GRACE_MS);
+          grace.unref?.();
+        }),
+      ]);
       try {
-        await leaseRequest(where(), `/v1/leases/${encodeURIComponent(id)}`, { method: 'DELETE' });
+        await leaseRequest(
+          where(), `/v1/leases/${encodeURIComponent(id)}`, { method: 'DELETE', timeoutMs },
+        );
         log(`crucible "${server}" released the lease on ${leased} (${id})`);
       } catch (err) {
         // ALREADY GONE IS THE STATE A RELEASE WANTED. `unknown_lease` means it was

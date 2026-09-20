@@ -73,9 +73,14 @@ import {
 } from '@crucible/client';
 import type { RenderChunk, RenderResult } from '@crucible/client';
 import { CRUCIBLE_CLIENT_NAME, crucibleClientFor } from './servers';
-import { recordInFlight } from './in-flight-ledger';
+import { noteInFlightEvent, recordInFlight } from './in-flight-ledger';
+import { crucibleTransientLine } from './job';
+import {
+  CrucibleStreamWentQuiet, describeStallInterval, withStreamStallClock,
+} from './stream-stall';
+import { sweepCrucibleServerInFlight } from './in-flight-sweep';
 import { renderSessionDirOf } from '../narrator-paths';
-import { downloadRenderArtifacts } from './render-artifacts';
+import { downloadRenderArtifacts, type RenderArtifactsOutcome } from './render-artifacts';
 import {
   crucibleVoiceBand, describeVenueBand, refuseChunksOverVenueCap, renderBandFor,
 } from './voice-band';
@@ -164,12 +169,29 @@ export class CrucibleRenderRefused extends Error {
    * a 409 is a wait, not a failure). Added for that consumer, 2026-09-13.
    */
   readonly busyLine?: string;
+  /**
+   * TRUE WHEN WAITING IS THE RIGHT ANSWER — Contract 1 of the 2026-09-20 bug
+   * hunt, the same pair `CrucibleJobRefused` carries and for the same reason.
+   *
+   * A held card parked the row; an unreachable one FAILED it, so a server that
+   * was merely asleep sent a book to *Needs you* and stopped the chain. A 5xx
+   * is the same wait with a different cause. `queue-steps/runtime.ts
+   * transientLineOf` reads this pair and `settleStep` parks on it; nothing here
+   * retries, because the queue's admission tick is what asks again.
+   */
+  readonly transient?: boolean;
+  /** The sentence a parked row shows. Present exactly when `transient`. */
+  readonly transientLine?: string;
 
-  constructor(code: string, message: string, busyLine?: string) {
+  constructor(code: string, message: string, busyLine?: string, transientLine?: string) {
     super(`${code}: ${message}`);
     this.name = 'CrucibleRenderRefused';
     this.code = code;
     if (busyLine !== undefined) this.busyLine = busyLine;
+    if (transientLine !== undefined) {
+      this.transient = true;
+      this.transientLine = transientLine;
+    }
   }
 }
 
@@ -448,18 +470,29 @@ export function describeCrucibleRefusal(err: unknown, server: string): CrucibleR
       + `${err.serverMessage}. One of the two must be updated.`,
     );
   }
+  /*
+   * A 5xx AND AN UNREACHABLE SERVER ARE WAITS, NOT FAILURES (Contract 1,
+   * 2026-09-20). The sentence is composed by `job.ts crucibleTransientLine` and
+   * not written out here, because a row's wait must read the same whichever
+   * door hit the closed socket — the mistake the `busyLine`/`leasedLine` split
+   * made once already.
+   */
   if (err instanceof CrucibleServerError) {
     return new CrucibleRenderRefused(
       err.code,
       `${at} failed this render (HTTP ${err.status}): ${err.serverMessage}. The server broke; its own `
       + 'log says why.',
+      undefined,
+      crucibleTransientLine(server, `HTTP ${err.status}: ${err.serverMessage}`),
     );
   }
   if (err instanceof CrucibleUnreachable) {
     return new CrucibleRenderRefused(
       'crucible_unreachable',
-      `${at} could not be reached: ${err.message}. A render is not retried here — start the server `
-      + 'and queue the book again, or pick another one.',
+      `${at} could not be reached: ${err.message}. A render is not retried here — the queue asks `
+      + 'again on its next admission tick; start the server, or pick another one.',
+      undefined,
+      crucibleTransientLine(server, err.message),
     );
   }
   if (err instanceof CrucibleNotACrucible) {
@@ -545,9 +578,22 @@ export interface RunCrucibleRenderOptions {
   readonly onChunkWritten?: (index: number, file: string) => void;
   /** Free-text for the job log. */
   readonly onLog?: (message: string) => void;
+  /**
+   * OVERRIDES the stall clock's window and its post-DELETE grace
+   * (`stream-stall.ts`). **Only a keeper passes this** — `job.ts`'s identical
+   * field carries the reason.
+   */
+  readonly stallClock?: { readonly stallMs?: number; readonly graceMs?: number };
 }
 
 export interface CrucibleRenderOutcome {
+  /**
+   * The registry name this rendered on — the third of the three facts
+   * `{server, jobId, lastEventId}` a resume needs (bug hunt C4, 2026-09-20). A
+   * job id means nothing without the server that minted it, and a step's
+   * artifact detail must be able to carry the whole triple.
+   */
+  readonly server: string;
   readonly jobId: string;
   /** How many `<index>.flac` this call wrote. */
   readonly written: number;
@@ -709,6 +755,8 @@ export async function runCrucibleRender(
     jobType: 'tts',
     model: voice,
     localId: renderId,
+    // Nonzero only on an ATTACH — the resume point this call was handed.
+    lastEventId,
     // The `ebook-<uuid>` session, not the `chapters/sentences` leaf: that is the
     // unit the scratch sweep rescues and removes. Null for a render whose
     // sentences are not under the scratch root at all (a CLI run pointed
@@ -769,8 +817,28 @@ export async function runCrucibleRender(
   };
   options.onStarted?.({ jobId, cancel });
 
+  /**
+   * THE DELETE THE STALL CLOCK SENDS, which is NOT the `cancel` handle above.
+   *
+   * That handle resolves only once the downloader has stopped writing — and
+   * the downloader is precisely what has stopped, so awaiting it inside the
+   * stall would be the hang this clock exists to end. This sends the DELETE and
+   * says so; the clock's own grace is what bounds the wait afterwards.
+   */
+  const deleteAfterStall = async (): Promise<void> => {
+    const answered = await client.cancel(jobId);
+    log(`crucible "${server}" job ${jobId} is ${answered.status} after going quiet`);
+  };
+
   let downloaded = 0;
-  const outcome = await downloadRenderArtifacts({
+  /**
+   * Whether the SERVER said this job ended. It is what decides, on a throw,
+   * whether the job is an orphan still holding that card (Q7) — not the class
+   * of the error, which cannot tell a reset socket from a finished job whose
+   * last artifact would not write.
+   */
+  let sawTerminalFrame = false;
+  const followTheStream = (beat: () => void): Promise<RenderArtifactsOutcome> => downloadRenderArtifacts({
     client,
     server,
     jobId,
@@ -778,6 +846,10 @@ export async function runCrucibleRender(
     sentencesDir,
     ...(options.attachTo?.lastEventId === undefined ? {} : { lastEventId: options.attachTo.lastEventId }),
     onWritten: (written) => {
+      // A LANDED FILE IS THE SERVER TALKING. A 3-minute chunk download is the
+      // only thing happening while it happens, and a clock that only counted
+      // event frames would cut a render that was working.
+      beat();
       downloaded += 1;
       // `<index>.flac` is the artifact's whole name; the sidecar is
       // `<index>.flac.provenance.json` and is never announced as an artifact.
@@ -792,7 +864,18 @@ export async function runCrucibleRender(
       }
     },
     onEvent: (event) => {
-      if (event.id > lastEventId) lastEventId = event.id;
+      beat();
+      if (event.id > lastEventId) {
+        lastEventId = event.id;
+        // THE RESUME POINT, ON DISK AS IT MOVES — `job.ts` carries the same
+        // line and the same reason (bug hunt C4): `attachTo.lastEventId` was
+        // documented, persisted nowhere, and therefore unreachable after the
+        // hard kill it exists for.
+        noteInFlightEvent(server, jobId, lastEventId);
+      }
+      if (event.event === 'done' || event.event === 'failed' || event.event === 'cancelled') {
+        sawTerminalFrame = true;
+      }
       if (event.event === 'warming') {
         log(`crucible "${server}": ${event.data.message}`);
         return;
@@ -814,11 +897,55 @@ export async function runCrucibleRender(
     // threw has also stopped writing, and a cancel left waiting on a failed
     // download would hang the Stop button on a server that had gone away.
     downloaderStopped();
-  }).catch((err) => {
+  });
+
+  let outcome: RenderArtifactsOutcome;
+  try {
+    // ONE STALL CLOCK OVER THE STREAM — `stream-stall.ts`, the same one
+    // `job.ts` runs. A wedged server holds this socket open forever otherwise,
+    // and the row, the GPU slot and the book's hold on that card with it.
+    outcome = await withStreamStallClock({
+      server,
+      jobId,
+      ...(options.stallClock?.stallMs === undefined ? {} : { stallMs: options.stallClock.stallMs }),
+      ...(options.stallClock?.graceMs === undefined ? {} : { graceMs: options.stallClock.graceMs }),
+      onStall: deleteAfterStall,
+      onLog: log,
+      consume: followTheStream,
+    });
+  } catch (err) {
+    if (err instanceof CrucibleStreamWentQuiet) {
+      throw new CrucibleRenderRefused(
+        'crucible_went_quiet',
+        `${err.message} What it cost: this render (job ${jobId}); the ${downloaded} chunk(s) already `
+        + 'downloaded are on disk and a resume asks only for the rest.',
+        undefined,
+        crucibleTransientLine(server, `silent for ${describeStallInterval(err.stallMs)}`),
+      );
+    }
+    /*
+     * Q7 — OUR OWN ORPHAN IS RECONCILED BEFORE THE REFUSAL IS THROWN.
+     *
+     * A dropped stream keeps the ledger row (right) and fails the step, but no
+     * DELETE was sent: the server is STILL RENDERING. The queue then admits the
+     * next book there, 409s on our own orphan's line and parks every 15 s until
+     * the app restarts. The one-server sweep cancels what this app has recorded
+     * on that venue, confirms the lane, and unloads only if nothing holds the
+     * card. Gated on the SERVER never having said the job ended — a throw after
+     * the terminal frame is a finished job, and sweeping it would DELETE
+     * nothing and poll for no reason.
+     */
+    if (!sawTerminalFrame) {
+      await sweepCrucibleServerInFlight({
+        server,
+        reason: 'the render\'s event stream ended with no terminal frame',
+        log: (line) => log(line),
+      });
+    }
     // A refusal that arrives mid-stream (the token rotated, the server
     // restarted) is named the same way one at submit is.
     throw describeCrucibleRefusal(err, server);
-  });
+  }
 
   if (outcome.result.failed.length > 0) {
     log(`crucible job ${jobId}: ${outcome.result.failed.length} chunk(s) produced no audio — `
@@ -850,6 +977,7 @@ export async function runCrucibleRender(
       ? 'width unstated' : `${outcome.result.width} chunk(s) in flight`}`);
 
   return {
+    server,
     jobId,
     written: outcome.written,
     result: outcome.result,

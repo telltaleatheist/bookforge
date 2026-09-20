@@ -28,6 +28,13 @@
  *     the id it already had.
  *  7. A missing input file and a missing artifacts directory are refused
  *     before a byte crosses.
+ *  8. THE FIRST FAILED UPLOAD STOPS THE POOL (bug hunt C3, 2026-09-20) — the
+ *     other three workers used to upload the rest of the book to a server whose
+ *     job was never going to be submitted.
+ *  9. A DROPPED STREAM RECONCILES OUR OWN ORPHAN (Q7): no DELETE was ever sent,
+ *     so the server went on running the job and 409'd the next book on it.
+ * 10. AND THE LEDGER ROW CARRIES THE RESUME POINT (C4): `attachTo.lastEventId`
+ *     was documented and persisted nowhere.
  *
  * No GPU, no model, no network beyond 127.0.0.1.
  */
@@ -479,6 +486,203 @@ async function preflight() {
   }
 }
 
+/**
+ * 8. THE FIRST FAILED UPLOAD STOPS THE OTHER THREE — bug hunt C3, 2026-09-20.
+ *
+ * The pool had a cancellation input (`signal`) and no FAILURE input.
+ * `Promise.all` rejects on the first throw and `runCrucibleJob` throws, but the
+ * other three workers went on draining `entries` — uploading the REST OF THE
+ * BOOK (align: one FLAC per chunk; rvc: one per sentence) to a server whose job
+ * will never be submitted.
+ */
+async function uploadPoolStopsOnFailure() {
+  /*
+   * ITS OWN SERVER, not `startFakeCrucible`'s: that dispatcher answers every
+   * `POST /v1/uploads` 200 before a keeper's route ever sees it, and the whole
+   * question here is what the pool does when one of them says no.
+   */
+  let asked = 0;
+  let submits = 0;
+  const http = require('http');
+  const bare = http.createServer(async (req, res) => {
+    const answer = (status, body) => {
+      const text = JSON.stringify(body);
+      res.writeHead(status, { 'Content-Type': 'application/json' });
+      res.end(text);
+    };
+    if (req.url === '/v1/ping') return answer(200, { crucible: true, name: 'fake', api_version: 1 });
+    if (req.url === '/v1/uploads' && req.method === 'POST') {
+      asked += 1;
+      const mine = asked;
+      req.resume();
+      // Every worker is in flight before any of them answers, so the failure
+      // lands while the others are mid-upload — the real shape of the bug.
+      await new Promise((r) => setTimeout(r, 25));
+      if (mine === 2) {
+        return answer(400, { error: { code: 'invalid_inputs', message: 'that one is not audio' } });
+      }
+      return answer(200, { blob_id: `blob-${mine}`, bytes: 4, sha256: 'a'.repeat(64) });
+    }
+    if (req.url === '/v1/jobs' && req.method === 'POST') {
+      submits += 1;
+      req.resume();
+      return answer(200, { job_id: 'job-never' });
+    }
+    req.resume();
+    return answer(404, { error: { code: 'not_found', message: req.url } });
+  });
+  await new Promise((done) => bare.listen(0, '127.0.0.1', done));
+  const fake = {
+    url: `http://127.0.0.1:${bare.address().port}`,
+    close: () => new Promise((done) => { bare.closeAllConnections(); bare.close(done); }),
+  };
+  const server = registerFake(fake.url);
+
+  const dir = freshDir('pool');
+  const inputs = {};
+  // Twelve against a pool of four: three full passes if nothing stops it.
+  for (let n = 1; n <= 12; n += 1) {
+    const file = path.join(dir, `chunk-${n}.flac`);
+    fs.writeFileSync(file, `fLaC${n}`);
+    inputs[`chunk-${n}.flac`] = file;
+  }
+
+  let thrown = null;
+  try {
+    await job.runCrucibleJob({ server, type: 'align', params: {}, inputs });
+  } catch (err) {
+    thrown = err;
+  } finally {
+    await fake.close();
+  }
+
+  await check('the first failed upload stops the pool — nothing after it crosses the wire', () => {
+    assert.ok(thrown !== null, 'a refused upload is a refused job');
+    assert.strictEqual(thrown.code, 'invalid_inputs');
+    assert.ok(asked <= 4,
+      `only the first pool-width was ever attempted; asked for ${asked} of 12 uploads`);
+    assert.strictEqual(submits, 0,
+      'and no job was submitted — the rest of the book would have gone to a server that '
+      + 'was never going to run it');
+  });
+}
+
+/**
+ * 9. Q7 — A DROPPED STREAM RECONCILES OUR OWN ORPHAN BEFORE IT REPORTS.
+ *
+ * The ledger row is kept (right: a broken stream is not a job that stopped) and
+ * the step fails — but no DELETE was ever sent, so the server is STILL RUNNING
+ * the job. The queue then admits the next book there, is refused by BookForge's
+ * own orphan, and parks every 15 s until the app is restarted.
+ *
+ * 10. C4 — and while it ran, the ledger row carried the RESUME POINT.
+ */
+async function droppedStreamSweepsItsOwnServer() {
+  const ledger = require(path.join(REPO, 'dist', 'electron', 'crucible', 'in-flight-ledger.js'));
+  /** What the ledger row said at each frame this side acted on. */
+  const resumePointPerFrame = [];
+
+  const fake = await startFakeCrucible(async (req, res, ctx) => {
+    const { state, send, sseWriter, url } = ctx;
+    if (url.pathname === '/v1/jobs' && req.method === 'POST') {
+      const body = JSON.parse((await ctx.readBody(req)).toString('utf-8'));
+      state.submitted.push(body);
+      const id = ctx.newJobId();
+      state.jobs.set(id, { body });
+      send(res, 200, { job_id: id });
+      return true;
+    }
+    if (/^\/v1\/jobs\/[^/]+\/events$/.test(url.pathname) && req.method === 'GET') {
+      const sse = sseWriter(req, res);
+      sse.frame('queued', { position: null });
+      sse.frame('warming', { message: 'loading qwen3-aligner' });
+      sse.frame('progress', {
+        fraction: 0.5, message: 'half the book', stage: 'aligning', processed: 1, total: 2,
+      });
+      // THE SOCKET DIES MID-STREAM WITH NO TERMINAL FRAME — a proxy reset, a
+      // restarted uvicorn, a tailnet blip. The job is still running over there.
+      setTimeout(() => res.destroy(), 40);
+      return true;
+    }
+    if (url.pathname === '/v1/activity' && req.method === 'GET') {
+      // The idle answer, in the SDK's exact shape: our job is gone, nothing
+      // else holds the card, nothing is resident. So the sweep confirms the
+      // lane is clear and submits no unload.
+      send(res, 200, {
+        server: { name: 'fake-crucible', version: '0.5.0', api_version: 1, backend: 'cuda-linux', uptime_s: 99 },
+        resident: null, stopping: null, warming: null, claim: null, streaming: null, lease: null,
+        chat: { in_flight: 0, rows: [] },
+        slots: { accelerated: { busy: 0, of: 1, queue_depth: 0, accepts_work: true } },
+        running: [], queued: [],
+      });
+      return true;
+    }
+    return false;
+  });
+  const server = registerFake(fake.url);
+
+  let thrown = null;
+  try {
+    await job.runCrucibleJob({
+      server, type: 'align', params: {}, inputs: {}, localId: 'step_drop_1', onLog: () => {},
+      onEvent: () => {
+        const row = ledger.readInFlightLedger().find((r) => r.server === server);
+        resumePointPerFrame.push(row === undefined ? null : row.lastEventId);
+      },
+    });
+  } catch (err) {
+    thrown = err;
+  } finally {
+    await fake.close();
+  }
+
+  await check('a dropped stream DELETEs our own orphan on that server before it reports', () => {
+    /*
+     * The CLASS is whatever the SDK threw — undici answers a socket destroyed
+     * mid-response with a bare `TypeError: terminated`, which
+     * `describeCrucibleJobRefusal` deliberately returns UNCHANGED ("an
+     * unexpected exception is not a refusal, and dressing it as one loses where
+     * it came from"). That is why the sweep is gated on THE SERVER NEVER HAVING
+     * SAID THE JOB ENDED rather than on a list of error classes: the orphan is
+     * an orphan whatever the transport called its failure.
+     */
+    assert.ok(thrown !== null, 'a stream that reset is not a finished job');
+    assert.strictEqual(fake.state.cancelled.length, 1,
+      'the one-server sweep sent the DELETE nothing used to send — without it the server '
+      + 'goes on holding that card and 409s the next book');
+    assert.strictEqual(ledger.readInFlightLedger().filter((r) => r.server === server).length, 0,
+      'and the confirmed-cancelled row came out of the ledger');
+  });
+
+  await check('THE LEDGER ROW CARRIES lastEventId AS THE FRAMES ARRIVE: after 3 frames it says 3', () => {
+    assert.deepStrictEqual(resumePointPerFrame.slice(0, 3), [1, 2, 3],
+      `the resume point moved with the stream, saw ${JSON.stringify(resumePointPerFrame)}`);
+  });
+}
+
+/** 11. C4 — the outcome carries the whole triple a resume needs. */
+async function outcomeCarriesTheResumeTriple() {
+  const fake = await startFake('run');
+  const server = registerFake(fake.url);
+  const inputDir = freshDir('triple');
+  const file = path.join(inputDir, 'book.m4b');
+  fs.writeFileSync(file, 'm4b-bytes');
+  let outcome;
+  try {
+    outcome = await job.runCrucibleJob({
+      server, type: 'asr', model: 'whisper', params: {}, inputs: { audio: file },
+    });
+  } finally {
+    await fake.close();
+  }
+  await check('the outcome exposes {server, jobId, lastEventId} — what an attach needs', () => {
+    assert.strictEqual(outcome.server, server,
+      'a job id means nothing without the server that minted it');
+    assert.ok(typeof outcome.jobId === 'string' && outcome.jobId !== '');
+    assert.ok(outcome.lastEventId > 0, 'the highest frame this side acted on');
+  });
+}
+
 (async () => {
   await happyPath();
   await memoryArtifacts();
@@ -486,6 +690,9 @@ async function preflight() {
   await cancellation();
   await resume();
   await preflight();
+  await uploadPoolStopsOnFailure();
+  await droppedStreamSweepsItsOwnServer();
+  await outcomeCarriesTheResumeTriple();
   summary('test-crucible-job');
 })().catch((err) => {
   console.error(err);

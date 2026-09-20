@@ -192,14 +192,60 @@ export async function sweepCrucibleInFlight(options: {
   readonly timing?: SweepTiming;
   readonly log?: (line: string) => void;
 }): Promise<CrucibleSweepReport> {
+  return sweep({ ...options, onlyServer: null });
+}
+
+/**
+ * THE SAME SWEEP, FOR ONE SERVER, WHILE THE APP IS RUNNING — bug hunt Q7,
+ * 2026-09-20.
+ *
+ * A Crucible job's event stream can drop mid-job: the tailnet blips, the server
+ * restarts its uvicorn, a proxy resets the socket. The ledger row is KEPT (a
+ * broken stream is not a job that stopped) and the step fails — but until this
+ * entry point existed **no DELETE was ever sent**, so the server went on
+ * rendering. `gpuHoldOf` then released the card because the next act had
+ * failed, the queue admitted the next book to that same server, and it was
+ * refused `409 server_busy` by BookForge's own orphan and parked every 15 s
+ * until somebody restarted the app and the startup sweep found it. Nothing in
+ * the running process reconciled the ledger against the server.
+ *
+ * This is that reconciliation, and it is deliberately the WHOLE server rather
+ * than the one job: a Crucible takes one job at a time on the lane, so anything
+ * else of ours recorded there is queued behind the job that is about to be
+ * cancelled, and it is this app's to cancel either way. The safety rule is
+ * unchanged — `cardHeldBy` still refuses to unload anything somebody else is
+ * using.
+ *
+ * Never throws, exactly like the quit and startup callers, because the caller
+ * here is already in a `catch` about to report the real failure and a throw
+ * from the tidying would replace it.
+ */
+export async function sweepCrucibleServerInFlight(options: {
+  readonly server: string;
+  readonly reason: string;
+  readonly timing?: SweepTiming;
+  readonly log?: (line: string) => void;
+}): Promise<CrucibleSweepReport> {
+  return sweep({ ...options, onlyServer: options.server });
+}
+
+async function sweep(options: {
+  readonly reason: string;
+  readonly onlyServer: string | null;
+  readonly timing?: SweepTiming;
+  readonly log?: (line: string) => void;
+}): Promise<CrucibleSweepReport> {
   const log = options.log ?? ((line: string) => console.log(`[CRUCIBLE] ${line}`));
   const timing = options.timing ?? QUIT_SWEEP_TIMING;
-  const entries = readInFlightLedger();
+  const entries = options.onlyServer === null
+    ? readInFlightLedger()
+    : readInFlightLedger().filter((row) => row.server === options.onlyServer);
   if (entries.length === 0) {
-    return { jobs: [], servers: [], kept: [], scratchOwned: [] };
+    return { jobs: [], servers: [], kept: readInFlightLedger(), scratchOwned: [] };
   }
 
-  log(`${entries.length} crucible job(s) recorded as in flight — ${options.reason}`);
+  log(`${entries.length} crucible job(s) recorded as in flight`
+    + `${options.onlyServer === null ? '' : ` on "${options.onlyServer}"`} — ${options.reason}`);
   const byServer = new Map<string, CrucibleInFlightEntry[]>();
   for (const entry of entries) {
     const rows = byServer.get(entry.server);

@@ -47,6 +47,7 @@
  * instead of the window going looking for a file it should not know the name
  * of. Nothing here is logged but names — see {@link describeHostCrucibleRegistry}.
  */
+import { onCrucibleRecordChanged } from './routes';
 import { readRouting } from './routing';
 import { getServer, CrucibleRegistryError, type ResolvedServer } from './servers';
 import type { RoutingView } from '../../shared/crucible/settings-wire';
@@ -221,3 +222,52 @@ export function describeHostCrucibleRegistry(taken: HostCrucibleRegistrySnapshot
 export function forgetHostCrucibleRegistrySnapshot(): void {
   snapshot = null;
 }
+
+/** The live subscription, so arming twice replaces rather than doubles. */
+let disarmRecordListener: (() => void) | null = null;
+
+/**
+ * TAKE A NEW READING WHENEVER THE REGISTRY OR THE RANK RECORD MOVES — bug hunt
+ * C10, 2026-09-20.
+ *
+ * The header says the snapshot is refreshed *"at every write that can change
+ * the list"*. It was not: `refreshHostCrucibleRegistry` was called from ten IPC
+ * handlers and startup, while the SCHEDULER is told by
+ * `announceCrucibleRecordChanged()` inside `servers.addServer` /
+ * `servers.removeServer` / `routing.setServerEnabled` / `setRoutingOrder` /
+ * `forgetRoutingName` — deliberately there, so a non-IPC writer could not
+ * forget. Auto-connect, the pairing flow and the CLI are all non-IPC writers.
+ * So the hosted snapshot had exactly the failure mode `servers.ts` was
+ * refactored to remove: a fact nobody told it about.
+ *
+ * Subscribing HERE rather than adding a call beside each announce keeps the one
+ * rule in one place, and means `main.ts` needs no wiring at all — this module is
+ * imported at startup and arms itself below.
+ *
+ * A read that throws (a corrupt registry) is caught and logged by
+ * `routes.recordChanged`, which is the right end of the rule: the PREVIOUS
+ * snapshot stands rather than being wiped by a failed read, exactly as
+ * {@link refreshHostCrucibleRegistry}'s own docstring promises.
+ *
+ * `reader` exists for a keeper; the app passes none. Returns a disarm.
+ */
+export function armHostCrucibleRegistryRefresh(
+  reader: HostRegistryReader = processHostRegistryReader(),
+): () => void {
+  disarmRecordListener?.();
+  disarmRecordListener = onCrucibleRecordChanged(() => {
+    refreshHostCrucibleRegistry(reader);
+  });
+  return () => {
+    disarmRecordListener?.();
+    disarmRecordListener = null;
+  };
+}
+
+/*
+ * ARMED ON IMPORT, and that is the point: a registration `main.ts` had to
+ * remember is a registration a later refactor drops, which is the shape of the
+ * defect above. Registering a listener reads nothing and touches no disk, so it
+ * is safe at module scope; the READ happens only when something announces.
+ */
+armHostCrucibleRegistryRefresh();
