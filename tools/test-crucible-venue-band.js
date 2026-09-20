@@ -12,6 +12,14 @@
  * PC's numbers for a render on the Mac. `electron/crucible/stream.ts` had
  * carried the gap as a RULING OWED since the streaming door landed.
  *
+ * **AND THE SERVER NO LONGER SENDS THAT REFUSAL.** `chunk_too_long` was retired
+ * on both Crucible doors on 2026-09-19 (crucible
+ * docs/PHASE18-UNCERTIFIED.md 4.0.2: a screening checkpoint has no measured cap
+ * to be refused against, and a second TTS engine's frame arithmetic is not this
+ * number). An over-long chunk is rendered as sent. That does not weaken the
+ * ruling below — it removes the second door behind it, and makes this app the
+ * only thing standing between a book and a cap nobody checked.
+ *
  * `electron/crucible/voice-band.ts` is that ruling, and this is its keeper.
  * Phase 15's division: **the engine owns the voice's facts, the client owns the
  * chunking.** Before packing for a venue, read that venue's `GET /v1/voices`
@@ -148,6 +156,15 @@ function voiceRow(id, over) {
     sample_rate: 24000,
     takes: 1,
     needs_reference: false,
+    // `[voice.serving]` — what the server under narrator is sized by. Required
+    // on every row since 2026-09-19 (crucible docs/PHASE18-UNCERTIFIED.md 4.0):
+    // `max_num_seqs` is the ceiling a render's `width` must not exceed, and the
+    // SDK refuses a row without the block rather than inventing one.
+    serving: {
+      max_num_seqs: 4, max_num_seqs_note: 'measured 2026-09-19 on a 24 GB card',
+      mem_fraction: 0.6, mem_fraction_note: 'measured beside it',
+      context_length: 4096, context_length_note: 'the engine was started at it',
+    },
     pace: MAC_PACE,
   }, over || {});
 }
@@ -284,8 +301,10 @@ async function main() {
     assert.strictEqual(
       band.venuePackingCeiling({ ...VENUE_BAND, safeMaxChars: null }), 800,
     );
-    // A server contradicting itself does not get to overrule the number its own
-    // render door enforces.
+    // A server contradicting itself does not get to overrule the cap its own
+    // row certifies. (Until 2026-09-19 the reason read "the number its own
+    // render door enforces"; that door enforces nothing by length any more —
+    // `chunk_too_long` is retired — and the clamp is still right.)
     assert.strictEqual(
       band.venuePackingCeiling({ ...VENUE_BAND, safeMaxChars: 1200 }), 800,
     );
@@ -327,6 +346,43 @@ async function main() {
     } finally {
       await fake.close();
     }
+  });
+
+  // ── 2b. the band a guarded render STATES ───────────────────────────────────
+  //
+  // Since 2026-09-19 Crucible chooses the arm by what the REQUEST says and never
+  // looks a band up: `retake: true` carries the three rates it is measured
+  // against. BookForge echoes back the row it just read. The two ways to get
+  // that wrong are both silent — invent a band (a book judged against numbers
+  // nobody measured) or omit `retake` (a book with nothing judged at all) — so
+  // the helper that turns a row into the request's band is pinned here.
+  await check('the request band is the row\'s three rates, in the manifest\'s own spelling', () => {
+    assert.deepStrictEqual(band.renderBandFor(VENUE_BAND), {
+      pace_chars_per_sec: 16.64,
+      max_chars_per_sec: 21.63,
+      min_chars_per_sec: 12.8,
+    });
+  });
+
+  await check('a row with NO measured rates is refused by name — no band is invented', () => {
+    for (const missing of ['paceCharsPerSec', 'maxCharsPerSec', 'minCharsPerSec']) {
+      assert.throws(
+        () => band.renderBandFor({ ...VENUE_BAND, [missing]: null }),
+        (err) => {
+          assert.strictEqual(err.code, 'crucible_voice_states_no_band',
+            `a null ${missing} must refuse by name`);
+          assert.ok(/NOTHING WAS MEASURED/.test(err.message),
+            'the refusal says what a null rate MEANS — unmeasured weights, not a missing field');
+          return true;
+        },
+        `a null ${missing} was accepted`,
+      );
+    }
+    // And there is no arm that quietly renders such a voice unguarded: the
+    // refusal is the whole of the answer.
+    assert.throws(() => band.renderBandFor({
+      ...VENUE_BAND, paceCharsPerSec: null, maxCharsPerSec: null, minCharsPerSec: null,
+    }), (err) => err.code === 'crucible_voice_states_no_band');
   });
 
   // ── 3. the clamp ───────────────────────────────────────────────────────────

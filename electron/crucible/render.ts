@@ -74,7 +74,9 @@ import {
 import type { RenderChunk, RenderResult } from '@crucible/client';
 import { CRUCIBLE_CLIENT_NAME, crucibleClientFor } from './servers';
 import { downloadRenderArtifacts } from './render-artifacts';
-import { crucibleVoiceBand, describeVenueBand, refuseChunksOverVenueCap } from './voice-band';
+import {
+  crucibleVoiceBand, describeVenueBand, refuseChunksOverVenueCap, renderBandFor,
+} from './voice-band';
 import type { ChunkGuardSummary } from '../chunk-guard-ledger';
 
 /**
@@ -256,9 +258,20 @@ export interface CrucibleVoiceRow {
   readonly loadable: boolean;
   readonly reason: string | null;
   /**
-   * How many rungs this voice's take ladder has: the valid `take` values are
-   * `0 .. takes - 1`, and the SDK's own words are "ask before you submit" —
-   * a take past the end is refused `unknown_take` and NEVER clamped.
+   * How many rungs this voice's take ladder has: the rungs it DECLARES are
+   * `0 .. takes - 1`.
+   *
+   * CORRECTED 2026-09-19: a take past the end used to be refused
+   * `unknown_take`; that refusal is retired (crucible
+   * docs/PHASE18-UNCERTIFIED.md section 5). Take N above the ladder is now a
+   * legal request and means "the voice's OWN sampling in take N's seed lane",
+   * which is what a screening sweep asks for on a voice with no ladder at all.
+   * It is still NEVER clamped — take 4 is never take 2's numbers under take 4's
+   * name — so a caller spreading candidates across rungs must still ask this
+   * number before it submits, and this app's retake door still refuses to ask
+   * for a rung the voice does not declare (`reroll.ts`): a rung that changes
+   * nothing would be a candidate that differs from its neighbour only by seed,
+   * sold to a person as a different reading.
    */
   readonly takes: number;
 }
@@ -281,8 +294,14 @@ export interface CrucibleVoiceRow {
  *
  * `runCrucibleRender` itself no longer calls this: it needs the SAME row for the
  * cap (`voice-band.ts`), so it reads the row once and asserts both halves off it.
- * This entry point stays for the callers that only ask the question — the retake
- * door (`reroll.ts`) and the keepers.
+ * **And since 2026-09-19 neither does `reroll.ts`** — every render door now
+ * states the guard's band on its own request, and the three rates live on the
+ * FULL row, so both doors read it through `crucibleVoiceBand` and call
+ * `assertVoiceRowLoadable` on what comes back. This entry point therefore has no
+ * caller in the tree today. It is kept, not deleted, because it is the
+ * structurally-typed form of the question — it asks for `voices()` and nothing
+ * else, which is what lets a door with no SDK row (or a keeper with no server)
+ * ask it — and `voice-load.ts` is written against it.
  *
  * **It HANDS BACK the row it judged**, for the same reason `crucibleVoiceBand`
  * does: the row carries more than the two booleans checked here, and the retake
@@ -617,25 +636,52 @@ export async function runCrucibleRender(
     log(`attaching to crucible "${server}" job ${jobId} after event ${lastEventId}`);
   } else {
     // Before the whole book crosses the wire: does this server have this voice,
-    // can it load it, and does every chunk fit the cap IT states. One GET, and
-    // every refusal carries the server's own row.
+    // can it load it, does every chunk fit the cap IT states, and HAS IT
+    // MEASURED the band this render will be guarded against. One GET, and every
+    // refusal carries the server's own row.
     //
     // THE CAP IS READ FROM THE SERVER AND NEVER FROM THE LOCAL CATALOG (see
-    // voice-band.ts's header): the two disagree today, and the server is the one
-    // that refuses. Asked here, `chunk_too_long` arrives as a local refusal
-    // naming the chunk and what packed it, rather than as an HTTP 400 after the
-    // whole book has been serialised onto the wire.
+    // voice-band.ts's header): the two disagree today, and the server measured
+    // the weights it is holding.
+    //
+    // CORRECTED 2026-09-19: this used to say the refusal was asked here so that
+    // `chunk_too_long` arrived naming the chunk instead of as an HTTP 400 — i.e.
+    // that the server would refuse it anyway. It will not. `chunk_too_long` is
+    // retired on both Crucible doors (crucible docs/PHASE18-UNCERTIFIED.md
+    // 4.0.2) and an over-long chunk is now rendered as sent. THIS APP IS THE
+    // ONLY DOOR THAT REFUSES ONE, which is why `refuseChunksOverVenueCap` stays
+    // exactly as it is: chunking and packing are the client's, and a book
+    // silently rendered past the cap the engine advertised is not what is asked
+    // for here.
     const { row, band } = await crucibleVoiceBand(client, server, voice);
     assertVoiceRowLoadable(row, server, voice);
     log(describeVenueBand(band));
     refuseChunksOverVenueCap(band, options.chunks);
-    log(`submitting ${options.chunks.length} chunk(s) to crucible "${server}" as voice "${voice}"`);
+    // A BOOK RENDER IS ALWAYS GUARDED, AND IT STATES THE BAND ITSELF (Owen,
+    // 2026-09-19). `retake: true` picks narrator's guarded driver — the
+    // PaceTracker, the re-roll on truncation/runaway/loop, the split ladder —
+    // and the band is the one just read off this server's own row for this
+    // voice, echoed back: Crucible never looks one up, and `retake: true` with
+    // no band is refused `retake_without_band` rather than quietly downgraded to
+    // the bare arm. A voice whose row states no rates is refused by name above
+    // (`crucible_voice_states_no_band`) and no band is invented for it.
+    //
+    // `width` is deliberately absent: it is the in-flight cap, and absence is
+    // the resident voice's own `[voice.serving].max_num_seqs` — the width the
+    // engine was actually started at, which is a stated number with an owner.
+    // BookForge has no better number to send and will not guess one.
+    const retakeBand = renderBandFor(band);
+    log(`submitting ${options.chunks.length} chunk(s) to crucible "${server}" as voice "${voice}", `
+      + `guarded against pace ${retakeBand.pace_chars_per_sec} ch/s `
+      + `(${retakeBand.min_chars_per_sec}-${retakeBand.max_chars_per_sec})`);
     try {
       jobId = await client.render({
         voice,
         language,
         take: CRUCIBLE_RENDER_TAKE,
         chunks: options.chunks,
+        retake: true,
+        band: retakeBand,
       });
     } catch (err) {
       throw describeCrucibleRefusal(err, server);
@@ -750,8 +796,30 @@ export async function runCrucibleRender(
     log(`crucible job ${jobId}: ${outcome.result.failed.length} chunk(s) produced no audio — `
       + outcome.result.failed.slice(0, 8).map((f) => `${f.index}: ${f.message}`).join('; '));
   }
+  // THE DONE LINE IS PROVENANCE, SO IT SAYS WHAT RAN (2026-09-19).
+  //
+  // `sampling` is the FULL triple the engine applied — the voice's take-0
+  // numbers with this take's rung laid over them, never the rung's override
+  // alone — and `voice` is the row's own three words for which weights spoke.
+  // Both arrived on the terminal frame with crucible's phase-18 door, and they
+  // are logged because sampling lives on the MANIFEST and not on this request:
+  // a manifest edited between two runs otherwise makes two incomparable records
+  // that both say "take 0". That is not hypothetical — every Higgs measurement
+  // before 2026-09-06 was rendered at temperature 1.0 and the whole prior ladder
+  // record had to be marked "at the wrong temperature" once already.
+  //
+  // The vocabulary is the server's, so the pairs are printed as they arrive
+  // rather than read by name: a type here that knew the words would be a second
+  // owner of them. `identityBasis` is printed beside the identity because a
+  // directory somebody pointed at (`asserted`) must not read like a commit
+  // somebody fetched (`verified`).
+  const applied = Object.entries(outcome.result.sampling)
+    .map(([key, value]) => `${key} ${value}`).join(', ');
   log(`crucible job ${jobId} done: ${outcome.result.rendered} rendered, ${outcome.written} file(s) `
-    + `written into ${path.basename(sentencesDir)}`);
+    + `written into ${path.basename(sentencesDir)}; take ${outcome.result.take} at ${applied}, `
+    + `voice "${outcome.result.voice.id}" ${outcome.result.voice.identity} `
+    + `(${outcome.result.voice.identityBasis}), ${outcome.result.width === null
+      ? 'width unstated' : `${outcome.result.width} chunk(s) in flight`}`);
 
   return {
     jobId,

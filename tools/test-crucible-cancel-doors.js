@@ -40,6 +40,7 @@ const fs = require('fs');
 const path = require('path');
 const {
   REPO, installElectronStub, makeChecker, startFakeCrucible, fakeNamer, provenanceFor,
+  refuseRenderParams,
 } = require('./fake-crucible');
 
 const DIST = path.join(REPO, 'dist', 'electron');
@@ -98,6 +99,15 @@ function voiceRow(id) {
     sample_rate: 24000,
     takes: 1,
     needs_reference: false,
+    // `[voice.serving]` — what the server under narrator is sized by. Required
+    // on every row since 2026-09-19 (crucible docs/PHASE18-UNCERTIFIED.md 4.0):
+    // `max_num_seqs` is the ceiling a render's `width` must not exceed, and the
+    // SDK refuses a row without the block rather than inventing one.
+    serving: {
+      max_num_seqs: 4, max_num_seqs_note: 'measured 2026-09-19 on a 24 GB card',
+      mem_fraction: 0.6, mem_fraction_note: 'measured beside it',
+      context_length: 4096, context_length_note: 'the engine was started at it',
+    },
     pace: FAKE_PACE,
   };
 }
@@ -146,6 +156,13 @@ function startCancellingRenderServer() {
     if (route === '/v1/jobs' && req.method === 'POST') {
       const body = JSON.parse((await ctx.readBody(req)).toString('utf-8'));
       state.submitted.push(body);
+      // The render door's own refusals (retake without a band, a malformed
+      // band), so a cancel is measured against a submit a real server accepts.
+      const badParams = refuseRenderParams(body.params);
+      if (badParams) {
+        send(res, badParams.status, { error: { code: badParams.code, message: badParams.message } });
+        return true;
+      }
       const id = ctx.newJobId();
       state.jobs.set(id, { body });
       send(res, 200, { job_id: id });

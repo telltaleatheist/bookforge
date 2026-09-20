@@ -5,9 +5,12 @@
  *
  * Phase 15's division of knowledge: **the engine owns the voice's facts, the
  * client owns the chunking.** A client still decides where one chunk ends and
- * the next begins — Crucible refuses an over-long chunk rather than re-splitting
- * it (`crucible/jobs/tts/render.py`: "Chunking is the client's, so this is a
- * refusal and not a re-split") — but the NUMBERS it packs to belong to the
+ * the next begins — and since 2026-09-19 it is the ONLY thing that decides,
+ * because Crucible retired `chunk_too_long` on both doors and now renders an
+ * over-long chunk as sent (crucible `docs/PHASE18-UNCERTIFIED.md` 4.0.2). It
+ * still never re-splits one: "a server that quietly cut a chunk in half would
+ * return two files where one was asked for." So the refusal below is this app's
+ * alone — but the NUMBERS it packs to still belong to the
  * server that will speak them, and they arrive on `GET /v1/voices`:
  * `max_chars` (the cap certificate for this (voice, backend)) and the `pace`
  * block (`safe_min_chars` / `safe_max_chars` / `target_chars` and the three
@@ -159,8 +162,11 @@ export async function crucibleVoiceBand(
  * `safe_max_chars` when the row states one — the measured band is INSIDE the
  * cap and is what the model reads best — else the cap itself. Never above
  * `max_chars`: a server that advertised a safe ceiling above its own cap would
- * be refusing its own advice, and this clamps rather than trusting it, because
- * the cap is the number the render door actually enforces.
+ * be contradicting itself, and this clamps rather than trusting it, because the
+ * cap is the outer number the voice's row certifies. (Until 2026-09-19 the
+ * reason given here was "the number the render door actually enforces"; the
+ * render door enforces nothing by length any more — `chunk_too_long` is retired
+ * — and the certificate is still the certificate.)
  */
 export function venuePackingCeiling(band: CrucibleVoiceBand): number {
   const stated = band.safeMaxChars;
@@ -227,6 +233,64 @@ export function statedBandForDocument(
   };
 }
 
+/**
+ * THE BAND A RENDER STATES, BECAUSE THE SERVER NO LONGER LOOKS ONE UP.
+ *
+ * Crucible's `tts` render door gained `retake` and `band` on 2026-09-19
+ * (crucible `docs/PHASE18-UNCERTIFIED.md` sections 4 and 6): the request chooses
+ * the ARM — guarded (narrator's PaceTracker, the re-roll, the split ladder) or
+ * bare — and, when it chooses guarded, it STATES the three rates that arm
+ * measures against. `retake: true` with no band is refused `retake_without_band`;
+ * the server never fills one in from the voice.
+ *
+ * **Owen's ruling for BookForge, 2026-09-19: a book render always wants the
+ * guard**, and the band it states is the one it just read off `/v1/voices` for
+ * this voice on this server — echoed back, never re-derived and never from this
+ * machine's catalog. That is the same rule the cap already follows (this file's
+ * header): the engine measured the weights it is holding, and a second owner of
+ * "what band is this voice guarded against" is the shape crucible's
+ * `docs/ARCHITECTURE.md` section 1 says every defect in this system turned out
+ * to be. It was measured twice: a base voice satisfying a then-mandatory triple
+ * with narrator's own frame-cap divisor (15.0, which is not a narration rate at
+ * all), and deathstalker inheriting pace 16.64 onto weights that measured 15.91.
+ *
+ * Manifest spelling on the wire (`pace_chars_per_sec`), because the band is a
+ * fact about the voice and this is the voice's own word for it.
+ */
+export function renderBandFor(band: CrucibleVoiceBand): {
+  readonly pace_chars_per_sec: number;
+  readonly max_chars_per_sec: number;
+  readonly min_chars_per_sec: number;
+} {
+  const { paceCharsPerSec, maxCharsPerSec, minCharsPerSec } = band;
+  if (
+    typeof paceCharsPerSec !== 'number'
+    || typeof maxCharsPerSec !== 'number'
+    || typeof minCharsPerSec !== 'number'
+  ) {
+    throw new CrucibleRenderRefused(
+      'crucible_voice_states_no_band',
+      `crucible "${band.server}" advertises voice "${band.voice}" with no measured pace band `
+      + `(pace ${JSON.stringify(paceCharsPerSec)}, min ${JSON.stringify(minCharsPerSec)}, `
+      + `max ${JSON.stringify(maxCharsPerSec)} chars/s). Since 2026-09-19 a rate is null there `
+      + 'exactly when NOTHING WAS MEASURED for these weights — a screening checkpoint, whose '
+      + 'pace its own renders exist to discover — and never a number that went missing. '
+      + 'BookForge guards every book render (it sends retake: true and states this band), so '
+      + 'there is nothing to guard against here, and nothing is invented: a band this door made '
+      + 'up would judge a real book against numbers nobody measured, which is how healthy chunks '
+      + 'become run-ons and re-roll to the bottom of the ladder. It will also not render '
+      + 'unguarded on the reader\'s behalf — a book rendered with nothing judged is a decision, '
+      + 'not a fallback. Measure this voice (the screening sweep is what produces the rates) and '
+      + 'write them into its manifest on that server, or render on a server whose row states them.',
+    );
+  }
+  return {
+    pace_chars_per_sec: paceCharsPerSec,
+    max_chars_per_sec: maxCharsPerSec,
+    min_chars_per_sec: minCharsPerSec,
+  };
+}
+
 /** One line for a log, so a render says which numbers it packed to and whose they are. */
 export function describeVenueBand(band: CrucibleVoiceBand): string {
   const floor = band.safeMinChars === null ? 'none' : String(band.safeMinChars);
@@ -237,18 +301,28 @@ export function describeVenueBand(band: CrucibleVoiceBand): string {
 }
 
 /**
- * THE CHUNKS THIS VENUE WILL REFUSE, NAMED HERE FIRST.
+ * THE CHUNKS THIS VENUE WILL NOT SPEAK WELL, AND THE ONLY DOOR THAT SAYS SO.
  *
- * The server measures `len(chunk.text)` — the bytes it is handed, markers and
- * all — against `max_chars`, and refuses the WHOLE job for one over-long row
- * (`chunk_too_long`, HTTP 400). Asked here, before the submit, the same fact
- * arrives as a local refusal that names the chunk, its length, and what packed
- * it, instead of a 400 the operator has to go read a server log to understand.
+ * It used to be the second of two: the server measured `len(chunk.text)` — the
+ * bytes it is handed, markers and all — against `max_chars` and refused the
+ * WHOLE job for one over-long row (`chunk_too_long`, HTTP 400), and this asked
+ * the same question first so the answer named the chunk instead of arriving as a
+ * 400 after the book had crossed the wire.
+ *
+ * **CORRECTED 2026-09-19: `chunk_too_long` is retired on both Crucible doors**
+ * (crucible `docs/PHASE18-UNCERTIFIED.md` 4.0.2 — a screening checkpoint has no
+ * measured cap to be refused against, and a second TTS engine's frame
+ * arithmetic is not this number). An over-long chunk is now rendered as sent and
+ * reported honestly on its `chunk` row. So this is no longer the earlier of two
+ * refusals — it is the ONLY one, and Owen's ruling of the same day is that it
+ * stays exactly as it is: chunking and packing are the client's, and a book
+ * quietly rendered past the cap the engine advertised is not what this app asks
+ * for. The server still never re-splits, and neither does this.
  *
  * It measures the cap and NOT the safe ceiling on purpose: the ceiling is where
- * the packer aims, the cap is what the server enforces, and refusing a book for
- * being inside the cap but outside the band would be this door overruling the
- * engine's own certificate.
+ * the packer aims, the cap is what the voice's row certifies, and refusing a
+ * book for being inside the cap but outside the band would be this door
+ * overruling the engine's own certificate.
  */
 export function refuseChunksOverVenueCap(
   band: CrucibleVoiceBand,

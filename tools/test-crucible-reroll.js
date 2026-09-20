@@ -47,7 +47,7 @@ const fs = require('fs');
 const path = require('path');
 const {
   REPO, installElectronStub, makeChecker, startFakeCrucible, fakeNamer,
-  crucibleHost, noServerHost,
+  crucibleHost, noServerHost, refuseRenderParams, renderDoneProvenance,
 } = require('./fake-crucible');
 const { skipLine } = require('./keeper-skip.js');
 
@@ -83,7 +83,7 @@ const FAKE_PACE = {
  * and 3 to exist. `shortLadder()` below is the real catalog's shape and is what
  * pins the refusal.
  */
-function voiceRow(id, takes = 4) {
+function voiceRow(id, takes = 4, pace = FAKE_PACE) {
   return {
     id, display: id, kind: 'checkpoint', language: 'en', narrator_engine: 'higgs-v3',
     backend_supported: true, installed: true, resident: false, loadable: true, reason: null,
@@ -94,9 +94,27 @@ function voiceRow(id, takes = 4) {
     // 0.6.0 SDK (PHASE3-TTS.md §5's amendment) and the SDK refuses the whole
     // document by name without it, so it is stated rather than omitted.
     needs_reference: false,
-    pace: FAKE_PACE,
+    // `[voice.serving]` — what the server under narrator is sized by. Required
+    // on every row since 2026-09-19 (crucible docs/PHASE18-UNCERTIFIED.md 4.0):
+    // `max_num_seqs` is the ceiling a render's `width` must not exceed, and the
+    // SDK refuses a row without the block rather than inventing one.
+    serving: {
+      max_num_seqs: 4, max_num_seqs_note: 'measured 2026-09-19 on a 24 GB card',
+      mem_fraction: 0.6, mem_fraction_note: 'measured beside it',
+      context_length: 4096, context_length_note: 'the engine was started at it',
+    },
+    pace,
   };
 }
+
+/**
+ * The row of a voice NOBODY HAS MEASURED — the three rates null, which is what a
+ * `/v1/voices` row says about a screening checkpoint since 2026-09-19 (absence
+ * propagates as absence; never an inherited number, never the engine's own).
+ */
+const UNMEASURED_PACE = {
+  ...FAKE_PACE, pace_chars_per_sec: null, max_chars_per_sec: null, min_chars_per_sec: null,
+};
 
 /** A real `GuardPlan.verdict()` object, shaped from PHASE6-REMOTE-RENDER.md §3. */
 function verdictObject(word) {
@@ -117,6 +135,7 @@ function verdictObject(word) {
  *                   manifest declares (`[[voice.takes]]`: the boson default and
  *                   the one measured alternative at 0.7)
  *   'no-voice'      `/v1/voices` serves a different voice only
+ *   'unmeasured'    the voice is served with NO measured pace band
  *   'busy'          the submit is 409 server_busy
  */
 function startFake(behaviour) {
@@ -127,15 +146,23 @@ function startFake(behaviour) {
 
     if (route === '/v1/voices' && req.method === 'GET') {
       state.voicesAsked = (state.voicesAsked || 0) + 1;
-      send(res, 200, behaviour === 'no-voice'
-        ? [voiceRow('owen')]
-        : [voiceRow('mistborn', rungs), voiceRow('deathstalker', rungs)]);
+      if (behaviour === 'no-voice') send(res, 200, [voiceRow('owen')]);
+      else if (behaviour === 'unmeasured') {
+        send(res, 200, [voiceRow('mistborn', rungs, UNMEASURED_PACE)]);
+      } else send(res, 200, [voiceRow('mistborn', rungs), voiceRow('deathstalker', rungs)]);
       return true;
     }
 
     if (route === '/v1/jobs' && req.method === 'POST') {
       const body = JSON.parse((await ctx.readBody(req)).toString('utf-8'));
       state.submitted.push(body);
+      // The phase-18 door's own refusals, so "every candidate states the band it
+      // is guarded against" is a measurement and not a comment.
+      const badParams = refuseRenderParams(body.params);
+      if (badParams) {
+        send(res, badParams.status, { error: { code: badParams.code, message: badParams.message } });
+        return true;
+      }
       if (behaviour === 'busy') {
         send(res, 409, { error: { code: 'server_busy', message: 'one at a time', details: {
           holder: 'foundry', job_id: 'j-held', type: 'tts', model: 'deathstalker', status: 'running',
@@ -143,14 +170,18 @@ function startFake(behaviour) {
         } } });
         return true;
       }
-      // A real server refuses a rung its manifest does not declare
-      // (`unknown_take`) and NEVER clamps, so the fake does the same — that is
-      // what makes "the client asked before it submitted" a testable claim
-      // rather than a comment.
-      if (!Number.isInteger(body.params.take) || body.params.take < 0 || body.params.take >= rungs) {
-        send(res, 400, { error: { code: 'unknown_take', message:
-          `voice '${body.model}' has no take ${body.params.take}; it declares ${rungs} take(s), `
-          + `0 to ${rungs - 1}`,
+      // A rung past the ladder is NOT refused here any more, and that is the
+      // point: crucible retired `unknown_take` on 2026-09-19 and renders take N
+      // above the ladder at the voice's OWN sampling in that rung's seed lane
+      // (docs/PHASE18-UNCERTIFIED.md section 5). So a client that stopped
+      // checking the ladder would now get audio back rather than a 400 — three
+      // "candidates" at the settings the rejected reading already used — which
+      // is exactly why `ladderTooShort()` below asserts ZERO submits rather than
+      // trusting the far end to say no. The fake still refuses a take that is
+      // not a rung at all, which no server would accept.
+      if (!Number.isInteger(body.params.take) || body.params.take < 0) {
+        send(res, 400, { error: { code: 'take_malformed', message:
+          `take ${JSON.stringify(body.params.take)} is not a rung`,
         } });
         return true;
       }
@@ -184,6 +215,8 @@ function startFake(behaviour) {
       });
       sse.frame('done', {
         artifacts: names, rendered: names.length, failed: [], take: j.take, sample_rate: 24000,
+        // The three provenance fields the SDK now reads strictly off a `done`.
+        ...renderDoneProvenance(j.voice, j.take),
       });
       sse.end();
       return true;
@@ -288,6 +321,27 @@ async function happyPath() {
     assert.strictEqual(new Set(asked).size, 3, 'no two candidates share a rung, i.e. a seed lane');
     assert.ok(!asked.includes(0), 'rung 0 is the draw the rejected take was already rendered at');
   });
+  // A RETAKE IS A RENDER, AND IT IS GUARDED TOO (Owen, 2026-09-19).
+  //
+  // The arm is chosen by the REQUEST since the same day: no `retake` is the bare
+  // arm, where nothing is judged and nothing retaken. A candidate rendered on
+  // that arm would be auditioned beside candidates that were guarded, and the
+  // truncation/runaway re-roll is the very thing a person re-rolling a sentence
+  // is asking the engine for. The band is the voice row's own three rates,
+  // echoed back: Crucible never looks one up.
+  await check('every candidate asks to be GUARDED, against the voice row\'s own three rates', () => {
+    for (const body of fake.state.submitted) {
+      assert.strictEqual(body.params.retake, true,
+        `candidate at take ${body.params.take} was submitted on the bare arm`);
+      assert.deepStrictEqual(body.params.band, {
+        pace_chars_per_sec: FAKE_PACE.pace_chars_per_sec,
+        max_chars_per_sec: FAKE_PACE.max_chars_per_sec,
+        min_chars_per_sec: FAKE_PACE.min_chars_per_sec,
+      }, 'the band is the server\'s row, not a number from this machine');
+      assert.ok(!('width' in body.params),
+        'no width is stated — absence is the engine\'s own serving width, which has an owner');
+    }
+  });
   await check('the rung rides on the outcome, beside the candidate it produced', () => {
     assert.deepStrictEqual(outcome.takes.map((t) => [t.take, t.rung]), [[0, 1], [1, 2], [2, 3]]);
   });
@@ -354,9 +408,16 @@ async function happyPath() {
  * a two-rung voice has exactly ONE rung a candidate may use. Correct Sentences
  * asks for three by default, and that is refused here, by name, with both
  * numbers, before a single job is submitted: not clamped to rung 1 three times
- * (one rung is one seed lane, so those three would be byte-identical), not
- * quietly rendered once, and not sent for the server to refuse `unknown_take` on
- * the second job after the first has already run.
+ * (one rung is one seed lane, so those three would be byte-identical), and not
+ * quietly rendered once.
+ *
+ * SINCE 2026-09-19 THERE IS NO SECOND DOOR BEHIND THIS ONE. The refusal used to
+ * be "and not sent for the server to refuse `unknown_take` on the second job
+ * after the first has already run"; crucible retired that refusal, and rung N
+ * above the ladder now renders at the voice's OWN sampling. So a client that
+ * stopped asking would be handed three readings at the settings the person just
+ * rejected, with nothing anywhere saying so — which is why the check below
+ * counts submits.
  */
 async function ladderTooShort() {
   const fake = await startFake('short-ladder');
@@ -433,7 +494,14 @@ async function refusals() {
     );
   });
 
-  for (const [behaviour, code, submits] of [['no-voice', 'crucible_unknown_voice', 0], ['busy', 'server_busy', 1]]) {
+  // `unmeasured` is the 2026-09-19 row: a voice served with no measured pace
+  // band. A retake against it would have to invent a band or drop the guard, and
+  // this door does neither — it refuses by name before the first submit.
+  for (const [behaviour, code, submits] of [
+    ['no-voice', 'crucible_unknown_voice', 0],
+    ['unmeasured', 'crucible_voice_states_no_band', 0],
+    ['busy', 'server_busy', 1],
+  ]) {
     const fake = await startFake(behaviour);
     const server = registerFake(fake.url);
     const targetDir = freshScratch();

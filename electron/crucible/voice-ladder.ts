@@ -14,7 +14,10 @@
  * take` (crucible `docs/PHASE3-TTS.md` §2, "THE SEED HALF"). Two renders of one
  * chunk at the SAME take are byte-identical by design, so candidates are only
  * different readings if they sit on different rungs; and a `take` past the end
- * of the ladder is refused `unknown_take` and never clamped. The number of
+ * of the ladder is refused by `reroll.ts` and never clamped — the server
+ * retired its own `unknown_take` on 2026-09-19 and renders such a rung at the
+ * voice's OWN sampling, which is the settings the audition is trying to get
+ * away from. The number of
  * candidates a voice can offer is therefore its ladder length minus one — take
  * 0 is the reading already in the book — and that number is the SERVER's, in
  * `VoiceInfo.takes`, not this app's to guess.
@@ -22,13 +25,15 @@
  * ── One `GET /v1/voices`, and the one that is still owed ───────────────────
  *
  * This asks the server once per correction pass, before any job is submitted.
- * `runCrucibleReroll` then asks a second time for its own question — can this
- * server load that voice (`reroll.ts`'s `assertCrucibleVoiceAvailable` call,
- * one GET for the whole pass). Two reads of one document, which is one more
- * than the fact needs: the collapse is for `assertCrucibleVoiceAvailable` to
- * hand its row BACK, so the ladder and the loadable check come off the same
- * response. That change lives in `render.ts` and `reroll.ts` and is deliberately
- * not made here.
+ * `runCrucibleReroll` then asks a second time for its own questions — can this
+ * server load that voice, and what pace band does it state (`reroll.ts`'s
+ * `crucibleVoiceBand` call, one GET for the whole pass; it was
+ * `assertCrucibleVoiceAvailable` until 2026-09-19, when a retake began stating
+ * the band it is guarded against). Two reads of one document, which is one more
+ * than the fact needs: the collapse is for one read to hand its row BACK, so the
+ * ladder, the loadable check and the band come off the same response. That
+ * change lives in `render.ts` and `reroll.ts` and is deliberately not made
+ * here.
  *
  * ── The venue is decided ONCE, here, and handed on ─────────────────────────
  *

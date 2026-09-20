@@ -308,6 +308,13 @@ function refusal(fn) {
       revision: 'abc1234', fingerprint: `${id}@abc1234`, memory_bytes_estimate: 19000000000,
       estimate_basis: 'declared', max_chars: 600, sample_rate: 24000, takes: 1,
       needs_reference: needsReference, pace,
+      // Required on every row since 2026-09-19; the SDK refuses a row with no
+      // [voice.serving] block rather than inventing the width it was started at.
+      serving: {
+        max_num_seqs: 4, max_num_seqs_note: 'measured', mem_fraction: 0.6,
+        mem_fraction_note: 'measured', context_length: 4096,
+        context_length_note: 'measured',
+      },
     });
     // `GET /v1/voices` answers the ARRAY, not an envelope around one.
     const rows = [row('mistborn', 'checkpoint', false), row('zeroshot', 'zeroshot', true)];

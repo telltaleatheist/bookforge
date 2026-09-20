@@ -94,9 +94,11 @@
  * ── What is deliberately not here ──────────────────────────────────────────
  *
  * No chunking and no text normalisation — the surfaces pack the rows before the
- * scheduler sees them (`shared/listen-text/chunks.ts`, `shared/listen-text/normalize.ts`). A row
- * longer than the (voice, backend) cap is refused by the server as
- * `chunk_too_long`, and it is never re-split here.
+ * scheduler sees them (`shared/listen-text/chunks.ts`, `shared/listen-text/normalize.ts`), and
+ * since 2026-09-19 that packing is the only judge of a row's length: Crucible
+ * retired `chunk_too_long` on both doors (crucible
+ * `docs/PHASE18-UNCERTIFIED.md` 4.0.2) and speaks an over-long row as sent. It
+ * is never re-split here, and never there.
  *
  * WHAT THEY PACK TO IS THIS SERVER'S, as of 2026-09-15. The RULING OWED that
  * stood here — "pack to the venue server's advertised `pace` / `max_chars`
