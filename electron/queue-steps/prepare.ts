@@ -31,16 +31,41 @@
  * `tools/test-queue-narration-plan.js` pins it so a future change to the pump
  * cannot quietly take it away.
  *
- * ── The one thing it DOES ask a server ─────────────────────────────────────
+ * ── The one thing it DOES ask a server, and it WAITS for the answer ────────
  *
  * The chunk boundaries are the rendering machine's numbers — `max_chars` and
  * the pace block off `GET /v1/voices`, never this machine's catalog
  * (`electron/crucible/voice-band.ts`). So the prep door reads ONE band from ONE
- * server and refuses by name when no enabled server will state it. That is not
- * waiting for a free server: a busy one answers `/v1/voices` in milliseconds.
+ * server. A busy server answers in milliseconds, so this is not waiting for a
+ * free card — but a server that is asleep or switched off answers nothing, and
+ * until 2026-09-19 that FAILED the row. Owen: a book *"would just sit there in
+ * the queue until it's free"*, and *"it should only fail because of a
+ * misconfiguration, which can be repaired."* So this row PARKS on availability
+ * and fails only on something a person repairs; the line between the two is
+ * `electron/crucible/prep-band.ts`.
+ *
  * Which server's band it read is recorded on the session and travels to the
  * render, which refuses by name if it is admitted somewhere with a tighter
  * ceiling (`parallel-tts-bridge.packingTravelsTo`).
+ *
+ * ── A PARKED CPU ROW IS RE-ADMITTED AT ONCE, so the cool-off is HERE ───────
+ *
+ * Measured while building this (2026-09-19): `settleStep` parks a step by
+ * putting it back to `queued` and calling `pump()` in the same breath, and the
+ * pump's CPU branch asks NOTHING about admission — `busyHolds`, the cool-off
+ * that keeps a GPU row off a server it just met a 409 on, is read by
+ * `decideWaitFor`, which is only asked for a travelling step, and
+ * `admissionBlocked`/`admissionRecheckTimer` are only armed there too. So a
+ * parked prepare row relaunches on the very next tick, and a park that cost
+ * nothing (every server switched off refuses before a socket is opened) would
+ * spin the main process flat out, firing a renderer update per turn.
+ *
+ * The cadence therefore lives where the asking does: this module remembers when
+ * this step last parked and waits out the remainder of {@link PARK_RECHECK_MS}
+ * before it asks again. The row holds its `local-work` slot while it waits,
+ * which is the honest cost of not touching the engine for it — and it is a slot
+ * held by a book that genuinely cannot proceed, not one stolen from a book that
+ * can.
  */
 import { onBridgeEvent } from '../bridge-events';
 import {
@@ -48,9 +73,36 @@ import {
   setMainWindow,
   detectRecommendedWorkerCount,
 } from '../parallel-tts-bridge';
+import { beginPrepare, cancelPrepare, waitUnlessStopped } from '../prep-handles';
 import type { StepModule, StepRunContext, StepReport } from '../queue-engine';
 import type { ArtifactRef } from '../../shared/queue/engine-types';
 import { projectDirForStep, queueMainWindow, stepFailure } from './runtime';
+
+/**
+ * How long a parked prepare row waits before it asks the servers again.
+ *
+ * The engine's own admission cadence (`queue-engine.ts`, `admissionRecheckMs`,
+ * 15 s) written down a second time, and the duplication is deliberate: that one
+ * is not applied to a CPU step at all (see the header), so this is not a copy of
+ * a value being used — it is the same CHOICE of cadence, made where it is
+ * actually enforced. If the engine ever gates CPU parks, this goes.
+ */
+const PARK_RECHECK_MS = 15_000;
+
+/**
+ * When each prepare step last parked and what it said, by STEP id — two books
+ * waiting on the same absent machine are two rows, each on its own clock.
+ *
+ * THE SENTENCE IS KEPT HERE BECAUSE THE ROW CANNOT KEEP IT. `settleStep` writes
+ * the park sentence into `progress.admissionHold`, and `launch` — which the
+ * park's own `pump()` reaches on the very next turn for a CPU step — resets
+ * `step.progress` to `{ percent: 0 }`. So the hold is a state the queue passes
+ * THROUGH rather than one it rests in, and an operator watching a prepare row
+ * that is not moving would see nothing at all. This row reports the line back
+ * while it waits out the cool-off, which is where it spends almost all of its
+ * time.
+ */
+const parkedAt = new Map<string, { readonly at: number; readonly line: string }>();
 
 /** The bridge's prep frames, as they arrive on the bus. */
 interface PrepProgressEvent {
@@ -181,15 +233,45 @@ export const prepareStep: StepModule = {
       ctx.report(report);
     });
 
+    /*
+     * OPENED HERE, not by the bridge, because the cool-off above is part of
+     * this row's life and a Stop pressed during it has no process to kill —
+     * only this handle to break. The bridge's own `beginPrepare` takes a second
+     * reference on the same entry and both are released, so the registry is
+     * empty again the moment this step settles (`electron/prep-handles.ts`).
+     */
+    const handle = beginPrepare(ctx.stepId);
     try {
+      const parked = parkedAt.get(ctx.stepId);
+      if (parked !== undefined) {
+        const left = PARK_RECHECK_MS - (Date.now() - parked.at);
+        if (left > 0) {
+          ctx.report({
+            percent: 0,
+            message: `Waiting for a machine to answer — ${parked.line}`,
+          });
+          await waitUnlessStopped(handle, left, 'while it was waiting to ask again');
+        }
+      }
       const result = await prepareNarrationSession(ctx.stepId, conversionConfig as never);
       if (!result.success || !result.prepared) {
         // A refusal that named a holder is a WAIT, not a failure — the same one
-        // road every module's refusal takes since 2026-09-19 (A5).
+        // road every module's refusal takes since 2026-09-19 (A5). For this row
+        // the holder may be nobody at all: a band no enabled server would state
+        // is availability, and the sentence names every machine that was asked
+        // and every one that is switched off (`crucible/prep-band.ts`).
+        if (result.busyLine === undefined) {
+          // A real failure ends the row; nothing is waiting, so nothing is
+          // remembered about waiting.
+          parkedAt.delete(ctx.stepId);
+        } else {
+          parkedAt.set(ctx.stepId, { at: Date.now(), line: result.busyLine });
+        }
         throw stepFailure(
           result.error || 'The book could not be prepared and no reason was given.',
           result.busyLine);
       }
+      parkedAt.delete(ctx.stepId);
       const prepared = result.prepared;
       ctx.report({
         percent: 100,
@@ -226,31 +308,39 @@ export const prepareStep: StepModule = {
         },
       };
     } finally {
+      handle.release();
       unsubscribe();
     }
   },
 
   /**
-   * THERE IS NOTHING HERE TO STOP, AND SAYING SO IS THE POINT.
+   * STOP THE PACK, AND TAKE THE HALF-WRITTEN SESSION WITH IT (2026-09-19).
    *
-   * `prepareSession` spawns narrator's prep and waits on it; the spawn is not
-   * registered anywhere a stop can reach — `activeSessions` is written by the
-   * RENDER door, after prep has returned — so a stop cannot kill the python.
-   * That has always been true: prep ran inside `startParallelConversion` before
-   * the session existed, and `stopParallelConversion` answered `false` for the
-   * whole of it. Moving prep to its own row did not change it, and pretending
-   * otherwise by calling a door that is a no-op here would be worse than
-   * stating it.
+   * This was deliberately EMPTY until tonight, and it said so: `prepareSession`
+   * spawned narrator's prep and registered the spawn nowhere a stop could reach
+   * — `activeSessions` is written by the RENDER door, after prep has returned —
+   * so `stopParallelConversion` answered `false` for the whole of prep. The
+   * engine aborted the step, the row stopped waiting, and the python ran on,
+   * writing into a scratch session nothing would ever read.
    *
-   * What DOES happen: the engine aborts the step, the row stops waiting, and
-   * the prep process finishes into a scratch session nothing reads. The next
-   * launch packs the book again — which is the behaviour, not a leak.
+   * `electron/prep-handles.ts` is the handle the render's `crucibleCancel`
+   * already had: keyed by THIS STEP'S id (which is the `jobId` the bridge is
+   * given), it holds how to kill the spawn — a process tree here, a guest
+   * process and its wsl.exe wrapper over there — and the session directory the
+   * prep is writing.
    *
-   * RULING OWED: a cancellable prep means `prepareSession` keeping a handle by
-   * job id, the way the render keeps `crucibleCancel`. Worth doing; not done
-   * here, because it is a change to the spawn and this packet is about the row.
+   * IT WAITS FOR THE PROCESS AND THEN DELETES THE DIRECTORY, in that order,
+   * because `session-state.json` is exactly what a resume and the clean-session
+   * sweep read a session back from: a prep killed half-way must not leave one
+   * behind for a later run to mistake for a session that was packed. If the
+   * removal fails it is named in the log rather than left to be discovered.
+   *
+   * The step then settles `cancelled` — this module declares no
+   * `stopIsResumable`, and it must not: there is nothing left on disk to resume
+   * from, which is the whole point of the paragraph above.
    */
-  cancel(): void {
-    // Deliberately empty. See above.
+  async cancel(stepId: string): Promise<void> {
+    parkedAt.delete(stepId);
+    await cancelPrepare(stepId);
   },
 };

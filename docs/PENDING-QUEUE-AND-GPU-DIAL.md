@@ -132,13 +132,41 @@ not match, so a busy server made a long book pay for its prep over and over.
 **One thing prep still asks a server, and it is not admission.** The chunk boundaries
 are the RENDERING machine's numbers (`max_chars` and the pace block off
 `GET /v1/voices`, never this machine's catalog — `electron/crucible/voice-band.ts`),
-so prep reads ONE band from one enabled server and refuses by name when none will
-state it. A busy server answers `/v1/voices` in milliseconds, so this is not waiting
-for a free machine; and the alternative — inventing a cap — is a whole book packed to
-numbers nobody measured. Which server's band it read is recorded on the session
-(`PrepInfo.packedFor`) and travels to the render, which **refuses by name if it is
-admitted to a server with a TIGHTER ceiling** (`packingTravelsTo`), because Crucible
-refuses an over-long chunk rather than re-splitting it.
+so prep reads ONE band from one enabled server. A busy server answers `/v1/voices` in
+milliseconds, so this is not waiting for a free machine; and the alternative —
+inventing a cap — is a whole book packed to numbers nobody measured. Which server's
+band it read is recorded on the session (`PrepInfo.packedFor`) and travels to the
+render, which **refuses by name if it is admitted to a server with a TIGHTER ceiling**
+(`packingTravelsTo`), because Crucible refuses an over-long chunk rather than
+re-splitting it.
+
+**And it WAITS for that answer rather than failing** (Owen, 2026-09-19: a book *"would
+just sit there in the queue until it's free"*; *"it should only fail because of a
+misconfiguration, which can be repaired"*). `electron/crucible/prep-band.ts` is the
+line between the two, and it is asked BEFORE the narration copy is cut so a parked
+pass costs one ping sweep:
+
+- **PARK** — not one enabled server answered, every registered server is switched
+  off, or the chosen one stopped answering between the ping and the voices call. The
+  sentence names the voice, every machine that was asked with what it said, and every
+  machine whose switch is off.
+- **FAIL** — no server is registered at all (nothing is coming), or the servers
+  ANSWERED and the voice is not one they serve, is unmapped, or its row states no cap
+  or no pace. Each is repairable and none gets better by waiting.
+
+**A parked prepare row is re-admitted by the pump immediately** — a CPU step is not
+gated by `busyHolds` or the admission recheck timer, both of which are asked only for
+a travelling step — so the 15 s cadence lives in `queue-steps/prepare.ts`
+(`PARK_RECHECK_MS`) and the row holds its `local-work` slot while it waits. It also
+keeps the park sentence itself, because `launch` resets `step.progress` and the
+relaunch is the very next turn.
+
+**A prepare row can be stopped.** `electron/prep-handles.ts` holds, by the step's job
+id, how to kill the prep spawn and which scratch session it is writing; a stop kills
+the spawn, waits for it, and then REMOVES the session — a half-written
+`session-state.json` is what a resume and the clean-session sweep read a session back
+from — naming the directory in the log if it cannot. The step settles `cancelled`:
+there is nothing left to resume from, which is the point.
 
 **A restored row with no prepare step still runs.** `tts-conversion` consumes
 `['prepared-session', 'epub']`; the `epub` arm preps inline, announced in the TTS log,
@@ -280,6 +308,10 @@ must still be told apart:
   holder's line and its progress. The fix is time.
 - **The server is disabled:** say THAT, and name the switch that turns it back on.
 - **The server is unreachable:** say THAT, and name what it said.
+- **Nothing will state the voice's chunk band:** a PREPARE row, waiting on
+  availability rather than on a card — name the voice, every machine that was asked
+  with what it said, and every machine whose switch is off
+  (`electron/crucible/prep-band.ts`).
 - **The row's venue was fixed at admission:** say that, and offer Cancel — the one act
   that works.
 

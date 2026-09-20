@@ -2643,13 +2643,18 @@ check('the render doors resolve the voice through ONE function', () => {
   // door; `higgsModelForJob(settings)` is the only one that can see an override.
   assert.strictEqual(/higgsPreflight/.test(bridgeSrc), false,
     'parallel-tts-bridge still resolves a Higgs voice without its override');
-  // FIVE since the local renderer was deleted (docs/LEGACY-REMOVAL.md). It was
-  // seven: the four LOCAL render doors are gone, and what is left is prep, the
+  // SIX since the prepare row learned to PARK (2026-09-19). It was five when
+  // the local renderer was deleted (docs/LEGACY-REMOVAL.md) and seven before
+  // that: the four LOCAL render doors are gone, and what is left is prep, the
   // two in the Crucible seam (`startCrucibleGeneration`) — the voice-id mapping
   // to the server's voice, and the refusal sentence that names the BookForge
-  // voice it could not map — plus `venueBandForPrep`, which asks the VENUE for
-  // that voice's cap and band before prep packs the book
-  // (`electron/crucible/voice-band.ts`).
+  // voice it could not map — `venueBandForPrep`, which asks the VENUE for that
+  // voice's cap and band before prep packs the book
+  // (`electron/crucible/voice-band.ts`), and now `bandThisPrepPacksTo`, which
+  // names the voice in the sentence a PARKED prepare row shows. That sentence
+  // has to name the voice the render will actually use — a park that named the
+  // catalog voice while the run carried an override would send its reader
+  // looking at the wrong machine's voice list.
   //
   // The COUNT is not the point; the SHARING is. Every one of them reads the same
   // door, because narrator's reaction to a voice its document does not name is
@@ -2657,8 +2662,8 @@ check('the render doors resolve the voice through ONE function', () => {
   // own speaker. A band fetched for a voice the render does not use would pack
   // the book to the wrong certificate, which is the same failure one layer up.
   const sites = bridgeSrc.match(/higgsModelForJob\(/g) || [];
-  assert.strictEqual(sites.length, 5,
-    `expected 5 higgsModelForJob call sites in the bridge, saw ${sites.length}`);
+  assert.strictEqual(sites.length, 6,
+    `expected 6 higgsModelForJob call sites in the bridge, saw ${sites.length}`);
   /*
    * LISTEN STAYS CATALOG-ONLY, and the check moved with the code.
    *

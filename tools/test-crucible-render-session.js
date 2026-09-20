@@ -387,22 +387,46 @@ function lift(name) {
      * venue is a Crucible and every session is host-native.)
      *
      * Owen split the prep off into its own CPU row that evening, so the doors
-     * that prep are `packSessionForNarration` — which both the `prepare` queue
-     * row and `startParallelConversion`'s inline compatibility arm go through —
-     * and `renderRangeHeadless`, the CLI's, which preps inline by design.
-     * `startParallelConversion` itself no longer preps: handed a packed
-     * session, it reads the chunks off disk.
+     * that prep are `packWithHandle` — which both the `prepare` queue row and
+     * `startParallelConversion`'s inline compatibility arm reach through
+     * `packSessionForNarration` — and `renderRangeHeadless`, the CLI's, which
+     * preps inline by design. `startParallelConversion` itself no longer preps:
+     * handed a packed session, it reads the chunks off disk.
+     *
+     * AND IT IS ASKED EARLIER STILL SINCE THE PARK LANDED (2026-09-19, second
+     * pass): the queue's door resolves venue AND band through
+     * `bandThisPrepPacksTo` before it cuts the narration copy, because a
+     * prepare row now PARKS when no machine will state the band
+     * (`crucible/prep-band.ts`) and a parked pass that had already cut a copy
+     * and swept this book's scratch sessions would pay that price once per
+     * queue pass for as long as the machines are off.
      */
     const src = fs.readFileSync(path.join(REPO, 'electron', 'parallel-tts-bridge.ts'), 'utf8');
-    for (const name of ['async function packSessionForNarration(', 'async function renderRangeHeadless(']) {
+    for (const [name, decidedBy] of [
+      ['async function packWithHandle(', 'await bandThisPrepPacksTo('],
+      ['async function renderRangeHeadless(', 'await decideGenerationVenue('],
+    ]) {
       const at = src.indexOf(name);
       assert.ok(at > 0, `${name} not found`);
       const body = src.slice(at, at + 12000);
-      const decide = body.indexOf('await decideGenerationVenue(');
+      const decide = body.indexOf(decidedBy);
       const prep = body.indexOf('await prepareSession(');
       assert.ok(decide > 0 && prep > 0 && decide < prep,
         `${name} preps before it knows whose numbers to pack to`);
     }
+    // The CLI reads the band the plain way — it has no queue row to park — but
+    // it still reads it BEFORE it preps, for the same reason.
+    const cli = src.slice(src.indexOf('async function renderRangeHeadless('));
+    assert.ok(cli.indexOf('await venueBandForPrep(') > 0
+      && cli.indexOf('await venueBandForPrep(') < cli.indexOf('await prepareSession('),
+      'the headless door preps without the venue\'s band');
+    // And the queue's door asks the machines BEFORE it cuts the narration copy:
+    // a park must cost one ping sweep, not a copy and a sweep.
+    const queueDoor = src.slice(src.indexOf('async function packWithHandle('));
+    assert.ok(queueDoor.indexOf('await bandThisPrepPacksTo(')
+      < queueDoor.indexOf('await prepareNarrationInput('),
+      'the queue\'s prep cuts the narration copy before it knows whether any machine will '
+      + 'state the band — which is the whole cost of a park, paid on every queue pass');
     // And exactly one door spawns the prep, so a third could not appear with a
     // venue decided somewhere else.
     const spawns = src.match(/await prepareSession\(/g) || [];
