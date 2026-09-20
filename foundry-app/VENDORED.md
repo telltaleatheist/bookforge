@@ -10,10 +10,22 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\<user>\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **f349771** — *Record the two checks that found today's defects, and run neither of them for you* |
+| Source sha | **ca4754c** — *Adopt Crucible 1.0.7: the render door with retake, band and width, and serving levers on the voice row* |
 | Engine | **NOT VENDORED AND NOT KNOWABLE FROM THIS FILE** — it is a spawned CLI resolved at RUNTIME (`FOUNDRY_BIN`, else `resolveFoundryPath`, `electron/main.ts`), so which build executes is a property of the machine and not of this copy. On a developer's Mac that resolves to Foundry's own checkout at `/Volumes/Callisto/Projects/foundry/dist/foundry-darwin-arm64`, which is whatever was last built there — `foundry 2.0.2 (1c1eaa3)` as of 2026-09-18. **Ask the binary: `$FOUNDRY_BIN --version`.** See *The engine this file named was not the engine that ran* below. |
-| Copied on | 2026-09-19 (four times: 3738c01, 3436fc5, 806d44b, f349771) |
-| Copied by | Mechanical source sync, verified against Foundry `f349771:app/`; details below |
+| Copied on | 2026-09-19 (five times: 3738c01, 3436fc5, 806d44b, f349771, ca4754c) |
+| Copied by | Mechanical source sync, verified against Foundry `ca4754c:app/`; details below |
+
+## The `f349771 → ca4754c` re-vendor — four files, the 1.0.7 SDK adoption (2026-09-19, late night)
+
+Foundry ca4754c is f349771 plus `tools/adopt-crucible-release.mjs 1.0.7`: `app/package.json`,
+`app/package-lock.json`, and the two vendored tarballs (`crucible-bootstrap-1.0.7.tgz`,
+`crucible-client-1.0.7.tgz`; the 1.0.6 pair deleted). No other file under `app/` moved, so
+this copy is exactly those four, each checked by blob id against `ca4754c:app/<path>`
+(`git hash-object` = `git rev-parse ca4754c:app/<path>`, all four MATCH). 1.0.7 is the
+render door's `retake`/`band`/`width` and `serving` on the voice row (Crucible
+`docs/PHASE18-UNCERTIFIED.md`); Foundry's own code did not change for it, only its pin.
+IPC unchanged. `foundry-app/node_modules` in the main checkout was stale (bootstrap 1.0.0,
+recorded in the previous entry) and is refreshed by the `npm ci` that builds this dist.
 
 ## The `806d44b → f349771` re-vendor — a window opens onto a move nobody in it started (2026-09-19, night)
 
