@@ -740,11 +740,47 @@ export function mintImpliedExportPath(fileName: string): string {
  * are mostly not implied exports.
  */
 export function impliedExportDirOf(p: string): string | null {
+  return scratchTopLevelDirOf(p, IMPLIED_EXPORT_PREFIX);
+}
+
+/**
+ * The folder prefix of a RENDER SESSION: `<scratch>/ebook-<uuid>/…`.
+ *
+ * narrator/e2a mints the name, not this app, which is why it is stated here as
+ * a fact rather than composed: every sweep, rescue and ownership check in the
+ * app decides on this prefix (`rescueOrphanedScratchSessions`,
+ * `scratch-sweep.ts`), and three spellings of it were three places to forget.
+ */
+export const RENDER_SESSION_PREFIX = 'ebook-';
+
+/**
+ * The `ebook-<uuid>` session folder a path lies in, or null for anything else.
+ *
+ * A sentences directory is `<scratch>/ebook-<uuid>/<hash>/chapters/sentences`,
+ * and the SESSION is the unit everything acts on: the rescue promotes it, the
+ * sweep removes it, the in-flight ledger records it as what a render owns.
+ * Walking up from the leaf by hand is how a caller ends up naming `chapters`.
+ */
+export function renderSessionDirOf(p: string): string | null {
+  return scratchTopLevelDirOf(p, RENDER_SESSION_PREFIX);
+}
+
+/**
+ * The top-level scratch folder `p` lies in, when that folder's name starts with
+ * `prefix`. Null for a path outside the scratch root, the root itself, or a
+ * top-level folder of another kind.
+ *
+ * ONE rule for both kinds of scratch item, because they have the same one: the
+ * sweep decides by TOP-LEVEL name (see IMPLIED_EXPORT_PREFIX above), so "which
+ * folder does this path belong to" must be answered the same way for a landing
+ * EPUB and for a render session.
+ */
+function scratchTopLevelDirOf(p: string, prefix: string): string | null {
   const root = scratchRoot;
   if (!root || typeof p !== 'string' || p === '') return null;
   const rel = path.relative(root, p);
   if (rel === '' || rel.startsWith('..') || path.isAbsolute(rel)) return null;
   const top = rel.split(/[\\/]/)[0]!;
-  if (!top.startsWith(IMPLIED_EXPORT_PREFIX)) return null;
+  if (!top.startsWith(prefix)) return null;
   return path.join(root, top);
 }

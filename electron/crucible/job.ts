@@ -108,6 +108,7 @@ import type {
   WrittenArtifact,
 } from '@crucible/client';
 import { CRUCIBLE_CLIENT_NAME, crucibleClientFor } from './servers';
+import { recordInFlight, settleInFlight } from './in-flight-ledger';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // The refusal vocabulary
@@ -438,6 +439,18 @@ export interface RunCrucibleJobOptions {
    * event this caller already acted on. Nothing is uploaded or submitted.
    */
   readonly attachTo?: { readonly jobId: string; readonly lastEventId?: number };
+  /**
+   * THIS side's name for the work — a queue step id, a render id — for the
+   * in-flight ledger (`in-flight-ledger.ts`). A door that does not say gets
+   * its job type, which is enough to find the row but not enough to name it.
+   */
+  readonly localId?: string;
+  /**
+   * Absolute scratch paths this run owns, for the ledger. Nothing here writes
+   * to them or deletes them; they exist so a sweep after a hard kill can say
+   * what a dead job left behind.
+   */
+  readonly owns?: readonly string[];
 }
 
 export type CrucibleJobArtifacts =
@@ -529,6 +542,23 @@ export async function runCrucibleJob(options: RunCrucibleJobOptions): Promise<Cr
     log(`crucible "${server}" admitted ${verb} as ${jobId}`);
   }
 
+  /*
+   * WRITTEN DOWN BEFORE THIS CALL DOES ANYTHING ELSE WITH THE JOB.
+   *
+   * Including on a resume: an attach means this process did not submit it, so
+   * this process's ledger has no row for it — and it is now exactly as much
+   * ours to cancel as one we submitted a second ago. See in-flight-ledger.ts.
+   */
+  recordInFlight({
+    server,
+    jobId,
+    jobType: type,
+    model: options.model ?? null,
+    localId: options.localId ?? type,
+    owns: options.owns ?? [],
+    submittedAt: new Date().toISOString(),
+  });
+
   // CANCELLATION IS A CANCEL, NOT A HANG-UP — see the header.
   let cancelAsked = false;
   const cancel = async (): Promise<void> => {
@@ -570,6 +600,11 @@ export async function runCrucibleJob(options: RunCrucibleJobOptions): Promise<Cr
       });
     } else if (event.event === 'done' || event.event === 'failed' || event.event === 'cancelled') {
       terminal = event;
+      // HERE and not in a `finally`: the ledger records a job that is RUNNING
+      // on a server, and a broken event stream is not a job that stopped. Only
+      // a terminal frame is the server saying this job is over, so only a
+      // terminal frame takes the row out.
+      settleInFlight(server, jobId);
     }
   };
 
@@ -640,6 +675,55 @@ export async function runCrucibleJob(options: RunCrucibleJobOptions): Promise<Cr
   }
   log(`crucible "${server}" job ${jobId} done: ${bytes.size} artifact(s) fetched`);
   return { jobId, done, artifacts: { where: 'memory', bytes }, lastEventId };
+}
+
+/**
+ * `DELETE /v1/jobs/{id}` for a job NOBODY IN THIS PROCESS IS WATCHING.
+ *
+ * Every other cancel in this app is a handle closed over a live stream, which
+ * is the right shape while the run exists. After a hard kill it does not: the
+ * quit and startup sweeps have a server name and a job id out of the in-flight
+ * ledger and nothing else, and a door that needed a stream could not cancel the
+ * one job that most needs cancelling (`in-flight-sweep.ts`).
+ *
+ * It answers rather than throws, because the sweep's whole job is to keep going
+ * past a server that is off, gone from the registry, or refusing. The ledger row
+ * is settled ONLY on `cancelled`/`gone` — an unreachable server keeps its row
+ * for the next start, which is the difference between a hole and a delay.
+ *
+ * `gone` covers a job the server no longer has (404) and one already past
+ * cancelling (`job_not_cancellable`): both mean the card is not being held by
+ * it, which is the only thing the sweep is asking about.
+ */
+export async function cancelCrucibleJobById(
+  server: string,
+  jobId: string,
+): Promise<{ outcome: 'cancelled' | 'gone' | 'unreachable' | 'refused'; detail: string }> {
+  let client: CrucibleClient;
+  try {
+    client = await crucibleClientFor(server, CRUCIBLE_CLIENT_NAME);
+  } catch (err) {
+    // An unknown server name: the registry entry was removed while a job of
+    // ours was on it. Named, kept in the ledger, and not retried in a loop.
+    return { outcome: 'refused', detail: err instanceof Error ? err.message : String(err) };
+  }
+  try {
+    const result = await client.cancel(jobId);
+    return { outcome: 'cancelled', detail: `crucible "${server}" job ${jobId} is ${result.status}` };
+  } catch (err) {
+    if (err instanceof CrucibleUnreachable) {
+      return { outcome: 'unreachable', detail: `nothing answered at ${err.url}` };
+    }
+    if (err instanceof CrucibleRefused
+      && (err.status === 404 || err.code === 'job_not_cancellable' || err.code === 'not_found')) {
+      return { outcome: 'gone', detail: `crucible "${server}" no longer has job ${jobId} to cancel (${err.code})` };
+    }
+    const described = describeCrucibleJobRefusal(err, server, `cancelling job ${jobId}`);
+    return {
+      outcome: 'refused',
+      detail: described instanceof Error ? described.message : String(described),
+    };
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

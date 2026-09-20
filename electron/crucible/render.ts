@@ -73,6 +73,8 @@ import {
 } from '@crucible/client';
 import type { RenderChunk, RenderResult } from '@crucible/client';
 import { CRUCIBLE_CLIENT_NAME, crucibleClientFor } from './servers';
+import { recordInFlight } from './in-flight-ledger';
+import { renderSessionDirOf } from '../narrator-paths';
 import { downloadRenderArtifacts } from './render-artifacts';
 import { crucibleVoiceBand, describeVenueBand, refuseChunksOverVenueCap } from './voice-band';
 import type { ChunkGuardSummary } from '../chunk-guard-ledger';
@@ -642,6 +644,32 @@ export async function runCrucibleRender(
     }
     log(`crucible "${server}" admitted the render as job ${jobId}`);
   }
+
+  /*
+   * THE RECEIPT A HARD KILL CANNOT LOSE.
+   *
+   * This is the exact job Owen found still running at 70% an hour after ctrl-C
+   * killed the app — voice resident, card claimed, nothing left on this side
+   * that knew its id. Written before the first artifact is asked for, removed by
+   * `downloadRenderArtifacts` on the job's terminal frame, and read by the quit
+   * and startup sweeps (`in-flight-ledger.ts`, `in-flight-sweep.ts`).
+   *
+   * On a RESUME too: an attached job is as much ours to cancel as a fresh one,
+   * and this process has no row for it until one is written here.
+   */
+  recordInFlight({
+    server,
+    jobId,
+    jobType: 'tts',
+    model: voice,
+    localId: renderId,
+    // The `ebook-<uuid>` session, not the `chapters/sentences` leaf: that is the
+    // unit the scratch sweep rescues and removes. Null for a render whose
+    // sentences are not under the scratch root at all (a CLI run pointed
+    // somewhere else) — then this render owns no scratch and says so.
+    owns: [renderSessionDirOf(sentencesDir)].filter((p): p is string => p !== null),
+    submittedAt: new Date().toISOString(),
+  });
 
   // CANCELLATION IS A CANCEL, NOT A HANG-UP — AND IT IS NOT OVER ON THE 200.
   //

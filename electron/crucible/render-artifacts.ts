@@ -75,6 +75,7 @@ import * as fsSync from 'fs';
 import type { CrucibleClient, JobEvent, RenderResult, WrittenArtifact } from '@crucible/client';
 import { readRenderResult } from '@crucible/client';
 import { CRUCIBLE_CLIENT_NAME, crucibleClientFor } from './servers';
+import { settleInFlight } from './in-flight-ledger';
 import {
   recordCrucibleChunkGuard,
   takeChunkGuards,
@@ -249,6 +250,11 @@ export async function downloadRenderArtifacts(
       }
       if (event.event === 'done' || event.event === 'failed' || event.event === 'cancelled') {
         terminal = event;
+        // The in-flight ledger's row for this render comes out HERE, at the one
+        // frame that means the server has stopped holding the card for it — not
+        // in a `catch`, where a dropped stream would delete the record of a job
+        // still rendering. Same rule, same reason, as `crucible/job.ts`.
+        settleInFlight(server, jobId);
       }
     }
   } catch (err) {
