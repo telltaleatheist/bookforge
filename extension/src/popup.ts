@@ -47,6 +47,16 @@ import {
   minimumCaptureRateFor
 } from '../../shared/audio/tab-recording';
 import { listClips, type ClipSummary } from './clips';
+import { unreadableBecause } from './voice-band';
+
+/**
+ * What the tooltip calls the server before one is picked.
+ *
+ * It is never shown in practice — there are no voice rows without a server to
+ * have fetched them — and it is a LABEL rather than a fallback: nothing is
+ * derived from it and no request is made with it.
+ */
+const NO_SERVER_PICKED = 'the selected server';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -429,7 +439,7 @@ let voicesSig: string | null = null;
  * hidden, and why the next voice engine costs this file nothing. The engine
  * appears in the label only when the list actually spans more than one.
  */
-function buildVoiceOptions(rows: VoiceRow[]): void {
+function buildVoiceOptions(rows: VoiceRow[], serverName: string): void {
   const engines = new Set(rows.map((v) => v.engine));
   voiceEl.textContent = '';
   // Keep the saved voice selectable even if the server has not answered yet.
@@ -445,12 +455,26 @@ function buildVoiceOptions(rows: VoiceRow[]): void {
   for (const v of rows) {
     const o = document.createElement('option');
     o.value = v.id;
-    o.textContent = engines.size > 1 ? `${v.display} — ${v.engine}` : v.display;
+    const label = engines.size > 1 ? `${v.display} — ${v.engine}` : v.display;
     // A voice that cannot be loaded on that host stays VISIBLE and disabled with
     // the server's own reason as its title: "not installed" is something you can
     // act on, a missing row is not.
-    o.disabled = !v.loadable && !v.resident;
-    if (v.reason) o.title = v.reason;
+    //
+    // SO DOES ONE WITH NO MEASURED LENGTH, and for the same reason. Since
+    // Crucible 1.0.7 a row may state no cap and no safe band at all — a
+    // checkpoint being screened, whose numbers are what the screening run
+    // exists to produce (`crucible/docs/PHASE18-UNCERTIFIED.md` §4). It is a
+    // real voice and it loads; it is not one a web page can be packed against,
+    // and saying so HERE is the difference between a greyed row with a reason
+    // and a green Load followed by a refusal at the moment you press play.
+    // `unreadableBecause` is the same function the offscreen document's packer
+    // refuses through, so what this picker offers and what can be read are one
+    // answer rather than two.
+    const unreadable = unreadableBecause(v.id, serverName, v.lengths);
+    o.textContent = unreadable === null ? label : `${label} — no measured length`;
+    o.disabled = (!v.loadable && !v.resident) || unreadable !== null;
+    if (unreadable !== null) o.title = unreadable;
+    else if (v.reason) o.title = v.reason;
     voiceEl.appendChild(o);
   }
   voiceEl.value = selectedVoice;
@@ -462,10 +486,16 @@ function renderEngine(): void {
   const engine = s?.engine ?? null;
   const connected = !!s?.connected;
 
-  const sig = rows
-    .map((v) => `${v.id}:${v.engine}:${v.loadable}:${v.resident}:${v.needsReference}`)
-    .join('|');
-  if (sig !== voicesSig) { voicesSig = sig; buildVoiceOptions(rows); }
+  // The server's registered name is IN the signature because it is in a
+  // tooltip the options carry ("Crucible X states no measured chunk length…"),
+  // and so are the lengths: a voice that gains a measured cap — which is what
+  // finishing a screening run DOES to it — has to stop being greyed out
+  // without waiting for something else about the row to change.
+  const serverName = engine?.server ?? NO_SERVER_PICKED;
+  const sig = [serverName].concat(rows.map((v) => `${v.id}:${v.engine}:${v.loadable}:`
+    + `${v.resident}:${v.needsReference}:${v.lengths.maxChars}:${v.lengths.safeMinChars}:`
+    + `${v.lengths.safeMaxChars}`)).join('|');
+  if (sig !== voicesSig) { voicesSig = sig; buildVoiceOptions(rows, serverName); }
   renderClipPicker(rows);
 
   // Mirror the resident voice so the popup stays in lockstep with whatever the
@@ -474,7 +504,7 @@ function renderEngine(): void {
   if (cv && cv !== selectedVoice && document.activeElement !== voiceEl) {
     selectedVoice = cv;
     try { void chrome.storage.local.set({ voice: selectedVoice }); } catch { /* orphaned context */ }
-    if (!rows.some((v) => v.id === cv)) buildVoiceOptions(rows); else voiceEl.value = cv;
+    if (!rows.some((v) => v.id === cv)) buildVoiceOptions(rows, serverName); else voiceEl.value = cv;
   }
   voiceEl.disabled = !connected;
 

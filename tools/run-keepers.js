@@ -575,6 +575,14 @@ const SUITES = [
   // has stopped keeping, and this one passed the whole time, which is the way
   // that goes unnoticed.
   'test-extension-pairing',
+  // A voice row may state NO length since Crucible 1.0.7 retired `chunk_too_long`
+  // and made `max_chars` optional — a checkpoint being screened has no measured
+  // cap, because measuring it is what the screening run is FOR. The extension
+  // used to hand `maxChars` alone to the shared packer and get the APP's refusal
+  // back, naming electron/data/higgs-models.json at the moment somebody pressed
+  // play; and it dropped `pace`'s measured band entirely, so two clients packed
+  // one voice on one server to two bands. Executed, not grepped.
+  'test-extension-voice-band',
   // A backtick inside a template's own comment ENDS the template literal, and
   // the errors then point at unrelated lines. It happened three times on
   // 2026-09-17 -- two HTML comments and one CSS comment in styles: [...] --

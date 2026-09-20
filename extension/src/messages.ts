@@ -13,6 +13,7 @@
  */
 
 import { DEFAULT_RECORDINGS_DIR, RECORDER } from '../../shared/audio/tab-recording';
+import type { VoiceLengths } from './voice-band';
 
 export type MessageTarget = 'background' | 'offscreen' | 'content' | 'popup';
 
@@ -161,6 +162,22 @@ export interface VoiceRow {
    * a server is entitled to call a zero-shot voice anything it likes.
    */
   needsReference: boolean;
+  /**
+   * What the row states about LENGTH, verbatim — the cap and the safe band,
+   * nulls and all (`extension/src/voice-band.ts`).
+   *
+   * It is on the row rather than in a second map beside it because both
+   * pickers and the packer need it and there must be exactly one copy: the
+   * popup decides whether to offer a voice from these numbers and the offscreen
+   * document packs to them, and the day those two disagree is the day a voice
+   * you can select is one nothing can read.
+   *
+   * SINCE 2026-09-19 EVERY FIELD CAN BE NULL. Crucible made `max_chars`
+   * optional and retired `chunk_too_long` with it (its
+   * `docs/PHASE18-UNCERTIFIED.md` §4): a checkpoint that has not been swept has
+   * no measured length, and null says so rather than standing in for one.
+   */
+  lengths: VoiceLengths;
 }
 
 /** The selected server and what is on its card. Replaces the old ServerConfig. */
