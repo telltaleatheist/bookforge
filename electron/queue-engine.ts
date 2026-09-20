@@ -109,6 +109,7 @@ import {
   gpuHoldOf,
   gpuHoldWords,
   isCloudLane,
+  isTravellingGpuStep,
   longformAlignCharged,
   LONGFORM_ALIGN_SET,
   slotSetForStep,
@@ -132,7 +133,23 @@ import { JOB_GERUND } from '../shared/queue/job-words';
  * `queue-steps/runtime` without the cycle that module's other exports would
  * imply — everything it imports is `import type`.
  */
-import { busyLineOf, projectDirForStep } from './queue-steps/runtime';
+import { busyLineOf, projectDirForStep, transientLineOf } from './queue-steps/runtime';
+/*
+ * WHERE A FAILURE GOES SO IT IS STILL THERE TOMORROW.
+ *
+ * The queue's own account of a failure lived in exactly two places, and both
+ * were erasable: the dev terminal, and `step.error` — which a Retry press or a
+ * resumable stop used to delete (bug hunt 2026-09-20, F7/P6). So the night a
+ * Foundry clean died on an ENOENT left nothing on disk at all. The rolling
+ * logger is the durable third: `~/Library/Logs/BookForge/bookforge.log`, the
+ * file `initializeLoggers` opens at startup.
+ *
+ * Safe for the keepers, which is why it is imported rather than wired through
+ * a host: `getMainLogger()` constructs a logger that touches no filesystem
+ * until `init()` has opened its stream, and an uninitialised one writes to the
+ * console only.
+ */
+import { getMainLogger } from './rolling-logger';
 
 // ────────────────────────────────────────────────────────────────────────────
 // The step-module contract
@@ -775,6 +792,22 @@ let heldTailRecheckTimer: ReturnType<typeof setTimeout> | null = null;
 const heldTailParks = new Map<string, number>();
 
 /**
+ * A STEP HELD OFF FOR ONE ADMISSION TICK AFTER A TRANSPORT FAILURE — Contract
+ * 1 of the bug hunt, 2026-09-20 (C1/Q3).
+ *
+ * Keyed by STEP and not by server, which is the whole distinction from
+ * `busyHolds`: a `409` is a fact about a MACHINE that every book bound for it
+ * shares, and a reset socket is a fact about one conversation. Holding a
+ * server off because one row's stream dropped would park every other book on a
+ * jam nobody reported.
+ *
+ * The pump reads it for steps of EVERY resource — a transport failure is not
+ * about a card — and `launch` clears it, so a step that starts leaves nothing
+ * behind in the map.
+ */
+const transientParks = new Map<string, number>();
+
+/**
  * THE BENCH IS COMPOSED FROM A RECORD THAT LEARNS, SO IT REPUBLISHES WHEN IT
  * DOES.
  *
@@ -879,11 +912,66 @@ function changed(): void {
 
 const STATE_VERSION = 1;
 
+/**
+ * WRITE THE FILE WHOLE OR NOT AT ALL — and leave exactly ONE tmp name behind
+ * while doing it.
+ *
+ * ── The fixed name (bug hunt 2026-09-20, Q10/P7) ────────────────────────────
+ *
+ * This minted `${target}.tmp-${pid}-${Date.now()}` — unique per write — so a
+ * process killed between the open and the rename orphaned a file FOREVER, and
+ * nothing ever swept them: 17 of them in userData, 12 zero-byte, three
+ * complete snapshots, one of them 63 KB against a live file of 45 KB. A fixed
+ * `${target}.tmp` self-heals, because the next write truncates it — and the
+ * uniqueness bought nothing, since {@link persist} serialises every write
+ * through one promise chain, so two of them cannot be in flight at once.
+ * `in-flight-ledger.ts` has spelt it this way all along.
+ *
+ * ── The fsync ───────────────────────────────────────────────────────────────
+ *
+ * A rename is atomic against a CRASH and says nothing about a power cut: the
+ * directory entry can land while the file's own blocks are still in the page
+ * cache, leaving a correctly-named empty queue. The library's rule is the
+ * stricter one (write to staging, fsync, move), and the queue — which holds
+ * the record of a nine-hour narration's resume point — is not owed less.
+ */
 async function atomicWrite(target: string, content: string): Promise<void> {
-  const tmp = `${target}.tmp-${process.pid}-${Date.now()}`;
+  const tmp = `${target}.tmp`;
   await fs.mkdir(path.dirname(target), { recursive: true });
-  await fs.writeFile(tmp, content, 'utf-8');
+  const handle = await fs.open(tmp, 'w');
+  try {
+    await handle.writeFile(content, 'utf-8');
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
   await fs.rename(tmp, target);
+}
+
+/**
+ * THE ORPHANS OF THE OLD UNIQUE-NAMED WRITES, swept once per configure.
+ *
+ * Every one of them is dead by construction — `loadState` reads `stateFile()`
+ * exactly and nothing else ever looks at a `.tmp-*` — so there is no file here
+ * whose loss could cost anything, and leaving them was 17 files and counting
+ * in a directory an operator reads when something has gone wrong.
+ *
+ * `.corrupt-*` is NOT swept: that is a preserved queue somebody may want to
+ * read, and it is named so it survives.
+ *
+ * Best-effort and never a gate: a sweep that threw would take startup down
+ * over litter (`startQueueEngine` is awaited, main.ts).
+ */
+async function sweepOrphanedTmpWrites(): Promise<void> {
+  const target = stateFile();
+  const dir = path.dirname(target);
+  const prefix = `${path.basename(target)}.tmp-`;
+  try {
+    for (const name of await fs.readdir(dir)) {
+      if (!name.startsWith(prefix)) continue;
+      await fs.unlink(path.join(dir, name)).catch(() => { /* gone already */ });
+    }
+  } catch { /* no directory yet, or unreadable: nothing to sweep */ }
 }
 
 let persisting: Promise<void> = Promise.resolve();
@@ -1456,6 +1544,8 @@ export async function removeStep(stepId: string): Promise<void> {
     runningSteps.delete(step.id);
   }
   const gone = new Set(going.map((s) => s.id));
+  // Every park these rows were carrying goes with them — see `forgetStepParks`.
+  for (const id of gone) forgetStepParks(id);
   job.steps = job.steps.filter((s) => !gone.has(s.id));
   if (job.steps.length === 0) jobs = jobs.filter((j) => j.id !== job.id);
   // The subtree went with the step, so the act the row's lease was being kept
@@ -1652,6 +1742,9 @@ function settleNotStarted(job: QueueJob, step: QueueStep, reason: string): void 
   step.status = 'cancelled';
   step.error = reason;
   step.finishedAt = new Date().toISOString();
+  // A cancelled row is never tried again, so whatever park it was carrying is
+  // an entry keyed by a step nothing will look at — see `forgetStepParks`.
+  forgetStepParks(step.id);
   cascadeCancel(job, step.id, `Skipped: ${step.label} was cancelled.`);
 }
 
@@ -1667,6 +1760,8 @@ function cascadeCancel(job: QueueJob, stepId: string, reason: string): void {
       step.status = 'cancelled';
       step.error = reason;
       step.finishedAt = new Date().toISOString();
+      // Same rule, one rung down — see `forgetStepParks`.
+      forgetStepParks(step.id);
       cancelledIds.add(step.id);
       changedAny = true;
     }
@@ -1695,6 +1790,9 @@ export async function remove(jobId: string): Promise<void> {
     live.abort.abort();
     runningSteps.delete(step.id);
   }
+  // Every park any row of this run was carrying goes with it — see
+  // `forgetStepParks`. Done before the filter, off the run still in hand.
+  for (const step of job.steps) forgetStepParks(step.id);
   jobs = jobs.filter((j) => j.id !== jobId);
   /*
    * THE WHOLE RUN IS GONE, so nothing can still want its lease — closed
@@ -2171,6 +2269,22 @@ export function bulkWaitFor(from: string | null, to: string): number {
  * Set by `reviveInterrupted` on every load and read by main, which logs it.
  */
 let migrationReport: string | null = null;
+
+/**
+ * WHAT HAPPENED TO THE SAVED QUEUE ITSELF, when it was not simply read — a
+ * `.corrupt-<ts>` rename, or a read that failed (bug hunt 2026-09-20, Q10).
+ *
+ * On the SAME channel as the waitFor migration and not a second one, because
+ * both are the same kind of news: one line, at load, about a queue file that
+ * is not what the running queue is. Two channels would mean a second caller to
+ * remember in main, and the one that was never added is the one that would
+ * have said a queue had been set aside.
+ *
+ * Set by `loadState` and cleared by it on a clean read, so it describes THIS
+ * load and never a previous one.
+ */
+let stateFileReport: string | null = null;
+
 export function waitForMigrationReport(): string | null {
   return migrationReport;
 }
@@ -2204,11 +2318,27 @@ export function clearFinished(): void {
  * only way out was to cancel the book back to Pending.
  *
  * So the assignment is released exactly when there is nothing of the run left
- * standing on that machine: no step `done`, none `running`. The test is about
- * the run rather than about the step being retried, because §4.4 is — one book
- * is one GPU, so a run with a finished narration on a card keeps its card while
- * its assembly is retried, and the retried step follows it. A run where every
- * step is now held, waiting or failed has nothing to follow.
+ * standing on that machine: no TRAVELLING step `done`, none `running`. The test
+ * is about the run rather than about the step being retried, because §4.4 is —
+ * one book is one GPU, so a run with a finished narration on a card keeps its
+ * card while its assembly is retried, and the retried step follows it. A run
+ * where every travelling step is now held, waiting or failed has nothing to
+ * follow.
+ *
+ * ── "STANDING" IS ABOUT A MACHINE, AND A LOCAL STEP STANDS ON NONE ─────────
+ *
+ * This asked whether ANY step was `done` or `running` until 2026-09-20 (bug
+ * hunt, Q1), and that is a different question. Since Sep 19 every narration
+ * chain opens with `prepare` — CPU, local, no venue — which lands `done`
+ * first. So when the render was refused `409 server_busy` by a stranger, the
+ * busy branch called this and the guard tripped on the completed LOCAL row:
+ * the venue stood, `decideWaitFor` took its rung-1 forever, and an `any` book
+ * waited hours on the busy machine beside an idle one with a read-only picker.
+ * A1 verbatim, reached through the row A1's own fix had added.
+ *
+ * {@link isTravellingGpuStep} is the one spelling of "this step's work is on a
+ * server's card" — borrowed, never restated, because the GPU hold reads the
+ * identical fact and two copies would drift.
  *
  * `step.venue` goes with it. That is where one step's work HAPPENED, and with
  * the attempt reset there is no such place — left standing it would keep the
@@ -2222,7 +2352,8 @@ export function clearFinished(): void {
  */
 function releaseVenueIfNothingStands(job: QueueJob): void {
   if (job.waitForResolved === undefined) return;
-  if (job.steps.some((step) => step.status === 'done' || step.status === 'running')) return;
+  if (job.steps.some((step) => isTravellingGpuStep(step)
+    && (step.status === 'done' || step.status === 'running'))) return;
   job.waitForResolved = undefined;
   for (const step of job.steps) step.venue = undefined;
 }
@@ -2240,6 +2371,17 @@ function releaseVenueIfNothingStands(job: QueueJob): void {
 export function retry(target: { jobId?: string; stepId?: string }): void {
   const reset = (step: QueueStep): void => {
     step.status = 'held';
+    /*
+     * THE REASON IS KEPT, IT IS ONLY NO LONGER THE ROW'S STATE — P6/F7, bug
+     * hunt 2026-09-20. `step.error = undefined` here erased the ONE persisted
+     * copy of a failure's account: the engine's stdout/stderr lives in memory
+     * and a `ctx.report` line overwrites, so the stderr a failed Foundry clean
+     * carried on `error` was all there was, and pressing Retry deleted it
+     * before anybody had read it. It moves to {@link QueueStep.lastError},
+     * which no status is derived from, so the row is not red and the account
+     * survives the next attempt.
+     */
+    if (step.error !== undefined) step.lastError = step.error;
     step.error = undefined;
     step.progress = {};
     step.metrics = {};
@@ -2253,10 +2395,28 @@ export function retry(target: { jobId?: string; stepId?: string }): void {
     const found = findStep(target.stepId);
     if (!found) throw new Error(`There is no step "${target.stepId}" in the queue.`);
     reset(found.step);
-    // Everything downstream of it has to run again too: it read what this step
-    // wrote, and this step is about to write it differently.
-    for (const step of found.job.steps) {
-      if (step.parentStepId === found.step.id) reset(step);
+    /*
+     * EVERYTHING DOWNSTREAM OF IT, TRANSITIVELY — the mirror of
+     * `cascadeCancel`, which is what put those rows where they are.
+     *
+     * This walked ONE link until 2026-09-20 (bug hunt F6/Q2). A failure
+     * cancels the whole subtree; a Retry on the failed step reset the step and
+     * its CHILDREN, and a grandchild stayed `cancelled`. Owen's chain clean →
+     * landing → prepare → tts → align → reassembly: Retry on the clean revived
+     * clean and landing, the clean re-ran for hours, the export landed — and
+     * the narration it was ordered for stayed cancelled with nothing saying
+     * so. The same shape ends a narration retry with a rendered book, an
+     * alignment, and no m4b.
+     *
+     * `done` IS SKIPPED, for `retry({jobId})`'s reason one rung down: a step
+     * that already succeeded under this one is not re-run because a sibling
+     * failed. Nothing downstream of a failure is `done` today — `cascadeCancel`
+     * only touches non-terminal rows — but a future chain that forks is not
+     * owed an hour of GPU by this walk.
+     */
+    for (const step of descendantsOf(found.job, found.step.id)) {
+      if (step.status === 'done') continue;
+      reset(step);
     }
     found.job.finishedAt = undefined;
     releaseVenueIfNothingStands(found.job);
@@ -3059,6 +3219,69 @@ const reservingSteps = new Map<string, { jobId: string; server: string }>();
 const reserveHolds = new Map<string, number>();
 
 /**
+ * HOW MANY TIMES IN A ROW ONE STEP'S RESERVE HAS BEEN REFUSED FOR THE SAME
+ * REASON — the ceiling under {@link reserveHolds} (bug hunt 2026-09-20, Q6;
+ * Owen's ruling 2, the same night).
+ *
+ * ── The park that could not end ─────────────────────────────────────────────
+ *
+ * A non-busy reserve refusal is HELD, not failed, and that is right: the act
+ * never ran, nothing of the book is lost, and the refusal names the thing to
+ * repair. But a book whose render is `done` on a machine HOLDS that machine's
+ * card (`gpuHoldOf`, ruling 9) from its first travelling GPU step to its last,
+ * and a `queued` next act keeps the hold standing. So a mid-chain reserve
+ * refused for `model_not_resident` — or for a class nobody ever probed — parked
+ * for ever WHILE HOLDING THE CARD: the row re-reserved every 15 s, the
+ * server's only slot stayed charged, every other book bound for it read
+ * *"holding the card for <title>"* with no clock, and nobody was told to
+ * intervene. A failed step would have given the card back; this park
+ * deliberately does not fail.
+ *
+ * So there is a ceiling, and it is a COUNT rather than a clock because the
+ * thing being counted is evidence: the same machine answering the same
+ * sentence four times running is a misconfiguration somebody can repair, which
+ * is exactly what ruling 3 says a step may fail on. A DIFFERENT sentence
+ * restarts the count — the server is telling us something new, and the row is
+ * owed the same patience it had at the start.
+ *
+ * Separate from `reserveHolds` because that map is deleted on every fresh
+ * answer ("a fresh answer supersedes any cool-off") and the count has to
+ * survive exactly those. Cleared where a park is cleared: a launch, a removal,
+ * a cancel, and a reserve that finally succeeded.
+ */
+const reserveRefusals = new Map<string, { reason: string; times: number }>();
+
+/**
+ * FOUR CONSECUTIVE IDENTICAL REFUSALS — about a minute at the 15 s admission
+ * tick. Owen's ruling 2 (2026-09-20): *"a mid-chain reserve refused for a
+ * non-holder reason fails after 4 consecutive identical refusals (~1 min)"*.
+ * Change the number here and the keeper reads it from this constant, never
+ * from a literal of its own.
+ */
+export const RESERVE_REFUSAL_CEILING = 4;
+
+/**
+ * EVERY PER-STEP PARK THIS SCHEDULER KEEPS, FORGOTTEN IN ONE PLACE.
+ *
+ * Four maps are keyed by step id — the own-tail park, the transport cool-off,
+ * the reserve cool-off and its refusal count — and each was cleared on its own
+ * one path (`heldTailParks` in `launch`, `reserveHolds` in `settleReserve`).
+ * `remove`, `removeStep` and `cancel` cleared NONE of them, so a step deleted
+ * while parked left an entry keyed by an id nothing would look at again, for
+ * the life of the process (bug hunt 2026-09-20, "Smaller, confirmed (Q)").
+ * A leak rather than a bug — until a count decides whether a row fails, at
+ * which point a stale entry is a wrong answer.
+ *
+ * One door, so a fifth map cannot be added and forgotten by four callers.
+ */
+function forgetStepParks(stepId: string): void {
+  heldTailParks.delete(stepId);
+  transientParks.delete(stepId);
+  reserveHolds.delete(stepId);
+  reserveRefusals.delete(stepId);
+}
+
+/**
  * What {@link reserveBeforeLaunch} told the pump to do.
  *
  * `waiting` and `recheck` both leave the row in the queue and differ in WHO
@@ -3203,6 +3426,10 @@ function settleReserve(
        * holder.
        */
       holdServerBusyAt(server, busyLine);
+      // A holder's 409 breaks the non-busy streak: the ceiling below counts
+      // CONSECUTIVE refusals for the same reason, and this is a different
+      // answer from the same machine.
+      reserveRefusals.delete(step.id);
       holdStep(step, holdBusy(server, busyLine));
     } else {
       // Not a wait: something about this machine or this act is wrong, and the
@@ -3210,9 +3437,44 @@ function settleReserve(
       // failed — the act has not run, nothing of the book is lost, and the
       // operator fixes the named thing and the row goes on. The cool-off is
       // per STEP: this is not a busy card, so no other row is held off it.
+      const reason = (outcome.err as Error)?.message || String(outcome.err);
+      const seen = reserveRefusals.get(step.id);
+      const times = seen !== undefined && seen.reason === reason ? seen.times + 1 : 1;
+      /*
+       * ── AND THE CEILING, BECAUSE THE PARK HOLDS THE CARD ────────────────
+       *
+       * See {@link reserveRefusals}. A book that is partway through holds its
+       * server's slot until its last GPU act settles (ruling 9), so a
+       * mid-chain refusal that parks for ever parks the MACHINE for ever with
+       * it. Four identical answers is a misconfiguration somebody can repair,
+       * which is the one thing ruling 3 says a step may fail on — and failing
+       * is what gives the card back, because `gpuHoldOf` asks the NEXT act and
+       * a failed one is not one.
+       *
+       * The last reason IS the error, verbatim: the row's whole value to
+       * whoever comes to repair it is the server's own sentence, and a summary
+       * composed here would be this file guessing at a refusal it has never
+       * read.
+       */
+      if (times >= RESERVE_REFUSAL_CEILING) {
+        forgetStepParks(step.id);
+        step.status = 'failed';
+        step.error = reason;
+        step.finishedAt = new Date().toISOString();
+        step.progress = { ...step.progress, message: reason };
+        console.error(
+          `[QUEUE-ENGINE] ${step.label} (${step.id}) was refused by ${server} ${times} times in `
+          + `a row: ${reason}`);
+        logFailure(found.job, step, reason);
+        cascadeCancel(found.job, step.id,
+          `Skipped: ${step.label} failed. Fix it and run the job again.`);
+        changed();
+        pump();
+        return;
+      }
+      reserveRefusals.set(step.id, { reason, times });
       reserveHolds.set(step.id, Date.now() + admissionRecheckMs);
-      holdStep(step, `Waiting for ${server}: `
-        + `${(outcome.err as Error)?.message || String(outcome.err)}`);
+      holdStep(step, `Waiting for ${server}: ${reason}`);
     }
     pump();
     return;
@@ -3236,6 +3498,7 @@ function settleReserve(
     pump();
     return;
   }
+  reserveRefusals.delete(found.step.id);
   assignRunVenue(found.job, found.step, server);
   clearAdmissionHold(found.step);
   void launch(found.job, found.step);
@@ -3472,6 +3735,19 @@ export function pump(): void {
       if (step.status !== 'queued') continue;
       const parent = parentOf(step);
       if (parent && parent.status !== 'done') { step.status = 'waiting'; continue; }
+
+      /*
+       * A STEP THAT MET A TRANSPORT FAILURE, re-asked on the admission tick —
+       * see `transientParks`. Asked here rather than in the GPU branch below
+       * because a reset socket is not a fact about a card: a CPU step talking
+       * to a hosted engine can meet one too, and its sentence is on the row
+       * either way.
+       */
+      const transientUntil = transientParks.get(step.id);
+      if (transientUntil !== undefined) {
+        if (transientUntil > Date.now()) { admissionBlocked = true; continue; }
+        transientParks.delete(step.id);
+      }
 
       if (step.resource !== 'gpu') {
         /*
@@ -3932,8 +4208,10 @@ async function launch(job: QueueJob, step: QueueStep): Promise<void> {
   const mod = moduleFor(step.type);
   // Whatever park this row was carrying is answered by it starting. Left
   // standing it would be a stale entry keyed by a step nothing will look at
-  // again.
-  heldTailParks.delete(step.id);
+  // again — and the reserve's refusal COUNT with it, because four consecutive
+  // refusals is what fails the row and a launch is the thing that breaks the
+  // run (bug hunt 2026-09-20, Q6).
+  forgetStepParks(step.id);
   const abort = new AbortController();
   runningSteps.set(step.id, {
     jobId: job.id,
@@ -4009,10 +4287,18 @@ async function launch(job: QueueJob, step: QueueStep): Promise<void> {
      * which class it was.
      */
     const busyLine = busyLineOf(err);
+    /*
+     * AND THE OTHER WAIT: a refusal the door marked TRANSPORT. Read here beside
+     * its sibling, by the same duck-typed rule, so a module that lets a typed
+     * refusal propagate gets both behaviours for free (Contract 1, bug hunt
+     * 2026-09-20).
+     */
+    const transientLine = busyLine === undefined ? transientLineOf(err) : undefined;
     settleStep(job, step, {
       ok: false,
       error: (err as Error)?.message || String(err),
       ...(busyLine === undefined ? {} : { busyLine }),
+      ...(transientLine === undefined ? {} : { transientLine }),
     });
   }
 }
@@ -4036,6 +4322,22 @@ type StepOutcome =
      * let's fix that"*).
      */
     busyLine?: string;
+    /**
+     * THE SENTENCE A REFUSAL THAT WILL PASS ON ITS OWN CARRIES — Contract 1,
+     * bug hunt 2026-09-20 (C1/Q3).
+     *
+     * Present when the door said its refusal was TRANSPORT (`transient: true`):
+     * a reset socket, a host asleep, a 5xx from an engine reloading, a stream
+     * that went quiet. `settleStep` parks on it exactly as it parks on a
+     * `busyLine`, with ONE difference — nothing server-wide is written, because
+     * a reset is not a holder and holding every other book off a machine that
+     * is merely slow to answer this one would be the queue inventing a jam.
+     *
+     * Read second (`busyLineOf(err) ?? transientLineOf(err)`): a refusal that
+     * names a holder is the more specific fact and the one whose cool-off the
+     * other books share.
+     */
+    transientLine?: string;
   };
 
 /**
@@ -4094,6 +4396,33 @@ function leaseWantedAfter(job: QueueJob, step: QueueStep, held: HeldRowLease | n
   return false;
 }
 
+/**
+ * EVERY FAILURE, BY NAME, IN A FILE THAT OUTLIVES THE PROCESS.
+ *
+ * `bookforge.log` was a STARTUP log: nothing in the queue's lifecycle wrote a
+ * line to it, so a failed step's account existed only on `step.error` and in
+ * whatever terminal happened to be open (bug hunt 2026-09-20, F7/P5). The
+ * first was erased by the next Retry and the second dies with the window.
+ *
+ * Both identities are written — the run's title and the step's id — because
+ * the two questions asked of this line afterwards are "what happened to this
+ * book" and "what happened to this row", and neither can be derived from the
+ * other once the queue has been cleared.
+ *
+ * It never throws: a logger that is not ready is not a reason to unwind a
+ * settle that is disposing of a nine-hour run.
+ */
+function logFailure(job: QueueJob, step: QueueStep, reason: string): void {
+  try {
+    getMainLogger().error(`[QUEUE] ${job.title} — ${step.label} failed: ${reason}`, {
+      jobId: job.id,
+      stepId: step.id,
+      type: step.type,
+      venue: step.venue,
+    });
+  } catch { /* the log is an account, never a gate */ }
+}
+
 function settleStep(job: QueueJob, step: QueueStep, outcome: StepOutcome): void {
   const live = runningSteps.get(step.id);
   const stopped = live?.stopRequested === true;
@@ -4107,6 +4436,12 @@ function settleStep(job: QueueJob, step: QueueStep, outcome: StepOutcome): void 
    * a new one to forget.
    */
   const busyLine = outcome.ok ? undefined : outcome.busyLine;
+  /*
+   * AND THE OTHER WAIT — a refusal the door marked TRANSPORT (Contract 1, bug
+   * hunt 2026-09-20). Same park, same cool-off, one difference: no
+   * server-wide hold, because a reset socket names no holder.
+   */
+  const transientLine = outcome.ok ? undefined : outcome.transientLine;
   runningSteps.delete(step.id);
   step.finishedAt = new Date().toISOString();
 
@@ -4161,12 +4496,46 @@ function settleStep(job: QueueJob, step: QueueStep, outcome: StepOutcome): void 
    * Handled FIRST, before the thermal accumulator and every other branch,
    * because this is the one outcome that is not an ending.
    */
-  if (!outcome.ok && busyLine !== undefined && !stopped) {
+  if (!outcome.ok && (busyLine ?? transientLine) !== undefined && !stopped) {
     takeThermalSummary(step.id);
     step.status = 'queued';
     step.finishedAt = undefined;
     step.startedAt = undefined;
     step.error = undefined;
+    /*
+     * ── TRANSPORT, NOT A HOLDER (Contract 1, bug hunt 2026-09-20, C1/Q3) ───
+     *
+     * `crucible_unreachable`, a 5xx, a stream that went quiet: nothing about
+     * the book is wrong, nobody holds the card, and there is nothing a human
+     * could repair — and every one of these FAILED the row, red, in *Needs
+     * you*, on a machine that would have answered a minute later. The whole
+     * non-409 refusal class, which is the shape of a night spent pressing
+     * Retry.
+     *
+     * It parks like a 409 and differs in exactly two places, both deliberate:
+     *
+     *  - NOTHING SERVER-WIDE. `busyHolds` means *somebody holds that machine*;
+     *    a reset socket is not a holder, and recording one would hold every
+     *    other book off a server that is merely slow to answer this one.
+     *    The cool-off is per STEP instead — `transientParks`, read by the pump
+     *    for every resource, because a transport failure is not about a card.
+     *  - THE VENUE FOLLOWS THE ORDINARY RULE. `releaseVenueIfNothingStands`
+     *    keeps it exactly when a TRAVELLING step of this run already stands on
+     *    that machine — which is the same fact as "this book holds the card"
+     *    (`gpuHoldOf`) — so a render that landed and an align that met a reset
+     *    socket stay on the machine holding the book's model, and a first
+     *    submit that never reached anybody is free to try the next server.
+     */
+    if (busyLine === undefined) {
+      transientParks.set(step.id, Date.now() + admissionRecheckMs);
+      const where = job.waitForResolved ?? job.waitFor ?? 'that server';
+      const reason = `Waiting for ${where}: ${transientLine}`;
+      releaseVenueIfNothingStands(job);
+      step.progress = { ...step.progress, percent: undefined, message: reason, admissionHold: reason };
+      changed();
+      pump();
+      return;
+    }
     /*
      * REFUSED BY THIS BOOK'S OWN TAIL — see {@link parkOnOwnTail} (Owen,
      * 2026-09-20).
@@ -4284,6 +4653,25 @@ function settleStep(job: QueueJob, step: QueueStep, outcome: StepOutcome): void 
     // makes a stopped narration resumable — nothing revives `cancelled`.
     step.status = 'held';
     step.wasInterrupted = true;
+    /*
+     * AND THE REASON IT WAS CARRYING IS KEPT — P6/F7, bug hunt 2026-09-20.
+     *
+     * This branch is reached by a stop AND by a runner that stopped itself
+     * (`setResumableStopReason`), so the row can arrive here holding a real
+     * account of what went wrong. Deleting it left the live shape the hunt
+     * found: a `held`, `wasInterrupted` row with an empty `progress` and no
+     * error, whose four descendants still said *"Skipped: … failed"* — the
+     * children remembering a failure the row denied. It moves to `lastError`,
+     * which nothing derives a status from, so the row is not red and the
+     * account survives.
+     *
+     * BOTH SOURCES ARE ASKED. `launch` clears `step.error` before the module
+     * runs, so a row that fails, is retried and is then stopped carries its
+     * account on the OUTCOME — which is where a runner that stopped itself
+     * with something to say puts it too (`setResumableStopReason`).
+     */
+    const said = step.error ?? (outcome.ok ? undefined : outcome.error);
+    if (said !== undefined && said !== '') step.lastError = said;
     step.error = undefined;
   } else if (stopped) {
     step.status = 'cancelled';
@@ -4292,6 +4680,9 @@ function settleStep(job: QueueJob, step: QueueStep, outcome: StepOutcome): void 
   } else {
     step.status = 'failed';
     step.error = outcome.error || `${step.label} failed and gave no reason.`;
+    // AND INTO THE LOG, because `step.error` is not durable: a Retry press
+    // moves it and a cleared queue takes it away. See `logFailure`.
+    logFailure(job, step, step.error);
     // Downstream steps read what this one would have written. They are CANCELLED
     // with the reason, not left pending — a workflow that silently sits forever
     // is the failure mode this replaces.
@@ -4454,9 +4845,11 @@ export async function configure(options: ConfigureOptions): Promise<void> {
   // `before-quit`; this map is only the in-flight guard.
   reservingSteps.clear();
   reserveHolds.clear();
+  reserveRefusals.clear();
   // A park belongs to the pass that wrote it, like a reserve: the act it was
   // waiting on is long settled by the time a process configures again.
   heldTailParks.clear();
+  transientParks.clear();
   // ...so the sweep starts again from nothing, on whatever cadence this
   // configuration asked for. THE ONE PLACE IT IS ARMED, and it re-arms rather
   // than adds, for the same reason the record watcher does: a second
@@ -4468,8 +4861,26 @@ export async function configure(options: ConfigureOptions): Promise<void> {
   // leaves exactly one listener behind, not two.
   watchCrucibleRecord();
 
+  // The report describes THIS load. A second `configure` in one process (the
+  // keepers, a library move) must not inherit the last one's news.
+  stateFileReport = null;
+  // The litter of the old unique-named writes, once per configure. Never a
+  // gate: see `sweepOrphanedTmpWrites`.
+  await sweepOrphanedTmpWrites();
+
   const loaded = await loadState();
-  if (!loaded) {
+  /*
+   * ONLY AN ABSENT FILE REACHES THE LEGACY MIGRATION (bug hunt 2026-09-20,
+   * Q10).
+   *
+   * `loadState` answered a BOOLEAN, and a corrupt modern queue answered it
+   * `false` — the same answer as "there has never been one". So a queue file
+   * that would not parse resurrected `queue.json`, an artefact of the renderer
+   * blob retired long ago, and put whatever was in it on screen as the current
+   * queue. The three outcomes are now distinct and only the first of them is a
+   * fresh install.
+   */
+  if (loaded === 'absent') {
     const migrated = await migrateLegacyQueue();
     jobs = migrated;
   }
@@ -4477,13 +4888,37 @@ export async function configure(options: ConfigureOptions): Promise<void> {
   changed();
 }
 
-async function loadState(): Promise<boolean> {
+/**
+ * What the saved queue turned out to be.
+ *
+ *  - `loaded`  — read and parsed; `jobs` is it.
+ *  - `absent`  — there is no file. The ONE verdict that may fall through to
+ *                the retired `queue.json` migration.
+ *  - `refused` — a file exists and this process will not use it: unreadable,
+ *                or unparseable and preserved under `.corrupt-<ts>`. The queue
+ *                starts EMPTY and says so on {@link waitForMigrationReport}.
+ */
+type LoadVerdict = 'loaded' | 'absent' | 'refused';
+
+async function loadState(): Promise<LoadVerdict> {
   let raw: string;
   try {
     raw = await fs.readFile(stateFile(), 'utf-8');
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return false;
-    throw new Error(`The queue state at ${stateFile()} could not be read: ${(err as Error).message}`);
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return 'absent';
+    /*
+     * IT THREW OUT OF HERE UNTIL 2026-09-20 (Q10), and `configure` is AWAITED
+     * by `startQueueEngine` (main.ts) — so a userData on a volume that had not
+     * mounted took the whole application down with no window and no sentence.
+     * An unreadable queue is a bad morning; it is not a reason to have no app.
+     * The run starts with an empty queue and the reason is carried out on the
+     * report, where main logs it.
+     */
+    stateFileReport = `The saved queue at ${stateFile()} could not be read `
+      + `(${(err as Error).message}), so BookForge started with an empty queue. Nothing was `
+      + 'written over it.';
+    console.error(`[QUEUE-ENGINE] ${stateFileReport}`);
+    return 'refused';
   }
   let parsed: { version?: number; jobs?: QueueJob[] };
   try {
@@ -4493,17 +4928,19 @@ async function loadState(): Promise<boolean> {
     // that says so, because the next mutation would otherwise write over it.
     const corrupt = `${stateFile()}.corrupt-${Date.now()}`;
     await fs.rename(stateFile(), corrupt).catch(() => { /* naming it is best-effort */ });
-    console.error(
-      `[QUEUE-ENGINE] the saved queue could not be parsed and was preserved at ${corrupt}:`,
-      (err as Error).message,
-    );
-    return false;
+    // AND SAID WHERE SOMEBODY WILL SEE IT. The rename alone was silent: the
+    // renderer showed an empty queue and nothing anywhere said a queue had
+    // been set aside, let alone under what name.
+    stateFileReport = `The saved queue could not be parsed (${(err as Error).message}). It was `
+      + `preserved at ${corrupt} and BookForge started with an empty queue.`;
+    console.error(`[QUEUE-ENGINE] ${stateFileReport}`);
+    return 'refused';
   }
   jobs = Array.isArray(parsed.jobs) ? parsed.jobs : [];
   // Deliberately NOT restoring `running`. Coming back up claiming the GPU because
   // the app was killed while busy is the app deciding for the user.
   running = false;
-  return true;
+  return 'loaded';
 }
 
 /**
@@ -4571,14 +5008,31 @@ function reviveInterrupted(): void {
       if (step.status === 'running') {
         step.status = 'held';
         step.wasInterrupted = true;
+        /*
+         * THE PERCENT GOES WITH THE RUN THAT EARNED IT (bug hunt 2026-09-20,
+         * Q9). This spread `...step.progress` and replaced only `message`, so
+         * a render killed during its session copy came back saying 100% — and
+         * the bench's own sentence for an interrupted row reads the number
+         * (`stillReason`: *"Stopped at 100% — it picks up where it left
+         * off"*), which is a completed book that is not there. The percent was
+         * measured against a session this process can no longer see; nothing
+         * knows what fraction of it survived on disk until the step runs
+         * again and reads it.
+         */
         step.progress = {
-          ...step.progress,
           message: 'Interrupted when BookForge closed. Press Start to pick it up from where it got to.',
         };
       }
     }
   }
-  migrationReport = describeWaitForMigration(jobs);
+  /*
+   * ONE LINE, BOTH PIECES OF NEWS — see `stateFileReport`. The file's own
+   * story comes first: "the queue you had is not the queue you are looking at"
+   * outranks "these runs do not say where to render".
+   */
+  const parts = [stateFileReport, describeWaitForMigration(jobs)].filter(
+    (line): line is string => line !== null);
+  migrationReport = parts.length === 0 ? null : parts.join(' ');
 }
 
 /**

@@ -1009,6 +1009,33 @@ export function needsYou(snapshot: QueueSnapshot): FailedRun[] {
 }
 
 /**
+ * CAN A PRESS ON THIS ROW ACTUALLY START IT?
+ *
+ * `held` alone is not the answer, and drawing Start on a row where it is not
+ * was the defect (bug hunt 2026-09-20, Q8). A chain's rows are all `held` until
+ * the run is started, so a held step BEHIND a held parent was drawn with a
+ * Start button that calls `release({stepId})` — which sets the row `waiting`
+ * and launches nothing, because its parent has not run. The press did
+ * something invisible and the book did not move. Worse on the same shape:
+ * `allHeld` is false whenever one row is mid-chain, so "Start this book" was
+ * suppressed on exactly the run that needed it.
+ *
+ * So a row is startable when the work in front of it is finished: its parent
+ * is `done`, or it reads the SOURCE and has no parent at all. A row behind a
+ * live parent is not offered a press — its reason already says what it is
+ * behind, which is the truthful instruction.
+ *
+ * Deliberately NOT "parent terminal": a parent that failed or was cancelled
+ * did not write what this step reads, and offering to start it would be
+ * offering to run it on nothing.
+ */
+function startableStep(snapshot: QueueSnapshot, step: QueueStep): boolean {
+  if (step.status !== 'held') return false;
+  const parent = parentStep(snapshot, step);
+  return parent === null || parent.status === 'done';
+}
+
+/**
  * Everything released-or-held and not running, in the engine's own order, each
  * with the reason it is still.
  *
@@ -1034,7 +1061,7 @@ export function upNext(snapshot: QueueSnapshot): StillStep[] {
         status: step.status,
         reason,
         percent: step.progress.percent ?? null,
-        startable: step.status === 'held',
+        startable: startableStep(snapshot, step),
       });
     }
   }
@@ -1120,7 +1147,7 @@ function plansOf(snapshot: QueueSnapshot, pending: boolean): BookPlan[] {
         status: step.status,
         percent: step.progress.percent ?? null,
         reason: step.status === 'running' ? null : stillReason(snapshot, job, step),
-        startable: step.status === 'held',
+        startable: startableStep(snapshot, step),
       });
       if (step.status !== 'held') plan.allHeld = false;
     }

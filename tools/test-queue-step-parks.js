@@ -250,6 +250,139 @@ async function seamChecks() {
     assert.strictEqual(runtime.stepFailure('m', BUSY).busyLine, BUSY);
   });
 
+  // ── Contract 1 · A refusal that will pass on its own ──────────────────────
+  //
+  // bug hunt 2026-09-20 (C1/Q3). Between "somebody holds the card" and "this is
+  // a misconfiguration somebody can repair" sits everything that is neither: a
+  // reset socket, a host asleep, a 5xx from an engine reloading, a stream that
+  // went quiet. Every one of them FAILED the row, red, in *Needs you*, on a
+  // machine that would have answered a minute later. PK2 sets the flag in the
+  // Crucible doors; this half is the reader and the park, so the fake below is
+  // deliberately a bare object — the seam must read the two FIELDS, never a
+  // class.
+
+  await check('transientLineOf reads the flag and the sentence, and nothing else', () => {
+    const line = 'crucible@mac did not answer (read ECONNRESET); asking again in 15 s';
+    assert.strictEqual(
+      runtime.transientLineOf(Object.assign(new Error('x'), { transient: true, transientLine: line })),
+      line);
+    assert.strictEqual(
+      runtime.transientLineOf(Object.assign(new Error('socket hang up'), { transient: true })),
+      'socket hang up',
+      'a door that set the flag and no sentence falls back to its own message');
+    assert.strictEqual(runtime.transientLineOf(new Error('plain')), undefined,
+      'no flag is no wait: an ordinary failure must still fail');
+    assert.strictEqual(
+      runtime.transientLineOf(Object.assign(new Error('x'), { transient: 'yes' })), undefined,
+      'the flag is `true`, never truthy — a string would make every typo a park');
+    assert.strictEqual(
+      runtime.transientLineOf(Object.assign(new Error('x'), { transient: true, transientLine: '' })),
+      'x', 'a blank sentence is not a sentence; the message answers instead');
+    assert.strictEqual(runtime.transientLineOf(null), undefined);
+  });
+
+  await check('a TRANSIENT refusal parks the row and is re-launched after the cool-off',
+    async () => {
+      const line = 'crucible@mac did not answer (read ECONNRESET); asking again in 15 s';
+      const mod = fakeModule('tts-conversion');
+      await freshEngine('transient-parks', mod);
+      /*
+       * The cool-off IS the admission tick, so this suite's 5 s default would
+       * outlast the test. 300 ms is long enough that `settle()` — twenty real
+       * `setTimeout(0)` turns — cannot walk through it, and short enough to
+       * wait out; a value under that would make the park look like a relaunch.
+       */
+      await engine.configure({
+        stateDir: path.join(SCRATCH, 'transient-parks'), admissionRecheckMs: 300, reachSweepMs: 0,
+      });
+      const job = sendBook('Reset socket');
+      engine.start();
+      await settle();
+      assert.strictEqual(stepOf(job.id).status, 'running');
+
+      mod.runs[0].reject(Object.assign(new Error('crucible_unreachable'), {
+        transient: true, transientLine: line,
+      }));
+      await settle();
+
+      const step = stepOf(job.id);
+      assert.strictEqual(step.status, 'queued', 'transport is a wait, not a failure');
+      assert.strictEqual(step.error, undefined, 'and nothing about this row is wrong');
+      assert.ok(String(step.progress.admissionHold).includes(line),
+        `the door's own sentence is what the row says; got: ${step.progress.admissionHold}`);
+      assert.strictEqual(step.progress.percent, undefined,
+        'a percent from the attempt that never landed is a measurement nobody made');
+      assert.strictEqual(mod.runs.length, 1, 'the cool-off held it off the immediate re-pump');
+
+      await wait(400);
+      await settle();
+      assert.strictEqual(mod.runs.length, 2, 'and the admission tick tried it again');
+    });
+
+  await check('a transient refusal records NO server-wide hold — a reset is not a holder',
+    async () => {
+      /*
+       * THE ONE DIFFERENCE FROM A 409, and the reason it matters: `busyHolds`
+       * is keyed by SERVER and holds every book bound for that machine off it.
+       * A dropped socket on one conversation is not evidence that the machine
+       * is occupied, and recording one would be the queue inventing a jam.
+       * Read through the SECOND book, which is the only thing that can see it.
+       */
+      const mod = fakeModule('tts-conversion');
+      await freshEngine('transient-no-server-hold', mod);
+      const first = sendBook('Reset socket');
+      const second = sendBook('Behind it');
+      engine.start();
+      await settle();
+      assert.strictEqual(mod.runs.length, 1, 'one GPU slot: the second book waits its turn');
+
+      mod.runs[0].reject(Object.assign(new Error('socket hang up'), { transient: true }));
+      await settle();
+
+      assert.strictEqual(stepOf(first.id).status, 'queued', 'the first book parked');
+      assert.strictEqual(mod.runs.length, 2,
+        'and the machine was NOT held off: the freed slot went straight to the next book');
+      assert.strictEqual(mod.runs[1].ctx.jobId, second.id);
+    });
+
+  await check('a transient refusal of a step whose BOOK holds the card keeps the venue',
+    async () => {
+      // Ruling 9: a book is atomic on the card. A render that landed stands on
+      // that machine, so an align that meets a reset socket waits for the SAME
+      // machine — the model it needs is the one loaded there.
+      const render = fakeModule('tts-conversion');
+      const align = fakeModule('align');
+      engine.clearStepModules();
+      for (const m of [render, align]) engine.registerStepModule(m);
+      engine.setGpuLockProbe(() => null);
+      engine.setGpuHolderProbe(() => null);
+      engine.setCrucibleRoutingHost(routingHost([{ name: 'mac', enabled: true }]));
+      const dir = path.join(SCRATCH, 'transient-holds-card');
+      fs.mkdirSync(dir, { recursive: true });
+      await engine.configure({ stateDir: dir, admissionRecheckMs: 5_000, reachSweepMs: 0 });
+
+      const job = engine.enqueue({
+        title: 'Mistborn',
+        steps: [
+          { type: 'tts-conversion', label: 'Narrate', config: {}, sourceRef: { kind: 'epub', path: '/a.epub' } },
+          { type: 'align', label: 'Align', config: {}, parentIndex: 0 },
+        ],
+      });
+      if (job.pending === true) engine.sendToQueue(job.id);
+      engine.start();
+      await settle();
+      render.runs[0].resolve({ kind: 'audio', path: '/out/render' });
+      await settle();
+      assert.strictEqual(engine.snapshot().jobs.find((j) => j.id === job.id).waitForResolved, 'mac');
+
+      align.runs[0].reject(Object.assign(new Error('crucible_unreachable'), { transient: true }));
+      await settle();
+      const row = engine.snapshot().jobs.find((j) => j.id === job.id);
+      assert.strictEqual(row.steps[1].status, 'queued');
+      assert.strictEqual(row.waitForResolved, 'mac',
+        'the render stands on that machine, so the book stays on it');
+    });
+
   await check('the retired side call is GONE — one road, or a module can take the wrong one', () => {
     assert.strictEqual(engine.noteStepBusy, undefined,
       'noteStepBusy is back: the line must ride on the throw, not on a call five modules forgot');

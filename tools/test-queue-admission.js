@@ -621,6 +621,100 @@ test('a 409 from a LAUNCHED step releases the venue, and an `any` row takes the 
     'on the OTHER enabled machine — the busy one is held off for the cool-off');
 });
 
+test('Q1: a PREPARE that landed does not keep the venue — the 409 still releases it', async () => {
+  /*
+   * ── The defect (bug hunt 2026-09-20, Q1) ─────────────────────────────────
+   *
+   * `releaseVenueIfNothingStands` asked whether ANY step was `done` or
+   * `running`. Since 2026-09-19 every narration chain opens with `prepare` —
+   * CPU, local, no venue — which lands `done` FIRST. So the guard tripped on
+   * the completed LOCAL row and the venue stood: `decideWaitFor` took rung 1
+   * forever, and an `any` book waited hours on the machine that had refused it
+   * with an idle one beside it and a read-only picker. A1 verbatim, reached
+   * through the row A1's own fix had added — which is why the one-step shape
+   * above passed all along and this two-step one is the keeper.
+   *
+   * The rule is about a MACHINE: only a TRAVELLING step stands on one
+   * (`isTravellingGpuStep`), and a local prepare stands on none.
+   */
+  const prep = fakeModule('prepare', { travels: false, resource: () => 'cpu' });
+  const render = fakeModule('tts-conversion');
+  const host = fakeHost({
+    ranked: TWO,
+    defaultWaitFor: 'any',
+    reach: { pc: { reachable: true }, mac: { reachable: true } },
+  });
+  await fresh('q1-prepare-then-409', [prep, render], host, null);
+
+  const job = enqueueSent({
+    title: 'Hitler\'s People',
+    steps: [
+      { type: 'prepare', label: 'Prepare', config: {}, sourceRef: { kind: 'epub', path: '/a.epub' } },
+      { type: 'tts-conversion', label: 'Narrate', config: {}, parentIndex: 0 },
+    ],
+  });
+  engine.start();
+  await settle();
+
+  prep.runs[0].resolve({ kind: 'prepared-session', path: '/out/prepared' });
+  await settle();
+  assert.strictEqual(jobOf(job.id).steps[0].status, 'done', 'the prepare landed, on no machine');
+  assert.strictEqual(jobOf(job.id).waitForResolved, 'pc', 'and the render took rank-1');
+  assert.strictEqual(render.runs.length, 1);
+
+  // THE PARKED MOMENT IS READ OFF THE SNAPSHOT — see the test above for why.
+  const parked = [];
+  const stop = engine.onQueueChanged((snap) => {
+    const row = snap.jobs.find((j) => j.id === job.id);
+    if (row !== undefined && row.steps[1].status === 'queued') {
+      parked.push({ resolved: row.waitForResolved, venue: row.steps[1].venue });
+    }
+  });
+  render.runs[0].reject(refusedBusy(BUSY_LINE));
+  await settle();
+  stop();
+
+  assert.ok(parked.length > 0, 'a 409 is a wait: the render went back to `queued`');
+  assert.strictEqual(parked[0].resolved, undefined,
+    'AND THE VENUE IS RELEASED — a done LOCAL step stands on no machine');
+  assert.strictEqual(parked[0].venue, undefined);
+  assert.strictEqual(render.runs.length, 2, 'the next pass started it somewhere');
+  assert.strictEqual(jobOf(job.id).waitForResolved, 'mac',
+    'on the OTHER machine — which is the whole of A1, through the prepare row');
+});
+
+test('Q1: a TRAVELLING step that landed DOES keep the venue — §4.3 is untouched', async () => {
+  // The other half of the same predicate: a book whose render is `done` on a
+  // machine is partway through ON THAT MACHINE, and a refusal of its next act
+  // must not send the rest of it somewhere else.
+  const render = fakeModule('tts-conversion');
+  const align = fakeModule('align');
+  const host = fakeHost({
+    ranked: TWO,
+    defaultWaitFor: 'any',
+    reach: { pc: { reachable: true }, mac: { reachable: true } },
+  });
+  await fresh('q1-render-then-409', [render, align], host, null);
+
+  const job = enqueueSent({
+    title: 'Mistborn',
+    steps: [
+      { type: 'tts-conversion', label: 'Narrate', config: {}, sourceRef: { kind: 'epub', path: '/a.epub' } },
+      { type: 'align', label: 'Align', config: {}, parentIndex: 0 },
+    ],
+  });
+  engine.start();
+  await settle();
+  render.runs[0].resolve({ kind: 'audio', path: '/out/render' });
+  await settle();
+  assert.strictEqual(jobOf(job.id).waitForResolved, 'pc');
+
+  align.runs[0].reject(refusedBusy(BUSY_LINE));
+  await settle();
+  assert.strictEqual(jobOf(job.id).waitForResolved, 'pc',
+    'the render stands on that machine, so the book stays on it');
+});
+
 test('…but a row that NAMES the busy server keeps waiting for it', async () => {
   const gpu = fakeModule('tts-conversion');
   const host = fakeHost({

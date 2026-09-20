@@ -229,6 +229,48 @@ export function busyLineOf(err: unknown): string | undefined {
  * throw the step seam reads, so no module has to remember which half of the
  * pair means "wait".
  */
+/**
+ * THE SENTENCE A REFUSAL THAT WILL PASS ON ITS OWN CARRIES — Contract 1 of the
+ * bug hunt, 2026-09-20 (C1/Q3), and the second half of the one rule
+ * {@link busyLineOf} is the first half of.
+ *
+ * ── The class that had no home ──────────────────────────────────────────────
+ *
+ * A refusal is one of three things, and the queue could only tell two of them
+ * apart. A `409` names a HOLDER and the row waits (`busyLine`). A `4xx` that
+ * names a misconfiguration — a class never probed, a model not resident, a
+ * disabled job type — is a repair somebody has to make, and the row fails with
+ * it (ruling 3, 2026-09-19). Between them sits everything that is neither: a
+ * reset socket, a host asleep, a 5xx from an engine reloading, a stream that
+ * went quiet. Nothing about the book is wrong, nobody holds the card, and
+ * nothing is broken that a human could repair — and every one of them FAILED
+ * the row, red, in *Needs you*, on a machine that would have answered a minute
+ * later.
+ *
+ * So a door that knows its refusal was transport marks the throw `transient:
+ * true` and says what the row should read while it waits. `settleStep` parks
+ * on `busyLineOf(err) ?? transientLineOf(err)` — the same park, the same
+ * cool-off — with one difference that matters: NOTHING SERVER-WIDE is
+ * recorded. `busyHolds` means *somebody holds that machine*, and a reset
+ * socket is not a holder; writing one would hold every other book off a server
+ * that is merely slow to answer this one.
+ *
+ * Duck-typed like its sibling, for the same reason: `CrucibleJobRefused`,
+ * `CrucibleRenderRefused` and whatever door is built next all set two plain
+ * fields, and a table of classes here would go stale on the first of them.
+ * `transientLine` is optional — a refusal that sets the flag and no sentence
+ * falls back to its own message, because a park on a blank line reads to an
+ * operator as a stall with no cause.
+ */
+export function transientLineOf(err: unknown): string | undefined {
+  if (err === null || typeof err !== 'object') return undefined;
+  const spelt = err as { transient?: unknown; transientLine?: unknown; message?: unknown };
+  if (spelt.transient !== true) return undefined;
+  const said = (value: unknown): string | undefined =>
+    typeof value === 'string' && value !== '' ? value : undefined;
+  return said(spelt.transientLine) ?? said(spelt.message);
+}
+
 export function stepFailure(message: string, busyLine?: string): Error {
   return busyLine === undefined || busyLine === ''
     ? new Error(message)

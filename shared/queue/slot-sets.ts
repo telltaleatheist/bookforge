@@ -532,8 +532,16 @@ function nextTravellingGpuStep(job: QueueJob): QueueStep | null {
  * upstream-routed act (crucible `docs/PHASE15-HOST.md` §5.3), which is written
  * with its engine's cloud lane as its venue — it costs the engine a socket, so
  * it holds no card and cannot hold one for the book either.
+ *
+ * EXPORTED because the scheduler asks the same question for a second reason
+ * (bug hunt 2026-09-20, Q1): "does anything of this run still stand ON THAT
+ * MACHINE" is this predicate plus a status, and `releaseVenueIfNothingStands`
+ * spelt it itself as `status === 'done' || 'running'` over EVERY step — which a
+ * local CPU `prepare` row satisfies, on no machine at all, so the venue of a
+ * narration refused `409` was never released and A1 came back through the row
+ * its own fix had added. One predicate, two readers.
  */
-function isTravellingGpuStep(step: QueueStep): boolean {
+export function isTravellingGpuStep(step: QueueStep): boolean {
   if (step.travels !== true) return false;
   if (step.venue !== undefined && isCloudLane(step.venue)) return false;
   return true;
