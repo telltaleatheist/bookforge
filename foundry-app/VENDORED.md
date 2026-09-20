@@ -10,10 +10,50 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\<user>\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **7b98004** — *A cancelled placement gives back the model its own load put on the card* — PK12, on branch `fix/cancelled-placement-unloads` off `dccc144` |
+| Source sha | **cc5fc5b** — *Merge Crucible 1.0.11 (6b7a95d) into fix/cancelled-placement-unloads* — PK12 landed on `main`, carrying `7b98004` (the cancelled-placement fix) and `6b7a95d` (the 1.0.11 adoption) |
 | Engine | **NOT VENDORED AND NOT KNOWABLE FROM THIS FILE** — it is a spawned CLI resolved at RUNTIME (`FOUNDRY_BIN`, else `resolveFoundryPath`, `electron/main.ts`), so which build executes is a property of the machine and not of this copy. On a developer's Mac that resolves to Foundry's own checkout at `/Volumes/Callisto/Projects/foundry/dist/foundry-darwin-arm64`, which is whatever was last built there — `foundry 2.0.2 (1c1eaa3)` as of 2026-09-18. **Ask the binary: `$FOUNDRY_BIN --version`.** See *The engine this file named was not the engine that ran* below. |
-| Copied on | 2026-09-19 (five times: 3738c01, 3436fc5, 806d44b, f349771, ca4754c) and 2026-09-20 (98a4344, 9e0b27d, dccc144, 7b98004) |
-| Copied by | Mechanical source sync, verified against Foundry `7b98004:app/` (`diff -rq`, clean but for this file, `IPC-CHANNELS.md` and `.gitignore` — see below); details below |
+| Copied on | 2026-09-19 (five times: 3738c01, 3436fc5, 806d44b, f349771, ca4754c) and 2026-09-20 (98a4344, 9e0b27d, dccc144, 7b98004, cc5fc5b) |
+| Copied by | Mechanical source sync, verified against Foundry `cc5fc5b:app/` (`diff -rq`, clean but for this file, `IPC-CHANNELS.md` and `.gitignore` — see below); details below |
+
+## The `7b98004 → cc5fc5b` re-vendor — the two halves of 1.0.11 meet (2026-09-20)
+
+**WHY THIS COPY EXISTS: for a few hours this repo was on two Cruciles at once.**
+BookForge adopted `@crucible/client` 1.0.11 at its ROOT (`12af35f7`, its own
+`package.json` and `vendor/`); Foundry adopted it inside `app/` (`6b7a95d`). The
+PK12 copy in between (`73005baa`) was taken from Foundry `7b98004`, a branch cut
+from `dccc144` — before Foundry's adoption — so `foundry-app/` stayed on 1.0.10
+while the host process around it ran 1.0.11. Nothing was reverted and nothing was
+broken (the two are separate `file:` specifiers, and the SDK surface is identical
+between the releases), but one repo naming two versions of one SDK is exactly the
+kind of split that is discovered later and by accident.
+
+This copy is Foundry `cc5fc5b` — PK12 merged onto Foundry `main`, with 1.0.11
+already in it — so `foundry-app/vendor/crucible-client-1.0.11.tgz` is now
+byte-identical to the root's (sha256 `b171f1ee…`). The superseded
+`crucible-{client,bootstrap}-1.0.10.tgz` are DELETED rather than left beside the
+new ones: the tarballs arrive as renames, and `tar -x` adds without removing, so
+an unchecked extract leaves both versions on disk with `package.json` naming only
+one. **The rule: re-vendor from the sha the work LANDED on, never from the branch
+it was written on, and read `git status` for files an extract could not remove.**
+
+`electron/crucible-dispatch.ts` is unchanged by this copy — `73005baa` already
+brought the PK12 fix and `cc5fc5b` carries the same file.
+
+**What 1.0.11 is** (Foundry `6b7a95d`): `/v1/activity`'s `resident` gains
+`held_by` and `unclaimed_since`, so a server can REPORT a stranded card — a
+`load-model` that succeeded and was never claimed, or a lease that lapsed with
+nothing asking again. It is the server-side half of the bug PK12 fixes on the
+client side; it unloads nothing and runs no timer, and what should be DONE about
+an unheld card is a ruling still owed. The SDK is otherwise byte-identical to
+1.0.10 (only `sdkVersion` moved) and does **not** parse the two new fields — a
+reconciler that wants them must read the document itself, as `statedChatDepth`
+already does for `chat.max_in_flight`.
+
+**Gates on this copy**, against a real 1.0.11 install: `npm run typecheck` clean;
+`bun test test/` 100 pass / 0 fail (`module-file`'s source comparison needs
+`CRUCIBLE_REPO` when the copy sits in a worktree, since it looks for
+`../crucible`); a stage build of `cc5fc5b:app/` compiled and carried the new
+`[slots] cancelled placement: …` lines into `dist/electron/crucible-dispatch.js`.
 
 ## The `dccc144 → 7b98004` re-vendor — PK12, a cancelled placement gives the card back (2026-09-20)
 
