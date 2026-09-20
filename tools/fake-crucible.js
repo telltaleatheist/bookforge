@@ -232,28 +232,174 @@ function renderDoneProvenance(voice, take, width) {
 }
 
 /**
+ * ── THE FAULT LAYER (PK13, 2026-09-20) ──────────────────────────────────────
+ *
+ * A server that misbehaves the way the real ones did on the night of Sep 19.
+ * Every knob is a LIST of rules, each `{match, times?, …}`; `times` counts down
+ * and `undefined` means for ever, so "the FIRST events GET is reset and the
+ * second is not" — the shape every reconnect scenario needs — is expressible
+ * without a flag per scenario.
+ *
+ *   resetAfterBytes  destroy the socket after N bytes of the RESPONSE have
+ *                    been written (0 = before the status line), which is what
+ *                    a keep-alive socket closed under a reply looks like and
+ *                    what undici answers with `TypeError: terminated`. Works
+ *                    mid-SSE because it wraps `res.write`.
+ *   connectDelay     hold the request and answer NOTHING for `ms`. A listening
+ *                    socket always completes TCP connect on loopback, so this
+ *                    is a RESPONSE stall, not a connect stall — the observable
+ *                    consequence (the client's own clock fires, headers never
+ *                    arrive) is the same one undici's 10 s connect timeout
+ *                    produces, and calling it what it is beats pretending.
+ *   refuse           answer `{status, code, message}` in the server's refusal
+ *                    envelope, with an optional `Retry-After`.
+ *
+ * `match` is `{method?, path?}`; `path` is a prefix string or a RegExp.
+ *
+ * Nothing here is armed unless a caller passes `faults`, so the fifteen suites
+ * that already share this file are untouched.
+ */
+function faultMatches(rule, method, pathname) {
+  // `match` is REQUIRED, and its absence is a rule that matches everything —
+  // which is almost never what a scenario means and is exactly what silently
+  // refused an UPLOAD when the rule said DELETE. Spelling it out here so the
+  // shape is one thing: `{match: {method?, path?}, times?, …}`.
+  const m = rule.match;
+  if (m === undefined) return true;
+  if (m.method !== undefined && m.method !== method) return false;
+  if (m.path === undefined) return true;
+  if (m.path instanceof RegExp) return m.path.test(pathname);
+  return pathname.startsWith(m.path);
+}
+
+/** The first rule that matches and has fires left, with its counter decremented. */
+function takeFault(list, method, pathname) {
+  if (!Array.isArray(list)) return null;
+  for (const rule of list) {
+    if (rule.times !== undefined && rule.times <= 0) continue;
+    if (!faultMatches(rule, method, pathname)) continue;
+    if (rule.times !== undefined) rule.times -= 1;
+    return rule;
+  }
+  return null;
+}
+
+/**
+ * Arm a mid-response socket death. Wraps `res.write`/`res.end` so the count is
+ * of BYTES THAT REACHED THE WIRE, which is what makes `resetAfterBytes` usable
+ * against an SSE stream: "die after the third frame" is a byte count nobody has
+ * to compute, because a scenario says 0 (before anything) or a number large
+ * enough to let the opening frames through.
+ */
+function armReset(res, afterBytes) {
+  if (afterBytes <= 0) {
+    if (res.socket) res.socket.destroy();
+    return;
+  }
+  let written = 0;
+  let dead = false;
+  const write = res.write.bind(res);
+  const end = res.end.bind(res);
+  const kill = () => {
+    dead = true;
+    if (res.socket) res.socket.destroy();
+  };
+  res.write = (chunk, ...rest) => {
+    if (dead) return false;
+    const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
+    if (written + buf.length < afterBytes) {
+      written += buf.length;
+      return write(buf, ...rest);
+    }
+    const room = Math.max(0, afterBytes - written);
+    if (room > 0) write(buf.subarray(0, room));
+    written = afterBytes;
+    kill();
+    return false;
+  };
+  res.end = (...args) => {
+    if (dead) return res;
+    if (args.length > 0 && args[0] !== undefined && typeof args[0] !== 'function') {
+      res.write(args[0]);
+      if (dead) return res;
+    }
+    return end();
+  };
+}
+
+/**
  * Start a fake on 127.0.0.1. `route(req, res, ctx)` is the keeper's own
  * behaviour; it returns true when it handled the request. What every keeper
  * needs — uploads recorded and answered, DELETE recorded — is handled here
  * first, so a route only has to speak its job type.
+ *
+ * `options.faults` arms the fault layer above; `options.slowRequestMs` is not a
+ * thing — a stall is a `connectDelay` rule like any other.
+ *
+ * EVERY REQUEST IS RECORDED on `state.requests` as `{method, path, at}` (and
+ * `body` for the routes this file parses), so a scenario can assert *"no DELETE
+ * was sent"* and *"exactly one"* — which is the only way to tell a client that
+ * cleaned up after itself from one that abandoned a job on somebody's card.
  */
-function startFakeCrucible(route) {
+function startFakeCrucible(route, options = {}) {
   const state = {
     uploads: [],      // {filename, bytes, blobId}
     submitted: [],    // every POST /v1/jobs body
     cancelled: [],    // every DELETE /v1/jobs/<id>
     eventsRequests: [], // {jobId, lastEventId}
     jobs: new Map(),
+    /** Every request that crossed: {method, path, at, body?}. */
+    requests: [],
+    /** Mutable: a scenario adds and removes rules as it runs. */
+    faults: options.faults || {},
   };
   let nextBlob = 1;
   let nextJob = 1;
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://127.0.0.1');
     const routePath = url.pathname;
+    const record = { method: req.method, path: routePath, at: Date.now() };
+    state.requests.push(record);
     const ctx = {
-      state, send, sseWriter, provenanceFor, readBody, url,
+      state, send, sseWriter, provenanceFor, readBody, url, record,
       newJobId: () => `job-${nextJob++}`,
     };
+
+    // ── The fault layer, before any route ────────────────────────────────
+    const reset = takeFault(state.faults.resetAfterBytes, req.method, routePath);
+    if (reset) {
+      record.fault = `reset after ${reset.afterBytes} byte(s)`;
+      armReset(res, reset.afterBytes === undefined ? 0 : reset.afterBytes);
+      if (reset.afterBytes === undefined || reset.afterBytes <= 0) return undefined;
+    }
+    const stall = takeFault(state.faults.connectDelay, req.method, routePath);
+    if (stall) {
+      record.fault = `no answer for ${stall.ms} ms`;
+      await new Promise((r) => {
+        const t = setTimeout(r, stall.ms);
+        req.on('close', () => { clearTimeout(t); r(); });
+      });
+      if (res.writableEnded || res.destroyed) return undefined;
+      if (stall.thenDestroy !== false) {
+        if (res.socket) res.socket.destroy();
+        return undefined;
+      }
+    }
+    const refusal = takeFault(state.faults.refuse, req.method, routePath);
+    if (refusal) {
+      record.fault = `${refusal.status} ${refusal.code}`;
+      const headers = { 'Content-Type': 'application/json' };
+      if (refusal.retryAfter !== undefined) headers['Retry-After'] = String(refusal.retryAfter);
+      res.writeHead(refusal.status, headers);
+      res.end(JSON.stringify({
+        error: {
+          code: refusal.code,
+          message: refusal.message || refusal.code,
+          details: refusal.details === undefined ? null : refusal.details,
+        },
+      }));
+      return undefined;
+    }
 
     if (routePath === '/v1/ping' && req.method === 'GET') {
       return send(res, 200, { crucible: true, name: 'fake-crucible', api_version: 1 });
@@ -964,10 +1110,401 @@ function unknownLeaseRefusal(leaseId, why) {
   };
 }
 
+/**
+ * ── A WHOLE JOB LIFECYCLE, WITH THE WAYS IT GOES WRONG (PK13) ───────────────
+ *
+ * A delegated handler beside {@link leaseRoutes} and {@link settingsRoutes},
+ * for the same reason those two are delegated: this file is shared by fifteen
+ * suites and none of them should grow a route it never asked for.
+ *
+ * It owns `POST /v1/jobs`, the event stream, the artifact fetches, `DELETE` and
+ * `GET /v1/activity`, and it can misbehave in the ways the night of Sep 19 did:
+ *
+ *   refuseSubmit(n, body)   → a refusal, e.g. `503 chat_queue_full` with a
+ *                             `Retry-After`, or `409 server_busy`.
+ *   slowFramesMs            → milliseconds BETWEEN frames. Past the caller's
+ *                             stall clock this is a stream that went quiet.
+ *   partialArtifacts        → the FIRST artifact GET fails `500` once, then the
+ *                             same fetch succeeds. A `done` frame whose
+ *                             artifacts cannot be landed is not a failed job.
+ *   neverFinishes           → the stream stops after its opening frames and
+ *                             says nothing more: the stall clock's case.
+ *   endsFailed              → the job RAN and failed, which is not a refusal.
+ *   holdUntilCancelled      → the stream emits its opening frames and then
+ *                             waits for a DELETE, ending `cancelled`.
+ *   activity                → `{residentId?, holder?, maxInFlight?, inFlight?}`
+ *                             for `GET /v1/activity` (1.0.10's chat admission
+ *                             number lives here as `chat.max_in_flight`).
+ *
+ * `restart()` on the handle is a server that FORGOT everything: a reconnecting
+ * `events()` gets `404 unknown_job`, a heartbeat `404 unknown_lease`, and a
+ * DELETE of a job it no longer knows `404 unknown_job` — which is what a client
+ * sees when the box it was talking to came back up under it.
+ */
+function faultyJobRoutes(behaviour = {}) {
+  const jobs = {
+    /** Every submit body, in order. */
+    submitted: [],
+    /** Every events GET: {jobId, lastEventId, answered}. */
+    streams: [],
+    /** Every artifact GET: {jobId, name, ok}. */
+    artifacts: [],
+    /** How many times the server forgot everything. */
+    restarts: 0,
+    /**
+     * Job ids the server is still RUNNING for anybody — a cancelled one is not
+     * one, and the DELETE that cancelled it was handled by
+     * {@link startFakeCrucible} rather than here, so the two records are joined
+     * at the one place that answers the question.
+     */
+    live: () => [...open.keys()].filter((id) => (hostState === null ? true : hostState.cancelled.indexOf(id) === -1)),
+  };
+  /** jobId → {body, names} for the jobs this server still knows. */
+  const open = new Map();
+  /** The event-stream responses open right now, so a restart can kill them. */
+  const streaming = new Set();
+  /** The dispatcher's state, captured on the first request (see `live`). */
+  let hostState = null;
+  let submits = 0;
+  let artifactFetches = 0;
+  let nextId = 1;
+
+  /**
+   * WHAT IS ON THE CARD, AND WHETHER ANYBODY IS COMING BACK FOR IT.
+   *
+   * Crucible 1.0.11's two fields, modelled as the ONE fact they are. Nothing
+   * sets both: `loaded()` puts something on the card held by whatever asked for
+   * it; `stranded()` is a load whose asker walked away, which stamps
+   * `unclaimedSince` and clears the holder.
+   */
+  const card = {
+    id: null, kind: null, since: null, heldBy: null, unclaimedSince: null, warming: null,
+  };
+
+  // Every branch must answer `true`: `startFakeCrucible`'s dispatcher reads a
+  // falsy return as "not handled" and sends its own 404 on top, which is a
+  // thrown ERR_HTTP_HEADERS_SENT rather than a test failure.
+  const serve = (res, status, body) => { send(res, status, body); return true; };
+  const refuse = (res, status, code, message, extra = {}) => {
+    const headers = { 'Content-Type': 'application/json' };
+    if (extra.retryAfter !== undefined) headers['Retry-After'] = String(extra.retryAfter);
+    res.writeHead(status, headers);
+    res.end(JSON.stringify({
+      error: { code, message, details: extra.details === undefined ? null : extra.details },
+    }));
+    return true;
+  };
+
+  const artifactNames = (body) => (behaviour.artifacts
+    ? behaviour.artifacts(body)
+    : Object.keys(body.inputs || {}).map((n) => `${n}.out`));
+
+  return {
+    jobs,
+    /** What the card currently says, for a scenario's assertion. */
+    card,
+    /** Something was loaded and SOMETHING holds it. */
+    loaded(id, heldBy, kind = 'llm') {
+      card.id = id;
+      card.kind = kind;
+      card.since = new Date().toISOString();
+      card.heldBy = heldBy === undefined ? { fact: 'lease', who: 'bookforge', details: {} } : heldBy;
+      card.unclaimedSince = null;
+      card.warming = null;
+    },
+    /**
+     * A LOAD THAT COMPLETED AND NOBODY CAME BACK FOR — S14's signature. The
+     * card is resident, `held_by` is null, and `unclaimed_since` is when the
+     * load finished. `at` so a scenario can state the moment rather than
+     * measure it.
+     */
+    stranded(id, at = new Date().toISOString(), kind = 'llm') {
+      // THE JOB IS OVER — that is what `409 job_not_cancellable` means. What is
+      // left is the thing it loaded, and nothing holding it.
+      open.clear();
+      for (const res of streaming) { try { res.socket.destroy(); } catch { /* gone */ } }
+      streaming.clear();
+      card.id = id;
+      card.kind = kind;
+      card.since = at;
+      card.heldBy = null;
+      card.unclaimedSince = at;
+      card.warming = null;
+    },
+    /** Nothing on the card at all. */
+    empty() {
+      card.id = null; card.kind = null; card.since = null;
+      card.heldBy = null; card.unclaimedSince = null; card.warming = null;
+    },
+    /**
+     * The server came back up with no memory of anything — and the open event
+     * streams DIE WITH IT, because that is what a restart is. A fake that
+     * forgot its jobs while its sockets kept writing frames would model a
+     * server nobody has ever run.
+     */
+    restart() {
+      jobs.restarts += 1;
+      open.clear();
+      for (const res of streaming) { try { res.socket.destroy(); } catch { /* already gone */ } }
+      streaming.clear();
+      card.id = null; card.kind = null; card.since = null;
+      card.heldBy = null; card.unclaimedSince = null; card.warming = null;
+    },
+    async handle(req, res, ctx) {
+      hostState = ctx.state;
+      const route = ctx.url.pathname;
+
+      if (route === '/v1/activity' && req.method === 'GET') {
+        const a = behaviour.activity || {};
+        const id = card.id === null ? (a.residentId === undefined ? null : a.residentId) : card.id;
+        // WHO HOLDS IT, DERIVED — never taken on trust from a scenario. A job
+        // this fake is running IS a holder, and a fake that let a test say
+        // "nothing holds it" while a stream was open would model a server that
+        // does not exist.
+        const holder = open.size > 0
+          ? { fact: 'job', who: 'a client', details: { job_id: [...open.keys()][0] } }
+          : card.heldBy;
+        return serve(res, 200, {
+          server: { name: 'fake-crucible', version: '1.0.11', api_version: 1, backend: 'cuda-linux', uptime_s: 12 },
+          resident: id === null || id === undefined
+            ? null
+            : {
+              kind: card.kind || a.residentKind || 'llm',
+              id,
+              since: card.since || '2026-09-20T01:00:00Z',
+              memory_bytes_estimate: null,
+              /*
+               * ── CRUCIBLE 1.0.11: THE CARD SAYS WHEN NOBODY IS COMING BACK ──
+               *
+               * `held_by` is `null` or `{fact, who, details}` — what is holding
+               * the resident thing right now (a lease, a chat, a job, a
+               * stream). `unclaimed_since` is the mirror: non-null means
+               * RESIDENT AND HELD BY NOTHING, since that moment.
+               *
+               * The two are exclusive by construction here, because they are
+               * one fact in the server: a load that completed with no lease, no
+               * chat and no job behind it is a STRANDED CARD, and its
+               * `unclaimed_since` is the load's completion time. That is S14's
+               * signature — the DELETE that arrived one tick after the load
+               * finished, `409 job_not_cancellable`, and 12 GB resident that
+               * nobody ever asks for again.
+               */
+              held_by: holder === null || holder === undefined ? null : holder,
+              unclaimed_since: holder === null || holder === undefined
+                ? (card.unclaimedSince || a.unclaimedSince || null)
+                : null,
+            },
+          stopping: null,
+          warming: card.warming === null ? (a.warming === undefined ? null : a.warming) : card.warming,
+          claim: a.holder ? { held_by: a.holder } : null,
+          streaming: null,
+          chat: {
+            in_flight: a.inFlight === undefined ? 0 : a.inFlight,
+            /*
+             * 1.0.10's admission number, and 1.0.11's account of where it came
+             * from. BookForge itself does not read either today — Foundry's
+             * dispatcher does (PK8) — but the SDK READS BOTH KEYS STRICTLY, so
+             * a fake that left one out is a `crucible_protocol` refusal rather
+             * than a test of anything.
+             */
+            max_in_flight: a.maxInFlight === undefined ? 4 : a.maxInFlight,
+            max_in_flight_basis: a.maxInFlightBasis === undefined ? 'stated' : a.maxInFlightBasis,
+            rows: [],
+          },
+          lease: null,
+          slots: { accelerated: { busy: open.size, of: 1, queue_depth: 0, accepts_work: open.size === 0 } },
+          // THE TEN FIELDS AN ActivityJob CARRIES. The SDK requires every key,
+          // null or not, so a three-field row is a protocol refusal and not a
+          // running job.
+          running: [...open.keys()].map((jid) => ({
+            job_id: jid,
+            type: open.get(jid).body.type,
+            model: open.get(jid).body.model === undefined ? null : open.get(jid).body.model,
+            status: 'running',
+            position: null,
+            progress: 0.5,
+            message: null,
+            created: '2026-09-20T01:00:00Z',
+            started: '2026-09-20T01:00:01Z',
+            client: 'bookforge',
+          })),
+          queued: [],
+        });
+      }
+
+      if (route === '/v1/jobs' && req.method === 'POST') {
+        submits += 1;
+        const body = JSON.parse((await ctx.readBody(req)).toString('utf-8'));
+        jobs.submitted.push(body);
+        ctx.record.body = body;
+        const refusal = behaviour.refuseSubmit ? behaviour.refuseSubmit(submits, body) : null;
+        if (refusal) {
+          return refuse(res, refusal.status, refusal.code, refusal.message || refusal.code, refusal);
+        }
+        const id = `job-${nextId++}`;
+        open.set(id, { body, names: artifactNames(body) });
+        return serve(res, 200, { job_id: id });
+      }
+
+      /*
+       * THERE IS NO `DELETE` BRANCH HERE, and that is not an omission.
+       * {@link startFakeCrucible} handles it FIRST, for all fifteen suites, and
+       * records it on `state.cancelled` — which is the record a scenario
+       * asserts *"exactly one DELETE was sent"* against. A cancel that must be
+       * REFUSED (S14's `409 job_not_cancellable`, a restarted server's `404
+       * unknown_job`) is a `faults.refuse` rule matching `DELETE /v1/jobs/`,
+       * applied above every route; {@link cancelRefusedFault} spells the two.
+       */
+
+      const events = /^\/v1\/jobs\/([^/]+)\/events$/.exec(route);
+      if (events && req.method === 'GET') {
+        const id = decodeURIComponent(events[1]);
+        const lastEventId = Number(req.headers['last-event-id'] || 0);
+        const entry = open.get(id);
+        if (entry === undefined) {
+          // The server forgot it — a restart, or a job that never was.
+          jobs.streams.push({ jobId: id, lastEventId, answered: 'unknown_job' });
+          return refuse(res, 404, 'unknown_job',
+            `no job ${id} on this server (it was restarted at ${new Date().toISOString()})`);
+        }
+        jobs.streams.push({ jobId: id, lastEventId, answered: 'stream' });
+        const sse = sseWriter(req, res);
+        streaming.add(res);
+        req.on('close', () => streaming.delete(res));
+        const gap = behaviour.slowFramesMs === undefined ? 0 : behaviour.slowFramesMs;
+        const pause = () => (gap > 0 ? new Promise((r) => setTimeout(r, gap)) : Promise.resolve());
+        let alive = true;
+        req.on('close', () => { alive = false; });
+        sse.frame('queued', { position: null });
+        await pause();
+        if (!alive) return true;
+        sse.frame('warming', { message: 'loading the model' });
+        await pause();
+        if (!alive) return true;
+        sse.frame('progress', { fraction: 0.1, message: 'started', stage: 'rendering' });
+        if (behaviour.holdUntilCancelled === true) {
+          // The DELETE is recorded by `startFakeCrucible` on `state.cancelled`;
+          // this is the stream noticing it, which is the order a real server
+          // ends a job in.
+          await new Promise((done) => {
+            const tick = setInterval(() => {
+              if (!alive) { clearInterval(tick); done(); return; }
+              if (ctx.state.cancelled.indexOf(id) === -1) return;
+              clearInterval(tick);
+              sse.frame('cancelled', { status: 'cancelled' });
+              sse.end();
+              open.delete(id);
+              done();
+            }, 10);
+            req.on('close', () => { clearInterval(tick); done(); });
+          });
+          return true;
+        }
+        if (behaviour.neverFinishes === true) {
+          // A stream that goes quiet and stays quiet: the stall clock's case.
+          await new Promise((done) => { req.on('close', done); });
+          return true;
+        }
+        for (const name of entry.names) {
+          await pause();
+          if (!alive) return true;
+          sse.frame('artifact', { name });
+        }
+        await pause();
+        if (!alive) return true;
+        if (behaviour.endsFailed === true) {
+          sse.frame('failed', { error: { code: 'render_failed', message: 'the model fell over' } });
+          sse.end();
+          open.delete(id);
+          return true;
+        }
+        /*
+         * A SETTLEMENT THAT TAKES TIME — and `/v1/activity` MUST STILL ANSWER.
+         *
+         * An unload holds the server's own card lock while it takes a 12 GB
+         * model off, and the hazard this models is one the real server had:
+         * `GET /v1/activity` behind that lock would have hung for the whole
+         * unload — up to 180 s — and every poll in the queue with it. Modelled
+         * here as a settlement that is SLOW and a read route that is NOT
+         * blocked by it, because that is the contract; a scenario polls across
+         * this gap and measures how long the answer took.
+         */
+        if (behaviour.settleHoldsMs) {
+          await new Promise((r) => {
+            const t = setTimeout(r, behaviour.settleHoldsMs);
+            req.on('close', () => { clearTimeout(t); r(); });
+          });
+          if (!alive) return true;
+        }
+        if (behaviour.doneShape === 'resident') {
+          // An unload's `done`: the card is empty and says so.
+          card.id = null; card.kind = null; card.since = null;
+          card.heldBy = null; card.unclaimedSince = null;
+          sse.frame('done', { resident: null });
+        } else {
+          sse.frame('done', Object.assign({ artifacts: entry.names }, behaviour.doneExtra || {}));
+        }
+        sse.end();
+        open.delete(id);
+        return true;
+      }
+
+      const artifact = /^\/v1\/jobs\/([^/]+)\/artifacts\/(.+)$/.exec(route);
+      if (artifact && req.method === 'GET') {
+        const id = decodeURIComponent(artifact[1]);
+        const name = decodeURIComponent(artifact[2]);
+        artifactFetches += 1;
+        if (behaviour.partialArtifacts === true && artifactFetches === 1) {
+          jobs.artifacts.push({ jobId: id, name, ok: false });
+          return refuse(res, 500, 'artifact_unavailable', `${name} could not be read back`);
+        }
+        jobs.artifacts.push({ jobId: id, name, ok: true });
+        if (name.endsWith('.provenance.json')) {
+          const base = name.replace(/\.provenance\.json$/, '');
+          const body = (open.get(id) || {}).body || { type: behaviour.jobType || 'align', model: null };
+          return serve(res, 200, provenanceFor(base, body.type, body.model === undefined ? null : body.model));
+        }
+        const bytes = Buffer.from(behaviour.artifactBytes ? behaviour.artifactBytes(name) : `artifact:${name}`);
+        res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Length': bytes.length });
+        res.end(bytes);
+        return true;
+      }
+
+      return false;
+    },
+  };
+}
+
+/**
+ * The two ways a server refuses a DELETE, as `faults.refuse` rules.
+ *
+ *   'not-cancellable' — S14: the job reached `done` one tick before the cancel
+ *                       arrived (`409 job_not_cancellable`). Whatever it
+ *                       loaded is now resident and nobody holds it.
+ *   'unknown'         — the server was restarted and has never heard of it
+ *                       (`404 unknown_job`).
+ */
+function cancelRefusedFault(kind, times = 1) {
+  const rule = { match: { method: 'DELETE', path: /^\/v1\/jobs\// }, times };
+  if (kind === 'not-cancellable') {
+    return Object.assign(rule, {
+      status: 409,
+      code: 'job_not_cancellable',
+      message: 'that job is already done; there is nothing to cancel',
+    });
+  }
+  return Object.assign(rule, {
+    status: 404,
+    code: 'unknown_job',
+    message: 'no such job on this server',
+  });
+}
+
 module.exports = {
   REPO, installElectronStub, makeChecker, startFakeCrucible, fakeNamer, provenanceFor,
   refuseRenderParams, renderDoneProvenance,
   crucibleHost, noServerHost, send,
   leaseRoutes, modelLeasedRefusal, unknownLeaseRefusal,
   settingsRoutes, LLM_CLASSES, UPSTREAM_NAMES, WSL_ONLY_CLASSES, WSL_ONLY_REASON,
+  faultyJobRoutes, cancelRefusedFault, armReset, takeFault,
 };
