@@ -629,6 +629,27 @@ export interface QueueStep {
   /** Why it failed / was cancelled. Present exactly on 'failed' and 'cancelled'. */
   error?: string;
   /**
+   * THE ACCOUNT OF THE ATTEMPT BEFORE THIS ONE — kept when `error` is cleared,
+   * never read as state.
+   *
+   * A stop and a Retry both put a step back in play, and both used to write
+   * `error = undefined` (bug hunt 2026-09-20, P6/F7). That erased the only
+   * durable copy of a failure's reason: the Foundry engine's stdout/stderr is
+   * accumulated in memory and lost with the process, a progress line
+   * overwrites, and `error` was the one field persisted to `queue-engine.json`
+   * — so the stderr of a clean that died on an ENOENT was gone the moment
+   * somebody pressed Retry on it, before anyone had read it. Live: a `held`,
+   * `wasInterrupted` row with an empty `progress` whose four descendants still
+   * said *"Skipped: … failed"* — the children remembering a failure the row
+   * denied.
+   *
+   * SEPARATE FROM `error` because `error` is what the bench draws red and what
+   * *Needs you* is filtered on: a retried row must not be red, and a stopped
+   * one is not broken. This is history, shown as a secondary line at most, and
+   * it is overwritten by the NEXT failure's account rather than accumulating.
+   */
+  lastError?: string;
+  /**
    * What a SUCCESSFUL step still owes the user in whole sentences — a ledger
    * refusal, a narration-carry note. A step with these is complete, not failed.
    */
@@ -928,7 +949,22 @@ export interface QueueSnapshot {
  *    would hide the failure that caused it).
  *  - everything terminal with a cancellation and no failure ⇒ cancelled.
  *  - everything done ⇒ done.
- *  - otherwise it has not started: `queued` if anything is released, else `held`.
+ *  - otherwise it has not started: `queued` if anything is released, else the
+ *    rung that says WHO the run is waiting on — `held` ahead of `waiting`.
+ *
+ * ── WHY `held` OUTRANKS `waiting` (bug hunt 2026-09-20, Q8) ────────────────
+ *
+ * The two answer different questions and only one of them is actionable. A
+ * `waiting` step is waiting on a PARENT, which the queue will finish by
+ * itself; a `held` step is waiting on a PERSON. A chain of [held narrate,
+ * waiting align, waiting assemble] filed itself under `waiting` because a
+ * `waiting` row was seen first — so a run that needed a press was drawn as one
+ * that was getting on with it, next to the bench's own suppressed "Start this
+ * book". The held row is the one nothing else will move, so it is the run's
+ * status.
+ *
+ * A live `queued` row still outranks both: the scheduler has that row and will
+ * start it the moment a slot opens, which is neither of the two waits.
  */
 export function jobStatus(job: QueueJob): StepStatus {
   const steps = job.steps;
@@ -943,9 +979,9 @@ export function jobStatus(job: QueueJob): StepStatus {
     return 'done';
   }
   const live = steps.filter((s) => !TERMINAL_STEP_STATUSES.has(s.status));
-  if (live.every((s) => s.status === 'held')) return 'held';
-  if (live.some((s) => s.status === 'waiting') && !live.some((s) => s.status === 'queued')) {
-    return 'waiting';
+  if (!live.some((s) => s.status === 'queued')) {
+    if (live.some((s) => s.status === 'held')) return 'held';
+    if (live.some((s) => s.status === 'waiting')) return 'waiting';
   }
   return 'queued';
 }

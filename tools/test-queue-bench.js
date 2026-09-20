@@ -41,6 +41,10 @@ if (!fs.existsSync(MOD)) {
 
 const bench = require(MOD);
 const slots = require(path.join(REPO, 'dist', 'shared', 'queue', 'slot-sets.js'));
+// `jobStatus` is the other half of Q8: the bench draws the row, this files the
+// RUN, and a run filed under the wrong wait is what suppressed the one press
+// that would have moved it.
+const types = require(path.join(REPO, 'dist', 'shared', 'queue', 'engine-types.js'));
 
 let passed = 0;
 const failures = [];
@@ -588,6 +592,78 @@ test('only held rows are startable — a queued one is already released', () => 
   const by = Object.fromEntries(rows.map((r) => [r.stepId, r.startable]));
   assert.strictEqual(by['s_h'], true);
   assert.strictEqual(by['s_q'], false);
+});
+
+// ── Q8 · A held row behind a held parent is not startable ───────────────────
+//
+// bug hunt 2026-09-20, Q8. `startable: step.status === 'held'` drew a Start
+// button on every row of a held chain; pressing it calls `release({stepId})`,
+// which sets the row `waiting` and launches nothing, because the parent has not
+// run. The press did something invisible and the book did not move — while
+// "Start this book" was suppressed, `allHeld` being false for exactly that
+// shape.
+
+test('Q8: a held row BEHIND a held parent is not startable — the press would do nothing', () => {
+  const head = step({ id: 's_head', status: 'held', label: 'Narrate' });
+  const tail = step({ id: 's_tail', status: 'held', label: 'Assemble', parentStepId: 's_head' });
+  const rows = bench.upNext(snap([job([head, tail])]));
+  const by = Object.fromEntries(rows.map((r) => [r.stepId, r.startable]));
+  assert.strictEqual(by['s_head'], true, 'the head of the chain reads the source: press it');
+  assert.strictEqual(by['s_tail'], false,
+    'the tail is behind a parent that has not run, and Start there launches nothing');
+});
+
+test('Q8: the same rule in bookPlans, which is what the page draws', () => {
+  const head = step({ id: 's_head', status: 'held', label: 'Narrate' });
+  const tail = step({ id: 's_tail', status: 'held', label: 'Assemble', parentStepId: 's_head' });
+  const plan = bench.bookPlans(snap([job([head, tail], { projectId: 'p' })]))[0];
+  const by = Object.fromEntries(plan.steps.map((s) => [s.stepId, s.startable]));
+  assert.strictEqual(by['s_head'], true);
+  assert.strictEqual(by['s_tail'], false, 'the page must not offer a press it cannot honour');
+});
+
+test('Q8: a held row behind a DONE parent is startable — the work in front of it is finished', () => {
+  const head = step({ id: 's_head', status: 'done', label: 'Narrate' });
+  const tail = step({ id: 's_tail', status: 'held', label: 'Assemble', parentStepId: 's_head' });
+  const rows = bench.upNext(snap([job([head, tail])]));
+  assert.strictEqual(rows.find((r) => r.stepId === 's_tail').startable, true);
+});
+
+test('Q8: a held row behind a FAILED parent is not startable — it would run on nothing', () => {
+  // Terminal is not the test: a failed parent never wrote what this step reads.
+  const head = step({ id: 's_head', status: 'failed', label: 'Narrate', error: 'no' });
+  const tail = step({ id: 's_tail', status: 'held', label: 'Assemble', parentStepId: 's_head' });
+  const rows = bench.upNext(snap([job([head, tail])]));
+  assert.strictEqual(rows.find((r) => r.stepId === 's_tail').startable, false);
+});
+
+test('Q8: a run with a held step and waiting ones is HELD, not waiting', () => {
+  // The live shape the hunt found: [held tts, waiting align, waiting assemble]
+  // filed under `waiting` — a run that needs a human press drawn as one that
+  // is getting on with it.
+  const tts = step({ id: 's_tts', status: 'held', label: 'Narrate' });
+  const align = step({ id: 's_align', status: 'waiting', label: 'Align', parentStepId: 's_tts' });
+  const asm = step({ id: 's_asm', status: 'waiting', label: 'Assemble', parentStepId: 's_align' });
+  assert.strictEqual(types.jobStatus(job([tts, align, asm])), 'held',
+    'the held row is the one nothing else will move, so it is the run\'s status');
+});
+
+test('Q8: a live QUEUED row still outranks both waits', () => {
+  const tts = step({ id: 's_tts', status: 'queued', label: 'Narrate' });
+  const align = step({ id: 's_align', status: 'held', label: 'Align', parentStepId: 's_tts' });
+  assert.strictEqual(types.jobStatus(job([tts, align])), 'queued',
+    'the scheduler has that row and will start it: neither wait is the answer');
+});
+
+test('Q8: a run with only waiting rows is still waiting', () => {
+  const head = step({ id: 's_head', status: 'running', label: 'Narrate' });
+  const tail = step({ id: 's_tail', status: 'waiting', label: 'Assemble', parentStepId: 's_head' });
+  // Running outranks everything, so the waiting-only rung is read with the
+  // parent already landed.
+  assert.strictEqual(types.jobStatus(job([head, tail])), 'running');
+  const landed = step({ id: 's_head2', status: 'done', label: 'Narrate' });
+  const still = step({ id: 's_tail2', status: 'waiting', label: 'Assemble', parentStepId: 's_head2' });
+  assert.strictEqual(types.jobStatus(job([landed, still])), 'waiting');
 });
 
 test('bookPlans groups runs that are about the same project', () => {
