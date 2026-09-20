@@ -98,11 +98,18 @@ export type CrucibleVenueErrorCode =
 
 export class CrucibleVenueError extends Error {
   readonly code: CrucibleVenueErrorCode;
+  /**
+   * Every server pinged and what each said, carried through from
+   * {@link VenueDecisionRefusal} — see its own field for why it is a list and
+   * not a sentence. Empty for every refusal this door mints itself.
+   */
+  readonly tried: readonly string[];
 
-  constructor(code: CrucibleVenueErrorCode, message: string) {
+  constructor(code: CrucibleVenueErrorCode, message: string, tried: readonly string[] = []) {
     super(message);
     this.name = 'CrucibleVenueError';
     this.code = code;
+    this.tried = tried;
   }
 }
 
@@ -166,7 +173,7 @@ export async function decideWhereGenerationRuns(
     // routing's `no_enabled_server` passes through in its own words; only the
     // decision's own two refusals are re-dressed.
     if (err instanceof VenueDecisionRefusal) {
-      throw new CrucibleVenueError(err.code, err.message);
+      throw new CrucibleVenueError(err.code, err.message, err.tried);
     }
     throw err;
   }

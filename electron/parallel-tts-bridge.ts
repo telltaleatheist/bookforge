@@ -162,6 +162,22 @@ import {
  */
 import { coverageReportPath } from './coverage-align-job';
 import { takeChunkGuards } from './chunk-guard-ledger';
+/*
+ * WHAT A STOP CAN REACH WHILE A BOOK IS BEING PACKED (2026-09-19).
+ *
+ * Prep's spawn used to be registered nowhere: `activeSessions` is written by
+ * the RENDER door, after prep has returned, so `stopParallelConversion`
+ * answered `false` for the whole of prep and a stopped prepare row left the
+ * python running. The registry holds the handle; this file still owns HOW to
+ * kill the spawn and hands that in. See `electron/prep-handles.ts`.
+ */
+import {
+  PrepCancelled,
+  beginPrepare,
+  cancelPrepare,
+  isPreparing,
+  type PrepHandle,
+} from './prep-handles';
 
 /**
  * Append the voice/fine-tune CLI args for the selected voice. Centralizes the
@@ -3498,6 +3514,35 @@ async function venueBandForPrep(
   return stated;
 }
 
+/**
+ * WHERE THIS BOOK WOULD BE READ, AND THE LENGTHS THAT MACHINE PACKS TO — asked
+ * ONCE, before a prep does anything, and answered before a copy is cut.
+ *
+ * The RULE about what to do when nobody answers is not here: it is
+ * `crucible/prep-band.ts`, because "wait for a machine" and "name a
+ * misconfiguration" is the distinction Owen ruled on (2026-09-19) and it needs
+ * one place and one keeper. This is the half that knows where the three answers
+ * come from on a real machine.
+ *
+ * `crucibleVoiceFor` is asked HERE, outside that rule, on purpose: a voice with
+ * no Crucible id at all is a misconfiguration of this app's own catalog and
+ * nothing about a server's availability changes it, so it refuses by name
+ * before any machine is pinged.
+ */
+async function bandThisPrepPacksTo(
+  settings: ParallelTtsSettings,
+): Promise<{ venue: GenerationVenue; band: CrucibleStatedBand }> {
+  const { crucibleVoiceFor } = await import('./crucible/render.js');
+  const { bandForPrep } = await import('./crucible/prep-band.js');
+  const { readRouting } = await import('./crucible/routing.js');
+  const voice = crucibleVoiceFor(settings.ttsEngine, higgsModelForJob(settings).id);
+  return bandForPrep<GenerationVenue>(voice, {
+    decide: () => decideGenerationVenue(settings),
+    band: (server) => venueBandForPrep(settings, server),
+    roster: () => readRouting().ranked,
+  });
+}
+
 export async function prepareSession(
   epubPath: string,
   settings: ParallelTtsSettings,
@@ -3508,12 +3553,24 @@ export async function prepareSession(
    * session, and one render must have one answer.
    */
   venue: GenerationVenue,
+  /**
+   * THE NUMBERS THIS BOOK IS PACKED TO — that server's own `max_chars` and pace
+   * block, read by the CALLER before any of this run's expensive work started.
+   *
+   * It was read here until 2026-09-19, three phases in: after the narration copy
+   * had been cut and the scratch sessions swept. That order cost a whole cut
+   * copy on every pass where no server would state a band — which, since the
+   * `prepare` row PARKS on that rather than failing (`crucible/prep-band.ts`),
+   * is once per queue pass for as long as the machines are off. The availability
+   * question is asked first now, and the answer is handed in.
+   */
+  venueBand: CrucibleStatedBand,
+  /** What a stop can reach — the spawn and the session dir are noted on it. */
+  handle: PrepHandle,
   prepJobId?: string  // Used only to address first-run model-download progress notes
 ): Promise<PrepInfo> {
   const sessionId = crypto.randomUUID();
   const engine = narratorEngineFor(settings);
-  /** The rendering venue's own cap/band/pace, for a Crucible render. See below. */
-  let venueBand: CrucibleStatedBand | undefined;
 
   if (venue.where === 'crucible') {
     // THE ENGINE IS NOT ON THIS MACHINE. The render goes to a Crucible server, so
@@ -3525,10 +3582,6 @@ export async function prepareSession(
     // not, rather than falling back into the guest.
     const refusal = await hostPrepRefusal(engine);
     if (refusal) throw new Error(refusal);
-    // AND THE NUMBERS THIS BOOK IS PACKED TO ARE THAT SERVER'S. One
-    // `GET /v1/voices` before prep spawns; every refusal by name, and none of
-    // them falls back to the local catalog. See `venueBandForPrep`.
-    venueBand = await venueBandForPrep(settings, venue.server);
   }
   // There WAS an `else if (isHiggsJob(settings))` here that ran the Higgs doctor —
   // a WSL round trip asking whether THIS machine's serving env was ready. It went
@@ -3548,6 +3601,16 @@ export async function prepareSession(
   const useWsl = home.inGuest;
   const sessionDir = home.sessionDir;
   const sessionDirForReading = home.sessionDirForReading;
+  /*
+   * THE DIRECTORY A STOP HAS TO TAKE WITH IT, noted before anything can write
+   * into it. narrator's prep writes `session-state.json` in here, and that file
+   * is what a resume and the clean-session sweep read a session back from — so
+   * a prep killed half-way must not leave one behind (`prep-handles.ts`).
+   * The READABLE path: for a WSL prep that is the UNC one, because this process
+   * is the one that deletes it.
+   */
+  handle.noteSession(sessionDirForReading);
+  handle.throwIfCancelled('before the session was created');
   // The --ebook path as the spawned e2a will see it. For a WSL prep the file is
   // STAGED into WSL's own filesystem first: buildWslBashCommand maps drive
   // letters to /mnt/<letter>, but WSL auto-mounts only fixed drives — a library
@@ -3692,7 +3755,7 @@ export async function prepareSession(
       // WSL toggle says — the render is on another machine. See prepRunsInWsl.
       onHost: venue.where === 'crucible',
       // AND IT PACKS TO THAT MACHINE'S NUMBERS, not to this arm's catalog block.
-      ...(venueBand === undefined ? {} : { venueBand }),
+      venueBand,
       // ORPHEUS_MAX_CHARS is consumed HERE (prep packs sentences), not in the
       // worker. Precedence: an explicit user env override wins, else the selected
       // voice's declared packing cap, else nothing — NO invented default.
@@ -3720,6 +3783,36 @@ export async function prepareSession(
       env: prepPlan.env,
       shell: false,
     });
+
+    /*
+     * THE ONE MOMENT A STOP HAS SOMETHING TO KILL (2026-09-19).
+     *
+     * Registered here rather than by the caller, because the caller does not
+     * know which of the two teardowns this spawn needs: a native prep is a
+     * process tree, and a WSL prep is a wsl.exe wrapper in front of a guest
+     * process that `taskkill` cannot see — the same asymmetry the stall
+     * watchdog below already handles, and the same session-scoped pattern
+     * (`--session <id>` is in the guest argv; `app\.py` matches nothing in
+     * `python -u -m narrator.compat.app`, which is why the pattern is
+     * narrator's module name).
+     *
+     * `gone` is the other half of the contract: `cancelPrepare` waits for it
+     * before it removes the session directory, so the files are never deleted
+     * out from under a process that is still writing them.
+     */
+    const gone = new Promise<void>((settled) => {
+      prepProcess.once('close', () => settled());
+      prepProcess.once('error', () => settled());
+    });
+    handle.noteSpawn(async () => {
+      if (prepPlan.viaWsl) {
+        await destroyWslGuestProcesses(`${NARRATOR_APP_RE}.*${sessionId}`,
+          { graceMs: 10000, label: 'prep-cancel' });
+        killWslWrapper(prepProcess, 'prep');
+        return;
+      }
+      killProcessTree(prepProcess, 'prep');
+    }, gone);
 
     // Log stdout for visibility (but don't parse it)
     prepProcess.stdout?.on('data', (data: Buffer) => {
@@ -3793,6 +3886,15 @@ export async function prepareSession(
 
     prepProcess.on('close', (code: number | null) => {
       clearStallTimer();
+      handle.noteSpawnGone();
+      if (handle.cancelled) {
+        // OUR OWN KILL, named as itself. The exit is `null`/SIGKILL either way,
+        // so without this the row would file "Prep failed with code null" on
+        // work the user stopped on purpose — a sentence that sends somebody
+        // looking for a bug.
+        reject(new PrepCancelled('The book was not packed: preparing it was stopped.'));
+        return;
+      }
       if (code === 0) {
         resolve();
       } else {
@@ -3806,6 +3908,7 @@ export async function prepareSession(
 
     prepProcess.on('error', (err) => {
       clearStallTimer();
+      handle.noteSpawnGone();
       reject(err);
     });
   }).finally(removeStagedEbook);
@@ -3885,10 +3988,8 @@ export async function prepareSession(
     })),
     metadata: state.metadata,
     // WHOSE CEILING THESE CHUNKS RESPECT — see `PrepInfo.packedFor`. Written
-    // from the band this prep actually read, never re-derived later.
-    ...(venueBand === undefined
-      ? {}
-      : { packedFor: { server: venue.server, ceilingChars: venueBand.ceilingChars } }),
+    // from the band this prep was handed, never re-derived later.
+    packedFor: { server: venue.server, ceilingChars: venueBand.ceilingChars },
   };
 
   console.log('[PARALLEL-TTS] Prep complete:', prepInfo.totalSentences, 'sentences');
@@ -7192,16 +7293,20 @@ async function effectiveOutputDirFor(config: ParallelConversionConfig): Promise<
  * refused `409 server_busy` had already paid for a prep into a scratch session
  * the next attempt did not match, so it paid for it again (finding A2).
  *
- * ── It still has to ASK a server one question ──────────────────────────────
+ * ── It still has to ASK a server one question, and it WAITS for the answer ──
  *
  * The chunk boundaries are the RENDERING machine's numbers: `max_chars` and the
  * pace block off `GET /v1/voices`, never this machine's catalog
  * (`electron/crucible/voice-band.ts` — "only one of them can refuse, and the
- * engine is the one that will"). So prep reads one band from one server, and
- * REFUSES BY NAME when no enabled server will state it. That is not "waiting
- * for a server": a busy server answers `/v1/voices` in milliseconds, and the
- * refusal names a misconfiguration a person repairs in seconds — against a cap
- * invented here, which would be a whole book packed to numbers nobody measured.
+ * engine is the one that will"). So prep reads one band from one server. A busy
+ * server answers in milliseconds, so this is not waiting for a free card — but a
+ * server that is ASLEEP or switched off answers nothing, and until 2026-09-19
+ * that FAILED the row (bug hunt §H). Owen: a book *"would just sit there in the
+ * queue until it's free"*, and *"it should only fail because of a
+ * misconfiguration, which can be repaired."* So the row PARKS on availability
+ * and fails only on a misconfiguration — the line between the two is
+ * `crucible/prep-band.ts` — and the question is asked FIRST, before the
+ * narration copy is cut, so a parked pass costs one ping sweep and nothing else.
  *
  * Which server's band it read is recorded on the session (`PrepInfo.packedFor`)
  * and travels to the render, which refuses by name if it is admitted somewhere
@@ -7254,6 +7359,28 @@ async function packSessionForNarration(
   jobId: string,
   config: ParallelConversionConfig,
 ): Promise<{ config: ParallelConversionConfig; prepInfo: PrepInfo }> {
+  /*
+   * WHAT A STOP CAN REACH, open for the whole of the prep (2026-09-19).
+   *
+   * The `prepare` row opened one already — it waits out its park cool-off under
+   * the same handle — and `beginPrepare` hands that one back; an inline prep
+   * (the CLI, the language-learning chain, a restored row with no prepare step)
+   * opens the only one there is, which is what lets `stopParallelConversion`
+   * reach a prep it could not touch before.
+   */
+  const handle = beginPrepare(jobId);
+  try {
+    return await packWithHandle(jobId, config, handle);
+  } finally {
+    handle.release();
+  }
+}
+
+async function packWithHandle(
+  jobId: string,
+  config: ParallelConversionConfig,
+  handle: PrepHandle,
+): Promise<{ config: ParallelConversionConfig; prepInfo: PrepInfo }> {
   // WHICH CLEANUP STORY THIS RUN IS, refused rather than guessed. Everything
   // that queues a conversion states it (the Narrate button asks the user when
   // the file it is about to read carries no stamp); a config that reached here
@@ -7268,6 +7395,21 @@ async function packSessionForNarration(
       + "mistake or your own choice. Press Narrate again on the book's version row — the run it "
       + 'queues says so.');
   }
+
+  /*
+   * IS THERE A MACHINE THAT WILL STATE THIS VOICE'S CHUNK LENGTHS — ASKED FIRST.
+   *
+   * It was asked three phases later until 2026-09-19, inside `prepareSession`,
+   * and that order was the whole cost of a park: every pass with the servers
+   * asleep cut a fresh narration copy and swept this book's scratch sessions
+   * before finding out nobody was going to answer. A parked pass is now one
+   * ping sweep.
+   *
+   * Refuses a MISCONFIGURATION by name and parks on AVAILABILITY — the line
+   * between the two is `crucible/prep-band.ts`, not here.
+   */
+  const { venue, band } = await bandThisPrepPacksTo(config.settings);
+  handle.throwIfCancelled('while a machine was being asked for the band');
 
   // The captions out, before anything downstream sees the path: the session,
   // its resume matching and the clean-session sweep all key on `epubPath`, so
@@ -7305,18 +7447,19 @@ async function packSessionForNarration(
   // Users who want to assemble an existing session should use the Reassembly feature.
   // TTS jobs always run prep to create a fresh session with the current settings.
 
-  // WHOSE NUMBERS THIS BOOK IS PACKED TO. Not an admission and not a placement:
-  // one `GET /v1/voices` for the voice's band. See `prepareNarrationSession`.
-  const venue = await decideGenerationVenue(config.settings);
-
   // Prep is a real, minute-scale stage (extract the epub, split it, pack chunks)
   // that used to emit nothing — so announce it before starting, or the job shows
   // a blank 0% until the first worker spawns.
   emitPrepStageProgress(jobId, 'Extracting text and splitting sentences…', config.skipAssembly === true);
+  handle.throwIfCancelled('before narrator was spawned');
   let prepInfo: PrepInfo;
   try {
-    prepInfo = await prepareSession(config.epubPath, config.settings, venue, jobId);
+    prepInfo = await prepareSession(config.epubPath, config.settings, venue, band, handle, jobId);
   } catch (err) {
+    // A STOP IS NOT A FAILURE, and it keeps its own sentence. Wrapping it in
+    // "Preparation failed:" would file the user's own press as an error on the
+    // row and send the next person looking for a bug.
+    if (err instanceof PrepCancelled) throw err;
     throw new Error(`Preparation failed: ${err}`);
   }
   await logger.log('INFO', jobId, 'Prep complete', {
@@ -7852,9 +7995,28 @@ export async function renderRangeHeadless(
    * a render runs. The band it packs to is that server's, for the same reason.
    */
   const venue = await decideGenerationVenue(settings);
+  /*
+   * THE BAND, READ THE PLAIN WAY — not through `bandThisPrepPacksTo`.
+   *
+   * That door carries the QUEUE ROW's rule: a machine that will not answer is a
+   * PARK, with a sentence about asking again on the next queue pass (Owen,
+   * 2026-09-19). There is no next pass here — a person is waiting at a shell —
+   * so this door keeps the refusal it has always given, in the render's own
+   * words: start the server, or name another one.
+   */
+  const band = await venueBandForPrep(settings, venue.server);
 
   // Real e2a prep — identical packing/session-creation to a UI job.
-  const prepInfo = await prepareSession(inputPath, settings, venue, jobId);
+  // The handle is what a Ctrl-C-driven `stopParallelConversion` can reach while
+  // this prep runs; `renderRangeHeadless` has no queue row behind it, so it
+  // opens and releases its own (`electron/prep-handles.ts`).
+  const prepHandle = beginPrepare(jobId);
+  let prepInfo: PrepInfo;
+  try {
+    prepInfo = await prepareSession(inputPath, settings, venue, band, prepHandle, jobId);
+  } finally {
+    prepHandle.release();
+  }
   if (!prepInfo.totalSentences || prepInfo.totalSentences < 1) {
     throw new Error(`renderRangeHeadless: prep produced 0 generation chunks for ${inputPath}`);
   }
@@ -7988,8 +8150,25 @@ export async function renderRangeHeadless(
  * Stop a parallel conversion
  */
 export async function stopParallelConversion(jobId: string): Promise<boolean> {
+  /*
+   * A RENDER THAT IS STILL PREPPING IS STOPPED HERE TOO (2026-09-19).
+   *
+   * `activeSessions` is written once prep has returned, so for the whole of an
+   * INLINE prep — the CLI, the language-learning chain, a queue row restored
+   * from before the `prepare` row existed — this function used to answer
+   * `false` and leave the python running. The prep registry is what the stop
+   * can reach in that window; it kills the spawn and takes the half-written
+   * session with it (`electron/prep-handles.ts`).
+   */
+  let stoppedPrep = false;
+  if (isPreparing(jobId)) {
+    console.log(`[PARALLEL-TTS] Stopping job ${jobId} while it is still being prepared`);
+    stoppedPrep = await cancelPrepare(jobId);
+  }
+  // Not `else`: a prep that landed in the same breath leaves a session behind
+  // it, and the render half of the stop still has to run.
   const session = activeSessions.get(jobId);
-  if (!session) return false;
+  if (!session) return stoppedPrep;
 
   console.log(`[PARALLEL-TTS] Stopping conversion for job ${jobId}`);
   logger.log('WARN', jobId, 'Conversion stopped by user').catch(() => {});

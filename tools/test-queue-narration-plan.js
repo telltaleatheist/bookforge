@@ -31,9 +31,19 @@
  * It also pins the ONE pure rule the split made possible to get wrong:
  * chunks packed to one server's ceiling may only be read by a server whose own
  * ceiling is at least as high (`parallel-tts-bridge.packingTravelsTo`).
+ *
+ * ── And the two things the split LEFT OWED (2026-09-19, bug hunt §H) ───────
+ *
+ * 6. **A prepare row can be cancelled.** Its spawn was registered nowhere a
+ *    stop could reach, so `prepare.cancel()` was empty and a stopped row left
+ *    narrator running into a scratch session a later run could read back.
+ * 7. **Prepare PARKS when no machine will state the band**, and fails only on
+ *    something a person repairs. *"It should only fail because of a
+ *    misconfiguration, which can be repaired."*
  */
 'use strict';
 const assert = require('assert');
+const { spawn } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -441,6 +451,318 @@ function narrationRun(title, epubPath = '/a.epub') {
     assert.strictEqual(packingTravelsTo(800, 800), true, 'the same ceiling is the ordinary case');
     assert.strictEqual(packingTravelsTo(800, 700), false,
       'a TIGHTER ceiling must be refused by name before the render is submitted');
+  });
+
+  console.log('6. a prepare row can be cancelled');
+
+  /*
+   * The gap this closes (bug hunt §H): `prepareSession` registered its spawn
+   * NOWHERE a stop could reach, so `prepare.cancel()` was deliberately empty,
+   * the python ran on after a Stop, and it finished writing a scratch session
+   * — `session-state.json` and all — that a resume or the clean-session sweep
+   * could read back as a session somebody had packed.
+   *
+   * Driven through the MODULE's own `cancel`, with a real child process and a
+   * real directory standing in for narrator: what is under test is the door,
+   * not what narrator does behind it.
+   */
+  const handles = require(path.join(DIST, 'prep-handles.js'));
+
+  /** A process that will not exit on its own, the way a wedged prep does not. */
+  async function longRunningChild() {
+    const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1e9)'], { stdio: 'ignore' });
+    await new Promise((r) => child.once('spawn', r));
+    return {
+      child,
+      gone: new Promise((r) => { child.once('close', () => r()); child.once('error', () => r()); }),
+    };
+  }
+
+  /** A half-written session exactly as prep leaves one. */
+  function halfWrittenSession(name) {
+    const dir = path.join(SCRATCH, 'scratch', `ebook-${name}`);
+    fs.mkdirSync(path.join(dir, 'proc'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'proc', 'session-state.json'),
+      JSON.stringify({ session_id: name, total_sentences: 12, chapters: [{ chapter_num: 1 }] }));
+    return dir;
+  }
+
+  await check('CANCELLING A RUNNING PREPARE KILLS THE SPAWN AND LEAVES NO SESSION DIR', async () => {
+    const { prepareStep } = require(path.join(DIST, 'queue-steps', 'prepare.js'));
+    const stepId = 'step-prep-cancel';
+    const dir = halfWrittenSession('cancelme');
+    const { child, gone } = await longRunningChild();
+    const handle = handles.beginPrepare(stepId);
+    handle.noteSpawn(() => { child.kill('SIGKILL'); }, gone);
+    handle.noteSession(dir);
+
+    await prepareStep.cancel(stepId);
+
+    assert.ok(child.exitCode !== null || child.signalCode !== null,
+      'the prep spawn is still alive after a Stop — this is the whole defect: the engine '
+      + 'abandons the step and narrator keeps reading the book');
+    assert.ok(!fs.existsSync(dir),
+      `the half-written session survived the stop (${dir}). It holds a session-state.json, `
+      + 'which a resume and the clean-session sweep read as a session that was packed.');
+    assert.strictEqual(handle.cancelled, true, 'and the run itself must know it was stopped');
+    handle.release();
+    assert.strictEqual(handles.isPreparing(stepId), false, 'the handle is dropped when released');
+  });
+
+  await check('a prepare that is only WAITING is stopped too — there is no process to kill',
+    async () => {
+      // The park cool-off (`queue-steps/prepare.ts`) is time spent inside the
+      // step with nothing spawned. A stop pressed there has only the handle to
+      // break, and a wait that ignored it would walk on and prep the book.
+      const stepId = 'step-prep-waiting';
+      const handle = handles.beginPrepare(stepId);
+      const waiting = handles.waitUnlessStopped(handle, 60_000, 'while it was waiting to ask again');
+      await handles.cancelPrepare(stepId);
+      await assert.rejects(waiting, /stopped/);
+      handle.release();
+    });
+
+  await check('stopping a job that is not preparing is FALSE, not a thrown error', async () => {
+    assert.strictEqual(await handles.cancelPrepare('nothing-by-that-name'), false,
+      'the render door calls this for every stop; an unknown id is simply "not mine"');
+  });
+
+  await check('a directory that is not a narrator scratch session is NEVER removed', async () => {
+    const stepId = 'step-prep-rail';
+    const notASession = path.join(SCRATCH, 'precious');
+    fs.mkdirSync(notASession, { recursive: true });
+    fs.writeFileSync(path.join(notASession, 'book.epub'), 'x');
+    const handle = handles.beginPrepare(stepId);
+    handle.noteSession(notASession);
+    await handles.cancelPrepare(stepId);
+    assert.ok(fs.existsSync(path.join(notASession, 'book.epub')),
+      'every scratch session is "ebook-<uuid>"; a recursive delete of anything else is a '
+      + 'mistake nothing gives back, so the rail refuses and says so');
+    handle.release();
+  });
+
+  console.log('7. prepare PARKS when no machine will state the band');
+
+  /*
+   * Owen, 2026-09-19: a book *"would just sit there in the queue until it's
+   * free"*, and *"it should only fail because of a misconfiguration, which can
+   * be repaired."* Prep packs to the RENDERING machine's `max_chars` and pace
+   * block, so it asks one server before it packs anything — and with every
+   * machine asleep or switched off that question FAILED the row until tonight:
+   * a red line in Needs you for a card that was simply not on yet.
+   */
+  const { bandForPrep, PrepBandUnavailable } = require(path.join(DIST, 'crucible', 'prep-band.js'));
+  const runtime = require(path.join(DIST, 'queue-steps', 'runtime.js'));
+
+  /** A refusal as a real door mints one: the code in the message and on the error. */
+  const refusal = (code, message, extra = {}) =>
+    Object.assign(new Error(`${code}: ${message}`), { code, ...extra });
+
+  const ROSTER = [{ name: 'M1 Ultra', enabled: true }, { name: '3090 Ti', enabled: false }];
+  const BAND = { server: 'M1 Ultra', voice: 'deathstalker', maxChars: 800, ceilingChars: 700 };
+
+  async function askedFor(host) {
+    try {
+      return { threw: null, got: await bandForPrep('deathstalker', host) };
+    } catch (err) {
+      return { threw: err, got: null };
+    }
+  }
+
+  await check('NO SERVER ANSWERS → PARKED, naming every machine asked and every one switched off',
+    async () => {
+      const { threw } = await askedFor({
+        decide: async () => {
+          throw refusal('no_reachable_server',
+            'not one enabled Crucible server answered: M1 Ultra (unreachable: connect ECONNREFUSED).',
+            { tried: ['M1 Ultra (unreachable: connect ECONNREFUSED 192.0.2.10:8760)'] });
+        },
+        band: async () => { throw new Error('the band must not be asked for'); },
+        roster: () => ROSTER,
+      });
+      assert.ok(threw instanceof PrepBandUnavailable,
+        `an absent machine is availability, not a misconfiguration; got: ${threw && threw.message}`);
+      assert.strictEqual(runtime.busyLineOf(threw), threw.busyLine,
+        'the line must ride on the throw under the name `busyLine` — that duck-type is the ONE '
+        + 'rule that decides whether settleStep parks the row or fails it');
+      assert.match(threw.busyLine, /deathstalker/, 'the voice it could not get numbers for');
+      assert.match(threw.busyLine, /M1 Ultra \(unreachable: connect ECONNREFUSED/,
+        'each machine that was asked, and what it said');
+      assert.match(threw.busyLine, /switched off: 3090 Ti/,
+        'and the machine that was never asked because its switch is off — half of why nothing '
+        + 'answered, and invisible in a list of what was tried');
+    });
+
+  await check('EVERY SERVER SWITCHED OFF → parked, naming the switch', async () => {
+    const { threw } = await askedFor({
+      decide: async () => {
+        throw refusal('no_enabled_server',
+          'every Crucible server is disabled (M1 Ultra, 3090 Ti). Enable one in Settings.');
+      },
+      band: async () => { throw new Error('the band must not be asked for'); },
+      roster: () => [{ name: 'M1 Ultra', enabled: false }, { name: '3090 Ti', enabled: false }],
+    });
+    assert.ok(threw instanceof PrepBandUnavailable,
+      'a switch somebody flicked is exactly the wait docs/PENDING-QUEUE-AND-GPU-DIAL.md files '
+      + 'under "a parked row says what would unblock it"');
+    assert.match(threw.busyLine, /switched off: M1 Ultra, 3090 Ti/);
+  });
+
+  await check('NO SERVER REGISTERED AT ALL → failed, in routing\'s own words', async () => {
+    const { threw } = await askedFor({
+      decide: async () => {
+        throw refusal('no_enabled_server',
+          'no Crucible server is available to the queue: this machine has none, and none is '
+          + 'registered. Add one in Settings → Crucible Servers.');
+      },
+      band: async () => { throw new Error('the band must not be asked for'); },
+      roster: () => [],
+    });
+    assert.ok(!(threw instanceof PrepBandUnavailable),
+      'nothing is coming: parking would be a row waiting for ever on an act nobody is going '
+      + 'to perform');
+    assert.strictEqual(runtime.busyLineOf(threw), undefined, 'so the row must FAIL, not park');
+    assert.match(threw.message, /Add one in Settings/);
+  });
+
+  await check('A SERVER ANSWERS → the band comes back and the book is packed', async () => {
+    const { threw, got } = await askedFor({
+      decide: async () => ({ where: 'crucible', server: 'M1 Ultra', because: 'the caller named it' }),
+      band: async (server) => { assert.strictEqual(server, 'M1 Ultra'); return BAND; },
+      roster: () => ROSTER,
+    });
+    assert.strictEqual(threw, null, 'nothing is wrong when a machine answers');
+    assert.strictEqual(got.venue.server, 'M1 Ultra');
+    assert.strictEqual(got.band.ceilingChars, 700,
+      'and the WHOLE venue travels back, because prepareSession derives the session home from it');
+  });
+
+  await check('A VOICE NOBODY SERVES, while the servers ANSWERED → failed by name', async () => {
+    const { threw } = await askedFor({
+      decide: async () => ({ where: 'crucible', server: 'M1 Ultra', because: 'the caller named it' }),
+      band: async () => {
+        throw refusal('crucible_unknown_voice',
+          'crucible "M1 Ultra" has no voice "deathstalker" (known: belinda, tara).');
+      },
+      roster: () => ROSTER,
+    });
+    assert.ok(!(threw instanceof PrepBandUnavailable),
+      'the machine answered — waiting for it to change its mind about which voices it has is '
+      + 'waiting for nothing');
+    assert.strictEqual(runtime.busyLineOf(threw), undefined);
+    assert.match(threw.message, /no voice "deathstalker"/);
+  });
+
+  await check('THE CHOSEN MACHINE STOPS ANSWERING between the ping and the voices call → parked',
+    async () => {
+      const { threw } = await askedFor({
+        decide: async () => ({ where: 'crucible', server: 'M1 Ultra', because: 'the caller named it' }),
+        band: async () => {
+          throw refusal('crucible_unreachable',
+            'crucible "M1 Ultra" could not be reached: socket hang up. A render is not retried '
+            + 'here — start the server and queue the book again, or pick another one.');
+        },
+        roster: () => ROSTER,
+      });
+      assert.ok(threw instanceof PrepBandUnavailable);
+      assert.ok(!/queue the book again/.test(threw.busyLine),
+        'the render\'s advice is about a thing the queue is already doing — a parked row must '
+        + 'not tell its operator to do the queue\'s job');
+      assert.match(threw.busyLine, /M1 Ultra did not answer/);
+    });
+
+  await check('a HELD card still parks on the holder\'s own line, untouched', async () => {
+    const held = 'GPU busy: foundry, tts 62% done';
+    const { threw } = await askedFor({
+      decide: async () => ({ where: 'crucible', server: 'M1 Ultra', because: 'the caller named it' }),
+      band: async () => { throw refusal('crucible_server_busy', 'held.', { busyLine: held }); },
+      roster: () => ROSTER,
+    });
+    assert.strictEqual(runtime.busyLineOf(threw), held,
+      'a refusal that already names a holder takes the road every other module takes; '
+      + 're-dressing it would lose the holder and the progress');
+  });
+
+  await check('A PARKED PREPARE ROW GOES BACK TO QUEUED AND IS ASKED AGAIN', async () => {
+    /*
+     * The engine half, driven through the real pump, and it pins the MEASURED
+     * behaviour rather than the one the packet assumed (2026-09-19):
+     *
+     * A parked CPU step is re-admitted IMMEDIATELY. `settleStep` puts it back
+     * to `queued`, writes the sentence, and calls `pump()` in the same breath;
+     * the pump's CPU branch asks NOTHING about admission — `busyHolds` is read
+     * by `decideWaitFor`, which is only asked for a travelling step, and
+     * `admissionBlocked`/`admissionRecheckTimer` are armed only there. So by
+     * the time this check looks, the row is RUNNING again: there is no cool-off
+     * in the engine for a CPU park, which is exactly why the cadence lives in
+     * the module (`queue-steps/prepare.ts`, PARK_RECHECK_MS) — without it the
+     * main process would spin flat out on a park that costs nothing.
+     *
+     * What must hold: the row waits IN THE QUEUE carrying its sentence, never
+     * in Needs you, and the next pass really does ask again.
+     */
+    const m = narrationModules();
+    /*
+     * AN `any` ROW, and the reason is a finding of its own (2026-09-19):
+     * `settleStep` answers EVERY park with `holdServerBusy(job, line)`, which
+     * keys a 15 s cool-off by the ROW'S SERVER — so a prepare park, which is
+     * not about a card being held at all, marks that machine busy for every
+     * other book bound for it, quoting a sentence about a band. It is a no-op
+     * for an `any` row, which is what this check wants: the property under test
+     * is the PREPARE row being asked again, not the render behind it inheriting
+     * the prepare row's cool-off.
+     */
+    await freshEngine('prep-parks', [m.prep, m.tts, m.align, m.asm], {
+      routing: {
+        routing: () => ({ ranked: [{ name: 'pc', enabled: true }], serversOnThisMachine: [] }),
+        defaultWaitFor: () => 'any',
+        reach: async () => ({ reachable: true }),
+      },
+    });
+    const job = engine.enqueue(narrationRun('Every machine asleep'));
+    engine.start();
+    await settle();
+
+    const line = 'no Crucible server will state the chunk lengths for voice "deathstalker" — '
+      + 'M1 Ultra (unreachable: socket hang up). switched off: 3090 Ti.';
+    /*
+     * WATCHED, because the sentence does not survive the relaunch: `launch`
+     * resets `step.progress` to `{ percent: 0 }`, and the relaunch is the very
+     * next turn. So the row's admission hold is a state the queue passes
+     * THROUGH rather than one it rests in — which is why the module also keeps
+     * the line and reports it while it waits out the cool-off, or an operator
+     * would never see why a book is not moving.
+     */
+    const held = [];
+    const unwatch = engine.onQueueChanged((snap) => {
+      const s = snap.jobs.flatMap((j) => j.steps).find((x) => x.type === 'prepare');
+      if (s && s.status === 'queued' && s.progress.admissionHold) held.push(s.progress.admissionHold);
+    });
+    m.prep.runs[0].reject(Object.assign(new Error(line), { busyLine: line }));
+    await settle();
+    unwatch();
+
+    const step = stepsOf(job.id)[0];
+    assert.notStrictEqual(step.status, 'failed',
+      'a book nobody can pack for yet is waiting, not broken');
+    assert.strictEqual(step.status, 'running',
+      'the parked row is back in flight already — see the note above: a CPU park has no '
+      + 'cool-off in the engine, and the module is what paces the asking');
+    assert.strictEqual(step.error, undefined, 'and nothing about it is wrong');
+    assert.ok(held.some((sentence) => sentence.includes(line)),
+      `the parked row never said what would unblock it; it said: ${JSON.stringify(held)}`);
+    const failed = engine.snapshot().jobs.flatMap((j) => j.steps).filter((s) => s.status === 'failed');
+    assert.strictEqual(failed.length, 0, 'a parked book must not appear in Needs you');
+    assert.ok(m.prep.runs.length >= 2,
+      'the parked row was never asked again — a park that is never re-tried is a stall');
+
+    m.prep.runs[m.prep.runs.length - 1].resolve({
+      kind: 'prepared-session', sessionId: 'e1', sessionDir: '/s', processDir: '/s/p',
+      detail: { epubPath: '/a.epub' },
+    });
+    await settle();
+    assert.strictEqual(m.tts.runs.length, 1,
+      'and when a machine answers, the pass that follows preps and the render starts behind it');
   });
 
   console.log(`\n${passed} check(s) passed, ${failures.length} failed`);

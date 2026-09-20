@@ -547,13 +547,51 @@ What the fixers found on the way, and what is still owed:
 - **`/v1/activity` arrived in Crucible 0.5.0.** An older server answers 404; the
   poll returns null, the row is admitted and the 409 backstop takes over — logged
   once per machine per app run.
-- **Prepare packs to a SERVER's voice band** (`max_chars`, pace) and refuses by
-  name when no enabled server states one. A busy server still answers `/v1/voices`
-  in milliseconds, so this is not waiting for a free card — but with every server
-  off or asleep, Prepare FAILS rather than parks. Owen may want it to hold.
-- **A Prepare row cannot be cancelled** — `prepareSession` registers no handle;
-  `prepare.cancel()` is deliberately empty and says so. Owed: a handle by job id
-  the way the render keeps `crucibleCancel`.
+- ~~**Prepare packs to a SERVER's voice band** (`max_chars`, pace) and refuses by
+  name when no enabled server states one … with every server off or asleep,
+  Prepare FAILS rather than parks. Owen may want it to hold.~~ **DONE, same
+  night.** It parks. `electron/crucible/prep-band.ts` owns the line between the
+  two answers: not one enabled server answered, every server switched off, or
+  the chosen one stopped answering, are AVAILABILITY and the row waits with a
+  sentence naming every machine that was asked, what each said, and every
+  machine whose switch is off. No server registered at all, a voice the servers
+  answered and do not serve, an unmapped voice, a row with no cap or no pace —
+  those FAIL by name. The question is also asked FIRST now, before the narration
+  copy is cut, so a parked pass costs one ping sweep instead of a copy and a
+  scratch sweep. Keeper: `tools/test-queue-narration-plan.js` §7.
+- ~~**A Prepare row cannot be cancelled** — `prepareSession` registers no handle;
+  `prepare.cancel()` is deliberately empty and says so.~~ **DONE, same night.**
+  `electron/prep-handles.ts` is the registry the render's `crucibleCancel`
+  already had: keyed by the step's job id, it holds how to kill the spawn (a
+  process tree here, a guest process and its wsl.exe wrapper over there) and the
+  scratch session being written. A stop kills the spawn, WAITS for it, then
+  removes the session — a half-written `session-state.json` is exactly what a
+  resume and the clean-session sweep read a session back from — and names the
+  directory in the log if it cannot. `stopParallelConversion` asks it first, so
+  an INLINE prep (the CLI, the language-learning chain, a restored row) is
+  stoppable too. Keeper: `tools/test-queue-narration-plan.js` §6.
+
+Two things the park found on the way, neither patched (the engine is owned
+elsewhere this week):
+
+- **A parked CPU step has NO cool-off in the engine.** `settleStep` puts it back
+  to `queued` and calls `pump()`; the pump's CPU branch asks nothing about
+  admission (`busyHolds` is read by `decideWaitFor`, which is asked only for a
+  travelling step, and `admissionBlocked`/`admissionRecheckTimer` are armed only
+  there). So a parked prepare row relaunches on the very next turn — and a park
+  that costs nothing would spin the main process flat out. The cadence therefore
+  lives in the module (`queue-steps/prepare.ts`, `PARK_RECHECK_MS`, 15 s), and
+  the row holds its `local-work` slot while it waits.
+- **The park sentence does not survive the relaunch**, and for the same reason:
+  `launch` resets `step.progress` to `{ percent: 0 }`. `progress.admissionHold`
+  is a state the queue passes THROUGH for a CPU row rather than one it rests in,
+  so the module keeps the line and reports it while it waits.
+- **Every park records a server-wide busy hold**, including a CPU row's:
+  `settleStep` answers every park with `holdServerBusy(job, line)`, keyed by the
+  ROW's server. A prepare park is not about a card being held at all, so a named
+  row's park marks that machine busy for 15 s for every other book bound for it,
+  quoting a sentence about a chunk band. Harmless in practice today (if nothing
+  states the band, nothing is reachable either), wrong in principle.
 - **`TTS_GPU_PHASE_OVER` stayed.** `cacheSessionToProject` measured 458 s on
   *Letter to the American Church*, all after the card went quiet, so the render
   step hands its slot back the moment the last chunk lands and caches on the CPU

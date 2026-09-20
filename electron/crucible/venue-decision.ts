@@ -93,11 +93,26 @@ export type VenueDecisionCode =
  */
 export class VenueDecisionRefusal extends Error {
   readonly code: VenueDecisionCode;
+  /**
+   * EVERY SERVER THAT WAS PINGED AND WHAT EACH ONE SAID — the same list the
+   * message spells out, kept as data beside the prose.
+   *
+   * Added 2026-09-19 for the `prepare` row, which PARKS on `no_reachable_server`
+   * rather than failing (Owen: a book *"would just sit there in the queue until
+   * it's free"*) and has to compose a sentence of its own for a waiting row —
+   * "this row asks again on every queue pass" instead of "queue the book
+   * again". Reading the list back out of this message with a regex would be a
+   * second parser of a sentence written for a person; it is a list, so it
+   * travels as one. Empty for `crucible_server_not_named`, which pinged
+   * nothing.
+   */
+  readonly tried: readonly string[];
 
-  constructor(code: VenueDecisionCode, message: string) {
+  constructor(code: VenueDecisionCode, message: string, tried: readonly string[] = []) {
     super(message);
     this.name = 'VenueDecisionRefusal';
     this.code = code;
+    this.tried = tried;
   }
 }
 
@@ -165,5 +180,6 @@ export async function decideVenueAmongEnabled(
     `not one enabled Crucible server answered: ${tried.join('; ')}. Start one, or enable one `
       + 'in Settings → Crucible Servers — a server that is switched off is never tried. '
       + words.noneAnswered,
+    tried,
   );
 }
