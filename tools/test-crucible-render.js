@@ -391,6 +391,17 @@ function startFakeCrucible(behaviour, rows) {
         return undefined;
       }
 
+      if (behaviour === 'cancelled-elsewhere') {
+        /*
+         * SOMEBODY ELSE'S DELETE. An operator's `crucible api … job cancel`,
+         * another client taking the lane, the server settling its own card:
+         * the job ends `cancelled` and this app never asked for it.
+         */
+        frame('cancelled', { status: 'cancelled' });
+        res.end();
+        return undefined;
+      }
+
       if (behaviour === 'cancel') {
         // Hold the stream open until the DELETE arrives, then end `cancelled` —
         // which is exactly what a real Crucible does with a running job.
@@ -1101,6 +1112,12 @@ async function bridgeSeamChecks() {
  * card until somebody pressed Stop. The clock is `crucible/stream-stall.ts`;
  * here it is driven at milliseconds against a real socket that goes silent.
  */
+/** The in-flight ledger's rows for one server — what a sweep would act on. */
+function inFlightRowsFor(server) {
+  const ledger = require(path.join(REPO, 'dist', 'electron', 'crucible', 'in-flight-ledger.js'));
+  return ledger.readInFlightLedger().filter((r) => r.server === server);
+}
+
 async function wentQuietChecks() {
   const fake = await startFakeCrucible('goes-quiet');
   const server = registerFake(fake.url);
@@ -1138,6 +1155,60 @@ async function wentQuietChecks() {
     assert.ok(/silent for 150 ms/.test(thrown.transientLine), thrown.transientLine);
     assert.ok(/already downloaded are on disk/.test(thrown.message),
       'it says what survives — a resume asks only for the rest (R6)');
+  });
+
+  await check('PK15: and the stalled render SETTLES its own in-flight row', () => {
+    const rows = inFlightRowsFor(server);
+    assert.strictEqual(rows.length, 0,
+      'THE FINDING: the row came out only on a terminal frame, and a stall never sees one — so '
+      + 'the job this app had itself DELETEd stayed in the ledger for the rest of the session. '
+      + `Left behind: ${JSON.stringify(rows)}`);
+  });
+}
+
+/**
+ * A RENDER CANCELLED BY SOMEBODY ELSE IS A WAIT (PK15, LOW).
+ *
+ * `CrucibleRenderNotDone` carried neither `busyLine` nor `transient`, so a
+ * `cancelled` frame this app never asked for — an operator's
+ * `crucible api … job cancel`, another client taking the card — reddened the
+ * row and waited for a person to press Retry. Nobody misconfigured anything:
+ * somebody else took the card, which is the same wait every other form of that
+ * gets. Our OWN Stop keeps its path (`cancelChecks` above pins it).
+ */
+async function cancelledElsewhereChecks() {
+  const fake = await startFakeCrucible('cancelled-elsewhere');
+  const server = registerFake(fake.url);
+  const sentencesDir = freshSentencesDir();
+  let thrown = null;
+  try {
+    await render.runCrucibleRender({
+      server,
+      renderId: 'test-render-cancelled-elsewhere',
+      voice: 'mistborn',
+      language: 'en',
+      chunks: CHUNKS,
+      sentencesDir,
+      onLog: () => {},
+    });
+  } catch (err) {
+    thrown = err;
+  } finally {
+    await fake.close();
+  }
+
+  await check('PK15: a cancel this app did not ask for parks the row, and says whose it was', () => {
+    assert.ok(thrown !== null, 'a cancelled render has not finished');
+    assert.strictEqual(thrown.name, 'CrucibleRenderRefused',
+      `it is a refusal with a sentence, not a raw ${thrown.name}`);
+    assert.strictEqual(thrown.code, 'crucible_cancelled_elsewhere', thrown.message);
+    assert.strictEqual(thrown.transient, true,
+      'somebody else taking the card is a wait — the queue asks again on its next tick');
+    assert.ok(/was cancelled by somebody else/.test(thrown.transientLine), thrown.transientLine);
+    assert.deepStrictEqual(fake.state.cancelled, [],
+      'and this side sent no DELETE of its own for a job that had already ended');
+    assert.strictEqual(inFlightRowsFor(server).length, 0,
+      'the terminal frame settles the row, whoever caused it');
   });
 }
 
@@ -1276,6 +1347,7 @@ async function restartedServerChecks() {
   await leasedChecks();
   await cancelChecks();
   await wentQuietChecks();
+  await cancelledElsewhereChecks();
   await reconnectChecks();
   await restartedServerChecks();
   await refusalChecks();

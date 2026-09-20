@@ -75,7 +75,6 @@ import * as fsSync from 'fs';
 import type { CrucibleClient, JobEvent, RenderResult, WrittenArtifact } from '@crucible/client';
 import { readRenderResult } from '@crucible/client';
 import { CRUCIBLE_CLIENT_NAME, crucibleClientFor } from './servers';
-import { settleInFlight } from './in-flight-ledger';
 import {
   recordCrucibleChunkGuard,
   takeChunkGuards,
@@ -268,11 +267,19 @@ export async function downloadRenderArtifacts(
       }
       if (event.event === 'done' || event.event === 'failed' || event.event === 'cancelled') {
         terminal = event;
-        // The in-flight ledger's row for this render comes out HERE, at the one
-        // frame that means the server has stopped holding the card for it — not
-        // in a `catch`, where a dropped stream would delete the record of a job
-        // still rendering. Same rule, same reason, as `crucible/job.ts`.
-        settleInFlight(server, jobId);
+        /*
+         * THE IN-FLIGHT LEDGER IS NOT TOUCHED HERE (PK15, 2026-09-20).
+         *
+         * It used to be settled on this line — right about WHEN (only a
+         * terminal frame means the server has stopped holding the card) and
+         * wrong about WHO. This function is one attempt at a stream: the
+         * reconnect ladder runs it again, `reroll.ts` runs it for jobs that
+         * have no ledger row at all, and the endings that leave a row standing
+         * (a stall cancelled by name, a done frame whose artifacts would not
+         * download) never reach this line. The row belongs to the door that
+         * WROTE it — `render.ts` — and it reconciles every ending at one exit
+         * through `reconcileStreamEnding`.
+         */
       }
     }
   } catch (err) {

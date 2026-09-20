@@ -26,8 +26,8 @@
  *
  * The caller hands in one `attempt(resumeFrom)` — its own stream loop, opened
  * at the event id it has already acted on — and two questions it alone can
- * answer: where it is (`resumeFrom`) and whether the server has already said
- * the job ended (`sawTerminalFrame`). Everything else is here, once, because
+ * answer: where it is (`resumeFrom`) and whether this stream has anything left
+ * to give (`nothingLeftToRead`). Everything else is here, once, because
  * `job.ts` and `render.ts` would otherwise grow two ladders that drift.
  *
  * What is retried is ONLY the wire: {@link crucibleUnavailableCause}, the same
@@ -43,6 +43,11 @@
  * `<index>.flac` per frame through the SDK's write-sidecar-then-rename, so a
  * frame seen twice is a file written twice with identical bytes, never a
  * duplicate and never a half file (`render-artifacts.ts`).
+ *
+ * That idempotence is also what lets a reconnect resume BELOW where the caller
+ * got to: an artifact whose fetch failed is re-asked for by re-opening the
+ * stream under the frame that announced it (`artifacts-owed.ts` owns that
+ * number), and the files already on disk are written again with the same bytes.
  *
  * Two answers end the ladder early:
  *
@@ -203,11 +208,23 @@ export interface StreamReconnectOptions<T> {
    */
   readonly resumeFrom: () => number;
   /**
-   * Has the server already said this job ended? A throw AFTER the terminal
-   * frame (an artifact that would not write) is not a stream to re-open, and
-   * re-opening it would replay a finished job's tail for nothing.
+   * IS THERE ANYTHING LEFT FOR THIS STREAM TO GIVE US?
+   *
+   * True when the server has sent a terminal frame AND the caller has
+   * everything that frame announced — then a throw is a throw (a file that
+   * would not write to a full disk, a protocol disagreement) and re-opening the
+   * stream would replay a finished job's tail for nothing.
+   *
+   * It is deliberately NOT "did we see the terminal frame" (which is what this
+   * asked until PK15). `writeArtifactsTo` starts each download as its frame
+   * lands and raises the first failure at the next yield boundary, so a single
+   * `500` on one artifact of a job that RAN can arrive on either side of the
+   * `done` frame — and in both cases the right answer is to ask again, from
+   * below the frame that announced the file (`artifacts-owed.ts`). A ladder
+   * that stopped at the terminal frame threw an hour of finished GPU away over
+   * one failed fetch.
    */
-  readonly sawTerminalFrame: () => boolean;
+  readonly nothingLeftToRead: () => boolean;
   /**
    * The caller's cancel. An abort during a wait ends the ladder at once with
    * the error that started it — a person who pressed Stop is not waiting five
@@ -260,9 +277,9 @@ export async function withStreamReconnect<T>(options: StreamReconnectOptions<T>)
     try {
       return await options.attempt(options.resumeFrom());
     } catch (err) {
-      // The server said the job ended and THEN something went wrong — landing an
-      // artifact, reading a done frame. That is not a stream to re-open.
-      if (options.sawTerminalFrame()) throw err;
+      // The stream has nothing left to give: the job ended and everything it
+      // announced is here. A throw now is a throw, not a stream to re-open.
+      if (options.nothingLeftToRead()) throw err;
       if (isUnknownJobRefusal(err)) {
         throw new CrucibleStreamLost(
           options.server, options.jobId, 'job_unknown', err, attempts,

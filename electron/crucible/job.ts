@@ -108,7 +108,8 @@ import type {
   WrittenArtifact,
 } from '@crucible/client';
 import { CRUCIBLE_CLIENT_NAME, crucibleClientFor } from './servers';
-import { noteInFlightEvent, recordInFlight, settleInFlight } from './in-flight-ledger';
+import { noteInFlightEvent, recordInFlight } from './in-flight-ledger';
+import { artifactOnDiskIn, createArtifactsOwed } from './artifacts-owed';
 import {
   CrucibleStreamWentQuiet, describeStallInterval, withStreamStallClock,
 } from './stream-stall';
@@ -121,7 +122,7 @@ import { CrucibleStreamLost, withStreamReconnect } from './stream-reconnect';
  * the emit is CommonJS, so each reads the other's export off the namespace
  * object when the call is made — by which time both are fully initialised.
  */
-import { sweepCrucibleServerInFlight } from './in-flight-sweep';
+import { reconcileStreamEnding, type CrucibleStreamEnding } from './in-flight-sweep';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // The refusal vocabulary
@@ -684,6 +685,16 @@ export async function runCrucibleJob(options: RunCrucibleJobOptions): Promise<Cr
   // CANCELLATION IS A CANCEL, NOT A HANG-UP — see the header.
   let cancelAsked = false;
   /**
+   * THE DELETE WAS ANSWERED — a receipt, not an intention.
+   *
+   * It is what tells {@link reconcileStreamEnding} that this side's own cancel
+   * is why the stream ended, so the ledger row can be settled without a second
+   * DELETE. A cancel that was REFUSED or never came back leaves this false and
+   * the ending reads `lost`: the job may still be running, and the one-server
+   * sweep is exactly the right thing to send then.
+   */
+  let cancelAnswered = false;
+  /**
    * Ends the reconnect ladder, and nothing else.
    *
    * Aborted by `cancel()`, which is both the caller's Stop and the stall
@@ -699,11 +710,22 @@ export async function runCrucibleJob(options: RunCrucibleJobOptions): Promise<Cr
     log(`cancelling crucible "${server}" job ${jobId}`);
     try {
       const outcome = await client.cancel(jobId);
+      cancelAnswered = true;
       log(`crucible "${server}" job ${jobId} is ${outcome.status}`);
     } catch (err) {
       // A job that already ended cannot be cancelled (`job_not_cancellable`),
       // and that is the stream's news to deliver, not this handle's. Anything
       // else is logged: the stream is what decides how this job ended.
+      //
+      // BOTH OF THOSE COUNT AS ANSWERED. The question `cancelAnswered` exists
+      // to settle is "is that server still holding a card for this job", and a
+      // server that says the job is past cancelling, or that it has no such
+      // job, has answered it. Only a cancel that never got through leaves the
+      // reconciler with a job that may still be running.
+      if (err instanceof CrucibleRefused
+        && (err.status === 404 || err.code === 'job_not_cancellable' || err.code === 'not_found')) {
+        cancelAnswered = true;
+      }
       const described = describeCrucibleJobRefusal(err, server, `cancelling job ${jobId}`);
       log(`cancel of crucible "${server}" job ${jobId} was not accepted: `
         + `${described instanceof Error ? described.message : String(described)}`);
@@ -718,6 +740,17 @@ export async function runCrucibleJob(options: RunCrucibleJobOptions): Promise<Cr
 
   let terminal: JobEvent | null = null;
   const files = new Map<string, WrittenArtifact>();
+  /**
+   * WHAT THE SERVER HAS ANNOUNCED AND THIS SIDE HAS NOT GOT — `artifacts-owed.ts`.
+   *
+   * One failed artifact fetch used to throw out of the iteration and be read as
+   * a lost job: the sweep DELETEd a job that had finished and the whole run was
+   * asked for again. What it actually is is a download to retry, and this is
+   * the tally that says which ones and from which event id.
+   */
+  const owed = createArtifactsOwed(
+    options.artifactsTo === undefined ? undefined : artifactOnDiskIn(options.artifactsTo),
+  );
   const seeEvent = (event: JobEvent): void => {
     if (event.id > lastEventId) {
       lastEventId = event.id;
@@ -744,13 +777,22 @@ export async function runCrucibleJob(options: RunCrucibleJobOptions): Promise<Cr
         message: event.data.message,
         extra: event.data.extra,
       });
+    } else if (event.event === 'artifact') {
+      owed.announced(event.data.name, event.id);
     } else if (event.event === 'done' || event.event === 'failed' || event.event === 'cancelled') {
       terminal = event;
-      // HERE and not in a `finally`: the ledger records a job that is RUNNING
-      // on a server, and a broken event stream is not a job that stopped. Only
-      // a terminal frame is the server saying this job is over, so only a
-      // terminal frame takes the row out.
-      settleInFlight(server, jobId);
+      // The `done` frame's list is the authoritative set: a name in it that
+      // produced no `artifact` frame is still a file this side is owed.
+      if (event.event === 'done' && options.artifactsTo !== undefined) {
+        owed.announcedByDone((event.data as DoneData).artifacts ?? []);
+      }
+      // THE LEDGER ROW IS NOT SETTLED HERE. Every ending of this stream — a
+      // terminal frame, a cancel this side sent, a server that forgot the job,
+      // a ladder that ran out — reconciles at ONE exit below
+      // (`reconcileStreamEnding`). It used to be settled on this line and
+      // swept in the `catch`, which is two reconcilers for one question, and a
+      // stall fell straight between them: cancelled by name, then thrown, with
+      // its row left standing for the session.
     }
   };
 
@@ -767,6 +809,7 @@ export async function runCrucibleJob(options: RunCrucibleJobOptions): Promise<Cr
         beat();
         if (write.kind === 'written') {
           files.set(write.written.name, write.written);
+          owed.landed(write.written.name);
           continue;
         }
         seeEvent(write.event);
@@ -779,6 +822,13 @@ export async function runCrucibleJob(options: RunCrucibleJobOptions): Promise<Cr
     }
   };
 
+  /**
+   * WHAT ENDED THE STREAM, kept rather than thrown straight out — so that the
+   * ledger is reconciled at ONE exit (below) whichever way it ended, including
+   * the endings that are not throws at all (a `failed` terminal frame is a job
+   * that ran, and its row must come out too).
+   */
+  let streamError: unknown = null;
   try {
     // ONE STALL CLOCK OVER THE STREAM — `stream-stall.ts`, shared with
     // `render.ts`. `beat()` on every frame INCLUDING a written artifact: a
@@ -800,8 +850,11 @@ export async function runCrucibleJob(options: RunCrucibleJobOptions): Promise<Cr
       consume: (beat) => withStreamReconnect({
         server,
         jobId,
-        resumeFrom: () => lastEventId,
-        sawTerminalFrame: () => (terminal as JobEvent | null) !== null,
+        // BELOW `lastEventId` WHEN AN ARTIFACT IS STILL OWED: the frame that
+        // announced the file has to be replayed for the SDK to fetch it again.
+        // `artifacts-owed.ts` owns that arithmetic and its reasons.
+        resumeFrom: () => owed.resumeFrom(lastEventId),
+        nothingLeftToRead: () => (terminal as JobEvent | null) !== null && owed.owed().length === 0,
         signal: stopReconnecting.signal,
         ...(options.reconnect?.delaysMs === undefined ? {} : { delaysMs: options.reconnect.delaysMs }),
         onLog: log,
@@ -809,6 +862,48 @@ export async function runCrucibleJob(options: RunCrucibleJobOptions): Promise<Cr
       }),
     });
   } catch (err) {
+    streamError = err;
+  } finally {
+    options.signal?.removeEventListener('abort', onAbort);
+  }
+
+  /*
+   * ── THE ONE EXIT ─────────────────────────────────────────────────────────
+   *
+   * Every ending of this stream reconciles the ledger HERE, through the one
+   * rule in `in-flight-sweep.ts`. Two exits is what PK15 found: the terminal
+   * frame settled the row from inside the loop and the `catch` swept the
+   * server, and a stall — cancelled BY NAME and then thrown — matched neither,
+   * so the job this app had itself DELETEd stayed in `crucible-in-flight.json`
+   * for the rest of the session.
+   */
+  const lost = streamError instanceof CrucibleStreamLost ? streamError : null;
+  const sawTerminal = (terminal as JobEvent | null) !== null;
+  const ending: CrucibleStreamEnding = sawTerminal && owed.owed().length === 0 ? 'terminal'
+    : sawTerminal ? 'artifacts-owed'
+      : lost?.reason === 'job_unknown' ? 'gone'
+        : cancelAsked && cancelAnswered ? 'cancelled'
+          : 'lost';
+  await reconcileStreamEnding({
+    server,
+    jobId,
+    ending,
+    reason: streamError === null
+      ? `the ${type} job ended`
+      : ending === 'cancelled'
+        ? `this side cancelled the ${type} job and the server answered`
+        : ending === 'gone'
+        ? `crucible "${server}" has no such ${type} job any more — it restarted`
+        : ending === 'artifacts-owed'
+          ? `the ${type} job is done and ${owed.describe()}`
+          : lost === null
+            ? `the ${type} job's event stream ended with no terminal frame`
+            : `the ${type} job's event stream could not be re-opened after ${lost.attempts} attempt(s)`,
+    log: (line) => log(line),
+  });
+
+  if (streamError !== null) {
+    const err = streamError;
     if (err instanceof CrucibleStreamWentQuiet) {
       throw new CrucibleJobRefused(
         'crucible_went_quiet', server,
@@ -818,51 +913,22 @@ export async function runCrucibleJob(options: RunCrucibleJobOptions): Promise<Cr
       );
     }
     /*
-     * Q7 — OUR OWN ORPHAN IS RECONCILED BEFORE THE REFUSAL IS THROWN.
+     * THE JOB RAN AND ITS OUTPUT IS STILL OVER THERE (PK15).
      *
-     * A stream that drops mid-job leaves the ledger row standing (right: a
-     * broken stream is not a job that stopped) and fails the step — but no
-     * DELETE was ever sent, so the server is STILL RENDERING. The queue then
-     * admits the next book to that server, which 409s on our own orphan's line
-     * and parks every 15 s until the app restarts and the startup sweep finds
-     * it. Nothing in the running process reconciled it.
-     *
-     * So the one-server sweep runs HERE, on the venue this job was on: cancel
-     * what this app has recorded there, confirm the lane, unload only if
-     * nothing at all holds the card. It is safe to sweep the whole server
-     * rather than this one job because a Crucible takes one job at a time on
-     * the lane — anything else of ours there is queued behind a job that is
-     * about to be cancelled, and it is this app's to cancel either way.
-     *
-     * THE PREDICATE IS "NO TERMINAL FRAME", not a list of error classes. What
-     * makes a job an orphan is that the SERVER never said it ended — whether
-     * the stream reset (`CrucibleUnreachable`), answered 5xx, or violated the
-     * protocol. A throw AFTER the terminal frame (an artifact that would not
-     * write) is a job that is over, and sweeping there would DELETE nothing
-     * and poll a server for no reason.
-     *
-     * It never throws (the sweep answers, by design) and it is awaited rather
-     * than voided: the next admission must not race the DELETE.
+     * The server sent `done` and the ladder could not get the last file(s)
+     * down. That is a TRANSPORT fault on finished work: nothing was cancelled,
+     * the ledger row was kept by the reconciler above, and the sentence says
+     * what is missing so a person reading the row knows a retry ATTACHES
+     * rather than asking for the hour of GPU again.
      */
-    /*
-     * AND SINCE 2026-09-20, THE SWEEP IS THE LAST RESORT RATHER THAN THE FIRST
-     * ANSWER (S13). The ladder above has already spent its five minutes trying
-     * to re-open this stream; only a server that never came back reaches here
-     * with a job that may still be running.
-     *
-     * The one case that must NOT sweep is `job_unknown`: the server answered,
-     * and what it said is that it has no such job. Cancelling a job a restarted
-     * server never heard of DELETEs nothing and polls it for no reason.
-     */
-    const lost = err instanceof CrucibleStreamLost ? err : null;
-    if ((terminal as JobEvent | null) === null && (lost === null || lost.jobMayStillRun)) {
-      await sweepCrucibleServerInFlight({
-        server,
-        reason: lost === null
-          ? `the ${type} job's event stream ended with no terminal frame`
-          : `the ${type} job's event stream could not be re-opened after ${lost.attempts} attempt(s)`,
-        log: (line) => log(line),
-      });
+    if (ending === 'artifacts-owed') {
+      throw new CrucibleJobRefused(
+        'crucible_artifacts_incomplete', server,
+        `${verb} (${jobId}) finished on crucible "${server}" and ${owed.describe()}. `
+        + 'The job is done and was NOT cancelled; the download is what failed.',
+        undefined,
+        crucibleTransientLine(server, `${owed.owed().length} artifact(s) of job ${jobId} would not download`),
+      );
     }
     if (lost?.reason === 'job_unknown') {
       // A WAIT, NOT A RED ROW. The server restarted; the work is gone with it
@@ -877,8 +943,6 @@ export async function runCrucibleJob(options: RunCrucibleJobOptions): Promise<Cr
       );
     }
     throw describeCrucibleJobRefusal(lost === null ? err : lost.lastError, server, `${verb}'s events`);
-  } finally {
-    options.signal?.removeEventListener('abort', onAbort);
   }
 
   // Narrowed through a local: TypeScript sees `terminal` assigned only inside a

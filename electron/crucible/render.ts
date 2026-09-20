@@ -74,14 +74,17 @@ import {
 import type { RenderChunk, RenderResult } from '@crucible/client';
 import { CRUCIBLE_CLIENT_NAME, crucibleClientFor } from './servers';
 import { noteInFlightEvent, recordInFlight } from './in-flight-ledger';
+import { artifactOnDiskIn, createArtifactsOwed } from './artifacts-owed';
 import { crucibleTransientLine } from './job';
 import { transportFailureCause } from './transport-failure';
 import {
   CrucibleStreamWentQuiet, describeStallInterval, withStreamStallClock,
 } from './stream-stall';
-import { sweepCrucibleServerInFlight } from './in-flight-sweep';
+import { reconcileStreamEnding, type CrucibleStreamEnding } from './in-flight-sweep';
 import { renderSessionDirOf } from '../narrator-paths';
-import { downloadRenderArtifacts, type RenderArtifactsOutcome } from './render-artifacts';
+import {
+  CrucibleRenderNotDone, downloadRenderArtifacts, type RenderArtifactsOutcome,
+} from './render-artifacts';
 import { CrucibleStreamLost, withStreamReconnect } from './stream-reconnect';
 import {
   crucibleVoiceBand, describeVenueBand, refuseChunksOverVenueCap, renderBandFor,
@@ -828,6 +831,16 @@ export async function runCrucibleRender(
   // quitting must not depend on another machine and stopping must not lie.
   let cancelled = false;
   /**
+   * THE DELETE WAS ANSWERED — a receipt, not an intention.
+   *
+   * What tells the reconciler below that this side's own cancel is why the
+   * stream ended, so the ledger row is settled without a second DELETE. A
+   * cancel that never got through leaves this false and the ending reads
+   * `lost`: the render may still be running over there, and the one-server
+   * sweep is exactly the right thing to send then.
+   */
+  let cancelAnswered = false;
+  /**
    * Aborted by {@link cancel}, and read by the reconnect ladder alone.
    *
    * A person who pressed Stop is not waiting five minutes for a server to come
@@ -851,6 +864,7 @@ export async function runCrucibleRender(
     stopReconnecting.abort();
     log(`cancelling crucible "${server}" job ${jobId}`);
     const outcome = await client.cancel(jobId);
+    cancelAnswered = true;
     log(`crucible "${server}" job ${jobId} is ${outcome.status}; waiting for it to stop writing`);
     await downloaderHasStopped;
     log(`crucible "${server}" job ${jobId} has stopped: ${path.basename(sentencesDir)} is settled`);
@@ -871,6 +885,7 @@ export async function runCrucibleRender(
     // catch has dropped them.
     stopReconnecting.abort();
     const answered = await client.cancel(jobId);
+    cancelAnswered = true;
     log(`crucible "${server}" job ${jobId} is ${answered.status} after going quiet`);
   };
 
@@ -882,6 +897,15 @@ export async function runCrucibleRender(
    * last artifact would not write.
    */
   let sawTerminalFrame = false;
+  /**
+   * WHAT THE SERVER ANNOUNCED AND IS NOT ON DISK YET — `artifacts-owed.ts`.
+   *
+   * A single failed `<index>.flac` fetch used to throw out of the downloader
+   * and be read as a lost render: the sweep DELETEd a job that had finished
+   * and the book was rendered again from chunk one. It is a download to retry,
+   * and this tally says which ones and from which event id.
+   */
+  const owed = createArtifactsOwed(artifactOnDiskIn(sentencesDir));
   /**
    * One run of the downloader, opened above the event this call has already
    * acted on — `resumeFrom` is `lastEventId`, which starts at the attach point
@@ -907,6 +931,7 @@ export async function runCrucibleRender(
       // only thing happening while it happens, and a clock that only counted
       // event frames would cut a render that was working.
       beat();
+      owed.landed(written.name);
       downloaded += 1;
       // `<index>.flac` is the artifact's whole name; the sidecar is
       // `<index>.flac.provenance.json` and is never announced as an artifact.
@@ -930,8 +955,15 @@ export async function runCrucibleRender(
         // hard kill it exists for.
         noteInFlightEvent(server, jobId, lastEventId);
       }
+      if (event.event === 'artifact') owed.announced(event.data.name, event.id);
       if (event.event === 'done' || event.event === 'failed' || event.event === 'cancelled') {
         sawTerminalFrame = true;
+        // The `done` frame's list is the authoritative set: a name in it that
+        // produced no `artifact` frame is still a file this side is owed.
+        if (event.event === 'done') {
+          const announced = (event.data as { readonly artifacts?: readonly string[] }).artifacts;
+          if (announced !== undefined) owed.announcedByDone(announced);
+        }
       }
       if (event.event === 'warming') {
         log(`crucible "${server}": ${event.data.message}`);
@@ -963,8 +995,10 @@ export async function runCrucibleRender(
   const followTheStream = (beat: () => void): Promise<RenderArtifactsOutcome> => withStreamReconnect({
     server,
     jobId,
-    resumeFrom: () => lastEventId,
-    sawTerminalFrame: () => sawTerminalFrame,
+    // BELOW `lastEventId` WHEN A CHUNK IS STILL OWED: the frame that announced
+    // the file has to be replayed for the SDK to fetch it again.
+    resumeFrom: () => owed.resumeFrom(lastEventId),
+    nothingLeftToRead: () => sawTerminalFrame && owed.owed().length === 0,
     signal: stopReconnecting.signal,
     ...(options.reconnect?.delaysMs === undefined ? {} : { delaysMs: options.reconnect.delaysMs }),
     onLog: log,
@@ -979,7 +1013,13 @@ export async function runCrucibleRender(
     downloaderStopped();
   });
 
-  let outcome: RenderArtifactsOutcome;
+  let outcome: RenderArtifactsOutcome | null = null;
+  /**
+   * WHAT ENDED THE STREAM, kept rather than thrown straight out — so the ledger
+   * is reconciled at ONE exit below whichever way it ended. See `job.ts`, which
+   * carries the same shape and the same reason.
+   */
+  let streamError: unknown = null;
   try {
     // ONE STALL CLOCK OVER THE STREAM — `stream-stall.ts`, the same one
     // `job.ts` runs. A wedged server holds this socket open forever otherwise,
@@ -994,6 +1034,44 @@ export async function runCrucibleRender(
       consume: followTheStream,
     });
   } catch (err) {
+    streamError = err;
+  }
+
+  /*
+   * ── THE ONE EXIT ─────────────────────────────────────────────────────────
+   *
+   * Every ending of this stream reconciles the ledger HERE, through the one
+   * rule in `in-flight-sweep.ts` — the terminal frame no longer settles the
+   * row from inside `downloadRenderArtifacts` and the `catch` no longer sweeps
+   * on its own. Two reconcilers for one question is what left a STALLED render
+   * — cancelled by name, then thrown — on the ledger for the session (PK15).
+   */
+  const lost = streamError instanceof CrucibleStreamLost ? streamError : null;
+  const ending: CrucibleStreamEnding = sawTerminalFrame && owed.owed().length === 0 ? 'terminal'
+    : sawTerminalFrame ? 'artifacts-owed'
+      : lost?.reason === 'job_unknown' ? 'gone'
+        : cancelled && cancelAnswered ? 'cancelled'
+          : 'lost';
+  await reconcileStreamEnding({
+    server,
+    jobId,
+    ending,
+    reason: streamError === null
+      ? 'the render ended'
+      : ending === 'cancelled'
+        ? 'this side cancelled the render and the server answered'
+        : ending === 'gone'
+          ? `crucible "${server}" has no such render job any more — it restarted`
+          : ending === 'artifacts-owed'
+            ? `the render is done and ${owed.describe()}`
+            : lost === null
+            ? 'the render\'s event stream ended with no terminal frame'
+            : `the render's event stream could not be re-opened after ${lost.attempts} attempt(s)`,
+    log: (line) => log(line),
+  });
+
+  if (streamError !== null) {
+    const err: unknown = streamError;
     // THE RENDER IS OVER, whichever arm below answers — so the guard ledger for
     // it is dropped HERE, once. The downloader kept its verdicts across the
     // reconnects (`resumable: true`), and this is the one place that knows
@@ -1009,33 +1087,47 @@ export async function runCrucibleRender(
       );
     }
     /*
-     * Q7 — OUR OWN ORPHAN IS RECONCILED BEFORE THE REFUSAL IS THROWN.
+     * A RENDER THAT ENDED `cancelled` AND THIS APP DID NOT ASK (PK15, LOW).
      *
-     * A dropped stream keeps the ledger row (right) and fails the step, but no
-     * DELETE was sent: the server is STILL RENDERING. The queue then admits the
-     * next book there, 409s on our own orphan's line and parks every 15 s until
-     * the app restarts. The one-server sweep cancels what this app has recorded
-     * on that venue, confirms the lane, and unloads only if nothing holds the
-     * card. Gated on the SERVER never having said the job ended — a throw after
-     * the terminal frame is a finished job, and sweeping it would DELETE
-     * nothing and poll for no reason.
+     * `CrucibleRenderNotDone` carries neither `busyLine` nor `transient`, so a
+     * cancel from anywhere but this app's own Stop — an operator's
+     * `crucible api … job cancel`, another client taking the card, a server
+     * settling its lane — reddened the row and waited for a person to press
+     * Retry. Nobody misconfigured anything: somebody else took the card, and a
+     * row that waits and asks again is the answer Owen's ruling gives for
+     * every other form of that.
+     *
+     * OUR OWN Stop keeps its path exactly: `cancelled` is true, this arm does
+     * not fire, and the queue tells a stop from a failure by its own
+     * `stopRequested` rather than by anything in the error.
      */
+    if (err instanceof CrucibleRenderNotDone && err.terminalEvent === 'cancelled' && !cancelled) {
+      throw new CrucibleRenderRefused(
+        'crucible_cancelled_elsewhere',
+        `crucible "${server}" cancelled this render (job ${jobId}) and it was not this app that `
+        + `asked. The ${downloaded} chunk(s) already downloaded are on disk and a resume asks only `
+        + 'for the rest.',
+        undefined,
+        crucibleTransientLine(server, `job ${jobId} was cancelled by somebody else`),
+      );
+    }
     /*
-     * AND SINCE 2026-09-20, THE SWEEP IS THE LAST RESORT (S13). The ladder has
-     * already spent its budget re-opening this stream; only a server that never
-     * answered again reaches here with a render that may still be running.
-     * `job_unknown` is the one answer that must NOT sweep — the server told us
-     * it has no such job, so there is nothing to DELETE.
+     * THE RENDER RAN AND ITS AUDIO IS STILL OVER THERE (PK15).
+     *
+     * The server sent `done` and the ladder could not get the last chunk(s)
+     * down. A transport fault on finished work: nothing was cancelled, the
+     * ledger row was kept by the reconciler above, and a retry attaches to
+     * this job rather than asking for the hour of GPU again.
      */
-    const lost = err instanceof CrucibleStreamLost ? err : null;
-    if (!sawTerminalFrame && (lost === null || lost.jobMayStillRun)) {
-      await sweepCrucibleServerInFlight({
-        server,
-        reason: lost === null
-          ? 'the render\'s event stream ended with no terminal frame'
-          : `the render's event stream could not be re-opened after ${lost.attempts} attempt(s)`,
-        log: (line) => log(line),
-      });
+    if (ending === 'artifacts-owed') {
+      throw new CrucibleRenderRefused(
+        'crucible_artifacts_incomplete',
+        `this render (job ${jobId}) finished on crucible "${server}" and ${owed.describe()}. `
+        + `The job is done and was NOT cancelled; the download is what failed. ${downloaded} `
+        + 'chunk(s) are on disk.',
+        undefined,
+        crucibleTransientLine(server, `${owed.owed().length} chunk(s) of job ${jobId} would not download`),
+      );
     }
     if (lost?.reason === 'job_unknown') {
       // A WAIT, NOT A RED ROW: the server restarted. The chunks already on disk
@@ -1053,6 +1145,15 @@ export async function runCrucibleRender(
     throw describeCrucibleRefusal(lost === null ? err : lost.lastError, server);
   }
 
+  if (outcome === null) {
+    // Unreachable: the stall clock resolves with the downloader's outcome or
+    // throws, and every throw was answered above. Stated rather than assumed,
+    // because the alternative is reading nothing as a finished render.
+    throw new CrucibleRenderRefused(
+      'crucible_protocol',
+      `the event stream for crucible "${server}" job ${jobId} ended without an outcome`,
+    );
+  }
   if (outcome.result.failed.length > 0) {
     log(`crucible job ${jobId}: ${outcome.result.failed.length} chunk(s) produced no audio — `
       + outcome.result.failed.slice(0, 8).map((f) => `${f.index}: ${f.message}`).join('; '));

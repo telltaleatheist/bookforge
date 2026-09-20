@@ -40,6 +40,9 @@
  *     timeout, and the resume that would have saved it was unwired.
  * 12. A SERVER THAT RESTARTED (`unknown_job`) is a WAIT with nothing to cancel;
  *     a server that never comes back is the sweep, as a LAST resort.
+ * 13. EVERY ENDING RECONCILES THE SAME WAY (PK15): a stall cancels by name and
+ *     SETTLES its own ledger row, and one failed artifact fetch is a download
+ *     to retry rather than a job to throw away and DELETE.
  *
  * No GPU, no model, no network beyond 127.0.0.1.
  */
@@ -886,6 +889,231 @@ async function aRestartedServerIsAWaitWithNothingToCancel() {
   });
 }
 
+/**
+ * 14. PK15 — A STALL RECONCILES ITS OWN LEDGER ROW.
+ *
+ * The stall clock cancels the job BY NAME, which is right, and then the door
+ * threw `crucible_went_quiet` — before the arm that reconciles the ledger. So
+ * the one job this app had itself DELETEd stayed in `crucible-in-flight.json`
+ * for the rest of the session: the quit sweep would DELETE it again at some
+ * later hour, and until then the row said a card was held that was not.
+ *
+ * Every ending of a stream now goes through one exit (`reconcileStreamEnding`).
+ * A cancel this side sent and the server ANSWERED settles the row where it is —
+ * no second DELETE, because a client that cancels a job twice is arguing with
+ * itself.
+ */
+async function aStallSettlesItsOwnLedgerRow() {
+  const fake = await startFakeCrucible(async (req, res, ctx) => {
+    const { state, send, sseWriter, url } = ctx;
+    if (url.pathname === '/v1/jobs' && req.method === 'POST') {
+      const body = JSON.parse((await ctx.readBody(req)).toString('utf-8'));
+      state.submitted.push(body);
+      const id = ctx.newJobId();
+      state.jobs.set(id, { body });
+      send(res, 200, { job_id: id });
+      return true;
+    }
+    if (/^\/v1\/jobs\/[^/]+\/events$/.test(url.pathname) && req.method === 'GET') {
+      // A SOCKET THAT IS OPEN AND MUTE — the wedged-worker shape C2 exists for.
+      const sse = sseWriter(req, res);
+      sse.frame('queued', { position: null });
+      sse.frame('progress', { fraction: 0.4, message: 'rendering', stage: 'tts' });
+      await new Promise((done) => req.on('close', done));
+      return true;
+    }
+    return false;
+  });
+  const server = registerFake(fake.url);
+  const outDir = freshDir('stall');
+  let thrown = null;
+  try {
+    await job.runCrucibleJob({
+      server, type: 'tts', model: 'deathstalker', params: {}, inputs: {},
+      artifactsTo: outDir, localId: 'step_stall_1',
+      stallClock: { stallMs: 120, graceMs: 120 },
+      onLog: () => {},
+    });
+  } catch (err) {
+    thrown = err;
+  } finally {
+    await fake.close();
+  }
+
+  await check('PK15: a stall is cancelled by name ONCE and its ledger row is settled', () => {
+    assert.ok(thrown !== null && thrown.code === 'crucible_went_quiet',
+      `a silent server is cancelled by name: ${thrown && thrown.code}`);
+    assert.strictEqual(thrown.transient, true, 'and it parks the row — nobody misconfigured anything');
+    assert.strictEqual(fake.state.cancelled.length, 1,
+      `exactly one DELETE: ${JSON.stringify(fake.state.cancelled)}`);
+    assert.strictEqual(ledgerRowsFor(server).length, 0,
+      'THE FINDING: `settleInFlight` fired only on a terminal frame, and a stalled stream never '
+      + 'sees one — so the job this app cancelled ITSELF stayed on the ledger for the session.');
+  });
+}
+
+/**
+ * 15. PK15 — ONE 500 ON ONE ARTIFACT DOES NOT THROW AWAY A JOB THAT RAN.
+ *
+ * `writeArtifactsTo` begins each download as its frame lands and raises the
+ * first failure at the next yield boundary, so a single failed fetch threw out
+ * of the iteration — usually before the `done` frame had been read. The door
+ * had no way to tell that from a lost stream: Q7 swept the server, DELETEd a
+ * job that had FINISHED, and the caller re-ran the whole thing.
+ *
+ * The fetch is transport, and the work is already done. So it is asked for
+ * again on the reconnect ladder, from BELOW the frame that announced it
+ * (`artifacts-owed.ts`), and nothing is cancelled.
+ */
+async function aFailedArtifactFetchIsRetriedNotDiscarded(alwaysFail) {
+  let fetches = 0;
+  const fake = await startFakeCrucible(async (req, res, ctx) => {
+    const { state, send, sseWriter, url } = ctx;
+    if (url.pathname === '/v1/jobs' && req.method === 'POST') {
+      const body = JSON.parse((await ctx.readBody(req)).toString('utf-8'));
+      state.submitted.push(body);
+      const id = ctx.newJobId();
+      state.jobs.set(id, { body });
+      send(res, 200, { job_id: id });
+      return true;
+    }
+    if (/^\/v1\/jobs\/[^/]+\/events$/.test(url.pathname) && req.method === 'GET') {
+      // The SAME history every time, ids and all — a finished job's events stay
+      // readable on a real Crucible, which is what makes a retry possible.
+      const sse = sseWriter(req, res);
+      sse.frame('queued', { position: null });
+      sse.frame('warming', { message: 'loading qwen3-aligner' });
+      sse.frame('artifact', { name: 'alignment.json' });
+      sse.frame('done', { artifacts: ['alignment.json'] });
+      sse.end();
+      return true;
+    }
+    const artifact = /^\/v1\/jobs\/([^/]+)\/artifacts\/(.+)$/.exec(url.pathname);
+    if (artifact && req.method === 'GET') {
+      const name = decodeURIComponent(artifact[2]);
+      fetches += 1;
+      if (alwaysFail || fetches <= 1) {
+        send(res, 500, { error: { code: 'artifact_unavailable', message: `${name} could not be read back` } });
+        return true;
+      }
+      if (name.endsWith('.provenance.json')) {
+        send(res, 200, provenanceFor(name.replace(/\.provenance\.json$/, ''), 'align', 'qwen3-aligner'));
+        return true;
+      }
+      const bytes = Buffer.from(`artifact:${name}`);
+      res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Length': bytes.length });
+      res.end(bytes);
+      return true;
+    }
+    return false;
+  });
+  const server = registerFake(fake.url);
+  const outDir = freshDir('artifact-500');
+  const lines = [];
+  let outcome = null;
+  let thrown = null;
+  try {
+    outcome = await job.runCrucibleJob({
+      server, type: 'align', model: 'qwen3-aligner', params: {}, inputs: {},
+      artifactsTo: outDir, localId: 'step_artifact_1',
+      onLog: (line) => lines.push(line),
+      reconnect: { delaysMs: [10, 10] },
+    });
+  } catch (err) {
+    thrown = err;
+  } finally {
+    await fake.close();
+  }
+  return { fake, server, outDir, lines, outcome, thrown };
+}
+
+async function artifactRetryChecks() {
+  const once = await aFailedArtifactFetchIsRetriedNotDiscarded(false);
+  await check('PK15: one 500 on one artifact is retried and the job lands, with no DELETE', () => {
+    assert.strictEqual(once.thrown, null,
+      `a failed fetch of a finished job's output is not a failed job: ${once.thrown && once.thrown.message}`);
+    assert.strictEqual(fs.readFileSync(path.join(once.outDir, 'alignment.json')).toString(),
+      'artifact:alignment.json', 'and the file is on disk — a retry that lands nothing is no retry');
+    assert.deepStrictEqual(once.fake.state.cancelled, [],
+      'THE FINDING: Q7 DELETEd a job whose own `done` frame had been sent, because the throw came '
+      + 'before the frame was read');
+    assert.ok(once.fake.state.eventsRequests.some((r) => r.lastEventId < 3),
+      'the re-open resumed BELOW the artifact frame, so the server replays it and the SDK fetches '
+      + `the file again. Saw ${JSON.stringify(once.fake.state.eventsRequests)}`);
+    assert.strictEqual(ledgerRowsFor(once.server).length, 0, 'and the row is settled');
+  });
+
+  const never = await aFailedArtifactFetchIsRetriedNotDiscarded(true);
+  await check('PK15: an artifact that never downloads KEEPS the ledger row and parks, transient', () => {
+    assert.ok(never.thrown !== null, 'a job whose output never arrived has not succeeded');
+    assert.strictEqual(never.thrown.code, 'crucible_artifacts_incomplete',
+      `named for what actually happened: ${never.thrown.code} — ${never.thrown.message}`);
+    assert.strictEqual(never.thrown.transient, true,
+      'a server that will not serve a file is a wait, not a repair somebody can make');
+    assert.deepStrictEqual(never.fake.state.cancelled, [],
+      'AND NOTHING IS CANCELLED: the terminal frame is the fact. A DELETE here would throw away '
+      + 'the very output that is being asked for');
+    const rows = ledgerRowsFor(never.server);
+    assert.strictEqual(rows.length, 1,
+      'and the row STAYS, with its resume point, so a later attempt attaches to this job and '
+      + 'fetches the rest instead of asking for the work again');
+    assert.ok(rows[0].lastEventId >= 1, `carrying where to resume: ${JSON.stringify(rows[0])}`);
+  });
+}
+
+/**
+ * 16. PK15 — THE RESUME ARITHMETIC, READ WITHOUT RUNNING A RENDER.
+ *
+ * `artifacts-owed.ts` decides the one number a retry depends on: how far BACK
+ * the stream must be re-opened for a file that did not download to be replayed.
+ * Pure, so it is measured here rather than inferred from a server's behaviour.
+ */
+async function artifactsOwedArithmetic() {
+  const owedModule = require(path.join(REPO, 'dist', 'electron', 'crucible', 'artifacts-owed.js'));
+
+  await check('PK15: nothing owed resumes where this side got to', () => {
+    const owed = owedModule.createArtifactsOwed();
+    owed.announced('a.flac', 4);
+    owed.landed('a.flac');
+    assert.deepStrictEqual(owed.owed(), []);
+    assert.strictEqual(owed.resumeFrom(9), 9);
+  });
+
+  await check('PK15: an owed artifact resumes just BELOW the frame that announced it', () => {
+    const owed = owedModule.createArtifactsOwed();
+    owed.announced('a.flac', 4);
+    owed.announced('b.flac', 7);
+    owed.landed('b.flac');
+    assert.deepStrictEqual(owed.owed(), ['a.flac']);
+    assert.strictEqual(owed.resumeFrom(9), 3,
+      'the LOWEST owed frame, minus one, so the server replays it — resuming at 9 would skip the '
+      + 'announcement and the file could never be asked for again');
+  });
+
+  await check('PK15: an artifact only the done frame named forces a full replay', () => {
+    const owed = owedModule.createArtifactsOwed();
+    owed.announced('a.flac', 4);
+    owed.landed('a.flac');
+    owed.announcedByDone(['a.flac', 'ghost.flac']);
+    assert.deepStrictEqual(owed.owed(), ['ghost.flac']);
+    assert.strictEqual(owed.resumeFrom(9), 0,
+      'the SDK fetches a done-listed name with no artifact frame ONLY when nothing was resumed '
+      + 'from, so any resume above zero would leave that file unfetchable for ever');
+  });
+
+  await check('PK15: a file already on disk is not owed, whoever failed to mention it', () => {
+    // The SDK yields a `written` record on the pass AFTER the download lands,
+    // so a file whose fetch settled as the socket died was never announced to
+    // anybody. Believing only what we were told re-fetched those on every blip.
+    const onDisk = new Set(['a.flac']);
+    const owed = owedModule.createArtifactsOwed((name) => onDisk.has(name));
+    owed.announced('a.flac', 4);
+    owed.announced('b.flac', 7);
+    assert.deepStrictEqual(owed.owed(), ['b.flac']);
+    assert.strictEqual(owed.resumeFrom(9), 6);
+  });
+}
+
 (async () => {
   await happyPath();
   await memoryArtifacts();
@@ -898,6 +1126,9 @@ async function aRestartedServerIsAWaitWithNothingToCancel() {
   await aBrokenStreamIsReOpenedAndTheJobFinishes();
   await aRestartedServerIsAWaitWithNothingToCancel();
   await outcomeCarriesTheResumeTriple();
+  await aStallSettlesItsOwnLedgerRow();
+  await artifactRetryChecks();
+  await artifactsOwedArithmetic();
   summary('test-crucible-job');
 })().catch((err) => {
   console.error(err);

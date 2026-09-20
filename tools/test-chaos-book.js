@@ -173,6 +173,47 @@ function scenario(id, title, fn, opts = {}) {
   scenarios.push({ id, title, fn, pendingPacket: opts.pendingPacket });
 }
 
+/**
+ * HOW LONG ONE SCENARIO MAY TAKE BEFORE IT IS A FAILURE.
+ *
+ * A keeper that hangs teaches nobody anything: it is read as "still running"
+ * until somebody gives up on it, and the run that proved this was PK11's
+ * reconnect ladder landing under S5 — the real schedule is five minutes, every
+ * stream-breaking scenario sat through it, and `node tools/test-chaos-book.js`
+ * went from seconds to never finishing. The fake scenarios now pass a
+ * millisecond ladder (see `FAST_LADDER`), and this is the backstop that says so
+ * out loud if one of them ever waits on a clock again.
+ *
+ * It is generous — sixty seconds against a suite whose scenarios take
+ * milliseconds — because what it is catching is a HANG, not a slow check.
+ */
+const SCENARIO_TIMEOUT_MS = 60_000;
+
+/**
+ * The reconnect ladder every fake scenario that breaks a stream passes in.
+ *
+ * Three rungs in under half a second, the same way a scenario passes
+ * `stallClock`. The shipped ladder is 5/10/20/40/80/145 s
+ * (`crucible/stream-reconnect.ts`) and that schedule is pinned, as a schedule,
+ * by `test-crucible-stall-clock`; what is under test HERE is what happens at a
+ * rung and when the budget runs out, and a suite must not spend five minutes
+ * per scenario proving it.
+ */
+const FAST_LADDER = [50, 100, 200];
+
+/** A scenario that has stopped rather than finished is a FAIL, never a hang. */
+function withWatchdog(id, promise) {
+  let timer = null;
+  const alarm = new Promise((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error(
+      `${id} did not settle in ${SCENARIO_TIMEOUT_MS / 1000} s. A scenario that waits is a scenario `
+      + 'waiting on a real clock — the reconnect ladder, the stall window, an admission tick — and '
+      + 'the fake set is meant to pass its own short one in.')), SCENARIO_TIMEOUT_MS);
+    timer.unref?.();
+  });
+  return Promise.race([promise, alarm]).finally(() => { if (timer !== null) clearTimeout(timer); });
+}
+
 async function runAll() {
   const set = REAL_SERVER === null ? scenarios : realScenarios;
   if (REAL_SERVER !== null) {
@@ -184,7 +225,7 @@ async function runAll() {
     let outcome = 'PASS';
     let detail = null;
     try {
-      detail = await s.fn();
+      detail = await withWatchdog(s.id, Promise.resolve().then(() => s.fn()));
       note = typeof detail === 'string' ? detail : (detail && detail.note) || '';
     } catch (err) {
       outcome = s.pendingPacket ? `PENDING-${s.pendingPacket}` : 'FAIL';
@@ -368,8 +409,19 @@ async function driveDoor(fake, options = {}) {
   const dir = fs.mkdtempSync(path.join(H.WORK, 'artifacts-'));
   const input = path.join(dir, 'in.txt');
   fs.writeFileSync(input, 'a book');
+  // THE JOB LOG IS EVIDENCE, not decoration: the reconnect ladder announces
+  // every attempt by name and a scenario that breaks a stream asserts it did.
+  const lines = [];
   try {
     const outcome = await crucibleJob.runCrucibleJob({
+      onLog: (line) => lines.push(line),
+      /*
+       * THE SHORT LADDER, passed the way `stallClock` is — see `FAST_LADDER`.
+       * A scenario that wants the shipped five minutes passes `reconnect: null`,
+       * and none does: waiting out a real ladder is what turned this suite from
+       * seconds into a hang.
+       */
+      ...(options.reconnect === null ? {} : { reconnect: { delaysMs: options.reconnect || FAST_LADDER } }),
       server: fake.server,
       type: options.type || 'align',
       model: options.model || 'qwen-align',
@@ -382,10 +434,15 @@ async function driveDoor(fake, options = {}) {
       onStarted: options.onStarted,
       onProgress: options.onProgress,
     });
-    return { ok: true, outcome, dir };
+    return { ok: true, outcome, dir, lines };
   } catch (err) {
-    return { ok: false, err, dir };
+    return { ok: false, err, dir, lines };
   }
+}
+
+/** Every line the reconnect ladder wrote, for a scenario's assertion. */
+function reconnectLines(result) {
+  return result.lines.filter((l) => /re-opening it from event/.test(l));
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -406,7 +463,14 @@ scenario('S5a', 'ONE reset on the events GET is resumed by the SDK; the job stil
     assert.strictEqual(result.ok, true,
       `one reset must be resumed, not reported: ${result.err && result.err.message}`);
     assertNothingLeftBehind(null, fake, 'S5a');
-    return `resumed after ${fake.state.requests.filter((r) => r.path.endsWith('/events')).length} events GET(s)`;
+    // AND THE DOOR'S LADDER WAS NEVER NEEDED: the SDK's own `events()` re-opens
+    // a dropped SSE connection itself, so a single stale keep-alive socket
+    // costs nothing and says nothing. A rung logged here would mean the SDK had
+    // stopped doing that and every blip had become BookForge's problem.
+    assert.strictEqual(reconnectLines(result).length, 0,
+      `the SDK resumed it; the door's ladder did not run: ${JSON.stringify(result.lines)}`);
+    return `resumed after ${fake.state.requests.filter((r) => r.path.endsWith('/events')).length} `
+      + 'events GET(s), inside the SDK — no ladder rung';
   } finally {
     await fake.close();
   }
@@ -427,6 +491,11 @@ scenario('S5', 'a reset the SDK cannot resume PARKS the row; it does not redden 
     assert.strictEqual(err.transient, true,
       'C1/PK7: a socket this app never got a byte out of is transport, not a repair. It arrived as '
       + `${err.name}/${err.code}: ${err.message}`);
+    // AND THE LADDER SPENT ITSELF FIRST, every rung said out loud. PK11's whole
+    // point is that the DELETE is the last resort, so a door that gave up
+    // without climbing is the regression this line catches.
+    assert.strictEqual(reconnectLines(first).length, FAST_LADDER.length,
+      `every rung of the ladder is logged by name: ${JSON.stringify(first.lines)}`);
     assertNothingLeftBehind(null, fake, 'S5 (the door)');
 
     // AND THE ENGINE'S HALF: that same error, thrown by the align row.
@@ -627,6 +696,17 @@ scenario('restart', 'a server that restarts mid-render is a wait, and no DELETE 
     const result = await door;
     assert.strictEqual(result.ok, false, 'a forgotten job cannot have finished');
     const err = result.err;
+    // AT MOST ONE rung: the server's own answer ends the ladder, because
+    // `unknown_job` is not a wire failure to climb through, it is news. Zero
+    // when the restart's own socket destroy is what broke the stream (the first
+    // re-open then answers 404 and the ladder never waits), one when the reset
+    // arrived first — a race in the SCENARIO, not in the door, and either way
+    // the ladder must not go on knocking.
+    assert.ok(reconnectLines(result).length <= 1,
+      `the ladder stops the moment the server answers: ${JSON.stringify(result.lines)}`);
+    assert.strictEqual(H.ledger.readInFlightLedger().length, 0,
+      'and the row comes OUT of the ledger: a server that says it has no such job has answered the '
+      + 'only question the ledger asks, so keeping the row would leave one nobody can settle');
     const cancels = fake.state.requests.filter((r) => r.method === 'DELETE');
     if (err.transient !== true) {
       throw Object.assign(new Error(
@@ -672,9 +752,26 @@ scenario('stall', 'a stream that goes quiet is cancelled by name, once, and the 
 
 // ── S14 · Stop during a model load leaves the card stranded, and it SAYS so ─
 
-scenario('S14', 'a Stop during a load strands the card, and nothing in this app comes back for it', async () => {
-  const fake = await startFaulty({ holdUntilCancelled: true }, {
-    // THE ONE-TICK RACE: the load reached `done` just before the cancel landed.
+scenario('S14', 'a Stop during a load strands the card, and this app says so rather than reaching for it', async () => {
+  /*
+   * THE ONE-TICK RACE, 14:29 on the night of Sep 19: the load reached `done`
+   * one second before the DELETE landed, so the cancel came back
+   * `409 job_not_cancellable` and `qwen3.5-9b` stayed on the PC's card held by
+   * nothing. The load therefore FINISHES here — a `holdUntilCancelled` job
+   * waiting for a DELETE that is refused is a deadlock, not this failure.
+   *
+   * WHAT IS ASSERTED HAS CHANGED WITH THE RULINGS THAT LANDED SINCE (PK12,
+   * PK14a). This app does NOT hunt for stranded cards: the client half of S14
+   * is that the PLACEMENT which asked for the load owns what its load put on
+   * the card (PK12), and the standing reconciler is Crucible 1.0.13's lapsing
+   * lease, not a sweep over here (§F.8, Owen). So what this row pins is the
+   * three things that are this side's:
+   *   1. the app's own ledger row is settled — no orphan naming a finished job;
+   *   2. the server's stranded-card stamp is READ by name (`strandedSince`);
+   *   3. a sweep with no row for that server asks it NOTHING — "nothing in this
+   *      app comes back for it" is the design, stated, not an omission.
+   */
+  const fake = await startFaulty({ slowFramesMs: 30 }, {
     refuse: [cancelRefusedFault('not-cancellable', 1)],
   });
   try {
@@ -687,9 +784,11 @@ scenario('S14', 'a Stop during a load strands the card, and nothing in this app 
     await H.waitUntil('the load to exist', () => started.length === 1);
     controller.abort();
     const result = await door;
-    assert.strictEqual(result.ok, false, 'the cancelled load did not finish for us');
     const refusedCancels = fake.state.requests.filter((r) => r.method === 'DELETE' && r.fault);
     assert.ok(refusedCancels.length >= 1, 'the 409 must have crossed');
+    assert.strictEqual(H.ledger.readInFlightLedger().length, 0,
+      'the load ended on the server, so this side settles its own row: a ledger naming a finished '
+      + 'job is a row nobody will ever come back to');
 
     /*
      * WHAT THE SERVER NOW SAYS — Crucible 1.0.11's two fields, and the exact
@@ -704,32 +803,32 @@ scenario('S14', 'a Stop during a load strands the card, and nothing in this app 
     assert.strictEqual(activity.resident.unclaimed_since, '2026-09-20T14:29:00Z',
       "and unclaimed_since says since when \u2014 the load's own completion time");
 
+    // AND THIS SIDE READS IT (PK14a). One reader, `strandedSince`, over the
+    // SDK's own `Activity` — not seven fields re-derived at the call site.
+    const client = await servers.crucibleClientFor(fake.server, 'bookforge-chaos');
+    const seen = sweep.strandedSince(await client.activity());
+    assert.strictEqual(seen, '2026-09-20T14:29:00Z',
+      `BookForge reads the card's own stamp: got ${JSON.stringify(seen)}`);
+
     /*
-     * AND THIS SIDE'S HALF, WHICH IS THE PACKET (PK12).
-     *
-     * The app HAS a reconciler \u2014 `sweepCrucibleInFlight` submits
-     * `unload-model` when `cardHeldBy` answers null \u2014 but it only ever looks at
-     * servers named by a LEDGER ROW, and a cancelled load leaves none: the
-     * refusal settled the row on its way out. So the 12 GB stays, and the next
-     * sweep does not even ask this server.
+     * AND IT DOES NOT REACH FOR THE CARD. The sweep is driven by the in-flight
+     * LEDGER, a cancelled load leaves no row, and that is deliberate: a client
+     * that went looking for unheld cards would be unloading models an operator
+     * loaded by hand. The lapsing lease on that server is the reconciler.
      */
-    const left = H.ledger.readInFlightLedger();
-    assert.strictEqual(left.length, 0, 'the ledger is clear, as the doors intend');
+    const asked = fake.state.requests.length;
     fake.routes.jobs.submitted.length = 0;
     await sweep.sweepCrucibleInFlight({ timing: { confirmForMs: 200, pollEveryMs: 20 } });
-    const unloads = fake.routes.jobs.submitted.filter((b) => String(b.type).startsWith('unload'));
-    assert.ok(unloads.length >= 1,
-      'PK12: nothing came back for the card. The reconciler EXISTS \u2014 `sweepCrucibleInFlight` '
-      + 'submits `unload-model` when `cardHeldBy` answers null \u2014 but it is driven by the '
-      + 'in-flight LEDGER, and a cancelled load leaves no row, so this server is never even asked. '
-      + '1.0.11 put the answer ON THE CARD (`resident.unclaimed_since`, surfaced by the SDK as '
-      + '`Activity.resident.unclaimedSince`) and nothing in BookForge reads it: `cardHeldBy` still '
-      + 're-derives the same fact from seven other fields.');
-    return 'the stranded card was reclaimed';
+    assert.strictEqual(fake.state.requests.length, asked,
+      'a sweep with no ledger row for this server must not so much as poll it');
+    assert.deepStrictEqual(fake.routes.jobs.submitted, [],
+      'and it must never submit an unload for a card nothing of ours is holding');
+    return `${result.ok ? 'the load finished for the server' : result.err.code}; `
+      + `stranded since ${seen}, read and left alone`;
   } finally {
     await fake.close();
   }
-}, { pendingPacket: 'PK12' });
+});
 
 // ── The unload lock hazard: /v1/activity must answer while a card is unloading ─
 
@@ -1003,17 +1102,46 @@ scenario('round-trip', 'the persisted queue comes back as the same queue', async
 // ── A partial artifact fetch is not a failed job ────────────────────────────
 
 scenario('artifacts', 'a done frame whose artifact fetch fails once does not lose the run', async () => {
+  /*
+   * THE FINDING THIS ROW FOUND (PK13 → PK15). `writeArtifactsTo` begins each
+   * download as its frame lands and raises the first failure at the next yield
+   * boundary, so ONE 500 on ONE artifact threw out of the iteration — and both
+   * doors read that throw as "no terminal frame, therefore an orphan": Q7 swept
+   * the server, DELETEd a job that had FINISHED, and the whole align was re-run
+   * from zero.
+   *
+   * A failed fetch is a transport fault on work that is already done, so it is
+   * retried on the reconnect ladder from BELOW the frame that announced the
+   * file (`crucible/artifacts-owed.ts`), and nothing is ever cancelled.
+   */
   const fake = await startFaulty({ partialArtifacts: true });
   try {
     const result = await driveDoor(fake, { type: 'align' });
-    if (result.ok) return 'the door retried the fetch and landed the artifacts';
-    const err = result.err;
-    const left = H.ledger.readInFlightLedger();
-    throw Object.assign(new Error(
-      'C4: ONE 500 on ONE artifact fetch loses a job that RAN. The stream never reaches a terminal '
-      + `frame, so nothing settles the ledger either — ${err.code || err.name} `
-      + `(transient=${err.transient === true}), ledger rows left: ${left.length}`),
-    { endState: { code: err.code, transient: err.transient === true, message: String(err.message).slice(0, 200), ledger: left.length } });
+    if (!result.ok) {
+      const err = result.err;
+      const left = H.ledger.readInFlightLedger();
+      throw Object.assign(new Error(
+        `ONE 500 on ONE artifact fetch lost a job that RAN — ${err.code || err.name} `
+        + `(transient=${err.transient === true}), ledger rows left: ${left.length}`),
+      { endState: { code: err.code, transient: err.transient === true, message: String(err.message).slice(0, 200), ledger: left.length } });
+    }
+    const announced = fake.routes.jobs.submitted.length > 0
+      ? Object.keys(fake.routes.jobs.submitted[0].inputs || {}).map((n) => `${n}.out`)
+      : [];
+    assert.ok(announced.length > 0, 'the job must have announced at least one artifact');
+    for (const name of announced) {
+      assert.ok(fs.existsSync(path.join(result.dir, name)),
+        `${name} is not on disk: a retry that does not land the file is not a retry`);
+    }
+    assert.deepStrictEqual(fake.state.cancelled, [],
+      'AND NOTHING WAS CANCELLED. The terminal frame is the fact: a job the server said was done '
+      + 'is not an orphan, whatever happened to its download afterwards');
+    assert.ok(reconnectLines(result).length >= 1,
+      `the retry says so by name in the job log: ${JSON.stringify(result.lines)}`);
+    assertNothingLeftBehind(null, fake, 'artifacts');
+    const asked = fake.routes.jobs.artifacts.filter((a) => !a.ok).length;
+    return `${asked} fetch(es) refused, re-opened from under the artifact frame, `
+      + `${announced.length} artifact(s) on disk, 0 DELETE`;
   } finally {
     await fake.close();
   }
@@ -1043,7 +1171,8 @@ scenario('S13', 'a connection that hangs and dies mid-align is a wait; what it d
     const cancels = fake.state.requests.filter((r) => r.method === 'DELETE');
     if (result.ok) {
       assertNothingLeftBehind(null, fake, 'S13');
-      return `the SDK resumed through the dead connections; ${cancels.length} DELETE(s) crossed`;
+      return `the ladder re-opened the stream ${reconnectLines(result).length} time(s) through the `
+        + `dead connections; ${cancels.length} DELETE(s) crossed`;
     }
     const err = result.err;
     assert.strictEqual(err.transient, true,

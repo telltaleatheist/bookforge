@@ -1159,8 +1159,23 @@ function faultyJobRoutes(behaviour = {}) {
      */
     live: () => [...open.keys()].filter((id) => (hostState === null ? true : hostState.cancelled.indexOf(id) === -1)),
   };
-  /** jobId → {body, names} for the jobs this server still knows. */
+  /** jobId → {body, names} for the jobs this server is still RUNNING. */
   const open = new Map();
+  /*
+   * jobId → {frames} for the jobs that ENDED and whose events are still
+   * readable.
+   *
+   * A real Crucible does not forget a job the moment its stream ends: the whole
+   * `Last-Event-ID` resume contract, and `409 job_not_cancellable` on a DELETE,
+   * are a server answering about a job that is over. A fake that answered
+   * `404 unknown_job` there made any reconnect ABOVE a terminal frame look like
+   * a restarted server — which is how the `artifacts` scenario read a retried
+   * artifact fetch as a lost job (PK15).
+   *
+   * The frames are the ones this server actually sent, recorded as they went
+   * out, so a replay is the same history and not a second guess at it.
+   */
+  const finished = new Map();
   /** The event-stream responses open right now, so a restart can kill them. */
   const streaming = new Set();
   /** The dispatcher's state, captured on the first request (see `live`). */
@@ -1245,6 +1260,7 @@ function faultyJobRoutes(behaviour = {}) {
     restart() {
       jobs.restarts += 1;
       open.clear();
+      finished.clear();
       for (const res of streaming) { try { res.socket.destroy(); } catch { /* already gone */ } }
       streaming.clear();
       card.id = null; card.kind = null; card.since = null;
@@ -1362,13 +1378,41 @@ function faultyJobRoutes(behaviour = {}) {
         const lastEventId = Number(req.headers['last-event-id'] || 0);
         const entry = open.get(id);
         if (entry === undefined) {
+          const over = finished.get(id);
+          if (over !== undefined) {
+            // A JOB THAT ENDED IS STILL A JOB THIS SERVER HAS. Its history is
+            // replayed above `Last-Event-ID` and the stream closes on the
+            // terminal frame it already sent — which is what lets a client that
+            // lost one artifact ask for it again instead of re-running an hour
+            // of GPU.
+            jobs.streams.push({ jobId: id, lastEventId, answered: 'replay' });
+            const replay = sseWriter(req, res);
+            for (const frame of over.frames) replay.frame(frame.name, frame.data);
+            replay.end();
+            return true;
+          }
           // The server forgot it — a restart, or a job that never was.
           jobs.streams.push({ jobId: id, lastEventId, answered: 'unknown_job' });
           return refuse(res, 404, 'unknown_job',
             `no job ${id} on this server (it was restarted at ${new Date().toISOString()})`);
         }
         jobs.streams.push({ jobId: id, lastEventId, answered: 'stream' });
-        const sse = sseWriter(req, res);
+        const live = sseWriter(req, res);
+        /*
+         * EVERY FRAME IS RECORDED AS IT GOES OUT, so a later reconnect replays
+         * this job's own history. Recorded on the ENTRY rather than per
+         * response: two readers of one job see one sequence of ids, which is
+         * the property `Last-Event-ID` is meaningless without.
+         */
+        if (entry.frames === undefined) entry.frames = [];
+        const sse = {
+          frame(name, data) {
+            if (entry.frames.length < live.lastId + 1) entry.frames.push({ name, data });
+            live.frame(name, data);
+          },
+          end() { live.end(); },
+          get lastId() { return live.lastId; },
+        };
         streaming.add(res);
         req.on('close', () => streaming.delete(res));
         const gap = behaviour.slowFramesMs === undefined ? 0 : behaviour.slowFramesMs;
@@ -1393,6 +1437,7 @@ function faultyJobRoutes(behaviour = {}) {
               clearInterval(tick);
               sse.frame('cancelled', { status: 'cancelled' });
               sse.end();
+              finished.set(id, entry);
               open.delete(id);
               done();
             }, 10);
@@ -1415,6 +1460,7 @@ function faultyJobRoutes(behaviour = {}) {
         if (behaviour.endsFailed === true) {
           sse.frame('failed', { error: { code: 'render_failed', message: 'the model fell over' } });
           sse.end();
+          finished.set(id, entry);
           open.delete(id);
           return true;
         }
@@ -1445,6 +1491,7 @@ function faultyJobRoutes(behaviour = {}) {
           sse.frame('done', Object.assign({ artifacts: entry.names }, behaviour.doneExtra || {}));
         }
         sse.end();
+        finished.set(id, entry);
         open.delete(id);
         return true;
       }

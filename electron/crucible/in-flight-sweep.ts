@@ -303,6 +303,96 @@ export async function sweepCrucibleServerInFlight(options: {
   return sweep({ ...options, onlyServer: options.server });
 }
 
+/**
+ * HOW A STREAM ENDED, in the only vocabulary the ledger cares about.
+ *
+ * Not the error's class and not the door's refusal: the one question a ledger
+ * row asks is *"is that server still holding a card for this job, and who is
+ * going to take it back"*. Five answers, and {@link reconcileStreamEnding} is
+ * the only place that decides what each one costs.
+ */
+export type CrucibleStreamEnding =
+  /** The server sent a terminal frame and this side has everything it announced. */
+  | 'terminal'
+  /**
+   * THIS APP sent the DELETE and the server answered it — a person's Stop, or
+   * the stall clock's cancel-by-name. The job is over because we ended it.
+   */
+  | 'cancelled'
+  /** The server answered `unknown_job`: it has no such job to be holding a card for. */
+  | 'gone'
+  /**
+   * The server said `done`, and artifacts it announced are still not on disk
+   * after the reconnect ladder ran out (`artifacts-owed.ts`).
+   */
+  | 'artifacts-owed'
+  /** The stream ended with no terminal frame and nobody told us why. */
+  | 'lost';
+
+/**
+ * ONE ENDING FOR ONE STREAM — the ledger row is reconciled HERE, whichever way
+ * the stream ended (bug hunt PK15, 2026-09-20).
+ *
+ * ── The hole this fills ────────────────────────────────────────────────────
+ *
+ * Both doors used to settle the ledger row from inside their stream loop, on
+ * the terminal frame, and sweep the server from inside their `catch`. That is
+ * two reconcilers for one question, and a stall fell between them: the stall
+ * clock cancels the job BY NAME and then throws, so there is no terminal frame
+ * to settle the row and the `CrucibleStreamWentQuiet` arm threw before the
+ * sweep — leaving `crucible-in-flight.json` naming a job this app had itself
+ * DELETEd, for the rest of the session. Every ending now comes through this
+ * function and says which one it was.
+ *
+ * ── The rule ───────────────────────────────────────────────────────────────
+ *
+ *  - `terminal`, `cancelled`, `gone` → **settle the row.** Each is a VERIFIED
+ *    state: the server said the job ended, or answered our DELETE, or told us
+ *    it has no such job. No poll and no second DELETE — a client that cancels
+ *    a job twice is arguing with itself.
+ *  - `artifacts-owed` → **keep the row.** The job ran and its output is still
+ *    on that server; the row (with its `lastEventId`) is what lets a later
+ *    attempt ATTACH and fetch the rest instead of re-rendering an hour of
+ *    audio. Nothing is cancelled: the terminal frame is the fact.
+ *  - `lost` → **sweep the server.** Only here is a DELETE right, because only
+ *    here might the job still be running with nobody watching it — the case
+ *    Q7 exists for.
+ *
+ * Never throws: every caller is already on its way out with the real failure,
+ * and a throw from the tidying would replace it.
+ */
+export async function reconcileStreamEnding(options: {
+  readonly server: string;
+  readonly jobId: string;
+  readonly ending: CrucibleStreamEnding;
+  /** Free text for the log line — what ended this stream, in the door's words. */
+  readonly reason: string;
+  readonly timing?: SweepTiming;
+  readonly log?: (line: string) => void;
+}): Promise<void> {
+  const log = options.log ?? ((line: string) => console.log(`[CRUCIBLE] ${line}`));
+  const { server, jobId, ending } = options;
+  if (ending === 'terminal' || ending === 'cancelled' || ending === 'gone') {
+    settleInFlight(server, jobId);
+    if (ending !== 'terminal') {
+      log(`crucible "${server}" job ${jobId} is settled in the in-flight ledger: ${options.reason}`);
+    }
+    return;
+  }
+  if (ending === 'artifacts-owed') {
+    log(`crucible "${server}" job ${jobId} STAYS in the in-flight ledger: ${options.reason}. `
+      + 'It ran and it is done — what is missing is the download, so a later attempt attaches to '
+      + 'this job and fetches the rest rather than asking for the work again.');
+    return;
+  }
+  await sweepCrucibleServerInFlight({
+    server,
+    reason: options.reason,
+    ...(options.timing === undefined ? {} : { timing: options.timing }),
+    log: (line) => log(line),
+  });
+}
+
 async function sweep(options: {
   readonly reason: string;
   readonly onlyServer: string | null;
