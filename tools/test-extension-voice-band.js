@@ -94,10 +94,10 @@ async function main() {
   });
 
   check('and says why, in this client\'s own words', () => {
-    const why = vb.unreadableBecause('ds_ckpt_3658', 'owens-pc-wsl', lengths(null, null, null));
+    const why = vb.unreadableBecause('ds_ckpt_3658', 'crucible@<the PC>', lengths(null, null, null));
     assert.ok(why !== null, 'an unreadable voice must state a reason');
     assert.ok(/ds_ckpt_3658/.test(why), 'the reason must name the voice');
-    assert.ok(/owens-pc-wsl/.test(why), 'the reason must name the server');
+    assert.ok(/crucible@<the PC>/.test(why), 'the reason must name the server');
     assert.ok(
       !/higgs-models\.json|Orpheus|electron[\\/]/i.test(why),
       'the refusal reached the browser extension still naming the APP\'s catalog file or the '
@@ -107,7 +107,7 @@ async function main() {
 
   check('the packer refuses it BEFORE the shared helper does', () => {
     assert.throws(
-      () => vb.bandFromVoiceRow('ds_ckpt_3658', 'owens-pc-wsl', lengths(null, null, null)),
+      () => vb.bandFromVoiceRow('ds_ckpt_3658', 'crucible@<the PC>', lengths(null, null, null)),
       (err) => /no measured chunk length/.test(err.message)
         && !/higgs-models\.json/.test(err.message),
       'bandFromVoiceRow must refuse a capless voice in the extension\'s own words',
@@ -120,7 +120,7 @@ async function main() {
     // deathstalker on this PC's Crucible, 2026-09-19: max_chars 800,
     // pace.safe_min_chars 500, pace.safe_max_chars 800. The pair is what
     // `electron/crucible/stream.ts` sends on the app's side of the same door.
-    const band = vb.bandFromVoiceRow('deathstalker', 'owens-pc-wsl', lengths(900, 500, 800));
+    const band = vb.bandFromVoiceRow('deathstalker', 'crucible@<the PC>', lengths(900, 500, 800));
     assert.strictEqual(band.maxChars, 800, 'the MEASURED ceiling is the one packed to');
     assert.strictEqual(band.minChars, 500, 'the safe floor must reach the band');
   });
@@ -128,7 +128,7 @@ async function main() {
   check('a voice with a cap and no measured band packs to the cap', () => {
     // higgs-default, live today: max_chars 600 and a pace table whose every
     // member is null. Readable, and the cap is the only number there is.
-    const band = vb.bandFromVoiceRow('higgs-default', 'owens-pc-wsl', lengths(600, null, null));
+    const band = vb.bandFromVoiceRow('higgs-default', 'crucible@<the PC>', lengths(600, null, null));
     assert.strictEqual(band.maxChars, 600);
     assert.strictEqual(band.minChars, null);
     assert.strictEqual(vb.isReadable(lengths(600, null, null)), true);
