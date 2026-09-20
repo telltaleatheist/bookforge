@@ -56,6 +56,7 @@ import {
   CrucibleRefused,
   CrucibleUnreachable,
   isServerSpecificRefusal,
+  type CrucibleClient,
 } from '@crucible/client';
 
 import { cloudEndpointOf, cloudHeaderMapFor, cloudProviderNamed } from './cloud-providers';
@@ -1223,13 +1224,18 @@ async function placeOnCrucible(
   }
 
   /*
-   * ── RESIDENCY: WE LOAD, AND WE NEVER UNLOAD ──────────────────────────────
+   * ── RESIDENCY: WE LOAD, AND WE NEVER UNLOAD — WITH ONE EXCEPTION ──────────
    *
    * One model is resident at a time and a load EVICTS whatever was there. That
    * is the server's design and it is the reason nothing here ever calls
-   * `unloadModel`: the card belongs to whoever is next, and a client that tidied
-   * up after itself would be taking a model away from the run that evicted ours
-   * a minute after it started.
+   * `unloadModel` on a model it did not put there: the card belongs to whoever
+   * is next, and a client that tidied up after itself would be taking a model
+   * away from the run that evicted ours a minute after it started.
+   *
+   * THE EXCEPTION IS A LOAD OF OUR OWN THAT NOBODY WILL USE — see
+   * {@link releaseAbandonedLoad}. Loading for a run that has been cancelled is
+   * not somebody else's model; it is ours, resident because this placement asked
+   * for it, and leaving it there is the 21 GB nobody is holding.
    */
   const models = await client.models();
   signal?.throwIfAborted();
@@ -1241,90 +1247,307 @@ async function placeOnCrucible(
         + 'That is its own record disagreeing with itself; nothing here can fix it.',
     };
   }
-  if (!resident.resident) {
-    say(`Loading ${row.selected} on ${slot.name}…`);
-    const jobId = await client.loadModel(row.selected);
-    const cancelLoad = (): void => {
-      void client.cancel(jobId).catch((err: unknown) => {
-        console.error(`[slots] cancelling the load on ${entry.name} failed: ${String(err)}`);
-      });
-    };
-    signal?.addEventListener('abort', cancelLoad, { once: true });
-    if (signal?.aborted) cancelLoad();
-    try {
-      for await (const event of client.events(jobId)) {
-        if (event.event === 'warming') say(`Loading ${row.selected} on ${slot.name}: ${warmingHeadline(event.data.message)}`);
-        else if (event.event === 'progress') say(`Loading ${row.selected} on ${slot.name}: ${event.data.message}`);
-        else if (event.event === 'failed') {
-          const code = event.data.error.code;
-          /*
-           * A LOAD THAT FAILED AFTER IT WAS ADMITTED. The codes that mean "this
-           * machine, right now" travel to the next server; anything else is about
-           * the model and would fail the same way everywhere.
-           */
-          return isServerSpecificRefusal(code)
-            ? transientWait(`"${slot.name}" could not load ${row.selected}: ${event.data.error.message}`)
-            : { verdict: 'refuse', reason: `"${slot.name}" could not load ${row.selected}: ${event.data.error.message}` };
-        } else if (event.event === 'cancelled') {
-          return transientWait(`the load of ${row.selected} on "${slot.name}" was cancelled`);
-        }
-      }
-    } finally {
-      signal?.removeEventListener('abort', cancelLoad);
-    }
-  }
 
   /*
-   * ── AND THE LEASE, WHICH IS THE LAST THING BEFORE THE SPAWN ───────────────
-   *
-   * It is taken HERE — after the model is resident, before the engine exists —
-   * because those are the two things that make a lease meaningful: there is
-   * something on the card to claim, and nothing has started depending on it yet.
-   * A lease taken before the load would be a claim on a model that is not there
-   * (the server says so by name: `model_not_resident`), and one taken after the
-   * spawn would leave a window in which another client's load evicts the model
-   * this run is three blocks into using.
+   * WHAT THIS PLACEMENT PUT ON THE CARD, if anything. Null until `load-model`
+   * has been submitted, because before that there is nothing this run is
+   * answerable for; non-null from the moment the server answers with a job id,
+   * because from that moment a model may land whether we are still here or not.
    */
-  signal?.throwIfAborted();
-  const lease = await takeLease(engine, row.selected, capability);
+  let ourLoad: SubmittedLoad | null = null;
+  try {
+    if (!resident.resident) {
+      say(`Loading ${row.selected} on ${slot.name}…`);
+      const jobId = await client.loadModel(row.selected);
+      const load: SubmittedLoad = { jobId, cancelled: null };
+      ourLoad = load;
+      /*
+       * THE CANCEL IS KEPT, NOT DROPPED. It used to be `void client.cancel(…)`
+       * — a DELETE fired into the dark, whose answer (`cancelled` or
+       * `cancelling`) is the very fact the cleanup below has to know. Recording
+       * the promise costs nothing and is the difference between "we asked" and
+       * "we know". `??=` because a re-entry would be a second DELETE for one
+       * gesture.
+       */
+      const cancelLoad = (): void => {
+        load.cancelled ??= client.cancel(jobId).then(() => undefined).catch((err: unknown) => {
+          console.error(`[slots] cancelling the load on ${entry.name} failed: ${String(err)}`);
+        });
+      };
+      signal?.addEventListener('abort', cancelLoad, { once: true });
+      if (signal?.aborted) cancelLoad();
+      try {
+        for await (const event of client.events(jobId)) {
+          if (event.event === 'warming') say(`Loading ${row.selected} on ${slot.name}: ${warmingHeadline(event.data.message)}`);
+          else if (event.event === 'progress') say(`Loading ${row.selected} on ${slot.name}: ${event.data.message}`);
+          else if (event.event === 'failed') {
+            const code = event.data.error.code;
+            /*
+             * A LOAD THAT FAILED AFTER IT WAS ADMITTED. The codes that mean "this
+             * machine, right now" travel to the next server; anything else is about
+             * the model and would fail the same way everywhere.
+             *
+             * NOTHING TO RELEASE: a `load-model` that ends `failed` did not make
+             * the model resident, and the engine process it was starting is the
+             * load job's own to take down. The cleanup below is for the one
+             * terminal state that leaves something behind, which is `done`.
+             */
+            return isServerSpecificRefusal(code)
+              ? transientWait(`"${slot.name}" could not load ${row.selected}: ${event.data.error.message}`)
+              : { verdict: 'refuse', reason: `"${slot.name}" could not load ${row.selected}: ${event.data.error.message}` };
+          } else if (event.event === 'cancelled') {
+            return transientWait(`the load of ${row.selected} on "${slot.name}" was cancelled`);
+          }
+        }
+      } finally {
+        signal?.removeEventListener('abort', cancelLoad);
+      }
+    }
 
-  return {
-    verdict: 'go',
-    placement: {
-      slot,
-      lease,
+    /*
+     * ── AND THE LEASE, WHICH IS THE LAST THING BEFORE THE SPAWN ───────────────
+     *
+     * It is taken HERE — after the model is resident, before the engine exists —
+     * because those are the two things that make a lease meaningful: there is
+     * something on the card to claim, and nothing has started depending on it yet.
+     * A lease taken before the load would be a claim on a model that is not there
+     * (the server says so by name: `model_not_resident`), and one taken after the
+     * spawn would leave a window in which another client's load evicts the model
+     * this run is three blocks into using.
+     */
+    signal?.throwIfAborted();
+    const lease = await takeLease(engine, row.selected, capability);
+
+    return {
+      verdict: 'go',
+      placement: {
+        slot,
+        lease,
+        /*
+         * HOW DEEP TO GO ON THIS CARD — the server's number when it states one, and
+         * four when it does not. See `Placement.concurrency`, which carries the whole
+         * argument and the night it is about, and `chatDepthFor`, which asks.
+         *
+         * A READING STATES NONE HERE: `--vlm-concurrency` is the page reader's own
+         * flag and the engine takes it from the server that serves the pages, so a
+         * chat depth on a `pages` placement would be a number about the wrong door.
+         */
+        concurrency: await chatDepthFor(engine, capability, say),
+        /*
+         * `openai` IS THE ENGINE'S DEFAULT AND IS LEFT UNSPELLED on the command
+         * line — see `doorArgs` in job-queue.ts. It is named here anyway, because a
+         * placement that said nothing about the dialect would be a placement whose
+         * reader had to know the default.
+         */
+        door: 'openai',
+        /*
+         * THE OPENAI DOOR IS MOUNTED AT `<url>/openai`, and the engine appends
+         * `/v1` itself. Composed here rather than stored on the entry: the entry's
+         * URL is the address a person pasted, which after PHASE17 may be the
+         * ORCHESTRATOR's, and a stored `/openai` would be this app's routing
+         * decision written into somebody's settings file. `engine.url` is the
+         * resolved one — see the hop at the top of this function.
+         */
+        endpoint: `${engine.url}/openai`,
+        model: row.selected,
+        env: { FOUNDRY_ENDPOINT_HEADERS: headerMapFor(engine, capability) },
+        /** A resident model on that machine's card. Nothing was forwarded. */
+        via: null,
+      },
+    };
+  } catch (err) {
+    /*
+     * ── A CANCELLED PLACEMENT OWNS WHAT ITS OWN LOAD LEFT ON THE CARD ───────
+     *
+     * Every throw out of the block above lands here, and exactly one shape of
+     * throw has a card to answer for: the run was STOPPED while this function
+     * was waiting on a `load-model` of its own. `releaseAbandonedLoad` says what
+     * is done about it and why; everything else — an unreachable server, a
+     * refused lease, a protocol error — rethrows untouched into
+     * `interpretFailure`, which is the one place that turns a throw on this path
+     * into a verdict.
+     *
+     * THE RETHROW IS UNCONDITIONAL. The cleanup is tidying, not an outcome: a
+     * placement that was cancelled is cancelled whether the card came back or
+     * not, and swallowing the abort here would hand the queue a placement for a
+     * row that has already settled.
+     */
+    if (ourLoad !== null && signal?.aborted === true) {
+      await releaseAbandonedLoad(engine, client, ourLoad, row.selected, capability, slot.name);
+    }
+    throw err;
+  }
+}
+
+/**
+ * A `load-model` THIS PLACEMENT SUBMITTED, and the cancel it has already sent.
+ *
+ * `cancelled` is the DELETE's own promise rather than a boolean, because the
+ * only useful thing about the cancel is its ANSWER — `cancelled` (the job never
+ * ran) or `cancelling` (it is running and will stop at a checkpoint) — and a
+ * fire-and-forget DELETE cannot tell the two apart. Null means no cancel has
+ * been sent yet.
+ */
+interface SubmittedLoad {
+  readonly jobId: string;
+  cancelled: Promise<void> | null;
+}
+
+/**
+ * HOW LONG THE TIDYING MAY TAKE, in milliseconds.
+ *
+ * A Stop must be a Stop. This cleanup is three round trips to a machine that may
+ * be mid-eviction, and a person who pressed the button is watching the row; so
+ * the whole of it runs under one deadline and a deadline that fires is a LOG
+ * LINE naming the model and the server, not a hang and not a failure. Thirty
+ * seconds is generous for three HTTP calls and short enough that nobody wonders
+ * whether the button worked.
+ */
+const ABANDONED_LOAD_CLEANUP_MS = 30_000;
+
+/**
+ * GIVE BACK WHAT A CANCELLED PLACEMENT LEFT ON THE CARD.
+ *
+ * ── The night this is about (2026-09-20) ──────────────────────────────────
+ *
+ * A reading was placed on a Crucible, `load-model qwen3.5-9b` went out, and the
+ * load read *"vllm loading; 50s elapsed"* while Owen pressed Stop. The load
+ * COMPLETED in the same second the abort fired. What this function replaced did
+ * three things and all three were right-looking: it fired `DELETE /v1/jobs/{id}`
+ * without waiting for the answer, it never asked how the load had actually
+ * ended, and it threw out of the placement before `takeLease`. The DELETE landed
+ * on a job that was already `done` — a no-op — and the placement walked away
+ * from a 21 GB model that was now resident with `claim: None, lease: None,
+ * chat.in_flight: 0, running: []`. Nothing was holding it and nothing ever
+ * would: Crucible's settlement is triggered by a HOLDER LETTING GO, and a load's
+ * own completion is deliberately not one (`crucible/settle.py`: *"a load is not
+ * a holder letting go"*). It sat there until it was unloaded by hand.
+ *
+ * ── The rule ──────────────────────────────────────────────────────────────
+ *
+ * **A placement that is cancelled after it submitted a load is responsible for
+ * what that load put on the card.** Not the server — it did exactly what it was
+ * asked — and not the next run, which may be on another machine or may never
+ * come. So:
+ *
+ *   1. **Await the cancel's answer.** `cancelling` and `cancelled` are different
+ *      news and a DELETE nobody reads is a question nobody asked.
+ *   2. **Read the load's terminal state** (`GET /v1/jobs/{id}`). `cancelled` or
+ *      `failed` means nothing landed and there is nothing to give back; `done`
+ *      means the model is resident because we asked for it.
+ *   3. **Release it, by being a holder that lets go.** A lease taken and
+ *      released immediately is the settlement's own trigger, it is the two verbs
+ *      this file already owns, and it is correct even if somebody else's run
+ *      arrived in between — the lease would be refused and the card is theirs.
+ *      `unload-model` is the FALLBACK, for a server that refuses the lease for a
+ *      reason that is not another client (`model_not_resident`: it has already
+ *      gone, and the unload says so by name and costs nothing).
+ *
+ * ── And it never hangs and never fails ────────────────────────────────────
+ *
+ * The whole of it is under {@link ABANDONED_LOAD_CLEANUP_MS} and it returns
+ * normally whatever happens. A Stop that waited on a tidy-up would be a Stop
+ * that did not stop, and a throw here would replace the row's real ending
+ * (cancelled) with a story about housekeeping. What a failure gets is a log line
+ * that NAMES THE MODEL AND THE SERVER, so the startup sweep — or a person with
+ * `crucible unload-model` — has something to act on.
+ *
+ * `boundMs` IS A PARAMETER WITH THE CONSTANT AS ITS DEFAULT for exactly one
+ * reason: the keeper that proves the deadline drives a server which never
+ * answers, and a thirty-second test is a thirty-second test on every run of the
+ * suite. Nothing in the app passes it.
+ *
+ * `entry` IS THE ENGINE-ADDRESSED ENTRY and `client` is the client
+ * `placeOnCrucible` already built from it — the same process that took the load
+ * must be the one that gives it back, and resolving again is a second chance for
+ * them to differ (the same argument {@link takeLease} makes).
+ */
+export async function releaseAbandonedLoad(
+  entry: CrucibleServerEntry,
+  client: CrucibleClient,
+  load: SubmittedLoad,
+  model: string,
+  capability: CapabilityClass,
+  slotName: string,
+  boundMs: number = ABANDONED_LOAD_CLEANUP_MS,
+): Promise<void> {
+  const where = `${model} on "${slotName}"`;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => { reject(new Error(`the cleanup did not finish within ${boundMs}ms`)); }, boundMs);
+    timer.unref?.();
+  });
+  try {
+    await Promise.race([tidy(), deadline]);
+  } catch (err) {
+    /*
+     * THE ONE SENTENCE A PERSON OR A SWEEP CAN ACT ON. It names the model and
+     * the machine because the next question after "did the Stop work" is "what
+     * is on that card", and an apology with neither in it answers nothing.
+     */
+    console.error(
+      `[slots] cancelled placement: the load of ${where} may still be resident and this app `
+      + `could not give it back — ${err instanceof Error ? err.message : String(err)}. `
+      + `Unload it there (\`crucible unload-model ${model}\`) if the card is still held.`,
+    );
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+
+  async function tidy(): Promise<void> {
+    /*
+     * The cancel may not have been sent at all: the abort can fire between the
+     * load's `done` frame and `throwIfAborted`, which is the exact second Owen's
+     * Stop landed in. Sending one now costs a DELETE on a finished job and buys
+     * the same answer the abort path gets.
+     */
+    load.cancelled ??= client.cancel(load.jobId).then(() => undefined).catch((err: unknown) => {
+      console.error(`[slots] cancelling the load on ${entry.name} failed: ${String(err)}`);
+    });
+    await load.cancelled;
+
+    const status = await client.job(load.jobId);
+    if (status.status !== 'done') {
+      console.log(
+        `[slots] cancelled placement: the load of ${where} ended ${status.status}; nothing is resident.`,
+      );
+      return;
+    }
+
+    try {
+      const lease = await takeLease(entry, model, capability);
+      await lease.release();
+      console.log(`[slots] cancelled placement: the load of ${where} had landed; released it.`);
+      return;
+    } catch (err) {
       /*
-       * HOW DEEP TO GO ON THIS CARD — the server's number when it states one, and
-       * four when it does not. See `Placement.concurrency`, which carries the whole
-       * argument and the night it is about, and `chatDepthFor`, which asks.
-       *
-       * A READING STATES NONE HERE: `--vlm-concurrency` is the page reader's own
-       * flag and the engine takes it from the server that serves the pages, so a
-       * chat depth on a `pages` placement would be a number about the wrong door.
+       * A REFUSED LEASE IS NOT A FAILED CLEANUP. `leased` means another client
+       * got there first and the card is honestly theirs — but the unload below
+       * will be refused by the same server for the same reason, which is the
+       * right answer arriving from the machine that owns the fact rather than
+       * from a guess here.
        */
-      concurrency: await chatDepthFor(engine, capability, say),
-      /*
-       * `openai` IS THE ENGINE'S DEFAULT AND IS LEFT UNSPELLED on the command
-       * line — see `doorArgs` in job-queue.ts. It is named here anyway, because a
-       * placement that said nothing about the dialect would be a placement whose
-       * reader had to know the default.
-       */
-      door: 'openai',
-      /*
-       * THE OPENAI DOOR IS MOUNTED AT `<url>/openai`, and the engine appends
-       * `/v1` itself. Composed here rather than stored on the entry: the entry's
-       * URL is the address a person pasted, which after PHASE17 may be the
-       * ORCHESTRATOR's, and a stored `/openai` would be this app's routing
-       * decision written into somebody's settings file. `engine.url` is the
-       * resolved one — see the hop at the top of this function.
-       */
-      endpoint: `${engine.url}/openai`,
-      model: row.selected,
-      env: { FOUNDRY_ENDPOINT_HEADERS: headerMapFor(engine, capability) },
-      /** A resident model on that machine's card. Nothing was forwarded. */
-      via: null,
-    },
-  };
+      console.error(
+        `[slots] cancelled placement: the load of ${where} had landed and a lease to release it was `
+        + `refused (${err instanceof Error ? err.message : String(err)}); unloading it instead.`,
+      );
+    }
+
+    const unloadId = await client.unloadModel(model);
+    for await (const event of client.events(unloadId)) {
+      if (event.event === 'failed') {
+        console.error(
+          `[slots] cancelled placement: unloading ${where} failed: ${event.data.error.message}`,
+        );
+        return;
+      }
+      if (event.event === 'cancelled') {
+        console.error(`[slots] cancelled placement: the unload of ${where} was itself cancelled.`);
+        return;
+      }
+    }
+    console.log(`[slots] cancelled placement: the load of ${where} had landed; unloaded it.`);
+  }
 }
 
 /**

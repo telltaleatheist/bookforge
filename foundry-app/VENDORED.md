@@ -10,10 +10,53 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\<user>\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **dccc144** — *The chat pool is the server's number, and the busy wait is a clock* — PK8, on branch `fix/chat-pool-from-server` off `9e0b27d` |
+| Source sha | **7b98004** — *A cancelled placement gives back the model its own load put on the card* — PK12, on branch `fix/cancelled-placement-unloads` off `dccc144` |
 | Engine | **NOT VENDORED AND NOT KNOWABLE FROM THIS FILE** — it is a spawned CLI resolved at RUNTIME (`FOUNDRY_BIN`, else `resolveFoundryPath`, `electron/main.ts`), so which build executes is a property of the machine and not of this copy. On a developer's Mac that resolves to Foundry's own checkout at `/Volumes/Callisto/Projects/foundry/dist/foundry-darwin-arm64`, which is whatever was last built there — `foundry 2.0.2 (1c1eaa3)` as of 2026-09-18. **Ask the binary: `$FOUNDRY_BIN --version`.** See *The engine this file named was not the engine that ran* below. |
-| Copied on | 2026-09-19 (five times: 3738c01, 3436fc5, 806d44b, f349771, ca4754c) and 2026-09-20 (98a4344, 9e0b27d, dccc144) |
-| Copied by | Mechanical source sync, verified against Foundry `dccc144:app/` (`diff -rq`, clean but for this file, `IPC-CHANNELS.md` and `.gitignore` — see below); details below |
+| Copied on | 2026-09-19 (five times: 3738c01, 3436fc5, 806d44b, f349771, ca4754c) and 2026-09-20 (98a4344, 9e0b27d, dccc144, 7b98004) |
+| Copied by | Mechanical source sync, verified against Foundry `7b98004:app/` (`diff -rq`, clean but for this file, `IPC-CHANNELS.md` and `.gitignore` — see below); details below |
+
+## The `dccc144 → 7b98004` re-vendor — PK12, a cancelled placement gives the card back (2026-09-20)
+
+**TWO FILES under `app/`**: `electron/crucible-dispatch.ts` and the new
+`test/crucible-cancelled-placement.test.ts`. (Foundry's `docs/SLOTS.md` §5 gained
+a paragraph; `docs/` is not vendored.) No dependency movement, no IPC change —
+`IPC-CHANNELS.md` is still true.
+
+**What it closes.** Measured 2026-09-20 18:29:37Z: Stop was pressed while the
+placement's `load-model qwen3.5-9b` read *"vllm loading; 50s elapsed"*, and the
+load COMPLETED in that same second. `placeOnCrucible` fired `DELETE /v1/jobs/{id}`
+fire-and-forget, then threw out on `signal.throwIfAborted()` before `takeLease`.
+The DELETE landed on an already-`done` job (a no-op) and the placement walked
+away from `resident: qwen3.5-9b` with `claim: None, lease: None,
+chat.in_flight: 0, running: []` — 21 GB held by nobody, indefinitely, because
+Crucible's settlement is triggered by a HOLDER LETTING GO and a load's own
+completion is deliberately not one (`crucible/settle.py`). It was unloaded by
+hand.
+
+- **The rule**: a placement cancelled after it submitted a load is responsible
+  for what that load put on the card. `releaseAbandonedLoad` awaits the cancel's
+  ANSWER (the DELETE's promise is kept, not `void`ed), reads the load job's
+  TERMINAL STATE — the receipt is not the fact, since a DELETE on a finished job
+  answers `cancelled` while `GET /v1/jobs/{id}` says `done` — and on `done`
+  gives the card back by being a holder that lets go: `takeLease` then
+  `release()`, with `unload-model` as the fallback when the lease is refused.
+  `failed` and `cancelled` landed nothing and tidy nothing.
+- **It never hangs and never fails.** The whole cleanup runs under one 30 s
+  deadline and returns normally whatever happens; the rethrow of the original
+  abort is unconditional, so the row's ending is still *cancelled*. A bound that
+  fires logs the model and the server (`[slots] cancelled placement: the load of
+  <model> on "<server>" may still be resident …`).
+- **The BookForge-side in-flight sweep cannot see this case.** `wires.placed` is
+  announced in `executeJob` only after `placeRun` returns `go` — i.e. after the
+  lease — so a load in flight is in no ledger. That is why the cleanup is in the
+  placement rather than left to the sweep.
+
+**Keepers** (`app/test/crucible-cancelled-placement.test.ts`, real dispatcher
+against a local `Bun.serve`): Owen's case (abort on the warming line, the load
+lands anyway → a lease is taken and released and the fixture's resident is back
+to null), a load the server genuinely cancels (no lease, no unload), and the
+deadline (a fixture that never answers the release → it returns, and the line
+names the model). Verified failing against `dccc144`.
 
 ## The `9e0b27d → dccc144` re-vendor — PK8, the pool depth stops being ours (2026-09-20)
 
