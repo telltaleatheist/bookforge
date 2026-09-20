@@ -929,13 +929,20 @@ apps' doors.
   `crucibleChatOnce`. `align` travels and then REFUSES BY NAME before submitting, because a
   remote alignment cannot finish until B5 — see §3. 12-check keeper
   `tools/test-queue-step-travel.js`. Still local: the PASS steps (§3).
-- **A4. Double admission on the local card.** For work `onThisMachine`, the queue still asks
-  the lock file (`external-gpu-job.lock`) and the GPU arbiter AFTER Crucible admission
-  (`queue-engine.ts:1844`). With a local Crucible, the server's `409 server_busy` and its
-  accelerator probe are the truth about the card; the lock file is how a TRAINING CHAIN
-  (not a Crucible client) tells BookForge the card is taken. Ruling: does the fine-tune
-  register with Crucible (a lease on the card with no model — a new lease kind), or does the
-  lock file stay as the one non-Crucible holder? **RULING.**
+- **A4. Double admission on the local card — RULED AND BUILT 2026-09-19.** Owen: *"Crucible
+  is configured to be system agnostic. Doesn't matter if it's on this system or on a rented
+  DigitalOcean GPU, it should effectively be treated the same locally or otherwise. Like
+  Ollama — the user connects to it the same way whether local or remote."* So the queue has
+  no notion of a server being here at all: `isLoopbackUrl`, `serversOnThisMachine`,
+  `thisMachinesCardHeldBy`, `thisMachineSetId` and `SlotSet.onThisMachine` are deleted, and
+  every registered server takes ONE road — the venue's slot, then `reserveBeforeLaunch`, then
+  the launch. `external-gpu-job.lock` and the GPU arbiter are asked only for a non-travelling
+  GPU step (`LONGFORM_ALIGN_SET`), which is the work this process runs itself. **The two
+  consequences, deliberate:** a training chain holding the lock no longer holds back a
+  Crucible render on the same box, and `acquireGpuForJob` no longer evicts the resident Ollama
+  models before one — Crucible owns its card's memory. The bench draws the nvidia-smi reading
+  on the in-app aligner's row alone, and the aligner keeps a lane of its own instead of being
+  filed into a loopback server's slots. Keeper: `tools/test-queue-admission.js` §3a.
 - **A5. One lease per row — BUILT 2026-09-14 (`52ed21c8`).** The scheduler runs every step
   inside a ROW SCOPE named by the run's id (`AsyncLocalStorage`, injected so the engine keeps
   its no-Electron property), and inside a scope `withCrucibleLease` hands its lease to the

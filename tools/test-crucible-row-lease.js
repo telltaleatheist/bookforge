@@ -695,7 +695,7 @@ const settle = async (n = 20) => { for (let i = 0; i < n; i += 1) await new Prom
       // step would not launch at all (crucible PHASE15 §5.3).
       routes.noteCrucibleRoutes('mac', { [DEFAULT_ACT]: 'local' });
       engine.setCrucibleRoutingHost({
-        routing: () => ({ ranked: [{ name: 'mac', enabled: true }], serversOnThisMachine: [] }),
+        routing: () => ({ ranked: [{ name: 'mac', enabled: true }] }),
         defaultWaitFor: () => 'mac',
         dial: () => 'any',
         async reach() { return { reachable: true }; },

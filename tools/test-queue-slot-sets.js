@@ -139,7 +139,6 @@ const factsOf = ({ servers = [], off = [], ranked, upstreams, roles, occupied = 
   roles: roles ?? allEngines(servers),
   occupied,
   alignerCharged: slots.longformAlignCharged({ jobs }),
-  serversOnThisMachine: [],
 });
 
 test('a CPU step is work BookForge does itself, whatever its run says', () => {
@@ -250,13 +249,13 @@ test('a server the caller said NOTHING about is refused by name, never defaulted
   assert.throws(
     () => slots.slotSets({
       rankedServers: [{ name: 'mac', enabled: true }], upstreams: {}, roles: { mac: 'engine' },
-      occupied: [], alignerCharged: false, serversOnThisMachine: [],
+      occupied: [], alignerCharged: false,
     }),
     /nothing was said about whether "mac" has an upstream/,
     'the two guesses are a lane that never fills and a lane that vanishes under a running row',
   );
   assert.throws(
-    () => slots.slotSets({ rankedServers: [], roles: {}, occupied: [], alignerCharged: false , serversOnThisMachine: []}),
+    () => slots.slotSets({ rankedServers: [], roles: {}, occupied: [], alignerCharged: false }),
     /`upstreams` was not supplied/,
     'the type says required; this is for the callers the compiler does not see',
   );
@@ -266,16 +265,16 @@ test('a caller that said nothing about the LEGACY row is refused by name too', (
   assert.throws(
     // Every OTHER required fact is supplied, so the refusal under test is the
     // only thing missing — otherwise this asserts whichever guard happens to
-    // run first, which is what it did when `serversOnThisMachine` was added.
+    // run first.
     () => slots.slotSets({
-      rankedServers: [], upstreams: {}, roles: {}, occupied: [], serversOnThisMachine: [],
+      rankedServers: [], upstreams: {}, roles: {}, occupied: [],
     }),
     /`alignerCharged` was not supplied/,
     'true draws a GPU row Owen ruled out; false strands a step that can run nowhere else',
   );
   assert.throws(
     () => slots.slotSets({
-      rankedServers: [], upstreams: {}, roles: {}, occupied: [LEGACY], alignerCharged: false, serversOnThisMachine: [],
+      rankedServers: [], upstreams: {}, roles: {}, occupied: [LEGACY], alignerCharged: false,
     }),
     /`occupied` says the local long-form aligner is holding something of ours/,
     'both are read off the same steps, so they cannot honestly disagree — and the occupied '
@@ -408,7 +407,7 @@ test('a server nobody has asked about its ROLE keeps its row — every older Cru
 test('a caller that said nothing about ROLES is refused by name, never defaulted', () => {
   assert.throws(
     () => slots.slotSets({
-      enabledServers: ['mac'], upstreams: { mac: 'none' }, occupied: [], alignerCharged: false, serversOnThisMachine: [],
+      enabledServers: ['mac'], upstreams: { mac: 'none' }, occupied: [], alignerCharged: false,
     }),
     /`roles` was not supplied/,
     'the type says required; this is for the callers the compiler does not see',
@@ -416,7 +415,7 @@ test('a caller that said nothing about ROLES is refused by name, never defaulted
   assert.throws(
     () => slots.slotSets({
       rankedServers: [{ name: 'mac', enabled: true }], upstreams: { mac: 'none' }, roles: {},
-      occupied: [], alignerCharged: false, serversOnThisMachine: [],
+      occupied: [], alignerCharged: false,
     }),
     /nothing was said about whether "mac" is an engine or an orchestrator/,
     'a name with no entry is a caller that forgot, not a server with no role',
@@ -580,16 +579,17 @@ test('a plain CPU step still goes to local-work — it carries no venue', () => 
   assert.strictEqual(slots.slotSetForStep(jobOfSteps([step]), step), slots.LOCAL_WORK_SET);
 });
 
-test("a cloud lane is never THIS machine's card, even local's", () => {
-  // `local:cloud` is the local engine FORWARDING work. Nothing is on the 3090.
-  const occupancy = new Map([[LEGACY, { gpu: 1, cpu: 0 }]]);
-  assert.strictEqual(slots.thisMachinesCardHeldBy({
-    venue: slots.cloudLaneOf('3090 Ti'), serversOnThisMachine: ['3090 Ti'], occupancy,
-  }), null);
-  // …and the GPU venue beside it still is.
-  assert.strictEqual(slots.thisMachinesCardHeldBy({
-    venue: '3090 Ti', serversOnThisMachine: ['3090 Ti'], occupancy,
-  }), LEGACY);
+test('THERE IS NO CROSS-SET ONE-CARD RULE ANY MORE — Owen, 2026-09-19', () => {
+  /*
+   * *"Crucible is configured to be system agnostic … it should effectively be
+   * treated the same locally or otherwise."* `thisMachinesCardHeldBy` held the
+   * in-app aligner and a loopback Crucible apart on the theory that they are
+   * one 3090 Ti. Crucible owns its card's memory — it holds its own lease and
+   * probes its own accelerator — so the rule, and the only function that could
+   * express it, are gone.
+   */
+  assert.strictEqual(slots.thisMachinesCardHeldBy, undefined);
+  assert.strictEqual(slots.thisMachineSetId, undefined);
 });
 
 test('a DISABLED server contributes no set, so nothing new is claimed there', () => {
@@ -616,23 +616,16 @@ test('occupancy counts only what is RUNNING, per set', () => {
   assert.strictEqual(counts.get(slots.LOCAL_WORK_SET).cpu, 1);
 });
 
-test('this machine has ONE card behind two venues', () => {
-  const occupancy = new Map([[LEGACY, { gpu: 1, cpu: 0 }]]);
+test('a step that cannot travel is charged to the in-app row, never to a server', () => {
+  // Owen, 2026-09-19. A registered server's lane is reached through a VENUE the
+  // step carries and no other way, so no server — loopback or across the
+  // tailnet — is ever charged for work this app runs itself.
+  const step = stepOf({ resource: 'gpu' });
+  assert.strictEqual(slots.slotSetForStep(jobOfSteps([step]), step), LEGACY);
+  const onMac = stepOf({ resource: 'gpu' });
   assert.strictEqual(
-    slots.thisMachinesCardHeldBy({ venue: '3090 Ti', serversOnThisMachine: ['3090 Ti'], occupancy }),
-    LEGACY,
-    'a local-Crucible render must not start on a card the legacy spawn is using');
-  assert.strictEqual(
-    slots.thisMachinesCardHeldBy({ venue: 'mac', serversOnThisMachine: ['3090 Ti'], occupancy }),
-    null,
-    'a REMOTE venue is a different card, which is the whole point of the sets');
-});
-
-test('with no local Crucible, only the legacy venue is this machine', () => {
-  const occupancy = new Map([[LEGACY, { gpu: 1, cpu: 0 }]]);
-  assert.strictEqual(
-    slots.thisMachinesCardHeldBy({ venue: 'mac', serversOnThisMachine: [], occupancy }),
-    null);
+    slots.slotSetForStep(jobOfSteps([onMac], { waitForResolved: 'local' }), onMac), LEGACY,
+    'even a run already pointed at a machine: this step cannot go there');
 });
 
 // ── The bench draws a machine per lane ──────────────────────────────────────
@@ -781,7 +774,6 @@ function fakeHost(initial) {
   const state = {
     ranked: initial.ranked ?? [],
     legacyLocalRender: initial.legacyLocalRender === true,
-    serversOnThisMachine: initial.serversOnThisMachine === undefined ? ['local'] : initial.serversOnThisMachine,
     defaultWaitFor: initial.defaultWaitFor === undefined ? null : initial.defaultWaitFor,
     reach: initial.reach ?? {},
   };
@@ -789,7 +781,6 @@ function fakeHost(initial) {
     routing: () => ({
       ranked: state.ranked.map((row) => ({ ...row })),
       legacyLocalRender: state.legacyLocalRender,
-      serversOnThisMachine: state.serversOnThisMachine,
     }),
     defaultWaitFor: () => state.defaultWaitFor,
     async reach(name) {
@@ -887,7 +878,7 @@ test('a host address uses its engine lane, and registering that engine twice nev
     const gpu = fakeModule('tts-conversion', { travels: true });
     const ranked = [{ name: 'tray', enabled: true }];
     if (direct) ranked.push({ name: 'gpu', enabled: true });
-    const host = fakeHost({ ranked, defaultWaitFor: 'tray', serversOnThisMachine: [],
+    const host = fakeHost({ ranked, defaultWaitFor: 'tray',
       reach: { tray: { reachable: true }, gpu: { reachable: true } } });
     await fresh(`host-engine-alias-${direct}`, [gpu], host);
     try {
@@ -1063,48 +1054,60 @@ test('THE BENCH REDRAWS WHEN THE RECORD LEARNS — nothing else would ever redra
   routes.forgetCrucibleRoutes();
 });
 
-test('the legacy spawn keeps ONE card, and a step that cannot travel waits for it', async () => {
-  const gpu = fakeModule('tts-conversion', { travels: true });
-  const local = fakeModule('rvc-enhancement', { consumes: 'audio-session', produces: 'sentences' });
-  const host = fakeHost({ ranked: TWO, defaultWaitFor: 'local', legacyLocalRender: true,
-    reach: REACHABLE });
-  await fresh('legacy-one-card', [gpu, local], host);
+test('the in-app row keeps ONE card, and a second step that cannot travel waits for it',
+  async () => {
+    /*
+     * The row is this app's OWN GPU tenant and has one slot, exactly as the old
+     * global number did. It was `gpu.runs + local.runs === 1` until Owen's
+     * ruling of 2026-09-19, when the cross-set one-card rule went: a render on
+     * `local` is Crucible's card to manage, so it no longer takes turns with
+     * work this process runs itself. Two steps of OUR OWN still do.
+     */
+    const local = fakeModule('rvc-enhancement', { consumes: 'audio-session', produces: 'sentences' });
+    const host = fakeHost({ ranked: TWO, defaultWaitFor: 'local', reach: REACHABLE });
+    await fresh('in-app-one-card', [local], host);
 
-  enqueueSent(narrate('Mistborn'));
-  enqueueSent({
-    title: 'Enhance',
-    steps: [{
-      type: 'rvc-enhancement', label: 'Enhance', config: {},
-      sourceRef: { kind: 'audio-session', path: '/s' },
-    }],
+    for (const title of ['Enhance A', 'Enhance B']) {
+      enqueueSent({
+        title,
+        steps: [{
+          type: 'rvc-enhancement', label: 'Enhance', config: {},
+          sourceRef: { kind: 'audio-session', path: '/s' },
+        }],
+      });
+    }
+    engine.start();
+    await settle(40);
+
+    assert.strictEqual(local.runs.length, 1,
+      'the in-app GPU row has one slot, exactly as the old global number did');
+
+    local.runs[0].resolve({ kind: 'sentences', path: '/out/s' });
+    await settle(40);
+    assert.strictEqual(local.runs.length, 2, 'and the second takes it the moment it frees');
   });
-  engine.start();
-  await settle(40);
 
-  assert.strictEqual(gpu.runs.length + local.runs.length, 1,
-    'the legacy set has one GPU slot, exactly as the old global number did');
-});
-
-test('LOCAL GPU WORK GOES IN THIS MACHINE\'S OWN SLOT, not a third one beside it', async () => {
+test('IN-APP GPU WORK GETS ITS OWN ROW, whatever servers are registered', async () => {
   /*
-   * Owen, 2026-09-18: *"instead of sitting next to the two gpu slots, it should
-   * be IN the gpu slot itll be taking up … the queued item should remain in the
-   * queue, not in a third slot."*
+   * Owen, 2026-09-19: *"Crucible is configured to be system agnostic … it should
+   * effectively be treated the same locally or otherwise."*
    *
-   * `local` answers on this box (`serversOnThisMachine` defaults to it, which is
-   * this PC's real shape — the WSL engine is on loopback). Its slots ARE the
-   * card, so a GPU step that has not been taught to travel belongs in them, and
-   * a row of its own beside them would describe the same GPU twice.
+   * Between 2026-09-18 and that ruling this row was SWALLOWED whenever a
+   * registered server answered on loopback — its two slots were held to BE the
+   * card, and the aligner was filed into them. That is the queue treating one
+   * registered server differently for being here, which is the thing the ruling
+   * deleted. So the row is drawn on `alignerCharged` and nothing else, and
+   * `local` keeps both of its own slots for renders.
    *
-   * THE HAZARD THE OLD UNCONDITIONAL ROW GUARDED IS STILL GUARDED, and it is the
-   * last assertion here: a step with no set to charge gets `slotsOf` 0 and is
-   * never launched. It launches.
+   * THE HAZARD THE ROW GUARDS is the last assertion here: a step with no set to
+   * charge gets `slotsOf` 0 and is never launched. It launches.
    */
   const local = fakeModule('rvc-enhancement', { consumes: 'audio-session', produces: 'sentences' });
   const host = fakeHost({ ranked: TWO, defaultWaitFor: 'any', reach: REACHABLE });
-  await fresh('local-gpu-in-its-own-slot', [local], host);
+  await fresh('in-app-gpu-own-row', [local], host);
 
-  assert.ok(!engine.snapshot().slotSets.some((s) => s.id === LEGACY));
+  assert.ok(!engine.snapshot().slotSets.some((s) => s.id === LEGACY),
+    'nothing charges it, so the row is absent');
 
   enqueueSent({
     title: 'Enhance',
@@ -1116,16 +1119,19 @@ test('LOCAL GPU WORK GOES IN THIS MACHINE\'S OWN SLOT, not a third one beside it
   engine.start();
   await settle(40);
 
-  assert.ok(!engine.snapshot().slotSets.some((s) => s.id === LEGACY),
-    'no third row: this machine already has two GPU slots on the bench');
+  const row = engine.snapshot().slotSets.find((s) => s.id === LEGACY);
+  assert.ok(row, "this app's own GPU work has a lane of its own");
+  assert.strictEqual(row.gpu, 1);
   assert.strictEqual(local.runs.length, 1, 'and it LAUNCHED — no set, no slots, no launch');
 
-  // IN the slot: the occupant is drawn on this machine's own GPU lane.
-  const lanes = bench.benchLanes(engine.snapshot()).filter((l) => l.resource === 'gpu');
-  const mine = lanes.filter((l) => l.setId === 'local');
-  assert.ok(mine.length > 0, "this machine's lanes are drawn");
+  const mine = bench.benchLanes(engine.snapshot())
+    .filter((l) => l.resource === 'gpu' && l.setId === LEGACY);
   assert.strictEqual(mine.filter((l) => l.occupant !== null).length, 1,
-    'the aligner occupies one of them');
+    'the occupant is drawn on that row and not on a server\'s');
+  assert.strictEqual(
+    bench.benchLanes(engine.snapshot())
+      .filter((l) => l.resource === 'gpu' && l.setId === 'local' && l.occupant !== null).length, 0,
+    "and NOT on the loopback server's lane — that card is Crucible's to fill");
 
   local.runs[0].resolve({ kind: 'sentences', path: '/out/s' });
   await settle(40);
@@ -1135,33 +1141,36 @@ test('LOCAL GPU WORK GOES IN THIS MACHINE\'S OWN SLOT, not a third one beside it
     'and the slot is free again the moment it finishes');
 });
 
-test('A QUEUED local GPU step raises no slot at all — it waits in the queue', async () => {
-  /*
-   * The second half of the same ruling. The row used to appear for any
-   * NON-TERMINAL step charging it, so merely queueing an align conjured a third
-   * slot that nothing was running in. Here the card is already full, so the new
-   * step stays queued — and the bench is exactly as wide as it was.
-   */
-  const local = fakeModule('rvc-enhancement', { consumes: 'audio-session', produces: 'sentences' });
-  const host = fakeHost({ ranked: TWO, defaultWaitFor: 'any', reach: REACHABLE });
-  await fresh('queued-local-gpu-raises-nothing', [local], host);
+test('a QUEUED in-app GPU step raises the row, because it has nowhere else to be',
+  async () => {
+    /*
+     * The row is what such a step is ADMITTED INTO: with no row, `slotsOf`
+     * answers 0 and the step waits for ever. So it is raised by any non-terminal
+     * step that charges it, queued or running — uniformly, on every machine.
+     * It was suppressed here while a loopback server was registered, which is
+     * exactly the "a server here is a different sort of thing" the 2026-09-19
+     * ruling removed.
+     */
+    const local = fakeModule('rvc-enhancement', { consumes: 'audio-session', produces: 'sentences' });
+    const host = fakeHost({ ranked: TWO, defaultWaitFor: 'any', reach: REACHABLE });
+    await fresh('queued-in-app-gpu-raises-its-row', [local], host);
 
-  const before = bench.benchLanes(engine.snapshot()).length;
+    enqueueSent({
+      title: 'Enhance',
+      steps: [{
+        type: 'rvc-enhancement', label: 'Enhance', config: {},
+        sourceRef: { kind: 'audio-session', path: '/s' },
+      }],
+    });
+    await settle(40);   // enqueued, never started: Start was not pressed
 
-  enqueueSent({
-    title: 'Enhance',
-    steps: [{
-      type: 'rvc-enhancement', label: 'Enhance', config: {},
-      sourceRef: { kind: 'audio-session', path: '/s' },
-    }],
+    const row = engine.snapshot().slotSets.find((s) => s.id === LEGACY);
+    assert.ok(row, 'the step has to have a lane to be admitted into');
+    const lanes = bench.benchLanes(engine.snapshot())
+      .filter((l) => l.resource === 'gpu' && l.setId === LEGACY);
+    assert.strictEqual(lanes.filter((l) => l.occupant !== null).length, 0,
+      'and nothing is IN it: the step is still in the queue');
   });
-  await settle(40);   // enqueued, never started: Start was not pressed
-
-  assert.ok(!engine.snapshot().slotSets.some((s) => s.id === LEGACY),
-    'a queued step advertises no in-app card');
-  assert.strictEqual(bench.benchLanes(engine.snapshot()).length, before,
-    'the bench did not grow a lane because something was waiting in the queue');
-});
 
 test('WITH NO LOCAL CRUCIBLE the row is still drawn, or the work could never start', async () => {
   /*
@@ -1173,7 +1182,7 @@ test('WITH NO LOCAL CRUCIBLE the row is still drawn, or the work could never sta
    */
   const local = fakeModule('rvc-enhancement', { consumes: 'audio-session', produces: 'sentences' });
   const host = fakeHost({
-    ranked: TWO, defaultWaitFor: 'any', reach: REACHABLE, serversOnThisMachine: [],
+    ranked: TWO, defaultWaitFor: 'any', reach: REACHABLE,
   });
   await fresh('no-local-crucible-keeps-the-row', [local], host);
 
@@ -1193,26 +1202,29 @@ test('WITH NO LOCAL CRUCIBLE the row is still drawn, or the work could never sta
   assert.strictEqual(local.runs.length, 1, 'and it launched');
 });
 
-test('the local Crucible and the local spawn never run on the card together', async () => {
+test('a loopback Crucible and this app\'s own GPU work run SIDE BY SIDE', async () => {
   /*
-   * ONE SET NOW, NOT TWO (2026-09-18). The render goes to `local`; the enhance
-   * step has not been taught to travel and `local` answers on this box, so it
-   * goes into the SAME set. That is the point of the change — one card, one row
-   * — and it makes the contention ordinary: the pool is full, which is a reason
-   * the bench already knows how to say.
+   * Owen, 2026-09-19: *"Crucible is configured to be system agnostic. Doesn't
+   * matter if it's on this system or on a rented DigitalOcean GPU, it should
+   * effectively be treated the same locally or otherwise. Like Ollama — the
+   * user connects to it the same way whether local or remote."*
    *
-   * It used to be two sets over one 3090 Ti, held apart by the cross-set
-   * one-card rule, and the waiting row carried an `admissionHold` naming *this
-   * machine's graphics card*. There is nothing to hold apart any more, so that
-   * hold is not written — and `pump` CLEARS a stale one by name when a pool is
-   * full, because the pool being full outranks whatever admission last said.
-   * What must still be true is what this test was always for: the two do not
-   * run on the card together.
+   * This test used to assert the opposite — the two took turns, held apart
+   * first by a cross-set one-card rule and then (2026-09-18) by being filed
+   * into one set. Both were the queue deciding what may be resident on a card
+   * Crucible manages. Crucible owns its card's memory: it holds its own lease,
+   * probes its own accelerator, and refuses by name when it is full. So the
+   * render goes to `local`'s lane, the enhance goes to this app's own row, and
+   * neither waits for the other.
+   *
+   * THE CONSEQUENCE IS DELIBERATE AND IS WRITTEN DOWN IN `pump`: a render on a
+   * Crucible here no longer waits behind `external-gpu-job.lock`, and
+   * `acquireGpuForJob` no longer evicts Ollama for one.
    */
   const gpu = fakeModule('tts-conversion', { travels: true });
   const local = fakeModule('rvc-enhancement', { consumes: 'audio-session', produces: 'sentences' });
   const host = fakeHost({ ranked: TWO, defaultWaitFor: 'local', reach: REACHABLE });
-  await fresh('one-card-two-venues', [gpu, local], host);
+  await fresh('loopback-and-in-app-side-by-side', [gpu, local], host);
 
   enqueueSent({
     title: 'Enhance',
@@ -1225,19 +1237,11 @@ test('the local Crucible and the local spawn never run on the card together', as
   engine.start();
   await settle(40);
 
-  assert.strictEqual(local.runs.length, 1);
-  assert.strictEqual(gpu.runs.length, 0, 'the card is taken, by the step that got there first');
-  // No cross-set hold to write, and none written: they are in one pool.
+  assert.strictEqual(local.runs.length, 1, "this app's own GPU row took the enhance");
+  assert.strictEqual(gpu.runs.length, 1,
+    'and the render went to the server, which is scheduled exactly as the Mac would be');
+  // Nothing is held, so nothing has a reason written on it.
   assert.strictEqual(jobById(b.id).steps[0].progress.admissionHold, undefined);
-  // The row still says WHY it is waiting, in the bench's own words.
-  const waiting = jobById(b.id);
-  const why = bench.stillReason(engine.snapshot(), waiting, waiting.steps[0]);
-  assert.strictEqual(why.kind, 'no-slot');
-  assert.match(why.sentence, /local/, 'and it names the machine it is waiting for');
-
-  local.runs[0].resolve({ kind: 'sentences', path: '/out/s' });
-  await settle(40);
-  assert.strictEqual(gpu.runs.length, 1);
 });
 
 test('a CPU step never waits for a card, however busy every machine is', async () => {
@@ -1535,7 +1539,7 @@ test('a caller that says nothing about what is switched off is refused', () => {
   assert.throws(
     () => slots.slotSets({
       upstreams: {}, roles: {}, occupied: [],
-      alignerCharged: false, serversOnThisMachine: [],
+      alignerCharged: false,
     }),
     /`rankedServers` was not supplied/,
     'an empty list is a claim that nothing is off, and every greyed row would vanish again',

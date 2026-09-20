@@ -130,7 +130,7 @@ export const foundryJobStep: StepModule = {
    * Asked of the same function that answers `resource`, on purpose: a step that
    * contends for a card and CANNOT travel is, by construction, charged to this
    * machine's card — `slotSetForStep` files a non-travelling step on
-   * `thisMachineSetId` — so the two facts cannot disagree without the bench
+   * `LONGFORM_ALIGN_SET` — so the two facts cannot disagree without the bench
    * drawing work on a machine that is not doing it. Deriving one from the other
    * is what makes that unsayable rather than merely untrue today.
    *

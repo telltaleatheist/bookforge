@@ -14,11 +14,13 @@
  * that did not want it — which is why this is a SOURCE assertion: there is no
  * failure to observe at runtime, only a card that is busy for no reason.
  *
- * THE TEST IS WHICH SERVER, NOT WHETHER CRUCIBLE, and that distinction is the
- * whole fix. `GenerationVenue` has one member, so "is it Crucible" is now always
- * yes; a Crucible server can BE this machine (the WSL engine on the PC), and
- * that render does use this card and must still take the lease. The question is
- * only whether the venue's server is one of `serversOnThisMachine()`.
+ * THE TEST IS WHETHER THERE IS A VENUE AT ALL, since Owen's ruling of
+ * 2026-09-19: *"Crucible is configured to be system agnostic. Doesn't matter if
+ * it's on this system or on a rented DigitalOcean GPU, it should effectively be
+ * treated the same locally or otherwise."* A loopback server used to be
+ * excepted — it took the lock and evicted Ollama — and that exception is gone.
+ * Crucible owns its card's memory wherever the card is; this process takes the
+ * lock only for a render it spawns itself, which is a session with NO venue.
  *
  * Run: node tools/test-gpu-lease-venue.js
  */
@@ -56,16 +58,19 @@ function acquireGpuBody() {
 
 const body = acquireGpuBody();
 
-check('the lease is gated on the venue being a server ON THIS MACHINE', () => {
-  assert.ok(/serversOnThisMachine\(\)/.test(body),
-    'acquireGpuForJob no longer asks which servers are on this machine, so a render '
-    + 'bound for the Mac will take this card\'s lock again and evict Ollama for nothing.');
+check('EVERY crucible venue skips the lease, wherever that server answers', () => {
   assert.ok(/session\.venue\?\.server/.test(body),
     'the gate must read the RESOLVED venue off the session.');
+  assert.ok(/venueServer !== undefined\) \{/.test(body),
+    'a venue — any venue — must be the whole gate: Crucible owns its card.');
+  assert.ok(!/serversOnThisMachine\(|isLoopbackUrl\(/.test(body),
+    'acquireGpuForJob asks again where the server is. Owen, 2026-09-19: a Crucible on '
+    + 'this box is treated exactly like one on a rented GPU, so a render there takes no '
+    + 'lock here and evicts nothing.');
 });
 
 check('the gate returns BEFORE the lock is taken and before Ollama is evicted', () => {
-  const gate = body.search(/serversOnThisMachine\(\)/);
+  const gate = body.search(/venueServer !== undefined/);
   const lock = body.search(/acquireGpu\(/);
   const evict = body.search(/unloadOllamaModels\(/);
   assert.ok(gate > -1 && lock > -1 && evict > -1, 'expected all three in this function');
@@ -76,19 +81,6 @@ check('the gate returns BEFORE the lock is taken and before Ollama is evicted', 
     + 'another machine is the second half of the defect, not a side effect of the first');
 });
 
-check('it tests WHICH server, never merely whether the venue is crucible', () => {
-  /*
-   * `GenerationVenue` has one member, so `where === 'crucible'` is now always
-   * true. A gate written that way would skip the lease for EVERY render —
-   * including the WSL engine on this PC, which really does use this card — and
-   * two GPU jobs would then run on one card with nothing arbitrating.
-   */
-  assert.ok(!/venue\?\.where\s*===\s*'crucible'/.test(body),
-    'acquireGpuForJob gates on `where === crucible`, which is always true now. That '
-    + 'skips the lease for the WSL engine on this machine too, and lets a local render '
-    + 'run unarbitrated beside AI cleanup.');
-});
-
 check('a session with NO venue keeps the old behaviour', () => {
   // "I do not know where this is going" must not be read as "it is going
   // elsewhere" — an assembly-only run has no venue and must not lose its lock.
@@ -96,12 +88,26 @@ check('a session with NO venue keeps the old behaviour', () => {
     'the gate must require a KNOWN venue before skipping the lease.');
 });
 
-check('the fact has one owner — the same one the bench reads', () => {
-  const slots = fs.readFileSync(
-    path.join(REPO, 'shared', 'queue', 'slot-sets.ts'), 'utf8');
-  assert.ok(/serversOnThisMachine/.test(slots),
-    'shared/queue/slot-sets.ts no longer uses serversOnThisMachine, so "is this server '
-    + 'here" now has two answers — the bench\'s and the GPU lease\'s — and they will drift.');
+check('NO DOOR ANYWHERE ANSWERS "is this server on this machine"', () => {
+  /*
+   * The rule has one owner because it has no owner: the question is not asked.
+   * A re-introduced helper anywhere in the scheduler or the registry is a
+   * second kind of server coming back, which is the thing the ruling deleted.
+   */
+  for (const rel of [
+    ['shared', 'queue', 'slot-sets.ts'],
+    ['shared', 'queue', 'bench.ts'],
+    ['electron', 'queue-engine.ts'],
+    ['electron', 'queue-ipc.ts'],
+    ['electron', 'crucible', 'servers.ts'],
+    ['electron', 'crucible', 'discovery.ts'],
+  ]) {
+    const text = fs.readFileSync(path.join(REPO, ...rel), 'utf8');
+    assert.ok(!/serversOnThisMachine|isLoopbackUrl|thisMachinesCardHeldBy|thisMachineSetId/
+      .test(text.replace(/GONE WITH THE SAME RULING[\s\S]*?\*\//, '')),
+      `${rel.join('/')} asks where a Crucible server is again — Owen, 2026-09-19: every `
+      + 'registered server is scheduled identically, local or otherwise.');
+  }
 });
 
 console.log(`\ngpu lease venue: ${ran} check(s), exit ${process.exitCode || 0}`);

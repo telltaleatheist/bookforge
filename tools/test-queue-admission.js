@@ -131,7 +131,6 @@ function fakeModule(type, opts = {}) {
 function fakeHost(initial) {
   const state = {
     ranked: initial.ranked ?? [],
-    serversOnThisMachine: initial.serversOnThisMachine === undefined ? [] : initial.serversOnThisMachine,
     defaultWaitFor: initial.defaultWaitFor === undefined ? null : initial.defaultWaitFor,
     reach: initial.reach ?? {},
     asked: [],
@@ -139,7 +138,6 @@ function fakeHost(initial) {
   state.host = {
     routing: () => ({
       ranked: state.ranked.map((row) => ({ ...row })),
-      serversOnThisMachine: state.serversOnThisMachine,
     }),
     defaultWaitFor: () => state.defaultWaitFor,
     async reach(name) {
@@ -452,6 +450,62 @@ test('a render, which leases nothing, is launched on a free server with no reser
   assert.strictEqual(gpu.runs.length, 1);
   assert.strictEqual(jobOf(job.id).waitForResolved, 'mac');
 });
+
+// ── 3a · Every server is the same road, local or otherwise ─────────────────
+
+test('A SERVER AT http://127.0.0.1:7100 TAKES THE RESERVE ROAD, like any other',
+  async () => {
+    /*
+     * Owen, 2026-09-19: *"Crucible is configured to be system agnostic. Doesn't
+     * matter if it's on this system or on a rented DigitalOcean GPU, it should
+     * effectively be treated the same locally or otherwise. Like Ollama — the
+     * user connects to it the same way whether local or remote."*
+     *
+     * Until that ruling the queue looked the registered URL up
+     * (`isLoopbackUrl` → `serversOnThisMachine`) and sent such a step down a
+     * SECOND road: `external-gpu-job.lock` and the GPU arbiter first, the
+     * reserve after. So a training chain on this box held back a render on the
+     * Crucible beside it, and a Crucible render evicted the resident Ollama
+     * models (`parallel-tts-bridge.ts`, `acquireGpuForJob`). Both probes are
+     * about the card THIS PROCESS drives; Crucible owns its card's memory.
+     *
+     * The probes here answer with a HOLDER, so if either were asked the row
+     * would park with its sentence instead of launching — the assertion has
+     * something to fail on rather than a silent zero.
+     */
+    const HERE = 'wsl — http://127.0.0.1:7100';
+    const gpu = fakeModule('pass', { leases: true });
+    const host = fakeHost({
+      ranked: [{ name: HERE, enabled: true }],
+      defaultWaitFor: HERE,
+      reach: { [HERE]: { reachable: true } },
+    });
+    const seam = fakeLeaseSeam();
+    await fresh('loopback-is-an-ordinary-server', [gpu], host, seam);
+
+    let lockAsked = 0;
+    let arbiterAsked = 0;
+    engine.setGpuLockProbe(() => { lockAsked += 1; return 'orpheus fine-tune (pid 1234)'; });
+    engine.setGpuHolderProbe(() => { arbiterAsked += 1; return 'AI cleanup'; });
+
+    const job = enqueueSent(narrate('Wool'));
+    engine.start();
+    await settle();
+
+    assert.strictEqual(lockAsked, 0,
+      "the external training lock was asked about a Crucible's card — it describes "
+      + 'the card THIS PROCESS drives, and a registered server is not that');
+    assert.strictEqual(arbiterAsked, 0,
+      'the GPU arbiter was asked about a Crucible\'s card, for the same reason');
+    assert.deepStrictEqual(
+      seam.reserves.map((r) => ({ server: r.server, act: r.act })),
+      [{ server: HERE, act: 'clean' }],
+      'the road is the reserve, exactly as it is for the Mac across the tailnet');
+    assert.strictEqual(gpu.runs.length, 1, 'and it launched');
+    assert.strictEqual(jobOf(job.id).waitForResolved, HERE);
+    assert.strictEqual(firstStep(job.id).progress.admissionHold, undefined,
+      'nothing held it, so nothing wrote a reason on it');
+  });
 
 // ── 4 · A refused reserve is a WAIT, and it assigns nothing ─────────────────
 

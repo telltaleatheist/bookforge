@@ -36,7 +36,6 @@ import type { NarrationTextCleanupChoice } from '../shared/queue/narration-run';
 import type { GenerationVenue } from './crucible/generation-venue';
 // Relative, never `@shared/*`: that alias resolves at compile time and breaks the
 // main process at RUNTIME (memory `shared-alias-runtime-trap`).
-import { serversOnThisMachine } from './crucible/servers';
 
 // Cap stderr buffers to prevent OOM on large books (e.g. 7983 sentences producing
 // megabytes of FFmpeg output). Only the tail is needed for error diagnostics.
@@ -6316,20 +6315,15 @@ function emitGpuWaitProgress(session: ConversionSession, message: string): void 
  * nothing renders on this card any more (docs/LEGACY-REMOVAL.md), so it is gone
  * with the spawn layer. What is left is the mutex.
  *
- * THE MUTEX IS KEPT DELIBERATELY, and this is the RULING OWED that
- * `startCrucibleGeneration`'s header names: *does a remote render hold this
- * machine's GPU lease?* Today it does. The conservative answer was written when
- * the common venue was a Crucible ON THIS MACHINE, where the card really is this
- * card and two things believing they own it is the failure
- * `crucible/docs/ARCHITECTURE.md` R3 is about. That premise WEAKENED when the
- * reserved server name `local` was removed — a venue no longer says whether it
- * is this box — so the honest version needs the lease to know WHICH machine's
- * card a job wants. That is a change to `gpu-arbiter` and Owen's call, and
- * removing the lease here instead would settle it silently.
+ * THE MUTEX IS FOR A RENDER THIS PROCESS SPAWNS ITSELF, and for nothing else.
+ * *Does a render on a Crucible hold this machine's GPU lease?* was the ruling
+ * owed that `startCrucibleGeneration`'s header named, and Owen answered it on
+ * 2026-09-19: no, wherever that Crucible is. See the venue gate below.
  *
- * The Ollama eviction goes with the mutex for the same reason: a cleanup model
- * pinned in this machine's VRAM is a real thing to step off, and it is stepped
- * off while we hold the mutex rather than hoped about.
+ * The Ollama eviction goes with the mutex, and so does its scope: a cleanup
+ * model pinned in this process's own VRAM is a real thing to step off before
+ * this process renders on it, and it is stepped off while we hold the mutex
+ * rather than hoped about.
  */
 async function acquireGpuForJob(session: ConversionSession): Promise<void> {
   const jobId = session.jobId;
@@ -6354,12 +6348,19 @@ async function acquireGpuForJob(session: ConversionSession): Promise<void> {
    * Nothing errored and nothing logged it, which is the shape this project keeps
    * paying for: the lock was held correctly, for a job that did not want it.
    *
-   * THE TEST IS WHICH SERVER, NOT WHETHER CRUCIBLE. A Crucible server can BE
-   * this machine — the WSL engine on the PC is one — and that render does use
-   * this card, so it must still take the lease. `serversOnThisMachine()` is the
-   * same fact `shared/queue/slot-sets.ts` already uses to decide which bench
-   * rows belong here; asking it twice in two ways is how the two would come to
-   * disagree.
+   * AND IT IS EVERY CRUCIBLE SERVER, WHEREVER IT ANSWERS (Owen, 2026-09-19):
+   * *"Crucible is configured to be system agnostic. Doesn't matter if it's on
+   * this system or on a rented DigitalOcean GPU, it should effectively be
+   * treated the same locally or otherwise. Like Ollama — the user connects to it
+   * the same way whether local or remote."* A loopback server used to be
+   * excepted here — it took this lock and evicted Ollama, because the card
+   * really is this card — and that exception is gone: **Crucible owns its
+   * card's memory.** It holds its own lease and probes its own accelerator, and
+   * a second process on this box deciding what may be resident there is the
+   * two-owners-of-one-fact this app keeps paying for. The visible consequence
+   * is that a render on a Crucible here no longer evicts the resident Ollama
+   * models first, and no longer waits behind `external-gpu-job.lock`
+   * (`queue-engine.ts`, `pump`).
    *
    * `sessionRunsInWsl` is the precedent for the shape: it gates on the venue so
    * a Crucible session "is never torn down in a guest it never entered". Same
@@ -6370,10 +6371,10 @@ async function acquireGpuForJob(session: ConversionSession): Promise<void> {
    * where this is going" must not be read as "it is going elsewhere".
    */
   const venueServer = session.venue?.server;
-  if (venueServer !== undefined && !serversOnThisMachine().includes(venueServer)) {
+  if (venueServer !== undefined) {
     console.log(
-      `[PARALLEL-TTS] Job ${jobId} renders on crucible "${venueServer}", which is not this `
-      + 'machine — taking no GPU lock here and evicting nothing.');
+      `[PARALLEL-TTS] Job ${jobId} renders on crucible "${venueServer}" — taking no GPU lock `
+      + 'here and evicting nothing; Crucible owns its card.');
     return;
   }
 

@@ -277,25 +277,6 @@ export interface SlotSet {
    * draws is waiting to be switched back.
    */
   readonly disabled: boolean;
-  /**
-   * DOES THIS SET'S WORK RUN ON THE CARD IN THIS BOX.
-   *
-   * True for {@link LONGFORM_ALIGN_SET} and for a registered server that answers
-   * on loopback (the WSL engine on this PC is one); false for the Mac across the
-   * tailnet, and for {@link LOCAL_WORK_SET}, which is CPU and has no card.
-   *
-   * On the SET rather than re-derived by each reader, because the fact is the
-   * registry's and `shared/` cannot reach it. `bench.ts` drew the nvidia-smi
-   * thermal reading on the aligner row ALONE until 2026-09-15 — its
-   * `isThisMachine` tested only the aligner id and ignored its own snapshot
-   * argument — so the temperature was missing from the row that actually renders
-   * books on this card, and present on a row that is usually empty.
-   *
-   * The same fact decides the cross-set GPU hold (`gpuHeldElsewhere` below), so
-   * carrying it once is what stops the bench and the scheduler disagreeing about
-   * which machine a row is on.
-   */
-  readonly onThisMachine: boolean;
 }
 
 /**
@@ -354,82 +335,9 @@ function labelFor(id: string): string {
  *     row has not been routed yet, and admission will say so in its own words
  *     rather than this guessing at a machine.
  */
-export function thisMachineSetId(
-  snapshot: { readonly slotSets: readonly SlotSet[] },
-): string | null {
-  /*
-   * A GPU SET, because the caller is placing GPU work: `local-work` is this
-   * machine too and has no card, and answering with it would file a render into
-   * the CPU pool.
-   *
-   * AND NEVER {@link LONGFORM_ALIGN_SET}, which also declares itself this
-   * machine. That row is the FALLBACK for exactly the steps this function is
-   * asked about, so returning it here would be a circular answer; the `??` at
-   * the call site is where it belongs, and the builder below only emits the row
-   * when this function has nothing to say.
-   */
-  /*
-   * AND NEVER A SET THE OPERATOR HAS SWITCHED OFF (2026-09-19).
-   *
-   * The switch's own heading on the bench is *"Switch one off to keep new work
-   * away from it"*, and this function was the one door that did not honour it:
-   * it matched on `onThisMachine && gpu > 0` alone, so a non-travelling GPU step
-   * was filed on a disabled engine's lane and CHARGED ITS SLOT. Owen watched a
-   * read occupy the only GPU slot of a local engine whose box was unchecked,
-   * while the work itself ran on another machine entirely — the disabled row was
-   * the one thing on screen that could not possibly have been doing it.
-   *
-   * `retiring` is NOT excluded here, and the difference is the whole point of
-   * carrying two flags: a retiring set is finishing work it already holds (§4.3,
-   * a job finishes on the machine it started on), so a step belonging to it must
-   * still resolve to it or its occupant vanishes off the bench mid-run. Disabled
-   * is a switch about NEW work, which is exactly what this answer is for.
-   *
-   * NULL when the only card here is switched off, and that is a real answer: the
-   * `??` at every call site sends the step to {@link LONGFORM_ALIGN_SET}, which
-   * is this machine under the name the fallback row draws. The step still runs —
-   * a switch governs where work is SENT, and this work was never going anywhere
-   * — but it stops being drawn in, and charged to, a lane the operator has told
-   * the queue to leave alone.
-   */
-  return snapshot.slotSets.find(
-    (set) => set.onThisMachine === true
-      && set.gpu > 0
-      && set.disabled !== true
-      && set.id !== LONGFORM_ALIGN_SET,
-  )?.id ?? null;
-}
-
-
 export function slotSetForStep(
   job: QueueJob,
   step: QueueStep,
-  /**
-   * THE SET THAT IS THIS MACHINE, when the caller knows it — `thisMachineSetId`.
-   *
-   * Owen, 2026-09-18: *"instead of sitting next to the two gpu slots, it should
-   * be IN the gpu slot itll be taking up … the queued item should remain in the
-   * queue, not in a third slot."*
-   *
-   * A GPU step whose module has not been taught to travel runs HERE. Until this
-   * date it was filed under {@link LONGFORM_ALIGN_SET} unconditionally, which
-   * drew a THIRD lane beside this machine's two GPU slots — and because the row
-   * exists while any non-terminal step charges it, a merely QUEUED align
-   * conjured that lane too. Both are the same mistake: a lane is a place work
-   * runs, and this work runs on the card the two slots are already drawing.
-   *
-   * So when the registry says which set is this machine, a non-travelling GPU
-   * step is filed THERE: it occupies one of those two slots while it runs, and
-   * charges nothing while it waits.
-   *
-   * NULL — no registered server answers here — keeps the old answer, and that is
-   * not a leftover. The work still runs on this machine and still needs a lane
-   * to be admitted into; without one the step would map to a set the bench does
-   * not draw and the scheduler cannot fill, and it would wait for ever. On such
-   * a machine a queued align does still raise the row, which is the price of it
-   * being able to start at all.
-   */
-  onThisMachine: string | null = null,
 ): string | null {
   if (step.resource === 'wait') return null;
   /*
@@ -456,23 +364,10 @@ export function slotSetForStep(
      */
     const recorded = step.venue === RETIRED_LOCAL_NARRATOR_VENUE
       ? LONGFORM_ALIGN_SET : step.venue;
-    /*
-     * AND THE FALLBACK ROW IS READ AS THIS MACHINE (2026-09-18), for the same
-     * reason the spelling above is migrated rather than honoured: the set is the
-     * same CARD under a different name.
-     *
-     * A step is stamped with its venue at admission, and the record is asked
-     * before everything else — so without this a step admitted as
-     * {@link LONGFORM_ALIGN_SET} would keep pointing at a row the bench no
-     * longer draws, and its occupant would vanish from the bench while it ran.
-     * That is true of a queue restored from before this change AND of one
-     * admitted seconds ago, because the stamp is written from whatever the pump
-     * resolved at the time.
-     */
-    return recorded === LONGFORM_ALIGN_SET ? (onThisMachine ?? LONGFORM_ALIGN_SET) : recorded;
+    return recorded;
   }
   if (step.resource === 'cpu') return LOCAL_WORK_SET;
-  if (step.travels !== true) return onThisMachine ?? LONGFORM_ALIGN_SET;
+  if (step.travels !== true) return LONGFORM_ALIGN_SET;
   return job.waitForResolved ?? null;
 }
 
@@ -492,22 +387,19 @@ export interface SetOccupancy {
  */
 export function slotSetOccupancy(
   /*
-   * THE SETS ARE PART OF THE QUESTION since 2026-09-18, and they are not
-   * optional: `slotSetForStep` files a non-travelling GPU step on this machine's
-   * set when there is one, so an occupancy count that did not know which set
-   * that is would charge the fallback row while the bench drew the server's —
-   * and the scheduler would read this machine's GPU slots as free while one of
-   * them was running an alignment. One fact, one derivation
-   * (`thisMachineSetId`), asked here so no caller can forget it.
+   * THE JOBS ALONE ANSWER IT. `slotSetForStep` needs nothing but the step since
+   * Owen's ruling of 2026-09-19 — a non-travelling GPU step is always
+   * {@link LONGFORM_ALIGN_SET} and a server's lane is only ever reached through
+   * a venue the step carries — so an occupancy count cannot disagree with the
+   * bench about which row a step is on.
    */
-  snapshot: { readonly jobs: readonly QueueJob[]; readonly slotSets: readonly SlotSet[] },
+  snapshot: { readonly jobs: readonly QueueJob[] },
 ): Map<string, SetOccupancy> {
   const counts = new Map<string, SetOccupancy>();
-  const onThisMachine = thisMachineSetId(snapshot);
   for (const job of snapshot.jobs) {
     for (const step of job.steps) {
       if (step.status !== 'running') continue;
-      const id = slotSetForStep(job, step, onThisMachine);
+      const id = slotSetForStep(job, step);
       if (id === null) continue;
       const entry = counts.get(id) ?? { gpu: 0, cpu: 0 };
       if (step.resource === 'gpu') entry.gpu += 1;
@@ -545,14 +437,6 @@ export function longformAlignCharged(
   for (const job of snapshot.jobs) {
     for (const step of job.steps) {
       if (TERMINAL_STEP_STATUSES.has(step.status)) continue;
-      /*
-       * ASKED WITHOUT THIS MACHINE'S SET, AND THAT IS THE POINT. This answer
-       * FEEDS the set list, so the sets do not exist yet to be consulted. The
-       * question here is only *"is there GPU work that can run nowhere but
-       * here"*, which is exactly what the unqualified answer means; whether that
-       * work gets a row of its own or joins this machine's is decided in
-       * `slotSets`, which by then knows.
-       */
       if (slotSetForStep(job, step) === LONGFORM_ALIGN_SET) return true;
     }
   }
@@ -728,14 +612,6 @@ export interface SlotSetFacts {
    * between two steps of one pump.
    */
   readonly alignerCharged: boolean;
-  /**
-   * The registered servers that answer on THIS machine (loopback), as
-   * `electron/crucible/servers.ts`'s `serversOnThisMachine()` reports them.
-   * Required, like `upstreams` and `roles`: the two guesses are "no row shows a
-   * temperature" and "the Mac's row shows this PC's fan speed", and neither is
-   * a thing to decide on a caller's behalf.
-   */
-  readonly serversOnThisMachine: readonly string[];
 }
 
 /**
@@ -763,21 +639,6 @@ export function slotSets(facts: SlotSetFacts): SlotSet[] {
       'slotSets: `upstreams` was not supplied. Every enabled server needs one of '
         + "'configured' | 'none' | 'unknown', because a cloud lane is drawn for an engine that "
         + 'CAN forward work and for one nobody has asked yet, and for no other.',
-    );
-  }
-
-  /*
-   * AND A CALLER THAT SAID NOTHING ABOUT WHICH SERVERS ARE HERE IS REFUSED TOO.
-   * The two guesses are "no row shows a temperature" and "the Mac's row shows
-   * this PC's fan speed", and the second is worse than the first: a reading
-   * labelled as somebody else's hardware is a number a person will act on.
-   */
-  if (facts.serversOnThisMachine === undefined || facts.serversOnThisMachine === null) {
-    throw new Error(
-      'slotSets: `serversOnThisMachine` was not supplied. A set has to know whether its '
-        + "work runs on the card in this box — the thermal reading is nvidia-smi's, taken "
-        + "here, and drawing it on a remote engine's row would be this PC's fan speed "
-        + "labelled as the Mac's.",
     );
   }
 
@@ -916,7 +777,6 @@ export function slotSets(facts: SlotSetFacts): SlotSet[] {
        * (`holdDisabled`) and already tries only enabled rows for `any`.
        */
       disabled: !enabled,
-      onThisMachine: facts.serversOnThisMachine.includes(name),
     });
     if (!enabled) {
       /*
@@ -958,10 +818,6 @@ export function slotSets(facts: SlotSetFacts): SlotSet[] {
         cpu: CLOUD_LANE_SLOTS,
         retiring: false,
         disabled: false,
-        // A CLOUD LANE IS NEVER THIS MACHINE'S CARD, even for an engine that is
-        // on it: the work runs on somebody's API and the engine forwarding it
-        // holds nothing. Same rule `gpuHeldElsewhere` states one screen down.
-        onThisMachine: false,
       });
     }
   }
@@ -983,40 +839,18 @@ export function slotSets(facts: SlotSetFacts): SlotSet[] {
    * `align-longform` job type, Owen's ruling.
    */
   /*
-   * ONLY WHEN THIS MACHINE HAS NO GPU ROW OF ITS OWN (Owen, 2026-09-18).
-   *
-   * Where a registered server answers here — the WSL engine on this PC is on
-   * loopback and is every bit as local as the aligner — its two slots ARE the
-   * card, and `slotSetForStep` now files the aligner into them. Drawing this row
-   * as well would put a third slot beside two that describe the same GPU, and
-   * would raise it for a merely QUEUED align: *"the queued item should remain in
-   * the queue, not in a third slot."*
-   *
-   * With no such server the row is still drawn, still on `alignerCharged` — the
-   * work runs here regardless, and it needs a lane to be admitted into or it
-   * waits for ever.
+   * IT IS THE ROW FOR THIS APP'S OWN GPU WORK AND NOTHING ELSE (Owen,
+   * 2026-09-19). A Crucible on loopback used to swallow this row — its two slots
+   * were held to BE the card, so the aligner was filed into them — and that was
+   * the last place the queue treated a server differently for being here. A
+   * Crucible server is scheduled the same way wherever it answers, so the
+   * in-app aligner keeps a lane of its own and takes it whenever it is charged.
    */
-  const machineHasItsOwnRow = sets.some(
-    (set) => set.onThisMachine === true && set.gpu > 0 && set.id !== LONGFORM_ALIGN_SET);
-  if (machineHasItsOwnRow) {
-    /*
-     * MARKED SEEN SO THE SURVIVOR LOOP BELOW LEAVES IT ALONE.
-     *
-     * `facts.occupied` is composed before the sets exist, so it cannot know this
-     * machine has a row of its own and still names the fallback for a running
-     * aligner. Without this the loop would take that id for a retiring SERVER
-     * and push the third slot straight back, greyed — which is the same wrong
-     * lane wearing a different label. The loop's own comment says only a
-     * server's set or a cloud lane can reach it; this is what keeps that true.
-     */
-    seen.add(LONGFORM_ALIGN_SET);
-  }
-  if (facts.alignerCharged && !machineHasItsOwnRow && !seen.has(LONGFORM_ALIGN_SET)) {
+  if (facts.alignerCharged && !seen.has(LONGFORM_ALIGN_SET)) {
     seen.add(LONGFORM_ALIGN_SET);
     sets.push({
       id: LONGFORM_ALIGN_SET,
       label: labelFor(LONGFORM_ALIGN_SET),
-      onThisMachine: true,
       gpu: SERVER_GPU_SLOTS,
       // This row is a GPU venue and nothing else: CPU work has never gone
       // through it, and giving it a CPU lane would invent a second home for
@@ -1047,12 +881,6 @@ export function slotSets(facts: SlotSetFacts): SlotSet[] {
       // A retiring set is not a switched-off one: nobody chose this and
       // nothing switches it back. See `SlotSet.disabled`.
       disabled: false,
-      // A retiring set is not a switched-off one: nobody chose this and
-      // nothing switches it back. See `SlotSet.disabled`.
-      // A retiring set's server may have been REMOVED from the registry, so it
-      // is not in `serversOnThisMachine` any more. Its running occupant is still
-      // wherever it started (§4.3), and a cloud lane is never here.
-      onThisMachine: !cloud && facts.serversOnThisMachine.includes(id),
     });
   }
 
@@ -1061,74 +889,11 @@ export function slotSets(facts: SlotSetFacts): SlotSet[] {
     label: labelFor(LOCAL_WORK_SET),
     gpu: 0,
     cpu: LOCAL_WORK_CPU_SLOTS,
-    // BookForge itself: CPU work, and no card to report a temperature for.
-    onThisMachine: false,
     retiring: false,
     disabled: false,
   });
 
   return sets;
-}
-
-/**
- * THIS MACHINE HAS ONE CARD, and more than one slot set can point at it.
- *
- * BookForge still has a GPU tenant of its own — the long-form aligner
- * ({@link LONGFORM_ALIGN_SET}) — and a Crucible server that answers on this
- * machine's loopback is the SAME 3090 Ti under a different set. As separate sets
- * they each have a GPU slot, so without this rule the scheduler could start an
- * `epub-align` and a render on that engine at the same moment, which the single
- * global `gpu: 1` used to prevent by accident. It is stated here rather than
- * rediscovered on a card running two models.
- *
- * ── `serversOnThisMachine` IS NOT A KIND OF SERVER ───────────────────────
- *
- * Owen's ruling of 2026-09-15 deleted the reserved name `local` and with it the
- * idea that a server here is a different sort of thing. It is not: it is added,
- * named, ranked, coordinated with and drawn exactly like any other. This
- * parameter answers one narrow question that is about THIS APP'S OWN CARD —
- * *does the venue I am about to use share the card my aligner runs on* — and the
- * caller answers it from the address (`electron/crucible/discovery.ts`,
- * `isLoopbackUrl`, which says what that reading does and does not promise).
- *
- * It is a LIST because a machine can legitimately have two: a Windows box runs
- * an orchestrator and a WSL engine on two loopback ports, and both may be
- * registered.
- *
- * ENDS WHEN long-form alignment becomes a Crucible job
- * (`docs/CRUCIBLE_ROLLOUT_PLAN.md` §B7). With no in-app GPU tenant there is no
- * second venue over this machine's card and this rule has nothing left to say.
- *
- * Returns the OTHER set id already using this machine's card, or `null` when
- * nothing is. A venue that is not on this machine answers `null` immediately:
- * its card is not this one, which is the whole point of the per-server sets.
- *
- * NOT the same question as `external-gpu-job.lock` and the GPU arbiter, which
- * are about holders OUTSIDE this queue (a training chain). Whether a Crucible
- * here should replace those two is item A4 of
- * `docs/CRUCIBLE_ROLLOUT_PLAN.md` §0b — a ruling, not this.
- */
-export function thisMachinesCardHeldBy(options: {
-  /** The venue the step is about to run at. */
-  readonly venue: string;
-  /** Registered servers that answer on this machine's loopback. See above. */
-  readonly serversOnThisMachine: readonly string[];
-  readonly occupancy: ReadonlyMap<string, SetOccupancy>;
-}): string | null {
-  const { venue, serversOnThisMachine, occupancy } = options;
-  /*
-   * A CLOUD LANE IS NEVER THIS MACHINE'S CARD, even for an engine that is on it.
-   * The work runs on somebody's API; the engine forwarding it holds nothing.
-   * Answered first so `<server>:cloud` cannot be mistaken for `<server>`.
-   */
-  if (isCloudLane(venue)) return null;
-  const here: string[] = [LONGFORM_ALIGN_SET, ...serversOnThisMachine];
-  if (!here.includes(venue)) return null;
-  for (const id of here) {
-    if (id === venue) continue;
-    if ((occupancy.get(id)?.gpu ?? 0) > 0) return id;
-  }
-  return null;
 }
 
 /**

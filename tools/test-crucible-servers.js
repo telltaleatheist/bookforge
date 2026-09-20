@@ -157,13 +157,16 @@ check('guest exit 3 is no_local_config; any other non-zero is wsl_read_failed; a
   refuses(() => discovery.discoverCrucible({ ...base, runWsl: () => ({ status: null, stdout: '', stderr: '', error: new Error('ENOENT wsl.exe') }) }), discovery.CrucibleDiscoveryError, 'wsl_read_failed');
 });
 
-check('isLoopbackUrl names exactly the shapes that are this machine', () => {
-  for (const u of ['http://127.0.0.1:7100', 'http://localhost:7100', 'http://LOCALHOST', 'http://[::1]:7100', 'http://0.0.0.0:7100', 'http://127.5.5.5', 'http://foo.localhost:1']) {
-    assert.strictEqual(discovery.isLoopbackUrl(u), true, u);
-  }
-  for (const u of ['http://mac.example.test:7100', 'http://192.0.2.86:7100', 'http://192.0.2.1', 'not a url']) {
-    assert.strictEqual(discovery.isLoopbackUrl(u), false, u);
-  }
+check('NOTHING ASKS WHETHER A SERVER IS ON THIS MACHINE — Owen, 2026-09-19', () => {
+  // *"Crucible is configured to be system agnostic. Doesn't matter if it's on
+  // this system or on a rented DigitalOcean GPU, it should effectively be
+  // treated the same locally or otherwise."* `isLoopbackUrl` and
+  // `serversOnThisMachine` were the last two doors that could answer it, and
+  // both are gone — the queue schedules every registered server identically.
+  assert.strictEqual(discovery.isLoopbackUrl, undefined,
+    'isLoopbackUrl is back: a loopback server is not a kind of server');
+  assert.strictEqual(servers.serversOnThisMachine, undefined,
+    'serversOnThisMachine is back: the queue must not know where a server is');
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -196,12 +199,6 @@ check('a listing cannot carry a plaintext token', () => {
   reg.add({ name: 'mac', url: 'http://mac:7100', token: 'mac-secret-KCK0' });
   assert.strictEqual(JSON.stringify(reg.list()).includes('mac-secret'), false);
   assert.strictEqual(servers.maskToken('mac-secret-KCK0'), '****KCK0');
-});
-
-check('serversOnThisMachine is a URL question, not a kind of server', () => {
-  // The one place "here" still means anything: the scheduler's one-card rule.
-  // It is composed from `isLoopbackUrl` over the registry and nothing else.
-  assert.strictEqual(typeof servers.serversOnThisMachine, 'function');
 });
 
 check('NAMES ARE FREE TEXT: spaces, dots, dashes, @ — the shapes Owen will type', () => {

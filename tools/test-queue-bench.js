@@ -124,7 +124,6 @@ function snap(jobs, running = true, servers = []) {
       // `currentSlotSets` answers it: the legacy row exists while something in
       // the queue can run nowhere else, and is absent otherwise.
       alignerCharged: slots.longformAlignCharged({ jobs }),
-      serversOnThisMachine: [],
     }),
   };
 }
@@ -347,31 +346,35 @@ test('the GPU lane carries the thermal reading; CPU lanes never do', () => {
   assert.strictEqual(lanes[2].thermal, null);
 });
 
-test("the reading lands on a LOCAL SERVER's row, not only on the aligner", () => {
+test("NO SERVER'S row carries this machine's reading, wherever it answers", () => {
   /*
-   * The defect this closes, found 2026-09-15. `isThisMachine` tested
-   * `setId === LONGFORM_ALIGN_SET` and ignored the snapshot it was handed, so
-   * the nvidia-smi reading appeared on the long-form aligner's row — which is
-   * usually empty — and NOT on the registered server that actually renders books
-   * on this card. The WSL engine on this PC answers on loopback and is every bit
-   * as local as the aligner.
+   * Owen, 2026-09-19: *"Crucible is configured to be system agnostic … it should
+   * effectively be treated the same locally or otherwise."* The bench drew this
+   * reading on a loopback server's row between 2026-09-15 and that ruling, on
+   * the theory that such a server renders on THIS card. A registered engine
+   * reports its own card through its own door or not at all; nvidia-smi run here
+   * knows nothing about the Mac, and the queue no longer knows which of the two
+   * a row is. So the reading goes on this app's OWN GPU row and on no other.
    */
   const s = snap([job([step({ id: 's_r', status: 'running' })])]);
   s.gpuThermal = { tempC: 71, fanPct: 60, throttleActive: false, at: '2026-09-15T23:00:00.000Z' };
-  // Two GPU rows: one here, one across the tailnet.
+  // Two server GPU rows and this app's own.
   s.slotSets = [
-    { id: 'wsl', label: 'wsl', gpu: 1, cpu: 0, retiring: false, onThisMachine: true },
-    { id: 'mac', label: 'mac', gpu: 1, cpu: 0, retiring: false, onThisMachine: false },
+    { id: 'wsl', label: 'wsl', gpu: 1, cpu: 0, retiring: false, disabled: false },
+    { id: 'mac', label: 'mac', gpu: 1, cpu: 0, retiring: false, disabled: false },
+    { id: slots.LONGFORM_ALIGN_SET, label: 'aligner', gpu: 1, cpu: 0, retiring: false, disabled: false },
   ];
   const lanes = bench.benchLanes(s);
-  const here = lanes.find((l) => l.setId === 'wsl');
-  const there = lanes.find((l) => l.setId === 'mac');
-  assert.ok(here && there, 'expected a lane for each set');
-  assert.strictEqual(here.thermal.tempC, 71,
-    "a local server renders on THIS card, so its row carries this card's temperature");
-  assert.strictEqual(there.thermal, null,
-    "the Mac's row must never show this PC's fan speed — a reading labelled as "
-    + "somebody else's hardware is a number a person will act on");
+  for (const name of ['wsl', 'mac']) {
+    const lane = lanes.find((l) => l.setId === name);
+    assert.ok(lane, `expected a lane for ${name}`);
+    assert.strictEqual(lane.thermal, null,
+      "a server's row must never show this PC's fan speed — a reading labelled as "
+      + "somebody else's hardware is a number a person will act on, and the queue "
+      + 'cannot tell a loopback engine from the Mac any more');
+  }
+  assert.strictEqual(lanes.find((l) => l.setId === slots.LONGFORM_ALIGN_SET).thermal.tempC, 71,
+    "this app's own GPU row is the one card nvidia-smi here is measuring");
 });
 
 // ── A machine that is not answering ─────────────────────────────────────────
@@ -392,8 +395,8 @@ test("the reading lands on a LOCAL SERVER's row, not only on the aligner", () =>
 function twoEngines(over = {}) {
   const s = snap([]);
   s.slotSets = [
-    { id: 'wsl', label: 'wsl', gpu: 1, cpu: 0, retiring: false, disabled: false, onThisMachine: true },
-    { id: 'mac', label: 'mac', gpu: 1, cpu: 0, retiring: false, disabled: false, onThisMachine: false },
+    { id: 'wsl', label: 'wsl', gpu: 1, cpu: 0, retiring: false, disabled: false },
+    { id: 'mac', label: 'mac', gpu: 1, cpu: 0, retiring: false, disabled: false },
   ];
   Object.assign(s, over);
   return s;
@@ -452,8 +455,8 @@ test("BookForge's own lanes have no machine to be down, and no `servers` row to 
    */
   const s = snap([]);
   s.slotSets = [
-    { id: slots.LOCAL_WORK_SET, label: 'CPU slots', gpu: 0, cpu: 2, retiring: false, disabled: false, onThisMachine: true },
-    { id: slots.LONGFORM_ALIGN_SET, label: 'aligner', gpu: 1, cpu: 0, retiring: false, disabled: false, onThisMachine: true },
+    { id: slots.LOCAL_WORK_SET, label: 'CPU slots', gpu: 0, cpu: 2, retiring: false, disabled: false },
+    { id: slots.LONGFORM_ALIGN_SET, label: 'aligner', gpu: 1, cpu: 0, retiring: false, disabled: false },
   ];
   s.servers = [
     { name: slots.LOCAL_WORK_SET, enabled: true, reach: 'unreachable', detail: 'impossible, but assert it' },
@@ -468,7 +471,7 @@ test('a CPU lane of a down server is not greyed — the reach is about its card 
   // work that is not on the card, and `switchOf` draws no switch over it either.
   const s = snap([]);
   s.slotSets = [
-    { id: 'mac', label: 'mac', gpu: 1, cpu: 2, retiring: false, disabled: false, onThisMachine: false },
+    { id: 'mac', label: 'mac', gpu: 1, cpu: 2, retiring: false, disabled: false },
   ];
   s.servers = [{ name: 'mac', enabled: true, reach: 'unreachable', detail: 'nothing answered.' }];
   const lanes = bench.benchLanes(s).filter((l) => l.setId === 'mac');

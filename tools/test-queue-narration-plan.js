@@ -148,7 +148,7 @@ function spyHost(subject) {
  * them and every case below would be testing admission rather than the chain.
  */
 const IDLE_SERVER = {
-  routing: () => ({ ranked: [{ name: 'pc', enabled: true }], serversOnThisMachine: [] }),
+  routing: () => ({ ranked: [{ name: 'pc', enabled: true }] }),
   defaultWaitFor: () => 'pc',
   reach: async () => ({ reachable: true }),
 };
@@ -286,7 +286,6 @@ function narrationRun(title, epubPath = '/a.epub') {
       routing: {
         routing: () => ({
           ranked: [{ name: 'pc', enabled: true, busy: 'GPU busy: foundry, tts 62% done' }],
-          serversOnThisMachine: [],
         }),
         defaultWaitFor: () => 'pc',
         // Reachable, and its lane is taken — which is the state that must not

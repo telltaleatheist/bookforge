@@ -100,16 +100,12 @@ function fakeModule(type, opts = {}) {
 function fakeHost(initial) {
   const state = {
     ranked: initial.ranked ?? [],
-    serversOnThisMachine: initial.serversOnThisMachine === undefined ? ['local'] : initial.serversOnThisMachine,
     defaultWaitFor: initial.defaultWaitFor === undefined ? null : initial.defaultWaitFor,
     reach: initial.reach ?? {},
     asked: [],
   };
   state.host = {
-    routing: () => ({
-      ranked: state.ranked.map((row) => ({ ...row })),
-      serversOnThisMachine: state.serversOnThisMachine,
-    }),
+    routing: () => ({ ranked: state.ranked.map((row) => ({ ...row })) }),
     defaultWaitFor: () => state.defaultWaitFor,
     async reach(name) {
       state.asked.push(name);
@@ -673,34 +669,67 @@ test('a GPU step that does not travel is admitted exactly as it is today', async
   assert.strictEqual(host.asked.length, 0);
 });
 
-test('a REMOTE step is not held by this machine\'s GPU lock; a local one is', async () => {
-  // crucible §2.5: a step running on another machine does not hold the LOCAL
-  // card, so a training chain that owns the 3090 Ti must not stop a Mac render.
-  const gpu = fakeModule('tts-conversion', { travels: true });
-  const host = fakeHost({
-    ranked: TWO_SERVERS, defaultWaitFor: 'mac',
-    reach: { local: { reachable: true }, mac: { reachable: true } },
+test('NO crucible step is held by this machine\'s GPU lock; this app\'s own work is',
+  async () => {
+    /*
+     * crucible §2.5 said a step running on ANOTHER machine does not hold the
+     * local card. Owen, 2026-09-19, widened it to every Crucible server:
+     * *"Crucible is configured to be system agnostic. Doesn't matter if it's on
+     * this system or on a rented DigitalOcean GPU, it should effectively be
+     * treated the same locally or otherwise."* `external-gpu-job.lock` is how a
+     * TRAINING CHAIN says it has the card this process drives, and Crucible owns
+     * its card's memory — so a render placed on a Crucible here no longer waits
+     * behind the fine-tune, and neither does one on the Mac.
+     *
+     * WHAT STILL WAITS is the work this process runs itself: a GPU step whose
+     * module cannot travel. That is what the lock and the arbiter are about.
+     */
+    const gpu = fakeModule('tts-conversion', { travels: true });
+    const mine = fakeModule('rvc-enhancement', {
+      consumes: 'audio-session', produces: 'sentences',
+    });
+    const host = fakeHost({
+      ranked: TWO_SERVERS, defaultWaitFor: 'mac',
+      reach: { local: { reachable: true }, mac: { reachable: true } },
+    });
+    await fresh('crucible-skips-lock', [gpu, mine], host);
+    engine.setGpuLockProbe(() => 'orpheus fine-tune (pid 1234)');
+
+    const remote = enqueueSent(narrate('On the Mac', '/mac.epub'));
+    engine.start();
+    await settle();
+    assert.strictEqual(gpu.runs.length, 1, 'the Mac render started');
+    assert.strictEqual(jobOf(remote.id).waitForResolved, 'mac');
+
+    // AND a book bound for the Crucible on THIS box starts too, which is the
+    // ruling: the lock is not about the card Crucible manages.
+    gpu.runs[0].resolve();
+    await settle();
+    host.defaultWaitFor = 'local';
+    const here = enqueueSent(narrate('On this PC', '/pc.epub'));
+    engine.start();
+    await settle();
+    assert.strictEqual(gpu.runs.length, 2,
+      'a loopback Crucible is scheduled exactly like the Mac — the training lock says '
+      + 'nothing about its card');
+    assert.strictEqual(firstStep(here.id).progress.admissionHold, undefined);
+
+    // This app's OWN GPU work is what the lock is for, and it waits.
+    gpu.runs[1].resolve();
+    await settle();
+    const ours = enqueueSent({
+      title: 'Enhance',
+      steps: [{
+        type: 'rvc-enhancement', label: 'Enhance', config: {},
+        sourceRef: { kind: 'audio-session', path: '/s' },
+      }],
+    });
+    engine.start();
+    await settle();
+    assert.strictEqual(mine.runs.length, 0, 'nothing of ours started');
+    assert.match(firstStep(ours.id).progress.admissionHold,
+      /another job outside BookForge is using it — orpheus fine-tune/);
   });
-  await fresh('remote-skips-lock', [gpu], host);
-  engine.setGpuLockProbe(() => 'orpheus fine-tune (pid 1234)');
-
-  const remote = enqueueSent(narrate('On the Mac', '/mac.epub'));
-  engine.start();
-  await settle();
-  assert.strictEqual(gpu.runs.length, 1, 'the Mac render started');
-  assert.strictEqual(jobOf(remote.id).waitForResolved, 'mac');
-
-  // A book bound for THIS machine waits on the lock, exactly as it always has.
-  gpu.runs[0].resolve();
-  await settle();
-  host.defaultWaitFor = 'local';
-  const local = enqueueSent(narrate('On this PC', '/pc.epub'));
-  engine.start();
-  await settle();
-  assert.strictEqual(gpu.runs.length, 1, 'nothing new started');
-  assert.match(firstStep(local.id).progress.admissionHold,
-    /another job outside BookForge is using it — orpheus fine-tune/);
-});
 
 // ── The migration ───────────────────────────────────────────────────────────
 
