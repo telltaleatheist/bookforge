@@ -1478,6 +1478,272 @@ class TableLikeTest(unittest.TestCase):
         self.assertEqual([b.kind for b in kept], [pp.TABLE, pp.PARAGRAPH])
 
 
+# =============================================================================
+# The dialogue table (Hitler's People, Evans 2024 - measured 2026-09-19)
+# =============================================================================
+#
+# THE FIXTURE IS THE BOOK'S OWN MARKUP, trimmed only in the number of `<tr>`s.
+# Its Prologue is Marie-Claude Vaillant-Couturier's Nuremberg testimony typeset
+# as a two-column `<table role="presentation">` - speaker on the left, speech on
+# the right, every cell a run of Kobo spans, not one `<th>` anywhere. Prepare
+# packed it and the render refused twelve chunks over the 1,000-char venue cap
+# (`crucible_chunk_over_venue_cap`), the longest 2,894 characters. Three defects
+# stacked, and each of the tests below pins one of them:
+#
+#   1. `rows[0]` taken as the headers, so "MME. VAILLANT-COUTURIER" and her
+#      ENTIRE first answer were prefixed to every later row, and the first row
+#      spoke no line of its own.
+#   2. `get_text(strip=True)` welding the spans, so "out of them. " + "We then"
+#      became "them.We" - which also left `split_sentences` one 1,200-character
+#      "sentence" with no boundary to cut at.
+#   3. a TABLE row appended with no length check at all, so the cap that bounds
+#      every prose chunk simply did not apply to it.
+
+_KOBO = 'class="kobospan"'
+
+EVANS_PROLOGUE_FIXTURE = f"""<body>
+<p>She set out what she had witnessed in Auschwitz to the Nuremberg War Crimes
+Tribunal, under examination by the French prosecutor, Charles Dubost.</p>
+<div class="tablewrap" data-bf-cat="table"><table class="dialogue_table" role="presentation">
+<tr class="calibre14">
+<td class="dialogue_speaker"><span {_KOBO}>MME. </span><span {_KOBO}>VAILLANT-COUTURIER:</span></td><td class="calibre15"><span {_KOBO}>… [W]e saw the unsealing of the cars and the soldiers letting men, women, and children out of them. </span><span {_KOBO}>We then witnessed heart-rending scenes; old couples forced to part from each other, mothers made to abandon their young [adolescent] daughters, since the latter were sent to the camp, whereas mothers and [small] children were sent to the gas chambers. </span><span {_KOBO}>All these people were unaware of the fate awaiting them. </span><span {_KOBO}>They were merely upset at being separated, but they did not know that they were going to their death. </span><span {_KOBO}>They were then informed that this was a labor camp and since they were not brought into the camp they saw only the small platform surrounded by flowering plants. </span><span {_KOBO}>Naturally, they could not realize what was in store for them. </span><span {_KOBO}>Those selected for the gas chamber, that is, the old people, mothers, and children, were escorted to a red-brick building.</span></td>
+</tr>
+<tr class="calibre14"><td class="dialogue_speaker"><span {_KOBO}>DUBOST:</span></td><td class="calibre15"><span {_KOBO}>These were not given an identification number?</span></td></tr>
+<tr class="calibre14"><td class="dialogue_speaker"><span {_KOBO}>VAILLANT-COUTURIER:</span></td><td class="calibre15"><span {_KOBO}>No.</span></td></tr>
+<tr class="calibre14"><td class="dialogue_speaker"><span {_KOBO}>DUBOST:</span></td><td class="calibre15"><span {_KOBO}>They were not tattooed?</span></td></tr>
+</table></div>
+</body>"""
+
+
+class DialogueTableTest(unittest.TestCase):
+    """A layout table is not a grid, and its first row is not its headings."""
+
+    def rows(self):
+        blocks = pp.extract_blocks(_FixtureDoc(EVANS_PROLOGUE_FIXTURE),
+                                   'text/c0003.xhtml')
+        return [b for b in blocks if b.kind == pp.TABLE]
+
+    # ---- defect 1: the first row is a DATA row -----------------------------
+
+    def test_every_tr_speaks_its_own_line_and_the_first_one_is_there(self):
+        rows = self.rows()
+        self.assertEqual(len(rows), 4)
+        self.assertTrue(rows[0].text.startswith(
+            'MME. VAILLANT-COUTURIER:' + pp.TABLE_CELL_JOIN + '… [W]e saw the '
+            'unsealing of the cars'), rows[0].text)
+        self.assertEqual(rows[1].text,
+                         'DUBOST:' + pp.TABLE_CELL_JOIN
+                         + 'These were not given an identification number?')
+        self.assertEqual(rows[2].text,
+                         'VAILLANT-COUTURIER:' + pp.TABLE_CELL_JOIN + 'No.')
+
+    def test_no_row_carries_the_first_rows_answer_as_a_heading(self):
+        """THE 2,894-CHARACTER BUG, stated as the thing that must not happen.
+
+        Under e2a's recipe every row read `<first row's speaker>: <this row's
+        speaker> — <first row's whole answer>: <this row's answer>`.
+        """
+        rows = self.rows()
+        for row in rows[1:]:
+            self.assertNotIn('unsealing of the cars', row.text)
+            self.assertNotIn('MME.', row.text)
+        self.assertNotIn('::', ' '.join(r.text for r in rows))
+
+    def test_a_presentation_table_has_no_headers_even_with_th_cells(self):
+        """`role="presentation"` is the author saying the grid means nothing.
+
+        A `<th>` inside one is typesetting, not a column heading, so it is a
+        data cell like any other and the row it sits in speaks its own line.
+        """
+        html = ('<body><table role="presentation">'
+                '<tr><th>SPEAKER:</th><td>The first thing said.</td></tr>'
+                '<tr><td>OTHER:</td><td>The second thing said.</td></tr>'
+                '</table></body>')
+        table = _soup_table(html)
+        self.assertIsNone(pp.table_header_row(table))
+        self.assertEqual(pp.table_headers(table), [])
+        # The `<th>` row has no `<td>` of its own in column one, so e2a's
+        # `find_all('td')` gives it ONE cell - the line is still spoken.
+        self.assertEqual(pp.table_rows(table),
+                         ['The first thing said.',
+                          'OTHER:' + pp.TABLE_CELL_JOIN + 'The second thing said.'])
+
+    def test_a_th_table_still_gets_header_colon_cell_pairs(self):
+        """The recipe that was RIGHT is untouched: a real grid still reads its
+        headings into every row, which is what makes a data table audible."""
+        html = ('<body><table>'
+                '<tr><th>Year</th><th>Office</th></tr>'
+                '<tr><td>1933</td><td>Chancellor</td></tr>'
+                '</table></body>')
+        table = _soup_table(html)
+        self.assertEqual(pp.table_headers(table), ['Year', 'Office'])
+        self.assertEqual(pp.table_rows(table),
+                         ['Year: 1933' + pp.TABLE_CELL_JOIN + 'Office: Chancellor'])
+
+    def test_a_thead_names_the_header_row_wherever_it_sits(self):
+        html = ('<body><table>'
+                '<thead><tr><td>Year</td><td>Office</td></tr></thead>'
+                '<tbody><tr><td>1933</td><td>Chancellor</td></tr></tbody>'
+                '</table></body>')
+        table = _soup_table(html)
+        self.assertEqual(pp.table_headers(table), ['Year', 'Office'])
+        self.assertEqual(pp.table_rows(table),
+                         ['Year: 1933' + pp.TABLE_CELL_JOIN + 'Office: Chancellor'])
+
+    def test_a_first_row_of_td_is_data_not_headings(self):
+        """The whole rule in one assertion: no `<th>`, no `<thead>`, no headers.
+
+        e2a's recipe (core.py:1461-1481 at 9daab0ba) read `rows[0]` whatever it
+        held. It is recorded here as the thing the port inherited and this
+        keeper forbids, not as a behaviour anyone chose.
+        """
+        html = ('<body><table>'
+                '<tr><td>1933</td><td>Chancellor</td></tr>'
+                '<tr><td>1934</td><td>Fuhrer</td></tr>'
+                '</table></body>')
+        table = _soup_table(html)
+        self.assertEqual(pp.table_headers(table), [])
+        self.assertEqual(pp.table_rows(table),
+                         ['1933' + pp.TABLE_CELL_JOIN + 'Chancellor',
+                          '1934' + pp.TABLE_CELL_JOIN + 'Fuhrer'])
+
+    # ---- defect 2: the spans are joined, not welded -------------------------
+
+    def test_two_spans_of_one_cell_keep_the_space_between_them(self):
+        """'out of them. ' + 'We then' is 'them. We', never 'them.We'.
+
+        The markup's own trailing space is what says so; `get_text(strip=True)`
+        threw it away. `markup_text` keeps it - and the sentence splitter then
+        has a boundary to cut at, which is the half of this bug that cost the
+        render.
+        """
+        row = self.rows()[0]
+        self.assertIn('out of them. We then witnessed', row.text)
+        self.assertNotIn('them.We', row.text)
+        self.assertGreater(len(pp.split_sentences(row.text)), 5)
+
+    def test_a_drop_cap_span_is_still_one_word(self):
+        """The other half of `markup_text`'s rule, asserted on a cell so the
+        cure for the weld cannot become a blanket `get_text(' ')`."""
+        table = _soup_table('<body><table><tr>'
+                            '<td><span class="dropcap">I</span>ntroduction</td>'
+                            '<td>Page one</td></tr></table></body>')
+        self.assertEqual(pp.table_rows(table),
+                         ['Introduction' + pp.TABLE_CELL_JOIN + 'Page one'])
+
+    # ---- defect 3: a row is held to the cap --------------------------------
+
+    def test_under_a_700_char_cap_no_chunk_of_the_prologue_is_over_it(self):
+        blocks = pp.extract_blocks(_FixtureDoc(EVANS_PROLOGUE_FIXTURE),
+                                   'text/c0003.xhtml')
+        report = pp.pack_paragraphs(blocks, FakeBudget(700), floor_chars=300)
+        self.assertTrue(report.chunks)
+        for chunk in report.chunks:
+            self.assertLessEqual(chunk.written_chars, 700, chunk.text[:80])
+
+    def test_the_long_answer_is_cut_at_sentence_boundaries(self):
+        blocks = pp.extract_blocks(_FixtureDoc(EVANS_PROLOGUE_FIXTURE),
+                                   'text/c0003.xhtml')
+        report = pp.pack_paragraphs(blocks, FakeBudget(700), floor_chars=300)
+        pieces = [c for c in report.chunks if c.blocks == (1,)]
+        self.assertGreater(len(pieces), 1, 'the 1,212-char row must be cut')
+        # EVERY CUT IS A SENTENCE END. The clause tiers are the last resort and
+        # this row never needs them.
+        for piece in pieces[:-1]:
+            self.assertTrue(pp.ends_a_thought(spoken(piece.text)),
+                            spoken(piece.text)[-60:])
+        # Rejoined it is the row, word for word: nothing invented, nothing lost.
+        self.assertEqual(' '.join(spoken(p.text) for p in pieces),
+                         pp.fold_caps_run(blocks[1].text))
+
+    def test_the_item_marker_rides_the_first_piece_only(self):
+        blocks = pp.extract_blocks(_FixtureDoc(EVANS_PROLOGUE_FIXTURE),
+                                   'text/c0003.xhtml')
+        report = pp.pack_paragraphs(blocks, FakeBudget(700), floor_chars=300)
+        pieces = [c for c in report.chunks if c.blocks == (1,)]
+        self.assertTrue(pieces[0].text.startswith('[break][item]'))
+        for piece in pieces[1:]:
+            self.assertNotIn('[', piece.text)
+        # Every piece is still a ROW - its own generation, kind 'item', never
+        # merged with the paragraph in front of it or the row behind it.
+        self.assertTrue(all(p.kind == 'item' for p in pieces))
+        self.assertEqual([c.blocks for c in report.chunks][:2], [(0,), (1,)])
+
+    def test_a_row_no_boundary_divides_is_refused_at_prep_not_at_the_render(self):
+        """The refusal Crucible would have made, made before a GPU is spent.
+
+        A row of one unpunctuated clause cannot be cut by anything this packer
+        is allowed to do, so the book stops here - by name, with the index.
+        """
+        row = pp.Block('word ' * 300 + 'end.', pp.TABLE, index=0)
+        with self.assertRaises(pp.SentenceOverCapUnsplittable) as caught:
+            pp.pack_paragraphs([row], FakeBudget(700), floor_chars=300)
+        self.assertIn('sentence_over_cap_unsplittable', str(caught.exception))
+        self.assertIn('chunk 0 of this document', str(caught.exception))
+
+
+def _soup_table(html):
+    from bs4 import BeautifulSoup
+    return BeautifulSoup(html, 'html.parser').find('table')
+
+
+class EveryChunkFitsTheCapTest(unittest.TestCase):
+    """THE INVARIANT, over every kind of block there is.
+
+    Stated as its own keeper because the bug of 2026-09-19 was not a wrong
+    number anywhere - it was a kind of block that never reached the code holding
+    the number. `written_chars` is the measure on purpose: it is `len(chunk.text)`,
+    the markers included, which is exactly what Crucible's render door counts
+    (`crucible/jobs/tts/render.py`) and exactly what refused the Evans book.
+    """
+
+    #: Long enough to break any cap below, and punctuated so a cut is possible.
+    LONG = ('The witness described the platform, the orchestra and the white '
+            'blouses; then the trucks, and what the women in them knew. ') * 8
+
+    def every_kind(self):
+        return [pp.Block(self.LONG, pp.PARAGRAPH, index=0),
+                pp.Block(self.LONG, pp.HEADING, index=1),
+                pp.Block(self.LONG, pp.ITEM, index=2),
+                pp.Block(self.LONG, pp.TABLE, index=3),
+                pp.Block('', pp.SCENE_BREAK, index=4),
+                pp.Block('', pp.CHAPTER_START, index=5),
+                pp.Block(self.LONG, pp.PARAGRAPH, index=6)]
+
+    def test_no_chunk_of_any_kind_exceeds_the_cap(self):
+        for cap in (300, 430, 520, 700, 800):
+            for walls in (pp.DEFAULT_WALLS, pp.DEFAULT_WALLS | {pp.ITEM}):
+                report = pp.pack_paragraphs(self.every_kind(), FakeBudget(cap),
+                                            floor_chars=0, walls=walls)
+                self.assertTrue(report.chunks)
+                for chunk in report.chunks:
+                    self.assertLessEqual(
+                        chunk.written_chars, cap,
+                        f'cap={cap} walls={sorted(walls)} kind={chunk.kind}: '
+                        f'{chunk.text[:80]!r}')
+
+    def test_a_lone_heading_over_the_cap_is_cut_like_anything_else(self):
+        """It used to be appended whole - not by a rule, but because the
+        standalone-heading branch returned before the cap was ever consulted."""
+        report = pp.pack_paragraphs([pp.Block(self.LONG, pp.HEADING, index=0)],
+                                    FakeBudget(300), floor_chars=0)
+        self.assertGreater(len(report.chunks), 1)
+        for chunk in report.chunks:
+            self.assertLessEqual(chunk.written_chars, 300)
+        # Every piece is the heading's own words, so every piece stays a heading.
+        self.assertEqual({c.kind for c in report.chunks}, {'heading'})
+        self.assertTrue(report.chunks[0].text.startswith('[break][heading]'))
+
+    def test_the_operators_own_rows_are_still_kept_whole(self):
+        """`split_over_cap=False` is `sentence_per_paragraph`'s door and it did
+        not move: the row the operator typed is the chunk they asked for."""
+        report = pp.pack_paragraphs([pp.Block(self.LONG, pp.TABLE, index=0)],
+                                    FakeBudget(300), floor_chars=0,
+                                    split_over_cap=False)
+        self.assertEqual(len(report.chunks), 1)
+        self.assertEqual(report.over_cap_chunks, 1)
+
+
 class PrepPolicyTest(unittest.TestCase):
     """The switch in `prep_session`, and that the default changes nothing."""
 

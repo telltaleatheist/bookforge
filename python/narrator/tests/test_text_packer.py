@@ -709,5 +709,74 @@ class EngineRefusalTest(unittest.TestCase):
             filter_chapter(0, _FixtureDoc('<body><p>Guten Tag.</p></body>'), ctx))
 
 
+# =============================================================================
+# The table recipe is ONE recipe, shared with the block policy (2026-09-19)
+# =============================================================================
+
+class DialogueTableTest(unittest.TestCase):
+    """The walker's `typ == 'table'` branch was a SECOND COPY of e2a's recipe
+    (core.py:1461-1481 at 9daab0ba), so it carried both of e2a's defects: the
+    first row taken as headings whatever it held, and a cell's spans welded by
+    `get_text(strip=True)`.
+
+    Measured on Hitler's People (Evans 2024), whose Prologue is a Nuremberg
+    transcript typeset as a `role="presentation"` table of speaker and speech.
+    Both branches now call `paragraph_packer.table_rows`, and these keepers are
+    the twin of `test_text_paragraph_packer.DialogueTableTest` - the point of
+    them is that the two paths cannot answer differently.
+    """
+
+    FIXTURE = (
+        '<body><table class="dialogue_table" role="presentation">'
+        '<tr><td><span>MME. </span><span>VAILLANT-COUTURIER:</span></td>'
+        '<td><span>We saw the soldiers letting men, women and children '
+        'out of them. </span><span>We then witnessed heart-rending '
+        'scenes.</span></td></tr>'
+        '<tr><td><span>DUBOST:</span></td>'
+        '<td><span>These were not given an identification number?</span></td></tr>'
+        '</table></body>')
+
+    def test_the_first_row_speaks_its_own_line_and_is_no_ones_heading(self):
+        chunks = _run_chapter(self.FIXTURE)
+        text = ' '.join(_spoken(c) for c in chunks)
+        self.assertIn('MME. VAILLANT-COUTURIER:', text)
+        # The bug: the witness's name and her whole answer prefixed to the row
+        # behind her, and her own row never spoken.
+        self.assertNotIn('DUBOST: — We saw', text)
+        self.assertNotIn('::', text)
+
+    def test_two_spans_of_one_cell_keep_the_space_between_them(self):
+        chunks = _run_chapter(self.FIXTURE)
+        text = ' '.join(_spoken(c) for c in chunks)
+        self.assertIn('out of them. We then witnessed', text)
+        self.assertNotIn('them.We', text)
+
+    def test_a_real_grid_still_reads_its_headings_into_every_row(self):
+        chunks = _run_chapter('<body><table>'
+                              '<tr><th>Year</th><th>Office</th></tr>'
+                              '<tr><td>1933</td><td>Chancellor</td></tr>'
+                              '</table></body>')
+        text = ' '.join(_spoken(c) for c in chunks)
+        self.assertIn('Year: 1933', text)
+        self.assertIn('Office: Chancellor', text)
+
+    def test_both_paths_read_one_table_the_same_way(self):
+        """The whole reason the recipe moved: two copies drift.
+
+        DASHES ARE FOLDED before the comparison and only dashes: this path runs
+        `normalize_text` after the walk, which rewrites the em dash `table_rows`
+        joins cells with into a hyphen. That is a lexical step of the Orpheus
+        parity path, downstream of the recipe, and not a second answer about
+        what the table SAYS - which is the thing being pinned here.
+        """
+        from bs4 import BeautifulSoup
+        from narrator.text.paragraph_packer import table_rows
+        fold = lambda s: re.sub(r'[—–-]', '-', s)  # noqa: E731
+        table = BeautifulSoup(self.FIXTURE, 'html.parser').find('table')
+        text = fold(' '.join(_spoken(c) for c in _run_chapter(self.FIXTURE)))
+        for line in table_rows(table):
+            self.assertIn(fold(line), text)
+
+
 if __name__ == '__main__':
     unittest.main()
