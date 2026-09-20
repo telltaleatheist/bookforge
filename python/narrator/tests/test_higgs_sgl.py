@@ -813,10 +813,28 @@ class MemFractionExportTest(unittest.TestCase):
     def _backend(self):
         return HiggsSglServedBackend.__new__(HiggsSglServedBackend)
 
+    def _launchable(self):
+        """Just enough backend to build the wrapper's export prefix."""
+        backend = self._backend()
+        backend.base_url = 'http://127.0.0.1:8200'
+        backend.concurrency = 4
+        backend.checkpoint_dir = None
+        backend.owner_id = lambda: 'keeper'
+        return backend
+
     def test_a_stated_fraction_is_exported(self):
         os.environ['HIGGS_SGL_MEM_FRACTION'] = '0.42'
         self.addCleanup(os.environ.pop, 'HIGGS_SGL_MEM_FRACTION', None)
         self.assertEqual(self._backend()._mem_fraction(), 0.42)
+        self.assertIn('HIGGS_SGL_MEM_FRACTION=0.42',
+                      self._launchable()._launch_exports(),
+                      'the launch must STATE the fraction it started the '
+                      'server at, not hope the script inherits one')
+
+    def test_an_absent_fraction_exports_nothing(self):
+        os.environ.pop('HIGGS_SGL_MEM_FRACTION', None)
+        self.assertNotIn('HIGGS_SGL_MEM_FRACTION',
+                         self._launchable()._launch_exports())
 
     def test_an_absent_fraction_states_nothing(self):
         os.environ.pop('HIGGS_SGL_MEM_FRACTION', None)
