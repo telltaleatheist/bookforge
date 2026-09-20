@@ -539,6 +539,35 @@ Ruled 2026-09-19, later the same evening:
    when the user skips curation; the curated path stays manual by nature. No
    design pass is owed. C2 (a chained act follows its run's server) is unchanged.
 
+### 2026-09-20, after the first live run
+
+9. **A book is atomic on the card.** Owen watched *Mistborn* finish its render,
+   move to the CPU for the session copy, and then wait to get back on the GPU:
+   *"Waiting for crucible@owens-mac-studio: busy: bookforge crucible-client/1.0.6,
+   tts mistborn, 99% done — 80 of 81 chunk(s) rendered"* — parked on its OWN
+   render's tail, re-admitted a second later. Ruling: *"i want books to be
+   atomic actions, ideally, where they keep the GPU until all of their GPU steps
+   are complete. they can run the preparation step locally before going to the
+   GPU, but CPU steps that might take place between GPU steps are very small and
+   fast. they shouldnt lose their GPU slot because theyre doing a quick step."*
+   → **The GPU hold is the JOB's, not the step's.** From the moment a book's
+   first travelling GPU step is admitted to a server until its LAST travelling
+   GPU step settles, the book keeps one GPU slot on that server: the session
+   copy, and any other CPU work between GPU steps, runs inside the hold; the next
+   GPU step of a held book is admitted without polling the server (the book
+   holds the card — the poll asks whether OTHERS do) and without the slot gate
+   (it is charging the slot already); a `409` from its own server during the
+   hold — the previous act still closing — is re-asked in ~2 s, keeping the venue
+   and the hold, never the 15 s cool-off. Prepare runs before the hold, on the
+   CPU; reassembly runs after it. The hold ends when the last travelling GPU
+   step is terminal, or the job is cancelled, failed, or sent back to Pending.
+   Paused keeps the hold (Paused starts nothing, so nothing else could take the
+   slot anyway). The 2026-09-19 mid-step hand-over stays as POOL bookkeeping
+   (the copy is CPU work and the bench should say so) but no longer frees the
+   card. Known remaining gap, Crucible-side: another Crucible CLIENT can still
+   take the lane between two of our acts; closing it needs a job-level lane
+   reservation on the server (`docs/CRUCIBLE_ROLLOUT_PLAN.md`, owed).
+
 ### Packet changes from the rulings
 
 - **P1** grows: admission reads `/v1/activity` through `reach()`; the lease is
@@ -679,6 +708,11 @@ elsewhere this week):
   wrapper (`invokeFoundryNarrate`, electron/main.ts): `sayToUser` → `jobs:notice`
   in BookForge's renderer, the throw back over the mount to Foundry's notice
   strip, and the log line. Every throw happens before the dialog is raised.
+- **Ruling 9 (job-level GPU hold) — in progress (2026-09-20).** Files:
+  `shared/queue/slot-sets.ts` (`gpuHoldOf(job)`, occupancy counts a hold),
+  `electron/queue-engine.ts` (admission of a step in a held job), `shared/queue/bench.ts`
+  (the held slot's occupant phrase), keepers `test-queue-slot-sets`,
+  `test-queue-admission`, `test-queue-engine`, `test-queue-bench`.
 - **A9 → ruling 7 LANDED (2026-09-20, 2052af58):** `isLoopbackUrl`,
   `serversOnThisMachine`, `thisMachinesCardHeldBy`, `SlotSet.onThisMachine`,
   `thisMachineSetId` and `slotSetForStep`'s third parameter are gone; the pump
