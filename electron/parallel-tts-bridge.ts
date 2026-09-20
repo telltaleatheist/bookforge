@@ -20,6 +20,17 @@ import * as fs from 'fs/promises';
 import * as fsSync from 'fs';
 import { flacDurationSeconds } from './flac-duration';
 import { findCachedSessionLayout } from './session-cache-layout';
+// ONE module owns "can this run keep the sentences the last one rendered": the
+// pack-against-pack comparison, the seed, and the count of what a session
+// already holds. `RenderCarryOver` is re-exported below, because the queue step
+// that reads it imports this door and not that one.
+import {
+  carryOverIntoSession,
+  countRenderedChunks,
+  RESUME_MIN_BYTES,
+  seedRenderedChunks,
+  type RenderCarryOver,
+} from './render-carryover';
 // ONE module owns "is the cache as complete as the render" — the publish, the
 // interrupt-cache and the startup rescue all ask it, by chunk INDEX.
 import {
@@ -4657,7 +4668,7 @@ async function readFlattenedChunkTexts(prepInfo: PrepInfo): Promise<string[]> {
  * all produce the right set without a second notion of "what to render".
  * Indices whose FLAC is already on disk and larger than 1024 bytes are skipped
  * for the same reason narrator's own resume skips them — and the 1024 is
- * narrator's `RESUME_MIN_BYTES`, mirrored here and in `seedResumeSentences`.
+ * narrator's `RESUME_MIN_BYTES`, which `electron/render-carryover.ts` owns.
  */
 async function crucibleChunksForSession(
   session: ConversionSession,
@@ -4683,7 +4694,7 @@ async function crucibleChunksForSession(
     if (!text || !text.trim()) continue;             // the worker writes no file either
     try {
       const stat = await fs.stat(path.join(sentencesDir, `${index}.flac`));
-      if (stat.size > 1024) continue;                // already rendered (seeded or resumed)
+      if (stat.size > RESUME_MIN_BYTES) continue;    // already rendered (seeded or resumed)
     } catch { /* absent — render it */ }
     chunks.push({ index, text });
   }
@@ -7647,6 +7658,17 @@ export interface PreparedSessionRef {
   readonly packedFor?: { server: string; ceilingChars: number; because?: PrepPackedBecause };
 }
 
+/**
+ * WHAT THIS RUN KEPT OF THE LAST ONE, and — either way — why.
+ *
+ * Re-exported rather than redeclared: `electron/render-carryover.ts` owns the
+ * act and the sentence, and the queue step that reads the answer imports this
+ * door. Present on a prep's answer whenever the project held a part-finished
+ * render for this language, which is the only case in which there was anything
+ * to say. Starting a book over silently is the bug it exists to end.
+ */
+export type { RenderCarryOver };
+
 /** What {@link prepareNarrationSession} answers. Never throws; see the header. */
 export interface PrepareNarrationResult {
   success: boolean;
@@ -7654,6 +7676,8 @@ export interface PrepareNarrationResult {
   /** The server's own sentence naming a holder, for a refusal the row can wait out. */
   busyLine?: string;
   prepared?: PreparedSessionRef;
+  /** See {@link RenderCarryOver}. Absent when the project had no part-finished render. */
+  carryOver?: RenderCarryOver;
 }
 
 /** The packed session, as the rest of this file names it. */
@@ -7733,7 +7757,23 @@ export async function prepareNarrationSession(
   startPowerBlock();
   try {
     const packed = await packSessionForNarration(jobId, config);
-    return { success: true, prepared: preparedRefOf(packed.config.epubPath, packed.prepInfo) };
+    /*
+     * AND WHAT THE LAST RUN LEFT, carried into the session just packed.
+     *
+     * AFTER the pack and never instead of it: the pack is what says whether the
+     * cached sentences are still this book's, and it is also the session this
+     * render will run in. "Start fresh" is the one answer that skips this —
+     * `cleanSession` has already deleted the scratch checkpoints above, and
+     * seeding the project's cache back in would undo the user's own press.
+     */
+    const carryOver = config.cleanSession === true
+      ? null
+      : await carryOverCachedSentences(jobId, config, packed.prepInfo);
+    return {
+      success: true,
+      prepared: preparedRefOf(packed.config.epubPath, packed.prepInfo),
+      ...(carryOver === null ? {} : { carryOver }),
+    };
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
     ttsLog.error('The narration session could not be prepared', { jobId, error });
@@ -7746,6 +7786,76 @@ export async function prepareNarrationSession(
   } finally {
     stopPowerBlock();
   }
+}
+
+/**
+ * CARRY THE PROJECT'S PART-FINISHED RENDER INTO THE SESSION JUST PACKED.
+ *
+ * Owen, 2026-09-20: *"the continue button … is supposed to continue the render
+ * where it left off. finish the unrendered sentences, keeping the ones that are
+ * done. it doesnt do that right now. it starts over."* The whole of why it did
+ * is in `electron/render-carryover.ts`; what happens here is the act.
+ *
+ * WHICH CACHE: the same one the narration dialog counts on its Continue row and
+ * the same one `tts-conversion`'s cached-session resume used before the prepare
+ * row existed — `findResumableProjectSession`, which answers only for a render
+ * that is PART finished. A complete cache is not carried: nobody was offered a
+ * choice about it, and a render that renders nothing is not what pressing
+ * Narrate asked for.
+ *
+ * WHAT IS COPIED: the rendered chunk FLACs, by index, into the fresh session's
+ * own sentences dir — `seedRenderedChunks`, the same act the CLI's resume has
+ * always used, and on APFS/ReFS a clone rather than a copy (scratch and the
+ * cache are both under the library root). Copying rather than pointing the
+ * render at the cache keeps this run's session its own: its ids, its band and
+ * its `packedFor` are the ones the render is checked against, and the publish
+ * that follows merges back into the cache by the union rule.
+ *
+ * NEVER THROWS, and never fails the prep. A cache that cannot be read is a
+ * sentence, exactly as a cache that does not match is; the book is then read
+ * from the beginning, which is what always happened — the difference is that
+ * the row now says so.
+ */
+async function carryOverCachedSentences(
+  jobId: string,
+  config: ParallelConversionConfig,
+  prepInfo: PrepInfo,
+): Promise<RenderCarryOver | null> {
+  const projectDir = config.bfpPath;
+  if (!projectDir) return null;
+  const ttsLog = getTTSLogger();
+  const language = config.settings.language || 'en';
+
+  let cached: CachedRenderSummary | null;
+  try {
+    cached = await findResumableProjectSession(projectDir, language);
+  } catch (err) {
+    cached = null;
+    ttsLog.warn('The project cache could not be searched for a part-finished render', {
+      jobId, projectDir, error: (err as Error)?.message || String(err),
+    });
+  }
+  if (!cached) return null;
+
+  const said = (line: string, carried: number): RenderCarryOver => {
+    ttsLog.info(carried > 0
+      ? 'Carrying the part-finished render into this run'
+      : 'NOT carrying the part-finished render into this run', {
+      jobId, projectDir, language, carried,
+      cachedSessionDir: cached!.sessionDir,
+      freshSessionDir: prepInfo.sessionDir,
+      line,
+    });
+    return { carried, line };
+  };
+
+  const outcome = await carryOverIntoSession({
+    cachedSessionDir: cached.sessionDir,
+    freshProcessDir: toReadablePath(prepInfo.processDir),
+    freshSentencesDir: toReadablePath(prepInfo.chaptersDirSentences),
+    totalChunks: prepInfo.totalSentences,
+  });
+  return said(outcome.line, outcome.carried);
 }
 
 /**
@@ -8146,6 +8256,38 @@ export async function startParallelConversion(
   // Test mode: cap total chunks to process (shared with renderRangeHeadless).
   applyTestSentenceCap(prepInfo, config.settings, 'PARALLEL-TTS');
 
+  /*
+   * THIS SESSION MAY ALREADY HOLD AUDIO, and if it does this run is a RESUME
+   * however it was started.
+   *
+   * Two shapes arrive here with chunks already on disk: a session the
+   * `prepare` row seeded from the project's part-finished render
+   * (`carryOverCachedSentences`), and a session this very step was rendering
+   * when the app was interrupted and is now rendering again. In both, the
+   * generation step renders only what is missing — `crucibleChunksForSession`
+   * skips every index whose FLAC is on disk and larger than narrator's
+   * RESUME_MIN_BYTES — so a run that did not say so counted its own progress
+   * from zero and drew a bar that could only ever reach the fraction it
+   * re-rendered.
+   *
+   * Counting the files is what makes that honest, and it is deliberately a
+   * count of FILES rather than something carried in the config: it survives an
+   * app restart between the prepare row and this one, and it is the same
+   * question the submit itself asks.
+   */
+  const alreadyRendered = await countRenderedChunks(
+    toReadablePath(prepInfo.chaptersDirSentences), prepInfo.totalSentences);
+  const resumingSeeded = alreadyRendered > 0 && alreadyRendered < prepInfo.totalSentences;
+  if (alreadyRendered > 0) {
+    ttsLog.info('This session already holds rendered chunks', {
+      jobId,
+      sessionDir: prepInfo.sessionDir,
+      alreadyRendered,
+      totalSentences: prepInfo.totalSentences,
+      renderedInThisRun: prepInfo.totalSentences - alreadyRendered,
+    });
+  }
+
   // Calculate ranges for workers based on mode
   const isChapterMode = config.parallelMode === 'chapters';
   let workers: WorkerState[];
@@ -8212,6 +8354,16 @@ export async function startParallelConversion(
     cancelled: false,
     assemblyProcess: null,
     venue,
+    // What was already on disk when this run started — see the count above. The
+    // bar, the ETA and the analytics all read these three, which is why they are
+    // set here rather than inferred later from a file tally nobody kept.
+    ...(resumingSeeded
+      ? {
+          isResumeJob: true,
+          baselineCompleted: alreadyRendered,
+          totalMissing: prepInfo.totalSentences - alreadyRendered,
+        }
+      : {}),
   };
 
   activeSessions.set(jobId, session);
@@ -8393,26 +8545,6 @@ function applyTestSentenceCap(
   console.log(`[${tag}] Test mode: limiting to ${prepInfo.totalSentences} of ${originalTotal} sentences`);
 }
 
-async function seedResumeSentences(fromDir: string, toDir: string, total: number): Promise<number> {
-  let entries: string[];
-  try { entries = await fs.readdir(fromDir); } catch { return 0; }
-  await fs.mkdir(toDir, { recursive: true });
-  let n = 0;
-  for (const name of entries) {
-    const m = /^(\d+)\.flac$/.exec(name);
-    if (!m || parseInt(m[1], 10) >= total) continue;   // not a sentence file, or out of range
-    const src = path.join(fromDir, name);
-    const dst = path.join(toDir, name);
-    try {
-      if ((await fs.stat(src)).size <= 1024) continue;  // truncated — let it re-render
-      try { await fs.access(dst); continue; } catch { /* absent — copy it */ }
-      await fs.copyFile(src, dst);
-      n++;
-    } catch { /* skip unreadable */ }
-  }
-  return n;
-}
-
 export async function renderRangeHeadless(
   inputPath: string,
   settings: ParallelTtsSettings,
@@ -8499,7 +8631,7 @@ export async function renderRangeHeadless(
 
   // Resume: seed the fresh sentences dir with already-rendered FLACs from a prior run.
   if (opts?.resumeFromSentencesDir) {
-    const seeded = await seedResumeSentences(
+    const seeded = await seedRenderedChunks(
       opts.resumeFromSentencesDir, prepInfo.chaptersDirSentences, prepInfo.totalSentences
     );
     console.log(`[renderRangeHeadless] resume: seeded ${seeded}/${prepInfo.totalSentences} cached sentence(s)`);

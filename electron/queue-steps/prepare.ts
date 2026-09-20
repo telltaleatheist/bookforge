@@ -332,6 +332,19 @@ export const prepareStep: StepModule = {
       }
       parkedAt.delete(ctx.stepId);
       const prepared = result.prepared;
+      /*
+       * WHAT THIS RUN KEPT OF THE LAST ONE, said on the row.
+       *
+       * The prep seeds the session it just packed with the chunks the project's
+       * part-finished render already holds, unless the user chose "Start over"
+       * or the pack no longer matches
+       * (`electron/render-carryover.ts` for the rule). Either answer is a
+       * sentence and both belong here: Owen pressed Continue on 2026-09-20 and
+       * watched a book start from the beginning with nothing anywhere saying
+       * why, and a refusal that names what changed — the voice, the language,
+       * the chunk count, the text — is the difference between a bug and a fact.
+       */
+      const carryOver = result.carryOver;
       ctx.report({
         percent: 100,
         message: `${prepared.totalSentences} chunk(s) in ${prepared.totalChapters} chapter(s)`
@@ -342,7 +355,8 @@ export const prepareStep: StepModule = {
               // WHY that machine: the card the book holds, the server its row
               // named, or the tightest of the enabled ones.
               + `${prepared.packedFor.because === undefined
-                ? '' : ` — ${prepared.packedFor.because}`}`),
+                ? '' : ` — ${prepared.packedFor.because}`}`)
+          + (carryOver === undefined ? '' : ` — ${carryOver.line}`),
       });
       return {
         kind: 'prepared-session',

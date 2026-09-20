@@ -303,8 +303,23 @@ function fileName(fullPath: string): string {
                   <label class="nm-label">There is a part-finished narration of this book</label>
                   <p class="nm-hint">
                     {{ cached.completedSentences | number }} of
-                    {{ cached.totalSentences | number }} sentences were already rendered.
+                    {{ cached.totalSentences | number }} sentences were already rendered{{
+                      cached.voice ? ', in ' + cached.voice : '' }}.
                   </p>
+                  <!--
+                    CARRYING ON MEANS CARRYING ON IN THAT VOICE, so the picker
+                    opens on it (see loadCachedSentences) and this says what
+                    changing it costs. The prep still refuses the carry-over by
+                    name if the two disagree — a book half in one voice and half
+                    in another is the outcome that rule exists to prevent — but
+                    finding that out on the queue row is finding out late.
+                  -->
+                  @if (resumeChoice() === 'resume' && cached.voice) {
+                    <p class="nm-hint">
+                      Those sentences are kept and only the rest are read. Choosing another voice
+                      here re-renders the whole book instead.
+                    </p>
+                  }
                   <div class="nm-choices">
                     <button type="button" class="nm-choice"
                             [class.on]="resumeChoice() === 'resume'"
@@ -350,7 +365,7 @@ function fileName(fullPath: string): string {
                   [options]="voiceOptions()"
                   [disabled]="!narrate()"
                   [ngModel]="voice()"
-                  (ngModelChange)="voice.set($event)"
+                  (ngModelChange)="onVoiceChosen($event)"
                   placeholder="Choose a voice"
                 />
                 <!--
@@ -1047,6 +1062,15 @@ export class NarrationModalComponent {
 
   readonly engine = signal<TTSEngine>(this.defaults.ttsEngine);
   readonly voice = signal<string>(this.defaults.ttsVoice);
+  /**
+   * The voice on screen is the USER'S choice, not a pre-fill.
+   *
+   * `loadCachedSentences` opens the picker on the voice a part-finished render
+   * was made in — carrying on is carrying on in that voice — and it arrives
+   * asynchronously, after the servers answer. So it must never land on top of a
+   * voice somebody has already picked, and this is what says which it is.
+   */
+  private readonly voiceChosen = signal(false);
   readonly speed = signal(this.defaults.ttsSpeed);
   /*
    * ONE, ALWAYS, AND NO LONGER A CONTROL — see the Reading tab's comment where
@@ -1215,6 +1239,9 @@ export class NarrationModalComponent {
       const dir = this.projectDir();
       this.cachedSentences.set(null);
       this.resumeChoice.set('resume');
+      // A new book is a new question about the voice, so the pre-fill is armed
+      // again — see `voiceChosen`.
+      this.voiceChosen.set(false);
       this.showGap.set(false);
       this.gapTouched.set(false);
       if (!dir) return;
@@ -1238,6 +1265,12 @@ export class NarrationModalComponent {
 
   onChapterGapInput(value: number): void {
     this.chapterGap.set(value);
+  }
+
+  /** The user picked a voice — see {@link voiceChosen}. */
+  onVoiceChosen(value: string): void {
+    this.voice.set(value);
+    this.voiceChosen.set(true);
   }
 
   // ── The Enhance stage and its two passes ──────────────────────────────────
@@ -1329,6 +1362,22 @@ export class NarrationModalComponent {
         complete: completed >= data.totalSentences,
         ...(data.provenance?.voice ? { voice: data.provenance.voice } : {}),
       });
+      /*
+       * A PART-FINISHED RENDER DECIDES THE VOICE, unless the user has already
+       * said otherwise.
+       *
+       * Continue means "finish these sentences", and sentences are finished in
+       * the voice they were started in: prep carries the rendered chunks into
+       * the new session only when the voice matches, so a picker opening on
+       * this machine's DEFAULT voice turned every Continue into a full
+       * re-render — silently, until 2026-09-20. The pre-fill is the offer; the
+       * refusal that names the mismatch still stands behind it.
+       */
+      const renderedIn = data.provenance?.voice;
+      if (renderedIn && completed > 0 && completed < data.totalSentences
+        && !this.voiceChosen()) {
+        this.voice.set(renderedIn);
+      }
       await this.loadSentenceGap(data.processDir, dir);
     } catch { /* silent: an offer that cannot be made is simply not made */ }
   }

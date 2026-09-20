@@ -704,6 +704,14 @@ const SUITES = [
   // Temp dirs, real filesystem: Owen's exact case is driven through the real
   // bridge, along with the two sibling guards that compared COUNTS.
   'test-session-cache-merge',
+  // CONTINUE FINISHES THE BOOK. The resume road was never broken — it stopped
+  // being taken, because every narration grew a `prepare` row in front of the
+  // render and the render's cached-session resume is gated on there being none.
+  // So prep carries the part-finished render into the session it just packed,
+  // and the rule it carries it BY is what this pins: identical pack, identical
+  // voice, or nothing — a chunk is audio filed under an index, and a mismatched
+  // carry-over would put the wrong words at the wrong minute of the book.
+  'test-render-carryover',
   // WHICH MACHINE A BOOK RENDERS ON. A named server is an instruction, so the
   // defects this defends are silent by construction: a row re-routed onto
   // slower hardware overnight, a default that manufactures a choice nobody
