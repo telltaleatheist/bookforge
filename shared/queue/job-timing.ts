@@ -60,6 +60,30 @@ export function taskElapsedSeconds(task: TaskTiming, now: number): number {
 }
 
 /**
+ * Seconds of RENDERING a narration row has done — its elapsed, ending at the
+ * instant the render settled rather than when the whole step does.
+ *
+ * Owen, 2026-09-20, watching a finished render sit on a file copy for eight
+ * minutes with the clock still running: *"it should zero out when it finishes
+ * rendering, not give the idea that its still rendering. for analytics
+ * purposes, we need it to show as finalized/'rendered' with an accurate time.
+ * if its doing a different action it should say its doing that."*
+ *
+ * `renderSettledAt` is stamped by the render itself (`StepMetrics`), so this is
+ * one instant shared by the row and by `job-analytics.json` — not two clocks
+ * that agree by luck. A step that never rendered carries none and is timed the
+ * ordinary way.
+ */
+export function taskWorkingSeconds(
+  task: TaskTiming & { readonly renderSettledAt?: number },
+  now: number,
+): number {
+  const settled = task.renderSettledAt;
+  if (settled === undefined) return taskElapsedSeconds(task, now);
+  return taskElapsedSeconds({ startedAt: task.startedAt, completedAt: settled }, now);
+}
+
+/**
  * Seconds the whole run has been working — every task in it, added up.
  *
  * A standalone job is a run of one, so it goes through here too and there is one rule

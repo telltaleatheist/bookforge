@@ -255,6 +255,7 @@ function projectStep(job: EngineJob, step: EngineStep, multi: boolean): QueueJob
     rawWordsDoneInSession: m.rawWordsDoneInSession,
     rawCharsDoneInSession: m.rawCharsDoneInSession,
     audioSecondsPerChar: m.audioSecondsPerChar,
+    renderSettledAt: m.renderSettledAt,
     copyrightIssuesDetected: m.copyrightIssuesDetected,
     copyrightChunksAffected: m.copyrightChunksAffected,
     contentSkipsDetected: m.contentSkipsDetected,

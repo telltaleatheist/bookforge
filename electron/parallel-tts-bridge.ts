@@ -815,10 +815,68 @@ export async function cacheSessionToBfp(
  * Destination: ${projectDir}/stages/03-tts/sessions/${language}/ebook-{uuid}/
  * Returns the cached sentences path for use in assembly chaining.
  */
+/** How often the publish counts what has landed. */
+const PUBLISH_PROGRESS_MS = 2_000;
+
+/** What a publish says about itself while it runs. */
+export interface PublishProgress {
+  readonly copied: number;
+  readonly total: number;
+}
+
+/**
+ * COUNT WHAT HAS LANDED, while it lands.
+ *
+ * The publish is a file copy of thousands of chunks — eight minutes and 2.5 GB
+ * for *Shift* on 2026-09-20 — and it reported nothing at all, so the row said
+ * "done" in every bar it had while the step sat there. Owen: *"i have no idea
+ * if its locked up or what."*
+ *
+ * It POLLS THE DESTINATION rather than counting the copies it issues, because
+ * the two branches below copy differently (a per-file merge, a whole-tree `cp`)
+ * and the destination is the one answer that is true of both — and it is the
+ * effect, not the intent: a file that is counted is a file that is there.
+ * Returns the function that stops it.
+ */
+function watchPublish(
+  dir: string,
+  total: number,
+  onProgress?: (p: PublishProgress) => void,
+): () => void {
+  if (!onProgress || total <= 0) return () => { /* nothing to report */ };
+  // SAID BEFORE THE FIRST BYTE MOVES. The first real count is a `readdir` away
+  // and a small session can finish copying before it resolves — so the act
+  // announces itself synchronously, and what follows is the count.
+  onProgress({ copied: 0, total });
+  let stopped = false;
+  const tick = async (): Promise<void> => {
+    let copied = 0;
+    try {
+      const files = await fs.readdir(dir);
+      copied = files.filter((f) => f.endsWith('.flac')).length;
+    } catch { /* not created yet — nothing has landed */ }
+    if (!stopped) onProgress({ copied, total });
+  };
+  void tick();
+  const timer = setInterval(() => { void tick(); }, PUBLISH_PROGRESS_MS);
+  return () => { stopped = true; clearInterval(timer); };
+}
+
+/** How many rendered chunks a sentences dir holds — the publish's denominator. */
+async function chunkFileCount(dir: string): Promise<number> {
+  try {
+    return (await fs.readdir(dir)).filter((f) => f.endsWith('.flac')).length;
+  } catch {
+    return 0;
+  }
+}
+
 export async function cacheSessionToProject(
   sessionDir: string,
   projectDir: string,
-  language: string
+  language: string,
+  /** Told how many chunks have landed, about every two seconds. */
+  opts?: { onProgress?: (p: PublishProgress) => void },
 ): Promise<{
   success: boolean;
   cachedSentencesDir?: string;
@@ -882,10 +940,16 @@ export async function cacheSessionToProject(
      * created on host-native paths now anyway ("THERE IS NOTHING TO BRING OUT OF
      * THE GUEST", the completion path).
      */
+    // What this publish owes, and the bar that says how much of it has landed —
+    // started before the first byte moves, so a copy that is slow says so from
+    // its first second. See `watchPublish`.
+    const owed = await chunkFileCount(sourceSentencesDir);
+
     const existing = await findCachedSessionLayout(destDir).catch(() => null);
     if (existing) {
       const before = await publishPlan(sourceSentencesDir, destSentencesDir);
-      const merge = await mergeSessionTree(sessionDir, destDir);
+      const stopWatching = watchPublish(destSentencesDir, owed, opts?.onProgress);
+      const merge = await mergeSessionTree(sessionDir, destDir).finally(stopWatching);
 
       if (!merge.samePath) {
         // The state file the cache now holds names the scratch dir it was
@@ -930,6 +994,10 @@ export async function cacheSessionToProject(
       // publish of the same session, and the answer must name the one this
       // render's chunks are in. The probe stays as the fallback for a session
       // that published no sentences dir at all.
+      // THE LAST WORD ON THE BAR, and it comes after the set comparison above —
+      // so a full bar means "the cache holds every chunk this render made", not
+      // "the copy loop ran out of files".
+      opts?.onProgress?.({ copied: owed, total: owed });
       const merged = await fs.access(destSentencesDir).then(() => true).catch(() => false);
       return {
         success: true,
@@ -949,19 +1017,27 @@ export async function cacheSessionToProject(
     // Determine if the session is in WSL filesystem (handles \\wsl$\ and \\wsl.localhost\)
     const isWslSession = isWslUncPath(sessionDir);
 
-    if (isWslSession && process.platform === 'win32') {
-      // Routed copy-out: guest-side to a mounted drive, \\wsl$ read on the
-      // Windows side to a drive the guest cannot see (network drives never
-      // appear under /mnt — the NAS library's Z: is the live case).
-      await copyDirOutOfWsl(sessionDir, tempDestDir);
-    } else {
-      // Clone-on-write where the filesystem supports it (APFS/ReFS) — with the
-      // scratch dir on the library volume this is near-instant regardless of
-      // session size. Falls back to a regular copy automatically elsewhere.
-      await fs.cp(sessionDir, tempDestDir, {
-        recursive: true,
-        mode: fsSync.constants.COPYFILE_FICLONE,
-      });
+    // The bar, over the TEMP copy this branch writes into — the publish's real
+    // destination until the rename below puts it in place.
+    const stopWatching = watchPublish(
+      path.join(tempDestDir, processRel, 'chapters', 'sentences'), owed, opts?.onProgress);
+    try {
+      if (isWslSession && process.platform === 'win32') {
+        // Routed copy-out: guest-side to a mounted drive, \\wsl$ read on the
+        // Windows side to a drive the guest cannot see (network drives never
+        // appear under /mnt — the NAS library's Z: is the live case).
+        await copyDirOutOfWsl(sessionDir, tempDestDir);
+      } else {
+        // Clone-on-write where the filesystem supports it (APFS/ReFS) — with the
+        // scratch dir on the library volume this is near-instant regardless of
+        // session size. Falls back to a regular copy automatically elsewhere.
+        await fs.cp(sessionDir, tempDestDir, {
+          recursive: true,
+          mode: fsSync.constants.COPYFILE_FICLONE,
+        });
+      }
+    } finally {
+      stopWatching();
     }
 
     // Rewrite session-state.json paths to point at where the copy will live —
@@ -1023,6 +1099,10 @@ export async function cacheSessionToProject(
       });
       return { success: false, error };
     }
+
+    // The full bar, after the set comparison and never before it — see the merge
+    // branch's copy of this line.
+    opts?.onProgress?.({ copied: owed, total: owed });
 
     console.log(`[PARALLEL-TTS] LL session cached: ${destDir}`);
     console.log(`[PARALLEL-TTS] Cached sentences dir: ${cachedSentencesDir}`);
@@ -2640,6 +2720,14 @@ export interface AggregatedProgress {
   // yet), so this is the only thing that moves. ABSENT means absent: a job with
   // no counted prep work reports no bar rather than a fabricated zero.
   prep?: PrepSubProgress;
+  /**
+   * WHEN THE RENDER SETTLED — see `ConversionSession.renderSettledAt`. Present
+   * from that instant on, so the row can stop counting a finished render's
+   * elapsed while the step goes on doing something else.
+   */
+  renderSettledAt?: number;
+  /** How far the publish has got, while it is happening. */
+  publish?: { copied: number; total: number };
 }
 
 /** Counted work inside the preparing stage: what it is, and how far along. */
@@ -3103,6 +3191,34 @@ interface ConversionSession {
   // Live "what's happening inside the current stage" text (MLX bucket heartbeat, or
   // the chunk currently being repaired). Overwritten on every marker line.
   stageDetail?: string;
+  /**
+   * HOW FAR THE PUBLISH HAS GOT — the file copy that follows the last chunk.
+   *
+   * Owen, 2026-09-20, on a finished *Shift*: *"when it finished rendering TTS, it
+   * moved to CPU and just sat there for like 10 minutes. im getting no indication
+   * of whats happening, and i have no idea if its locked up or what."* It was
+   * copying 1,637 chunks — 2.5 GB — into the library at about 200 files a minute,
+   * and every bar on the row said done. A stage that can run for eight minutes
+   * needs a bar, and this is what fills it.
+   */
+  publish?: { copied: number; total: number; startedAt: number };
+  /**
+   * WHEN THE RENDER STOPPED BEING A RENDER — the instant the last worker went
+   * terminal, before the publish, the assembly or anything else this step still
+   * owes.
+   *
+   * Owen, 2026-09-20: *"it should zero out when it finishes rendering, not give
+   * the idea that its still rendering. for analytics purposes, we need it to
+   * show as finalized/'rendered' with an accurate time. if its doing a different
+   * action it should say its doing that."*
+   *
+   * Everything that measures the RENDER ends here: the row's Elapsed, and every
+   * per-minute rate in `job-analytics.json`. They used to end when the STEP did,
+   * which on *Shift* meant eight minutes of file copy were divided into the
+   * rendering speed — a book measured 25% slower than it ran, and no two books
+   * comparable unless their publishes happened to cost the same.
+   */
+  renderSettledAt?: number;
   // ETA calculation - exclude model setup time
   firstSentenceCompletedTime?: number;  // When first sentence actually completed (excludes model loading)
   /**
@@ -5009,6 +5125,15 @@ async function completeAfterWorkers(session: ConversionSession): Promise<void> {
       return;
     }
 
+    /*
+     * THE RENDER IS OVER — stamped HERE, once, before anything this step still
+     * owes. See `ConversionSession.renderSettledAt`. Not inside the
+     * `skipAssembly` branch that announces the card: a run that assembles
+     * inline stops rendering at exactly the same instant and its analytics have
+     * the same right to say so.
+     */
+    if (session.renderSettledAt === undefined) session.renderSettledAt = Date.now();
+
     // Some workers completed - attempt assembly (may work with partial results)
     if (failedWorkersList.length > 0) {
       console.warn(`[PARALLEL-TTS] ${failedWorkersList.length} worker(s) failed, but ${completedWorkers.length} succeeded. Attempting assembly with available sentences...`);
@@ -5065,7 +5190,8 @@ async function completeAfterWorkers(session: ConversionSession): Promise<void> {
       const language = session.config.settings.language || 'en';
       try {
         const cacheResult = await cacheSessionToProject(
-          session.prepInfo.sessionDir, session.config.bfpPath, language
+          session.prepInfo.sessionDir, session.config.bfpPath, language,
+          { onProgress: (p) => notePublishProgress(session, p) },
         );
         if (cacheResult.success) {
           cachedSentencesDir = cacheResult.cachedSentencesDir;
@@ -6087,7 +6213,7 @@ async function getUniqueFilePath(filePath: string): Promise<string> {
  * Defined ONCE and shared by both builders (the initial stage list and buildTtsStages)
  * so the two can never drift apart.
  */
-function ttsStageWeights(skipAssembly: boolean): Record<string, number> {
+function ttsStageWeights(skipAssembly: boolean, publishes: boolean): Record<string, number> {
   /*
    * NO `aligning` SHARE ANY MORE (Owen, 2026-09-19). It had one because the
    * alignment was a phase of this step — 2026-09-15: *"i thought aligning text
@@ -6098,9 +6224,25 @@ function ttsStageWeights(skipAssembly: boolean): Record<string, number> {
    * never reaches. Its 0.05 goes back to `converting`, which is what was
    * quietly paying for it before it was priced at all.
    */
+  /*
+   * `publishing` IS DECLARED ONLY BY A RUN THAT PUBLISHES — a render with no
+   * project has nothing to copy anywhere, and a stage it can never reach would
+   * park its bar at 95% for ever. Same rule as `assembling`, for the same
+   * reason, and it is why this takes two questions rather than one.
+   *
+   * Its share is small and its duration is not: the publish is minutes on a
+   * long book. That is correct — the weights price a stage's share of the RUN,
+   * and eight minutes of file copy after ninety minutes of rendering really is
+   * about a twentieth of it.
+   */
+  if (!publishes) {
+    return skipAssembly
+      ? { preparing: 0.05, loading: 0.10, converting: 0.85 }
+      : { preparing: 0.04, loading: 0.08, converting: 0.73, assembling: 0.15 };
+  }
   return skipAssembly
-    ? { preparing: 0.05, loading: 0.10, converting: 0.85 }
-    : { preparing: 0.04, loading: 0.08, converting: 0.73, assembling: 0.15 };
+    ? { preparing: 0.05, loading: 0.10, converting: 0.80, publishing: 0.05 }
+    : { preparing: 0.04, loading: 0.08, converting: 0.70, publishing: 0.03, assembling: 0.15 };
 }
 
 /*
@@ -6112,7 +6254,10 @@ function buildTtsStages(
   session: ConversionSession,
   opts: { convertPct: number; assemblyPct?: number; done?: boolean }
 ): JobStageProgress[] {
-  const weights = ttsStageWeights(session.config.skipAssembly === true);
+  // Does this run end by copying its sentences into a project? That is what
+  // declares the `publishing` stage — see `ttsStageWeights`.
+  const publishes = !!session.config.bfpPath;
+  const weights = ttsStageWeights(session.config.skipAssembly === true, publishes);
   const stage = (
     name: string,
     label: string,
@@ -6126,6 +6271,7 @@ function buildTtsStages(
       stage('loading', 'Loading voice model', 100, 'complete'),
       stage('converting', 'Converting sentences', 100, 'complete'),
     ];
+    if (publishes) all.push(stage('publishing', 'Publishing to the library', 100, 'complete'));
     if (!session.config.skipAssembly) all.push(stage('assembling', 'Assembling audiobook', 100, 'complete'));
     return all;
   }
@@ -6158,6 +6304,19 @@ function buildTtsStages(
       assembling || opts.convertPct >= 100 ? 'complete' : (converting ? 'running' : 'pending')),
   ];
 
+  /*
+   * THE COPY INTO THE LIBRARY, which is where a finished render spends its last
+   * minutes. `session.publish` is set only while it is happening, so this bar is
+   * pending through the whole render and complete only once the audio is
+   * somewhere the alignment and the assembly can read it.
+   */
+  if (publishes) {
+    const p = session.publish;
+    const pct = p && p.total > 0 ? Math.min(100, Math.round((p.copied / p.total) * 100)) : 0;
+    stages.push(stage('publishing', 'Publishing to the library', pct,
+      p === undefined ? 'pending' : (pct >= 100 ? 'complete' : 'running')));
+  }
+
   // When a separate assembly STEP follows in the chain, this job never assembles —
   // showing a bar that can only ever read 0% would be a lie.
   if (!session.config.skipAssembly) {
@@ -6167,6 +6326,45 @@ function buildTtsStages(
   }
 
   return stages;
+}
+
+/**
+ * THE PUBLISH, ON THE ROW — one landing count, turned into a bar and a sentence.
+ *
+ * Owen, 2026-09-20, on a *Shift* that had finished rendering: *"it moved to CPU
+ * and just sat there for like 10 minutes. im getting no indication of whats
+ * happening, and i have no idea if its locked up or what."* It was copying 1,637
+ * chunks into the library at about 200 files a minute.
+ *
+ * It goes through `emitProgress` rather than sending a frame of its own, because
+ * a frame built here would carry none of the counts the row is already showing —
+ * the chunk tally, the elapsed, the rate — and the renderer would read the
+ * absences as zeroes. One builder, one shape, one extra fact on it.
+ */
+function notePublishProgress(session: ConversionSession, p: PublishProgress): void {
+  const startedAt = session.publish?.startedAt ?? Date.now();
+  session.publish = { copied: p.copied, total: p.total, startedAt };
+  session.stageDetail = `${p.copied.toLocaleString('en-US')} of ${p.total.toLocaleString('en-US')} `
+    + 'rendered chunk(s) copied into the library';
+  emitProgress(session);
+}
+
+/**
+ * Seconds of copying left, from the copy's OWN measured rate.
+ *
+ * Priced in files rather than bytes because files are what the count knows, and
+ * on the shape that made this necessary — thousands of small FLACs over SMB —
+ * the per-file round trip is the cost, not the megabytes. Null until there is a
+ * span long enough to divide.
+ */
+function publishEtaSeconds(session: ConversionSession): number | null {
+  const p = session.publish;
+  if (!p || p.total <= 0 || p.copied <= 0) return null;
+  const elapsed = (Date.now() - p.startedAt) / 1000;
+  if (elapsed < 5) return null;
+  const perSecond = p.copied / elapsed;
+  if (perSecond <= 0) return null;
+  return Math.round(Math.max(0, p.total - p.copied) / perSecond);
 }
 
 /**
@@ -6180,6 +6378,8 @@ function emitPrepStageProgress(
   jobId: string,
   message: string,
   skipAssembly: boolean,
+  /** Whether this run ends by publishing into a project — see `ttsStageWeights`. */
+  publishes: boolean,
   // Counted work inside prep, when there is any. Passed through rather than
   // derived: the only thing that knows how many paragraphs a normalization pass
   // has left is the pass.
@@ -6192,12 +6392,18 @@ function emitPrepStageProgress(
   // 750-word probe, setup was 82 s against 42 s of generation, but that setup is a
   // fixed cost while conversion scales with the book — on a full render it is the
   // overwhelming majority.
-  const stageWeights = ttsStageWeights(skipAssembly);
+  const stageWeights = ttsStageWeights(skipAssembly, publishes);
   const stages: JobStageProgress[] = [
     { name: 'preparing', label: 'Preparing book', pct: 0, status: 'running', weight: stageWeights.preparing },
     { name: 'loading', label: 'Loading voice model', pct: 0, status: 'pending', weight: stageWeights.loading },
     { name: 'converting', label: 'Converting sentences', pct: 0, status: 'pending', weight: stageWeights.converting },
   ];
+  if (publishes) {
+    stages.push({
+      name: 'publishing', label: 'Publishing to the library', pct: 0, status: 'pending',
+      weight: stageWeights.publishing,
+    });
+  }
   if (!skipAssembly) {
     stages.push({
       name: 'assembling', label: 'Assembling audiobook', pct: 0, status: 'pending',
@@ -6710,8 +6916,28 @@ function emitProgress(session: ConversionSession): void {
     historicalRate: session.persistentState?.historicalSentencesPerMinute,
     stages: buildTtsStages(session, { convertPct: Math.round(percentage) }),
     stageDetail: session.stageDetail,
-    activeBatch: currentBatch(session)
+    activeBatch: currentBatch(session),
+    // Both absent until the render settles, which is what makes them readable as
+    // "this row is no longer rendering" without anybody comparing timestamps.
+    ...(session.renderSettledAt === undefined ? {} : { renderSettledAt: session.renderSettledAt }),
+    ...(session.publish === undefined
+      ? {}
+      : { publish: { copied: session.publish.copied, total: session.publish.total } }),
   };
+
+  /*
+   * A ROW THAT IS NOT RENDERING SAYS WHAT IT IS DOING (Owen, 2026-09-20).
+   *
+   * The message and the wait are the render's until the render is over; from
+   * then on they belong to whatever this step is actually doing, which is the
+   * publish. Leaving the render's "0s left" up while a file copy ran for eight
+   * minutes is how a working step reads as a hung one.
+   */
+  if (session.publish !== undefined && session.publish.copied < session.publish.total) {
+    progress.message = 'Publishing to the library';
+    const left = publishEtaSeconds(session);
+    progress.estimatedRemaining = left ?? 0;
+  }
 
   rendererSend('parallel-tts:progress', { jobId: session.jobId, progress });
 
@@ -7009,7 +7235,14 @@ function emitComplete(
   const historicalRate = persistentState?.historicalSentencesPerMinute || chunksPerMinuteOverall;
 
   // Counted from this run — no assumed sentences-per-chunk anywhere in them.
-  const throughput = measureThroughput(session, session.prepInfo, completedTime);
+  /*
+   * MEASURED TO THE RENDER'S OWN END, not to the step's. What happens between
+   * them is a file copy (`cacheSessionToProject`, minutes on a long book) and,
+   * for an inline run, the assembly — neither of which is rendering, and both of
+   * which used to be divided into every rate this record carries.
+   */
+  const renderEndedAt = session.renderSettledAt ?? completedTime;
+  const throughput = measureThroughput(session, session.prepInfo, renderEndedAt);
   // Cross-run REAL sentences/min, over render time only. Mirrors the historicalRate
   // fallback above: this run's measured figure when no cross-run one exists — and
   // undefined when neither does, never a chunk-based stand-in.
@@ -7021,6 +7254,19 @@ function emitComplete(
     startedAt: new Date(session.startTime).toISOString(),
     completedAt,
     durationSeconds: duration,
+    /*
+     * THE RENDER'S OWN SPAN, beside the step's. `durationSeconds` still means
+     * what it always did — the whole job, start to finish — and these two say
+     * where it went: the render, and the publish that follows it. Absent on a
+     * run that never reached a settle (it failed before a worker finished), and
+     * absent is the honest answer there rather than a zero that reads as a
+     * measurement.
+     */
+    ...(session.renderSettledAt === undefined ? {} : {
+      renderedAt: new Date(session.renderSettledAt).toISOString(),
+      renderSeconds: Math.round((session.renderSettledAt - session.startTime) / 1000),
+      publishSeconds: Math.round((completedTime - session.renderSettledAt) / 1000),
+    }),
     totalSentences: session.prepInfo.totalSentences,
     // Whole-book real sentence count. Kept for context and for older readers; the
     // per-run measurements below are what the throughput figures are built from.
@@ -7556,7 +7802,8 @@ async function normalizeTextNumbersFor(
     systemPrompt: await loadNumberNormalizePrompt(),
     outDir: narrationCutsDir(),
     source: inputPath,
-    onProgress: prepProgressSink(jobId, opts.skipAssembly),
+    // A `.txt` audition belongs to no project, so it publishes nothing.
+    onProgress: prepProgressSink(jobId, opts.skipAssembly, false),
   });
 
   if (outcome === null) {
@@ -7615,7 +7862,7 @@ async function narrationNumberRunner(
 
 /** The prep bar, throttled — the same sink for a book and for a text file. */
 function prepProgressSink(
-  jobId: string, skipAssembly: boolean,
+  jobId: string, skipAssembly: boolean, publishes: boolean,
 ): (done: number, total: number, label: string) => void {
   // At most ~4 updates a second: a paragraph can settle in well under 250 ms and
   // the renderer redraws a lane on every one of these.
@@ -7628,7 +7875,7 @@ function prepProgressSink(
     // short of the end for the rest of the job.
     if (done < total && now - lastEmit < MIN_INTERVAL_MS) return;
     lastEmit = now;
-    emitPrepStageProgress(jobId, `${label}…`, skipAssembly, { label, done, total });
+    emitPrepStageProgress(jobId, `${label}…`, skipAssembly, publishes, { label, done, total });
   };
 }
 
@@ -7963,7 +8210,8 @@ async function packWithHandle(
   // Prep is a real, minute-scale stage (extract the epub, split it, pack chunks)
   // that used to emit nothing — so announce it before starting, or the job shows
   // a blank 0% until the first worker spawns.
-  emitPrepStageProgress(jobId, 'Extracting text and splitting sentences…', config.skipAssembly === true);
+  emitPrepStageProgress(jobId, 'Extracting text and splitting sentences…',
+    config.skipAssembly === true, !!config.bfpPath);
   handle.throwIfCancelled('before narrator was spawned');
   let prepInfo: PrepInfo;
   try {

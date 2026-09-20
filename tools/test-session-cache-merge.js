@@ -446,6 +446,73 @@ const caseDir = (tag) => {
   console.log('7. THE CALLER FAILS THE STEP');
   // ───────────────────────────────────────────────────────────────────────────
 
+  // ── 8. A PUBLISH THAT TAKES MINUTES SAYS SO ────────────────────────────────
+  //
+  // Owen, 2026-09-20, on a *Shift* whose render had just finished: *"it moved to
+  // CPU and just sat there for like 10 minutes. im getting no indication of
+  // whats happening, and i have no idea if its locked up or what."* It was
+  // copying 1,637 chunks — 2.5 GB — into the library at ~200 files a minute,
+  // with every bar on the row reading done.
+  //
+  // So the publish reports, on both branches, and the two reports that matter
+  // are the FIRST (before a byte moves, so a slow copy is never silent) and the
+  // LAST (after the set comparison, so a full bar means the cache holds every
+  // chunk the render made — never "the copy loop ran out of files").
+
+  await check('a fresh publish announces itself and reports a verified full bar', async () => {
+    const root = caseDir('reports-fresh');
+    const project = path.join(root, 'project');
+    const scratch = path.join(root, 'scratch');
+    const source = makeSession(path.join(scratch, 'ebook-77aa77aa'), { chunks: [0, 1, 2, 3] });
+
+    const seen = [];
+    const result = await bridge.cacheSessionToProject(source.sessionDir, project, 'en', {
+      onProgress: (p) => seen.push(p),
+    });
+    assert.strictEqual(result.success, true, result.error);
+    assert.ok(seen.length >= 2, `the publish reported ${seen.length} time(s); expected a first and a last`);
+    assert.deepStrictEqual(seen[0], { copied: 0, total: 4 },
+      'the first report goes out before the copy starts, naming what it owes');
+    assert.deepStrictEqual(seen[seen.length - 1], { copied: 4, total: 4 },
+      'and the last says every chunk landed');
+  });
+
+  await check('a merge publish reports too, over the cache it is merging into', async () => {
+    const root = caseDir('reports-merge');
+    const project = path.join(root, 'project');
+    const scratch = path.join(root, 'scratch');
+    const NAME = 'ebook-88bb88bb';
+    makeSession(cacheDirFor(project, 'en', NAME), { chunks: [0], body: 'CACHE', ageSeconds: 600 });
+    const source = makeSession(path.join(scratch, NAME), { chunks: [0, 1, 2], body: 'SRC' });
+
+    const seen = [];
+    const result = await bridge.cacheSessionToProject(source.sessionDir, project, 'en', {
+      onProgress: (p) => seen.push(p),
+    });
+    assert.strictEqual(result.success, true, result.error);
+    assert.deepStrictEqual(seen[0], { copied: 0, total: 3 });
+    assert.deepStrictEqual(seen[seen.length - 1], { copied: 3, total: 3 });
+  });
+
+  await check('a publish that drops a chunk never reports a full bar', async () => {
+    const root = caseDir('reports-hole');
+    const project = path.join(root, 'project');
+    const scratch = path.join(root, 'scratch');
+    const source = makeSession(path.join(scratch, 'ebook-99cc99cc'), { chunks: [0, 1, 2] });
+    // The destination is a FILE where the session must go, so the copy fails.
+    const langDir = path.join(project, 'stages', '03-tts', 'sessions', 'en');
+    fs.mkdirSync(langDir, { recursive: true });
+    fs.writeFileSync(path.join(langDir, 'ebook-99cc99cc'), 'not a directory');
+
+    const seen = [];
+    const result = await bridge.cacheSessionToProject(source.sessionDir, project, 'en', {
+      onProgress: (p) => seen.push(p),
+    });
+    assert.strictEqual(result.success, false, 'the publish could not land the session');
+    assert.ok(!seen.some((p) => p.copied === p.total && p.total > 0),
+      'and it never showed a full bar for a cache that does not hold the render');
+  });
+
   await check('tts-conversion throws on a publish that did not succeed', () => {
     const arm = TTS_STEP_TS.slice(TTS_STEP_TS.indexOf('const cached = await cacheSessionToProject('));
     assert.ok(/if \(!cached\.success\) \{\s*\n\s*throw new Error\(/.test(arm),

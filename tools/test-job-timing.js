@@ -24,7 +24,7 @@ if (!fs.existsSync(MODULE)) {
   process.exit(1);
 }
 
-const { taskElapsedSeconds, runElapsedSeconds } = require(MODULE);
+const { taskElapsedSeconds, taskWorkingSeconds, runElapsedSeconds } = require(MODULE);
 
 const tests = [];
 let passed = 0, failed = 0;
@@ -132,6 +132,40 @@ test('the run total ignores the master row it is displayed on', () => {
   const steps = [{ startedAt: new Date(min(5)), completedAt: new Date(min(9)) }];
   assert.strictEqual(runElapsedSeconds(steps, min(60)), 4 * 60);
   assert.notStrictEqual(runElapsedSeconds(steps, min(60)), taskElapsedSeconds(master, min(60)));
+});
+
+// ── a render that has settled stops counting ────────────────────────────────
+//
+// Owen, 2026-09-20, watching a finished render sit on an eight-minute file copy
+// with the clock still running: *"it should zero out when it finishes
+// rendering, not give the idea that its still rendering. for analytics
+// purposes, we need it to show as finalized/'rendered' with an accurate time.
+// if its doing a different action it should say its doing that."*
+
+test('a row still running, whose render has settled, reads the RENDER time', () => {
+  const row = { startedAt: new Date(min(0)), renderSettledAt: min(26) };
+  assert.strictEqual(taskWorkingSeconds(row, min(26)), 26 * 60);
+  // Eight minutes of publishing later it still reads twenty-six.
+  assert.strictEqual(taskWorkingSeconds(row, min(34)), 26 * 60);
+});
+
+test('and it keeps reading the render time after the step completes', () => {
+  const row = {
+    startedAt: new Date(min(0)),
+    renderSettledAt: min(26),
+    completedAt: new Date(min(34)),
+  };
+  assert.strictEqual(taskWorkingSeconds(row, min(90)), 26 * 60,
+    'the publish is a different act; charging its minutes to the render is what '
+    + 'made every rate in the analytics wrong');
+  assert.strictEqual(taskElapsedSeconds(row, min(90)), 34 * 60,
+    'the whole-step reading is still there for whoever wants it');
+});
+
+test('a row that never rendered is timed the ordinary way', () => {
+  const row = { startedAt: new Date(min(0)) };
+  assert.strictEqual(taskWorkingSeconds(row, min(12)), 12 * 60);
+  assert.strictEqual(taskWorkingSeconds({}, min(12)), 0);
 });
 
 // ── run ─────────────────────────────────────────────────────────────────────

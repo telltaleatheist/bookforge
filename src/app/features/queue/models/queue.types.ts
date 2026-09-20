@@ -259,6 +259,17 @@ export interface QueueJob {
    * alone rather than a zero.
    */
   audioSecondsPerChar?: number;
+  /**
+   * WHEN THE RENDER SETTLED — the last chunk landed and this row moved on to
+   * what it still owes (publishing the session into the library, and for an
+   * inline run the assembly).
+   *
+   * The Elapsed readout ends here rather than at the step's own completion, and
+   * `job-analytics.json` measures every per-minute figure to the same instant,
+   * so the two cannot disagree. Absent on a row that has not finished rendering
+   * — and on every row that never rendered.
+   */
+  renderSettledAt?: number;
   // Copyright issues detected during AI cleanup
   copyrightIssuesDetected?: boolean;
   copyrightChunksAffected?: number;

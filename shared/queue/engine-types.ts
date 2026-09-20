@@ -542,6 +542,18 @@ export interface StepMetrics {
    * a stream with no bursts anchors at its first landing, as it always did.
    */
   anchorBurstOpenSince?: number;
+  /**
+   * When the RENDER settled — the last chunk landed and the step moved on to
+   * whatever it still owes (publishing the session into the library, and for an
+   * inline run the assembly).
+   *
+   * The row's Elapsed ends here rather than at the step's own completion, and
+   * every per-minute figure in `job-analytics.json` is measured to the same
+   * instant. Owen, 2026-09-20: *"it should zero out when it finishes rendering,
+   * not give the idea that its still rendering … if its doing a different action
+   * it should say its doing that."*
+   */
+  renderSettledAt?: number;
   /** Counts for THIS session only — a resume must not divide prior work by new time. */
   chunksDoneInSession?: number;
   rawSentencesDoneInSession?: number;

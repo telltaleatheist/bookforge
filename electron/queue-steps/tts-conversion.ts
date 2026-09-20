@@ -111,6 +111,14 @@ function mapProgress(p: Record<string, unknown>): StepReport {
       rawWordsDoneInSession: num('rawWordsCompletedInSession'),
       rawCharsDoneInSession: num('rawCharsCompletedInSession'),
       audioSecondsPerChar: num('audioSecondsPerChar'),
+      /*
+       * WHEN THIS ROW STOPPED RENDERING. From here the row's Elapsed is the
+       * RENDER's, not the step's — the publish and the assembly are different
+       * acts and the row says which one it is doing (Owen, 2026-09-20). It is
+       * carried as a metric rather than inferred from the stage bars because
+       * the analytics record and the readout must agree on one instant.
+       */
+      renderSettledAt: num('renderSettledAt'),
       currentChapter: num('assemblyChapter'),
       totalChapters: num('assemblyTotalChapters'),
       parallelWorkers: p['workers'] as never,
@@ -674,6 +682,21 @@ export const ttsConversionStep: StepModule = {
          */
         const cached = await cacheSessionToProject(
           sessionDir, projectDir, config.language || 'en',
+          {
+            /*
+             * THIS ONE IS NORMALLY THE FAST HALF — the bridge published on
+             * completion and what reaches here is the merge that finds the
+             * cache already holding the render. It reports anyway, because the
+             * case where it is NOT fast (a first publish that failed, a resume
+             * whose cache is behind) is exactly the case where a row sitting
+             * silently is the thing that gets reported as a hang.
+             */
+            onProgress: ({ copied, total }) => ctx.report({
+              message: 'Publishing to the library',
+              detail: `${copied.toLocaleString('en-US')} of ${total.toLocaleString('en-US')} `
+                + 'rendered chunk(s) copied into the library',
+            }),
+          },
         ).catch((err: unknown) => ({
           success: false as const,
           error: `${(err as Error)?.message ?? String(err)}`,

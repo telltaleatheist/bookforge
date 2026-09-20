@@ -16,7 +16,7 @@
  */
 
 import { Injectable, OnDestroy, signal } from '@angular/core';
-import { runElapsedSeconds, taskElapsedSeconds } from '@shared/queue/job-timing';
+import { runElapsedSeconds, taskWorkingSeconds } from '@shared/queue/job-timing';
 import { throughputSample } from '@shared/queue/rate-window';
 import { JobStageProgress, QueueJob } from '../models/queue.types';
 
@@ -342,10 +342,17 @@ export class JobEtaService implements OnDestroy {
       : text;
   }
 
-  /** Seconds THIS ONE task has been working, ticking. Zero before it starts. */
+  /**
+   * Seconds THIS ONE task has been working, ticking. Zero before it starts.
+   *
+   * A narration row stops counting when its RENDER settles, not when the step
+   * does: what follows is a publish (and sometimes an assembly), which the row
+   * names and prices separately. `taskWorkingSeconds` holds that rule, so the
+   * number here and the one in `job-analytics.json` are the same measurement.
+   */
   elapsedSeconds(job: QueueJob): number {
     this.tick();
-    return taskElapsedSeconds(job, Date.now());
+    return taskWorkingSeconds(job, Date.now());
   }
 
   elapsedDisplay(job: QueueJob): string {
