@@ -47,6 +47,31 @@
  * fake server's request log tail — the input to the next hardening packet.
  *
  * No GPU, no model, no network beyond 127.0.0.1, no library.
+ *
+ * ── AND THE SAME HARNESS AGAINST A REAL CRUCIBLE ────────────────────────────
+ *
+ *   node tools/test-chaos-book.js --real <server-name>
+ *
+ * Owen, 2026-09-20: *"we have a real crucible to test against."* The fake keeps
+ * what only a fake can do — a socket destroyed at a chosen byte, a server that
+ * forgets everything between two frames, a sub-second race run the same way
+ * every time — and that is the half that belongs in the keeper set. What a fake
+ * can never tell you is whether the SERVER agrees, and that is this mode: the
+ * same doors, the same assertions, against a live engine.
+ *
+ * The rules it runs under, every one of them a refusal rather than a comment:
+ *
+ *  - THE SERVER IS NAMED, ALWAYS. There is no default, no "first enabled", no
+ *    search. `--real` with no name, or a name not in the registry, refuses.
+ *  - IT MUST BE IDLE. Anything resident, running, queued, claimed, leased,
+ *    streaming or mid-chat and this refuses to start — a suite that interrupted
+ *    a nine-hour narration to measure a cancel would be the defect it is looking
+ *    for.
+ *  - IT IS LEFT AS IT WAS FOUND, and that is asserted at the end: the same
+ *    resident (which is normally nothing), no lease, no job of ours.
+ *  - NOTHING THAT NEEDS A KILLED PROCESS OR A CHOSEN BYTE runs here. Those are
+ *    the fake's, and asking a real server to be killed is not a test, it is an
+ *    outage.
  */
 'use strict';
 const assert = require('assert');
@@ -66,6 +91,61 @@ for (const needed of ['queue-engine.js', 'crucible/job.js', 'crucible/render.js'
   }
 }
 
+/*
+ * ── WHICH MODE, AND WHICH SERVER ───────────────────────────────────────────
+ *
+ * `--real <name>` and nothing else. The name is REQUIRED and is matched against
+ * the app's own registry; there is no default server and no search, because the
+ * one thing this must never do is find a machine somebody is using and submit
+ * work to it.
+ */
+const argv = process.argv.slice(2);
+const realFlag = argv.indexOf('--real');
+const REAL_SERVER = realFlag === -1 ? null : argv[realFlag + 1];
+if (realFlag !== -1 && (REAL_SERVER === undefined || REAL_SERVER.startsWith('--'))) {
+  console.error('--real needs the NAME of a registered Crucible server: '
+    + 'node tools/test-chaos-book.js --real "crucible@<machine>"');
+  process.exit(2);
+}
+
+/**
+ * The app's own `crucible-servers.json`, at the platform path `servers.ts`
+ * reads it from — composed from `os.homedir()` rather than written down,
+ * because a tracked file may not carry a home path (`test-no-machine-addresses`).
+ */
+function appUserDataDir() {
+  const home = require('os').homedir();
+  if (process.platform === 'darwin') return path.join(home, 'Library', 'Application Support', 'BookForge');
+  if (process.platform === 'win32') {
+    return path.join(process.env.APPDATA || path.join(home, 'AppData', 'Roaming'), 'BookForge');
+  }
+  return path.join(process.env.XDG_CONFIG_HOME || path.join(home, '.config'), 'BookForge');
+}
+
+/**
+ * Put the ONE named server into this run's temp registry, so every door reaches
+ * it through `crucibleClientFor` exactly as the app does — and so a name this
+ * run was not given is not even present to be reached by accident.
+ */
+function adoptRealServer(name) {
+  const file = path.join(appUserDataDir(), 'crucible-servers.json');
+  if (!fs.existsSync(file)) {
+    throw new Error(`there is no Crucible registry at ${file} — nothing to test against`);
+  }
+  const record = JSON.parse(fs.readFileSync(file, 'utf-8'));
+  const rows = Array.isArray(record.servers) ? record.servers : [];
+  const row = rows.find((r) => r.name === name);
+  if (row === undefined) {
+    throw new Error(`no Crucible server named ${JSON.stringify(name)} is registered. `
+      + `Registered: ${rows.map((r) => r.name).join(', ') || '(none)'}`);
+  }
+  fs.writeFileSync(
+    path.join(H.USER_DATA, 'crucible-servers.json'),
+    JSON.stringify({ servers: [row] }, null, 2),
+  );
+  return row;
+}
+
 const crucibleJob = require(path.join(H.DIST, 'crucible', 'job.js'));
 const servers = require(path.join(H.DIST, 'crucible', 'servers.js'));
 const sweep = require(path.join(H.DIST, 'crucible', 'in-flight-sweep.js'));
@@ -77,6 +157,11 @@ const registerFake = fakeNamer(servers);
 
 const results = [];
 const scenarios = [];
+/** The set that only a LIVE server can answer. See the header. */
+const realScenarios = [];
+function realScenario(id, title, fn, opts = {}) {
+  realScenarios.push({ id, title, fn, pendingPacket: opts.pendingPacket });
+}
 
 /**
  * `pendingPacket` is the honest half of this suite: a scenario whose behaviour
@@ -89,7 +174,12 @@ function scenario(id, title, fn, opts = {}) {
 }
 
 async function runAll() {
-  for (const s of scenarios) {
+  const set = REAL_SERVER === null ? scenarios : realScenarios;
+  if (REAL_SERVER !== null) {
+    const row = adoptRealServer(REAL_SERVER);
+    console.log(`against the REAL ${row.name} at ${new URL(row.url).host}\n`);
+  }
+  for (const s of set) {
     let note = '';
     let outcome = 'PASS';
     let detail = null;
@@ -113,6 +203,8 @@ async function runAll() {
     }
     await H.quiesce();
   }
+
+  if (REAL_SERVER !== null) await leaveAsFound();
 
   const failed = results.filter((r) => r.outcome === 'FAIL');
   const pending = results.filter((r) => r.outcome.startsWith('PENDING'));
@@ -964,6 +1056,246 @@ scenario('S13', 'a connection that hangs and dies mid-align is a wait; what it d
     await fake.close();
   }
 });
+
+// ════════════════════════════════════════════════════════════════════════════
+// AGAINST A REAL CRUCIBLE  (`--real <server-name>`)
+// ════════════════════════════════════════════════════════════════════════════
+
+/** The SDK client for the one named server, through the app's own factory. */
+async function realClient() {
+  return servers.crucibleClientFor(REAL_SERVER, 'bookforge-chaos');
+}
+
+/** What the card said before this suite touched anything. */
+let baseline = null;
+
+/**
+ * THE IDLE GATE. A machine with anything on it is a machine somebody is using,
+ * and every scenario below either cancels something or takes the lane.
+ */
+function whatHolds(activity) {
+  if (activity.running.length > 0) return `a ${activity.running[0].type} job is running`;
+  if (activity.queued.length > 0) return `a ${activity.queued[0].type} job is queued`;
+  if (activity.claim !== null) return `a claim held by ${activity.claim.heldBy}`;
+  if (activity.lease !== null) return 'an open lease';
+  if (activity.streaming !== null) return 'an open streaming session';
+  if (activity.chat.inFlight > 0) return `${activity.chat.inFlight} chat completion(s) in flight`;
+  if (activity.stopping !== null) return 'a stop already under way';
+  if (activity.warming !== null) return `${activity.warming} is loading`;
+  return null;
+}
+
+/** Take off whatever this suite put on the card, whatever it was. */
+async function takeOffTheCard(what) {
+  const client = await realClient();
+  const now = await client.activity();
+  if (now.resident === null) return 'nothing resident';
+  const type = now.resident.kind === 'tts' ? 'unload-voice'
+    : now.resident.kind === 'llm' ? 'unload-model'
+      : now.resident.kind === 'align' ? 'unload-aligner' : null;
+  if (type === null) return `left ${now.resident.kind} ${now.resident.id} — no unload job type for it`;
+  const jobId = await client.submit({ type, model: now.resident.id, params: {}, inputs: {} });
+  for await (const event of client.events(jobId)) {
+    if (event.event === 'done' || event.event === 'failed' || event.event === 'cancelled') break;
+  }
+  return `${what}: unloaded ${now.resident.id}`;
+}
+
+/**
+ * The last word: the server is as it was found, and this SAYS so.
+ *
+ * POLLED, not asked once. A settlement takes a moment — the first run of this
+ * read *"a claim held by the settlement clearing the card"* a millisecond after
+ * the last unload and called a perfectly tidy server dirty. What is asserted is
+ * where the machine COMES TO REST, and that is a question with a clock in it.
+ */
+async function leaveAsFound(graceMs = 20000) {
+  try {
+    await takeOffTheCard('teardown');
+    const client = await realClient();
+    const wanted = baseline === null || baseline.resident === null ? null : baseline.resident.id;
+    const deadline = Date.now() + graceMs;
+    let now = await client.activity();
+    let held = whatHolds(now);
+    while ((held !== null || now.lease !== null) && Date.now() < deadline) {
+      await H.wait(500);
+      // eslint-disable-next-line no-await-in-loop
+      now = await client.activity();
+      held = whatHolds(now);
+    }
+    const same = (now.resident === null ? null : now.resident.id) === wanted;
+    const clean = same && now.lease === null && held === null;
+    console.log(`\nleft as found: ${clean ? 'yes' : 'NO'} — resident `
+      + `${now.resident === null ? 'nothing' : now.resident.id}, lease `
+      + `${now.lease === null ? 'none' : 'OPEN'}, holding ${held || 'nothing'}`);
+    if (!clean) process.exitCode = 1;
+  } catch (err) {
+    console.log(`\nleft as found: UNKNOWN — ${err.message}`);
+    process.exitCode = 1;
+  }
+}
+
+realScenario('real-activity', 'the live card answers the stranded-card question, and answers it coherently', async () => {
+  const client = await realClient();
+  const activity = await client.activity();
+  baseline = activity;
+  const held = whatHolds(activity);
+  assert.strictEqual(held, null,
+    `REFUSING TO RUN: ${REAL_SERVER} is busy (${held}). Every scenario below cancels something or `
+    + 'takes the lane, and interrupting somebody\'s run to measure a cancel is the defect, not the test.');
+  if (activity.resident !== null) {
+    const r = activity.resident;
+    assert.ok((r.heldBy === null) !== (r.unclaimedSince === null),
+      'ONE FACT, TWO SPELLINGS: held_by and unclaimed_since are exclusive. This card says '
+      + `heldBy=${JSON.stringify(r.heldBy)} and unclaimedSince=${JSON.stringify(r.unclaimedSince)}`);
+  }
+  return `${activity.server.name} ${activity.server.version} (${activity.server.backend}), resident `
+    + `${activity.resident === null ? 'nothing' : activity.resident.id}, `
+    + `chat.maxInFlight=${activity.chat.maxInFlight}`;
+});
+
+realScenario('real-409', 'a second job while the lane is taken is refused 409 BY NAME, and nothing is lost', async () => {
+  const client = await realClient();
+  const voice = 'mistborn';
+  // A load is the cheapest thing that holds the lane for long enough to race.
+  const loading = await client.loadVoice(voice);
+  try {
+    let refusal = null;
+    for (let attempt = 0; attempt < 20 && refusal === null; attempt += 1) {
+      const now = await client.activity();
+      if (now.running.length === 0 && now.warming === null) { await H.wait(100); continue; }
+      try {
+        // eslint-disable-next-line no-await-in-loop
+        await client.submit({ type: 'load-voice', model: 'thirdreich', params: {}, inputs: {} });
+        throw new Error('the second job was ADMITTED while the lane was taken');
+      } catch (err) {
+        if (err && (err.code === 'server_busy' || err.code === 'leased')) { refusal = err; break; }
+        if (err && String(err.message).includes('ADMITTED')) throw err;
+        throw err;
+      }
+    }
+    assert.ok(refusal !== null, 'the lane never reported taken, so nothing was raced');
+    assert.ok(typeof refusal.busyLine === 'string' && refusal.busyLine !== '',
+      `a 409 must carry the holder's own sentence; got ${JSON.stringify(refusal.busyLine)}`);
+    assert.strictEqual(H.ledger.readInFlightLedger().length, 0,
+      'a refused submit records nothing — it never started');
+    return `${refusal.code}: ${refusal.busyLine}`;
+  } finally {
+    // Let the load settle either way; the next scenario owns what it left.
+    try {
+      for await (const event of client.events(loading)) {
+        if (event.event === 'done' || event.event === 'failed' || event.event === 'cancelled') break;
+      }
+    } catch { /* the load's own ending is the next scenario's subject */ }
+  }
+});
+
+realScenario('real-S14', 'a Stop during a real load: what the card says afterwards', async () => {
+  const client = await realClient();
+  // Start from an empty card, so what is resident afterwards is ours.
+  await takeOffTheCard('before the load');
+  const controller = new AbortController();
+  const started = [];
+  const door = driveRealLoad(client, 'mistborn', controller.signal, started);
+  await H.waitUntil('the load to be admitted', () => started.length === 1, { timeoutMs: 20000 });
+  // STOP, mid-load — the press that stranded qwen3.5-9b on the PC at 14:29.
+  controller.abort();
+  const result = await door;
+  const after = await client.activity();
+  const resident = after.resident;
+  const line = `stop → ${result.ok ? 'the load finished anyway' : result.err.code}; `
+    + `resident ${resident === null ? 'nothing' : resident.id}, `
+    + `heldBy ${JSON.stringify(resident === null ? null : resident.heldBy)}, `
+    + `unclaimedSince ${resident === null ? null : resident.unclaimedSince}`;
+  if (resident !== null) {
+    // THE STRANDED-CARD SIGNATURE, measured on a real server.
+    assert.strictEqual(resident.heldBy, null,
+      `the load was stopped, so nothing can be holding what it left: ${JSON.stringify(resident.heldBy)}`);
+    assert.ok(typeof resident.unclaimedSince === 'string' && resident.unclaimedSince !== '',
+      'and the card must say since WHEN nobody has been coming back for it — that is the fact a '
+      + 'reconciler keys on, and without it a stranded card is indistinguishable from a busy one');
+  }
+  assert.strictEqual(H.ledger.readInFlightLedger().length, 0,
+    'and this side settled its own ledger row');
+  return line;
+});
+
+realScenario('real-render-stop', 'a Stop mid-render of three chunks: the job ends and the card comes back', async () => {
+  const render = require(path.join(H.DIST, 'crucible', 'render.js'));
+  const client = await realClient();
+  const dir = fs.mkdtempSync(path.join(H.WORK, 'real-render-'));
+  const chunks = [
+    { index: 1, text: 'The queue is not the work; the queue is who may begin.' },
+    { index: 2, text: 'A refusal that names a holder is a wait, not a failure.' },
+    { index: 3, text: 'What is on the card, and is anybody coming back for it?' },
+  ];
+  const started = [];
+  const controller = new AbortController();
+  const run = render.runCrucibleRender({
+    server: REAL_SERVER,
+    renderId: 'chaos-real-render',
+    voice: 'mistborn',
+    language: 'en',
+    chunks,
+    sentencesDir: dir,
+    onStarted: (s) => { started.push(s); },
+  }).then((outcome) => ({ ok: true, outcome }), (err) => ({ ok: false, err }));
+  await H.waitUntil('the render to be admitted', () => started.length === 1, { timeoutMs: 120000 });
+  await H.wait(1500);
+  await started[0].cancel();
+  const result = await run;
+  const after = await client.activity();
+  assert.strictEqual(whatHolds(after), null,
+    `after a cancel the lane must be free; it holds ${whatHolds(after)}`);
+  assert.strictEqual(H.ledger.readInFlightLedger().length, 0,
+    'and the cancelled render leaves no in-flight row behind');
+  const wrote = fs.readdirSync(dir).filter((n) => n.endsWith('.flac')).length;
+  const how = result.ok
+    ? 'finished before the cancel landed'
+    : `${result.err.code || result.err.name}: ${String(result.err.message).slice(0, 90)}`;
+  return `${how}; ${wrote} chunk(s) on disk, lane free`;
+});
+
+realScenario('real-chat-full', 'more chats than the engine admits: the extra ones are refused by name', async () => {
+  const client = await realClient();
+  await takeOffTheCard('before the chat storm');
+  const model = 'qwen3.5-9b';
+  const loadId = await client.submit({ type: 'load-model', model, params: {}, inputs: {} });
+  for await (const event of client.events(loadId)) {
+    if (event.event === 'failed') throw new Error(`the load failed: ${JSON.stringify(event.data)}`);
+    if (event.event === 'done' || event.event === 'cancelled') break;
+  }
+  const stated = (await client.activity()).chat.maxInFlight;
+  const width = (stated === null ? 2 : stated) + 2;
+  const asks = [];
+  for (let i = 0; i < width; i += 1) {
+    asks.push(client.chat({
+      model,
+      messages: [{ role: 'user', content: `Say the number ${i} and nothing else.` }],
+      maxTokens: 64,
+    }).then(() => ({ ok: true }), (err) => ({ ok: false, code: err && err.code, retryAfter: err && err.retryAfter })));
+  }
+  const answers = await Promise.all(asks);
+  const refused = answers.filter((a) => !a.ok);
+  const codes = [...new Set(refused.map((a) => a.code))];
+  assert.ok(answers.some((a) => a.ok), 'at least one chat must have been admitted');
+  return `stated max_in_flight=${stated}; ${width} asked, ${refused.length} refused `
+    + `${JSON.stringify(codes)}`;
+});
+
+/** One real `load-voice`, through the app's own door, cancellable. */
+function driveRealLoad(client, voice, signal, started) {
+  return crucibleJob.runCrucibleJob({
+    server: REAL_SERVER,
+    type: 'load-voice',
+    model: voice,
+    params: {},
+    inputs: {},
+    localId: 'chaos-real-load',
+    signal,
+    onStarted: (s) => started.push(s),
+  }).then((outcome) => ({ ok: true, outcome }), (err) => ({ ok: false, err }));
+}
 
 runAll().catch((err) => {
   console.error(err);
