@@ -252,6 +252,17 @@ const SUITES = [
   // no signal. Against the shared fake, which answers the DELETE `cancelling`
   // and only stops a beat later, the way a real one does.
   'test-crucible-cancel-doors',
+  // AND THE CANCEL NOBODY IS LEFT TO MAKE (2026-09-19). `cancel-doors` above
+  // pins what a LIVE handle does; a ctrl-C on `electron:dev` has no live
+  // handles. Owen's kill skipped `before-quit` entirely and an hour later the
+  // Mac's Crucible still showed this app's `tts` job at 70% with the voice
+  // resident, because the only thing that knew the job id was a closure in a
+  // dead process. These two are the record that survives that
+  // (`crucible-in-flight.json`) and the sweep that reads it at quit and at the
+  // next start — including the line it must print INSTEAD of acting when the
+  // card is somebody else's, and the scratch it may rescue but must not delete.
+  'test-crucible-in-flight-ledger',
+  'test-crucible-quit-sweep',
   // The LEASE (Owen, 2026-09-14: "Models should always be unloaded when we're
   // done with them. Every time."). A Crucible now clears the card the moment no
   // job, no lease, no session and no chat hold it — and a chat holds NOTHING, so
