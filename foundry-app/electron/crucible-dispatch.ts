@@ -299,13 +299,25 @@ export interface Placement {
    * number from the server that serves the pages. A number on the request would be
    * a person's preference about somebody else's backend.
    *
-   * ── FOUR, UNTIL A SERVER STATES ONE ───────────────────────────────────────
+   * ── THE SERVER'S NUMBER, AND FOUR ONLY WHEN IT STATES NONE ────────────────
    *
-   * Owen's ruling 4 of 2026-09-20, off the Mac's 2026-09-08 measurement: the knee
-   * is at 4 on a Crucible chat door. `GET /v1/capability`'s rows do not carry a
-   * depth today (`CapabilityRow`, shared/engine-settings.ts, mirrors every field
-   * the SDK publishes); the day one does, {@link CRUCIBLE_CHAT_CONCURRENCY} is the
-   * one line that reads it, and the placement still overrides the engine's default.
+   * Owen's ruling 4 of 2026-09-20, off the Mac's 2026-09-08 measurement, was 4 on
+   * a Crucible chat door *until the server states a number of its own*. Crucible
+   * 1.0.10 states one the same day: `chat.max_in_flight` on `/v1/activity` — 2 on
+   * the Mac's serial `mlx-lm`, nothing at all from a vLLM, which batches. It is
+   * an ADMISSION limit and not a throughput opinion: past it a request is refused
+   * `503 chat_queue_full` rather than queued, which is how four went out against
+   * an admission of two and killed a clean pass. So the placement asks
+   * (`chatDepthFor`) and {@link CRUCIBLE_CHAT_CONCURRENCY} is now the UNSTATED
+   * fallback.
+   *
+   * THE ENGINE CLAMPS TO IT AS WELL, and that is not a second copy of this rule —
+   * it is the same rule applied to a number that may be STALE. This app's dist
+   * outlives the server it places against: a build already running keeps sending
+   * the depth it was compiled to send, and cannot be corrected without a restart.
+   * So `resolveConcurrency` (src/translate/model-server.ts) reads the same field
+   * and refuses to keep a pool above it whatever `--concurrency` said, honouring
+   * anything BELOW it untouched. Two readers, one authority: the server's.
    *
    * NULL IS "THE REQUEST'S OWN", exactly as `endpoint` and `model` are null on
    * {@link UNPLACED}: a job that never meets a model states no depth, and a dry run
@@ -359,6 +371,102 @@ export const UNPLACED: Placement = {
  * nowhere else — see `Placement.concurrency`.
  */
 export const CRUCIBLE_CHAT_CONCURRENCY = 4;
+
+/**
+ * HOW LONG THE DEPTH READ MAY TAKE. A status read in front of a placement that
+ * has already made three round trips; a server too slow to answer this in ten
+ * seconds will be named by the placement itself a moment later, with a better
+ * sentence. A cut-off is `null`, which is the same answer as "it did not say".
+ */
+const CHAT_DEPTH_TIMEOUT_MS = 10_000;
+
+/**
+ * WHAT THIS SERVER WILL ADMIT AT ONCE ON ITS CHAT DOOR — `chat.max_in_flight`.
+ *
+ * ── The fact, and why it outranks the knee ────────────────────────────────
+ *
+ * Crucible 1.0.10 bounds chat completions per engine and publishes the bound on
+ * `/v1/activity`. On the Mac's serial `mlx-lm` it is 2 (engine concurrency 1,
+ * plus one); a vLLM batches, states nothing, and is not bounded. Past the bound
+ * a request is not queued — it is refused `503 chat_queue_full`. So this is not
+ * a second opinion about throughput to be weighed against {@link
+ * CRUCIBLE_CHAT_CONCURRENCY}'s measured knee: it is what the other end will
+ * ACCEPT, and a placement that asks for more spends the run retrying. That is
+ * the defect of 2026-09-20 (BUG-HUNT §A): four out, two admitted, two refused,
+ * and the clean pass died on the refusals.
+ *
+ * ── Null is "it did not say", never a zero ────────────────────────────────
+ *
+ * No engine resident, an engine that does not bound chats, a Crucible older
+ * than 1.0.10, an unreachable server, a cut-off — all one answer to a caller,
+ * and that answer is `CRUCIBLE_CHAT_CONCURRENCY`. Nothing here throws: the
+ * placement's own calls decide whether this server can be used, with sentences
+ * built for that, and a courtesy read must not be the thing that fails a row.
+ *
+ * ── AND IT IS THE ONE CRUCIBLE ROUTE IN THIS FILE NOT SPOKEN THROUGH THE SDK ─
+ *
+ * `@crucible/client` 1.0.10's `Activity.chat` carries `inFlight` and `rows` and
+ * DROPS `max_in_flight` — the client is one release behind the server on this
+ * field, and `client.activity()` cannot hand back a number it never parsed. So
+ * this reads the document itself, with the entry's own token, exactly as
+ * {@link headerMapFor} composes it. The moment the SDK carries the field this
+ * function becomes one line of `client.activity()` and the fetch goes; it is
+ * written small and in one place so that is a small edit. Foundry does not
+ * re-implement an SDK rule here — there is no rule to re-implement, only a field
+ * to read.
+ */
+async function statedChatDepth(engine: CrucibleServerEntry): Promise<number | null> {
+  const url = `${engine.url.replace(/\/+$/, '')}/v1/activity`;
+  try {
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${engine.token}`, 'X-Crucible-Api': '1' },
+      signal: AbortSignal.timeout(CHAT_DEPTH_TIMEOUT_MS),
+    });
+    if (!response.ok) return null;
+    const document = await response.json() as { chat?: { max_in_flight?: unknown } } | null;
+    const stated = document?.chat?.max_in_flight;
+    if (typeof stated !== 'number' || !Number.isFinite(stated) || stated < 1) return null;
+    return Math.floor(stated);
+  } catch {
+    /*
+     * NOTHING IS LOGGED FROM THE CATCH, and that is not silence about a failure:
+     * the caller says which number it settled on and why, in one line, on every
+     * path (`chatDepthFor`). A second line here would report the same decision
+     * twice and would put a network message in front of a person whose placement
+     * is about to succeed.
+     */
+    return null;
+  }
+}
+
+/**
+ * THE NUMBER THAT GOES ON THE PLACEMENT, and the line that says where it is from.
+ *
+ * The server's own admission limit when it states one, {@link
+ * CRUCIBLE_CHAT_CONCURRENCY} when it does not — and it SAYS WHICH, because a run
+ * at four against a server admitting two looks exactly like a run that asked and
+ * was told four. `pages` states none at all: `--vlm-concurrency` is the page
+ * reader's own flag, taken from the server that serves the pages, so a chat
+ * depth on a reading placement would be a number about the wrong door.
+ */
+async function chatDepthFor(
+  engine: CrucibleServerEntry,
+  capability: CapabilityClass,
+  say: PlacementProgress,
+): Promise<number | null> {
+  if (capability === 'pages') return null;
+  const stated = await statedChatDepth(engine);
+  if (stated === null) {
+    say(
+      `${engine.name} states no chat depth, so ${capability} runs with `
+      + `${CRUCIBLE_CHAT_CONCURRENCY} requests in flight.`,
+    );
+    return CRUCIBLE_CHAT_CONCURRENCY;
+  }
+  say(`${engine.name} admits ${stated} chat${stated === 1 ? '' : 's'} at once.`);
+  return stated;
+}
 
 export type PlacementOutcome =
   | { verdict: 'go'; placement: Placement }
@@ -1087,10 +1195,14 @@ async function placeOnCrucible(
         lease: null,
         via,
         door: 'openai',
-        // The depth this app keeps against a door it does not own. An upstream
-        // rations by an account's rate limit rather than by a card, and four is
-        // still the number nobody has measured a better one for (ruling 4).
-        concurrency: capability === 'pages' ? null : CRUCIBLE_CHAT_CONCURRENCY,
+        /*
+         * The depth this app keeps against a door it does not own. The SERVER's
+         * own admission limit when it states one, four when it does not — an
+         * upstream rations by an account's rate limit rather than by a card, so
+         * a forwarding Crucible usually states nothing and four stands (ruling
+         * 4). `chatDepthFor` carries the argument and says which happened.
+         */
+        concurrency: await chatDepthFor(engine, capability, say),
         // THE ENGINE'S ADDRESS, not the registered one — see the hop at the top
         // of this function. A `<orchestrator>/openai` would be a spawn pointed
         // at a process with no route to serve it.
@@ -1184,13 +1296,13 @@ async function placeOnCrucible(
       /*
        * HOW DEEP TO GO ON THIS CARD — the server's number when it states one, and
        * four when it does not. See `Placement.concurrency`, which carries the whole
-       * argument and the night it is about.
+       * argument and the night it is about, and `chatDepthFor`, which asks.
        *
        * A READING STATES NONE HERE: `--vlm-concurrency` is the page reader's own
        * flag and the engine takes it from the server that serves the pages, so a
        * chat depth on a `pages` placement would be a number about the wrong door.
        */
-      concurrency: capability === 'pages' ? null : CRUCIBLE_CHAT_CONCURRENCY,
+      concurrency: await chatDepthFor(engine, capability, say),
       /*
        * `openai` IS THE ENGINE'S DEFAULT AND IS LEFT UNSPELLED on the command
        * line — see `doorArgs` in job-queue.ts. It is named here anyway, because a

@@ -10,10 +10,56 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\<user>\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **9e0b27d** — *host.ts: say what the enqueue's request carries now* — PK6's runner rewrite (`4ff96a3`) merged with `d3a44a1` (Crucible 1.0.10) |
+| Source sha | **dccc144** — *The chat pool is the server's number, and the busy wait is a clock* — PK8, on branch `fix/chat-pool-from-server` off `9e0b27d` |
 | Engine | **NOT VENDORED AND NOT KNOWABLE FROM THIS FILE** — it is a spawned CLI resolved at RUNTIME (`FOUNDRY_BIN`, else `resolveFoundryPath`, `electron/main.ts`), so which build executes is a property of the machine and not of this copy. On a developer's Mac that resolves to Foundry's own checkout at `/Volumes/Callisto/Projects/foundry/dist/foundry-darwin-arm64`, which is whatever was last built there — `foundry 2.0.2 (1c1eaa3)` as of 2026-09-18. **Ask the binary: `$FOUNDRY_BIN --version`.** See *The engine this file named was not the engine that ran* below. |
-| Copied on | 2026-09-19 (five times: 3738c01, 3436fc5, 806d44b, f349771, ca4754c) and 2026-09-20 (98a4344, 9e0b27d) |
-| Copied by | Mechanical source sync, verified against Foundry `9e0b27d:app/` (`diff -rq`, clean but for this file, `IPC-CHANNELS.md` and `.gitignore` — see below); details below |
+| Copied on | 2026-09-19 (five times: 3738c01, 3436fc5, 806d44b, f349771, ca4754c) and 2026-09-20 (98a4344, 9e0b27d, dccc144) |
+| Copied by | Mechanical source sync, verified against Foundry `dccc144:app/` (`diff -rq`, clean but for this file, `IPC-CHANNELS.md` and `.gitignore` — see below); details below |
+
+## The `9e0b27d → dccc144` re-vendor — PK8, the pool depth stops being ours (2026-09-20)
+
+**TWO FILES under `app/`**: `electron/crucible-dispatch.ts` and
+`test/crucible-http.test.ts`. No dependency movement, no IPC change —
+`IPC-CHANNELS.md` is still true. The rest of PK8 is in Foundry's `src/`, which is
+the ENGINE and is not vendored here (it arrives as the built
+`dist/foundry-darwin-arm64`; see the Engine row above).
+
+**What it closes.** Crucible 1.0.10, installed on both servers an hour before,
+admits `chat.max_in_flight` chat completions per engine — 2 on the Mac's serial
+`mlx-lm` — and refuses the rest `503 chat_queue_full`. The placement stated a
+flat four (`CRUCIBLE_CHAT_CONCURRENCY`, the 2026-09-08 throughput knee), so the
+clean pass sent four: two were admitted and generated ~30 s blocks, and the two
+refused spent the run being re-asked until the pass failed on them.
+
+- **`Placement.concurrency` is now the SERVER's number.** `chatDepthFor` reads
+  `chat.max_in_flight` off that engine's `/v1/activity` and states it; four is
+  the UNSTATED fallback, and which of the two happened is said out loud on the
+  placement's progress line. A `pages` placement still states none and does not
+  ask — `--vlm-concurrency` is the page reader's own flag.
+- **It is the one Crucible route in that file not spoken through the SDK.**
+  `@crucible/client` 1.0.10's `Activity.chat` parses `in_flight` and `rows` and
+  DROPS `max_in_flight` — the client is one release behind the server on this
+  field — so `statedChatDepth` reads the document itself with the entry's own
+  token, exactly as `headerMapFor` composes it. It is written small and in one
+  place so that the day the SDK carries the field it becomes one line of
+  `client.activity()`.
+- **Nothing there throws.** An unreachable server, a 404 from a Crucible older
+  than 1.0.10, a cut-off and a `null` are one answer — "it did not say" — and
+  the placement's own calls are what decide whether this server can be used.
+
+**The engine clamps to the same field, and that is not a second copy of the
+rule.** A dist outlives the server it places against: a build already running
+keeps sending the depth it was compiled to send and cannot be corrected without
+a restart. So Foundry's `resolveConcurrency` reads `chat.max_in_flight` too and
+refuses to keep a pool ABOVE it whatever `--concurrency` said, honouring anything
+below it untouched. Two readers, one authority: the server's. **Consequence for
+this checkout: an OLD dist placed against a 1.0.10 server is now corrected by the
+NEW engine alone** — so swapping the engine binary is worth doing before swapping
+the app.
+
+Keeper on this side: the four tests appended to `foundry-app/test/crucible-http.test.ts`
+drive the real placement against a real local server (`Bun.serve`), because the
+thing that was wrong is a FIELD ON THE WIRE and a test against a mocked client
+would prove the mock.
 
 ## The `98a4344 → 9e0b27d` re-vendor — PK6, Foundry becomes a runner (2026-09-20)
 

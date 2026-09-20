@@ -12,7 +12,7 @@ afterEach(()=>mock.restore());
 const classes=['pages','clean','translate','simplify','analysis'];
 const chosen=(cls:string)=>cls==='pages'?'dots-ocr':cls==='clean'?'qwen3.5-9b':'qwen3.8-27b-4bit';
 
-function fixture(options:{missing?:boolean;competing?:boolean;competitorStocks?:boolean;failCompetitor?:boolean;leased?:boolean}={}) {
+function fixture(options:{missing?:boolean;competing?:boolean;competitorStocks?:boolean;failCompetitor?:boolean;leased?:boolean;chatMaxInFlight?:number|null;noActivity?:boolean}={}) {
   let stocked=!options.missing, competed=false, loaded:string|null=null;
   const calls:{method:string;path:string;body:any}[]=[];
   const revision='a'.repeat(40);
@@ -28,6 +28,13 @@ function fixture(options:{missing?:boolean;competing?:boolean;competitorStocks?:
     const url=new URL(req.url);const p=url.pathname;const body=req.method==='POST'?await req.json():null;calls.push({method:req.method,path:p,body});
     if(p==='/v1/info')return Response.json(info());
     if(p==='/v1/capability')return Response.json(capability());
+    // `chat.max_in_flight` is spelled as Crucible 1.0.10 spells it on the wire.
+    // `noActivity` is a server older than that route: it answers 404, which is
+    // "it did not say" and must leave the placement on its own default.
+    if(p==='/v1/activity'){
+      if(options.noActivity)return Response.json({error:{code:'not_found',message:'no such route'}},{status:404});
+      return Response.json({server:{name:'fixture',version:'1.0.10',api_version:1,backend:'llama-windows',uptime_s:1},resident:null,stopping:null,warming:null,claim:null,streaming:null,chat:{in_flight:0,rows:[],max_in_flight:options.chatMaxInFlight===undefined?2:options.chatMaxInFlight,max_in_flight_basis:'engine concurrency 1, +1'},lease:null,slots:{accelerated:{busy:0,of:1,queue_depth:0,accepts_work:true}},running:[],queued:[]});
+    }
     if(p==='/v1/models')return Response.json(models());
     if(p==='/v1/catalog')return Response.json({backend_kind:'llama-windows',rows:models().map(m=>({kind:'model',id:m.id,name:m.id,job_type:'llm',installed:m.installed,installed_bytes:m.installed?1:null,expected_bytes:1,floors:[],license:null,source:'fixture',resident:false})).concat([{kind:'engine',id:'llama-cpp',name:'engine',job_type:'llm',installed:true,installed_bytes:1,expected_bytes:1,floors:[],license:null,source:'fixture',resident:false}])});
     if(p==='/v1/tasks'&&req.method==='POST'){
@@ -105,5 +112,66 @@ test('a 409 leased on the lease door waits and names who holds the card, for wha
     // the holder too, so anything looser passes on the generic arm this branch
     // exists to replace — which is exactly how a dead branch stays dead.
     expect(result.reason).toBe(`the resident llm on "${f.entry.name}" is leased: bookforge, tts, until 2026-09-18T03:02:00+00:00`);
+  }finally{f.close();}
+});
+
+/**
+ * ── THE POOL DEPTH IS THE SERVER'S, ASKED OVER REAL HTTP — PK8 ──────────────
+ *
+ * Crucible 1.0.10 admits `chat.max_in_flight` chats per engine and refuses the
+ * rest `503 chat_queue_full`. The placement used to state a flat four
+ * (`CRUCIBLE_CHAT_CONCURRENCY`, the Sep 8 throughput knee), so on the Mac's
+ * serial `mlx-lm` — which admits 2 — four went out, two were admitted and two
+ * spent the pass being re-asked until the clean run failed on them.
+ *
+ * These drive the real placement against a real local server, because the thing
+ * that was wrong is a FIELD ON THE WIRE: `@crucible/client` 1.0.10's `Activity`
+ * parses `in_flight` and drops `max_in_flight`, so the app reads the document
+ * itself, with the token, and a test against a mocked client would prove the
+ * mock. The fixture asserts the Authorization and X-Crucible-Api headers on
+ * every request it serves, so a depth that arrives at all is a depth that was
+ * asked for correctly.
+ */
+test('real HTTP a chat placement takes the depth the server says it admits',async()=>{
+  const f=fixture({chatMaxInFlight:2});try{
+    const result=await dispatch.placeJob('clean',f.entry.name,()=>{},()=>true);
+    expect(result.verdict).toBe('go');if(result.verdict!=='go')throw Error(JSON.stringify(result));
+    try{expect(result.placement.concurrency).toBe(2);
+      expect(f.calls.some(c=>c.path==='/v1/activity')).toBe(true);
+    }finally{await result.placement.lease?.release();}
+  }finally{f.close();}
+});
+
+test('real HTTP a server that states no chat depth leaves the placement on four',async()=>{
+  const f=fixture({chatMaxInFlight:null});try{
+    const result=await dispatch.placeJob('translate',f.entry.name,()=>{},()=>true);
+    expect(result.verdict).toBe('go');if(result.verdict!=='go')throw Error(JSON.stringify(result));
+    try{expect(result.placement.concurrency).toBe(dispatch.CRUCIBLE_CHAT_CONCURRENCY);}
+    finally{await result.placement.lease?.release();}
+  }finally{f.close();}
+});
+
+test('real HTTP a Crucible older than the route is "it did not say", not a refused placement',async()=>{
+  const f=fixture({noActivity:true});try{
+    const result=await dispatch.placeJob('simplify',f.entry.name,()=>{},()=>true);
+    expect(result.verdict).toBe('go');if(result.verdict!=='go')throw Error(JSON.stringify(result));
+    try{expect(result.placement.concurrency).toBe(dispatch.CRUCIBLE_CHAT_CONCURRENCY);}
+    finally{await result.placement.lease?.release();}
+  }finally{f.close();}
+});
+
+/**
+ * A READING STATES NO CHAT DEPTH AT ALL, and never asks. `--vlm-concurrency` is
+ * the page reader's own flag and the engine takes it from the server that serves
+ * the pages; a chat depth on a `pages` placement would be a number about the
+ * wrong door.
+ */
+test('real HTTP a reading placement states no chat depth and does not ask for one',async()=>{
+  const f=fixture({chatMaxInFlight:2});try{
+    const result=await dispatch.placeJob('read',f.entry.name,()=>{},()=>true);
+    expect(result.verdict).toBe('go');if(result.verdict!=='go')throw Error(JSON.stringify(result));
+    try{expect(result.placement.concurrency).toBeNull();
+      expect(f.calls.some(c=>c.path==='/v1/activity')).toBe(false);
+    }finally{await result.placement.lease?.release();}
   }finally{f.close();}
 });
