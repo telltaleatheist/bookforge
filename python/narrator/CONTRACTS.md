@@ -481,6 +481,78 @@ reproducing. The Listen door keeps the position: its `i` is a label the player
 resolves by, and its engine is Orpheus, whose seeding is not `seed + index` at
 all.
 
+## The serving environment (three names, one per spawn)
+
+Crucible starts a FRESH narrator per resident voice - a voice change is a full
+engine restart - and sets these in that spawn's environment from the voice's
+`[voice.serving]` block. So "per voice" IS "per spawn", and there is no
+load-message channel for any of them (ruling, 2026-09-19). narrator translates
+each name into whatever the stack underneath actually takes; **each stack's own
+number applies when a name is unset**, which is a statement, not a fallback.
+
+| name | sglang-omni | vllm-omni | mlx |
+|---|---|---|---|
+| `HIGGS_MAX_NUM_SEQS` | `--tts_engine.factory.max_running_requests`, and `BATCH_SIZE` | `max_num_seqs` per stage, and `BATCH_SIZE` | n/a - MLX reads `NARRATOR_HIGGS3_MLX_BATCH` (default 1) |
+| `HIGGS_CONTEXT_LENGTH` | `HiggsTtsEngineBuilder.context_length`, ASSIGNED by narrator's entry module (default 4096) | exported as `HIGGS_MAX_MODEL_LEN` -> `--max-model-len` (default 8192) | `HiggsV3MlxConfig.context_tokens` at load (default 8192) |
+| `HIGGS_SGL_MEM_FRACTION` | `--mem-fraction-static` (default 0.60), exported by narrator rather than inherited | n/a - that stack splits two vLLM stages through `--stage-overrides` | `NARRATOR_HIGGS3_MLX_MEM_BUDGET_GB` = fraction x the device's unified memory |
+
+**`HIGGS_CONTEXT_LENGTH` on sglang-omni is a class attribute, not a flag.**
+`sglang_omni/models/higgs_tts/engine_builder.py:29` reads
+`class HiggsTtsEngineBuilder: context_length = 4096`, and three flag spellings
+were tried and recorded as failures (2026-09-09, sglang_omni 0.1.4 /
+sglang 0.5.18 - the versions Crucible's tts env carries):
+`--tts_engine.factory.context_length` dies with "factory does not accept a
+'context_length' parameter"; `--tts_engine.engine.context_length` collides with
+an explicit keyword; there is no thinker stage. The only thing that has ever
+moved it is changing the attribute, which the ladder's author did by REWRITING
+that line in site-packages with a sed script - wiped by the 2026-09-15 env
+rebuild, taking every 8192-token render with it. narrator does not patch
+site-packages (this stack's selling point is that it needs none). It launches
+the server through `engine/higgs/launch/sgl_omni_entry.py`, which imports the
+builder, ASSIGNS the attribute from this variable, prints what it changed to
+the server log, and then calls `sgl-omni`'s own `app()` unwrapped. The shell
+launcher execs that module instead of `bin/sgl-omni` and **refuses to start
+without it**: falling back to the console script would serve the built-in 4096
+under a request for something else and report a clean start.
+
+`sgl_served.context_tokens()` / `max_context_positions()` read the same
+variable, so the client sizes every request against the window the server is
+actually serving. They are functions, not the constants they used to be: a
+constant would have gone on sizing chunks for a 4096-token server while an
+8192-token one ran - every chunk quietly short, and nothing to see.
+
+**vllm-omni keeps both names and refuses a disagreement.** `HIGGS_MAX_MODEL_LEN`
+predates `HIGGS_CONTEXT_LENGTH` and is what `serve_higgs_v3.sh:123` reads, so
+renaming it would break every launch line that sets it. `v3_served
+.context_tokens()` takes either, and when both are set and differ it refuses by
+name - picking a winner would mean a server started at one window and a client
+sizing against the other, invisible until an HTTP 500 hundreds of chunks later.
+
+**The fraction on MLX is a fraction of the machine.** The Mac is unified memory,
+so `HIGGS_SGL_MEM_FRACTION` x `mx.metal.device_info()['memory_size']` is a real
+budget, and that is what `mlx_mem_budget_gb()` returns. A device whose Metal
+cannot answer is a refusal, not a guess. If the absolute name
+(`NARRATOR_HIGGS3_MLX_MEM_BUDGET_GB`) is ALSO set and disagrees by more than
+0.1 GB, that is refused by name too. The pinned buffer cache
+(`HIGGS_MLX_CACHE_LIMIT_GB`) does NOT follow the fraction: it caps a cache that
+lives inside the budget and is already subtracted by `_mlx_kv_headroom_gb`, so
+scaling both would take it off twice.
+
+**Nothing checks a context against the model's own maximum.** narrator never
+loads the weights on either served stack - it hands a server a path and talks
+HTTP - so `max_position_embeddings` is not a number it has, and the MLX arm
+loads through mlx-audio's loader whose config carries no position ceiling this
+code has verified. A window above what the weights support is passed through,
+and what refuses it is the server's own startup or the first request that runs
+past the rotary table. Closing that means reading the model directory's
+`config.json`, which is a change with its own measurement to take.
+
+**One length refusal remains that is not narrator's and not Crucible's:**
+`sglang_omni/serve/speech_service.py:58`, `MAX_SPEECH_INPUT_CHARS = 4096` - a
+cap on the request TEXT in characters, answered as an HTTP 400 before
+generation. It is not a token window and it does not move with
+`HIGGS_CONTEXT_LENGTH`. It is the server's to own and is left alone.
+
 ## Reporting a guess
 
 If a behaviour of e2a is ambiguous (two code paths, a flag the bridge never

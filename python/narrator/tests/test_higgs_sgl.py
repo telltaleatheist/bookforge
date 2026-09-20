@@ -33,6 +33,7 @@ recorded capture; when one lands, `EXPECTED_REQUEST` is the one place it
 replaces.
 """
 import json
+import io
 import os
 import pathlib
 import sys
@@ -356,7 +357,7 @@ class ClipsVoiceReferenceTest(SglTestCase):
         cap = sgl_served.frame_cap(long, voice)
         self.assertLess(cap, sgl_served.frame_cap(long))
         self.assertLessEqual(cap + sgl_served.prompt_token_bound(long, voice),
-                             sgl_served.MAX_CONTEXT_POSITIONS)
+                             sgl_served.max_context_positions())
         config = HiggsV3Config(voice=voice, base_url=self.server.base_url)
         self.assertEqual(config.cap_frames(long), cap,
                          "the config's cap charges the config's own voice")
@@ -430,18 +431,18 @@ class ContextGuardTest(SglTestCase):
         self.assertLessEqual(cap, v3_served.cap_frames(text))
         self.assertLessEqual(
             cap + sgl_served.prompt_token_bound(text),
-            sgl_served.MAX_CONTEXT_POSITIONS)
+            sgl_served.max_context_positions())
 
     def test_a_long_chunk_is_capped_by_the_CONTEXT_not_by_cap_frames(self):
         """At ~1,150 characters `cap_frames`' 2.0x ceiling passes 4,096 on its
         own, so this is the ordinary case rather than a corner one."""
         text = 'x' * 1190
         self.assertGreater(v3_served.cap_frames(text),
-                           sgl_served.MAX_CONTEXT_POSITIONS)
+                           sgl_served.max_context_positions())
         cap = sgl_served.frame_cap(text)
         self.assertEqual(
             cap,
-            sgl_served.MAX_CONTEXT_POSITIONS - sgl_served.prompt_token_bound(text))
+            sgl_served.max_context_positions() - sgl_served.prompt_token_bound(text))
 
     def test_a_chunk_that_cannot_fit_is_REFUSED_by_name(self):
         with self.assertRaises(ValueError) as caught:
@@ -779,7 +780,7 @@ class StackSelectionTest(SglTestCase):
                                checkpoint_dir=self.merged_checkpoint())
         policy = higgs_v3_stop_policy(config)
         self.assertLessEqual(policy.max_new_tokens,
-                             sgl_served.MAX_CONTEXT_POSITIONS)
+                             sgl_served.max_context_positions())
 
     def test_a_render_through_the_engine_sends_sampling_and_max_new_tokens(self):
         checkpoint = self.merged_checkpoint()
@@ -850,6 +851,135 @@ class MemFractionExportTest(unittest.TestCase):
                 with self.assertRaises(ValueError) as caught:
                     self._backend()._mem_fraction()
                 self.assertIn('HIGGS_SGL_MEM_FRACTION', str(caught.exception))
+
+
+class ContextLengthEnvTest(unittest.TestCase):
+    """`HIGGS_CONTEXT_LENGTH` is real on this stack, and narrator owns it.
+
+    SGLang-Omni's Higgs builder hard-codes the window as a CLASS ATTRIBUTE
+    (`sglang_omni/models/higgs_tts/engine_builder.py:29`,
+    `context_length = 4096`) with no flag - three spellings were tried and
+    recorded as failures on 2026-09-09, and the ladder's author had been
+    rewriting that line in site-packages with a sed script, which the
+    2026-09-15 env rebuild wiped. narrator instead ASSIGNS the attribute in the
+    server process, from this variable, before the engine is built
+    (`launch/sgl_omni_entry.py`), and reads the same variable here so the
+    client sizes every request against the window the server is really serving.
+    """
+
+    def setUp(self):
+        self.addCleanup(os.environ.pop, 'HIGGS_CONTEXT_LENGTH', None)
+        os.environ.pop('HIGGS_CONTEXT_LENGTH', None)
+
+    def test_unset_is_the_builders_own_4096(self):
+        self.assertEqual(sgl_served.context_tokens(), 4096)
+        self.assertEqual(sgl_served.max_context_positions(), 4095)
+
+    def test_the_launched_value_is_what_every_request_is_sized_against(self):
+        os.environ['HIGGS_CONTEXT_LENGTH'] = '8192'
+        self.assertEqual(sgl_served.context_tokens(), 8192)
+        self.assertEqual(sgl_served.max_context_positions(), 8191)
+        # 1,759 characters: inside an 8,192-token window and over a 4,096-token
+        # one. The window is what decides whether this chunk can be rendered at
+        # all, which is the strongest thing it could decide.
+        text = ('The night was long and the road was longer. ' * 40).strip()
+        cap = sgl_served.frame_cap(text, None)
+        self.assertLessEqual(sgl_served.prompt_token_bound(text) + cap,
+                             sgl_served.max_context_positions())
+        os.environ['HIGGS_CONTEXT_LENGTH'] = '4096'
+        with self.assertRaises(ValueError) as caught:
+            sgl_served.frame_cap(text, None)
+        self.assertIn('4096', str(caught.exception),
+                      'the refusal must name the window that refused it')
+
+    def test_a_context_that_is_not_a_positive_int_is_refused_by_name(self):
+        for raw in ('0', '-1', '8192.0', 'eight thousand'):
+            with self.subTest(raw=raw):
+                os.environ['HIGGS_CONTEXT_LENGTH'] = raw
+                with self.assertRaises(ValueError) as caught:
+                    sgl_served.context_tokens()
+                self.assertIn('HIGGS_CONTEXT_LENGTH', str(caught.exception))
+
+    def test_the_launch_STATES_the_window_it_asked_for(self):
+        os.environ['HIGGS_CONTEXT_LENGTH'] = '8192'
+        backend = HiggsSglServedBackend.__new__(HiggsSglServedBackend)
+        backend.base_url = 'http://127.0.0.1:8200'
+        backend.concurrency = 4
+        backend.checkpoint_dir = None
+        backend.owner_id = lambda: 'keeper'
+        self.assertIn('HIGGS_CONTEXT_LENGTH=8192', backend._launch_exports())
+
+
+class SglEntryModuleTest(unittest.TestCase):
+    """narrator's own entry point for the SGLang server.
+
+    It must be importable WITHOUT sglang_omni (it is packaged with narrator and
+    read by this test on any platform), it must take the value from the
+    environment, and it must assign the builder's class attribute - which is the
+    only thing that has ever moved that number.
+    """
+
+    def _module(self):
+        import importlib.util
+        path = os.path.join(os.path.dirname(sgl_served.__file__), 'launch',
+                            'sgl_omni_entry.py')
+        self.assertTrue(os.path.isfile(path), path)
+        spec = importlib.util.spec_from_file_location('sgl_omni_entry', path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def setUp(self):
+        self.addCleanup(os.environ.pop, 'HIGGS_CONTEXT_LENGTH', None)
+        os.environ.pop('HIGGS_CONTEXT_LENGTH', None)
+
+    def test_it_reads_the_same_variable_narrator_exports(self):
+        module = self._module()
+        self.assertEqual(module.CONTEXT_LENGTH_ENV,
+                         served_common.CONTEXT_LENGTH_ENV)
+        self.assertEqual(module.wanted_context_length(), 4096)
+        os.environ['HIGGS_CONTEXT_LENGTH'] = '8192'
+        self.assertEqual(module.wanted_context_length(), 8192)
+
+    def test_it_ASSIGNS_the_builders_class_attribute(self):
+        """The whole point. The attribute is evaluated at module import
+        upstream, so nothing but an assignment after that import can move it -
+        and a patched site-packages file is what the env rebuild wiped."""
+        import sys as _sys
+        import types
+        module = self._module()
+        builder = type('HiggsTtsEngineBuilder', (), {'context_length': 4096})
+        pkg = types.ModuleType('sglang_omni')
+        models = types.ModuleType('sglang_omni.models')
+        higgs = types.ModuleType('sglang_omni.models.higgs_tts')
+        eb = types.ModuleType('sglang_omni.models.higgs_tts.engine_builder')
+        eb.HiggsTtsEngineBuilder = builder
+        for name, mod in (('sglang_omni', pkg),
+                          ('sglang_omni.models', models),
+                          ('sglang_omni.models.higgs_tts', higgs),
+                          ('sglang_omni.models.higgs_tts.engine_builder', eb)):
+            _sys.modules[name] = mod
+            self.addCleanup(_sys.modules.pop, name, None)
+        before = module.apply_context_length(8192)
+        self.assertEqual(before, 4096)
+        self.assertEqual(builder.context_length, 8192,
+                         'the builder must be serving the launched window')
+
+    def test_a_missing_builder_is_a_hard_error(self):
+        """Starting the server anyway would serve 4096 under a request for
+        something else - the exact silence this entry exists to end."""
+        module = self._module()
+        with self.assertRaises(SystemExit) as caught:
+            module.apply_context_length(8192)
+        self.assertIn('engine_builder', str(caught.exception))
+
+    def test_the_launcher_execs_the_entry_and_never_the_console_script(self):
+        script = io.open(sgl_served.packaged_serve_script(),
+                         encoding='utf-8').read()
+        self.assertIn('sgl_omni_entry.py', script)
+        self.assertNotIn('exec "$HIGGS_SGL_ENV/bin/sgl-omni" serve', script,
+                         'the console script would build the engine with the '
+                         'builder\'s own 4096 and report a clean start')
 
 
 if __name__ == '__main__':

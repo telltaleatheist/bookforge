@@ -90,6 +90,65 @@ CHECKPOINT_ENV = 'NARRATOR_HIGGS3_CHECKPOINT'
 #: scan. Both stacks' launchers read it.
 SERVE_MODEL_DIR_ENV = 'HIGGS_MODEL_DIR'
 
+#: THE ONE EXTERNAL NAME FOR THE CONTEXT WINDOW, across all three Higgs
+#: backends. Crucible sets it per voice in the spawn environment, beside
+#: `HIGGS_MAX_NUM_SEQS` and `HIGGS_SGL_MEM_FRACTION` (a voice change is a full
+#: engine restart, so per-voice IS per-spawn); narrator translates it into
+#: whatever each stack actually takes, and each stack's own default applies
+#: when it is unset.
+#:
+#:   sglang-omni  `HiggsTtsEngineBuilder.context_length`, a CLASS ATTRIBUTE
+#:                with no flag (engine_builder.py:29, `context_length = 4096`).
+#:                narrator's launch entry assigns it in the engine process
+#:                before the engine is built - see `launch/sgl_omni_entry.py`.
+#:   vllm-omni    `--max-model-len`, which the launcher reads as
+#:                `HIGGS_MAX_MODEL_LEN`. narrator exports that from this name;
+#:                both set and disagreeing is refused by name.
+#:   mlx          `HiggsV3MlxConfig.context_tokens`, wired at load.
+CONTEXT_LENGTH_ENV = 'HIGGS_CONTEXT_LENGTH'
+
+
+def context_length(default: int) -> int:
+    """`HIGGS_CONTEXT_LENGTH`, or `default` - THIS STACK's own window.
+
+    `default` is required and is the number the stack uses when nobody said
+    otherwise (4096 on sglang-omni, 8192 on vllm-omni and MLX). It is not a
+    fallback for a missing required value: an unset variable means "serve the
+    window this stack has always served", which is a different statement from
+    "narrator could not find out".
+
+    REFUSED, NEVER COERCED: a value that is not a positive whole number raises
+    here, before a server is launched or a chunk is sized against it. A context
+    that silently became 0 or 4096.0 would size every `max_new_tokens` in the
+    book off a number nobody chose.
+
+    NOT CHECKED AGAINST THE MODEL'S OWN MAXIMUM, and this is a stated gap.
+    narrator never loads the weights on either served stack - it hands a server
+    a path and talks to it over HTTP - so `max_position_embeddings` is not a
+    number it has. The MLX arm does load the model, but through mlx-audio's own
+    loader, and the Higgs v3 config it exposes carries no position ceiling this
+    code has verified. So a value above what the weights support is passed
+    through, and what refuses it is the server's own startup (sglang) or the
+    first request that runs past the rotary table. Closing this means reading
+    the model directory's `config.json` here, which is a change with its own
+    measurement to take.
+    """
+    default = int(default)
+    raw = (os.environ.get(CONTEXT_LENGTH_ENV) or '').strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        raise ValueError(
+            f'{CONTEXT_LENGTH_ENV}={raw!r} is not a whole number of tokens. It '
+            'is the model context every request is sized against; there is '
+            'nothing to round it to.') from None
+    if value < 1:
+        raise ValueError(
+            f'{CONTEXT_LENGTH_ENV}={raw!r} must be at least 1 token.')
+    return value
+
 #: How long one guest-side command (a /proc scan, a group signal) may take
 #: before it is reported as unanswered. Owen, 2026-09-05: "timeouts are intended
 #: to kill something if its waiting for an obscenely long time ... it should be

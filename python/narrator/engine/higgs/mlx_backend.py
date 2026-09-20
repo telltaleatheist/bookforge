@@ -116,7 +116,7 @@ from ...env import env_number
 from ..log import log
 from ..protocol import (EMPTY_SENTENCE_SILENCE_SEC, BackendSpec, ClipsVoice,
                         DefaultVoice, StopPolicy)
-from . import truncation, v3_served
+from . import served_common, truncation, v3_served
 from .codec import FrameMeasure
 from .prompt import clean_text
 from .v3_engine import HiggsV3Defaults, apply_v3_voice_defaults
@@ -161,6 +161,16 @@ MEM_BUDGET_ENV = 'NARRATOR_HIGGS3_MLX_MEM_BUDGET_GB'
 CACHE_LIMIT_ENV = 'HIGGS_MLX_CACHE_LIMIT_GB'
 CACHE_LIMIT_DEFAULT_GB = 8.0
 
+#: THE FRACTION NAME, shared with the CUDA stack on purpose - the same variable
+#: Crucible sets per voice in the spawn environment, and the same one
+#: `sgl_served` exports into its launcher. Here it means a fraction of the
+#: machine's UNIFIED memory, and `mlx_mem_budget_gb` turns it into the absolute
+#: GB this backend's headroom math has always worked in. The pinned buffer
+#: cache (`CACHE_LIMIT_ENV`) does NOT follow it: it is a cap on a cache that
+#: lives inside the budget, already subtracted by `_mlx_kv_headroom_gb`, and
+#: scaling both would take it off twice.
+SERVE_MEM_FRACTION_ENV = 'HIGGS_SGL_MEM_FRACTION'
+
 
 # `_env_number` USED TO BE DEFINED HERE. It moved to `narrator/env.py` on
 # 2026-09-13, unchanged, because it states a POLICY - garbage is refused by
@@ -178,10 +188,73 @@ def mlx_batch_ceiling() -> int:
                           'the widest Higgs MLX batch, in rows'))
 
 
+def mlx_device_memory_gb() -> float:
+    """The machine's PHYSICAL unified memory, in GB, as Metal reports it.
+
+    `mx.metal.device_info()['memory_size']` is bytes of device memory - on
+    Apple silicon that is the unified pool the whole machine shares, which is
+    what a FRACTION has to be a fraction of. Imported here rather than at module
+    scope: this module is imported on Windows (where there is no mlx) by tests
+    and by the registry, and only a caller that asked for a fraction needs an
+    answer.
+
+    NO GUESS. A machine whose Metal cannot say is a machine narrator cannot turn
+    a fraction into gigabytes on, and it says so rather than assuming 64.
+    """
+    try:
+        import mlx.core as mx
+        info = mx.metal.device_info()
+        size = info['memory_size']
+    except Exception as exc:                        # noqa: BLE001 - reported whole
+        raise ValueError(
+            f'{SERVE_MEM_FRACTION_ENV} was set, but narrator cannot read this '
+            f"device's memory size from Metal ({type(exc).__name__}: {exc}), so "
+            'it has nothing to take a fraction OF. Set '
+            f'{MEM_BUDGET_ENV} in gigabytes instead.') from exc
+    return float(size) / 1e9
+
+
 def mlx_mem_budget_gb() -> float:
-    """`MLX_MEM_BUDGET_GB`: the whole batch's unified-memory budget."""
-    return float(env_number(MEM_BUDGET_ENV, 42.0, float, 1.0,
-                            'the Higgs MLX batch memory budget, in GB'))
+    """`MLX_MEM_BUDGET_GB`: the whole batch's unified-memory budget.
+
+    TWO WAYS TO SAY IT, AND THEY MAY NOT DISAGREE (Owen, 2026-09-19).
+    `HIGGS_SGL_MEM_FRACTION` is the fraction-of-the-card name the CUDA stack
+    already takes, and Crucible sets it per voice in the spawn environment for
+    every backend; the Mac is 64 GB unified, so the same fraction is a real
+    number here too - `fraction x mlx_device_memory_gb()`. `MEM_BUDGET_ENV` is
+    the absolute-GB name this backend has always had.
+
+    A value set BOTH ways that does not agree is refused by name rather than
+    letting one silently win: the loser would be invisible - the batch simply
+    runs narrower or wider than the operator believes, and the only symptom is
+    a number in a log nobody compares.
+    """
+    absolute = (os.environ.get(MEM_BUDGET_ENV) or '').strip()
+    fraction = (os.environ.get(SERVE_MEM_FRACTION_ENV) or '').strip()
+    if not fraction:
+        return float(env_number(MEM_BUDGET_ENV, 42.0, float, 1.0,
+                                'the Higgs MLX batch memory budget, in GB'))
+    share = float(env_number(SERVE_MEM_FRACTION_ENV, 0.0, float, 0.0,
+                             "the Higgs MLX batch's share of unified memory"))
+    if not (0.0 < share < 1.0):
+        raise ValueError(
+            f'{SERVE_MEM_FRACTION_ENV}={fraction!r} is out of range: it is a '
+            'FRACTION of the device, strictly between 0 and 1.')
+    derived = share * mlx_device_memory_gb()
+    if absolute:
+        stated = float(env_number(MEM_BUDGET_ENV, 42.0, float, 1.0,
+                                  'the Higgs MLX batch memory budget, in GB'))
+        # A tenth of a gigabyte: the two are the same statement rounded
+        # differently, not two different budgets.
+        if abs(stated - derived) > 0.1:
+            raise ValueError(
+                f'{SERVE_MEM_FRACTION_ENV}={share:g} of this device\'s '
+                f'{mlx_device_memory_gb():.1f} GB is {derived:.1f} GB, but '
+                f'{MEM_BUDGET_ENV}={stated:g} GB says otherwise. They are two '
+                'ways of stating ONE budget and narrator will not pick between '
+                'them - the loser is invisible, and the batch would run at a '
+                'width nobody chose. Set one, or make them agree.')
+    return derived
 
 
 def mlx_cache_limit_gb() -> float:
@@ -2432,4 +2505,13 @@ def higgs_v3_mlx_config_from_worker_kwargs(voice=None, model_dir=None,
     # checkpoint file's - see `mlx_sampling`. None keeps the file's values.
     return HiggsV3MlxConfig(voice=resolved,
                             model_dir=named or model_dir_from_env(),
+                            # THE WINDOW THIS LOAD ASKS FOR. One external name
+                            # across all three backends (`HIGGS_CONTEXT_LENGTH`,
+                            # set per voice in the spawn env); on this arm there
+                            # is no server to launch, so it lands straight on
+                            # the config the engine bounds prompts against.
+                            # Unset = HiggsV3Defaults.CONTEXT_TOKENS, exactly
+                            # what this factory produced before.
+                            context_tokens=served_common.context_length(
+                                HiggsV3Defaults.CONTEXT_TOKENS),
                             sampling=getattr(resolved, 'sampling', None))

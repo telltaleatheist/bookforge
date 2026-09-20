@@ -101,7 +101,11 @@ class HiggsV3Defaults:
     MODEL_ID = v3_served.MODEL_ID
     SAMPLE_RATE = v3_served.SAMPLE_RATE
     FRAMES_PER_SECOND = v3_served.FRAMES_PER_SECOND
-    CONTEXT_TOKENS = v3_served.CONTEXT_TOKENS
+    #: The window a config gets when nobody states one. The LAUNCHED value
+    #: is `v3_served.context_tokens()`, read per load by
+    #: `higgs_v3_config_from_worker_kwargs` - this is only the default that
+    #: applies when a config is built in code with no environment at all.
+    CONTEXT_TOKENS = v3_served.DEFAULT_CONTEXT_TOKENS
     # <= 600 chars is the measured safe zone; the delivered render used 300.
     MAX_CHARS = v3_served.MAX_CHARS
     # THE LENGTH BAND, ENFORCED since 2026-09-06 by `truncation.render_guarded`
@@ -1643,4 +1647,8 @@ def higgs_v3_config_from_worker_kwargs(voice=None, model_dir=None, base_dir=None
         voice=resolved,
         checkpoint_dir=getattr(resolved, 'checkpoint_dir', None),
         base_dir=getattr(resolved, 'base_dir', None),
+        # THE WINDOW THE SERVER WAS LAUNCHED WITH, not the class default: this
+        # bounds `max_total_tokens`, so a prompt is refused against the context
+        # that actually exists rather than against 8192 forever.
+        context_tokens=v3_served.context_tokens(),
         sampling=getattr(resolved, 'sampling', None))

@@ -3470,3 +3470,57 @@ class ConvertManyTest(unittest.TestCase):
         self.assertEqual(len(pulled), seen, 'nothing is pulled after the exception')
         self.assertIn(1, in_flight)
 
+
+class ContextLengthNamesTest(unittest.TestCase):
+    """ONE external name for the context window, translated per stack.
+
+    Crucible sets `HIGGS_CONTEXT_LENGTH` per voice in the spawn environment for
+    every backend (a voice change is a full engine restart, so per-voice IS
+    per-spawn). vllm-omni's launcher has always read `HIGGS_MAX_MODEL_LEN`
+    (`serve_higgs_v3.sh:123` -> `--max-model-len`), and renaming it would break
+    every launch line and campaign script that sets it - so narrator keeps both
+    and refuses a disagreement rather than picking a winner nobody can see.
+    """
+
+    def setUp(self):
+        for name in ('HIGGS_CONTEXT_LENGTH', 'HIGGS_MAX_MODEL_LEN'):
+            os.environ.pop(name, None)
+            self.addCleanup(os.environ.pop, name, None)
+
+    def test_unset_is_the_stacks_own_window(self):
+        self.assertEqual(v3_served.context_tokens(),
+                         v3_served.DEFAULT_CONTEXT_TOKENS)
+
+    def test_the_external_name_alone_decides_it(self):
+        os.environ['HIGGS_CONTEXT_LENGTH'] = '4096'
+        self.assertEqual(v3_served.context_tokens(), 4096)
+
+    def test_the_launchers_own_name_alone_still_decides_it(self):
+        os.environ['HIGGS_MAX_MODEL_LEN'] = '16384'
+        self.assertEqual(v3_served.context_tokens(), 16384)
+
+    def test_the_two_names_AGREEING_is_fine(self):
+        os.environ['HIGGS_CONTEXT_LENGTH'] = '4096'
+        os.environ['HIGGS_MAX_MODEL_LEN'] = '4096'
+        self.assertEqual(v3_served.context_tokens(), 4096)
+
+    def test_the_two_names_DISAGREEING_is_refused_by_name(self):
+        """The loser would be invisible: the server comes up clean either way
+        and the fault shows as an HTTP 500 hundreds of chunks later."""
+        os.environ['HIGGS_CONTEXT_LENGTH'] = '8192'
+        os.environ['HIGGS_MAX_MODEL_LEN'] = '4096'
+        with self.assertRaises(ValueError) as caught:
+            v3_served.context_tokens()
+        message = str(caught.exception)
+        self.assertIn('HIGGS_CONTEXT_LENGTH', message)
+        self.assertIn('HIGGS_MAX_MODEL_LEN', message)
+
+    def test_the_launch_exports_the_window_it_is_starting_with(self):
+        os.environ['HIGGS_CONTEXT_LENGTH'] = '4096'
+        backend = HiggsV3ServedBackend.__new__(HiggsV3ServedBackend)
+        backend.base_url = 'http://127.0.0.1:8095'
+        backend.concurrency = 4
+        backend.checkpoint_dir = None
+        backend.sentinel_report = '/tmp/report.json'
+        backend.owner_id = lambda: 'keeper'
+        self.assertIn('HIGGS_MAX_MODEL_LEN=4096', backend._launch_exports())

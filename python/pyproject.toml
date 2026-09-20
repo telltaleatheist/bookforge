@@ -299,4 +299,9 @@ narrator = ["**/*.md"]
 # SGLang-Omni has no deploy profile at all - which is why sampling must ride on
 # every request there - so nothing reads its `$(dirname "$0")` and no second
 # file is invented to sit beside it.
-"narrator.engine.higgs" = ["launch/*.sh", "launch/*.yaml"]
+# `launch/*.py` is narrator's SGLang entry module (`sgl_omni_entry.py`),
+# which the shell launcher execs INSTEAD of `bin/sgl-omni` so that
+# `HiggsTtsEngineBuilder.context_length` - a class attribute upstream gives
+# no flag for - is assigned before the engine is built. It ships beside the
+# script because the script finds it at `$(dirname "$0")`.
+"narrator.engine.higgs" = ["launch/*.sh", "launch/*.yaml", "launch/*.py"]
