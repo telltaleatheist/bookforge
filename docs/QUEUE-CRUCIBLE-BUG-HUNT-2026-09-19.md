@@ -543,7 +543,7 @@ Ruled 2026-09-19, later the same evening:
 
 9. **A book is atomic on the card.** Owen watched *Mistborn* finish its render,
    move to the CPU for the session copy, and then wait to get back on the GPU:
-   *"Waiting for crucible@owens-mac-studio: busy: bookforge crucible-client/1.0.6,
+   *"Waiting for crucible@<the Mac>: busy: bookforge crucible-client/1.0.6,
    tts mistborn, 99% done — 80 of 81 chunk(s) rendered"* — parked on its OWN
    render's tail, re-admitted a second later. Ruling: *"i want books to be
    atomic actions, ideally, where they keep the GPU until all of their GPU steps
