@@ -29,6 +29,11 @@
  *     the refusal is `crucible_went_quiet`, TRANSIENT (Contract 1), so the row
  *     parks rather than reddening.
  *  7. TEN MINUTES is the shipped number.
+ *  8. AND THE RECONNECT LADDER FITS INSIDE IT (PK11, 2026-09-20). Two clocks
+ *     over one stream must not argue: the ladder gives up first and names the
+ *     server, and this clock stays the backstop for a socket that is open and
+ *     mute. Its schedule is a pure function and is read here rather than by
+ *     running a render for five minutes.
  *
  * No GPU, no model, no network beyond 127.0.0.1 — and the clock is driven at
  * milliseconds, never at its real setting.
@@ -50,6 +55,7 @@ if (!fs.existsSync(STALL)) {
 
 installElectronStub('bf-crucible-stall-');
 const stall = require(STALL);
+const reconnect = require(path.join(REPO, 'dist', 'electron', 'crucible', 'stream-reconnect.js'));
 const job = require(path.join(REPO, 'dist', 'electron', 'crucible', 'job.js'));
 const servers = require(path.join(REPO, 'dist', 'electron', 'crucible', 'servers.js'));
 const registerFake = fakeNamer(servers);
@@ -229,6 +235,36 @@ function startSilentFake({ frames = 2, endOnCancel = false } = {}) {
       assert.ok(/the align job/.test(thrown.message), thrown.message);
     });
   }
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // 8. PK11 · the reconnect ladder's schedule, and the two clocks' order
+  // ───────────────────────────────────────────────────────────────────────────
+
+  await check('PK11: the ladder doubles from 5 s and spends its whole five minutes', () => {
+    const delays = reconnect.reconnectDelaysMs();
+    assert.deepStrictEqual(delays.slice(0, 5), [5000, 10000, 20000, 40000, 80000],
+      `doubling from the first rung: ${JSON.stringify(delays)}`);
+    const total = delays.reduce((sum, ms) => sum + ms, 0);
+    assert.strictEqual(total, reconnect.CRUCIBLE_RECONNECT_TOTAL_MS,
+      'the last rung is clipped to what is LEFT of the budget rather than rounded away, so the '
+      + `ladder uses all of it: ${JSON.stringify(delays)}`);
+    assert.strictEqual(delays[0], reconnect.CRUCIBLE_RECONNECT_FIRST_DELAY_MS);
+    assert.ok(delays.every((ms) => ms > 0), JSON.stringify(delays));
+  });
+
+  await check('PK11: a budget smaller than one rung still gives exactly one try', () => {
+    assert.deepStrictEqual(reconnect.reconnectDelaysMs(3000, 5000), [3000],
+      'a ladder that answered [] here would turn the first blip into a sweep');
+    assert.deepStrictEqual(reconnect.reconnectDelaysMs(0, 5000), [],
+      'and a budget of nothing is no ladder at all, not an infinite one');
+  });
+
+  await check('PK11: the ladder gives up BEFORE the stall clock fires', () => {
+    assert.ok(reconnect.CRUCIBLE_RECONNECT_TOTAL_MS < stall.CRUCIBLE_STREAM_STALL_MS,
+      'the ladder sits inside the stall clock, so if its budget were the longer of the two the '
+      + 'silence would be cancelled out from under a reconnect that was about to succeed — '
+      + `ladder ${reconnect.CRUCIBLE_RECONNECT_TOTAL_MS} ms, stall ${stall.CRUCIBLE_STREAM_STALL_MS} ms`);
+  });
 
   summary('crucible stall clock');
 })();

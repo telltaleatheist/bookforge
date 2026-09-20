@@ -24,7 +24,13 @@
  * messages, and anything else qualifies only by carrying a real transport
  * errno on `cause.code`. Everything else stays an unexpected exception and
  * comes back with its stack.
+ *
+ * Since 2026-09-20 this module also owns the WIDER question — "was the server
+ * available at all" — for the callers that hold a raw error and never went
+ * through a describer. See {@link crucibleUnavailableCause}.
  */
+
+import { CrucibleServerError, CrucibleUnreachable } from '@crucible/client';
 
 /**
  * The errnos that mean "the wire, not the work". `ECONNRESET` and
@@ -41,6 +47,23 @@ const TRANSPORT_CODES: ReadonlySet<string> = new Set([
   'EHOSTUNREACH',
   'ENETUNREACH',
   'EPIPE',
+  /*
+   * UNDICI'S OWN THREE CLOCKS, ADDED 2026-09-20 AFTER THEY COST A BOOK.
+   *
+   * At 14:27 a TCP connect to the render host took longer than undici's 10 s
+   * connect timeout — one network blip, on a server that had been up eleven
+   * hours — and the align step of a 2,267-chunk book went RED at chunk 1901.
+   * The errno is `UND_ERR_CONNECT_TIMEOUT` and it was not in this set, so the
+   * only thing that recognised the blip was the SDK's own `CrucibleUnreachable`
+   * wrapper, which the door that threw it did not build.
+   *
+   * All three are a clock that ran out on the WIRE — a connect that never
+   * completed, headers that never arrived, a body that stopped — and not one of
+   * them is a run that needs repairing. They are the exact shape of a wait.
+   */
+  'UND_ERR_CONNECT_TIMEOUT',
+  'UND_ERR_HEADERS_TIMEOUT',
+  'UND_ERR_BODY_TIMEOUT',
 ]);
 
 /**
@@ -93,4 +116,47 @@ export function transportFailureCause(err: unknown): string | null {
  */
 export function isTransportFailure(err: unknown): boolean {
   return transportFailureCause(err) !== null;
+}
+
+/**
+ * "NOT NOW" IN THE SERVER'S OWN WORDS — the whole membership test for Contract
+ * 1, for a caller holding a RAW error rather than a door's refusal object.
+ *
+ * ── Why this exists beside {@link transportFailureCause} ───────────────────
+ *
+ * The two describers (`job.ts describeCrucibleJobRefusal`, `render.ts
+ * describeCrucibleRefusal`) already know this set: an unreachable server, a
+ * 5xx, and a socket that died mid-answer are the three things a row WAITS out
+ * rather than goes red for. But a door only gets a described refusal if it went
+ * through a describer, and two callers do not:
+ *
+ *  - `coverage-align-job.ts`'s generic catch. On 2026-09-20 at 14:27 it caught
+ *    the SDK's own `CrucibleUnreachable` ("connect timeout, 10000ms") from a
+ *    plain SDK call and returned a plain fail — no `transient` pair — so the
+ *    align of a book at 1901 of 2267 chunks went red on ONE network blip while
+ *    the identical wait on a busy card would have parked;
+ *  - {@link module:./stream-reconnect}, which has to decide whether a stream
+ *    that ended badly is worth re-opening. That question is "was this the wire"
+ *    and it must be answered the same way the refusal is classified, or a row
+ *    could be told to wait for something nothing will retry (or the reverse).
+ *
+ * ── It does not compose the sentence ───────────────────────────────────────
+ *
+ * The line a parked row shows is composed by ONE function, `job.ts
+ * crucibleTransientLine`, so a wait reads the same whichever door hit the
+ * socket. This answers only what the CAUSE was, in the server's own words, and
+ * hands it there. It never invents a category.
+ *
+ * ── The describers keep their own arms ─────────────────────────────────────
+ *
+ * Each of them mints a refusal whose PROSE is per class (a 5xx names the
+ * status, an unreachable server names the url), and folding those into one arm
+ * would lose sentences a person acts on. What must not drift is the SET, and
+ * `tools/test-crucible-transient-refusals.js` pins that the describers and this
+ * agree on every member — the agreement is checked rather than assumed.
+ */
+export function crucibleUnavailableCause(err: unknown): string | null {
+  if (err instanceof CrucibleUnreachable) return err.message;
+  if (err instanceof CrucibleServerError) return `HTTP ${err.status}: ${err.serverMessage}`;
+  return transportFailureCause(err);
 }

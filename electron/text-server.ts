@@ -794,7 +794,23 @@ function requireCondaEnvPrefix(): string {
  */
 let fileLog: RollingLogger | null = null;
 function recordToFile(line: string): void {
-  if (fileLog === null) fileLog = new RollingLogger({ name: 'text-server', consoleOutput: false });
+  if (fileLog === null) {
+    fileLog = new RollingLogger({ name: 'text-server', consoleOutput: false });
+    /*
+     * OPENED EXPLICITLY, because since 2026-09-20 nothing else opens a log.
+     *
+     * `RollingLogger.write()` used to open the file on the first line, which
+     * meant any process that merely `require`d a built module could write into
+     * this machine's real log directory — and the queue keepers did, with
+     * invented failures (bug hunt S13). The file now belongs to the caller that
+     * says `init()`, and this is that caller saying it. Not awaited: the lines
+     * written while the open is in flight wait for it inside the logger, so no
+     * request line is lost and no serving path is made to wait on a mkdir.
+     */
+    void fileLog.init().catch((err: unknown) => {
+      console.error('[text-server] its own log could not be opened:', err);
+    });
+  }
   fileLog.info(line);
 }
 

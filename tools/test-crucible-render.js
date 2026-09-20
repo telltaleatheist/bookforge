@@ -208,8 +208,14 @@ function startFakeCrucible(behaviour, rows) {
     cancelled: [],          // every DELETE /v1/jobs/<id>
     voicesAsked: 0,
     jobs: new Map(),        // id -> {voice, chunks}
+    // PK11: what a reconnect asked for, and what was fetched — the two things
+    // "the stream was re-opened at the right place" is read from.
+    eventsRequests: [],     // {jobId, lastEventId}
+    artifactsAsked: [],     // every GET /v1/jobs/<id>/artifacts/<name>
   };
   let nextJob = 1;
+  /** How many times the event stream has been opened, across reconnects. */
+  let eventOpens = 0;
 
   const send = (res, status, body) => {
     const text = JSON.stringify(body);
@@ -291,8 +297,18 @@ function startFakeCrucible(behaviour, rows) {
 
     const events = /^\/v1\/jobs\/([^/]+)\/events$/.exec(route);
     if (events && req.method === 'GET') {
-      const job = state.jobs.get(decodeURIComponent(events[1]));
+      const jobId = decodeURIComponent(events[1]);
+      const job = state.jobs.get(jobId);
       assert.ok(job, `the fake was asked for events of an unknown job: ${events[1]}`);
+      eventOpens += 1;
+      // A REAL CRUCIBLE REPLAYS ABOVE `Last-Event-ID` AND NO FURTHER, which is
+      // the whole mechanism a reconnect rests on (PK11).
+      const lastSeen = Number(req.headers['last-event-id'] || 0);
+      state.eventsRequests.push({ jobId, lastEventId: lastSeen });
+      if (behaviour === 'restarts' && eventOpens > 1) {
+        // THE SERVER CAME BACK WITHOUT THE JOB. Nothing is running there.
+        return send(res, 404, { error: { code: 'unknown_job', message: 'no such job here' } });
+      }
       res.writeHead(200, {
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache',
@@ -301,8 +317,21 @@ function startFakeCrucible(behaviour, rows) {
       let id = 0;
       const frame = (name, data) => {
         id += 1;
+        if (id <= lastSeen) return;
         res.write(`id: ${id}\nevent: ${name}\ndata: ${JSON.stringify(data)}\n\n`);
       };
+      /**
+       * The blip: the socket dies mid-book, on the FIRST open only.
+       *
+       * `drops-once` dies after the SECOND chunk so that the run before the
+       * break has reported writes of its own — which is what makes the
+       * render's `written` tally provably a sum across runs rather than
+       * whatever the last one happened to write.
+       */
+      const dropsAfterChunk = eventOpens !== 1 ? null
+        : behaviour === 'drops-once' ? 1
+        : behaviour === 'restarts' ? 0
+        : null;
       const total = job.chunks.length;
       frame('queued', { position: null });
       frame('progress', {
@@ -334,6 +363,15 @@ function startFakeCrucible(behaviour, rows) {
           message: `${n + 1} of ${total} chunk(s) rendered`,
           rendered: n + 1, failed: 0, total,
         });
+        if (dropsAfterChunk !== null && n === dropsAfterChunk) {
+          // A proxy reset, a restarted uvicorn, a tailnet blip. The render is
+          // still going over here; only the socket died. The delay is long
+          // enough that the downloads announced so far have certainly landed
+          // and been reported — a file written but never yielded is on disk
+          // and out of the tally, and this keeper is about the tally.
+          setTimeout(() => res.destroy(), 120);
+          return undefined;
+        }
       }
 
       if (behaviour === 'goes-quiet') {
@@ -386,6 +424,7 @@ function startFakeCrucible(behaviour, rows) {
     if (artifact && req.method === 'GET') {
       const job = state.jobs.get(decodeURIComponent(artifact[1]));
       const name = decodeURIComponent(artifact[2]);
+      state.artifactsAsked.push(name);
       if (name.endsWith('.provenance.json')) {
         return send(res, 200, provenanceFor(name.replace(/\.provenance\.json$/, ''), job.voice));
       }
@@ -1102,6 +1141,133 @@ async function wentQuietChecks() {
   });
 }
 
+
+/**
+ * A RENDER WHOSE SOCKET DIES MID-BOOK — bug hunt S13 (PK11), 2026-09-20.
+ *
+ * At 14:27 one TCP connect to the render host took longer than undici's 10 s
+ * timeout. The server had been up eleven hours and the job was fine; what
+ * BookForge did with that blip was CANCEL it — Q7's one-server sweep, which is
+ * right for a server that has gone and wrong for a socket that hiccuped. The
+ * resume it should have taken instead (`lastEventId`, in the in-flight ledger
+ * since C4) had two writers and no caller.
+ *
+ * Here the stream dies after the first chunk. The ladder re-opens it at the
+ * last frame this side acted on, the server replays above that and no further,
+ * and the render finishes with every FLAC on disk — no DELETE, and the chunks
+ * already downloaded are not fetched again.
+ */
+async function reconnectChecks() {
+  const fake = await startFakeCrucible('drops-once');
+  const server = registerFake(fake.url);
+  const sentencesDir = freshSentencesDir();
+  const lines = [];
+  let outcome = null;
+  let thrown = null;
+  try {
+    outcome = await render.runCrucibleRender({
+      server,
+      renderId: 'test-render-blip',
+      voice: 'mistborn',
+      language: 'en',
+      chunks: CHUNKS,
+      sentencesDir,
+      onLog: (line) => lines.push(line),
+      // Milliseconds, never the shipped five minutes: what is under test is
+      // what happens at a rung, not how long a rung is.
+      reconnect: { delaysMs: [10, 10, 10] },
+    });
+  } catch (err) {
+    thrown = err;
+  } finally {
+    await fake.close();
+  }
+
+  await check('PK11: a render whose stream dies mid-book is RE-OPENED, and finishes', () => {
+    assert.strictEqual(thrown, null, `a blip must not fail a render: ${thrown && thrown.message}`);
+    assert.ok(outcome !== null && outcome.result.rendered === CHUNKS.length,
+      'the server\'s own terminal news, from the run that completed');
+    for (const chunk of CHUNKS) {
+      const file = path.join(sentencesDir, `${chunk.index}.flac`);
+      assert.ok(fs.existsSync(file), `${chunk.index}.flac never landed`);
+    }
+    /*
+     * THE DIRECTORY IS THE AUTHORITY, and `written` is a report.
+     *
+     * `written` is the sum across every run of the stream (it used to be the
+     * last run's count alone), but it can still be SHORT of the files on disk:
+     * the SDK downloads an artifact as its frame lands and yields the
+     * `written` record on its next pass, so a file whose download settled
+     * after the socket died is on disk and was never announced to anybody. The
+     * resume scan and the coverage audit read the directory for exactly that
+     * reason, and so does this check.
+     */
+    assert.ok(outcome.written >= 1 && outcome.written <= CHUNKS.length,
+      `a tally of the files this call was told about: ${outcome.written}`);
+    const landed = fs.readdirSync(sentencesDir).filter((f) => /^\d+\.flac$/.test(f));
+    assert.strictEqual(landed.length, CHUNKS.length,
+      `the directory holds the whole book and nothing half-written: ${JSON.stringify(landed)}`);
+  });
+
+  await check('PK11: it resumed above the last frame, and nothing was cancelled', () => {
+    assert.ok(fake.state.eventsRequests.some((r) => r.lastEventId > 0),
+      'the re-open carried Last-Event-ID, so the server replays the frames since the break and '
+      + `no more. Saw ${JSON.stringify(fake.state.eventsRequests)}`);
+    assert.deepStrictEqual(fake.state.cancelled, [],
+      'THE FINDING: the sweep DELETEd a 90%-done render on a stream blip');
+    assert.ok(lines.some((l) => /re-opening it from event/.test(l)),
+      `every reconnect says so by name: ${JSON.stringify(lines)}`);
+  });
+
+  await check('PK11: the chunks already on disk were not fetched again', () => {
+    const asked = fake.state.artifactsAsked.filter((n) => /^\d+\.flac$/.test(n));
+    assert.strictEqual(asked.length, new Set(asked).size,
+      `each <index>.flac was fetched once: ${JSON.stringify(asked)}`);
+  });
+}
+
+/**
+ * AND A SERVER THAT RESTARTED IS A WAIT WITH NOTHING TO CANCEL (PK11).
+ *
+ * `unknown_job` on the reconnect is the server telling us it does not have the
+ * job. The row still PARKS — a restarted Crucible is not a misconfiguration
+ * somebody repairs — and no DELETE is sent, because there is nothing there.
+ */
+async function restartedServerChecks() {
+  const fake = await startFakeCrucible('restarts');
+  const server = registerFake(fake.url);
+  const sentencesDir = freshSentencesDir();
+  let thrown = null;
+  try {
+    await render.runCrucibleRender({
+      server,
+      renderId: 'test-render-restart',
+      voice: 'mistborn',
+      language: 'en',
+      chunks: CHUNKS,
+      sentencesDir,
+      onLog: () => {},
+      reconnect: { delaysMs: [10, 10] },
+    });
+  } catch (err) {
+    thrown = err;
+  } finally {
+    await fake.close();
+  }
+
+  await check('PK11: a reconnect answered `unknown_job` parks the render and cancels nothing', () => {
+    assert.ok(thrown !== null, 'a job the server has forgotten is not a finished render');
+    assert.strictEqual(thrown.code, 'crucible_job_unknown');
+    assert.strictEqual(thrown.transient, true,
+      'a Crucible that restarted is a wait, not a red row');
+    assert.ok(/asking again shortly/.test(thrown.transientLine), thrown.transientLine);
+    assert.deepStrictEqual(fake.state.cancelled, [],
+      'there is nothing over there to cancel: the server said so');
+    assert.ok(/already downloaded are on disk/.test(thrown.message),
+      `it says what survives (R6): ${thrown.message}`);
+  });
+}
+
 (async () => {
   await voiceMapChecks();
   await bridgeSeamChecks();
@@ -1110,6 +1276,8 @@ async function wentQuietChecks() {
   await leasedChecks();
   await cancelChecks();
   await wentQuietChecks();
+  await reconnectChecks();
+  await restartedServerChecks();
   await refusalChecks();
 
   try {

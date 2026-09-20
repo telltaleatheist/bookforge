@@ -35,6 +35,11 @@
  *     so the server went on running the job and 409'd the next book on it.
  * 10. AND THE LEDGER ROW CARRIES THE RESUME POINT (C4): `attachTo.lastEventId`
  *     was documented and persisted nowhere.
+ * 11. A BROKEN STREAM IS RE-OPENED BEFORE ANYTHING IS CANCELLED (PK11, S13) —
+ *     Q7's sweep DELETEd a job 1,901 of 2,267 chunks through on ONE connect
+ *     timeout, and the resume that would have saved it was unwired.
+ * 12. A SERVER THAT RESTARTED (`unknown_job`) is a WAIT with nothing to cancel;
+ *     a server that never comes back is the sweep, as a LAST resort.
  *
  * No GPU, no model, no network beyond 127.0.0.1.
  */
@@ -166,6 +171,12 @@ function startFake(behaviour, onSubmit = () => {}) {
     }
     return false;
   });
+}
+
+/** The in-flight ledger's rows for one server — the sweep's and the resume's record. */
+function ledgerRowsFor(server) {
+  const ledger = require(path.join(REPO, 'dist', 'electron', 'crucible', 'in-flight-ledger.js'));
+  return ledger.readInFlightLedger().filter((r) => r.server === server);
 }
 
 function freshDir(label) {
@@ -601,6 +612,8 @@ async function droppedStreamSweepsItsOwnServer() {
       });
       // THE SOCKET DIES MID-STREAM WITH NO TERMINAL FRAME — a proxy reset, a
       // restarted uvicorn, a tailnet blip. The job is still running over there.
+      // EVERY time, including the reconnects: this fake is the server that
+      // never comes back, which is the only case the sweep is for.
       setTimeout(() => res.destroy(), 40);
       return true;
     }
@@ -625,6 +638,10 @@ async function droppedStreamSweepsItsOwnServer() {
   try {
     await job.runCrucibleJob({
       server, type: 'align', params: {}, inputs: {}, localId: 'step_drop_1', onLog: () => {},
+      // Milliseconds, never the shipped five minutes — `stream-reconnect.ts`
+      // says why only a keeper passes this. Two rungs: the sweep must come
+      // after BOTH have been spent and the server is still not answering.
+      reconnect: { delaysMs: [10, 10] },
       onEvent: () => {
         const row = ledger.readInFlightLedger().find((r) => r.server === server);
         resumePointPerFrame.push(row === undefined ? null : row.lastEventId);
@@ -636,7 +653,7 @@ async function droppedStreamSweepsItsOwnServer() {
     await fake.close();
   }
 
-  await check('a dropped stream DELETEs our own orphan on that server before it reports', () => {
+  await check('a dropped stream DELETEs our own orphan on that server — AFTER the ladder runs out', () => {
     /*
      * The CLASS is whatever the SDK threw — undici answers a socket destroyed
      * mid-response with a bare `TypeError: terminated`, which
@@ -647,9 +664,26 @@ async function droppedStreamSweepsItsOwnServer() {
      * an orphan whatever the transport called its failure.
      */
     assert.ok(thrown !== null, 'a stream that reset is not a finished job');
+    /*
+     * THE LADDER RAN BEFORE ANYTHING WAS CANCELLED (PK11). Two rungs were
+     * configured, so there are at least three openings of the stream; the SDK
+     * adds its own single pre-response retry on top of ours, which is why this
+     * counts a floor rather than an exact number — what is being pinned is
+     * that the stream was re-opened at all, and from where.
+     */
+    assert.ok(fake.state.eventsRequests.length >= 3,
+      'PK11: the stream was RE-OPENED before anything was cancelled — one connect timeout must '
+      + 'not end a job that is 1,901 chunks through. Saw '
+      + JSON.stringify(fake.state.eventsRequests));
+    assert.strictEqual(fake.state.eventsRequests.filter((r) => r.lastEventId === 0).length, 1,
+      'and exactly one of them started from the beginning: every re-open asked for the frames '
+      + 'it had not seen, never the whole job again');
+    assert.ok(fake.state.eventsRequests.slice(1).every((r) => r.lastEventId === 3),
+      'each re-open resumed at the last frame this side acted on');
     assert.strictEqual(fake.state.cancelled.length, 1,
       'the one-server sweep sent the DELETE nothing used to send — without it the server '
-      + 'goes on holding that card and 409s the next book');
+      + 'goes on holding that card and 409s the next book. Exactly ONE, at the END of the '
+      + 'ladder: a server that never came back may still be running our job');
     assert.strictEqual(ledger.readInFlightLedger().filter((r) => r.server === server).length, 0,
       'and the confirmed-cancelled row came out of the ledger');
   });
@@ -683,6 +717,175 @@ async function outcomeCarriesTheResumeTriple() {
   });
 }
 
+
+/**
+ * 12. PK11 — A SOCKET THAT DIES IS NOT A JOB THAT DIED (bug hunt S13).
+ *
+ * 14:27 ET, 2026-09-20: one TCP connect to the render host took longer than
+ * undici's 10 s timeout. The server never restarted (uptime eleven hours) and
+ * the job was 1,901 of 2,267 chunks through an align. Q7's sweep — right for a
+ * server that has gone — CANCELLED it, because "the stream dropped" was being
+ * read as "the job is lost". The resume the ledger's `lastEventId` exists for
+ * had two writers and no caller.
+ *
+ * Here the stream dies after frame 3 ONCE. The ladder re-opens it, the server
+ * replays above 3, and the job finishes with its artifacts — and NO DELETE is
+ * sent, because there was never anything wrong with the job.
+ */
+async function aBrokenStreamIsReOpenedAndTheJobFinishes() {
+  let opened = 0;
+  const fake = await startFakeCrucible(async (req, res, ctx) => {
+    const { state, send, sseWriter, url } = ctx;
+    if (url.pathname === '/v1/jobs' && req.method === 'POST') {
+      const body = JSON.parse((await ctx.readBody(req)).toString('utf-8'));
+      state.submitted.push(body);
+      const id = ctx.newJobId();
+      state.jobs.set(id, { body });
+      send(res, 200, { job_id: id });
+      return true;
+    }
+    if (/^\/v1\/jobs\/[^/]+\/events$/.test(url.pathname) && req.method === 'GET') {
+      opened += 1;
+      // The writer numbers from 1 and skips everything at or below
+      // `Last-Event-ID`, which is what a real Crucible does on a resume.
+      const sse = sseWriter(req, res);
+      sse.frame('queued', { position: null });
+      sse.frame('warming', { message: 'loading qwen3-aligner' });
+      sse.frame('progress', { fraction: 0.5, message: 'half the book', stage: 'aligning' });
+      if (opened === 1) {
+        // THE BLIP. Three frames in, the socket goes — and the job carries on
+        // over there exactly as it did on the night this is taken from.
+        setTimeout(() => res.destroy(), 30);
+        return true;
+      }
+      sse.frame('artifact', { name: 'alignment.json' });
+      sse.frame('progress', { fraction: 1, message: 'done', stage: 'aligning' });
+      sse.frame('done', { artifacts: ['alignment.json'] });
+      sse.end();
+      return true;
+    }
+    const artifact = /^\/v1\/jobs\/([^/]+)\/artifacts\/(.+)$/.exec(url.pathname);
+    if (artifact && req.method === 'GET') {
+      const name = decodeURIComponent(artifact[2]);
+      if (name.endsWith('.provenance.json')) {
+        send(res, 200, provenanceFor(name.replace(/\.provenance\.json$/, ''), 'align', 'qwen3-aligner'));
+        return true;
+      }
+      const bytes = Buffer.from(`artifact:${name}`);
+      res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Length': bytes.length });
+      res.end(bytes);
+      return true;
+    }
+    return false;
+  });
+  const server = registerFake(fake.url);
+  const outDir = freshDir('reconnect');
+  const lines = [];
+  let outcome = null;
+  let thrown = null;
+  try {
+    outcome = await job.runCrucibleJob({
+      server, type: 'align', model: 'qwen3-aligner', params: {}, inputs: {},
+      artifactsTo: outDir, localId: 'step_blip_1',
+      onLog: (line) => lines.push(line),
+      // Milliseconds, never the shipped five minutes — `stream-reconnect.ts`
+      // says why only a keeper passes this.
+      reconnect: { delaysMs: [10, 10, 10] },
+    });
+  } catch (err) {
+    thrown = err;
+  } finally {
+    await fake.close();
+  }
+
+  await check('PK11: a stream that dies after frame 3 is RE-OPENED at 3 and the job finishes', () => {
+    assert.strictEqual(thrown, null, `the job must not fail on a blip: ${thrown && thrown.message}`);
+    assert.ok(outcome !== null && outcome.done !== undefined, 'it ended on the server\'s done frame');
+    assert.ok(fake.state.eventsRequests.some((r) => r.lastEventId === 3),
+      'the re-open asked for the frames above the last one this side acted on, so the server '
+      + `replays those and no more. Saw ${JSON.stringify(fake.state.eventsRequests)}`);
+    assert.strictEqual(fs.readFileSync(path.join(outDir, 'alignment.json')).toString(),
+      'artifact:alignment.json', 'and the artifact announced AFTER the break landed');
+  });
+
+  await check('PK11: and NOTHING was cancelled — the job was never in trouble', () => {
+    assert.deepStrictEqual(fake.state.cancelled, [],
+      'THE FINDING: Q7\'s one-server sweep DELETEd a 90%-done job on a stream blip. The sweep is '
+      + 'the last resort now, not the first answer');
+    assert.strictEqual(ledgerRowsFor(server).length, 0,
+      'and the ledger row came out on the terminal frame, as it always did');
+  });
+
+  await check('PK11: every reconnect attempt says so by name in the job log', () => {
+    const said = lines.filter((l) => /re-opening it from event/.test(l));
+    assert.ok(said.length >= 1,
+      `a reconnect nobody can see in the log is a reconnect nobody can debug: ${JSON.stringify(lines)}`);
+    assert.ok(/the event stream broke/.test(said[0]) && /attempt 1 of 3/.test(said[0]), said[0]);
+  });
+}
+
+/**
+ * 13. PK11 — AND A SERVER THAT RESTARTED SAYS SO, so nothing is cancelled.
+ *
+ * `unknown_job` is the one answer that ends the ladder without a DELETE: the
+ * server has told us it does not have the job. Sweeping there would DELETE
+ * nothing and poll a server for no reason — and the row still PARKS, because a
+ * restarted Crucible is not a misconfiguration somebody has to repair.
+ */
+async function aRestartedServerIsAWaitWithNothingToCancel() {
+  let opened = 0;
+  const fake = await startFakeCrucible(async (req, res, ctx) => {
+    const { state, send, sseWriter, url } = ctx;
+    if (url.pathname === '/v1/jobs' && req.method === 'POST') {
+      const body = JSON.parse((await ctx.readBody(req)).toString('utf-8'));
+      state.submitted.push(body);
+      const id = ctx.newJobId();
+      state.jobs.set(id, { body });
+      send(res, 200, { job_id: id });
+      return true;
+    }
+    if (/^\/v1\/jobs\/[^/]+\/events$/.test(url.pathname) && req.method === 'GET') {
+      opened += 1;
+      if (opened === 1) {
+        const sse = sseWriter(req, res);
+        sse.frame('queued', { position: null });
+        sse.frame('progress', { fraction: 0.5, message: 'half the book', stage: 'aligning' });
+        setTimeout(() => res.destroy(), 30);
+        return true;
+      }
+      // THE SERVER CAME BACK WITHOUT THE JOB — a restart. There is nothing
+      // running there and nothing to cancel.
+      send(res, 404, { error: { code: 'unknown_job', message: 'no such job here' } });
+      return true;
+    }
+    return false;
+  });
+  const server = registerFake(fake.url);
+  let thrown = null;
+  try {
+    await job.runCrucibleJob({
+      server, type: 'align', model: 'qwen3-aligner', params: {}, inputs: {},
+      localId: 'step_restart_1', onLog: () => {},
+      reconnect: { delaysMs: [10, 10, 10] },
+    });
+  } catch (err) {
+    thrown = err;
+  } finally {
+    await fake.close();
+  }
+
+  await check('PK11: a reconnect answered `unknown_job` is a WAIT, and nothing is cancelled', () => {
+    assert.ok(thrown instanceof job.CrucibleJobRefused, `got ${thrown}`);
+    assert.strictEqual(thrown.code, 'crucible_job_unknown');
+    assert.strictEqual(thrown.transient, true,
+      'a Crucible that restarted is not a misconfiguration somebody can repair — the row parks');
+    assert.ok(/asking again shortly/.test(thrown.transientLine), thrown.transientLine);
+    assert.deepStrictEqual(fake.state.cancelled, [],
+      'there is nothing there to cancel: the server said so');
+    assert.ok(/no longer has job/.test(thrown.message), thrown.message);
+  });
+}
+
 (async () => {
   await happyPath();
   await memoryArtifacts();
@@ -692,6 +895,8 @@ async function outcomeCarriesTheResumeTriple() {
   await preflight();
   await uploadPoolStopsOnFailure();
   await droppedStreamSweepsItsOwnServer();
+  await aBrokenStreamIsReOpenedAndTheJobFinishes();
+  await aRestartedServerIsAWaitWithNothingToCancel();
   await outcomeCarriesTheResumeTriple();
   summary('test-crucible-job');
 })().catch((err) => {

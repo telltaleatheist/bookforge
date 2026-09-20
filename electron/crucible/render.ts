@@ -82,10 +82,11 @@ import {
 import { sweepCrucibleServerInFlight } from './in-flight-sweep';
 import { renderSessionDirOf } from '../narrator-paths';
 import { downloadRenderArtifacts, type RenderArtifactsOutcome } from './render-artifacts';
+import { CrucibleStreamLost, withStreamReconnect } from './stream-reconnect';
 import {
   crucibleVoiceBand, describeVenueBand, refuseChunksOverVenueCap, renderBandFor,
 } from './voice-band';
-import type { ChunkGuardSummary } from '../chunk-guard-ledger';
+import { forgetChunkGuards, type ChunkGuardSummary } from '../chunk-guard-ledger';
 
 /**
  * The name that lands in the `User-Agent`, so a shared server's log says which
@@ -607,6 +608,11 @@ export interface RunCrucibleRenderOptions {
    * field carries the reason.
    */
   readonly stallClock?: { readonly stallMs?: number; readonly graceMs?: number };
+  /**
+   * OVERRIDES the reconnect ladder's schedule (`stream-reconnect.ts`). **Only a
+   * keeper passes this** — `job.ts`'s identical field carries the reason.
+   */
+  readonly reconnect?: { readonly delaysMs?: readonly number[] };
 }
 
 export interface CrucibleRenderOutcome {
@@ -822,6 +828,16 @@ export async function runCrucibleRender(
   // quitting must not depend on another machine and stopping must not lie.
   let cancelled = false;
   /**
+   * Aborted by {@link cancel}, and read by the reconnect ladder alone.
+   *
+   * A person who pressed Stop is not waiting five minutes for a server to come
+   * back, so a cancel ends the ladder at once — and it must, or `cancel()`
+   * would sit on `downloaderHasStopped` for the rest of the ladder's budget.
+   * It is NOT handed to the SDK: the render's own cancel is a DELETE followed
+   * by the stream's `cancelled` frame, never a hang-up (see the note above).
+   */
+  const stopReconnecting = new AbortController();
+  /**
    * Resolved when the downloader below has ended, whether on the job's terminal
    * frame or by throwing. Held here rather than awaited on the render's own
    * promise because the two have different callers: the render's rejects with
@@ -832,6 +848,7 @@ export async function runCrucibleRender(
   const cancel = async (): Promise<void> => {
     if (cancelled) return;
     cancelled = true;
+    stopReconnecting.abort();
     log(`cancelling crucible "${server}" job ${jobId}`);
     const outcome = await client.cancel(jobId);
     log(`crucible "${server}" job ${jobId} is ${outcome.status}; waiting for it to stop writing`);
@@ -849,6 +866,10 @@ export async function runCrucibleRender(
    * says so; the clock's own grace is what bounds the wait afterwards.
    */
   const deleteAfterStall = async (): Promise<void> => {
+    // The clock has decided this job is over; re-opening its stream is work for
+    // nothing and would go on recording guard verdicts after the render's own
+    // catch has dropped them.
+    stopReconnecting.abort();
     const answered = await client.cancel(jobId);
     log(`crucible "${server}" job ${jobId} is ${answered.status} after going quiet`);
   };
@@ -861,13 +882,26 @@ export async function runCrucibleRender(
    * last artifact would not write.
    */
   let sawTerminalFrame = false;
-  const followTheStream = (beat: () => void): Promise<RenderArtifactsOutcome> => downloadRenderArtifacts({
+  /**
+   * One run of the downloader, opened above the event this call has already
+   * acted on — `resumeFrom` is `lastEventId`, which starts at the attach point
+   * and moves with every frame.
+   *
+   * `resumable: true` keeps this render's guard verdicts across a break. The
+   * downloader drops them on a throw so that a failed attach cannot leave a
+   * partial map for a later attach to add to; a RECONNECT is not a later
+   * attach, it is the same render continuing, and dropping them there would
+   * report a book's guard summary from whatever ran after the last blip. The
+   * render's own catch below drops them when the render is really over.
+   */
+  const oneStreamRun = (resumeFrom: number, beat: () => void): Promise<RenderArtifactsOutcome> => downloadRenderArtifacts({
     client,
     server,
     jobId,
     renderId,
     sentencesDir,
-    ...(options.attachTo?.lastEventId === undefined ? {} : { lastEventId: options.attachTo.lastEventId }),
+    resumable: true,
+    ...(resumeFrom > 0 ? { lastEventId: resumeFrom } : {}),
     onWritten: (written) => {
       // A LANDED FILE IS THE SERVER TALKING. A 3-minute chunk download is the
       // only thing happening while it happens, and a clock that only counted
@@ -914,11 +948,34 @@ export async function runCrucibleRender(
         downloaded,
       });
     },
+  });
+
+  /**
+   * The downloader under the reconnect ladder — `stream-reconnect.ts`, shared
+   * with `job.ts`.
+   *
+   * A socket that dies at chunk 1,901 of 2,267 is not a render that died: the
+   * server replays above `lastEventId` and the chunks already on disk are not
+   * asked for again (the SDK writes the sidecar then renames, so a frame seen
+   * twice is the same bytes). Only a server that never comes back within the
+   * ladder's budget is a render this side has to give up on.
+   */
+  const followTheStream = (beat: () => void): Promise<RenderArtifactsOutcome> => withStreamReconnect({
+    server,
+    jobId,
+    resumeFrom: () => lastEventId,
+    sawTerminalFrame: () => sawTerminalFrame,
+    signal: stopReconnecting.signal,
+    ...(options.reconnect?.delaysMs === undefined ? {} : { delaysMs: options.reconnect.delaysMs }),
+    onLog: log,
+    attempt: (resumeFrom) => oneStreamRun(resumeFrom, beat),
   }).finally(() => {
     // THE DIRECTORY HAS STOPPED CHANGING, and `cancel()` above is what waits
     // for it. In the `finally` and not in the success arm because a stream that
     // threw has also stopped writing, and a cancel left waiting on a failed
-    // download would hang the Stop button on a server that had gone away.
+    // download would hang the Stop button on a server that had gone away. It is
+    // on the LADDER and not on one attempt: a stream that is about to be
+    // re-opened has not stopped writing.
     downloaderStopped();
   });
 
@@ -937,6 +994,11 @@ export async function runCrucibleRender(
       consume: followTheStream,
     });
   } catch (err) {
+    // THE RENDER IS OVER, whichever arm below answers — so the guard ledger for
+    // it is dropped HERE, once. The downloader kept its verdicts across the
+    // reconnects (`resumable: true`), and this is the one place that knows
+    // there will be no further attempt.
+    forgetChunkGuards(renderId);
     if (err instanceof CrucibleStreamWentQuiet) {
       throw new CrucibleRenderRefused(
         'crucible_went_quiet',
@@ -958,16 +1020,37 @@ export async function runCrucibleRender(
      * the terminal frame is a finished job, and sweeping it would DELETE
      * nothing and poll for no reason.
      */
-    if (!sawTerminalFrame) {
+    /*
+     * AND SINCE 2026-09-20, THE SWEEP IS THE LAST RESORT (S13). The ladder has
+     * already spent its budget re-opening this stream; only a server that never
+     * answered again reaches here with a render that may still be running.
+     * `job_unknown` is the one answer that must NOT sweep — the server told us
+     * it has no such job, so there is nothing to DELETE.
+     */
+    const lost = err instanceof CrucibleStreamLost ? err : null;
+    if (!sawTerminalFrame && (lost === null || lost.jobMayStillRun)) {
       await sweepCrucibleServerInFlight({
         server,
-        reason: 'the render\'s event stream ended with no terminal frame',
+        reason: lost === null
+          ? 'the render\'s event stream ended with no terminal frame'
+          : `the render's event stream could not be re-opened after ${lost.attempts} attempt(s)`,
         log: (line) => log(line),
       });
     }
+    if (lost?.reason === 'job_unknown') {
+      // A WAIT, NOT A RED ROW: the server restarted. The chunks already on disk
+      // stay, and a re-queue asks only for the rest.
+      throw new CrucibleRenderRefused(
+        'crucible_job_unknown',
+        `${lost.message} What it cost: this render (job ${jobId}); the ${downloaded} chunk(s) `
+        + 'already downloaded are on disk and a resume asks only for the rest.',
+        undefined,
+        crucibleTransientLine(server, `job ${jobId} is gone after a restart`),
+      );
+    }
     // A refusal that arrives mid-stream (the token rotated, the server
     // restarted) is named the same way one at submit is.
-    throw describeCrucibleRefusal(err, server);
+    throw describeCrucibleRefusal(lost === null ? err : lost.lastError, server);
   }
 
   if (outcome.result.failed.length > 0) {
@@ -993,7 +1076,7 @@ export async function runCrucibleRender(
   // somebody fetched (`verified`).
   const applied = Object.entries(outcome.result.sampling)
     .map(([key, value]) => `${key} ${value}`).join(', ');
-  log(`crucible job ${jobId} done: ${outcome.result.rendered} rendered, ${outcome.written} file(s) `
+  log(`crucible job ${jobId} done: ${outcome.result.rendered} rendered, ${downloaded} file(s) `
     + `written into ${path.basename(sentencesDir)}; take ${outcome.result.take} at ${applied}, `
     + `voice "${outcome.result.voice.id}" ${outcome.result.voice.identity} `
     + `(${outcome.result.voice.identityBasis}), ${outcome.result.width === null
@@ -1002,7 +1085,11 @@ export async function runCrucibleRender(
   return {
     server,
     jobId,
-    written: outcome.written,
+    // `downloaded`, not `outcome.written`: the outcome counts what the LAST run
+    // of the stream wrote, and a render that reconnected has runs before it.
+    // Both count one per landed artifact, so this is the same number when
+    // nothing broke.
+    written: downloaded,
     result: outcome.result,
     guard: outcome.guard,
     lastEventId,

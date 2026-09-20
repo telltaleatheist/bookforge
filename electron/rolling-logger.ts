@@ -69,6 +69,35 @@ class RollingLogger {
   private writeStream: fs.WriteStream | null = null;
   private currentSize: number = 0;
   private initialized: boolean = false;
+  /**
+   * THE APP'S OWN DECLARATION THAT IT IS THE APP — set by {@link init}, and the
+   * only thing that ever opens a file in this machine's log directory.
+   *
+   * ── The finding (bug hunt 2026-09-20) ─────────────────────────────────────
+   *
+   * `write()` used to open the log lazily: `if (!this.initialized) await
+   * this.init()`. That is fine for the app, which calls `initializeLoggers()`
+   * as the first thing in `whenReady`, and wrong for everything else that
+   * `require`s a built module. When the queue keepers drove the real engine
+   * through PK1's `logFailure()`, lines like *"[QUEUE] Book — Narrate failed:
+   * the model would not load"* — fabricated failures for books that were
+   * never queued — landed in Owen's `~/Library/Logs/BookForge/bookforge.log`
+   * at 18:01Z, in among the night's real ones. A log somebody debugs at 9am
+   * cannot contain a test's inventions.
+   *
+   * ── Why THIS rule and not a keeper flag ───────────────────────────────────
+   *
+   * An env var (`BOOKFORGE_KEEPER=1`) only works if every harness remembers to
+   * set it, and the harness that caused this did not exist when the rule would
+   * have been written. `init()` is the opposite: a POSITIVE declaration that
+   * only the app makes, in one place, which no test process can satisfy by
+   * accident. A logger nobody opened writes to the console and creates nothing.
+   *
+   * A write that arrives while an init is still in flight WAITS for it rather
+   * than going to the console, so a caller that opens its own logger
+   * (`text-server.ts`) loses nothing to the gap.
+   */
+  private opening: Promise<void> | null = null;
 
   constructor(config: LoggerConfig) {
     this.logDir = this.getLogDirectory();
@@ -88,7 +117,17 @@ class RollingLogger {
    */
   async init(): Promise<void> {
     if (this.initialized) return;
+    if (this.opening !== null) return this.opening;
+    this.opening = this.open();
+    try {
+      await this.opening;
+    } finally {
+      this.opening = null;
+    }
+  }
 
+  /** {@link init}'s body. Separate so a second caller can await the first. */
+  private async open(): Promise<void> {
     // Ensure log directory exists
     await fs.promises.mkdir(this.logDir, { recursive: true });
 
@@ -153,8 +192,18 @@ class RollingLogger {
    * Write a log entry
    */
   private async write(level: LogLevel, message: string, data?: any): Promise<void> {
+    /*
+     * NO LAZY OPEN — see {@link opening}. The file belongs to the process that
+     * declared itself the app by calling `init()`; a write from any other
+     * process goes to the console, which is where whoever is running it is
+     * looking anyway.
+     */
     if (!this.initialized) {
-      await this.init();
+      if (this.opening === null) {
+        this.toConsole(level, new Date().toISOString(), message, data);
+        return;
+      }
+      await this.opening;
     }
 
     const timestamp = new Date().toISOString();
@@ -182,24 +231,37 @@ class RollingLogger {
       this.currentSize += lineSize;
     }
 
-    // Console output
-    if (this.consoleOutput) {
-      const prefix = `[${timestamp}] [${level}]`;
-      const consoleMsg = data ? `${prefix} ${message} ${JSON.stringify(data)}` : `${prefix} ${message}`;
+    this.toConsole(level, timestamp, message, data);
+  }
 
-      switch (level) {
-        case 'ERROR':
-          console.error(consoleMsg);
-          break;
-        case 'WARN':
-          console.warn(consoleMsg);
-          break;
-        case 'DEBUG':
-          console.debug(consoleMsg);
-          break;
-        default:
-          console.log(consoleMsg);
-      }
+  /**
+   * The console half, which is also the WHOLE of a logger nobody opened.
+   *
+   * It honours `consoleOutput` on the ordinary path — a logger built with it
+   * false (`text-server`) is deliberately file-only — but a dropped line from an
+   * unopened logger is printed regardless of that flag when it is a WARN or an
+   * ERROR: the alternative is a harness losing the one sentence that says why
+   * something failed, which is the failure this whole rule exists to avoid
+   * repeating in the other direction.
+   */
+  private toConsole(level: LogLevel, timestamp: string, message: string, data?: any): void {
+    const loud = level === 'ERROR' || level === 'WARN';
+    if (!this.consoleOutput && !(loud && !this.initialized)) return;
+    const prefix = `[${timestamp}] [${level}]`;
+    const consoleMsg = data ? `${prefix} ${message} ${JSON.stringify(data)}` : `${prefix} ${message}`;
+
+    switch (level) {
+      case 'ERROR':
+        console.error(consoleMsg);
+        break;
+      case 'WARN':
+        console.warn(consoleMsg);
+        break;
+      case 'DEBUG':
+        console.debug(consoleMsg);
+        break;
+      default:
+        console.log(consoleMsg);
     }
   }
 

@@ -66,6 +66,7 @@ const coverage = require(path.join(REPO, 'dist', 'electron', 'coverage-align-job
 const sdk = require('@crucible/client');
 const registerFake = fakeNamer(servers);
 const { check, summary } = makeChecker();
+const transport = require(path.join(REPO, 'dist', 'electron', 'crucible', 'transport-failure.js'));
 
 /** Both doors, asked the same question about the same SDK error. */
 const asJob = (err) => job.describeCrucibleJobRefusal(err, 'the-mac', 'the align job');
@@ -189,6 +190,60 @@ const asRender = (err) => render.describeCrucibleRefusal(err, 'the-mac');
     }
   });
 
+  /*
+   * PK11 — UNDICI'S OWN CLOCKS, which were not in the errno set until a book
+   * paid for it. 14:27 ET, 2026-09-20: one TCP connect to the render host took
+   * longer than undici's 10 s, on a server that had been up eleven hours, and
+   * the align of a 2,267-chunk book at 1,901 went red.
+   */
+  await check('PK11: undici\'s three timeouts are transport failures, not red rows', () => {
+    for (const code of ['UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT']) {
+      const timedOut = new TypeError('fetch failed');
+      timedOut.cause = Object.assign(new Error('Connect Timeout Error (timeout: 10000ms)'), { code });
+      assert.ok(transport.isTransportFailure(timedOut), `${code} is the wire, not the work`);
+      for (const [door, refusal] of [['job', asJob(timedOut)], ['render', asRender(timedOut)]]) {
+        assert.strictEqual(refusal.transient, true, `${door}: ${code}`);
+        assert.ok(refusal.transientLine.includes(code),
+          `${door}: the errno is the most specific true thing — ${refusal.transientLine}`);
+      }
+    }
+  });
+
+  /*
+   * PK11 — ONE MEMBERSHIP TEST, and the describers agree with it.
+   *
+   * `crucibleUnavailableCause` is what the callers holding a RAW error ask:
+   * `coverage-align-job.ts`'s generic catch and the reconnect ladder. The
+   * describers keep their own per-class prose, so what must not drift is the
+   * SET and the CAUSE — checked here rather than assumed, because a door that
+   * parked on something the ladder would not retry (or the reverse) is exactly
+   * the shape of this bug.
+   */
+  await check('PK11: crucibleUnavailableCause and the two describers agree, member by member', () => {
+    const waits = [
+      ['unreachable', new sdk.CrucibleUnreachable('http://x:7444', 'read ECONNRESET', new Error('x'))],
+      ['a 5xx', new sdk.CrucibleServerError(503, 'engine_crashed', 'the worker pool is gone', null)],
+      ['terminated', new TypeError('terminated')],
+    ];
+    for (const [what, err] of waits) {
+      const cause = transport.crucibleUnavailableCause(err);
+      assert.ok(typeof cause === 'string' && cause !== '', `${what} is a wait, in the server's words`);
+      const line = job.crucibleTransientLine('the-mac', cause);
+      assert.strictEqual(asJob(err).transientLine, line, `${what}: job.ts composes the same sentence`);
+      assert.strictEqual(asRender(err).transientLine, line, `${what}: render.ts composes the same sentence`);
+    }
+    const notWaits = [
+      new sdk.CrucibleRefused(400, 'invalid_params', 'chunks must be a list', null),
+      new sdk.CrucibleAuthError(401, 'bad_token', 'not this server\'s token', null),
+      new sdk.CrucibleProtocolError('http://x', 'no job_id in the answer'),
+      new TypeError('client.events is not a function'),
+    ];
+    for (const err of notWaits) {
+      assert.strictEqual(transport.crucibleUnavailableCause(err), null,
+        `${err.constructor.name} is somebody's to repair — the ladder must not retry it either`);
+    }
+  });
+
   // ───────────────────────────────────────────────────────────────────────────
   // 6. The bridge that ANSWERS rather than throws
   // ───────────────────────────────────────────────────────────────────────────
@@ -224,6 +279,68 @@ const asRender = (err) => render.describeCrucibleRefusal(err, 'the-mac');
       assert.strictEqual(result.busyLine, undefined, 'nothing is holding the card');
     });
   }
+
+  /*
+   * PK11 — AND THE GENERIC CATCH, which is where the book was actually lost.
+   *
+   * The check above drives the door against a closed port and the refusal
+   * arrives DESCRIBED (`assertCrucibleModelOffered` builds it). At 14:27 on
+   * 2026-09-20 the SDK's own `CrucibleUnreachable` arrived from a plain SDK
+   * call instead, fell past the `CrucibleJobRefused` arm, and the last line of
+   * the catch returned a plain fail: red row, assembly stopped, for a network
+   * blip. Driven here by making the client factory itself throw one, because
+   * that is the shape — a raw SDK error from ANYWHERE inside the align door.
+   */
+  {
+    const dir = path.join(work, `session-${Math.random().toString(36).slice(2)}`);
+    fs.mkdirSync(path.join(dir, 'chapters', 'sentences'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'session-state.json'), JSON.stringify({
+      chapter_sentences: [['He had been walking for some time.']],
+    }));
+    fs.writeFileSync(path.join(dir, 'chapters', 'sentences', '0.flac'), 'fLaC-0');
+
+    const blipped = registerFake('http://127.0.0.1:1');
+    const previous = servers.crucibleClientFor;
+    servers.crucibleClientFor = function throwsRawUnreachable(name, clientName) {
+      if (name !== blipped) return previous(name, clientName);
+      throw new sdk.CrucibleUnreachable(
+        'http://127.0.0.1:7444',
+        'fetch failed (Connect Timeout Error (attempted address: 127.0.0.1:7444, timeout: 10000ms))',
+        new Error('fetch failed'));
+    };
+    let result;
+    try {
+      result = await coverage.runCoverageAlign(
+        'step-blip', { processDir: dir, language: 'en', device: 'gpu' }, null,
+        { venueHost: crucibleHost(blipped) });
+    } finally {
+      servers.crucibleClientFor = previous;
+    }
+
+    await check('PK11: a RAW CrucibleUnreachable out of the align door is a wait, not a red row', () => {
+      assert.strictEqual(result.success, false);
+      assert.strictEqual(result.transient, true,
+        'THE FINDING: the generic catch returned a plain fail, so one 10 s connect timeout sent a '
+        + 'book at 1,901 of 2,267 chunks to Needs you and stopped assembly');
+      assert.ok(/^crucible "/.test(result.transientLine)
+        && /asking again shortly/.test(result.transientLine), result.transientLine);
+      assert.ok(/^The Crucible alignment did not finish/.test(result.error),
+        'it is the GENERIC catch answering — the described-refusal arm is a different sentence: '
+        + result.error);
+      assert.ok(/Connect Timeout Error/.test(result.error),
+        'and the sentence still carries the server\'s own words — ' + result.error);
+      assert.strictEqual(result.busyLine, undefined, 'nothing is holding the card');
+    });
+  }
+
+  await check('PK11: the generic catch asks the ONE membership test, it does not sniff classes', () => {
+    const src = fs.readFileSync(path.join(REPO, 'electron', 'coverage-align-job.ts'), 'utf-8');
+    assert.ok(/crucibleUnavailableCause/.test(src),
+      'coverage-align-job.ts asks transport-failure.ts rather than growing its own list of '
+      + 'SDK classes, which is how the two readers of one question drift apart');
+    assert.ok(/crucibleTransientLine/.test(src),
+      'and composes the sentence through the one composer');
+  });
 
   summary('crucible transient refusals');
 })();

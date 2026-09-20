@@ -721,7 +721,12 @@ async function runCoverageAlignOnCrucible(
     BOOKFORGE_ALIGN_BACKEND, CrucibleAlignRefused,
     runCrucibleAlign, sessionAlignChunks,
   } = await import('./crucible/align.js');
-  const { CrucibleJobRefused, CrucibleJobCancelled } = await import('./crucible/job.js');
+  const {
+    CrucibleJobRefused, CrucibleJobCancelled, crucibleTransientLine,
+  } = await import('./crucible/job.js');
+  // The membership test for "the server, not the run" — one owner, shared with
+  // the reconnect ladder and the two describers. See the generic catch below.
+  const { crucibleUnavailableCause } = await import('./crucible/transport-failure.js');
 
   let selection: ReturnType<typeof sessionAlignChunks>;
   try {
@@ -856,8 +861,31 @@ async function runCoverageAlignOnCrucible(
     if (err instanceof CrucibleAlignRefused) {
       return fail(`${err.message} The rendered audio is intact.`);
     }
-    return fail(`The Crucible alignment did not finish: ${err instanceof Error ? err.message : String(err)}. `
-      + 'The rendered audio is intact.');
+    /*
+     * AND THE GENERIC CATCH CLASSIFIES, BECAUSE ON 2026-09-20 IT DID NOT (S13).
+     *
+     * At 14:27, with Hitler's People at 1,901 of 2,267 chunks, a TCP connect to
+     * the server took longer than undici's 10 s timeout — ONE blip; the server
+     * had been up eleven hours and never restarted. What arrived here was the
+     * SDK's own `CrucibleUnreachable`, thrown by a plain SDK call rather than
+     * built by a door, so the `CrucibleJobRefused` arm above (which forwards
+     * the transient pair) never saw it and this line returned a plain fail. The
+     * row went RED and assembly stopped, for a network that was back inside a
+     * second — while the identical wait on a BUSY card would have parked and
+     * come back on its own.
+     *
+     * So the pair is composed here for anything that was the SERVER rather than
+     * the run: unreachable, a 5xx, or a socket that died mid-answer. The
+     * sentence itself still comes from the one composer, so a person reading
+     * the row cannot tell which door noticed.
+     */
+    const message = `The Crucible alignment did not finish: `
+      + `${err instanceof Error ? err.message : String(err)}. The rendered audio is intact.`;
+    const cause = crucibleUnavailableCause(err);
+    if (cause !== null) {
+      return fail(message, { transient: true, transientLine: crucibleTransientLine(server, cause) });
+    }
+    return fail(message);
   } finally {
     activeCrucibleAligns.delete(stepId);
   }

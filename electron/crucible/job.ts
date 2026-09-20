@@ -113,6 +113,7 @@ import {
   CrucibleStreamWentQuiet, describeStallInterval, withStreamStallClock,
 } from './stream-stall';
 import { transportFailureCause } from './transport-failure';
+import { CrucibleStreamLost, withStreamReconnect } from './stream-reconnect';
 /*
  * A CYCLE, AND IT IS CALL-TIME ONLY. `in-flight-sweep.ts` imports this module's
  * `cancelCrucibleJobById` and `describeCrucibleJobRefusal`; this one imports its
@@ -555,6 +556,14 @@ export interface RunCrucibleJobOptions {
    * suite must not spend ten minutes per check proving it.
    */
   readonly stallClock?: { readonly stallMs?: number; readonly graceMs?: number };
+  /**
+   * OVERRIDES the reconnect ladder's schedule (`stream-reconnect.ts`).
+   *
+   * **Only a keeper passes this**, for the reason `stallClock` carries: five
+   * minutes is the policy, and a suite must not spend five minutes per check
+   * proving what happens when it runs out.
+   */
+  readonly reconnect?: { readonly delaysMs?: readonly number[] };
 }
 
 export type CrucibleJobArtifacts =
@@ -674,9 +683,19 @@ export async function runCrucibleJob(options: RunCrucibleJobOptions): Promise<Cr
 
   // CANCELLATION IS A CANCEL, NOT A HANG-UP — see the header.
   let cancelAsked = false;
+  /**
+   * Ends the reconnect ladder, and nothing else.
+   *
+   * Aborted by `cancel()`, which is both the caller's Stop and the stall
+   * clock's DELETE: once either has decided this job is over, re-opening its
+   * event stream is work for nothing. It is NOT the SDK's signal — the cancel
+   * handshake here is a DELETE followed by the stream's own `cancelled` frame.
+   */
+  const stopReconnecting = new AbortController();
   const cancel = async (): Promise<void> => {
     if (cancelAsked) return;
     cancelAsked = true;
+    stopReconnecting.abort();
     log(`cancelling crucible "${server}" job ${jobId}`);
     try {
       const outcome = await client.cancel(jobId);
@@ -735,7 +754,31 @@ export async function runCrucibleJob(options: RunCrucibleJobOptions): Promise<Cr
     }
   };
 
-  const resume = options.attachTo?.lastEventId === undefined ? {} : { lastEventId: options.attachTo.lastEventId };
+  /**
+   * One run of the stream, opened above the event this call has already acted
+   * on. `resumeFrom` is 0 for a fresh submit (replay everything, which for a
+   * job admitted a moment ago is nothing) and the ledger's own number on an
+   * attach or a reconnect.
+   */
+  const followTheStream = async (resumeFrom: number, beat: () => void): Promise<void> => {
+    const resume = resumeFrom > 0 ? { lastEventId: resumeFrom } : {};
+    if (options.artifactsTo !== undefined) {
+      for await (const write of client.writeArtifactsTo(jobId, options.artifactsTo, resume)) {
+        beat();
+        if (write.kind === 'written') {
+          files.set(write.written.name, write.written);
+          continue;
+        }
+        seeEvent(write.event);
+      }
+      return;
+    }
+    for await (const event of client.events(jobId, resume)) {
+      beat();
+      seeEvent(event);
+    }
+  };
+
   try {
     // ONE STALL CLOCK OVER THE STREAM — `stream-stall.ts`, shared with
     // `render.ts`. `beat()` on every frame INCLUDING a written artifact: a
@@ -748,23 +791,22 @@ export async function runCrucibleJob(options: RunCrucibleJobOptions): Promise<Cr
       ...(options.stallClock?.graceMs === undefined ? {} : { graceMs: options.stallClock.graceMs }),
       onStall: cancel,
       onLog: log,
-      consume: async (beat) => {
-        if (options.artifactsTo !== undefined) {
-          for await (const write of client.writeArtifactsTo(jobId, options.artifactsTo, resume)) {
-            beat();
-            if (write.kind === 'written') {
-              files.set(write.written.name, write.written);
-              continue;
-            }
-            seeEvent(write.event);
-          }
-          return;
-        }
-        for await (const event of client.events(jobId, resume)) {
-          beat();
-          seeEvent(event);
-        }
-      },
+      // AND ONE RECONNECT LADDER INSIDE IT — `stream-reconnect.ts`, shared with
+      // `render.ts`. A socket that dies mid-job is not a job that died: the
+      // server replays above `lastEventId`, so the stream is re-opened there
+      // before anything is cancelled. The ladder sits inside `consume` so the
+      // stall clock above keeps running across it — a reconnect that produces
+      // no frame is still silence.
+      consume: (beat) => withStreamReconnect({
+        server,
+        jobId,
+        resumeFrom: () => lastEventId,
+        sawTerminalFrame: () => (terminal as JobEvent | null) !== null,
+        signal: stopReconnecting.signal,
+        ...(options.reconnect?.delaysMs === undefined ? {} : { delaysMs: options.reconnect.delaysMs }),
+        onLog: log,
+        attempt: (resumeFrom) => followTheStream(resumeFrom, beat),
+      }),
     });
   } catch (err) {
     if (err instanceof CrucibleStreamWentQuiet) {
@@ -802,14 +844,39 @@ export async function runCrucibleJob(options: RunCrucibleJobOptions): Promise<Cr
      * It never throws (the sweep answers, by design) and it is awaited rather
      * than voided: the next admission must not race the DELETE.
      */
-    if ((terminal as JobEvent | null) === null) {
+    /*
+     * AND SINCE 2026-09-20, THE SWEEP IS THE LAST RESORT RATHER THAN THE FIRST
+     * ANSWER (S13). The ladder above has already spent its five minutes trying
+     * to re-open this stream; only a server that never came back reaches here
+     * with a job that may still be running.
+     *
+     * The one case that must NOT sweep is `job_unknown`: the server answered,
+     * and what it said is that it has no such job. Cancelling a job a restarted
+     * server never heard of DELETEs nothing and polls it for no reason.
+     */
+    const lost = err instanceof CrucibleStreamLost ? err : null;
+    if ((terminal as JobEvent | null) === null && (lost === null || lost.jobMayStillRun)) {
       await sweepCrucibleServerInFlight({
         server,
-        reason: `the ${type} job's event stream ended with no terminal frame`,
+        reason: lost === null
+          ? `the ${type} job's event stream ended with no terminal frame`
+          : `the ${type} job's event stream could not be re-opened after ${lost.attempts} attempt(s)`,
         log: (line) => log(line),
       });
     }
-    throw describeCrucibleJobRefusal(err, server, `${verb}'s events`);
+    if (lost?.reason === 'job_unknown') {
+      // A WAIT, NOT A RED ROW. The server restarted; the work is gone with it
+      // and the queue's next admission tick is the right thing to ask again.
+      // Described here rather than from the SDK's `404 unknown_job`, which the
+      // generic `CrucibleRefused` arm would report as a misconfiguration.
+      throw new CrucibleJobRefused(
+        'crucible_job_unknown', server,
+        `${lost.message} What it cost: ${verb} (${jobId}).`,
+        undefined,
+        crucibleTransientLine(server, `job ${jobId} is gone after a restart`),
+      );
+    }
+    throw describeCrucibleJobRefusal(lost === null ? err : lost.lastError, server, `${verb}'s events`);
   } finally {
     options.signal?.removeEventListener('abort', onAbort);
   }
