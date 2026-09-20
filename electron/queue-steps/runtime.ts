@@ -271,8 +271,18 @@ export function transientLineOf(err: unknown): string | undefined {
   return said(spelt.transientLine) ?? said(spelt.message);
 }
 
-export function stepFailure(message: string, busyLine?: string): Error {
-  return busyLine === undefined || busyLine === ''
-    ? new Error(message)
-    : new StepParked(message, busyLine);
+export function stepFailure(message: string, busyLine?: string, transientLine?: string): Error {
+  if (busyLine !== undefined && busyLine !== '') return new StepParked(message, busyLine);
+  /*
+   * A RESULT that carries the transient pair (`CoverageAlignResult` does — the
+   * align door returns a result rather than throwing) has to become an ERROR
+   * that carries it, or `settleStep`'s `transientLineOf` never sees the flag and
+   * the row fails on a socket reset exactly as it did on 2026-09-20 (C1/Q3).
+   * A holder's line wins over a transient one: a 409 names WHO, a reset only
+   * says WAIT.
+   */
+  if (transientLine !== undefined && transientLine !== '') {
+    return Object.assign(new Error(message), { transient: true as const, transientLine });
+  }
+  return new Error(message);
 }

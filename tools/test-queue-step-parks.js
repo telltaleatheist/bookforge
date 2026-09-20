@@ -248,6 +248,13 @@ async function seamChecks() {
     assert.ok(!(runtime.stepFailure('m') instanceof runtime.StepParked));
     assert.ok(runtime.stepFailure('m', BUSY) instanceof runtime.StepParked);
     assert.strictEqual(runtime.stepFailure('m', BUSY).busyLine, BUSY);
+    // A RESULT'S transient pair becomes an error `transientLineOf` can read (the
+    // align door returns a result, it does not throw) — and a holder's line wins.
+    const quiet = runtime.stepFailure('reset', undefined, 'did not answer — asking again');
+    assert.ok(!(quiet instanceof runtime.StepParked));
+    assert.strictEqual(runtime.transientLineOf(quiet), 'did not answer — asking again');
+    assert.strictEqual(runtime.transientLineOf(runtime.stepFailure('m')), undefined);
+    assert.strictEqual(runtime.stepFailure('m', BUSY, 'ignored').busyLine, BUSY);
   });
 
   // ── Contract 1 · A refusal that will pass on its own ──────────────────────

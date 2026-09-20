@@ -353,7 +353,8 @@ export const alignStep: StepModule = {
         // tick. A wait, never a failure — and since 2026-09-19 (A5) it travels
         // on the throw, so this module makes no side call into the engine.
         throw stepFailure(
-          result.error || 'The alignment failed and gave no reason.', result.busyLine);
+          result.error || 'The alignment failed and gave no reason.', result.busyLine,
+          result.transient === true ? (result.transientLine ?? result.error) : undefined);
       }
       /*
        * WHAT IT FOUND, SAID ONCE ON THE ROW. The card's live message is the
