@@ -679,6 +679,15 @@ elsewhere this week):
   wrapper (`invokeFoundryNarrate`, electron/main.ts): `sayToUser` → `jobs:notice`
   in BookForge's renderer, the throw back over the mount to Foundry's notice
   strip, and the log line. Every throw happens before the dialog is raised.
-- **A9 → ruling 7 (in progress):** the "on this machine" family is being deleted
-  on a branch; the training-lock consequence above is the one thing Owen may
-  still veto before it merges.
+- **A9 → ruling 7 LANDED (2026-09-20, 2052af58):** `isLoopbackUrl`,
+  `serversOnThisMachine`, `thisMachinesCardHeldBy`, `SlotSet.onThisMachine`,
+  `thisMachineSetId` and `slotSetForStep`'s third parameter are gone; the pump
+  has one road for every server (venue slot → reserve → launch) and asks the
+  lock file + arbiter only for non-travelling steps; `acquireGpuForJob` takes no
+  lock and evicts nothing for ANY session with a venue. Rollout plan §0b A4 is
+  marked ruled and built. Side effect to know: a queued in-app GPU step raises
+  the `LONGFORM_ALIGN_SET` row again on a machine with a loopback Crucible — the
+  2026-09-18 "no third slot" folding WAS the queue treating a local server
+  differently, so ruling 7 overrides it. Keeper: `test-queue-admission` "A SERVER
+  AT http://127.0.0.1:7100 TAKES THE RESERVE ROAD, like any other". The
+  training-lock consequence stands as stated in ruling 7.
