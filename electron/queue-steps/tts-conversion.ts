@@ -47,6 +47,7 @@ import { getTTSLogger } from '../rolling-logger';
 import type { StepModule, StepRunContext, StepReport } from '../queue-engine';
 import type { ArtifactRef } from '../../shared/queue/engine-types';
 import { projectDirForStep, queueMainWindow, stepFailure } from './runtime';
+import { runVenueOfRow } from '../crucible/step-venue';
 
 /** The bridge's AggregatedProgress, as it arrives on the bus. */
 interface TtsProgressEvent {
@@ -349,9 +350,20 @@ export const ttsConversionStep: StepModule = {
      *
      * An UNASSIGNED row passes nothing and the bridge decides for itself
      * (`generation-venue.ts`), which is what a standalone CLI render does.
+     *
+     * ── THROUGH `runVenueOfRow`, NOT RAW (bug hunt 2026-09-20, C6) ──────────
+     *
+     * `waitForResolved` is a string with THREE shapes and this door read it as
+     * one, spelling the conversion inline where `align.ts` and every other
+     * travelling step ask `crucible/step-venue.ts` — "the ONE reader of
+     * `waitForResolved`'s three shapes". The consequence was a row carrying
+     * `RETIRED_LOCAL_NARRATOR_VENUE` (admitted while the legacy local narrator
+     * existed) dying deep in `crucibleClientFor` as an unknown registry entry
+     * instead of the named `legacy_venue_retired` refusal that tells the
+     * operator to queue the book again; `any` was latent here only because
+     * `assignRunVenue` happens never to write it.
      */
-    const venue = ctx.job.waitForResolved;
-    const crucibleServer = venue === undefined ? undefined : venue;
+    const runVenue = runVenueOfRow(ctx.job.waitForResolved);
 
     const conversionConfig: Record<string, unknown> = {
       workerCount,
@@ -371,8 +383,8 @@ export const ttsConversionStep: StepModule = {
         // Spread, never sent as undefined: `generation-venue.ts` refuses a
         // `crucible` block that names no server rather than reading it as
         // "render here", so an explicit absence is the only honest way to say
-        // "the record decides".
-        ...(crucibleServer === undefined ? {} : { crucible: { server: crucibleServer } }),
+        // "the record decides". Same shape as `align.ts`'s.
+        ...(runVenue === undefined ? {} : { crucible: { server: runVenue.server } }),
       },
       metadata: {
         title: config.metadata?.bookTitle || config.metadata?.title,

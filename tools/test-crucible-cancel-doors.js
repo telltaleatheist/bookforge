@@ -381,7 +381,13 @@ async function quitChecks() {
   await check('killAllWorkers — the quit path itself — goes through that door', () => {
     const src = fs.readFileSync(path.join(REPO, 'electron', 'parallel-tts-bridge.ts'), 'utf8');
     const body = src.slice(src.indexOf('export async function killAllWorkers'));
-    assert.ok(/cancelRemoteRenderOnQuit\(/.test(body.slice(0, 4000)),
+    // Since 2026-09-20 (bug hunt C9) the quit path calls the PLURAL door, which
+    // fans these out with `Promise.all` so N sessions cost one grace and not N;
+    // each is still `cancelRemoteRenderOnQuit` under its own clock. Either
+    // spelling satisfies what this check is about — that the quit reaches the
+    // servers at all. The fan-out itself is measured in
+    // tools/test-bridge-quit-and-owner.js.
+    assert.ok(/cancelAllRemoteRendersOnQuit\(|cancelRemoteRenderOnQuit\(/.test(body.slice(0, 4000)),
       'killAllWorkers kills processes and a Crucible render is not one; without this call the '
       + 'job renders the rest of the book holding that server\'s lane, claim and voice');
   });
