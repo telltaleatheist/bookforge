@@ -98,6 +98,9 @@ function fakeModule(type, opts = {}) {
     consumes: opts.consumes === undefined ? null : opts.consumes,
     produces: opts.produces || 'epub',
     resource: opts.resource || (() => 'gpu'),
+    // A stopped step of a resumable module lands `held`, not `cancelled` — the
+    // status the hold rule turns on, so a test about it has to be able to say so.
+    stopIsResumable: opts.stopIsResumable === true,
     runs,
     run(ctx) {
       const record = { ctx, job: ctx.job, settled: false };
@@ -1004,6 +1007,64 @@ test("OWEN'S FIVE BOOKS: one book holds its card from Clean through Align; the n
   assert.deepStrictEqual(runningOf(clean).sort(), ['People', 'Pursuit'], 'two books, two cards — dual rendering');
   assert.strictEqual(jobOf(books[2].id).waitForResolved, 'mac');
   assert.strictEqual(stepOf(books[3].id, 0).status, 'queued', 'the fourth waits for a card');
+});
+
+test("A HELD NEXT ACT FREES THE CARD: the second book takes the PC (Owen's Pursuit, 01:50)", async () => {
+  /*
+   * The same five-book shape, stopped where Owen found it: Clean done on the
+   * PC, the landing and the Prepare done, `tts-conversion` HELD ("Interrupted
+   * when BookForge closed. Press Start to pick it up"), Align waiting behind
+   * it. Nothing was going to start, and until this fix the run's hold kept the
+   * PC's card anyway — the bench drew "Holding the card · Align" over an idle
+   * Crucible and the next book could not have the machine.
+   */
+  const clean = fakeModule('foundry-job');
+  const land = fakeModule('foundry-export-landing', { travels: false, resource: () => 'cpu' });
+  const prep = fakeModule('prepare', { travels: false, resource: () => 'cpu' });
+  const render = fakeModule('tts-conversion', { stopIsResumable: true });
+  const align = fakeModule('align');
+  const host = fakeHost({
+    ranked: [{ name: 'pc', enabled: true }],
+    defaultWaitFor: 'any',
+    reach: { pc: { reachable: true } },
+  });
+  await fresh('held-frees-card', [clean, land, prep, render, align], host, null);
+
+  const [pursuit, next] = ['Pursuit', 'Memory'].map((t) => enqueueSent(book(t)));
+  engine.start();
+  await settle();
+  clean.runs[0].resolve({ kind: 'epub', path: '/out/pursuit' });
+  await settle();
+  land.runs[0].resolve({ kind: 'epub', path: '/out/pursuit.landed' });
+  await settle();
+  prep.runs[0].resolve({ kind: 'prepared-session', path: '/out/prepared' });
+  await settle();
+  assert.deepStrictEqual(runningOf(render), ['Pursuit'], 'the narration is on the PC');
+  assert.strictEqual(stepOf(next.id, 0).status, 'queued', 'and the next book waits, correctly');
+
+  // Stop — or the app closing, which `reviveInterrupted` lands in the same
+  // place: `held`, with `wasInterrupted`, picked up by nothing but a press.
+  await engine.cancel({ stepId: stepOf(pursuit.id, 3).id }, 'Stopped.', { resumable: true });
+  render.runs[0].reject(new Error('Stopped by the user.'));
+  await settle();
+  assert.strictEqual(stepOf(pursuit.id, 3).status, 'held');
+  assert.strictEqual(stepOf(pursuit.id, 4).status, 'waiting', 'Align still sits behind it');
+  assert.strictEqual(jobOf(pursuit.id).waitForResolved, 'pc', '§4.3: the book stays on its machine');
+
+  /*
+   * A stop idles the queue, so the queue is started again — on the OTHER book.
+   * Targeted on purpose: a bare `start()` releases every held step in the queue
+   * (`release`), which would un-hold the very row this test is about. Pressing
+   * Start on one book is what leaves the shape Owen was looking at: a running
+   * queue with somebody else's narration still held.
+   */
+  engine.start({ jobId: next.id });
+  await settle();
+  assert.deepStrictEqual(runningOf(clean), ['Memory'],
+    'the card was kept for an act nobody had released; the next book has it now');
+  assert.strictEqual(jobOf(next.id).waitForResolved, 'pc');
+  assert.strictEqual(stepOf(pursuit.id, 3).status, 'held',
+    'and the held book did not quietly restart itself');
 });
 
 // ── Runner ──────────────────────────────────────────────────────────────────

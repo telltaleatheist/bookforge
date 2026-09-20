@@ -689,6 +689,74 @@ test("A STOPPED NEXT STEP GIVES THE CARD BACK — a held step is nobody's order"
   assert.strictEqual(gpuOn(job, 'mac'), 0);
 });
 
+// ── THE HOLD ASKS THE NEXT ACT, NOT ALL OF THEM (2026-09-20 01:50) ─────────
+//
+// Owen's queue, live: "Clean text — Pursuit of Power" with `foundry-job` done
+// on the PC, `prepare` done, `tts-conversion` HELD ("Interrupted when BookForge
+// closed. Press Start to pick it up") and `align`/`reassembly` waiting behind
+// it. Scanning ALL travelling GPU steps found `align` outstanding and kept the
+// PC's card — for a step that cannot start until a human presses Start on the
+// row above it. The bench drew "Holding the card · Align — waiting to start
+// Align" over an idle Crucible and nothing else could have the machine.
+
+/**
+ * That job, as the scheduler sees it: the Foundry render travels to the PC, the
+ * landing and the prepare are local, then the two narration GPU acts.
+ */
+const pursuit = (render, align, over = {}) => jobOfSteps([
+  stepOf({ id: 'foundry', type: 'foundry-job', label: 'Clean text', travels: true,
+    status: 'done', venue: undefined }),
+  stepOf({ id: 'landing', type: 'foundry-export-landing', label: 'Land the export',
+    resource: 'cpu', status: 'done' }),
+  stepOf({ id: 'prep', type: 'prepare', label: 'Prepare', resource: 'cpu', status: 'done' }),
+  stepOf({ id: 'render', type: 'tts-conversion', label: 'Narrate', travels: true, ...render }),
+  stepOf({ id: 'align', type: 'align', label: 'Align', travels: true, ...align }),
+  stepOf({ id: 'assemble', type: 'reassembly', label: 'Assemble', resource: 'cpu',
+    status: 'waiting' }),
+], { id: 'pursuit', title: 'Pursuit of Power', waitForResolved: 'pc', ...over });
+
+test("OWEN'S PURSUIT CASE — a HELD step between two landed acts frees the card", () => {
+  const job = pursuit({ status: 'held', wasInterrupted: true }, { status: 'waiting' });
+  assert.strictEqual(slots.gpuHoldOf(job), null,
+    'nobody has released the narration, so the card is kept for nothing');
+  assert.strictEqual(slots.gpuHoldStep(job), null,
+    'and the bench must not name Align, which cannot start until Start is pressed');
+  assert.strictEqual(slots.gpuHoldWords(job), null);
+  assert.strictEqual(gpuOn(job, 'pc'), 0, "the PC's card is free for any other book");
+});
+
+test('THE SAME BOOK AFTER START: the released narration takes the card straight back', () => {
+  const job = pursuit({ status: 'queued' }, { status: 'waiting' });
+  assert.deepStrictEqual(slots.gpuHoldOf(job), { server: 'pc' },
+    'the Foundry render already put this book on that card');
+  assert.strictEqual(slots.gpuHoldStep(job).id, 'render');
+  assert.strictEqual(gpuOn(job, 'pc'), 1);
+});
+
+test('RENDER DONE, ALIGN HELD: Stop on the NEXT GPU step gives the card back', () => {
+  const job = pursuit({ status: 'done', venue: undefined }, { status: 'held' });
+  assert.strictEqual(slots.gpuHoldOf(job), null);
+  assert.strictEqual(slots.gpuHoldStep(job), null);
+  assert.strictEqual(gpuOn(job, 'pc'), 0);
+});
+
+test('RENDER DONE, ALIGN QUEUED: unchanged — the gap between two acts still holds', () => {
+  const job = pursuit({ status: 'done', venue: undefined }, { status: 'queued' });
+  assert.deepStrictEqual(slots.gpuHoldOf(job), { server: 'pc' });
+  assert.strictEqual(slots.gpuHoldStep(job).id, 'align');
+  assert.strictEqual(gpuOn(job, 'pc'), 1);
+});
+
+test('A HELD STEP AFTER THE NEXT ACT CHANGES NOTHING — only the next act decides', () => {
+  // The book is genuinely about to be on the card: its narration is released
+  // and admissible. What the user has done to a step BEYOND it is a question
+  // for when that step is next, not now.
+  const job = pursuit({ status: 'queued' }, { status: 'held' });
+  assert.deepStrictEqual(slots.gpuHoldOf(job), { server: 'pc' });
+  assert.strictEqual(slots.gpuHoldStep(job).id, 'render');
+  assert.strictEqual(gpuOn(job, 'pc'), 1);
+});
+
 test('PREPARE ALONE HOLDS NOTHING — "they can run the preparation step locally"', () => {
   const job = narration({ status: 'queued' }, { status: 'waiting' });
   assert.strictEqual(slots.gpuHoldOf(job), null, 'no GPU act of this book has started');

@@ -132,7 +132,7 @@
 
 import { RETIRED_LOCAL_NARRATOR_VENUE } from './wait-for';
 import { TERMINAL_STEP_STATUSES } from './engine-types';
-import type { QueueJob, QueueStep, StepResource } from './engine-types';
+import type { QueueJob, QueueStep, StepResource, StepStatus } from './engine-types';
 
 /**
  * THE ONE GPU SET THAT IS NOT A REGISTERED SERVER — and what is left in it.
@@ -422,13 +422,35 @@ export function slotSetForStep(
  *     step locally before going to the GPU"). `failed` and `cancelled` are not
  *     starts either — the run is over, and a hold that survived a failure would
  *     be a card held for work that will never run.
- * (b) OUTSTANDING — a travelling GPU step of this run is RELEASED and not
- *     terminal (`queued`, `waiting`, `running`). `held` is deliberately not
- *     outstanding: a held step is one the queue will not start on its own (a
- *     user Stop lands there), so a card kept for it would be a card kept for an
- *     act nobody has ordered, with nothing on screen counting down. Pause is
- *     the opposite case and KEEPS the hold — a paused queue starts nothing but
- *     its steps are still `queued`, and the book is still mid-flight.
+ * (b) OUTSTANDING — the run's NEXT GPU ACT ({@link nextTravellingGpuStep}, the
+ *     first travelling GPU step that is not `done`) is RELEASED and not
+ *     terminal: `queued`, `waiting` or `running`. Only that ONE step is asked,
+ *     and the whole bug of 2026-09-20 01:50 is in the word *next*.
+ *
+ *     `held` is not outstanding: a held step is one the queue will not start on
+ *     its own — a user Stop lands there, and so does every `running` step when
+ *     the app is closed and reopened (`reviveInterrupted`,
+ *     electron/queue-engine.ts) — so it is the user's own gesture to stop the
+ *     chain here. A card kept for it is a card kept for work NOBODY HAS
+ *     RELEASED, with nothing on screen counting down: exactly the idle card
+ *     ruling 9 forbids everywhere else. `failed` and `cancelled` say the same
+ *     thing more finally.
+ *
+ *     Asking only the next act is what makes that bite. Owen's *"Clean text —
+ *     Pursuit of Power"* had `foundry-job` done, `tts-conversion` HELD
+ *     ("Interrupted when BookForge closed") and `align` waiting behind it. A
+ *     scan that asked whether ANY travelling GPU step was outstanding found
+ *     `align` and kept the PC's card — for a step that cannot start until a
+ *     human presses Start on the row above it. The bench drew "Holding the card
+ *     · Align — waiting to start Align" over a completely idle Crucible, and no
+ *     other book could have it. Steps AFTER the next act are not consulted at
+ *     all: a held `align` behind a queued `tts-conversion` still holds, because
+ *     the run is genuinely about to be on the card and only the next act
+ *     decides.
+ *
+ *     Pause is the opposite case and KEEPS the hold — a paused queue starts
+ *     nothing but its steps are still `queued`, and the book is still
+ *     mid-flight.
  *
  * A NON-TRAVELLING GPU STEP NEITHER STARTS NOR EXTENDS A HOLD. A local RVC or
  * denoise pass runs on {@link LONGFORM_ALIGN_SET}, this machine's own row; it
@@ -460,16 +482,38 @@ export function gpuHoldOf(job: QueueJob): { readonly server: string } | null {
    * machine name here would charge a slot set nothing is on.
    */
   if (server === RETIRED_LOCAL_NARRATOR_VENUE) return null;
-  let started = false;
-  let outstanding = false;
-  for (const step of job.steps) {
-    if (!isTravellingGpuStep(step)) continue;
-    if (step.status === 'running' || step.status === 'done') started = true;
-    if (step.status === 'queued' || step.status === 'waiting' || step.status === 'running') {
-      outstanding = true;
-    }
-  }
-  return started && outstanding ? { server } : null;
+  // (b) OUTSTANDING — the NEXT act only. Null means every GPU act of this run
+  // has landed, so there is nothing left to keep the card for.
+  const next = nextTravellingGpuStep(job);
+  if (next === null) return null;
+  if (!RELEASED_STEP_STATUSES.has(next.status)) return null;
+  // (a) STARTED — asked over ALL of them, because "has this book been on the
+  // card" is a fact about its history, not about the act in front of it.
+  const started = job.steps.some((step) => isTravellingGpuStep(step)
+    && (step.status === 'running' || step.status === 'done'));
+  return started ? { server } : null;
+}
+
+/**
+ * Statuses the queue will pick up ON ITS OWN, as the one membership test the
+ * hold turns on. `held` is absent by the ruling above; the terminal three are
+ * absent because there is nothing left to pick up.
+ */
+const RELEASED_STEP_STATUSES: ReadonlySet<StepStatus> =
+  new Set<StepStatus>(['queued', 'waiting', 'running']);
+
+/**
+ * THE RUN'S NEXT GPU ACT — the first travelling GPU step that is not `done`, or
+ * null when every one of them has landed.
+ *
+ * ONE owner for "which act does the card answer to", so {@link gpuHoldOf} and
+ * {@link gpuHoldStep} cannot disagree: the hold exists only when THIS step is
+ * released, and the phrase on the bench can therefore never name a step that
+ * comes after a held, failed or cancelled one. Step order is the plan's order,
+ * which is the order the pump admits them in.
+ */
+function nextTravellingGpuStep(job: QueueJob): QueueStep | null {
+  return job.steps.find((s) => isTravellingGpuStep(s) && s.status !== 'done') ?? null;
 }
 
 /**
@@ -520,13 +564,18 @@ export function gpuHoldCharges(job: QueueJob, setId: string): boolean {
  * render's session copy, an assembly between two GPU acts); otherwise the next
  * GPU act it is waiting to start, which is the honest answer for the gap
  * between one step settling and the next being admitted.
+ *
+ * It reads {@link nextTravellingGpuStep} — the same step {@link gpuHoldOf}
+ * turned the hold on — rather than scanning for its own candidate, so the
+ * phrase can never name an act BEYOND a held one. That mismatch is precisely
+ * what the bench said out loud on 2026-09-20: "waiting to start Align" while
+ * the step above Align was held and nothing was going to start at all.
  */
 export function gpuHoldStep(job: QueueJob): QueueStep | null {
   if (gpuHoldOf(job) === null) return null;
   const onCpu = job.steps.find((s) => s.status === 'running' && s.resource === 'cpu');
   if (onCpu !== undefined) return onCpu;
-  return job.steps.find((s) => isTravellingGpuStep(s)
-    && (s.status === 'queued' || s.status === 'waiting' || s.status === 'running')) ?? null;
+  return nextTravellingGpuStep(job);
 }
 
 /**
