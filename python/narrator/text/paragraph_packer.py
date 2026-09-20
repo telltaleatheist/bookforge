@@ -832,9 +832,13 @@ def split_sentences(text: str) -> list:
 #     ends in ';' or ',' rather than in a full stop, which is what the book says
 #     and is the only honest thing to hand the model.
 #   - MEASURED THE WAY THE WIRE MEASURES. The budget a piece is checked against is
-#     the one `emit_prose` will actually pay for it: the first piece of a group
-#     carries the lead `[break]` (and a heading's marker) and the rest do not -
-#     the reading commit 268c26e7 settled.
+#     the one `_emit_bounded` will actually pay for it: the first piece of a
+#     group carries the lead `[break]` (and a heading's or a row's marker) and
+#     the rest do not - the reading commit 268c26e7 settled.
+#   - IT APPLIES TO EVERY KIND OF BLOCK (2026-09-19). Prose reached it from the
+#     start; a TABLE ROW and a lone HEADING did not reach it at all, and were
+#     appended whole. `_emit_bounded` is now the one door, so the cap bounds the
+#     whole book rather than most of it.
 #   - NO BOUNDARY, NO SPLIT, NO CUT. If nothing yields pieces that all fit, the
 #     book is REFUSED BY NAME (`SentenceOverCapUnsplittable`). Cutting mid-clause
 #     or truncating would ship a chunk nobody wrote.
