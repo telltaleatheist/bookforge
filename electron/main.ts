@@ -22,6 +22,7 @@ import { bookshelfServer } from './bookshelf-server';
 import * as ebookLibrary from './ebook-library';
 import { importEpubProject } from './import-epub-project';
 import { initializeLoggers, getMainLogger, getTTSLogger, closeLoggers } from './rolling-logger';
+import { startupFailureHtml, startupFailureLine } from './startup-failure';
 import { Quire } from '../packages/quire/src';
 import {
   setupQuireViewerIpc, closeAllBooksForViewer, closeViewerDocumentsUnder,
@@ -147,7 +148,7 @@ import {
 import type { NarrateTarget } from '../shared/queue/narrate-target';
 import type { QueueJob, QueueStep } from '../shared/queue/engine-types';
 import { TERMINAL_STEP_STATUSES } from '../shared/queue/engine-types';
-import { setNarratorScratchRoot, narratorScratchRoot, mintImpliedExportPath, impliedExportDirOf } from './narrator-paths';
+import { setNarratorScratchRoot, narratorScratchRoot, mintImpliedExportPath } from './narrator-paths';
 import { getOrpheusBatchConfig, setOrpheusMaxBatch } from './orpheus-batch';
 import { getOrpheusMemoryTier, setOrpheusMemoryTier, orpheusMemoryProfile, resolveConcreteOrpheusTier, fitOrpheusTier, getOrpheusAutoCeiling, type OrpheusMemoryTier } from './orpheus-memory';
 import { getGpuMemMB } from './gpu-arbiter';
@@ -3038,16 +3039,36 @@ async function sweepDirContents(dir: string): Promise<void> {
    * only what was on the list at plan time keeps the sweep from eating a live
    * run.
    */
-  const { foreignSessionHost, rescueOrphanedScratchSessions } = await import('./parallel-tts-bridge.js');
-  const { planScratchSweepOf, runScratchSweep } = await import('./scratch-sweep.js');
-  const plan = await planScratchSweepOf(dir, await liveStepIds(), foreignSessionHost);
-  if (plan === null) return; /* dir doesn't exist yet / volume offline */
-  await runScratchSweep(dir, plan, rescueOrphanedScratchSessions);
+  /*
+   * GUARDED, because this runs on the STARTUP path and a throw here used to
+   * reject `whenReady` itself — a windowless main process with no way out but
+   * a kill, which then skips `before-quit` (P11, 2026-09-20). The sweep is
+   * hygiene: a library volume that went away mid-readdir, an ownership probe
+   * that threw, a rescue that could not write — none of them is a reason for
+   * the app not to open. Named, so the leftovers have an explanation.
+   */
+  try {
+    const { foreignSessionHost, rescueOrphanedScratchSessions } = await import('./parallel-tts-bridge.js');
+    const { planScratchSweepOf, runScratchSweep } = await import('./scratch-sweep.js');
+    const plan = await planScratchSweepOf(dir, await liveStepIds(), foreignSessionHost);
+    if (plan === null) return; /* dir doesn't exist yet / volume offline */
+    await runScratchSweep(dir, plan, rescueOrphanedScratchSessions);
+  } catch (err) {
+    console.error(`[MAIN] The scratch sweep of ${dir} failed and was abandoned; anything left `
+      + 'there is a leftover this start did not clear:', (err as Error).message);
+  }
 }
 
 /**
- * The ids of steps the queue has not finished with — every step that is not
- * terminal, whatever state it is otherwise in.
+ * What the queue has not finished with, as scratch-root names.
+ *
+ * ONLY THE ASKING IS HERE. The RULE — which steps count, and which of their
+ * paths name a scratch folder — is `scratchNamesWantedBy` in
+ * `scratch-sweep.ts`, where a keeper can state a job and read the answer back.
+ * It lived here, undriveable, until 2026-09-20, and went wrong exactly the way
+ * an undriveable rule does: it read a step's CONFIG and never its OUTPUT, so a
+ * finished `prepare`'s session — the only record of which `ebook-<uuid>` a held
+ * `tts-conversion` was about to render into — was swept as a leftover (Q5).
  *
  * Read from the ENGINE, which has already loaded its persisted state by the
  * time the sweep runs. Empty on any failure, which makes the sweep behave
@@ -3055,31 +3076,14 @@ async function sweepDirContents(dir: string): Promise<void> {
  * keep every leftover forever.
  */
 async function liveStepIds(): Promise<Set<string>> {
-  const ids = new Set<string>();
   try {
     const { snapshot } = await import('./queue-engine.js');
-    const { TERMINAL_STEP_STATUSES } = await import('../shared/queue/engine-types.js');
-    for (const job of snapshot().jobs) {
-      for (const step of job.steps) {
-        // The shared set, not a copy of its members: it exists "for a membership
-        // test that cannot go stale", and an inline triple here is the one site
-        // that would not follow a fourth terminal status (bookforge-mac-2's
-        // review, 2026-08-20).
-        if (TERMINAL_STEP_STATUSES.has(step.status)) continue;
-        ids.add(step.id);
-        // AN IMPLIED EXPORT a live step still names is kept by its folder name —
-        // the run's book, written to scratch and filed nowhere (narrator-paths.ts).
-        const cfg = step.config as { epubPath?: unknown; unfiledPath?: unknown };
-        for (const p of [cfg.epubPath, cfg.unfiledPath, step.sourceRef?.path]) {
-          const dir = typeof p === 'string' ? impliedExportDirOf(p) : null;
-          if (dir !== null) ids.add(path.basename(dir));
-        }
-      }
-    }
+    const { scratchNamesWantedBy } = await import('./scratch-sweep.js');
+    return scratchNamesWantedBy(snapshot().jobs.flatMap((job) => job.steps));
   } catch (err) {
     console.warn('[MAIN] Could not ask the queue what it still needs before sweeping:', err);
+    return new Set<string>();
   }
-  return ids;
 }
 
 async function cleanNarratorScratchRoot(): Promise<void> {
@@ -13049,12 +13053,27 @@ if (isPrimaryInstance) {
   });
 }
 
+/**
+ * WHAT STARTUP IS DOING RIGHT NOW, in the words a person would use.
+ *
+ * Read by exactly one thing: the `.catch` at the end of `whenReady`, which has
+ * an error but no idea where it came from — the whole callback is one stack
+ * frame as far as a rejection is concerned. `startingUp()` is called at each
+ * step that can plausibly fail, so a failed launch names a step instead of
+ * reporting a stack from a thousand-line function (P11).
+ */
+let startupPhase = 'starting up';
+function startingUp(phase: string): void {
+  startupPhase = phase;
+}
+
 app.whenReady().then(async () => {
   if (!isPrimaryInstance) {
     app.quit();
     return;
   }
   // Initialize rolling logger
+  startingUp('opening the logs');
   await initializeLoggers();
   const logger = getMainLogger();
 
@@ -13092,12 +13111,38 @@ app.whenReady().then(async () => {
   manifestService.useViewerReaderCloser(closeViewerDocumentsUnder);
   logger.info('BookForge starting', { version: app.getVersion(), platform: process.platform });
 
-  // The audiobook job log (<library>/logs/audiobook-<date>.log) was initialized
-  // only when a renderer happened to call logger:initialize — a queue-engine job
-  // that started first wrote every entry to '' and spammed ENOENT (seen live
-  // 2026-08-17, first engine-run TTS job). The main process owns the library
-  // root, so the log is opened here, before any job can start.
+  /*
+   * THE AUDIOBOOK JOB LOG ASKS WHERE THE LIBRARY IS, EVERY TIME IT WRITES.
+   *
+   * `<library>/logs/audiobook-<date>.log` was initialized only when a renderer
+   * happened to call `logger:initialize` — a queue-engine job that started
+   * first wrote every entry to '' and spammed ENOENT (seen live 2026-08-17).
+   * Opening it here fixed that and introduced the next one: this line runs
+   * BEFORE the persisted library root is restored (that happens after
+   * `createWindow()`, a few hundred lines down), and since the 2026-08-16
+   * "main owns the library root" change the renderer no longer pushes the root
+   * back through `library:set-root`, so the re-init door was never taken
+   * either. The log has been opening at the `~/Documents/BookForge` DEFAULT
+   * ever since: the library's own `logs/` ends 2026-08-17, and every session
+   * since is in the wrong place (P4, 2026-09-20).
+   *
+   * So the logger is handed a QUESTION rather than an answer, and asks it at
+   * each open and each day roll. Two things follow, and both are the point:
+   *
+   *  • the log lands under whichever library is current, including after the
+   *    root is restored below and after a later `library:set-root`;
+   *  • registering the resolver TOUCHES NOTHING. No `mkdir`, no read, no stat
+   *    — the first WRITE creates the directory. That keeps the library off the
+   *    pre-window path entirely, which matters because the library is a
+   *    Syncthing/SMB volume and a wedged mount blocks in a syscall no JS
+   *    timeout can cancel: an `fs.mkdir` here would be a hang with no window
+   *    (P11's coupling, and the reason the fix is lazy rather than "restore the
+   *    root earlier").
+   */
+  startingUp('opening the audiobook job log');
   try {
+    const audiobookLogger = await import('./audiobook-logger.js');
+    audiobookLogger.useLibraryRoot(() => getLibraryRoot());
     const { parallelTtsBridge } = await import('./parallel-tts-bridge.js');
     await parallelTtsBridge.initializeLogger(getLibraryRoot());
   } catch (err) {
@@ -13267,6 +13312,7 @@ app.whenReady().then(async () => {
   firstRunModels = new FirstRunModels(path.join(app.getPath('userData'), 'model-setup.pending'),
     loadPersistedLibraryRoot() === null || !setupRuntimeReady());
   runtimeWasFresh = firstRunModels.pending;
+  startingUp('opening the IPC doors');
   setupIpcHandlers();
   registerClipforgeIpc();
   registerDocumentIpc();
@@ -13298,12 +13344,68 @@ app.whenReady().then(async () => {
     });
   }
 
+  /*
+   * ── THE SWEEP FOR THE QUIT THAT NEVER RAN, AND IT GOES FIRST ─────────────
+   *
+   * A hard kill (ctrl-C on `electron:dev`, jetsam, power loss) skips
+   * `before-quit` entirely, so the Crucible sweep there never happened and this
+   * app's jobs are still running on other machines: holding the lane, holding
+   * the claim, holding a 12 GB voice resident.
+   * `<userData>/crucible-in-flight.json` is the only thing that still knows
+   * their ids (`in-flight-ledger.ts`).
+   *
+   * AWAITED, AND ABOVE `startQueueEngine()` (C8, 2026-09-20). It used to be
+   * fire-and-forget, a hundred lines below the engine start, so on every
+   * recovery launch the engine could admit a render to a server the sweep was
+   * still DELETE-ing the previous run's job on — and `clearTheCard` could send
+   * an `unload-voice` into the lane the new render had just taken. No data was
+   * lost (the render parks on a 409 naming the holder), but the admission
+   * cycle was wasted and the log read as two apps fighting. Giving the card
+   * back before anything is admitted is the whole of the fix.
+   *
+   * ON A DEADLINE, because this is now in front of the window. The sweep talks
+   * to other machines, and an unreachable server must cost this launch thirty
+   * seconds at the very most — after which its rows stay in the ledger and the
+   * next start tries again, which is exactly what the ledger is for.
+   *
+   * `scratchOwned` is carried down to the scratch sweep below rather than acted
+   * on here: that sweep is the one that rescues an interrupted render's
+   * sentences into the project cache before removing anything, and two places
+   * deleting scratch would be two rules.
+   */
+  startingUp('giving back any card the last run left held');
+  const SWEEP_DEADLINE_MS = 30_000;
+  let crucibleScratchOwned: string[] = [];
+  await (async () => {
+    let timer: NodeJS.Timeout | undefined;
+    const deadline = new Promise<void>((resolve) => {
+      timer = setTimeout(() => {
+        console.error('[Startup] The Crucible in-flight sweep did not finish within '
+          + `${SWEEP_DEADLINE_MS / 1000}s — continuing without it. Any job it did not cancel `
+          + 'stays in the ledger and the next start will try again.');
+        resolve();
+      }, SWEEP_DEADLINE_MS);
+    });
+    const sweep = (async () => {
+      try {
+        const { sweepCrucibleInFlight } = await import('./crucible/in-flight-sweep.js');
+        const report = await sweepCrucibleInFlight({ reason: 'the last run did not quit cleanly' });
+        crucibleScratchOwned = [...report.scratchOwned];
+      } catch (err) {
+        console.error('[Startup] The Crucible in-flight sweep failed:', (err as Error).message);
+      }
+    })();
+    await Promise.race([sweep, deadline]).finally(() => clearTimeout(timer));
+  })();
+
   // The queue, before any window exists. It is main's now: its state is loaded
   // (migrating the retired renderer blob on first run), its step modules are
   // registered, and its doors are opened here — so a run survives every window
   // being closed, and a second window is a second VIEW rather than a second
   // scheduler writing over the first one's state file.
+  startingUp('starting the queue');
   await startQueueEngine();
+  startingUp('opening the window');
   // `electron . --clipforge` (the clipforge:electron:dev script) opens ONLY the
   // ClipForge window for a clean single-app dev session; otherwise BookForge.
   if (process.argv.includes('--clipforge')) {
@@ -13360,6 +13462,7 @@ app.whenReady().then(async () => {
   if (mainWindow) {
     registry.setMainWindow(mainWindow);
   }
+  startingUp('loading the plugins');
   await loadBuiltinPlugins(registry);
 
   // Restore persisted library root before auto-starting the bookshelf server.
@@ -13371,6 +13474,7 @@ app.whenReady().then(async () => {
     manifestService.setLibraryBasePath(persistedRoot);
     console.log('[Startup] Restored persisted library root:', persistedRoot);
   }
+  startingUp('clearing the scratch root');
   applyNarratorScratchRoot();
   /*
    * Clear the e2a tmp dir, EXCEPT what the queue still has plans for.
@@ -13385,41 +13489,38 @@ app.whenReady().then(async () => {
    * somebody moves (bookforge-mac-2's review, 2026-08-20).
    */
   /*
-   * THE SWEEP FOR THE QUIT THAT NEVER RAN — and it comes FIRST.
+   * THE OTHER HALF OF THE RECOVERY. The Crucible in-flight sweep already ran,
+   * awaited, ABOVE `startQueueEngine()` (see it there for why it moved): every
+   * job this app left running elsewhere has been cancelled, so a session that
+   * was being written into is dead before anything decides what to do with it.
    *
-   * A hard kill (ctrl-C on `electron:dev`, jetsam, power loss) skips
-   * `before-quit` entirely, so the Crucible sweep there never happened and this
-   * app's jobs are still running on other machines: holding the lane, holding
-   * the claim, holding a 12 GB voice resident. `<userData>/crucible-in-flight.json`
-   * is the only thing that still knows their ids (in-flight-ledger.ts).
+   * THE HANDOVER, SAID OUT LOUD. The scratch those cancelled jobs owned is not
+   * deleted by the sweep that cancelled them — this one owns that decision, and
+   * it is the one that rescues an interrupted render's sentences into the
+   * project cache before removing anything. Naming them is what makes the two
+   * halves one act in the log.
    *
-   * BEFORE the scratch sweep, and awaited, for two reasons. A job still
-   * rendering into `<scratch>/ebook-<uuid>` is a job whose session must not be
-   * removed or promoted while it writes — cancelling first makes the scratch
-   * dead before anything decides what to do with it. And the scratch each
-   * cancelled job owned is then swept by the same rescue-first rule as
-   * everything else in that root, rather than by a second one here.
-   *
-   * Chained rather than raced with `cleanNarratorScratchRoot` for that ordering;
-   * the pair is still `void`ed, because startup does not wait on another
-   * machine.
+   * STILL `void`ed, and it still has to run HERE: the library root was restored
+   * and `applyNarratorScratchRoot()` called a few lines up, so this is the first
+   * moment the scratch root is the real one.
    */
+  if (crucibleScratchOwned.length > 0) {
+    console.log('[Startup] Scratch owned by the cancelled crucible job(s), left to the scratch '
+      + `sweep: ${crucibleScratchOwned.join(', ')}`);
+  }
   void (async () => {
+    /*
+     * GUARDED HERE TOO, and not only inside `sweepDirContents`. This is the
+     * WSL half's outer frame: an unguarded rejection out of a `void`ed async
+     * IIFE on the startup path is an unhandledRejection with no handler, and
+     * `whenReady`'s own `.catch` cannot see it (P11, 2026-09-20).
+     */
     try {
-      const { sweepCrucibleInFlight } = await import('./crucible/in-flight-sweep.js');
-      const report = await sweepCrucibleInFlight({ reason: 'the last run did not quit cleanly' });
-      if (report.scratchOwned.length > 0) {
-        // THE HANDOVER, SAID OUT LOUD. These paths are not deleted here: the
-        // sweep below owns that decision, and it is the one that rescues an
-        // interrupted render's sentences into the project cache before removing
-        // anything. Naming them is what makes the two halves one act in the log.
-        console.log('[Startup] Scratch owned by the cancelled crucible job(s), left to the scratch '
-          + `sweep below: ${report.scratchOwned.join(', ')}`);
-      }
+      await cleanNarratorScratchRoot();
     } catch (err) {
-      console.error('[Startup] The Crucible in-flight sweep failed:', (err as Error).message);
+      console.error('[Startup] The narrator scratch sweep failed and was abandoned:',
+        (err as Error).message);
     }
-    await cleanNarratorScratchRoot();
   })();
 
   // ── Mount the hosted Foundry ─────────────────────────────────────────────
@@ -13584,6 +13685,7 @@ app.whenReady().then(async () => {
     }
   })();
 
+  startingUp('mounting the hosted Foundry');
   foundryMount.mountFoundry({
     modelPreparationReady: () => !firstRunModels.pending,
     // A GETTER, not a captured string. Foundry answers `readAppSettings()` from
@@ -14047,7 +14149,76 @@ app.whenReady().then(async () => {
       createWindow();
     }
   });
+  startingUp('running');
+}).catch((err) => {
+  /*
+   * A STARTUP THAT THREW MUST STILL DRAW SOMETHING — P11, and see
+   * `startup-failure.ts` for the whole of why.
+   *
+   * Everything above this line runs inside ONE promise callback, so any
+   * rejection anywhere in it lands here with no idea where it came from;
+   * `startupPhase` is the step it got to. Without this, a rejection before
+   * `createWindow()` left a running, windowless main process on darwin —
+   * killable only, and a kill skips `before-quit`, which is how a Crucible
+   * render ends up holding a card for an app that is gone.
+   *
+   * The window is made with NOTHING clever: no preload, no protocol, no
+   * library. Whatever failed above may be exactly those things.
+   */
+  const message = err instanceof Error ? (err.stack ?? err.message) : String(err);
+  const line = startupFailureLine(startupPhase, err instanceof Error ? err.message : String(err));
+  console.error(`[MAIN] ${line}`);
+  try {
+    getMainLogger().error(line, { phase: startupPhase, error: message });
+  } catch { /* the logger may be what failed */ }
+  try {
+    const win = new BrowserWindow({
+      width: 720, height: 420, show: true, title: 'BookForge did not start',
+    });
+    void win.loadURL('data:text/html;charset=utf-8,'
+      + encodeURIComponent(startupFailureHtml(startupPhase, message)));
+  } catch (second) {
+    // No window is possible either. Say so and go, rather than sitting invisible.
+    console.error('[MAIN] …and the failure window could not be opened either:',
+      (second as Error).message);
+    app.exit(1);
+  }
 });
+
+/*
+ * CTRL-C IS A QUIT — P8.
+ *
+ * There was no SIGINT or SIGTERM handler anywhere in `electron/`, so a ctrl-C
+ * on `npm run electron:dev` took Node's default disposition and `before-quit`
+ * never ran: no Crucible job cancelled, no session flushed to the project
+ * cache, no worker killed. That is the exact shape of the 2026-09-19 evening —
+ * an hour after the app was gone, a Mac Crucible still showed its `tts` job
+ * RUNNING at 70% with 12 GB of voice resident.
+ *
+ * `app.quit()` and nothing else on the first one. The whole cleanup ladder
+ * already hangs off `before-quit`, with its own per-step deadlines and a 120 s
+ * backstop; a second ladder here would be a second answer to "what does
+ * shutting down mean".
+ *
+ * THE SECOND SIGNAL EXITS, and it has to be said explicitly. Registering ANY
+ * listener removes Node's default disposition for that signal, so a handler
+ * that merely returns on the second ctrl-C swallows it — the person who has
+ * stopped waiting gets nothing at all, which is worse than the behaviour this
+ * is fixing. So the escape hatch is written down: press it twice and we go,
+ * cleanup unfinished, exactly as before this existed.
+ */
+let signalQuitRequested = false;
+for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+  process.on(signal, () => {
+    if (signalQuitRequested) {
+      console.error(`[MAIN] ${signal} again — exiting now, without finishing the cleanup.`);
+      process.exit(1);
+    }
+    signalQuitRequested = true;
+    console.log(`[MAIN] ${signal} — quitting through before-quit. Press ctrl-C again to exit now.`);
+    app.quit();
+  });
+}
 
 app.on('window-all-closed', () => {
   // On macOS, don't quit when all windows close (app stays in dock)

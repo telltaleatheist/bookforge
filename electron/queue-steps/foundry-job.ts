@@ -38,7 +38,7 @@ import { noteStepStopped } from '../queue-engine';
 import type { StepModule, StepRunContext } from '../queue-engine';
 import type { ArtifactRef, StepResource } from '../../shared/queue/engine-types';
 import {
-  FOUNDRY_VERSION_FOR_CLEAN_TEXT, foundryRunner, foundryTooOldForCleanText,
+  FOUNDRY_VERSION_FOR_CLEAN_TEXT, foundryRowFailure, foundryRunner, foundryTooOldForCleanText,
   hostedCrucibleServerNotOffered, parseFoundryProgressLine,
 } from '../foundry-host-queue';
 import type { FoundryJobRow, FoundryJobStepConfig } from '../foundry-host-queue';
@@ -585,9 +585,15 @@ export const foundryJobStep: StepModule = {
       throw new Error(`${config.label} was stopped.`);
     }
     if (row.state === 'failed') {
-      // Foundry's own sentence, verbatim. This side knows less about why the
-      // engine stopped than the engine's words do.
-      throw new Error(row.error ?? `${config.label} failed, and Foundry did not say why.`);
+      /*
+       * Foundry's own sentence, verbatim — this side knows less about why the
+       * engine stopped than the engine's words do — AND its `busyLine` when the
+       * row was refused by a holder rather than broken. That second half is
+       * Contract 2 (Q4, 2026-09-20): Foundry takes its own Crucible lease, so a
+       * `409 leased` came across this seam as prose and reddened a row over a
+       * card that was merely held. `foundryRowFailure` is where the rule lives.
+       */
+      throw foundryRowFailure(row, config.label);
     }
 
     /*

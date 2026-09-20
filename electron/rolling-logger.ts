@@ -234,6 +234,7 @@ class RollingLogger {
 let mainLogger: RollingLogger | null = null;
 let ttsLogger: RollingLogger | null = null;
 let reassemblyLogger: RollingLogger | null = null;
+let foundryLogger: RollingLogger | null = null;
 
 /**
  * Get the main application logger
@@ -266,13 +267,37 @@ export function getReassemblyLogger(): RollingLogger {
 }
 
 /**
+ * THE FOUNDRY CLI'S OWN LOG — `foundry.log`, beside `tts.log`.
+ *
+ * Everything the hosted Foundry engine says used to land in memory and nowhere
+ * else: `foundry-app`'s engine accumulated the child's stdout/stderr to drive
+ * one row message, and `bookforge.log` (this module's main logger) only ever
+ * carries explicit calls, so it ends at the last STARTUP line. On 2026-09-19 a
+ * whole night of Foundry clean-text failures left `grep -c '[job]' 0` across
+ * every log on disk, and the queue rows that had carried the reasons had been
+ * stopped, which erases them (P5/F7). A book that failed at 3am must be
+ * answerable at 9am.
+ *
+ * ONE log for every hosted Foundry run, not one per job: the CLI is a single
+ * child and its lines already name their job. Fed from `foundry-host-queue.ts`,
+ * which is the one door every run goes through.
+ */
+export function getFoundryLogger(): RollingLogger {
+  if (!foundryLogger) {
+    foundryLogger = new RollingLogger({ name: 'foundry' });
+  }
+  return foundryLogger;
+}
+
+/**
  * Initialize all loggers
  */
 export async function initializeLoggers(): Promise<void> {
   await Promise.all([
     getMainLogger().init(),
     getTTSLogger().init(),
-    getReassemblyLogger().init()
+    getReassemblyLogger().init(),
+    getFoundryLogger().init()
   ]);
 }
 
@@ -283,7 +308,8 @@ export async function closeLoggers(): Promise<void> {
   await Promise.all([
     mainLogger?.close(),
     ttsLogger?.close(),
-    reassemblyLogger?.close()
+    reassemblyLogger?.close(),
+    foundryLogger?.close()
   ]);
 }
 

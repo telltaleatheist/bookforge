@@ -51,6 +51,32 @@ export interface JobSummary {
 // Configuration
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * WHERE THIS LOG GOES IS A QUESTION, NOT A VALUE — asked at every open.
+ *
+ * `initializeLogger(getLibraryRoot())` runs at the top of `whenReady`, and the
+ * persisted library root is not restored until several hundred lines later. So
+ * the path this module captured was the `~/Documents/BookForge` DEFAULT, on
+ * every launch, and the re-init door (`library:set-root`) stopped being taken
+ * when main took ownership of the root on 2026-08-16. Measured 2026-09-20: the
+ * library's own `logs/` ends `audiobook-2026-08-17.log` and a month of
+ * sessions is in the wrong tree (P4).
+ *
+ * A resolver fixes it at the root of the problem. `useLibraryRoot` is main
+ * saying *"ask me every time"*; {@link initializeLogger} is a caller stating
+ * one path, and the resolver wins because a live answer cannot go stale.
+ *
+ * REGISTERING ONE TOUCHES NOTHING — no mkdir, no stat, no read. That is
+ * load-bearing, not tidiness: the library is an SMB/Syncthing volume, this runs
+ * before `createWindow()`, and a wedged mount blocks in a syscall no JS timeout
+ * can cancel. A logger that reached for the library at registration would turn
+ * a slow NAS into a launch with no window (P11).
+ */
+let resolveLibraryRoot: (() => string) | null = null;
+let statedLibraryRoot: string | null = null;
+
+/** What is open right now, so a day roll and a library change both reopen. */
+let openedFor: { dir: string; day: string } | null = null;
 let logsPath = '';
 let currentLogFile = '';
 let jobSummaries = new Map<string, JobSummary>();
@@ -59,38 +85,84 @@ let jobSummaries = new Map<string, JobSummary>();
 // Initialization
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * Hand the logger the question "where is the library?" instead of an answer.
+ * Called once by `main.ts`, before anything can log. See the note above for
+ * why this must not touch the filesystem.
+ */
+export function useLibraryRoot(resolve: () => string): void {
+  resolveLibraryRoot = resolve;
+}
+
+/**
+ * State the library this log belongs to. Kept for the callers that have a path
+ * and no resolver (the bridge's own init, the `logger:initialize` IPC).
+ *
+ * IT NO LONGER OPENS ANYTHING. It used to `mkdir`, read the day's summaries and
+ * write an "initialized" line — three library touches on the pre-window startup
+ * path, at a path that was usually the wrong one anyway. The first real log
+ * line does all three now, against the library that is current then.
+ */
 export async function initializeLogger(libraryPath: string): Promise<void> {
-  logsPath = path.join(libraryPath, 'logs');
-
-  // Ensure logs directory exists
-  await fs.mkdir(logsPath, { recursive: true });
-
-  // Set current log file based on today's date
-  const today = new Date().toISOString().split('T')[0];
-  currentLogFile = path.join(logsPath, `audiobook-${today}.log`);
-
-  // Load existing summaries from today's log if it exists
-  await loadExistingSummaries();
-
-  // Write initialization message
-  await writeLog({
-    timestamp: new Date().toISOString(),
-    level: 'INFO',
-    jobId: 'system',
-    message: 'Audiobook logger initialized',
-    details: { logsPath, currentLogFile }
-  });
+  statedLibraryRoot = libraryPath;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Core Logging Functions
 // ─────────────────────────────────────────────────────────────────────────────
 
+/** The library root as of RIGHT NOW: the resolver's answer, else the stated one. */
+function libraryRootNow(): string | null {
+  if (resolveLibraryRoot !== null) {
+    try {
+      const root = resolveLibraryRoot();
+      if (typeof root === 'string' && root !== '') return root;
+    } catch (error) {
+      console.error('Audiobook log: the library root could not be resolved:', error);
+    }
+  }
+  return statedLibraryRoot !== null && statedLibraryRoot !== '' ? statedLibraryRoot : null;
+}
+
+/** Where the log WOULD go right now. No filesystem access; '' when nobody has said. */
+function logsDirNow(): string {
+  const root = libraryRootNow();
+  return root === null ? '' : path.join(root, 'logs');
+}
+
+/**
+ * Open (or reopen) the day's log under the CURRENT library, creating the
+ * directory on the way. Reopens on a day roll and on a library change, which
+ * is the same act: both change the file this module should be appending to.
+ */
+async function currentLogFilePath(): Promise<string | null> {
+  const dir = logsDirNow();
+  if (dir === '') return null;
+  const day = new Date().toISOString().split('T')[0]!;
+  if (openedFor !== null && openedFor.dir === dir && openedFor.day === day) return currentLogFile;
+
+  await fs.mkdir(dir, { recursive: true });
+  logsPath = dir;
+  currentLogFile = path.join(dir, `audiobook-${day}.log`);
+  openedFor = { dir, day };
+  // The day's summaries belong to the file, so they are loaded with it.
+  await loadExistingSummaries();
+  return currentLogFile;
+}
+
 async function writeLog(entry: LogEntry): Promise<void> {
   const logLine = JSON.stringify(entry) + '\n';
 
   try {
-    await fs.appendFile(currentLogFile, logLine, 'utf8');
+    const file = await currentLogFilePath();
+    if (file === null) {
+      // No library has been named yet. Said to the console rather than appended
+      // to '' — which is what produced the ENOENT spam this module was given an
+      // explicit init to stop.
+      console.log('Audiobook log (no library root yet):', entry);
+      return;
+    }
+    await fs.appendFile(file, logLine, 'utf8');
   } catch (error) {
     // If we can't write to the log, at least log to console
     console.error('Failed to write to log file:', error);
@@ -251,6 +323,9 @@ export async function failJob(
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function writeSummaryFile(): Promise<void> {
+  // Through the same door as a log line, so a summary and the entries beside it
+  // can never end up in two different libraries.
+  if (await currentLogFilePath() === null) return;
   const today = new Date().toISOString().split('T')[0];
   const summaryFile = path.join(logsPath, `summary-${today}.json`);
 
@@ -296,13 +371,15 @@ export async function getTodaysSummary(): Promise<JobSummary[]> {
 
 export async function getRecentErrors(days: number = 7): Promise<LogEntry[]> {
   const errors: LogEntry[] = [];
+  const dir = logsDirNow();
+  if (dir === '') return errors;
   const today = new Date();
 
   for (let i = 0; i < days; i++) {
     const date = new Date(today);
     date.setDate(date.getDate() - i);
     const dateStr = date.toISOString().split('T')[0];
-    const logFile = path.join(logsPath, `audiobook-${dateStr}.log`);
+    const logFile = path.join(dir, `audiobook-${dateStr}.log`);
 
     try {
       const content = await fs.readFile(logFile, 'utf8');
@@ -334,6 +411,8 @@ export async function searchLogs(
   days: number = 7
 ): Promise<LogEntry[]> {
   const results: LogEntry[] = [];
+  const dir = logsDirNow();
+  if (dir === '') return results;
   const today = new Date();
   const searchLower = searchTerm.toLowerCase();
 
@@ -341,7 +420,7 @@ export async function searchLogs(
     const date = new Date(today);
     date.setDate(date.getDate() - i);
     const dateStr = date.toISOString().split('T')[0];
-    const logFile = path.join(logsPath, `audiobook-${dateStr}.log`);
+    const logFile = path.join(dir, `audiobook-${dateStr}.log`);
 
     try {
       const content = await fs.readFile(logFile, 'utf8');
