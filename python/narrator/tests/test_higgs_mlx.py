@@ -703,6 +703,12 @@ def _loaded_server(engine):
     return server
 
 
+#: The Listen contract, for the three direct `_generate_audio` calls below.
+#: `door` has no default (`finalize_audio` requires the caller to decide), and
+#: these are single renders with nothing assembling them.
+from narrator.serve.worker import FOR_STREAM as W_FOR_STREAM
+
+
 class WorkerRenderRoutingTest(unittest.TestCase):
     """`backend == 'mlx'` is a RUNTIME name, not an engine.
 
@@ -727,7 +733,8 @@ class WorkerRenderRoutingTest(unittest.TestCase):
         from narrator.serve.worker import OrpheusStreamServer
         server = _loaded_server(_StubEngine('higgs-v3', 'mlx'))
         engine = server.orph
-        audio = server._generate_audio('Hello there.', index=4)
+        audio, _m = server._generate_audio('Hello there.', index=4,
+                                          door=W_FOR_STREAM)
         self.assertEqual(engine.calls, [('Hello there.', 4)])
         self.assertGreater(len(audio), 0)
 
@@ -738,7 +745,7 @@ class WorkerRenderRoutingTest(unittest.TestCase):
         server = _loaded_server(_StubEngine('higgs-v3', 'mlx'))
         engine = server.orph
         for i in (0, 1, 17):
-            server._generate_audio('A line.', index=i)
+            server._generate_audio('A line.', index=i, door=W_FOR_STREAM)
         self.assertEqual([index for _text, index in engine.calls], [0, 1, 17])
 
     def test_an_engine_that_is_neither_orpheus_nor_renderable_is_a_named_error(self):
@@ -753,7 +760,7 @@ class WorkerRenderRoutingTest(unittest.TestCase):
 
         server = _loaded_server(_NoRender('higgs-v3', 'mlx'))
         with self.assertRaises(RuntimeError) as caught:
-            server._generate_audio('Hello.')
+            server._generate_audio('Hello.', door=W_FOR_STREAM)
         self.assertIn('render_audio', str(caught.exception))
 
     def test_the_batch_dispatcher_does_not_send_higgs_down_orpheuss_mlx_path(self):

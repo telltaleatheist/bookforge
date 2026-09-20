@@ -798,5 +798,41 @@ class StackSelectionTest(SglTestCase):
         self.assertNotIn('extra_params', sent)
 
 
+class MemFractionExportTest(unittest.TestCase):
+    """`mem_fraction_static` is STATED at launch, not inherited in silence.
+
+    The launch script has always read `HIGGS_SGL_MEM_FRACTION` from whatever
+    environment it happened to be exec'd with (`serve_higgs_sgl.sh`:
+    `--mem-fraction-static`, default 0.60), so the value reached the server but
+    nothing narrator wrote said what it was. It is now one of the knobs
+    narrator exports into the wrapper, and a nonsense one is refused HERE -
+    before the launch is reported as started - rather than aborting inside a
+    script narrator has already walked away from.
+    """
+
+    def _backend(self):
+        return HiggsSglServedBackend.__new__(HiggsSglServedBackend)
+
+    def test_a_stated_fraction_is_exported(self):
+        os.environ['HIGGS_SGL_MEM_FRACTION'] = '0.42'
+        self.addCleanup(os.environ.pop, 'HIGGS_SGL_MEM_FRACTION', None)
+        self.assertEqual(self._backend()._mem_fraction(), 0.42)
+
+    def test_an_absent_fraction_states_nothing(self):
+        os.environ.pop('HIGGS_SGL_MEM_FRACTION', None)
+        self.assertIsNone(self._backend()._mem_fraction(),
+                          "absent means the script's own default, which is "
+                          'the script to own - not a second copy here')
+
+    def test_a_fraction_outside_0_to_1_is_refused_by_name(self):
+        for raw in ('0', '1', '1.5', '-0.1', 'sixty percent'):
+            with self.subTest(raw=raw):
+                os.environ['HIGGS_SGL_MEM_FRACTION'] = raw
+                self.addCleanup(os.environ.pop, 'HIGGS_SGL_MEM_FRACTION', None)
+                with self.assertRaises(ValueError) as caught:
+                    self._backend()._mem_fraction()
+                self.assertIn('HIGGS_SGL_MEM_FRACTION', str(caught.exception))
+
+
 if __name__ == '__main__':
     unittest.main()

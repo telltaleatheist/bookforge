@@ -663,6 +663,42 @@ class HiggsSglServedBackend(GuestOwnedServer):
 
     # -- launch --------------------------------------------------------------
 
+    @staticmethod
+    def _mem_fraction():
+        """SGLang's `mem_fraction_static`, as THIS process was told it, or None.
+
+        `HIGGS_SGL_MEM_FRACTION` is the launch script's own knob
+        (`serve_higgs_sgl.sh`: `--mem-fraction-static`, default 0.60). It used
+        to reach the script only by being inherited through the `bash` exec -
+        which works, and which nothing states, so a launch could not say what
+        fraction it started the server at. narrator now EXPORTS the value it
+        was given, like every other knob it has an opinion about, and refuses a
+        nonsense one here rather than letting the script discover it: the
+        script's own check aborts a launch narrator has already reported as
+        started.
+
+        MEASURED, 2026-09-19: 16 concurrent requests at 0.60 summed to 24.2 GB
+        on a 24 GB card and WDDM paged the excess to host RAM - 4 to 10 times
+        slower, with no error anywhere. The fraction and the width are one
+        budget, which is why both are stated at launch.
+        """
+        raw = (os.environ.get(SERVE_MEM_FRACTION_ENV) or '').strip()
+        if not raw:
+            return None
+        try:
+            value = float(raw)
+        except ValueError:
+            raise ValueError(
+                f'{SERVE_MEM_FRACTION_ENV}={raw!r} is not a number. It is '
+                "SGLang's mem_fraction_static and must be between 0 and 1 "
+                '(exclusive).') from None
+        if not (0.0 < value < 1.0):
+            raise ValueError(
+                f'{SERVE_MEM_FRACTION_ENV}={raw!r} is out of range: '
+                'mem_fraction_static is a FRACTION of the card, strictly '
+                'between 0 and 1.')
+        return value
+
     def _launch_exports(self) -> str:
         """The `export ...` prefix of the wrapper: every launch-script knob
         narrator has an opinion about, stated explicitly.
@@ -682,6 +718,12 @@ class HiggsSglServedBackend(GuestOwnedServer):
             f'{SERVE_MAX_NUM_SEQS_ENV}={self.concurrency}',
             f'{served_common.OWNER_ENV}={shlex.quote(self.owner_id())}',
         ]
+        fraction = self._mem_fraction()
+        if fraction is not None:
+            # STATED, not inherited - see `_mem_fraction`. Absent means the
+            # script's own documented default (0.60), which is the script's
+            # number to own and not one narrator invents a second copy of.
+            exports.append(f'{SERVE_MEM_FRACTION_ENV}={fraction}')
         if self.checkpoint_dir:
             exports.append(
                 f'{SERVE_MODEL_DIR_ENV}={shlex.quote(_guest_form(self.checkpoint_dir))}')

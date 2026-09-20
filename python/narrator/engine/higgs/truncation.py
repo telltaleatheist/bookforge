@@ -141,6 +141,7 @@ from typing import Callable, List, Optional
 import numpy as np
 
 from ..log import log
+from .codec import FrameMeasure
 
 #: Silence between the halves of a re-split chunk. A sentence boundary inside a
 #: paragraph; the same length `v3_served.REFERENCE_JOIN_SECONDS` uses between
@@ -385,19 +386,89 @@ def check(text: str, audio, sample_rate: int, max_chars_per_sec: float,
                          max_hole_seconds=float(max_hole_seconds))
 
 
-def tracker_for(voice, default_max: float, default_min: float) -> PaceTracker:
-    """The guard's tracker for `voice`: seeded from the voice's own recorded
-    pace and band when the catalog measured them (`load_voices._length_band`
-    reads all three or none), else from the engine's default band with its
-    geometric centre as the pace - the Fuhrer whole-book measurement, not a
-    guess. Built ONCE per engine; the band then follows the book."""
-    own_pace = getattr(voice, 'pace_chars_per_sec', None)
-    own_max = getattr(voice, 'max_chars_per_sec', None)
-    own_min = getattr(voice, 'min_chars_per_sec', None)
-    if own_pace is not None and own_max is not None and own_min is not None:
-        return PaceTracker(float(own_pace), float(own_max), float(own_min))
-    return PaceTracker(expected_chars_per_sec(float(default_max), float(default_min)),
-                       float(default_max), float(default_min))
+#: The band's three numbers, in the spelling the wire and the voices document
+#: share. ONE spelling, because the band Crucible puts on a batch is the band
+#: BookForge read off the voice row.
+BAND_KEYS = ('paceCharsPerSec', 'maxCharsPerSec', 'minCharsPerSec')
+
+
+def parse_band(value, where: str) -> dict:
+    """A band off the wire -> the same three numbers, checked, or a refusal
+    that names `where`.
+
+    THREE POSITIVE NUMBERS WITH `min < pace < max`, and nothing filled in: a
+    band with two of the three is not a band with a default in the third, it is
+    a caller that has not measured one. `PaceTracker.__init__` enforces the
+    same two rules - this exists so the refusal lands on the BATCH, before a
+    row renders, rather than as one chunk's exception half way through.
+    """
+    if not isinstance(value, dict):
+        raise ValueError(
+            f'{where}: the band must be an object with {", ".join(BAND_KEYS)}; '
+            f'got {type(value).__name__}.')
+    out = {}
+    for key in BAND_KEYS:
+        if key not in value:
+            raise ValueError(
+                f'{where}: the band carries no {key!r}. All three of '
+                f'{", ".join(BAND_KEYS)} are required - a band is a MEASUREMENT '
+                'of one voice at one checkpoint, and two thirds of one is not a '
+                'band with the rest defaulted.')
+        number = value[key]
+        if isinstance(number, bool) or not isinstance(number, (int, float)) or number <= 0:
+            raise ValueError(
+                f'{where}: the band\'s {key} must be a positive number; got '
+                f'{number!r}.')
+        out[key] = float(number)
+    if not (out['minCharsPerSec'] < out['paceCharsPerSec'] < out['maxCharsPerSec']):
+        raise ValueError(
+            f'{where}: the band is min < pace < max; got min '
+            f'{out["minCharsPerSec"]}, pace {out["paceCharsPerSec"]}, max '
+            f'{out["maxCharsPerSec"]}.')
+    return out
+
+
+def engine_band(max_chars_per_sec: float, min_chars_per_sec: float) -> dict:
+    """THE ENGINE'S OWN band, centred on its geometric mean - the Fuhrer /
+    deathstalker whole-book measurements that set `MAX_CHARS_PER_SEC` and
+    `MIN_CHARS_PER_SEC`, not a guess.
+
+    It is what narrator's own audiobook path (`convert`, `convert_many`) judges
+    against, because there the renderer IS the client and has no other band to
+    be given. IT IS NOT A FALLBACK FOR THE SERVE DOOR: a `generate_batch` that
+    asks to be judged must carry the band it wants to be judged against, and is
+    refused by name when it does not (`retake_without_band`). That fallback WAS
+    the defect - a band centred at 15.0 against a book running at 17.2 chars/s
+    called healthy chunks run-ons and re-rolled them to MAX_DEPTH.
+    """
+    return {'paceCharsPerSec': expected_chars_per_sec(float(max_chars_per_sec),
+                                                      float(min_chars_per_sec)),
+            'maxCharsPerSec': float(max_chars_per_sec),
+            'minCharsPerSec': float(min_chars_per_sec)}
+
+
+def tracker_for(band, where: str = 'tracker_for') -> PaceTracker:
+    """A `PaceTracker` on THE BAND IT IS GIVEN, and on nothing else.
+
+    ONE OWNER FOR THE BAND (Owen's ruling, 2026-09-19). Until then this
+    function read three keys off the VOICE entry - `paceCharsPerSec` /
+    `maxCharsPerSec` / `minCharsPerSec`, whichever the catalog happened to
+    carry - and fell back to the engine's default band when it found none. Two
+    sources, silently chosen between, and the fallback is the one that fired
+    for every voice whose document had not been measured: the guard then judged
+    a 17.2 chars/s book against a band centred on 15.0, called healthy chunks
+    run-ons, and re-rolled them to MAX_DEPTH.
+
+    So the band is now an ARGUMENT. The serve door gets it from the batch
+    (`generate_batch`'s `band`, which is the row BookForge read off the voice);
+    narrator's own audiobook path gets it from `engine_band`, the engine's own
+    measured pair, and says so at the call site. Nothing reads a voice entry to
+    build a tracker any more - the voice document still carries the keys, and
+    they still reach `ClipsVoice`, for the CLIENT that packs and sends them.
+    """
+    checked = parse_band(band, where)
+    return PaceTracker(checked['paceCharsPerSec'], checked['maxCharsPerSec'],
+                       checked['minCharsPerSec'])
 
 
 def expected_chars_per_sec(max_chars_per_sec: float, min_chars_per_sec: float) -> float:
@@ -624,6 +695,10 @@ class _LadderTask:
         self.stage = 'take0'      # take0 -> reroll -> children | accept -> done
         self.base: dict = {}
         self.audio = None
+        #: The `FrameMeasure` of the take that SHIPS - see `_finish`. None
+        #: until this task is decided, and None afterwards for a driver that
+        #: measures nothing (every test that offers bare audio).
+        self.measure = None
         self.clean = False
         self.done = False
 
@@ -639,7 +714,7 @@ class _LadderTask:
         return None
 
     # -- one rung -----------------------------------------------------------
-    def offer(self, audio) -> None:
+    def offer(self, audio, measure=None) -> None:
         if self.stage not in ('take0', 'reroll'):
             raise RuntimeError(
                 f'GuardPlan: chunk {self.index} at {self.path} was handed a take '
@@ -657,9 +732,9 @@ class _LadderTask:
 
         if self.stage == 'take0':
             if not verdict.off_length:
-                self._finish(audio, True)
+                self._finish(audio, True, measure)
                 return
-            self.takes.append((audio, verdict))
+            self.takes.append((audio, verdict, measure))
             self.base = {'index': self.index, 'depth': self.depth,
                          'side': verdict.side, **asdict(verdict)}
             if self.plan.tracker is not None:
@@ -683,9 +758,9 @@ class _LadderTask:
         if not verdict.off_length:
             self.plan.on_event({**self.base, 'action': 'rerolled', 'rung': 'reroll',
                                 'seconds_after': verdict.seconds})
-            self._finish(audio, True)
+            self._finish(audio, True, measure)
             return
-        self.takes.append((audio, verdict))
+        self.takes.append((audio, verdict, measure))
         keep_reject(audio, self.plan.sample_rate,
                     {**self.base, 'action': verdict.side, 'rung': 'reroll',
                      'seconds_after': verdict.seconds,
@@ -720,16 +795,21 @@ class _LadderTask:
             if verdict.chars_per_second == float('inf'):
                 return (hole, float('inf'))
             return (hole, abs(math.log(max(verdict.chars_per_second, 1e-9)) - math.log(centre)))
-        best, best_verdict = min(self.takes, key=distance)
+        best, best_verdict, best_measure = min(self.takes, key=distance)
         self.plan.on_event({**self.base, 'action': 'accepted-off-length', 'rung': 'accept',
                             'shipped_side': best_verdict.side,
                             'seconds_shipped': best_verdict.seconds,
                             'why': ('at MAX_DEPTH' if self.depth >= MAX_DEPTH
                                     else 'text cannot be split')})
-        self._finish(best, False)
+        self._finish(best, False, best_measure)
 
-    def _finish(self, audio, clean: bool) -> None:
+    def _finish(self, audio, clean: bool, measure=None) -> None:
+        """This task is decided: `audio` ships, and `measure` is what THAT
+        take spent. A parent's is its children's, joined - see
+        `FrameMeasure.joined`, which is where "one half cut off is a chunk cut
+        off" lives."""
         self.audio = audio
+        self.measure = measure
         self.clean = bool(clean)
         self.stage = 'done'
         self.done = True
@@ -740,7 +820,8 @@ class _LadderTask:
         if all(child.done for child in siblings):
             self.parent._finish(
                 join_parts([child.audio for child in siblings], self.plan.sample_rate),
-                all(child.clean for child in siblings))
+                all(child.clean for child in siblings),
+                FrameMeasure.joined([child.measure for child in siblings]))
 
 
 class GuardPlan:
@@ -791,6 +872,7 @@ class GuardPlan:
         self.on_event = self._record
         self._records: dict = {}
         self._verdicts: dict = {}
+        self._measures: dict = {}
         self._tasks: dict = {}
         self._added = 0
         self._finished: List[tuple] = []
@@ -861,6 +943,15 @@ class GuardPlan:
         """
         return self._verdicts.pop(int(index), None)
 
+    def measure(self, index: int) -> Optional[FrameMeasure]:
+        """The `FrameMeasure` of the take this chunk SHIPPED, once.
+
+        POPS, for `verdict`'s reason. None when the driver offered no measure,
+        which is honest: the wire reads a missing measurement as "narrator did
+        not say" and never as "not capped".
+        """
+        return self._measures.pop(int(index), None)
+
     # -- the band -----------------------------------------------------------
     def edges(self) -> tuple:
         """`(max_chars_per_sec, min_chars_per_sec)` for a take being judged NOW:
@@ -871,14 +962,17 @@ class GuardPlan:
         return band['max_chars_per_sec'], band['min_chars_per_sec']
 
     # -- building -----------------------------------------------------------
-    def add(self, index: int, text: str, first_take=None) -> None:
+    def add(self, index: int, text: str, first_take=None,
+            first_measure=None) -> None:
         """A chunk onto the ladder. `first_take` is take 0 when the caller
-        already has it (every batch path), so it is never rendered twice."""
+        already has it (every batch path), so it is never rendered twice, and
+        `first_measure` is what THAT take spent - the slab arms measure their
+        rows as they decode them and would otherwise have nowhere to put it."""
         task = _LadderTask(self, (self._added,), int(index), text, 0)
         self._tasks[task.path] = task
         self._added += 1
         if first_take is not None:
-            task.offer(first_take)
+            task.offer(first_take, first_measure)
 
     def child(self, parent, position: int, text: str):
         """A split half. Its path sorts INSIDE its parent's, so depth-first
@@ -920,13 +1014,21 @@ class GuardPlan:
                 return request
         return None
 
-    def offer(self, request: RenderRequest, audio) -> None:
-        """The audio for one of `round()`'s requests."""
+    def offer(self, request: RenderRequest, audio, measure=None) -> None:
+        """The audio for one of `round()`'s requests, and what it SPENT.
+
+        `measure` is that take's `FrameMeasure` - optional because a driver
+        that cannot measure (a test offering bare audio) must still be able to
+        drive the ladder, and because the measurement is a fact the ladder
+        never reads. It is carried, not consulted: no rung, no accept rule and
+        no event here looks at it. It rides to whichever take ends up shipping
+        and leaves through `GuardPlan.measure`.
+        """
         task = self._tasks.get(request.path)
         if task is None:
             raise KeyError(f'GuardPlan.offer: no task at {request.path}')
         self._issued.discard(request.path)
-        task.offer(audio)
+        task.offer(audio, measure)
 
     def abandon(self, request: RenderRequest) -> int:
         """The driver could not render this request; the CHUNK leaves the ladder.
@@ -950,6 +1052,7 @@ class GuardPlan:
         # for its verdict. Leaving the records would leak one book's worth.
         self._records.pop(root.index, None)
         self._verdicts.pop(root.index, None)
+        self._measures.pop(root.index, None)
         return root.index
 
     def finish_root(self, task) -> None:
@@ -962,6 +1065,7 @@ class GuardPlan:
             self.tracker.observe(len((task.text or '').strip()),
                                  float(len(task.audio)) / float(self.sample_rate))
         self._verdicts[task.index] = self._build_verdict(task)
+        self._measures[task.index] = task.measure
         self._records.pop(task.index, None)
         self._finished.append((task.index, task.audio, task.clean))
 

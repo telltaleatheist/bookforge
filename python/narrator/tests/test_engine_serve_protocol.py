@@ -50,6 +50,23 @@ if _PYTHON_ROOT not in sys.path:
     sys.path.insert(0, _PYTHON_ROOT)
 
 
+def fake_higgs_band() -> dict:
+    """The band a batch must carry to be JUDGED by the fake Higgs engine.
+
+    Since Owen's ruling of 2026-09-19 the band comes from the BATCH and from
+    nowhere else - `retake: true` with no band is `retake_without_band` - so a
+    test that wants the ladder has to state one. It is read off the fake's own
+    constants rather than written out here: the fake renders
+    HIGGS_FRAMES_PER_CHAR frames per character, its pace follows from that, and
+    a hard-coded triple would drift the day the fake's pace changed and these
+    tests would silently start judging every chunk a runaway.
+    """
+    from narrator.serve.fake_engine import FakeHiggsEngine as F
+    return {'paceCharsPerSec': F._PACE,
+            'maxCharsPerSec': F.MAX_CHARS_PER_SEC,
+            'minCharsPerSec': F.MIN_CHARS_PER_SEC}
+
+
 def pcm16(data: str) -> array.array:
     """The wire's `data` field as int16 samples.
 
@@ -674,10 +691,19 @@ class GuardedBatchTest(_WorkerCase):
         """Restart this test's worker with a NARRATOR_FAKE_HIGGS_RATE table."""
         self._worker_with_env({'NARRATOR_FAKE_HIGGS_RATE': rate_json})
 
-    def _higgs_batch(self, items):
+    def _higgs_batch(self, items, **extra):
+        """A JUDGED batch: `retake: true` and the band it is judged against.
+
+        Both are required together (`retake_without_band`), and this class is
+        about the ladder, so every batch here asks for it. `extra` is for the
+        tests that vary one key - a width, a malformed band, a batch that asks
+        for no judging at all.
+        """
         self._ready()
         self._load('deathstalker')
-        self.w.send(action='generate_batch', items=items)
+        request = {'retake': True, 'band': fake_higgs_band()}
+        request.update(extra)
+        self.w.send(action='generate_batch', items=items, **request)
         msgs = self.w.read_until('batch_done')
         return self._assert_batch_closed(msgs, [it['i'] for it in items])
 
@@ -898,7 +924,10 @@ class GuardedBatchTest(_WorkerCase):
         n = 12
         items = [{'i': i, 'text': f'Sentence number {i} of a chapter being rendered.'}
                  for i in range(n)]
-        self.w.send(action='generate_batch', items=items)
+        # JUDGED: the cancel this test is about is the GUARDED arm's, which a
+        # batch only takes when it asks for it (Owen, 2026-09-19).
+        self.w.send(action='generate_batch', items=items,
+                    retake=True, band=fake_higgs_band())
         # LONG ENOUGH THAT THE LADDER IS ALREADY RUNNING, and that is the whole
         # point of the delay: a cancel written immediately behind the batch is
         # caught by the check BEFORE the driver is started, which is a different
@@ -930,6 +959,212 @@ class GuardedBatchTest(_WorkerCase):
         # only where it is dequeued).
         self.assertEqual(self.w.read_until('stopped')[-1]['type'], 'stopped')
 
+
+class RetakeFlagTest(_WorkerCase):
+    """WHO DECIDES WHETHER NARRATOR JUDGES (Owen's ruling, 2026-09-19).
+
+    Until this landed, an engine that COULD guard a batch always did - the arm
+    was picked by a capability probe on `render_many` and the caller had no
+    say. The fine-tuning ladder is why that had to change: a screening render
+    of a checkpoint has no measured pace and no measured cap, because MEASURING
+    THEM IS WHAT THE RENDER IS FOR, so judging it means judging one model
+    against another model's band. BookForge wants the opposite - the guarded
+    render, with the band it read off the voice row - and both are one flag.
+
+    Driven with NARRATOR_ENGINE=higgs-v3 + --fake-engine, so the WORKER and the
+    ladder are the real ones and only the audio is fake.
+    """
+
+    WORKER_ENV = {'NARRATOR_ENGINE': 'higgs-v3'}
+
+    def _send(self, items, **extra):
+        # ONE handshake per worker, however many batches a test sends: `ready`
+        # arrives once, so a second `_ready()` would wait for a line that is
+        # never coming.
+        if not getattr(self, '_prepared', False):
+            self._ready()
+            self._load('deathstalker')
+            self._prepared = True
+        self.w.send(action='generate_batch', items=items, **extra)
+        return self._assert_batch_closed(self.w.read_until('batch_done'),
+                                         [it['i'] for it in items])
+
+    #: A chunk whose take 0 comes back FAR too short for its text - the shape
+    #: the guard exists for (Fuhrer chunk 19: 1,127 characters in 3.0 s).
+    BENT = json.dumps({'1': 0.35})
+
+    ITEMS = [{'i': 0, 'text': 'An ordinary opening chunk of the chapter here.'},
+             {'i': 1, 'text': 'The chunk whose first take comes back far too '
+                              'short for the text it was given, which is what '
+                              'the length guard exists to catch and re-roll.'}]
+
+    def _with_rate(self, rate_json):
+        """Restart on a rate table. A new subprocess is a new handshake."""
+        self._worker_with_env({'NARRATOR_FAKE_HIGGS_RATE': rate_json})
+        self._prepared = False
+
+    def test_retake_true_judges_and_says_so(self):
+        self._with_rate(self.BENT)
+        by_i = self._send(self.ITEMS, retake=True, band=fake_higgs_band())
+        self.assertIn('data', by_i[1], by_i[1])
+        self.assertIsNotNone(by_i[1].get('guard'), by_i[1])
+        self.assertEqual(by_i[1]['guard']['verdict'], 'rerolled', by_i[1])
+
+    def test_retake_absent_renders_the_row_once_and_judges_NOTHING(self):
+        """The bare arm: the same bent chunk ships as it came back, with no
+        verdict at all. `guard` ABSENT - not 'clean' - because nobody judged
+        it, and a clean verdict on an unjudged row would be narrator claiming
+        to have looked."""
+        self._with_rate(self.BENT)
+        by_i = self._send(self.ITEMS)
+        for i in (0, 1):
+            self.assertIn('data', by_i[i], by_i[i])
+            self.assertNotIn('guard', by_i[i], by_i[i])
+
+    def test_retake_false_is_the_same_as_absent(self):
+        by_i = self._send(self.ITEMS, retake=False)
+        for i in (0, 1):
+            self.assertIn('data', by_i[i], by_i[i])
+            self.assertNotIn('guard', by_i[i], by_i[i])
+
+    def test_retake_true_with_no_band_is_refused_BY_NAME(self):
+        """THE DEFECT THIS REFUSAL EXISTS FOR. Before the ruling the tracker
+        fell back to the ENGINE's default band when the voice carried none: a
+        band centred at 15.0 chars/s against a book actually running near 17.2
+        called healthy chunks run-ons and re-rolled them to MAX_DEPTH. So the
+        batch that asks to be judged carries the band it is judged against, or
+        it is refused whole."""
+        by_i = self._send(self.ITEMS, retake=True)
+        for i in (0, 1):
+            self.assertNotIn('data', by_i[i], by_i[i])
+            self.assertTrue(by_i[i]['message'].startswith('retake_without_band'),
+                            by_i[i])
+
+    def test_a_MALFORMED_band_is_refused_BY_NAME(self):
+        good = fake_higgs_band()
+        for band in ({k: v for k, v in good.items() if k != 'minCharsPerSec'},
+                     {**good, 'minCharsPerSec': 0},
+                     {**good, 'paceCharsPerSec': good['maxCharsPerSec'] * 2},
+                     'a band'):
+            with self.subTest(band=band):
+                by_i = self._send(self.ITEMS, retake=True, band=band)
+                for i in (0, 1):
+                    self.assertTrue(
+                        by_i[i]['message'].startswith('band_malformed'), by_i[i])
+
+    def test_a_band_sent_WITHOUT_retake_is_accepted_and_not_used(self):
+        """Owen: "it won't do anything with the number because it wasn't asked
+        to." So a band is not even parsed on a batch that asks for no judging -
+        a malformed one riding along is not a refusal, because nothing was
+        going to read it."""
+        by_i = self._send(self.ITEMS, band={'paceCharsPerSec': 'nonsense'})
+        for i in (0, 1):
+            self.assertIn('data', by_i[i], by_i[i])
+            self.assertNotIn('guard', by_i[i], by_i[i])
+
+    def test_a_retake_that_is_not_a_BOOLEAN_is_refused_BY_NAME(self):
+        """Never coerced: `bool("false")` is True, so a client that spelled the
+        flag wrong would get the exact opposite of what it asked for on every
+        row of a book, silently, because both answers are ordinary audio."""
+        for value in ('true', 'false', 1, 0):
+            with self.subTest(retake=value):
+                by_i = self._send(self.ITEMS, retake=value)
+                self.assertTrue(
+                    by_i[0]['message'].startswith('retake_malformed'), by_i[0])
+
+    def test_every_row_carries_capped_ON_BOTH_ARMS(self):
+        """THE MEASUREMENT IS UNCONDITIONAL. Whether a generation ran out of
+        frame budget is a fact about the render, not a verdict on it, and the
+        bare arm is exactly the one whose numbers nobody else has. Crucible
+        reads a missing `capped` as "narrator did not say" and never as
+        `false`, so it must be there whenever narrator does know."""
+        for extra in ({}, {'retake': True, 'band': fake_higgs_band()}):
+            with self.subTest(extra=extra):
+                by_i = self._send(self.ITEMS, **extra)
+                for i in (0, 1):
+                    self.assertIn('capped', by_i[i], by_i[i])
+                    self.assertIs(by_i[i]['capped'], False, by_i[i])
+
+    def test_a_run_to_the_CEILING_is_reported_as_capped(self):
+        """`cap_frames` is 2x the expected duration plus 150 frames of slack,
+        so a take that reaches it did not stop because the model was finished.
+        The fake's cap is the REAL formula over the real text
+        (`FakeHiggsEngine.cap_frames`); only the audio is bent."""
+        self._with_rate(json.dumps({'1': 40.0}))
+        by_i = self._send(self.ITEMS)
+        self.assertIs(by_i[0]['capped'], False, by_i[0])
+        self.assertIs(by_i[1]['capped'], True, by_i[1])
+
+    def test_an_engine_with_no_ladder_refuses_a_retake_BY_NAME(self):
+        """Orpheus has no `render_many`. Rendering the batch unguarded would be
+        a render that silently skipped the retake it was asked for and reported
+        success."""
+        self.w.close()
+        self.w = Worker()                     # the Orpheus fake, the default
+        self._prepared = True                 # this test does its own handshake
+        self._ready()
+        self._load('leah')
+        self.w.send(action='generate_batch',
+                    items=[{'i': 0, 'text': 'An ordinary sentence.'}],
+                    retake=True, band=fake_higgs_band())
+        by_i = self._assert_batch_closed(self.w.read_until('batch_done'), [0])
+        self.assertTrue(by_i[0]['message'].startswith('retake_unsupported'),
+                        by_i[0])
+
+    def test_a_STREAMING_batch_cannot_ask_to_be_judged(self):
+        """A streamed row leaves as it generates, so there is nothing left to
+        re-roll by the time the ladder could decide. Refused rather than
+        quietly rendered unjudged."""
+        by_i = self._send([{'i': 0, 'text': 'A streamed sentence.', 'stream': True}],
+                          retake=True, band=fake_higgs_band())
+        self.assertTrue(by_i[0]['message'].startswith('retake_with_stream'),
+                        by_i[0])
+
+
+class BatchWidthTest(_WorkerCase):
+    """`width`: how many rows of THIS batch narrator may keep in flight.
+
+    MEASURED, 2026-09-19: SGLang started 16 wide at `mem_fraction_static` 0.60
+    summed to 24.2 GB on a 24 GB card and WDDM paged the excess to host RAM -
+    4 to 10 times slower, with no error and no log line. The fine-tuning ladder
+    renders 4 wide on voices whose manifest says 16, and restarting a server to
+    say so is not something a job can do. So a batch may narrow itself, and
+    narrator does not reconfigure anything to honour it.
+    """
+
+    WORKER_ENV = {'NARRATOR_ENGINE': 'higgs-v3'}
+
+    ITEMS = [{'i': i, 'text': f'Sentence number {i} of a chapter.'}
+             for i in range(3)]
+
+    def _send(self, **extra):
+        if not getattr(self, '_prepared', False):
+            self._ready()
+            self._load('deathstalker')
+            self._prepared = True
+        self.w.send(action='generate_batch', items=self.ITEMS, **extra)
+        return self._assert_batch_closed(self.w.read_until('batch_done'),
+                                         [it['i'] for it in self.ITEMS])
+
+    def test_a_width_inside_the_serving_width_reaches_the_driver(self):
+        by_i = self._send(retake=True, band=fake_higgs_band(), width=1)
+        for it in self.ITEMS:
+            self.assertIn('data', by_i[it['i']], by_i[it['i']])
+
+    def test_a_width_ABOVE_the_serving_width_is_refused_BY_NAME(self):
+        """Refused, never clamped: a caller that believes it is running 16 wide
+        while narrator quietly runs 4 reports a number nobody rendered at."""
+        by_i = self._send(retake=True, band=fake_higgs_band(), width=999)
+        for it in self.ITEMS:
+            message = by_i[it['i']]['message']
+            self.assertTrue(message.startswith('width_over_serving'), message)
+
+    def test_a_malformed_width_is_refused_BY_NAME(self):
+        for value in (0, -1, 2.0, True, '2'):
+            with self.subTest(width=value):
+                by_i = self._send(retake=True, band=fake_higgs_band(), width=value)
+                self.assertTrue(
+                    by_i[0]['message'].startswith('width_malformed'), by_i[0])
 
 class VoiceCapsResetTest(unittest.TestCase):
     """A reload with an EMPTY caps payload must CLEAR the previous one.

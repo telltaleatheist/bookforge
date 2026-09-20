@@ -34,6 +34,8 @@ from unittest import mock
 import numpy as np
 
 from narrator.engine.higgs import truncation
+from narrator.engine.higgs.codec import FrameMeasure
+from narrator.engine.higgs import v3_served
 from narrator.engine.higgs.mlx_backend import (BATCH_ENV, CACHE_LIMIT_ENV,
                                                MEM_BUDGET_ENV,
                                                HiggsV3MlxEngine,
@@ -841,8 +843,9 @@ class _SerialRenders:
             attempt = self._attempts.get(index, 0)
             self._attempts[index] = attempt + 1
             rate = float(table[min(attempt, len(table) - 1)])
-        return np.zeros(int(len(text.strip()) / rate * self.RATE),
-                        dtype=np.float32)
+        self.last_audio = np.zeros(int(len(text.strip()) / rate * self.RATE),
+                                   dtype=np.float32)
+        return self.last_audio
 
 
 def _serial_engine(renders) -> HiggsV3MlxEngine:
@@ -862,11 +865,32 @@ def _serial_engine(renders) -> HiggsV3MlxEngine:
     # unseeded-engine case where `reroll_seed` stays None.
     engine.config.seed = 1234
     engine.render_audio = renders
+    # THE DRIVER CALLS THE MEASURED DOOR (`render_audio_measured`), so that is
+    # what a stub has to stand in for: `render_audio` is its one-value face and
+    # stubbing only that would leave the real one rendering. The measure is
+    # taken from the stub's own audio against the real cap, which is what the
+    # served arm does for real (`FrameMeasure.from_audio`).
+    engine.render_audio_measured = lambda text, seed=None, index=0, **kw: (
+        renders(text, seed=seed, index=index, **kw),
+        FrameMeasure.from_audio(renders.last_audio, v3_served.cap_frames(text),
+                                engine.SAMPLE_RATE))
     engine._write_sentence = mock.Mock(
         side_effect=AssertionError('render_many wrote a file'))
     engine._generate_delayed_rows_batch = mock.Mock(
         side_effect=AssertionError('the serial arm built a batch'))
     return engine
+
+
+def _band_tracker():
+    """The band these tests judge against, stated by the CALLER.
+
+    `truncation.tracker_for` takes the band explicitly since Owen's ruling of
+    2026-09-19 - nothing reads it off the voice or off the engine any more - so
+    a test that drives `render_many` has to say which band it means. This is
+    the one `_engine()` used to produce: the config's 20.0 / 14.5 with its
+    geometric centre, sqrt(20 x 14.5) = 17.03.
+    """
+    return truncation.tracker_for(truncation.engine_band(20.0, 14.5))
 
 
 def _chunk_text(tag: str) -> str:
@@ -885,10 +909,10 @@ class RenderManySerialTest(unittest.TestCase):
         renders = _SerialRenders()
         engine = _serial_engine(renders)
         rows = [(0, _chunk_text('A')), (1, _chunk_text('B'))]
-        out = list(engine.render_many(rows))
+        out = list(engine.render_many(rows, tracker=_band_tracker()))
 
-        self.assertEqual([index for index, _audio, _v in out], [0, 1])
-        for _index, audio, verdict in out:
+        self.assertEqual([index for index, _audio, _v, _m in out], [0, 1])
+        for _index, audio, verdict, _m in out:
             self.assertEqual(verdict['verdict'], 'clean')
             self.assertIs(verdict['clean'], True)
             self.assertEqual(verdict['parts'], 1)
@@ -916,10 +940,10 @@ class RenderManySerialTest(unittest.TestCase):
         renders = _SerialRenders(cps={0: [_SerialRenders.SHORT_CPS,
                                           _SerialRenders.CLEAN_CPS]})
         engine = _serial_engine(renders)
-        out = list(engine.render_many([(0, _chunk_text('A'))]))
+        out = list(engine.render_many([(0, _chunk_text('A'))], tracker=_band_tracker()))
 
         self.assertEqual(len(out), 1)
-        index, audio, verdict = out[0]
+        index, audio, verdict, _measure = out[0]
         self.assertEqual(index, 0)
         self.assertEqual(verdict['verdict'], 'rerolled')
         self.assertIs(verdict['clean'], True)
@@ -956,10 +980,10 @@ class RenderManySerialTest(unittest.TestCase):
         """
         renders = _SerialRenders(cps={0: [_SerialRenders.SHORT_CPS]})  # every take
         engine = _serial_engine(renders)
-        out = list(engine.render_many([(0, _chunk_text('A'))]))
+        out = list(engine.render_many([(0, _chunk_text('A'))], tracker=_band_tracker()))
 
         self.assertEqual(len(out), 1, 'a split chunk shipped as two artifacts')
-        index, audio, verdict = out[0]
+        index, audio, verdict, _measure = out[0]
         self.assertEqual(index, 0)
         self.assertEqual(verdict['parts'], 2)
         self.assertEqual(verdict['verdict'], 'resplit')
@@ -988,11 +1012,11 @@ class RenderManySerialTest(unittest.TestCase):
                                           _SerialRenders.CLEAN_CPS]})
         engine = _serial_engine(renders)
         rows = [(0, _chunk_text('A')), (1, _chunk_text('B')), (2, _chunk_text('C'))]
-        out = list(engine.render_many(rows))
+        out = list(engine.render_many(rows, tracker=_band_tracker()))
 
         # One clean, one split, one re-rolled - every rung of the ladder walked.
-        self.assertEqual([v['parts'] for _i, _a, v in out], [1, 2, 1])
-        self.assertEqual([v['verdict'] for _i, _a, v in out],
+        self.assertEqual([v['parts'] for _i, _a, v, _m in out], [1, 2, 1])
+        self.assertEqual([v['verdict'] for _i, _a, v, _m in out],
                          ['clean', 'resplit', 'rerolled'])
         engine._write_sentence.assert_not_called()
         # ...and the fixture has no `sentences_dir` to write to, so a real
@@ -1009,7 +1033,7 @@ class RenderManySerialTest(unittest.TestCase):
         renders = _SerialRenders(cps={1: [_SerialRenders.SHORT_CPS]}, watch=held)
         engine = _serial_engine(renders)
         rows = [(0, _chunk_text('A')), (1, _chunk_text('B'))]
-        out = list(engine.render_many(rows, in_flight=held))
+        out = list(engine.render_many(rows, in_flight=held, tracker=_band_tracker()))
 
         self.assertEqual(len(out), 2)
         # Chunk 0 alone while it renders; chunk 1 alone once 0 is decided - and
@@ -1028,10 +1052,10 @@ class RenderManySerialTest(unittest.TestCase):
         renders = _SerialRenders(cps={7: [_SerialRenders.SHORT_CPS]})
         engine = _serial_engine(renders)
         rows = [(7, _chunk_text('A')), (3, _chunk_text('B')), (9, _chunk_text('C'))]
-        out = list(engine.render_many(rows))
+        out = list(engine.render_many(rows, tracker=_band_tracker()))
 
-        self.assertEqual([index for index, _a, _v in out], [7, 3, 9])
-        self.assertEqual([v['parts'] for _i, _a, v in out], [2, 1, 1])
+        self.assertEqual([index for index, _a, _v, _m in out], [7, 3, 9])
+        self.assertEqual([v['parts'] for _i, _a, v, _m in out], [2, 1, 1])
         # ...and every render of chunk 7 happened before chunk 3's only one.
         self.assertEqual([i for i, _t, _s in renders.calls], [7, 7, 7, 7, 3, 9])
 
@@ -1047,7 +1071,7 @@ class RenderManySerialTest(unittest.TestCase):
         renders = _SerialRenders()
         engine = _serial_engine(renders)
         marked = '[heading]' + _chunk_text('A') + ' [break]'
-        out = list(engine.render_many([(4, marked)]))
+        out = list(engine.render_many([(4, marked)], tracker=_band_tracker()))
 
         clean = _chunk_text('A')
         self.assertEqual([t for _i, t, _s in renders.calls], [clean])
@@ -1065,7 +1089,8 @@ class RenderManySerialTest(unittest.TestCase):
         renders = _SerialRenders()
         engine = _serial_engine(renders)
         with self.assertRaises(ValueError) as caught:
-            list(engine.render_many([(0, _chunk_text('A')), (5, '[break][heading]')]))
+            list(engine.render_many([(0, _chunk_text('A')), (5, '[break][heading]')],
+                               tracker=_band_tracker()))
         message = str(caught.exception)
         self.assertIn('chunk 5', message)
         self.assertIn('[break][heading]', message)
@@ -1075,7 +1100,7 @@ class RenderManySerialTest(unittest.TestCase):
     def test_no_rows_is_no_yields_and_no_renders(self):
         renders = _SerialRenders()
         engine = _serial_engine(renders)
-        self.assertEqual(list(engine.render_many([])), [])
+        self.assertEqual(list(engine.render_many([], tracker=_band_tracker())), [])
         self.assertEqual(renders.calls, [])
         engine._write_sentence.assert_not_called()
 
@@ -1130,9 +1155,9 @@ class RenderManySerialFailureTest(unittest.TestCase):
         renders = _FailingRenders(fail_at={1: [0]})
         engine = _serial_engine(renders)
         rows = [(0, _chunk_text('A')), (1, _chunk_text('B')), (2, _chunk_text('C'))]
-        out = list(engine.render_many(rows))
+        out = list(engine.render_many(rows, tracker=_band_tracker()))
 
-        self.assertEqual([index for index, _a, _v in out], [0, 1, 2])
+        self.assertEqual([index for index, _a, _v, _m in out], [0, 1, 2])
         # The failed chunk: audio None AND verdict None - the shared contract's
         # failure signal, which serve/worker.py turns into the ordinary
         # 'No audio generated' item rather than silence dressed as a success.
@@ -1153,9 +1178,10 @@ class RenderManySerialFailureTest(unittest.TestCase):
         renders = _FailingRenders(fail_at={0: [1]},
                                   cps={0: [_SerialRenders.SHORT_CPS]})
         engine = _serial_engine(renders)
-        out = list(engine.render_many([(0, _chunk_text('A')), (1, _chunk_text('B'))]))
+        out = list(engine.render_many([(0, _chunk_text('A')), (1, _chunk_text('B'))],
+                                    tracker=_band_tracker()))
 
-        self.assertEqual([(i, a is None) for i, a, _v in out],
+        self.assertEqual([(i, a is None) for i, a, _v, _m in out],
                          [(0, True), (1, False)])
         # Take 0, then the re-roll that raised - and NOT the two split halves the
         # ladder would have asked for next.
@@ -1169,7 +1195,7 @@ class RenderManySerialFailureTest(unittest.TestCase):
         renders = _FailingRenders(fail_at={1: [0]}, watch=held)
         engine = _serial_engine(renders)
         rows = [(0, _chunk_text('A')), (1, _chunk_text('B'))]
-        out = list(engine.render_many(rows, in_flight=held))
+        out = list(engine.render_many(rows, in_flight=held, tracker=_band_tracker()))
 
         self.assertEqual(len(out), 2)
         self.assertEqual(held, [], 'a failed chunk was left in flight')
@@ -1193,9 +1219,9 @@ class RenderManySerialFailureTest(unittest.TestCase):
         engine = _serial_engine(renders)
         rows = [(0, _chunk_text('A')), (1, _chunk_text('B')), (2, _chunk_text('C'))]
         with mock.patch.object(truncation, 'GuardPlan', _capture):
-            out = list(engine.render_many(rows))
+            out = list(engine.render_many(rows, tracker=_band_tracker()))
 
-        self.assertEqual([(i, a is None) for i, a, _v in out],
+        self.assertEqual([(i, a is None) for i, a, _v, _m in out],
                          [(0, True), (1, False), (2, True)])
         self.assertEqual(len(plans), 1, 'one plan for the whole call')
         plan = plans[0]
@@ -1226,7 +1252,8 @@ class RenderManySerialFailureTest(unittest.TestCase):
 
         engine = _serial_engine(interrupted)
         with self.assertRaises(KeyboardInterrupt):
-            list(engine.render_many([(0, _chunk_text('A')), (1, _chunk_text('B'))]))
+            list(engine.render_many([(0, _chunk_text('A')), (1, _chunk_text('B'))],
+                                    tracker=_band_tracker()))
 
     def test_ABOVE_width_one_a_failed_SLICE_still_RAISES(self):
         """The other half of the ruling, restated here so the two live side by
@@ -1241,7 +1268,8 @@ class RenderManySerialFailureTest(unittest.TestCase):
         engine._generate_delayed_rows_batch = mock.Mock(
             side_effect=RuntimeError('metal out of memory'))
         with self.assertRaises(RuntimeError) as caught:
-            list(engine.render_many([(0, _chunk_text('A')), (1, _chunk_text('B'))]))
+            list(engine.render_many([(0, _chunk_text('A')), (1, _chunk_text('B'))],
+                                    tracker=_band_tracker()))
         self.assertIn('rows [0, 1]', str(caught.exception))
 
 
