@@ -25,7 +25,7 @@
  *     transcript on the wire, a checkpoint sends none, and both mismatches are
  *     refused by name before the job is submitted.
  *  4. A TRIPWIRE on the SDK. Both clients read `resident.reference` off
- *     `/v1/activity` with their own `fetch`, because the 0.6.0 SDK's activity
+ *     `/v1/activity` with their own `fetch`, because the SDK's activity
  *     shaper builds `resident` out of four named fields and DROPS the rest.
  *     The day it carries the field, this check goes red and says to delete
  *     both readers — the same discipline `test-crucible-settings-seam.js`
@@ -500,7 +500,7 @@ function refusal(fn) {
      * THIS ASSERTS A GAP, DELIBERATELY, AND IT EXPIRES.
      *
      * PHASE3-TTS.md §5's amendment puts `reference: {name, sha256, seconds}`
-     * on `/v1/activity`'s `resident` block. The 0.6.0 SDK's activity reader
+     * on `/v1/activity`'s `resident` block. The SDK's activity reader
      * builds `resident` out of four named fields and drops everything else, so
      * BOTH clients read that one field with their own `fetch`:
      * `electron/crucible/probe.ts`'s `residentClipOn` and
