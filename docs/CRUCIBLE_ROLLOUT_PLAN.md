@@ -247,7 +247,9 @@ e0c0ebe3+):**
   asks for ROOM, projector pin → `ggml-org/dots.ocr-GGUF` Q8 pair, engine-task endings named, T6 stage,
   narrator HIGGS_ENV prefix regression).
 - **Takes + zero-shot proven on the Mac's card** (MLX arm, tts env rebuilt on narrator 95d11238):
-  take 1 ≠ take 0, take 0 == take 0 (seeded; per-take seed lane), take 2 refused `unknown_take`;
+  take 1 ≠ take 0, take 0 == take 0 (seeded; per-take seed lane), take 2 refused `unknown_take`
+  (what that run measured; the refusal was RETIRED on 2026-09-19 — a take past the ladder is a seed
+  lane at the voice's own sampling, crucible docs/PHASE18-UNCERTIFIED.md §5);
   **first zero-shot render ever: 12.1 s audio in 9 s** with the owen-morgan clip + transcript. On the PC
   the same two checks are OWED once the card is free (Training pc holds it until ~06:30; the tts venv
   has narrator 95d11238 reinstalled `--no-deps`; the full `install tts --build --force` rebuild waits
@@ -290,7 +292,8 @@ orchestrator claims the engine (`managed_by` set); T2 full pytest; then hand bac
 
 **The card window, 07:25–08:xx (Training pc's clear message came at 07:25):**
 - **PC takes proven on cuda-linux:** take 0 = 11.30 s / 264,174 B (byte-identical to last night's — seeded),
-  take 1 = 12.02 s / 275,887 B (differs: the rung reaches SGLang), take 2 refused `unknown_take`.
+  take 1 = 12.02 s / 275,887 B (differs: the rung reaches SGLang), take 2 refused `unknown_take`
+  (as measured that morning; that refusal is retired — see the note above).
   **Zero-shot load OK on the PC** (116 s, reference registered). The zero-shot RENDER on the resident voice
   refused `accelerator_busy` → root-fixed (crucible a87badab: a render on a resident voice never asks the card
   for room; on cuda-linux the guard owns narrator's whole process group).

@@ -36,8 +36,11 @@
  * to the listener exactly as it came.
  *
  * It does not chunk, normalise or pack — `shared/listen-text/` does, before a
- * row gets here. A row longer than the (voice, backend) cap is refused by the
- * server as `chunk_too_long` and is never re-split. WHAT THE PACKER PACKS TO is
+ * row gets here, and since 2026-09-19 that is the ONLY place a row's length is
+ * judged: Crucible retired `chunk_too_long` on the streaming door as well as
+ * the render door (crucible `docs/PHASE18-UNCERTIFIED.md` 4.0.2) and speaks an
+ * over-long row as sent, reporting what came back. It still never re-splits
+ * one. WHAT THE PACKER PACKS TO is
  * the SERVER's since 2026-09-15: the caller reads the venue's `GET /v1/voices`
  * row and hands `listenBandFromCaps` those numbers rather than the local
  * catalog's (`electron/crucible/voice-band.ts`; in the app it is the active

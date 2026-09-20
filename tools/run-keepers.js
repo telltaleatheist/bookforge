@@ -205,10 +205,15 @@ const SUITES = [
   // pace come from the VENUE's `GET /v1/voices` row and never from this
   // machine's catalog — which on Windows was the `served` arm's block whatever
   // machine the render was bound for, and which is how Owen's Mac render was
-  // refused `chunk_too_long` before a second of audio. Against a fake stating
+  // refused `chunk_too_long` before a second of audio. That refusal is RETIRED
+  // on the server since 2026-09-19 (crucible docs/PHASE18-UNCERTIFIED.md
+  // 4.0.2), which makes this app the only door that still refuses an over-long
+  // chunk — the same reading of the same row, now with nothing behind it.
+  // Against a fake stating
   // 800 while the local catalog states 900: the ceiling clamped to the cap, the
-  // two refusals by name (a voice the venue does not advertise, a row with no
-  // cap), the target clamp, the voice document prep packs against, and a chunk
+  // three refusals by name (a voice the venue does not advertise, a row with no
+  // cap, a row with no MEASURED pace band), the band a guarded render states,
+  // the target clamp, the voice document prep packs against, and a chunk
   // over the cap refused HERE with nothing submitted.
   'test-crucible-venue-band',
   // A render on a Crucible server never enters WSL (2026-09-14): the session
@@ -307,8 +312,11 @@ const SUITES = [
   // channel, and narrator gives each RUNG its own seed lane — two renders at
   // one take are byte-identical by design (crucible docs/PHASE3-TTS.md §2,
   // measured 2026-09-15) — so a candidate is a different reading only if it is
-  // a different rung, and a rung past the end of the ladder is refused
-  // `unknown_take` rather than clamped. Shipped manifests declare two rungs per
+  // a different rung, and a rung past the end of the ladder is refused by
+  // BookForge rather than clamped (the server retired its own `unknown_take` on
+  // 2026-09-19 and renders such a rung at the voice's OWN sampling, which for an
+  // audition is the settings the rejected reading already used). Shipped
+  // manifests declare two rungs per
   // fine-tune, so the literal asked for a rung that is not there. The count is
   // the voice's `takes` minus one, read off the server, and this pins that read
   // plus the two sentences a person sees that used to say "unseeded".

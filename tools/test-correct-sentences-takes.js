@@ -18,9 +18,15 @@
  *    "THE SEED HALF", measured 2026-09-15 after two take-0 renders came back
  *    byte-identical). So three candidates all at take 0 are three copies of one
  *    reading, and only the RUNG moves the draw.
- *  · A `take` past the end of the ladder is refused `unknown_take` and never
- *    clamped. Shipped manifests declare two rungs per fine-tune, so a default
- *    of three candidates asks for rung 3 on a two-rung voice and is refused.
+ *  · A `take` past the end of the ladder is refused BY THIS APP and never
+ *    clamped. It was `unknown_take` at the server until 2026-09-19, when
+ *    crucible retired that refusal and began rendering such a rung at the
+ *    voice's OWN sampling in that rung's seed lane — which for an audition is
+ *    the settings the rejected reading already used, so the refusal moved here
+ *    rather than disappearing (`reroll.ts`,
+ *    `crucible_reroll_ladder_too_short`). Shipped manifests declare two rungs
+ *    per fine-tune, so a default of three candidates asks for rung 3 on a
+ *    two-rung voice and is refused.
  *
  * The number a voice can offer IS its ladder length minus one — take 0 is the
  * reading already in the book — and that number is the server's, in
@@ -80,6 +86,15 @@ function voiceRow(id, takes) {
     revision: 'rev1', fingerprint: `${id}@rev1`, memory_bytes_estimate: 1,
     estimate_basis: 'declared', max_chars: 800, sample_rate: 24000, takes,
     needs_reference: false,
+    // `[voice.serving]` — what the server under narrator is sized by. Required
+    // on every row since 2026-09-19 (crucible docs/PHASE18-UNCERTIFIED.md 4.0):
+    // `max_num_seqs` is the ceiling a render's `width` must not exceed, and the
+    // SDK refuses a row without the block rather than inventing one.
+    serving: {
+      max_num_seqs: 4, max_num_seqs_note: 'measured 2026-09-19 on a 24 GB card',
+      mem_fraction: 0.6, mem_fraction_note: 'measured beside it',
+      context_length: 4096, context_length_note: 'the engine was started at it',
+    },
     pace: FAKE_PACE,
   };
 }

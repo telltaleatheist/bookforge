@@ -62,11 +62,21 @@
  * (`VoiceInfo.takes`, whose own words are "ask before you submit"), so a pass
  * that wants more candidates than the ladder has rungs above 0 is refused BY
  * NAME, with both numbers, before a single job is submitted. It is not clamped
- * to the top rung and it does not quietly render fewer: Crucible refuses
- * `unknown_take` rather than clamping ("a silent clamp is a retake ladder that
- * stops climbing without telling anyone"), and cycling back down the rungs
- * would put two candidates in one seed lane — which is the byte-identical pair
- * this whole change exists to remove.
+ * to the top rung and it does not quietly render fewer: cycling back down the
+ * rungs would put two candidates in one seed lane — the byte-identical pair
+ * this whole change exists to remove — and a clamp is "a retake ladder that
+ * stops climbing without telling anyone".
+ *
+ * **CORRECTED 2026-09-19: the refusal is now THIS DOOR'S ALONE.** It used to
+ * lean on the server — a take past the ladder was `unknown_take` — and that
+ * refusal is retired (crucible docs/PHASE18-UNCERTIFIED.md section 5): rung N
+ * above the ladder is a legal request meaning "the voice's OWN sampling in take
+ * N's seed lane", which is what a screening sweep wants. It is not what an
+ * audition wants. A candidate rendered at the voice's own sampling is a
+ * candidate rendered at THE SETTINGS THAT PRODUCED THE READING BEING CORRECTED,
+ * differing from it only by seed, and offering a person that as a different
+ * reading is the thing Owen ruled out ("a retake never reuses the failing
+ * settings"). So the refusal stays, and it is stated here rather than borrowed.
  *
  * ── THE DIRECTORY IS THE CANDIDATE'S, THE RUNG IS THE ENGINE'S ────────────
  *
@@ -108,10 +118,11 @@ import * as path from 'path';
 import type { RenderChunk, RenderResult } from '@crucible/client';
 import { CRUCIBLE_CLIENT_NAME, crucibleClientFor } from './servers';
 import {
-  assertCrucibleVoiceAvailable,
+  assertVoiceRowLoadable,
   crucibleVoiceFor,
   describeCrucibleRefusal,
 } from './render';
+import { crucibleVoiceBand, renderBandFor } from './voice-band';
 import { downloadRenderArtifacts } from './render-artifacts';
 import type { ChunkGuardSummary } from '../chunk-guard-ledger';
 import type { VenueHost } from './generation-venue';
@@ -311,16 +322,33 @@ export async function runCrucibleReroll(
   const voice = crucibleVoiceFor(options.ttsEngine, options.voiceId);
   const client = await crucibleClientFor(server, CRUCIBLE_CLIENT_NAME);
   // Before the first submit: does this server serve that voice, can it load it,
-  // and HOW LONG IS ITS LADDER. One GET for the whole pass rather than one per
-  // candidate, and the row answers all three.
-  const voiceRow = await assertCrucibleVoiceAvailable(client, server, voice);
+  // HOW LONG IS ITS LADDER, and WHAT BAND has it measured. One GET for the whole
+  // pass rather than one per candidate, and the row answers all four.
+  //
+  // It reads the row through `crucibleVoiceBand` since 2026-09-19, where it used
+  // to call `assertCrucibleVoiceAvailable`: same single GET, same two booleans
+  // asserted below, and the row now also has to yield the three rates every
+  // candidate states on its own request. A second call to ask for them would be
+  // one fact with two fetches.
+  const { row: voiceRow, band } = await crucibleVoiceBand(client, server, voice);
+  assertVoiceRowLoadable(voiceRow, server, voice);
+  // A RETAKE IS A RENDER, SO IT IS GUARDED TOO, and against this voice's own
+  // measured band echoed straight back (Owen, 2026-09-19). A candidate rendered
+  // with nothing judged would be auditioned against candidates that were, and
+  // the truncation/runaway re-roll is exactly what a person re-rolling a
+  // sentence is asking the engine for. Refused by name here
+  // (`crucible_voice_states_no_band`) for a voice nobody has measured, before
+  // any job is submitted, rather than a band invented for it.
+  const retakeBand = renderBandFor(band);
 
   // THE LADDER, ASKED BEFORE ANYTHING IS SUBMITTED. `takes` on the row is the
   // number of rungs the voice declares, `0 .. takes - 1`; rung 0 is the boson
   // default the rejected reading was already rendered at, so the rungs actually
   // available to a candidate are the ones above it. Asking for more than there
-  // are is refused here by name with both numbers rather than at the server as
-  // one `unknown_take` on the Nth job, after N-1 have already run.
+  // are is refused here by name with both numbers — and since 2026-09-19 it is
+  // refused ONLY here: the server retired `unknown_take` and would render rung
+  // N above the ladder at the voice's own sampling, which for an audition is
+  // the settings the rejected reading already used. See this file's header.
   const rungs = voiceRow.takes;
   const spread = rungs - 1;
   if (takes > spread) {
@@ -330,7 +358,10 @@ export async function runCrucibleReroll(
       + `of ${rungs} rung(s) for voice "${voice}" — `
       + `${spread === 0 ? 'none at all' : `only ${spread}`} above rung 0, and rung 0 is the draw the `
       + 'sentence being corrected was already rendered at. Candidate k goes to rung k + 1, so this '
-      + `would have asked for rung ${takes}, which the server refuses unknown_take. Nothing is `
+      + `would have asked for rung ${takes}, which that server would render at the voice's OWN `
+      + 'sampling in that rung\'s seed lane — the very settings the reading being corrected was '
+      + 'already read at, differing only by seed, which is not a different reading to offer '
+      + 'somebody. Nothing is '
       + 'clamped to the top rung and nothing is quietly rendered fewer times: two candidates on one '
       + 'rung share a seed lane (narrator shifts the seed by TAKE_SEED_STRIDE × take) and would be '
       + `byte-identical, which is the whole defect this door was fixed for. Ask for at most ${spread}`
@@ -366,6 +397,8 @@ export async function runCrucibleReroll(
         language: options.language.trim(),
         take: rung,
         chunks: options.chunks,
+        retake: true,
+        band: retakeBand,
       });
     } catch (err) {
       throw describeCrucibleRefusal(err, server);

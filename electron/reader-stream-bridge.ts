@@ -276,7 +276,11 @@ export class ReaderStreamBridge {
         // configured. That pool is deleted (docs/LEGACY-REMOVAL.md): every Listen
         // is a Crucible session now, `higgsVoiceCapsForModel` defaults to THIS
         // machine's arm, and packing a book to it for a voice another machine is
-        // holding is the `chunk_too_long` refusal of 2026-09-15. A venue that
+        // holding is rows packed to numbers nobody measured for the weights that
+        // will speak them — which until 2026-09-19 came back as the server's
+        // `chunk_too_long` and now comes back as audio nobody refused (that
+        // refusal is retired, crucible docs/PHASE18-UNCERTIFIED.md 4.0.2), which
+        // is a stronger reason to read the venue's row and not a weaker one. A venue that
         // states no band refuses by name in the facade, and that refusal reaches
         // the client below rather than being packed around. The two shapes the
         // interface still allows are refused here by name the same way the book
