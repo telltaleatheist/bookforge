@@ -89,7 +89,38 @@ machines.
 
 ## 3. Behaviour differences (exhaustive)
 
-The design target is zero. Five remain; each is stated with what it costs.
+The design target is zero. Six remain; each is stated with what it costs.
+
+### 3.0 The table recipe is FIXED, not preserved (2026-09-19)
+
+The one place where a ported e2a behaviour was judged a defect and changed rather
+than kept. e2a's cell recipe (`core.py:1461-1481` at `9daab0ba`) is copied into
+`chapters.filter_chapter`'s `typ == 'table'` branch; `paragraph_packer.table_rows`
+was a second copy of it. Both now call `table_rows`, and two parts of the recipe
+are gone:
+
+- **`rows[0]` is no longer taken as the column headers.** Headers come from
+  markup that SAYS header - a `<thead>`, or a first row carrying a `<th>` - and a
+  `role="presentation"` table has none whatever it carries. A first row of `<td>`
+  is a DATA row and speaks its own line.
+- **A cell's strings are joined by `markup_text`, not `get_text(strip=True)`.**
+  The latter joins with nothing, so a cell built of per-sentence spans came out
+  welded.
+
+Measured on Hitler's People (Evans 2024): its Prologue is Vaillant-Couturier's
+Nuremberg testimony typeset as a two-column `role="presentation"` table of
+Kobo spans. Under the ported recipe the witness's name and her entire first
+answer became "the headers" and were prefixed to every later row (the longest
+reached 2,894 characters), her own row spoke nothing, and `out of them. ` +
+`We then` came out `them.We` - which left `split_sentences` one 1,200-character
+"sentence" with no boundary the cap could cut at. Twelve chunks were refused by
+Crucible's render door after the book had already taken a GPU.
+
+- **Output difference: a table with no `<th>` reads differently, and only such a
+  table.** A real grid (`<th>` or `<thead>`) reads exactly as e2a read it.
+- Keepers: `test_text_paragraph_packer.DialogueTableTest` and its twin
+  `test_text_packer.DialogueTableTest` - the second exists so the two paths
+  cannot answer differently again.
 
 ### 3.1 No stanza pipeline is constructed — REMOVES a load and a failure mode
 
