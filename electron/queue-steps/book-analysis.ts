@@ -86,16 +86,19 @@ export const bookAnalysisStep: StepModule = {
   leasesModel: (config: Record<string, unknown>): boolean =>
     config['aiProvider'] === 'crucible',
 
-  /**
-   * WHICH model it leases — the row's own `aiModel`, through the one owner.
+  /*
+   * NO `leasedModel` HOOK: THE ID IS THE SERVER'S, AND THIS SIDE CANNOT NAME IT.
    *
-   * `leasesModel` above says a lease MAY be held; this says on what, and the
-   * scheduler keeps the run's lease across the seam only when the two acts
-   * name the same id. A lease is per model and a server holds one, so keeping
-   * the 9B's lease into a step that must load the 27B is a `leased` refusal
-   * this app hands itself (Foundry, 2026-09-14).
+   * It used to say WHICH model this act leases, and the scheduler kept the
+   * run's lease across the seam only when two acts named the same id. Since
+   * phase 15 a text door sends `capability.selected` for its class (crucible
+   * PHASE15 §5.3) — the SERVER's answer, one round trip away — so this
+   * synchronous hook answered `null` for every module and the comparison
+   * matched nothing (bug hunt 2026-09-19, §H). The carry-over now compares
+   * `crucibleClass` on the row's server (`nextActWouldUseHeldCard`,
+   * queue-engine.ts) and the hook is gone; the argument lives once, in
+   * `ai-provider.ts`.
    */
-  leasedModel: (): string | null => null,
 
   async run(ctx: StepRunContext): Promise<ArtifactRef> {
     const config = ctx.step.config as unknown as AnalysisStepConfig;

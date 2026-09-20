@@ -65,27 +65,19 @@ export const translationStep: StepModule = {
   leasesModel: (config: Record<string, unknown>): boolean =>
     config['aiProvider'] === 'crucible',
 
-  /**
-   * WHICH model it leases — and the answer is NULL BY CONSTRUCTION now.
+  /*
+   * NO `leasedModel` HOOK: THE ID IS THE SERVER'S, AND THIS SIDE CANNOT NAME IT.
    *
-   * `leasesModel` above says a lease MAY be held; this says on what, and the
-   * scheduler keeps the run's lease across the seam only when the two acts
-   * name the same id. A lease is per model and a server holds one, so keeping
-   * the 9B's lease into a step that must load the 27B is a `leased` refusal
-   * this app hands itself (Foundry, 2026-09-14).
-   *
-   * The id used to be the row's own `aiModel`. Since phase 15 a text door
-   * sends `capability.selected` for its class (crucible PHASE15 §5.3), which
-   * is the SERVER's answer and needs a server name and a round trip — and this
-   * hook is synchronous and asked before the step is placed. `pass.ts` had
-   * already reached exactly this answer for `narration-text`; it is now true
-   * of every act, and the argument lives once, in `ai-provider.ts`.
-   *
-   * Null never equals an open lease's subject, so the lease is given back at
-   * the seam: the behaviour before one-lease-per-row existed. Nothing is
-   * swallowed — the act raises its own named refusal when it runs.
+   * It used to say WHICH model this act leases, and the scheduler kept the
+   * run's lease across the seam only when two acts named the same id. Since
+   * phase 15 a text door sends `capability.selected` for its class (crucible
+   * PHASE15 §5.3) — the SERVER's answer, one round trip away — so this
+   * synchronous hook answered `null` for every module and the comparison
+   * matched nothing (bug hunt 2026-09-19, §H). The carry-over now compares
+   * `crucibleClass` on the row's server (`nextActWouldUseHeldCard`,
+   * queue-engine.ts) and the hook is gone; the argument lives once, in
+   * `ai-provider.ts`.
    */
-  leasedModel: (): string | null => null,
 
   async run(ctx: StepRunContext): Promise<ArtifactRef> {
     const config = ctx.step.config as unknown as TranslationStepConfig;

@@ -107,12 +107,30 @@ async function main() {
   process.on('SIGTERM', () => stopAndExit('SIGTERM'));
 
   const t0 = Date.now();
-  // CPU, said out loud. The app's Assembly tab offers the GPU as a choice
-  // (Owen, 2026-09-07) because the queue can hold a GPU row until the card is
-  // free; this door has no queue behind it, so it takes the default the choice
-  // defaults to rather than competing with whatever is rendering.
+  /*
+   * `gpu`, BECAUSE THERE IS NO OTHER ANSWER LEFT (2026-09-19, bug hunt §H).
+   *
+   * This said `cpu` until today, on the 2026-09-07 argument that the Assembly
+   * tab's GPU option exists because a QUEUE can hold a row until the card is
+   * free, and a door with no queue behind it should not compete with whatever
+   * is rendering. That argument was about a local spawn on this machine's card.
+   * It is not where the aligner runs any more: `runCoverageAlign` sends every
+   * alignment to the Crucible the session's own record names, and a Crucible
+   * has only the card — so `runCoverageAlignOnCrucible` refuses anything but
+   * `gpu` BY NAME (`crucible_align_cpu_row`). A door that asks for the CPU is
+   * a door that cannot run at all, which is what this one had become.
+   *
+   * Competing for the card is the SERVER's question now, and it answers it:
+   * a machine already running somebody's job refuses with its own holder line
+   * rather than being quietly shared.
+   *
+   * There is deliberately no `--device` flag here. The choice the app's row
+   * still carries is about a local spawn nothing reaches any more; inventing a
+   * flag for it would offer a setting whose only two values are "run" and
+   * "refused by name".
+   */
   const result = await job.runCoverageAlign(
-    stepId, { processDir, language, device: 'cpu' }, null);
+    stepId, { processDir, language, device: 'gpu' }, null);
   off();
   // FAILURE HERE MEANS THE RUN COULD NOT HAPPEN — no session, no aligner, a dead
   // worker. A pass that measured every chunk and doubted some of them succeeded

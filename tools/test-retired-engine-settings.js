@@ -236,5 +236,30 @@ check('nothing recorded is NOT treated as a migration', () => {
     'getPipelineDefaults logs a migration this check does not know about');
 });
 
+check('the renderer has ONE TTSSettings, and it is the manifest\'s record', () => {
+  /*
+   * THE SECOND ONE IS GONE (2026-09-19, bug hunt §H).
+   *
+   * `src/app/features/studio/models/tts.types.ts` declared a TTSSettings of its
+   * own — `device`, `ttsEngine`, `fineTuned`, worker counts — left over from a
+   * TTS panel Studio hosted before the narration modal became the one door. Its
+   * last reader went with `studio.component`'s `ttsSettings` signal on
+   * 2026-09-14, and a dead type shaped like a live one is a thing a new
+   * component can bind to by accident: it names an ENGINE and a DEVICE, and a
+   * second answer to either is the defect this suite exists for.
+   *
+   * `manifest.types.ts`'s TTSSettings STAYS and its `device` stays with it:
+   * that one is a RECORD of a run that happened, and a manifest written when
+   * the app still asked must keep parsing.
+   */
+  assert.ok(!fs.existsSync(path.join(REPO, 'src', 'app', 'features', 'studio', 'models', 'tts.types.ts')),
+    'the studio TTSSettings is back — the manifest record is the one TTSSettings the '
+    + 'renderer has');
+  const manifest = fs.readFileSync(
+    path.join(REPO, 'src', 'app', 'core', 'models', 'manifest.types.ts'), 'utf-8');
+  assert.ok(/export interface TTSSettings \{[\s\S]*?device: 'gpu' \| 'mps' \| 'cpu';/.test(manifest),
+    'the manifest record lost its device — a manifest that carries one must keep parsing');
+});
+
 console.log(`\n${failed === 0 ? 'ALL OK' : 'FAILED'}  retired engine settings: ${passed} passed, ${failed} failed`);
 process.exit(failed === 0 ? 0 : 1);

@@ -28,7 +28,7 @@
  *     The copy it replaced also defaulted both credentials to an empty string,
  *     which sends an empty Authorization header and reports whatever the API
  *     says about it instead of refusing at the door.
- *  2. THE PASS ASKS ITS OWN BLOCK. `machines`, `leasesModel`, `leasedModel`
+ *  2. THE PASS ASKS ITS OWN BLOCK. `machines`, `leasesModel`, `crucibleClass`
  *     and `resource` all read the nested provider, not a field that is never
  *     there.
  *  3. THE CLEAN ACT TRAVELS TOO, and by a different owner: nobody picks its
@@ -36,14 +36,15 @@
  *     `clean` act and its model is `<userData>/crucible-models.json`.
  *  4. A ROW THAT NAMES NO SERVER IS REFUSED BY NAME. A default here would be
  *     the manufactured instruction crucible §4.2.1a exists to prevent.
- *  5. NO PASS NAMES THE MODEL IT LEASES (rewritten 2026-09-14). This used to
- *     say the opposite — each act named its id so the scheduler could compare
- *     it to what the row was already holding — and that was right while the
- *     row owned the mapping. It does not: the id is `capability.selected` for
- *     the class ON THE PLACED SERVER, and `leasedModel` is synchronous and
- *     asked before placement. So all four answer null, with the cost of that
- *     (a lease given back at the seam) recorded as OWED rather than paid for
- *     with a lookup table this app has no business owning.
+ *  5. NO PASS NAMES THE MODEL IT LEASES (rewritten 2026-09-14, again
+ *     2026-09-19). Each act used to name its id so the scheduler could compare
+ *     it to what the row was already holding, and that was right while the row
+ *     owned the mapping. It does not: the id is `capability.selected` for the
+ *     class ON THE PLACED SERVER, so every module answered null — and a hook
+ *     every module answers null for is a comparison that matches nothing, which
+ *     is how `pause()` came to close a running step's lease (bug hunt §H). The
+ *     `leasedModel` hook is GONE; what a pass states is `crucibleClass`, and
+ *     the scheduler compares that on the row's server.
  *  6. THE TRANSPORT REALLY HAS A CRUCIBLE ARM. `callAI` is what a translate
  *     pass reaches the model through, and it had four providers; a declaration
  *     that the pass travels, over a transport that cannot, is a row that fails
@@ -102,12 +103,15 @@ function passConfig(kind, ai) {
 (async () => {
   // ── 1. The declarations exist at all ─────────────────────────────────────
 
-  await check('every pass module declares machines(), leasesModel() and leasedModel()', () => {
+  await check('every pass module declares machines(), leasesModel() and crucibleClass()', () => {
     for (const [type, mod] of Object.entries(PASSES)) {
       assert.ok(mod, `${type} exports no step module`);
-      for (const name of ['machines', 'leasesModel', 'leasedModel', 'resource']) {
+      for (const name of ['machines', 'leasesModel', 'crucibleClass', 'resource']) {
         assert.strictEqual(typeof mod[name], 'function', `${type} declares no ${name}()`);
       }
+      assert.strictEqual(mod.leasedModel, undefined,
+        `${type} declares leasedModel — the hook is gone (2026-09-19): every module answered `
+        + 'null for it, so the comparison it fed matched nothing');
     }
   });
 
@@ -218,16 +222,12 @@ function passConfig(kind, ai) {
      * the run was placed on (crucible PHASE15 §5.3), so the row carries no id
      * to name and the blank case is not a case any more.
      *
-     * Null is an ANSWER, not a gap: it never equals an open lease's subject,
-     * so the lease is given back at the seam — exactly the behaviour before
-     * one-lease-per-row existed. It costs a clean-then-simplify row its lease
-     * across the chain, which is a real cost, recorded as OWED in the module
-     * and repaired by an ASYNC `leasedModel` given the run's venue — never by
-     * a table over here. `leasedModel` is synchronous and is asked BEFORE the
-     * step is placed, so it has neither a server name nor a round trip, and a
-     * lookup saying "simplify is the 27B" would be a second owner of a
+     * What each pass DOES state is its class, and that is what the scheduler
+     * compares on the row's server (`nextActWouldUseHeldCard`, 2026-09-19). A
+     * lookup here saying "simplify is the 27B" would be a second owner of a
      * per-host fact (crucible `docs/ARCHITECTURE.md` R1) and wrong on the
-     * first machine with a smaller card.
+     * first machine with a smaller card — which is why the id is not named
+     * here and the class is.
      */
     for (const [type, config] of [
       ['simplify', passConfig('simplify', { aiProvider: 'crucible', aiModel: 'qwen3.8-27b-4bit' })],
@@ -236,17 +236,17 @@ function passConfig(kind, ai) {
     ]) {
       assert.strictEqual(PASSES[type].leasesModel(config), true,
         `${type} asks the model about every block of the book`);
-      assert.strictEqual(PASSES[type].leasedModel(config), null,
-        `${type} must not name an id the SERVER chooses from its own capability record`);
+      assert.strictEqual(typeof PASSES[type].crucibleClass(config), 'string',
+        `${type} must name the CLASS its lease is taken under — the id is the SERVER's, `
+        + 'chosen from its own capability record');
     }
-    // The two that lease nothing, for two different reasons, and both still
-    // answer null rather than an empty id.
+    // The two that lease nothing, for two different reasons. `footnote-refs`
+    // names no class either — a string replace over a zip asks no model.
     const legacy = passConfig('simplify', { aiProvider: 'local', aiModel: 'cogito' });
     assert.strictEqual(PASSES.simplify.leasesModel(legacy), false,
       'the bundled llama is this machine\'s process; there is no server lease to take');
-    assert.strictEqual(PASSES.simplify.leasedModel(legacy), null);
     assert.strictEqual(PASSES['footnote-refs'].leasesModel(passConfig('footnote-refs')), false);
-    assert.strictEqual(PASSES['footnote-refs'].leasedModel(passConfig('footnote-refs')), null);
+    assert.strictEqual(PASSES['footnote-refs'].crucibleClass(passConfig('footnote-refs')), null);
 
     /*
      * AND THE TWO WAYS THE TABLE COULD COME BACK ARE PINNED BY ABSENCE.

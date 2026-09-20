@@ -133,10 +133,11 @@ interface AlignStepConfig {
    * OPTIONAL ON THE TYPE. A row composed by a narration run says 'gpu' since
    * 2026-09-19: the alignment is a Crucible `align` job and a Crucible has only
    * the card, so `runCoverageAlignOnCrucible` refuses a CPU row by name. The
-   * CLI still queues 'cpu' against a local session, and absent means a row
-   * queued before 2026-09-07, when every align was CPU by construction. Both
-   * are real answers rather than missing ones, so absent is read as 'cpu' — and
-   * the row says so on the card, once, rather than quietly.
+   * headless door says 'gpu' too since later that day (`cli/coverage-align.js`
+   * — it queued 'cpu' from the local-spawn era and therefore could not run at
+   * all). Absent means a row queued before 2026-09-07, when every align was CPU
+   * by construction: a real answer rather than a missing one, so absent is read
+   * as 'cpu' — and the row says so on the card, once, rather than quietly.
    */
   device?: 'cpu' | 'gpu';
   /** The chain's act metadata: `title` is the ACT label ("Align"); the book is `bookTitle`. */

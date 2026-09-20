@@ -287,47 +287,28 @@ export interface StepModule {
    * Asked of the CONFIG because a step's provider is a config field: the same
    * translation row leases against `crucible` and leases nothing against Claude.
    *
-   * **NOT SUFFICIENT ON ITS OWN** — see {@link StepModule.leasedModel}.
+   * **NOT SUFFICIENT ON ITS OWN for a step that has not started** — which card
+   * a queued step would take is `crucibleClass` on the row's server, and the
+   * comparison is {@link nextActWouldUseHeldCard}. It IS sufficient for a step
+   * that is RUNNING: that act is using the card right now.
    */
   leasesModel?(config: Record<string, unknown>): boolean;
-  /**
-   * WHICH resident thing this step's act will lease, by id — or null.
+  /*
+   * THERE IS NO `leasedModel` HOOK ANY MORE, AND ITS ABSENCE IS THE RULING.
    *
-   * ── Why `leasesModel` alone was wrong (Foundry, 2026-09-14) ───────────────
+   * It asked a module WHICH model id its act would lease, and the scheduler
+   * kept the row's lease only when that id equalled the open lease's subject.
+   * Phase 15 took the answer away from this side: the id for an act is the
+   * SERVER's (`GET /v1/capability`'s `selected` for the class,
+   * `crucible/text-venue.ts` `crucibleActModel`, the one owner), so every
+   * module answered `null` and `null` never equals a subject. The comparison
+   * therefore matched NOTHING — which is how `pause()` came to close the lease
+   * of a step that was still running (bug hunt 2026-09-19, §H).
    *
-   * A Crucible lease is taken on a MODEL (`POST /v1/models/{id}/lease`) and a
-   * server holds exactly ONE. The first version of this seam kept the row's
-   * lease open whenever the NEXT step declared `leasesModel`, whatever model
-   * that step needed. But the acts of one row do not share a model: a cleanup
-   * runs on the 9B and a simplify or a translation on the 27B. So the
-   * archetypal row — clean, then simplify — carried the 9B's lease into a step
-   * whose job is to put the 27B on that card, and the load is refused `leased`
-   * naming `bookforge`, which is this app. The row parks on a claim it made
-   * against itself until the ttl lapses.
-   *
-   * It is exactly the case the seam was built for, and the keeper proved it
-   * "worked" because the fake server did not check model identity.
-   *
-   * ── The rule ─────────────────────────────────────────────────────────────
-   *
-   * The lease survives into the next step only when that step's own id for its
-   * own act EQUALS the open lease's subject. Otherwise it is given back at
-   * settle, exactly as it was before one lease per row existed — and the next
-   * step takes its own.
-   *
-   * ── Null is an answer, not a gap ─────────────────────────────────────────
-   *
-   * "This act leases nothing this side can name": a provider with no card, an
-   * act with no model chosen yet, a module that has not been taught. Null
-   * never equals an open lease's subject, so it releases — the safe direction,
-   * and the one that is true of a step nobody has declared for.
-   *
-   * MUST NOT THROW and must not reach the network: it is called synchronously
-   * inside `settleStep`, in front of a step that has not started. A module
-   * whose record is unreadable answers null and lets the ACT raise the refusal
-   * where an operator can act on it.
+   * What replaced it is {@link StepModule.crucibleClass} on the row's server —
+   * see {@link nextActWouldUseHeldCard} for why the class stands in for the id
+   * and what still catches a class whose model moved underneath it.
    */
-  leasedModel?(config: Record<string, unknown>): string | null;
   /**
    * WHICH CRUCIBLE CAPABILITY CLASS THIS STEP IS, or `null` when it is none.
    *
@@ -1274,8 +1255,8 @@ export function appendStep(jobId: string, spec: AppendStepSpec, opts?: EnqueueOp
 // never expires while the app lives. Stop a `clean → simplify` row after
 // `clean` lands and a 9–27 GB model stays leased until BookForge quits — and
 // Crucible answers this app's OWN next job `409 leased`, naming `bookforge`.
-// The app blocking itself is the same failure `StepModule.leasedModel` was
-// added to end, arriving through a different door.
+// The app blocking itself is the same failure the model-identity half of this
+// seam was added to end, arriving through a different door.
 //
 // ── The rule ───────────────────────────────────────────────────────────────
 //
@@ -1291,12 +1272,28 @@ export function appendStep(jobId: string, spec: AppendStepSpec, opts?: EnqueueOp
  * The row-wide mirror of {@link leaseWantedAfter}, which a door cannot use:
  * `leaseWantedAfter` asks about the children of *the step that just settled*,
  * and a door settles nothing. So this asks the same question of every step of
- * the run, with the same two halves — the module says its work is a run of
- * chat completions, and names the model the lease is already on.
+ * the run.
+ *
+ * ── A RUNNING STEP ALWAYS KEEPS IT (Owen's ruling 2, 2026-09-19) ───────────
+ *
+ * *"If the next step is guaranteed to use the currently loaded model, we can
+ * leave it loaded"* — and a step that is ALREADY RUNNING on that card is the
+ * one case where the guarantee needs no comparison at all: the act is using
+ * the lease at this instant, and `pause()` deliberately does not stop it.
+ * Taking the protection out from under a live run is the eviction the lease
+ * exists to prevent.
+ *
+ * This was the defect (bug hunt 2026-09-19, §H). The running branch sat behind
+ * a model-identity check that had matched nothing since phase 15 — every
+ * module answered `null` for the id — so `pause()` reached
+ * `closeRowLeasesTheQueueWillNotStart` and closed the lease of a step that was
+ * mid-act. The identity check moved to where it belongs: the steps that have
+ * not started.
  *
  * WHAT IT DELIBERATELY WILL NOT SAY YES TO, so that it can never keep a lease
  * `leaseWantedAfter` would have released:
  *
+ *  - a step that would take a DIFFERENT card ({@link nextActWouldUseHeldCard}).
  *  - a step BEHIND work that has not landed. An act queued behind an hour of
  *    ffmpeg was never what the lease was kept for, and holding somebody's model
  *    across that assembly is the thing ONE LEASE PER ROW rules out by name.
@@ -1305,24 +1302,58 @@ export function appendStep(jobId: string, spec: AppendStepSpec, opts?: EnqueueOp
  *    admitted, so the next act starts when a person presses Start and not
  *    before — an unbounded hold on a card, which is a different sentence from
  *    "it is next".
- *
- * A step that is RUNNING is using the lease right now, whatever the queue's
- * dial says: `pause()` does not stop what is already running, and taking the
- * protection out from under a live run is the eviction the lease exists to
- * prevent.
  */
-function rowLeaseStillWanted(job: QueueJob, heldModel: string): boolean {
+function rowLeaseStillWanted(job: QueueJob, held: HeldRowLease): boolean {
   for (const step of job.steps) {
     if (TERMINAL_STEP_STATUSES.has(step.status)) continue;
     const mod = modules.get(step.type);
     if (mod?.leasesModel?.(step.config ?? {}) !== true) continue;
-    if (mod.leasedModel?.(step.config ?? {}) !== heldModel) continue;
     if (runningSteps.has(step.id)) return true;
     if (!running) continue;
+    if (!nextActWouldUseHeldCard(job, step, held)) continue;
     const parent = parentOf(step);
     if (parent === null || parent.status === 'done') return true;
   }
   return false;
+}
+
+/**
+ * WOULD THIS NOT-YET-STARTED STEP TAKE THE CARD THE ROW IS ALREADY HOLDING?
+ *
+ * ── Why the CLASS stands in for the model id (2026-09-19) ──────────────────
+ *
+ * A lease is on a MODEL and a server holds one, so the honest question is "is
+ * the next act's model the model on this card". This side cannot ask it: since
+ * phase 15 the id for an act is the SERVER's answer — `GET /v1/capability`'s
+ * `selected` for the class, resolved inside `reserveCrucibleRowLease` — and
+ * this function is called synchronously inside `settleStep`, in front of a step
+ * that has not started, from a module that may not reach the network
+ * (`queue-engine.ts` holds no HTTP). The hook that used to answer it
+ * (`leasedModel`) therefore answered `null` for every module, which never
+ * equalled anything and released every time.
+ *
+ * So the comparison is made in the terms both sides really have: the CLASS on
+ * the SERVER. One server maps one class to one model, so same class + same
+ * machine IS the same card — and the server itself owns that mapping, which is
+ * the R1 reason not to keep a table of it here.
+ *
+ * WHAT CATCHES THE CASE THE CLASS CANNOT SEE: an operator repointing a class
+ * at another model between two acts. Then the held lease is on the old id and
+ * the act asks for the new one — and `withRowLease` (crucible/lease.ts)
+ * compares the real ids, releases the old lease and takes the new one, in that
+ * order. A stale keep costs the gap, never a `409 leased` this app hands
+ * itself.
+ *
+ * `waitForResolved` is the row's machine — written the moment the card is
+ * taken and never rewritten (`assignRunVenue`). An UNPLACED row does not veto:
+ * it is a row whose lease was taken inside the act rather than by admission
+ * (a build with no `reserveRow`), and both acts resolve their venue by the same
+ * rule from the same record, so the next one lands on the same machine — and
+ * if it does not, `withRowLease` swaps the lease as above.
+ */
+function nextActWouldUseHeldCard(job: QueueJob, step: QueueStep, held: HeldRowLease): boolean {
+  if (job.waitForResolved !== undefined && job.waitForResolved !== held.server) return false;
+  return leaseActOf(step) === held.act;
 }
 
 /**
@@ -1335,7 +1366,7 @@ function rowLeaseStillWanted(job: QueueJob, heldModel: string): boolean {
  */
 function closeRowLeaseIfUnwanted(job: QueueJob): void {
   if (crucibleLeaseHost === null) return;
-  const held = crucibleLeaseHost.leaseSubject(job.id);
+  const held = crucibleLeaseHost.leaseHeld(job.id);
   if (held === null) return;
   if (rowLeaseStillWanted(job, held)) return;
   void crucibleLeaseHost.closeRow(job.id);
@@ -2465,16 +2496,38 @@ export interface CrucibleLeaseHost {
   /** Give back the lease this run was holding, if any. Never throws. */
   closeRow(row: string): Promise<void>;
   /**
-   * The id of the thing this run's lease is on, or null when it holds none.
+   * WHAT THIS RUN IS HOLDING — the machine and the class — or null when it
+   * holds none.
    *
-   * The scheduler compares it to the NEXT step's own id
-   * ({@link StepModule.leasedModel}) and keeps the lease only when they are
-   * the same — a lease is per model and a server holds one, so keeping it open
-   * for an act that wants a different model is a refusal this app hands
+   * The scheduler compares it to what the NEXT step would take
+   * ({@link nextActWouldUseHeldCard}) and keeps the lease only when they are
+   * the same card: a lease is per model, a server holds one, and keeping it
+   * open for an act that wants a different model is a refusal this app hands
    * itself. Synchronous and local: it reads the map `withRowScope` fills, and
    * never the network.
+   *
+   * The MODEL ID is deliberately not in this answer even though the lease is
+   * on one. Since phase 15 the id for an act is the server's, learnt over the
+   * wire at reserve time, so this side cannot name what the NEXT act's id will
+   * be — an id here would only ever be compared against a `null` nothing can
+   * produce, which is the defect §H names (`leasedModel`, removed).
    */
-  leaseSubject(row: string): string | null;
+  leaseHeld(row: string): HeldRowLease | null;
+}
+
+/**
+ * A ROW'S OPEN LEASE, in the two terms both sides of the comparison can state.
+ *
+ * `server` because a lease lives on one machine, and `act` because the
+ * capability class is what this side knows about a step that has not started
+ * (`StepModule.crucibleClass`). The model id the lease is actually on belongs
+ * to the server and is not carried here — see `leaseHeld` above.
+ */
+export interface HeldRowLease {
+  /** The machine the card is on, by NAME — `local`, or a registry entry. */
+  readonly server: string;
+  /** The capability class the lease was taken under: `clean`, `simplify`, … */
+  readonly act: string;
 }
 
 let crucibleLeaseHost: CrucibleLeaseHost | null = null;
@@ -3027,7 +3080,7 @@ function reserveBeforeLaunch(job: QueueJob, step: QueueStep, server: string): Re
    * just finished precisely because this act wants the same model, so asking
    * for it again would be this app taking a second lease against itself.
    */
-  if (host.leaseSubject(job.id) !== null) return 'go';
+  if (host.leaseHeld(job.id) !== null) return 'go';
   if (reservingSteps.has(step.id)) return 'waiting';
   const until = reserveHolds.get(step.id);
   if (until !== undefined) {
@@ -3877,12 +3930,12 @@ type StepOutcome =
 /**
  * IS THE RUN'S CRUCIBLE LEASE STILL WANTED once this step has ended?
  *
- * Yes exactly when a step that would use it — THE SAME ONE — is next in the
+ * Yes exactly when a step that would use it — THE SAME CARD — is next in the
  * chain: a child of the one that just finished, not yet terminal, whose module
  * says its work is a run of chat completions (`StepModule.leasesModel`) AND
- * whose own model id (`StepModule.leasedModel`) is what the open lease is
- * already on. That is what makes "one lease per row" mean *per consecutive run
- * of acts against one model*.
+ * whose class on this row's machine is the one the open lease was taken under
+ * ({@link nextActWouldUseHeldCard}). That is what makes "one lease per row"
+ * mean *per consecutive run of acts against one model*.
  *
  * ── BOTH HALVES, AND WHY (Foundry, 2026-09-14) ─────────────────────────────
  *
@@ -3893,12 +3946,17 @@ type StepOutcome =
  * `bookforge`: this app, blocking itself, until the ttl lapsed. The archetypal
  * row this seam exists for was the one it broke.
  *
- * Comparing ids is the whole fix. An unnamed model (null) never equals an open
- * lease's subject, so anything undeclared releases — the behaviour before the
- * row scope existed, which is the safe direction.
+ * Comparing what the two acts would take is the whole fix. A step that will
+ * not name its class releases — the behaviour before the row scope existed,
+ * which is the safe direction.
  *
- * The SERVER is not compared because it cannot differ: a row has one
- * `waitForResolved`, and every act of it goes to that machine.
+ * The second half was the step's own MODEL ID until 2026-09-19, by which time
+ * phase 15 had already left every module answering `null` for it — so it
+ * released every time and the half was decorative (bug hunt §H). It is the
+ * CLASS on the row's server now, which is what both sides can state;
+ * `nextActWouldUseHeldCard` carries the reasoning, and the SERVER is compared
+ * there rather than assumed, because a row that was never placed has no
+ * machine to compare.
  *
  * ONLY AFTER A SUCCESS. A step that failed, was stopped, or came back
  * `409 server_busy` has no next act — its children are cancelled with it, or it
@@ -3907,20 +3965,20 @@ type StepOutcome =
  * that will never arrive. That is decided by the caller, which knows the
  * outcome; this answers only the chain question.
  */
-function leaseWantedAfter(job: QueueJob, step: QueueStep, heldModel: string | null): boolean {
-  if (heldModel === null) return false;
+function leaseWantedAfter(job: QueueJob, step: QueueStep, held: HeldRowLease | null): boolean {
+  if (held === null) return false;
   for (const child of job.steps) {
     if (child.parentStepId !== step.id) continue;
     if (TERMINAL_STEP_STATUSES.has(child.status)) continue;
-    const mod = modules.get(child.type);
-    if (mod?.leasesModel?.(child.config ?? {}) !== true) continue;
     /*
-     * A MODULE THAT LEASES AND WILL NOT SAY WHAT ends the run of acts. It is
-     * not treated as "probably the same": the whole defect above was a lease
-     * kept for an act that wanted something else, and a module with no answer
-     * is precisely the case nothing can rule that out for.
+     * A MODULE THAT LEASES AND WILL NOT NAME ITS CLASS ends the run of acts.
+     * It is not treated as "probably the same": the whole defect above was a
+     * lease kept for an act that wanted something else, and a module with no
+     * answer is precisely the case nothing can rule that out for. That is
+     * `leaseActOf` answering null inside the helper, which also asks
+     * `leasesModel` — both halves, one owner.
      */
-    if (mod.leasedModel?.(child.config ?? {}) === heldModel) return true;
+    if (nextActWouldUseHeldCard(job, child, held)) return true;
   }
   return false;
 }
@@ -3964,7 +4022,7 @@ function settleStep(job: QueueJob, step: QueueStep, outcome: StepOutcome): void 
     // WHAT IS ACTUALLY HELD, asked of the seam rather than assumed from the
     // step that just ran: a lease survives its act, so the thing on the card
     // may have been taken three steps ago.
-    const held = crucibleLeaseHost.leaseSubject(job.id);
+    const held = crucibleLeaseHost.leaseHeld(job.id);
     /*
      * `running` IS PART OF THE QUESTION, not a second one. A lease is kept
      * for an act that is ABOUT TO START, and nothing is admitted while the

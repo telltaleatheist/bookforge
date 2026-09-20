@@ -98,7 +98,9 @@ function fakeModule(type, opts = {}) {
     ...(opts.machines === undefined ? {} : { machines: opts.machines }),
     ...(opts.leases === undefined ? {} : {
       leasesModel: () => true,
-      leasedModel: () => opts.leases,
+      // The CLASS, not a model id: the id is the server's answer and no module
+      // can name it, so the carry-over compares classes (2026-09-19).
+      crucibleClass: () => opts.leases,
     }),
     cancelled: [],
     runs,
@@ -120,7 +122,12 @@ function fakeModule(type, opts = {}) {
   return mod;
 }
 
-/** Records what the scheduler asked of the lease seam. No network. */
+/**
+ * Records what the scheduler asked of the lease seam. No network.
+ *
+ * `subject` is what the row pretends to hold: the MACHINE and the CLASS, which
+ * is all `leaseHeld` answers — the model id belongs to the server.
+ */
 function spyHost(subject) {
   const closed = [];
   const held = new Map();
@@ -130,7 +137,7 @@ function spyHost(subject) {
     host: {
       withRowScope(row, fn) { held.set(row, subject); return fn(); },
       async closeRow(row) { closed.push(row); held.delete(row); },
-      leaseSubject(row) { return held.get(row) ?? null; },
+      leaseHeld(row) { return held.get(row) ?? null; },
     },
   };
 }
@@ -348,7 +355,7 @@ function narrationRun(title, epubPath = '/a.epub') {
        * So anything a text act earlier in the row left open must go back here.
        */
       const m = narrationModules();
-      const spy = spyHost('qwen3.5-9b');
+      const spy = spyHost({ server: 'mac', act: 'clean' });
       await freshEngine('lease-release', [m.prep, m.tts, m.align, m.asm], { lease: spy.host });
       const job = engine.enqueue(narrationRun('Lease'));
       engine.start();
@@ -362,16 +369,16 @@ function narrationRun(title, epubPath = '/a.epub') {
       await settle();
       assert.ok(spy.closed.includes(job.id),
         'the row lease is still open behind the render. `leaseWantedAfter` asks the children '
-        + 'of the settled step whether the SAME model is wanted next; neither tts-conversion '
+        + 'of the settled step whether the SAME card is wanted next; neither tts-conversion '
         + 'nor align declares leasesModel, so the card must go back.');
     });
 
-  await check('and the carry-over rule for same-model text acts is untouched', async () => {
-    // The archetypal row the lease scope exists for: two acts, one model. The
+  await check('and the carry-over rule for same-class text acts is untouched', async () => {
+    // The archetypal row the lease scope exists for: two acts, one card. The
     // release above must not have been bought by breaking this.
-    const a = fakeModule('translation', { consumes: 'epub', produces: 'epub', leases: 'qwen3.5-9b' });
-    const b = fakeModule('book-analysis', { consumes: 'epub', produces: 'report', leases: 'qwen3.5-9b' });
-    const spy = spyHost('qwen3.5-9b');
+    const a = fakeModule('translation', { consumes: 'epub', produces: 'epub', leases: 'clean' });
+    const b = fakeModule('book-analysis', { consumes: 'epub', produces: 'report', leases: 'clean' });
+    const spy = spyHost({ server: 'mac', act: 'clean' });
     await freshEngine('lease-keep', [a, b], { lease: spy.host });
     const job = engine.enqueue({
       title: 'Two acts, one model', release: true,

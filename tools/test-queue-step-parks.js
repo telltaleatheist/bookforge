@@ -172,6 +172,43 @@ async function seamChecks() {
       assert.strictEqual(failed.length, 0, 'a parked book must not appear in Needs you');
     });
 
+  await check('a `CrucibleLeased` parks on its `leasedLine` — the SDK\'s other spelling',
+    async () => {
+      /*
+       * THE SDK SPELLS THE TWO WAITS DIFFERENTLY and this seam reads one rule.
+       * A held LANE is `CrucibleBusy.busyLine`; a held MODEL is
+       * `CrucibleLeased.leasedLine` — the same sentence about a longer clock,
+       * and `busyLine` is UNDEFINED on it. `busyLineOf`'s docstring claimed
+       * otherwise until 2026-09-19 (bug hunt §H), so a `409 leased` that
+       * propagated out of a module untranslated failed the row over a card
+       * that was merely held.
+       *
+       * The REAL class, not a shape typed out here: this check is worth having
+       * only while it tracks what `@crucible/client` actually mints.
+       */
+      const { CrucibleLeased } = require('@crucible/client');
+      const held = new CrucibleLeased(409, 'leased', 'model is leased', {}, {
+        leaseId: 'lease-9', kind: 'llm', holder: 'foundry', act: 'translate',
+        since: '2026-09-19T03:00:00+00:00', expiresAt: '2026-09-19T04:00:00+00:00',
+      });
+      assert.strictEqual(held.busyLine, undefined,
+        'if the SDK ever grows a `busyLine` on this class, this check is testing nothing');
+      assert.strictEqual(runtime.busyLineOf(held), held.leasedLine,
+        'the one rule has to read both spellings, or a held model reddens a row');
+
+      const mod = fakeModule('tts-conversion');
+      await freshEngine('leased-parks', mod);
+      const job = sendBook('Leased model');
+      engine.start();
+      await settle();
+      mod.runs[0].reject(held);
+      await settle();
+      const step = stepOf(job.id);
+      assert.strictEqual(step.status, 'queued', 'a held model is a wait, not a failure');
+      assert.ok(step.progress.admissionHold.includes(held.leasedLine),
+        `the holder's own line is what the row says; got: ${step.progress.admissionHold}`);
+    });
+
   await check('the door is remembered as shut — no immediate re-submit into the same 409',
     async () => {
       const mod = fakeModule('tts-conversion');

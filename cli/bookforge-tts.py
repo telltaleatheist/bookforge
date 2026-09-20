@@ -1506,7 +1506,8 @@ def cmd_align(args):
     cmd += _session_target_argv(args, "--align")
 
     if args.dry_run:
-        print("[bookforge-tts] DRY RUN — coverage align (forced alignment per chunk), CPU only")
+        print("[bookforge-tts] DRY RUN — coverage align (forced alignment per chunk) "
+              "on the run's Crucible server")
         print("  spawn:", " ".join(cmd))
         return 0
 

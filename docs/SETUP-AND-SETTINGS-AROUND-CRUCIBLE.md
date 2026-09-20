@@ -919,7 +919,9 @@ commits `a1c99c41`, `ec24f361`, `7ce4c137`.
   answer — because the model is the server's, asked at run time, and that function is
   synchronous and runs before the step is placed. **OWED**, named in the comment: a `clean`
   row could keep its lease across a chain if `leasedModel` were allowed to be async and
-  given the run's venue.
+  given the run's venue. *(Closed 2026-09-19 the other way: the hook is REMOVED — every
+  module answered `null`, so the comparison matched nothing and `pause()` closed a running
+  step's lease — and the carry-over compares `crucibleClass` on the row's server instead.)*
 
 ### 11.10 THE BUTTON IS GONE — coordination on connect, 2026-09-14 (later the same day)
 

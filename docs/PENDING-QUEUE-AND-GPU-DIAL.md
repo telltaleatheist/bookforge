@@ -90,8 +90,9 @@ bug that pinned a book to the server that had refused it.
   knows it. An upstream-routed class reserves nothing either: nothing is resident, so
   Crucible refuses a lease naming it (`lease_not_needed`).
 - **The model the lease is on is the SERVER's answer**, `GET /v1/capability`'s
-  `selected` for the class, which is why `StepModule.leasedModel` answers null for
-  every module and why the reserve is async and takes a round trip.
+  `selected` for the class, which is why no module can name it (the `leasedModel`
+  hook was removed 2026-09-19; the carry-over compares `crucibleClass` on the row's
+  server) and why the reserve is async and takes a round trip.
 - **A refused reserve cools off, and the two refusals cool off differently.** A held
   card is keyed by SERVER (`busyHolds`) — every book bound for that machine is waiting
   on the same holder. A refusal that names a MISCONFIGURATION is keyed by STEP: it is
