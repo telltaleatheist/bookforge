@@ -224,6 +224,17 @@ export interface CoverageAlignResult {
    */
   busyLine?: string;
   /**
+   * Present exactly on a Crucible refusal worth WAITING OUT rather than
+   * failing the book — an unreachable server, a 5xx (Contract 1 of the
+   * 2026-09-20 bug hunt). The pair travels beside `busyLine` and for the same
+   * reason: this job ANSWERS rather than throwing, so a step seam that could
+   * only read a thrown refusal would lose the wait here and send a book to
+   * *Needs you* over a Crucible that was asleep.
+   */
+  transient?: boolean;
+  /** The sentence a parked row shows. Present exactly when `transient`. */
+  transientLine?: string;
+  /**
    * On a Crucible run: where the model's items landed (`<processDir>/alignment.json`)
    * — present even when `success` is false for the owed narrator door, because
    * the GPU half is done and R6 says partial work survives.
@@ -826,7 +837,21 @@ async function runCoverageAlignOnCrucible(
         `${err.message} The rendered audio is intact; no coverage report was written, and the `
         + 'audiobook is assembled with the proportional sentence transcript, as it is for any session '
         + 'without one.',
-        err.busyLine === undefined ? {} : { busyLine: err.busyLine });
+        {
+          ...(err.busyLine === undefined ? {} : { busyLine: err.busyLine }),
+          /*
+           * AND THE TRANSIENT PAIR, THE SAME WAY (Contract 1, 2026-09-20). An
+           * unreachable server used to arrive here as a plain fail, so align's
+           * opening `GET /v1/info` against a closed socket turned a sleeping
+           * Crucible into a red row and stopped assembly — while the identical
+           * wait on a BUSY card parked and came back on its own. Forwarded as a
+           * pair rather than composed here, because the sentence belongs to the
+           * door that saw the socket (`crucible/job.ts crucibleTransientLine`).
+           */
+          ...(err.transientLine === undefined
+            ? {}
+            : { transient: true, transientLine: err.transientLine }),
+        });
     }
     if (err instanceof CrucibleAlignRefused) {
       return fail(`${err.message} The rendered audio is intact.`);

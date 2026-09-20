@@ -21,6 +21,10 @@
  *     would be worse than the hole it fills.
  *  E. The write is atomic — temp-and-rename — so no reader ever sees half a
  *     file, and no `.tmp` is left behind.
+ *  F. The RESUME POINT moves with the job (bug hunt C4, 2026-09-20).
+ *     `attachTo.lastEventId` was documented and persisted nowhere, so after the
+ *     one event this file exists for, a resume could not say where the job had
+ *     got to and the only answer was the whole hour again.
  *
  * No server, no network, no GPU.
  */
@@ -117,7 +121,64 @@ it('a row missing its optional fields comes back with honest defaults', () => {
     JSON.stringify({ jobs: [{ server: 'x', jobId: 'j', jobType: 'align' }] }));
   assert.deepStrictEqual(rows, [{
     server: 'x', jobId: 'j', jobType: 'align', model: null, localId: '', owns: [], submittedAt: '',
+    // A row written before 2026-09-20 has no resume point. Zero is not a guess:
+    // it means "replay the whole history", which is correct and merely slower.
+    lastEventId: 0,
   }], 'a missing model is null and a missing owns is empty — never invented');
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// F. THE RESUME POINT (bug hunt C4, 2026-09-20)
+//
+// `attachTo.lastEventId` is the server's own counter and the whole mechanism
+// behind a resume that does not re-render an hour of audio. It was documented
+// and persisted NOWHERE, so after the one event it exists for — a hard kill —
+// nothing on this side knew where the job had got to.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** A ledger ROW: `entry()` is the submit shape, where `lastEventId` is optional. */
+const row = (over) => ({ lastEventId: 0, ...entry(over) });
+
+it('ledgerNotingEvent moves the row forward, and NEVER backwards', () => {
+  const rows = [row(), row({ server: 'the-pc', jobId: 'job-9' })];
+  const moved = ledger.ledgerNotingEvent(rows, 'the-mac', 'job-1', 7);
+  assert.strictEqual(moved.find((r) => r.jobId === 'job-1').lastEventId, 7);
+  assert.strictEqual(moved.find((r) => r.jobId === 'job-9').lastEventId, 0,
+    'the other server\'s row is untouched');
+  // A replay after an attach re-delivers ids this side has already acted on.
+  // Taking the smaller number would move the resume point BACKWARDS and
+  // re-render what was already landed.
+  const back = ledger.ledgerNotingEvent(moved, 'the-mac', 'job-1', 3);
+  assert.strictEqual(back, moved, 'nothing to do is the same array, so no write happens');
+  const same = ledger.ledgerNotingEvent(moved, 'the-mac', 'job-1', 7);
+  assert.strictEqual(same, moved, 'the same id twice costs no disk');
+});
+
+it('ledgerNotingEvent on a job that has settled is a no-op, not a resurrection', () => {
+  const rows = [row()];
+  assert.strictEqual(ledger.ledgerNotingEvent(rows, 'the-mac', 'gone', 4), rows);
+  assert.strictEqual(ledger.ledgerNotingEvent([], 'the-mac', 'job-1', 4).length, 0,
+    'a frame for a row that is not there does not put it back');
+});
+
+it('THREE FRAMES LATER THE LEDGER ROW ON DISK SAYS 3', () => {
+  resetLedger();
+  ledger.recordInFlight(entry());
+  for (const id of [1, 2, 3]) ledger.noteInFlightEvent('the-mac', 'job-1', id);
+  const onDisk = JSON.parse(fs.readFileSync(LEDGER_FILE, 'utf-8'));
+  assert.strictEqual(onDisk.jobs.length, 1);
+  assert.strictEqual(onDisk.jobs[0].lastEventId, 3,
+    'write-through: the resume point is on disk, not in a variable a ctrl-C takes with it');
+});
+
+it('an ATTACH records the resume point it was handed, rather than starting at zero', () => {
+  resetLedger();
+  ledger.recordInFlight(entry({ lastEventId: 412 }));
+  assert.strictEqual(ledger.readInFlightLedger()[0].lastEventId, 412);
+  resetLedger();
+  ledger.recordInFlight(entry());
+  assert.strictEqual(ledger.readInFlightLedger()[0].lastEventId, 0,
+    'a fresh submit has acted on no frame and says so');
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

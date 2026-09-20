@@ -92,6 +92,22 @@ export interface CrucibleInFlightEntry {
   readonly owns: readonly string[];
   /** ISO 8601, when this side submitted it. */
   readonly submittedAt: string;
+  /**
+   * THE HIGHEST EVENT ID THIS SIDE HAS ACTED ON — the resume point, 2026-09-20.
+   *
+   * `attachTo.lastEventId` is the server's own monotonic counter and the whole
+   * mechanism behind a resume that does not re-render an hour of audio: the
+   * server replays events above it and no further. It was DOCUMENTED and
+   * persisted nowhere (bug hunt C4), so after the one event it exists for — a
+   * hard kill — nothing on this side knew where the job had got to and the only
+   * answer was to submit it again. An align or an asr has ONE artifact, so that
+   * is the whole hour.
+   *
+   * Zero means "no frame has been acted on", which is also the honest value for
+   * a row written by an older build: a resume from 0 replays the whole history,
+   * which is correct and merely slower, never wrong.
+   */
+  readonly lastEventId: number;
 }
 
 /**
@@ -136,6 +152,12 @@ export function parseInFlightLedger(
       localId: typeof entry.localId === 'string' ? entry.localId : '',
       owns: Array.isArray(entry.owns) ? entry.owns.filter((p): p is string => typeof p === 'string') : [],
       submittedAt: typeof entry.submittedAt === 'string' ? entry.submittedAt : '',
+      // A row from a build before 2026-09-20 has none. Zero is not a guess: it
+      // is "replay the whole history", which is the correct resume for a job
+      // this side cannot say it has seen any frame of.
+      lastEventId: typeof entry.lastEventId === 'number' && Number.isFinite(entry.lastEventId)
+        ? entry.lastEventId
+        : 0,
     });
   }
   return kept;
@@ -158,6 +180,27 @@ export function ledgerWith(
   entry: CrucibleInFlightEntry,
 ): CrucibleInFlightEntry[] {
   return [...entries.filter((row) => !sameJob(row, entry.server, entry.jobId)), entry];
+}
+
+/**
+ * `entries` with the row for `server`+`jobId` moved on to `lastEventId`. PURE.
+ *
+ * Returns the SAME array reference when there is nothing to do — no row, or a
+ * row already at or past that id — so the caller can skip the write without
+ * comparing the contents. A frame counter only ever goes forward: a replay
+ * after an attach re-delivers ids this side has already acted on, and taking
+ * the smaller number would move the resume point BACKWARDS and re-render what
+ * was already landed.
+ */
+export function ledgerNotingEvent(
+  entries: readonly CrucibleInFlightEntry[],
+  server: string,
+  jobId: string,
+  lastEventId: number,
+): readonly CrucibleInFlightEntry[] {
+  const row = entries.find((entry) => sameJob(entry, server, jobId));
+  if (row === undefined || row.lastEventId >= lastEventId) return entries;
+  return entries.map((entry) => (entry === row ? { ...entry, lastEventId } : entry));
 }
 
 /** `entries` without the row for `server`+`jobId`. PURE. */
@@ -221,8 +264,41 @@ function writeInFlightLedger(entries: readonly CrucibleInFlightEntry[]): void {
  * Record a job as in flight. Called immediately after the server admits it, and
  * before the caller does anything else with it.
  */
-export function recordInFlight(entry: CrucibleInFlightEntry): void {
-  writeInFlightLedger(ledgerWith(readInFlightLedger(), entry));
+export function recordInFlight(
+  /**
+   * `lastEventId` is optional HERE and required on the row: a fresh submit has
+   * acted on no frame, and only an ATTACH arrives already knowing where it got
+   * to. Defaulting it at the door means no caller writes `lastEventId: 0` to
+   * say the obvious thing, and none can forget to carry a resume point it does
+   * have.
+   */
+  entry: Omit<CrucibleInFlightEntry, 'lastEventId'> & { readonly lastEventId?: number },
+): void {
+  writeInFlightLedger(ledgerWith(
+    readInFlightLedger(),
+    { ...entry, lastEventId: entry.lastEventId ?? 0 },
+  ));
+}
+
+/**
+ * Move a live job's resume point forward as its frames arrive.
+ *
+ * WRITE-THROUGH, AND THAT IS AFFORDABLE. The file holds a handful of small
+ * objects and the write is temp-and-rename, the same one `recordInFlight` does
+ * on every submit; a 1,400-chunk render's few thousand frames cost well under a
+ * second spread over hours of GPU time, against a main process that is
+ * otherwise idle waiting on a socket. A batched write would be cheaper and
+ * would lose exactly the frames a hard kill happens between, which is the one
+ * moment this record exists for.
+ *
+ * A no-op when there is no row (the job settled a moment ago) or the id has not
+ * moved, so a replayed frame costs no disk at all.
+ */
+export function noteInFlightEvent(server: string, jobId: string, lastEventId: number): void {
+  const before = readInFlightLedger();
+  const after = ledgerNotingEvent(before, server, jobId, lastEventId);
+  if (after === before) return;
+  writeInFlightLedger(after);
 }
 
 /**

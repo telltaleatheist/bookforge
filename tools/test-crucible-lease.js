@@ -59,6 +59,12 @@
  *     a real job through `runCrucibleJob` takes no lease, and no one-job door
  *     module mentions the lease module at all.
  *
+ *  9. A HUNG HEARTBEAT HAS A CLOCK (bug hunt C7, 2026-09-20). The POST was a
+ *     bare `fetch` with no signal and the timer skips a tick while one is in
+ *     flight, so ONE request that never settled silenced every later beat: the
+ *     lease lapsed at its ttl with nothing in any log, and `release()` then
+ *     awaited the same promise on the quit path.
+ *
  * No GPU, no model, no network beyond 127.0.0.1, and no registry but its own.
  */
 'use strict';
@@ -751,6 +757,110 @@ const { check, summary } = makeChecker();
     } finally {
       await fake.close();
     }
+  });
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // 9. A HUNG HEARTBEAT (bug hunt C7, 2026-09-20)
+  //
+  // `leaseRequest` was a bare `fetch` with no signal, and the timer skips a tick
+  // while one is in flight. So a POST that never settled made EVERY LATER TICK A
+  // NO-OP: the lease lapsed at its 120 s ttl with no log line (the `catch` runs
+  // only if the promise settles) and the resident model could be evicted at
+  // chunk 400 of 2000 — the exact failure this module exists to prevent. And
+  // `release()` then awaited the same promise and hung with it, on the quit path.
+  // ───────────────────────────────────────────────────────────────────────────
+
+  /**
+   * A fake whose heartbeat route NEVER ANSWERS — the socket is accepted, the
+   * request is read, and nothing is ever written. Wrapped around the ordinary
+   * lease routes so take and release behave normally.
+   */
+  function withHungHeartbeat(routes) {
+    const held = [];
+    return {
+      lease: routes.lease,
+      held,
+      async handler(req, res, ctx) {
+        if (/^\/v1\/leases\/[^/]+\/heartbeat$/.test(ctx.url.pathname) && req.method === 'POST') {
+          routes.lease.heartbeats.push({ leaseId: 'never-answered' });
+          held.push(res);
+          req.resume();
+          return true; // …and no answer, ever.
+        }
+        return routes.handler(req, res, ctx);
+      },
+    };
+  }
+
+  await check('a hung heartbeat FAILS on its own clock, so the NEXT beat still goes out', async () => {
+    const routes = leaseRoutes();
+    const hung = withHungHeartbeat(routes);
+    const fake = await startFakeCrucible(hung.handler);
+    const server = nameFake(fake.url);
+    const lines = [];
+    try {
+      await lease.withCrucibleLease(
+        {
+          server, kind: 'model', id: 'qwen3.5-9b', act: 'clean',
+          heartbeatMs: 25,
+          // Milliseconds, never the shipped ten seconds: the behaviour under
+          // test is what happens when the clock runs out.
+          requestTimeoutMs: 40,
+          onLog: (line) => lines.push(line),
+        },
+        async () => { await after(260); },
+      );
+      assert.ok(routes.lease.heartbeats.length >= 3,
+        'the beat kept going out — before the clock, ONE hung POST silenced every later tick '
+        + `for the rest of the book; saw ${routes.lease.heartbeats.length}`);
+      assert.ok(lines.some((l) => /timed out after 40 ms/.test(l)),
+        `the timeout is named, not silent: ${JSON.stringify(lines)}`);
+      assert.strictEqual(lines.filter((l) => /It is ABANDONED rather than waited on/.test(l)).length, 1,
+        'the RULE is stated once, not on every tick');
+    } finally {
+      for (const res of hung.held) res.destroy();
+      await fake.close();
+    }
+  });
+
+  await check('release RACES an in-flight heartbeat instead of hanging on it', async () => {
+    const routes = leaseRoutes();
+    const hung = withHungHeartbeat(routes);
+    const fake = await startFakeCrucible(hung.handler);
+    const server = nameFake(fake.url);
+    const began = Date.now();
+    try {
+      await lease.withCrucibleLease(
+        {
+          server, kind: 'model', id: 'qwen3.5-9b', act: 'clean',
+          heartbeatMs: 20,
+          // LONGER THAN THE RUN, so a beat is genuinely in flight at release
+          // and its own clock cannot be what rescues this.
+          requestTimeoutMs: 30_000,
+          onLog: () => {},
+        },
+        async () => { await after(60); },
+      );
+      const took = Date.now() - began;
+      assert.ok(took < 5_000,
+        `the release gave the card back under its own grace, not the hung beat's (${took} ms)`);
+      assert.strictEqual(routes.lease.released.length, 1,
+        'and the DELETE still went out — a release that gave up entirely would hold the card '
+        + 'for the whole ttl');
+    } finally {
+      for (const res of hung.held) res.destroy();
+      await fake.close();
+    }
+  });
+
+  await check('the clock is shorter than the beat, so a hung POST is over before the next tick', () => {
+    assert.ok(
+      lease.CRUCIBLE_LEASE_REQUEST_TIMEOUT_MS
+        < lease.crucibleHeartbeatIntervalMs(lease.CRUCIBLE_LEASE_TTL_SECONDS),
+      'a clock longer than the cadence would let two hung beats overlap and skip a tick anyway',
+    );
+    assert.ok(lease.CRUCIBLE_LEASE_RELEASE_GRACE_MS < lease.CRUCIBLE_LEASE_REQUEST_TIMEOUT_MS,
+      'release must not wait out a whole request clock on the quit path');
   });
 
   summary('crucible lease');

@@ -108,7 +108,18 @@ import type {
   WrittenArtifact,
 } from '@crucible/client';
 import { CRUCIBLE_CLIENT_NAME, crucibleClientFor } from './servers';
-import { recordInFlight, settleInFlight } from './in-flight-ledger';
+import { noteInFlightEvent, recordInFlight, settleInFlight } from './in-flight-ledger';
+import {
+  CrucibleStreamWentQuiet, describeStallInterval, withStreamStallClock,
+} from './stream-stall';
+/*
+ * A CYCLE, AND IT IS CALL-TIME ONLY. `in-flight-sweep.ts` imports this module's
+ * `cancelCrucibleJobById` and `describeCrucibleJobRefusal`; this one imports its
+ * one-server entry point for Q7. Neither touches the other at module scope, and
+ * the emit is CommonJS, so each reads the other's export off the namespace
+ * object when the call is made — by which time both are fully initialised.
+ */
+import { sweepCrucibleServerInFlight } from './in-flight-sweep';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // The refusal vocabulary
@@ -135,14 +146,61 @@ export class CrucibleJobRefused extends Error {
   readonly code: string;
   readonly server: string;
   readonly busyLine?: string;
+  /**
+   * TRUE WHEN WAITING IS THE RIGHT ANSWER — the bug hunt's Contract 1
+   * (docs/BUG-HUNT-2026-09-20.md §E), 2026-09-20.
+   *
+   * A held card parks a row (`busyLine`); an unreachable one FAILED it, and
+   * Owen's Sep 19 ruling is that a step fails only on *"a misconfiguration
+   * somebody can repair"*. A server that is asleep, rebooting, or behind a
+   * tailnet that blipped is not one of those, and neither is a 5xx — those are
+   * the same wait with a different cause, so they take the same road:
+   * `queue-steps/runtime.ts transientLineOf` reads this pair exactly as
+   * `busyLineOf` reads the other, and `settleStep` parks.
+   *
+   * Two fields rather than one so a reader can ask the question ("is this
+   * worth waiting out") without parsing prose, and so the SENTENCE a person
+   * sees on the held row names the server and the cause rather than repeating
+   * the full refusal, which tells them to go and start a server the queue is
+   * about to ask again.
+   */
+  readonly transient?: boolean;
+  /** The sentence a parked row shows. Present exactly when `transient`. */
+  readonly transientLine?: string;
 
-  constructor(code: string, server: string, message: string, busyLine?: string) {
+  constructor(
+    code: string,
+    server: string,
+    message: string,
+    busyLine?: string,
+    transientLine?: string,
+  ) {
     super(`${code}: ${message}`);
     this.name = 'CrucibleJobRefused';
     this.code = code;
     this.server = server;
     if (busyLine !== undefined) this.busyLine = busyLine;
+    if (transientLine !== undefined) {
+      this.transient = true;
+      this.transientLine = transientLine;
+    }
   }
+}
+
+/**
+ * THE ONE COMPOSER OF A TRANSIENT REFUSAL'S SENTENCE, for every Crucible door.
+ *
+ * `render.ts` and `coverage-align-job.ts` compose theirs through this rather
+ * than writing their own, because the row a person sees must not read
+ * differently depending on which door hit the closed socket — that is the
+ * shape the `busyLine`/`leasedLine` split turned out to be (bug hunt §C1).
+ *
+ * `cause` is the server's OWN words wherever there are any — `read
+ * ECONNRESET`, `HTTP 503: worker pool exhausted` — and never a category this
+ * side invented.
+ */
+export function crucibleTransientLine(server: string, cause: string): string {
+  return `crucible "${server}" did not answer (${cause}) — asking again shortly`;
 }
 
 /**
@@ -251,18 +309,30 @@ export function describeCrucibleJobRefusal(err: unknown, server: string, verb: s
       + `${err.serverMessage}. One of the two must be updated.`,
     );
   }
+  /*
+   * A 5xx AND AN UNREACHABLE SERVER ARE WAITS, NOT FAILURES (Contract 1,
+   * 2026-09-20). Both mean "not now" rather than "not ever": the run is
+   * unchanged, nothing about it needs repairing, and the queue's next
+   * admission tick is the right thing to ask again. Nothing here loops — the
+   * transient pair is read by `settleStep`, which parks the row exactly as it
+   * parks one on a held card.
+   */
   if (err instanceof CrucibleServerError) {
     return new CrucibleJobRefused(
       err.code, server,
       `${at} failed ${verb} (HTTP ${err.status}): ${err.serverMessage}. The server broke; its own `
       + 'log says why.',
+      undefined,
+      crucibleTransientLine(server, `HTTP ${err.status}: ${err.serverMessage}`),
     );
   }
   if (err instanceof CrucibleUnreachable) {
     return new CrucibleJobRefused(
       'crucible_unreachable', server,
-      `${at} could not be reached for ${verb}: ${err.message}. Nothing is retried here — start the `
-      + 'server and queue the work again, or pick another one.',
+      `${at} could not be reached for ${verb}: ${err.message}. Nothing is retried here — the queue `
+      + 'asks again on its next admission tick; start the server, or pick another one.',
+      undefined,
+      crucibleTransientLine(server, err.message),
     );
   }
   if (err instanceof CrucibleNotACrucible) {
@@ -451,6 +521,17 @@ export interface RunCrucibleJobOptions {
    * what a dead job left behind.
    */
   readonly owns?: readonly string[];
+  /**
+   * OVERRIDES the stall clock's window and its post-DELETE grace
+   * (`stream-stall.ts`).
+   *
+   * **Only a keeper passes this.** Ten minutes is Owen's ruling 3 and is the
+   * policy; a caller that shortened it would be deciding on behalf of every
+   * book how long an MLX warm-load is allowed to take. It exists because the
+   * behaviour worth pinning is what happens when the window runs out, and a
+   * suite must not spend ten minutes per check proving it.
+   */
+  readonly stallClock?: { readonly stallMs?: number; readonly graceMs?: number };
 }
 
 export type CrucibleJobArtifacts =
@@ -467,6 +548,13 @@ export type CrucibleJobArtifacts =
     };
 
 export interface CrucibleJobOutcome {
+  /**
+   * The registry name this ran on — the third of the three facts a resume
+   * needs, and the one a caller could not otherwise put on a step's artifact
+   * detail without remembering what it passed in (bug hunt C4, 2026-09-20). A
+   * job id is only meaningful on the server that minted it.
+   */
+  readonly server: string;
   readonly jobId: string;
   /** The `done` frame, including the job type's own `extra`. */
   readonly done: DoneData;
@@ -555,6 +643,8 @@ export async function runCrucibleJob(options: RunCrucibleJobOptions): Promise<Cr
     jobType: type,
     model: options.model ?? null,
     localId: options.localId ?? type,
+    // Nonzero only on an ATTACH — the resume point this call was handed.
+    lastEventId,
     owns: options.owns ?? [],
     submittedAt: new Date().toISOString(),
   });
@@ -587,7 +677,21 @@ export async function runCrucibleJob(options: RunCrucibleJobOptions): Promise<Cr
   let terminal: JobEvent | null = null;
   const files = new Map<string, WrittenArtifact>();
   const seeEvent = (event: JobEvent): void => {
-    if (event.id > lastEventId) lastEventId = event.id;
+    if (event.id > lastEventId) {
+      lastEventId = event.id;
+      /*
+       * THE RESUME POINT, ON DISK AS IT MOVES (bug hunt C4, 2026-09-20).
+       *
+       * `attachTo.lastEventId` is the server's own counter and the whole
+       * mechanism behind a resume that does not re-render an hour of audio —
+       * and until this line nothing persisted it, so the documented resume was
+       * unreachable after a hard kill. Write-through rather than batched: the
+       * ledger is a handful of small rows written temp-and-rename, and a
+       * number that is one frame stale is a frame replayed, while one that was
+       * never written is the whole job again.
+       */
+      noteInFlightEvent(server, jobId, lastEventId);
+    }
     options.onEvent?.(event);
     if (event.event === 'warming') {
       options.onProgress?.({ kind: 'warming', message: warmingHeadline(event.data.message) });
@@ -610,18 +714,78 @@ export async function runCrucibleJob(options: RunCrucibleJobOptions): Promise<Cr
 
   const resume = options.attachTo?.lastEventId === undefined ? {} : { lastEventId: options.attachTo.lastEventId };
   try {
-    if (options.artifactsTo !== undefined) {
-      for await (const write of client.writeArtifactsTo(jobId, options.artifactsTo, resume)) {
-        if (write.kind === 'written') {
-          files.set(write.written.name, write.written);
-          continue;
+    // ONE STALL CLOCK OVER THE STREAM — `stream-stall.ts`, shared with
+    // `render.ts`. `beat()` on every frame INCLUDING a written artifact: a
+    // download landing is the server talking, and a 900 MB artifact can
+    // legitimately be the only thing happening for a while.
+    await withStreamStallClock({
+      server,
+      jobId,
+      ...(options.stallClock?.stallMs === undefined ? {} : { stallMs: options.stallClock.stallMs }),
+      ...(options.stallClock?.graceMs === undefined ? {} : { graceMs: options.stallClock.graceMs }),
+      onStall: cancel,
+      onLog: log,
+      consume: async (beat) => {
+        if (options.artifactsTo !== undefined) {
+          for await (const write of client.writeArtifactsTo(jobId, options.artifactsTo, resume)) {
+            beat();
+            if (write.kind === 'written') {
+              files.set(write.written.name, write.written);
+              continue;
+            }
+            seeEvent(write.event);
+          }
+          return;
         }
-        seeEvent(write.event);
-      }
-    } else {
-      for await (const event of client.events(jobId, resume)) seeEvent(event);
-    }
+        for await (const event of client.events(jobId, resume)) {
+          beat();
+          seeEvent(event);
+        }
+      },
+    });
   } catch (err) {
+    if (err instanceof CrucibleStreamWentQuiet) {
+      throw new CrucibleJobRefused(
+        'crucible_went_quiet', server,
+        `${err.message} What it cost: ${verb} (${jobId}).`,
+        undefined,
+        crucibleTransientLine(server, `silent for ${describeStallInterval(err.stallMs)}`),
+      );
+    }
+    /*
+     * Q7 — OUR OWN ORPHAN IS RECONCILED BEFORE THE REFUSAL IS THROWN.
+     *
+     * A stream that drops mid-job leaves the ledger row standing (right: a
+     * broken stream is not a job that stopped) and fails the step — but no
+     * DELETE was ever sent, so the server is STILL RENDERING. The queue then
+     * admits the next book to that server, which 409s on our own orphan's line
+     * and parks every 15 s until the app restarts and the startup sweep finds
+     * it. Nothing in the running process reconciled it.
+     *
+     * So the one-server sweep runs HERE, on the venue this job was on: cancel
+     * what this app has recorded there, confirm the lane, unload only if
+     * nothing at all holds the card. It is safe to sweep the whole server
+     * rather than this one job because a Crucible takes one job at a time on
+     * the lane — anything else of ours there is queued behind a job that is
+     * about to be cancelled, and it is this app's to cancel either way.
+     *
+     * THE PREDICATE IS "NO TERMINAL FRAME", not a list of error classes. What
+     * makes a job an orphan is that the SERVER never said it ended — whether
+     * the stream reset (`CrucibleUnreachable`), answered 5xx, or violated the
+     * protocol. A throw AFTER the terminal frame (an artifact that would not
+     * write) is a job that is over, and sweeping there would DELETE nothing
+     * and poll a server for no reason.
+     *
+     * It never throws (the sweep answers, by design) and it is awaited rather
+     * than voided: the next admission must not race the DELETE.
+     */
+    if ((terminal as JobEvent | null) === null) {
+      await sweepCrucibleServerInFlight({
+        server,
+        reason: `the ${type} job's event stream ended with no terminal frame`,
+        log: (line) => log(line),
+      });
+    }
     throw describeCrucibleJobRefusal(err, server, `${verb}'s events`);
   } finally {
     options.signal?.removeEventListener('abort', onAbort);
@@ -660,7 +824,7 @@ export async function runCrucibleJob(options: RunCrucibleJobOptions): Promise<Cr
   if (options.artifactsTo !== undefined) {
     log(`crucible "${server}" job ${jobId} done: ${files.size} artifact(s) written into `
       + `${path.basename(options.artifactsTo)}`);
-    return { jobId, done, artifacts: { where: 'disk', dir: options.artifactsTo, files }, lastEventId };
+    return { server, jobId, done, artifacts: { where: 'disk', dir: options.artifactsTo, files }, lastEventId };
   }
 
   // `done.artifacts` is the authoritative list (a `load-model` done has none
@@ -674,7 +838,7 @@ export async function runCrucibleJob(options: RunCrucibleJobOptions): Promise<Cr
     }
   }
   log(`crucible "${server}" job ${jobId} done: ${bytes.size} artifact(s) fetched`);
-  return { jobId, done, artifacts: { where: 'memory', bytes }, lastEventId };
+  return { server, jobId, done, artifacts: { where: 'memory', bytes }, lastEventId };
 }
 
 /**
@@ -784,9 +948,20 @@ async function uploadInputs(
 
   log(`uploading ${entries.length} input(s) for the ${type} job to crucible "${server}"`);
   let next = 0;
+  /*
+   * THE FIRST THROW STOPS THE OTHER THREE (bug hunt C3, 2026-09-20).
+   *
+   * The pool had a cancellation input (`signal`) and no FAILURE input.
+   * `Promise.all` rejects on the first throw and `runCrucibleJob` throws — but
+   * the other workers went on draining `entries`, uploading the REST OF THE
+   * BOOK (align: one FLAC per chunk; rvc: one per sentence) to a server whose
+   * job will never be submitted. Same shape as `aborted`, checked in the same
+   * place, and it is the rule the SDK's own `writeArtifactsTo` already applies.
+   */
+  let failed = false;
   const worker = async (): Promise<void> => {
     while (next < entries.length) {
-      if (options.signal?.aborted) return;
+      if (options.signal?.aborted || failed) return;
       const [name, source] = entries[next++];
       const data: Uint8Array | Blob = typeof source === 'string'
         ? await (openAsBlob as (p: string) => Promise<Blob>)(source)
@@ -795,6 +970,9 @@ async function uploadInputs(
       try {
         ({ blobId } = await client.upload(data, { filename: name }));
       } catch (err) {
+        // Set BEFORE the throw, so the sibling workers see it on their next
+        // pass rather than one upload later.
+        failed = true;
         throw describeCrucibleJobRefusal(err, server, `uploading input "${name}"`);
       }
       out[name] = { blobId };
