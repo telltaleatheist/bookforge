@@ -10,10 +10,66 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\<user>\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **93010d8** — *Adopt Crucible 1.0.12: a failed load cannot strand an engine nothing can see* |
+| Source sha | **77e1d6d** — *Lease on load: whichever act made the residency ours hands us the lease id* (branch `feat/lease-on-load`, cut from `main` @ `b54c148`) |
 | Engine | **NOT VENDORED AND NOT KNOWABLE FROM THIS FILE** — it is a spawned CLI resolved at RUNTIME (`FOUNDRY_BIN`, else `resolveFoundryPath`, `electron/main.ts`), so which build executes is a property of the machine and not of this copy. On a developer's Mac that resolves to Foundry's own checkout at `/Volumes/Callisto/Projects/foundry/dist/foundry-darwin-arm64`, which is whatever was last built there — `foundry 2.0.2 (1c1eaa3)` as of 2026-09-18. **Ask the binary: `$FOUNDRY_BIN --version`.** See *The engine this file named was not the engine that ran* below. |
-| Copied on | 2026-09-19 (five times: 3738c01, 3436fc5, 806d44b, f349771, ca4754c) and 2026-09-20 (98a4344, 9e0b27d, dccc144, 7b98004, cc5fc5b) |
-| Copied by | Mechanical source sync, verified against Foundry `cc5fc5b:app/` (`diff -rq`, clean but for this file, `IPC-CHANNELS.md` and `.gitignore` — see below); details below |
+| Copied on | 2026-09-19 (five times: 3738c01, 3436fc5, 806d44b, f349771, ca4754c) and 2026-09-20 (98a4344, 9e0b27d, dccc144, 7b98004, cc5fc5b, 93010d8, 77e1d6d) |
+| Copied by | Mechanical source sync, verified against Foundry `77e1d6d:app/` (`diff -rq`, clean but for this file, `IPC-CHANNELS.md` and `.gitignore` — see below); details below |
+
+## The `93010d8 → 77e1d6d` re-vendor — lease on load, and the 1.0.13 SDK (2026-09-20, PK14a)
+
+**Six files under `app/`**, and the SDK moves with them:
+`electron/crucible-dispatch.ts`, `test/crucible-http.test.ts`,
+`test/crucible-cancelled-placement.test.ts`, `test/crucible-races.test.ts`,
+`package.json` + `package-lock.json` (1.0.12 → 1.0.13). The
+`crucible-{client,bootstrap}-1.0.12.tgz` pair was `git rm`'d by hand — a
+tarball rename arrives from `tar -x` as an ADD, so an unchecked extract leaves
+both versions on disk with `package.json` naming only one. That is the rule two
+entries below wrote down, kept.
+
+**THIS COPY PUTS `foundry-app/` BACK ON THE HOST'S OWN SDK.** BookForge's root
+adopted 1.0.13 at `f8386ba8`; `foundry-app/` was still on 1.0.12 from `f7b8abba`.
+One repo naming two versions of one SDK is the split the `7b98004 → cc5fc5b`
+entry is about, and this closes it: both `file:` specifiers now name 1.0.13.
+
+**What the Foundry change is.** A load that succeeds cannot clear the card —
+its whole content is *"be resident"* — so Crucible deliberately does not settle
+on it, which left the window between the `done` frame and the app's own
+`POST /v1/models/{id}/lease` held by NOTHING. 1.0.13 lets the load carry
+`lease: {act, ttl_seconds}` and answers with `lease_id` on the `done` frame and
+on `GET /v1/jobs/{id}`; a lease that LAPSES now settles the card. So:
+
+- `placeOnCrucible`'s `load-model` carries the lease, with the same
+  `LEASE_TTL_SECONDS` and heartbeat cadence `takeLease` already owned, and
+  `takeLease` gains an ADOPT shape — same heartbeat, same `release()`, so
+  `Placement.lease` is unchanged for every caller. The already-resident case,
+  and a server that leases nothing on a load, take their own lease as before.
+- PK12's cleanup simplifies and stays: a Stop during a LEASED load releases the
+  id the load handed back (one `DELETE /v1/leases/{id}`), because the
+  take-and-release dance would now be a second lease on a card our own first one
+  holds. A `done` with no `lease_id` keeps the dance; the 409 path is untouched.
+- `statedChatDepth` is `client.activity()` at last — 1.0.13's `Activity.chat`
+  carries `maxInFlight`, which is precisely what the old hand-rolled `fetch`
+  said it was waiting for. **And that made the read able to FAIL**: the SDK is
+  strict where a two-key fetch was tolerant, so a server older than this build
+  raises `CrucibleProtocolError`. `CrucibleTooOld` names it and the placement
+  REFUSES — *"speaks an older Crucible than this app; update it"* — rather than
+  crashing or placing on a silent four. A 404 from a Crucible older than the
+  route is still "it did not say". The depth is now asked BEFORE the load, so a
+  refusal costs a round trip, not ninety seconds, and cannot abandon a lease
+  taken a line earlier.
+
+The one route still read by hand under `app/` is `GET /v1/jobs/{id}`'s
+`lease_id`, for the case where the event stream broke before the `done` frame:
+1.0.13's `JobStatus` does not model the field. It carries the same standing note
+the chat-depth read carried until 1.0.13 kept it.
+
+**Gates on this copy** (Foundry worktree, a real 1.0.13 install): root and `app`
+`npm run typecheck` clean; `bun test` **983 pass / 5 skip / 0 fail** (baseline
+979/0). A stage build of `77e1d6d:app/` compiled clean and its
+`dist/electron/crucible-dispatch.js` carries `ttlSeconds: LEASE_TTL_SECONDS` on
+the `load-model`, `load.leaseId = leaseIdIn(event.data.extra)`, the
+`CrucibleTooOld` class and its sentence, and
+`cancelled placement: … had landed holding its own lease; released it.`
 
 ## The `cc5fc5b → 93010d8` re-vendor — four files, the 1.0.12 SDK adoption (2026-09-20, afternoon)
 

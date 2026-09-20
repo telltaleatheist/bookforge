@@ -12,8 +12,8 @@ afterEach(()=>mock.restore());
 const classes=['pages','clean','translate','simplify','analysis'];
 const chosen=(cls:string)=>cls==='pages'?'dots-ocr':cls==='clean'?'qwen3.5-9b':'qwen3.8-27b-4bit';
 
-function fixture(options:{missing?:boolean;competing?:boolean;competitorStocks?:boolean;failCompetitor?:boolean;leased?:boolean;chatMaxInFlight?:number|null;noActivity?:boolean}={}) {
-  let stocked=!options.missing, competed=false, loaded:string|null=null;
+function fixture(options:{missing?:boolean;competing?:boolean;competitorStocks?:boolean;failCompetitor?:boolean;leased?:boolean;chatMaxInFlight?:number|null;noActivity?:boolean;oldActivity?:boolean;leaseOnLoad?:boolean}={}) {
+  let stocked=!options.missing, competed=false, loaded:string|null=null, loadLease:string|null=null;
   const calls:{method:string;path:string;body:any}[]=[];
   const revision='a'.repeat(40);
   const model=(id:string)=>({id,family:'fixture',params_b:9,revision,fingerprint:`${id}@${revision}`,modalities:id==='dots-ocr'?['text','image']:['text'],backend_supported:true,installed:id!=='qwen3.8-27b'&&stocked,resident:false,loadable:true,memory_bytes_estimate:1,context_default:8192,max_model_len:8192});
@@ -25,7 +25,7 @@ function fixture(options:{missing?:boolean;competing?:boolean;competitorStocks?:
   const server=Bun.serve({port:0,hostname:'127.0.0.1',async fetch(req){
     expect(req.headers.get('authorization')).toBe('Bearer fixture-token');
     expect(req.headers.get('x-crucible-api')).toBe('1');
-    const url=new URL(req.url);const p=url.pathname;const body=req.method==='POST'?await req.json():null;calls.push({method:req.method,path:p,body});
+    const url=new URL(req.url);const p=url.pathname;const body=req.method==='POST'?await req.json().catch(()=>null):null;calls.push({method:req.method,path:p,body});
     if(p==='/v1/info')return Response.json(info());
     if(p==='/v1/capability')return Response.json(capability());
     // `chat.max_in_flight` is spelled as Crucible 1.0.10 spells it on the wire.
@@ -33,7 +33,15 @@ function fixture(options:{missing?:boolean;competing?:boolean;competitorStocks?:
     // "it did not say" and must leave the placement on its own default.
     if(p==='/v1/activity'){
       if(options.noActivity)return Response.json({error:{code:'not_found',message:'no such route'}},{status:404});
-      return Response.json({server:{name:'fixture',version:'1.0.10',api_version:1,backend:'llama-windows',uptime_s:1},resident:null,stopping:null,warming:null,claim:null,streaming:null,chat:{in_flight:0,rows:[],max_in_flight:options.chatMaxInFlight===undefined?2:options.chatMaxInFlight,max_in_flight_basis:'engine concurrency 1, +1'},lease:null,slots:{accelerated:{busy:0,of:1,queue_depth:0,accepts_work:true}},running:[],queued:[]});
+      /*
+       * A CRUCIBLE OLDER THAN THIS BUILD: the route is there and answers 200,
+       * and the document is missing the fields a 1.0.13 SDK reads (`stopping`,
+       * `chat.max_in_flight`, `resident.unclaimed_since`). That is a different
+       * thing from a 404 and must not be read as "it did not say" — see
+       * `CrucibleTooOld`.
+       */
+      if(options.oldActivity)return Response.json({server:{name:'fixture',version:'1.0.9',api_version:1,backend:'llama-windows',uptime_s:1},resident:null,warming:null,claim:null,streaming:null,chat:{in_flight:0,rows:[]},lease:null,slots:{accelerated:{busy:0,of:1,queue_depth:0,accepts_work:true}},running:[],queued:[]});
+      return Response.json({server:{name:'fixture',version:'1.0.13',api_version:1,backend:'llama-windows',uptime_s:1},resident:null,stopping:null,warming:null,claim:null,streaming:null,chat:{in_flight:0,rows:[],max_in_flight:options.chatMaxInFlight===undefined?2:options.chatMaxInFlight,max_in_flight_basis:'engine concurrency 1, +1'},lease:null,slots:{accelerated:{busy:0,of:1,queue_depth:0,accepts_work:true}},running:[],queued:[]});
     }
     if(p==='/v1/models')return Response.json(models());
     if(p==='/v1/catalog')return Response.json({backend_kind:'llama-windows',rows:models().map(m=>({kind:'model',id:m.id,name:m.id,job_type:'llm',installed:m.installed,installed_bytes:m.installed?1:null,expected_bytes:1,floors:[],license:null,source:'fixture',resident:false})).concat([{kind:'engine',id:'llama-cpp',name:'engine',job_type:'llm',installed:true,installed_bytes:1,expected_bytes:1,floors:[],license:null,source:'fixture',resident:false}])});
@@ -45,14 +53,30 @@ function fixture(options:{missing?:boolean;competing?:boolean;competitorStocks?:
     if(p==='/v1/tasks/other/events'){if(options.competitorStocks)stocked=true;return options.failCompetitor?sse('failed',{code:'pull_failed',message:'fixture failed'}):sse('done');}
     if(p==='/v1/tasks/ours/events'){stocked=true;return sse('done');}
     if(p.startsWith('/v1/tasks/'))return Response.json(task(p.split('/')[3]!));
-    if(p==='/v1/jobs'){loaded=body?.model??null;return Response.json({job_id:'load'},{status:202});}
-    if(p==='/v1/jobs/load/events')return sse('done',{resident:loaded});
+    /*
+     * LEASE-ON-LOAD (Crucible 1.0.13). The load's own `params.lease` is what
+     * decides whether the `done` frame carries a `lease_id` — so a test that
+     * reads the id off the frame is reading a consequence of the param the
+     * dispatcher actually sent, not a constant the fixture made up.
+     * `leaseOnLoad:false` is a server that ignores the option (or an older one),
+     * which must leave the placement taking its own lease exactly as before.
+     */
+    /*
+     * A 409 `leased` ON THE LOAD DOOR, which is where a placement meets it now:
+     * with the lease on the load there is no separate lease POST to be refused
+     * on, and a `load-model` that would evict a leased model is refused by the
+     * same code with the same body (crucible/leases.py, `leased_error`).
+     */
+    if(p==='/v1/jobs'&&options.leased)return Response.json({error:{code:'leased',message:"'dots-ocr' (the resident llm) is leased by 'bookforge' for 'tts' since 2026-09-18T03:00:00+00:00, until at least 2026-09-18T03:02:00+00:00",details:{lease_id:'someone-elses',kind:'llm',client:'bookforge',act:'tts',since:'2026-09-18T03:00:00+00:00',expires_at:'2026-09-18T03:02:00+00:00'}}},{status:409});
+    if(p==='/v1/jobs'){loaded=body?.model??null;loadLease=options.leaseOnLoad===false?null:(body?.params?.lease?'load-lease':null);return Response.json({job_id:'load'},{status:202});}
+    if(p==='/v1/jobs/load/events')return sse('done',loadLease===null?{resident:loaded}:{resident:loaded,lease_id:loadLease});
     // `leased`, with the six fields `Lease.to_dict()` attaches (crucible/leases.py).
     // The code is `leased` and not `model_leased`: the leased thing is a voice or
     // an aligner as often as a model, which is why the rename happened at all.
     if(p.endsWith('/lease')&&req.method==='POST'&&options.leased)return Response.json({error:{code:'leased',message:"'dots-ocr' (the resident llm) is leased by 'bookforge' for 'tts' since 2026-09-18T03:00:00+00:00, until at least 2026-09-18T03:02:00+00:00",details:{lease_id:'someone-elses',kind:'llm',client:'bookforge',act:'tts',since:'2026-09-18T03:00:00+00:00',expires_at:'2026-09-18T03:02:00+00:00'}}},{status:409});
     if(p.endsWith('/lease')&&req.method==='POST')return Response.json({lease_id:'lease',kind:'llm',subject:p.split('/')[3],client:'fixture',act:body.act,since:'2026-09-16T00:00:00Z',expires_at:'2026-09-16T00:02:00Z'},{status:201});
-    if(p==='/v1/leases/lease'&&req.method==='DELETE')return new Response(null,{status:204});
+    if(p.startsWith('/v1/leases/')&&p.endsWith('/heartbeat')&&req.method==='POST')return Response.json({expires_at:'2026-09-16T00:04:00Z'});
+    if(p.startsWith('/v1/leases/')&&req.method==='DELETE')return new Response(null,{status:204});
     return Response.json({error:{code:'fixture_unhandled',message:`${req.method} ${p}`}},{status:500});
   }});
   const entry={name:`fixture-${server.port}`,url:`http://127.0.0.1:${server.port}`,token:'fixture-token',enabled:true};
@@ -78,19 +102,93 @@ test('after following another app task, preparation checks and installs its own 
   }finally{f.close();}
 });
 
+/**
+ * ── THE LOAD CARRIES THE LEASE, AND THE PLACEMENT ADOPTS IT — PK14a ─────────
+ *
+ * It used to be two requests: `POST /v1/jobs` (load-model), then
+ * `POST /v1/models/{id}/lease` once the `done` frame landed. Between them the
+ * card was held by NOTHING, and a client that died in that window stranded it
+ * for ever — a load's own completion is deliberately not a settlement trigger.
+ * Crucible 1.0.13 lets the load ask for the lease itself, so the act's name and
+ * its ttl travel ON the load and the id comes back on the `done` frame.
+ *
+ * So the assertion that used to read the act off the lease POST now reads it off
+ * the LOAD, and the absence of that POST is asserted outright: a placement that
+ * took a second lease on a card its own load already holds would be refused
+ * `409 leased` by itself.
+ */
 for(const [kind,cls] of [['read','pages'],['clean','clean'],['translate','translate'],['simplify','simplify'],['analysis','analysis']] as const){
-  test(`real HTTP native Windows ${kind} loads and leases the exact selected model`,async()=>{
+  test(`real HTTP native Windows ${kind} loads the exact selected model under a lease the load itself took`,async()=>{
     const f=fixture();try{
       const result=await dispatch.placeJob(kind,f.entry.name,()=>{},()=>true);
       expect(result.verdict).toBe('go');if(result.verdict!=='go')throw Error(JSON.stringify(result));
       try{expect(result.placement.model).toBe(chosen(cls));expect(result.placement.endpoint).toBe(`${f.entry.url}/openai`);
-        expect(f.calls.find(c=>c.path==='/v1/jobs')!.body.model).toBe(chosen(cls));
-        expect(f.calls.find(c=>c.path.endsWith('/lease'))!.body.act).toBe(cls);
+        const load=f.calls.find(c=>c.path==='/v1/jobs')!;
+        expect(load.body.model).toBe(chosen(cls));
+        // THE ACT AND THE TTL, on the load, in the server's own spelling.
+        expect(load.body.params.lease).toEqual({act:cls,ttl_seconds:120});
+        // ADOPTED, NOT RE-TAKEN: the id is the one the done frame handed back.
+        expect(result.placement.lease?.id).toBe('load-lease');
+        expect(f.calls.some(c=>c.path.endsWith('/lease')&&c.method==='POST')).toBe(false);
       }finally{await result.placement.lease?.release();}
-      expect(f.calls.some(c=>c.path==='/v1/leases/lease'&&c.method==='DELETE')).toBe(true);
+      expect(f.calls.some(c=>c.path==='/v1/leases/load-lease'&&c.method==='DELETE')).toBe(true);
     }finally{f.close();}
   });
 }
+
+/**
+ * A SERVER THAT LEASES NOTHING ON THE LOAD LEAVES THE OLD ROAD EXACTLY WHERE IT
+ * WAS. `lease_id` absent from the `done` frame is an answer — an older Crucible,
+ * or a load submitted without the option — and the separate
+ * `POST /v1/models/{id}/lease` is what it is still for. Without this, "adopt"
+ * would be a silent requirement that every server be 1.0.13.
+ */
+test('real HTTP a done frame with no lease_id still takes the lease the old way',async()=>{
+  const f=fixture({leaseOnLoad:false});try{
+    const result=await dispatch.placeJob('clean',f.entry.name,()=>{},()=>true);
+    expect(result.verdict).toBe('go');if(result.verdict!=='go')throw Error(JSON.stringify(result));
+    try{
+      expect(f.calls.some(c=>c.path==='/v1/models/qwen3.5-9b/lease'&&c.method==='POST')).toBe(true);
+      expect(result.placement.lease?.id).toBe('lease');
+    }finally{await result.placement.lease?.release();}
+    expect(f.calls.some(c=>c.path==='/v1/leases/lease'&&c.method==='DELETE')).toBe(true);
+  }finally{f.close();}
+});
+
+/**
+ * AN ADOPTED LEASE IS KEPT ALIVE LIKE ANY OTHER — the half of "same heartbeat,
+ * same release" that only a beat can prove. A lease whose id came from a load
+ * and is then never heartbeaten lapses in two minutes, and since 1.0.13 a lapse
+ * CLEARS THE CARD: the run would lose the model it is three blocks into using,
+ * and nothing in the placement would say so.
+ *
+ * The interval callback is captured rather than waited for — the cadence is 40 s
+ * and a keeper that waited it out would cost more than the bug — and what is
+ * asserted is the URL it goes to, because the whole question is WHICH id is
+ * being kept alive.
+ */
+test('real HTTP an adopted lease heartbeats and releases the load\'s own id',async()=>{
+  const f=fixture();
+  let beat:(()=>void)|null=null;
+  spyOn(globalThis,'setInterval').mockImplementation(((callback:()=>void)=>{beat=callback;return {unref(){}};}) as typeof setInterval);
+  spyOn(globalThis,'clearInterval').mockImplementation(()=>{});
+  try{
+    const lease=await dispatch.takeLease(f.entry,'qwen3.5-9b','clean','load-lease');
+    expect(lease.id).toBe('load-lease');
+    // NOTHING WAS TAKEN: adopting is not a cheaper take, it is no take at all.
+    expect(f.calls.some(c=>c.path.endsWith('/lease')&&c.method==='POST')).toBe(false);
+    expect(beat).not.toBeNull();
+    beat!();
+    // A REAL ROUND TRIP, not a microtask: the beat is fire-and-forget by design
+    // (a lost heartbeat must never stop a run), so the only thing to wait on is
+    // the request arriving at the fixture.
+    const beaten=async()=>{for(let i=0;i<200;i+=1){if(f.calls.some(c=>c.path==='/v1/leases/load-lease/heartbeat'))return true;await Bun.sleep(5);}return false;};
+    expect(await beaten()).toBe(true);
+    expect(f.calls).toContainEqual({method:'POST',path:'/v1/leases/load-lease/heartbeat',body:null});
+    await lease.release();
+    expect(f.calls.some(c=>c.path==='/v1/leases/load-lease'&&c.method==='DELETE')).toBe(true);
+  }finally{f.close();}
+});
 
 /**
  * A 409 `leased` IS READ, WHICH IT WAS NOT — the keeper for the twenty-line
@@ -157,6 +255,35 @@ test('real HTTP a Crucible older than the route is "it did not say", not a refus
     expect(result.verdict).toBe('go');if(result.verdict!=='go')throw Error(JSON.stringify(result));
     try{expect(result.placement.concurrency).toBe(dispatch.CRUCIBLE_CHAT_CONCURRENCY);}
     finally{await result.placement.lease?.release();}
+  }finally{f.close();}
+});
+
+/**
+ * ── VERSION SKEW IS NAMED, NOT GUESSED AROUND — PK14a ───────────────────────
+ *
+ * The depth read used to be a hand-rolled `fetch` that read two keys and shrugged
+ * at the rest; it is `client.activity()` now, and the SDK is STRICT — it reads
+ * the whole document and refuses a malformed one. So a server OLDER than this
+ * build (a 200 with no `stopping` and no `chat.max_in_flight`) throws where it
+ * used to answer null, and the two wrong endings are a crash and a silent four:
+ * a placement built on a number this app guessed about a machine whose answers
+ * it can no longer read. It is a REFUSAL naming the server and the cure.
+ *
+ * THE 404 CASE ABOVE IS THE CONTROL. "This Crucible has no such route" and "this
+ * Crucible's document is missing fields" are different news and only one of them
+ * is skew; if both refused, an old-but-working server would stop placing.
+ */
+test('real HTTP a server whose activity document this build cannot read is refused by name',async()=>{
+  const f=fixture({oldActivity:true});try{
+    const result=await dispatch.placeJob('translate',f.entry.name,()=>{},()=>true);
+    expect(result.verdict).toBe('refuse');if(result.verdict!=='refuse')throw Error(JSON.stringify(result));
+    expect(result.reason).toContain(`"${f.entry.name}" speaks an older Crucible than this app; update it.`);
+    // THE MISSING FIELD IS NAMED, in the SDK's own words, so the next question
+    // ("older how?") is answered on the row rather than in a debugger.
+    expect(result.reason).toContain('activity');
+    // AND NOTHING WAS LOADED OR LEASED: the read happens before the load, so a
+    // server this build cannot talk to costs a round trip, not 90 seconds.
+    expect(f.calls.some(c=>c.path==='/v1/jobs'&&c.method==='POST')).toBe(false);
   }finally{f.close();}
 });
 

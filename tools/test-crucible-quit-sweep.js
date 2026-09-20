@@ -90,19 +90,50 @@ function job(over) {
  * a keeper actually varies; everything else is the idle answer.
  */
 function activityBody(state) {
+  const resident = state.resident ?? null;
   return {
-    server: { name: 'fake-crucible', version: '0.5.0', api_version: 1, backend: 'cuda-linux', uptime_s: 99 },
-    resident: state.resident ?? null,
+    server: { name: 'fake-crucible', version: '1.0.13', api_version: 1, backend: 'cuda-linux', uptime_s: 99 },
+    /*
+     * `held_by` AND `unclaimed_since` ARE THE SERVER'S OWN VERDICT (1.0.13),
+     * from the one function that owns "what holds the card". The fake DERIVES
+     * them from the same script the rest of this body is built from, so a keeper
+     * cannot accidentally write a document in which a job is running and nothing
+     * holds the card. Crucible's four facts are the holders — a job, a claim, a
+     * lease, a stream — and deliberately NOT a chat in flight or a stop under
+     * way, which is exactly the gap `cardHeldBy` is wider than.
+     */
+    resident: resident === null ? null : {
+      ...resident,
+      held_by: heldByFor(state),
+      unclaimed_since: heldByFor(state) === null ? (state.unclaimedSince ?? '2026-09-20T18:00:00Z') : null,
+    },
     stopping: state.stopping ?? null,
     warming: null,
     claim: state.claim ?? null,
     streaming: null,
     lease: state.lease ?? null,
-    chat: { in_flight: state.chatInFlight ?? 0, rows: [] },
+    chat: {
+      in_flight: state.chatInFlight ?? 0,
+      max_in_flight: state.chatMaxInFlight ?? null,
+      max_in_flight_basis: null,
+      rows: [],
+    },
     slots: { accelerated: { busy: 0, of: 1, queue_depth: 0, accepts_work: true } },
     running: state.running ?? [],
     queued: state.queued ?? [],
   };
+}
+
+/** Crucible's four holders, in its own `{fact, who, details}` shape, or null. */
+function heldByFor(state) {
+  if (state.heldBy !== undefined) return state.heldBy;
+  const onTheLane = (state.running ?? [])[0] ?? (state.queued ?? [])[0];
+  if (onTheLane !== undefined) {
+    return { fact: 'job', who: onTheLane.client ?? 'an unnamed client', details: { job_id: onTheLane.job_id } };
+  }
+  if (state.claim) return { fact: 'claim', who: state.claim.held_by ?? 'a claim holder', details: {} };
+  if (state.lease) return { fact: 'lease', who: state.lease.client ?? 'a lease holder', details: {} };
+  return null;
 }
 
 /**
@@ -188,6 +219,35 @@ it('cardHeldBy names every real holder, and only ours is not one', () => {
   assert.match(sweep.cardHeldBy(activityShape({ ...base, lease: { leaseId: 'l1' } }), ours), /lease/);
   assert.match(sweep.cardHeldBy(activityShape({ ...base, chat: { inFlight: 3, rows: [] } }), ours), /3 chat/);
   assert.match(sweep.cardHeldBy(activityShape({ ...base, stopping: { id: 'qwen3', pids: [] } }), ours), /stop of qwen3/);
+});
+
+/**
+ * THE SERVER'S OWN VERDICT IS READ FOR THE LINE AND NOT FOR THE DECISION.
+ *
+ * Crucible 1.0.13 answers "what holds this card" itself, on
+ * `resident.heldBy`/`unclaimedSince` — and `cardHeldBy` deliberately stays
+ * WIDER than it: a chat in flight and a stop under way hold nothing on the
+ * server, and both mean somebody is mid-block on that card. This pins the gap
+ * from both ends, because collapsing the two tests into one is the change that
+ * would have this app unload a model out from under a running chat.
+ */
+it('the server calling a card stranded does not make it ours to unload', () => {
+  const ours = new Set();
+  const stranded = { kind: 'llm', id: 'qwen3', since: 'x', memoryBytesEstimate: null, heldBy: null, unclaimedSince: '2026-09-20T18:00:00Z' };
+  const held = { ...stranded, heldBy: { fact: 'job', who: 'foundry', details: {} }, unclaimedSince: null };
+  assert.strictEqual(sweep.strandedSince(activityShape({ resident: stranded })), '2026-09-20T18:00:00Z');
+  assert.strictEqual(sweep.strandedSince(activityShape({ resident: held })), null,
+    'something holds it, so there is no stamp to print');
+  assert.strictEqual(sweep.strandedSince(activityShape({ resident: null })), null,
+    'an empty card is not a stranded one');
+  // The gap, from both ends.
+  assert.match(
+    sweep.cardHeldBy(activityShape({ resident: stranded, chat: { inFlight: 2, rows: [] } }), ours),
+    /2 chat/,
+    'a chat in flight holds nothing on the server and everything here — somebody is mid-block',
+  );
+  assert.strictEqual(sweep.cardHeldBy(activityShape({ resident: stranded }), ours), null,
+    'and a genuinely idle stranded card is still decided by the four facts, not by the stamp');
 });
 
 /** The SDK's camelCase `Activity`, as `cardHeldBy` receives it. */
@@ -286,6 +346,47 @@ it('a resident another client is running against is LEFT ALONE, with one named l
     const said = lines.filter((line) => /using it — leaving it alone/.test(line));
     assert.strictEqual(said.length, 1, `exactly one named line, got: ${lines.join(' | ')}`);
     assert.match(said[0], /job-theirs/, 'and it names WHO is holding it');
+  } finally {
+    await fake.close();
+  }
+});
+
+/**
+ * THE STAMP IS PRINTED ON EVERY CARD THIS SWEEP WALKS AWAY FROM.
+ *
+ * A chat in flight is the case that only exists because the two tests differ:
+ * the server says nothing holds the card (a chat holds nothing — that is the
+ * whole reason leases exist), and this app still will not touch it, because
+ * somebody is mid-block. Nothing fires an event when a card becomes unheld, so
+ * if this sweep does not say "unheld since T" in the one line it leaves behind,
+ * a card that stays stranded is undiagnosable after the fact.
+ */
+it('a stranded card the sweep will not touch is logged WITH the unheld-since stamp', async () => {
+  resetLedger();
+  const script = newScript();
+  const fake = await fakeWithActivity(script);
+  const name = registerFake(fake.url);
+  script.current = () => ({
+    resident: { kind: 'llm', id: 'qwen3', since: 'x', memory_bytes_estimate: null },
+    running: fake.state.cancelled.includes('job-ours') ? [] : [job({ job_id: 'job-ours' })],
+    // Nothing HOLDS it once ours is gone — but two chats are mid-block on it.
+    chatInFlight: fake.state.cancelled.includes('job-ours') ? 2 : 0,
+    unclaimedSince: '2026-09-20T17:45:00Z',
+  });
+  ledger.recordInFlight(entry({ server: name, jobId: 'job-ours' }));
+
+  const lines = [];
+  await sweep.sweepCrucibleInFlight({ reason: 'a keeper is quitting', timing: FAST, log: (line) => lines.push(line) });
+
+  try {
+    assert.deepStrictEqual(script.submitted, [],
+      'a chat in flight is somebody mid-block; the card is not taken off them');
+    const said = lines.filter((line) => /leaving it alone/.test(line));
+    assert.strictEqual(said.length, 1, `exactly one named line, got: ${lines.join(' | ')}`);
+    assert.match(said[0], /2 chat/, 'it names why this app will not touch it');
+    assert.match(said[0], /nothing has held it since 2026-09-20T17:45:00Z/,
+      'and the server\'s own stamp, by name — the fact no event will ever announce');
+    assert.match(said[0], /lease that lapses there/, 'and who the real reconciler is');
   } finally {
     await fake.close();
   }

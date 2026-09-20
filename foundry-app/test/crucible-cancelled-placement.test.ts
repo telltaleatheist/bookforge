@@ -41,8 +41,9 @@ const chosen=(cls:string)=>cls==='pages'?'dots-ocr':cls==='clean'?'qwen3.5-9b':'
  * keeper. `resident` is the fixture's card: the lease release settles it to null
  * exactly as Crucible's own settlement does.
  */
-function fixture(options:{loadEnds:'done'|'cancelled';hangRelease?:boolean}) {
+function fixture(options:{loadEnds:'done'|'cancelled';hangRelease?:boolean;leaseOnLoad?:boolean}) {
   let resident:string|null=null;
+  let loadLease:string|null=null;
   const calls:{method:string;path:string}[]=[];
   const revision='a'.repeat(40);
   const model=(id:string)=>({id,family:'fixture',params_b:9,revision,fingerprint:`${id}@${revision}`,modalities:id==='dots-ocr'?['text','image']:['text'],backend_supported:true,installed:true,resident:resident===id,loadable:true,memory_bytes_estimate:1,context_default:8192,max_model_len:8192});
@@ -57,8 +58,16 @@ function fixture(options:{loadEnds:'done'|'cancelled';hangRelease?:boolean}) {
     if(p==='/v1/capability')return Response.json(capability());
     if(p==='/v1/models')return Response.json(models());
     if(p==='/v1/jobs'&&req.method==='POST'){
-      const body=await req.json() as {type:string};
+      const body=await req.json() as {type:string;params?:{lease?:unknown}};
       if(body.type==='unload-model'){resident=null;return Response.json({job_id:'unload'},{status:202});}
+      /*
+       * LEASE-ON-LOAD (Crucible 1.0.13). Whether the `done` frame carries a
+       * `lease_id` is decided by the load's own `params.lease` — so what the
+       * cleanup reads is a consequence of what the dispatcher sent.
+       * `leaseOnLoad:false` is the server that leases nothing on a load, which
+       * is what keeps the take-and-release dance under test.
+       */
+      loadLease=options.leaseOnLoad===false?null:(body.params?.lease?'load-lease':null);
       return Response.json({job_id:'load'},{status:202});
     }
     /*
@@ -70,16 +79,19 @@ function fixture(options:{loadEnds:'done'|'cancelled';hangRelease?:boolean}) {
     if(p==='/v1/jobs/load/events'){
       if(options.loadEnds==='cancelled')return sse(frame(1,'warming',{message:'vllm loading; 50s elapsed'})+frame(2,'cancelled',{status:'cancelled'}));
       resident='dots-ocr';
-      return sse(frame(1,'warming',{message:'vllm loading; 50s elapsed'})+frame(2,'done',{resident:'dots-ocr'}));
+      return sse(frame(1,'warming',{message:'vllm loading; 50s elapsed'})+frame(2,'done',loadLease===null?{resident:'dots-ocr'}:{resident:'dots-ocr',lease_id:loadLease}));
     }
     if(p==='/v1/jobs/unload/events')return sse(frame(1,'done',{resident:null}));
     // THE RECEIPT LIES AND THE RECORD DOES NOT. A DELETE on a job that has
     // already finished is a no-op there; the job's own state is the only fact
     // about what landed on the card.
     if(p==='/v1/jobs/load'&&req.method==='DELETE')return Response.json({job_id:'load',status:'cancelled'});
-    if(p==='/v1/jobs/load')return Response.json({job_id:'load',type:'load-model',model:'dots-ocr',status:options.loadEnds,progress:1,position:null,error:null,artifacts:[],created:'2026-09-20T18:29:00Z',started:'2026-09-20T18:28:47Z',finished:'2026-09-20T18:29:37Z'});
+    // 1.0.13 puts `lease_id` on the RECORD as well as on the `done` frame, and
+    // that is not a duplicate: a lease id a client cannot recover after a broken
+    // stream is a hold nobody can release.
+    if(p==='/v1/jobs/load')return Response.json({job_id:'load',type:'load-model',model:'dots-ocr',status:options.loadEnds,progress:1,position:null,error:null,artifacts:[],lease_id:loadLease,created:'2026-09-20T18:29:00Z',started:'2026-09-20T18:28:47Z',finished:'2026-09-20T18:29:37Z'});
     if(p.endsWith('/lease')&&req.method==='POST')return Response.json({lease_id:'lease',kind:'llm',subject:p.split('/')[3],client:'fixture',act:'pages',since:'2026-09-20T18:29:37Z',expires_at:'2026-09-20T18:31:37Z'},{status:201});
-    if(p==='/v1/leases/lease'&&req.method==='DELETE'){
+    if(p.startsWith('/v1/leases/')&&req.method==='DELETE'){
       if(options.hangRelease)return await new Promise<Response>(()=>{});
       resident=null;
       return new Response(null,{status:204});
@@ -97,12 +109,17 @@ function fixture(options:{loadEnds:'done'|'cancelled';hangRelease?:boolean}) {
 }
 
 /**
- * OWEN'S CASE. Stop lands on the warming line; the load completes anyway. The
- * placement is answerable for the model it put there, and gives it back by being
- * a holder that lets go — which is the one gesture Crucible's settlement reacts
- * to.
+ * OWEN'S CASE, AS IT IS SINCE CRUCIBLE 1.0.13. Stop lands on the warming line;
+ * the load completes anyway. The load carried its own lease, so what is resident
+ * is ALREADY held by us and the cleanup is one verb: release the id the `done`
+ * frame handed back.
+ *
+ * THE OLD DANCE WOULD NOW BE WRONG HERE, which is why its absence is asserted: a
+ * `POST /v1/models/dots-ocr/lease` against a card our own load is holding is
+ * refused `409 leased` naming us, and the `unload-model` behind it refused for
+ * the same reason. Exactly one DELETE, to exactly the id we were given.
  */
-test('real HTTP a placement cancelled while its load lands releases the model it loaded',async()=>{
+test('real HTTP a placement cancelled while its leased load lands releases that lease',async()=>{
   const f=fixture({loadEnds:'done'});
   const logged:string[]=[];
   spyOn(console,'log').mockImplementation((...args:unknown[])=>{logged.push(args.join(' '));});
@@ -112,13 +129,39 @@ test('real HTTP a placement cancelled while its load lands releases the model it
       if(line.includes('vllm loading'))abort.abort();
     },()=>true,abort.signal);
     expect(result.verdict).toBe('wait');
-    // The cancel was SENT and its answer WAITED FOR, the job's own state was
-    // read, and a lease was taken and given straight back.
+    // The cancel was SENT and its answer WAITED FOR, and the job's own state was
+    // read — the receipt says `cancelled` while the record says `done`.
     expect(f.calls).toContainEqual({method:'DELETE',path:'/v1/jobs/load'});
     expect(f.calls).toContainEqual({method:'GET',path:'/v1/jobs/load'});
+    // THE LOAD'S OWN LEASE, released once and nothing else asked for.
+    expect(f.calls.filter((c)=>c.method==='DELETE'&&c.path.startsWith('/v1/leases/')))
+      .toEqual([{method:'DELETE',path:'/v1/leases/load-lease'}]);
+    expect(f.calls.some((c)=>c.path.endsWith('/lease')&&c.method==='POST')).toBe(false);
+    expect(f.calls.some((c)=>c.path==='/v1/jobs/unload/events')).toBe(false);
+    // AND THE CARD IS BACK, which is the only assertion that is about the night.
+    expect(f.residentNow()).toBeNull();
+    expect(logged.some((line)=>line.includes('cancelled placement: the load of dots-ocr on "'+f.entry.name+'" had landed holding its own lease; released it.'))).toBe(true);
+  }finally{f.close();}
+});
+
+/**
+ * THE SERVER THAT LEASED NOTHING ON THE LOAD — an older Crucible, or a load
+ * submitted without the option. PK12's take-and-release survives untouched for
+ * exactly this case: nothing holds the model, so becoming a holder that lets go
+ * is still the one gesture Crucible's settlement reacts to.
+ */
+test('real HTTP a cancelled load that leased nothing is still released by taking a lease and letting go',async()=>{
+  const f=fixture({loadEnds:'done',leaseOnLoad:false});
+  const logged:string[]=[];
+  spyOn(console,'log').mockImplementation((...args:unknown[])=>{logged.push(args.join(' '));});
+  try{
+    const abort=new AbortController();
+    const result=await dispatch.placeJob('read',f.entry.name,(line)=>{
+      if(line.includes('vllm loading'))abort.abort();
+    },()=>true,abort.signal);
+    expect(result.verdict).toBe('wait');
     expect(f.calls).toContainEqual({method:'POST',path:'/v1/models/dots-ocr/lease'});
     expect(f.calls).toContainEqual({method:'DELETE',path:'/v1/leases/lease'});
-    // AND THE CARD IS BACK, which is the only assertion that is about the night.
     expect(f.residentNow()).toBeNull();
     expect(logged.some((line)=>line.includes('cancelled placement: the load of dots-ocr on "'+f.entry.name+'" had landed; released it.'))).toBe(true);
   }finally{f.close();}
@@ -139,7 +182,8 @@ test('real HTTP a placement whose load is genuinely cancelled takes no lease and
     expect(result.verdict).toBe('wait');
     if(result.verdict!=='wait')throw Error(JSON.stringify(result));
     expect(result.reason).toBe(`the load of dots-ocr on "${f.entry.name}" was cancelled`);
-    expect(f.calls.some((c)=>c.path.endsWith('/lease'))).toBe(false);
+    expect(f.calls.some((c)=>c.path.endsWith('/lease')&&c.method==='POST')).toBe(false);
+    expect(f.calls.some((c)=>c.path.startsWith('/v1/leases/'))).toBe(false);
     expect(f.calls.filter((c)=>c.path==='/v1/jobs'&&c.method==='POST')).toHaveLength(1);
     expect(f.residentNow()).toBeNull();
   }finally{f.close();}
@@ -162,7 +206,7 @@ test('real HTTP the cleanup is bounded, and names the model when the bound fires
     await dispatch.releaseAbandonedLoad(
       f.entry,
       registry.clientFor(f.entry),
-      {jobId:'load',cancelled:null},
+      {jobId:'load',cancelled:null,leaseId:null},
       'dots-ocr',
       'pages',
       f.entry.name,

@@ -119,6 +119,28 @@ export function unloadJobTypeForResidentKind(kind: string): string | null {
  * Crucible's settlement (`crucible/settle.py`): a job on the lane, a queued job
  * about to take it, narrator's claim, an open lease, a streaming session, a
  * chat in flight, and a stop already under way.
+ *
+ * ── AND IT IS NOT `resident.heldBy`, WHICH 1.0.13 PUTS RIGHT BESIDE IT ─────
+ *
+ * The server now answers this question itself — `resident.heldBy` is
+ * `settle.py`'s own verdict, and `null` there with a resident set IS the
+ * stranded card. It is READ (see {@link strandedSince}) and it is not the
+ * decision, because the two tests are deliberately not the same test:
+ *
+ *   * **This one is WIDER on purpose.** A chat in flight holds NOTHING on the
+ *     server — that is the entire reason leases exist — and a stop already
+ *     under way is not a holder either. Both mean somebody is mid-block on that
+ *     card, and an app that is quitting must not take a model off them. Owen's
+ *     rule stands: the only thing this app can honestly claim is a job id it
+ *     wrote down itself.
+ *   * **A stranded card is still not ours to reconcile.** Since 1.0.13 a lapsed
+ *     lease settles the card on the server, which is the real reconciler and
+ *     needs nothing from here. What this sweep clears is what OUR ledger says we
+ *     put there — and that is what {@link sweepCrucibleInFlight} walks.
+ *
+ * So the server's answer is for the SENTENCE, not the verdict: when this sweep
+ * leaves a card alone, the log says whether the server thinks anything is coming
+ * back for it, and since when.
  */
 export function cardHeldBy(
   activity: Activity,
@@ -140,6 +162,30 @@ export function cardHeldBy(
   if (activity.chat.inFlight > 0) return `${activity.chat.inFlight} chat completion(s) in flight`;
   if (activity.stopping !== null) return `a stop of ${activity.stopping.id} already under way`;
   return null;
+}
+
+/**
+ * SINCE WHEN NOTHING HAS HELD THAT CARD — the server's own stamp, or null
+ * because something does (or because nothing is resident). PURE.
+ *
+ * `resident.heldBy` and `resident.unclaimedSince` are Crucible 1.0.13's, and
+ * they come from the one function that owns "what holds the card"
+ * (`crucible/settle.py`). `heldBy: null` with a resident set is the STRANDED
+ * CARD: a load that succeeded and was never claimed, or a lease that lapsed with
+ * nothing asking again.
+ *
+ * NEVER A POLL ARTEFACT, which is what makes the stamp worth printing: both ways
+ * a card becomes unheld fire no event, so the server reports the later of two
+ * real timestamps — the moment the exempt load returned, and the lapsed lease's
+ * own expiry. It means what it says even if nobody polled for ten minutes.
+ *
+ * READ FOR THE LINE, NEVER FOR THE VERDICT — see {@link cardHeldBy}, which keeps
+ * the wider four-fact test as the decision.
+ */
+export function strandedSince(activity: Activity): string | null {
+  const resident = activity.resident;
+  if (resident === null || resident.heldBy !== null) return null;
+  return resident.unclaimedSince;
 }
 
 /** Our job ids still on this server's lane, running or queued. PURE. */
@@ -379,11 +425,25 @@ async function clearTheCard(
     return { server, ourJobsCleared: true, unloadJobId: null, note };
   }
 
+  /*
+   * WHAT THE SERVER ITSELF SAYS, said by name on every card this sweep walks
+   * away from. A stranded card that stays stranded is the single hardest thing
+   * to diagnose after the fact — nothing fires an event when a card becomes
+   * unheld — so the stamp goes in the log beside the reason we are leaving it,
+   * and the reconciler it names (a lapsing lease, on that server) is the one
+   * that will actually act on it.
+   */
+  const stranded = strandedSince(activity);
+  const strandedNote = stranded === null
+    ? ''
+    : ` "${server}" itself reports nothing has held it since ${stranded}; a lease that lapses `
+      + 'there is what settles that, not a sweep here.';
+
   const holder = cardHeldBy(activity, ours);
   if (holder !== null) {
     // THE LINE THIS MODULE EXISTS TO PRINT RATHER THAN ACT ON.
     const note = `"${server}" still holds ${activity.resident.kind} "${activity.resident.id}", but `
-      + `${holder} is using it — leaving it alone.`;
+      + `${holder} is using it — leaving it alone.${strandedNote}`;
     log(note);
     return { server, ourJobsCleared: true, unloadJobId: null, note };
   }
@@ -391,7 +451,7 @@ async function clearTheCard(
   const unloadType = unloadJobTypeForResidentKind(activity.resident.kind);
   if (unloadType === null) {
     const note = `"${server}" holds a resident of kind "${activity.resident.kind}", which this `
-      + 'build has no unload job type for. Crucible unloads it itself once nothing holds it.';
+      + `build has no unload job type for. Crucible unloads it itself once nothing holds it.${strandedNote}`;
     log(note);
     return { server, ourJobsCleared: true, unloadJobId: null, note };
   }

@@ -404,32 +404,39 @@ const CHAT_DEPTH_TIMEOUT_MS = 10_000;
  * placement's own calls decide whether this server can be used, with sentences
  * built for that, and a courtesy read must not be the thing that fails a row.
  *
- * ── AND IT IS THE ONE CRUCIBLE ROUTE IN THIS FILE NOT SPOKEN THROUGH THE SDK ─
+ * ── AND IT IS THE SDK'S NOW, WHICH IT WAS NOT WHEN IT WAS WRITTEN ──────────
  *
- * `@crucible/client` 1.0.10's `Activity.chat` carries `inFlight` and `rows` and
- * DROPS `max_in_flight` — the client is one release behind the server on this
- * field, and `client.activity()` cannot hand back a number it never parsed. So
- * this reads the document itself, with the entry's own token, exactly as
- * {@link headerMapFor} composes it. The moment the SDK carries the field this
- * function becomes one line of `client.activity()` and the fetch goes; it is
- * written small and in one place so that is a small edit. Foundry does not
- * re-implement an SDK rule here — there is no rule to re-implement, only a field
- * to read.
+ * This was the one Crucible route in this file spoken by a hand-rolled `fetch`,
+ * under a docstring that said so and promised to switch *"the moment the SDK
+ * carries the field"*: `@crucible/client` 1.0.10's `Activity.chat` parsed
+ * `in_flight` and `rows` and dropped `max_in_flight`, so `client.activity()`
+ * could not hand back a number it never read. 1.0.13 carries `maxInFlight` and
+ * `maxInFlightBasis`, so the promise is kept and the fetch is gone. One reader
+ * of this wire, and it is the SDK's — a second parse of a document the SDK
+ * already parses is exactly the shape that goes stale in silence.
+ *
+ * ── AND THE SWITCH GAVE THE READ A FAILURE MODE IT DID NOT HAVE ────────────
+ *
+ * A raw fetch is tolerant by construction: it reads two keys and shrugs at
+ * everything else. The SDK is STRICT — it reads the whole document and refuses
+ * a malformed one as a {@link CrucibleProtocolError} — so a server OLDER than
+ * this build (no `stopping`, no `resident.unclaimed_since`, no
+ * `chat.max_in_flight`) now throws here where it used to answer `null`. That
+ * must not be flattened into "it did not say": a silent four against a server
+ * this app can no longer read is a placement built on a guess about a machine
+ * it cannot talk to. It becomes {@link CrucibleTooOld}, which
+ * `interpretFailure` refuses by name. Everything ELSE — a 404 from a Crucible
+ * older than the route, an unreachable machine, a cut-off — is still exactly
+ * "it did not say".
  */
 async function statedChatDepth(engine: CrucibleServerEntry): Promise<number | null> {
-  const url = `${engine.url.replace(/\/+$/, '')}/v1/activity`;
   try {
-    const response = await fetch(url, {
-      method: 'GET',
-      headers: { Authorization: `Bearer ${engine.token}`, 'X-Crucible-Api': '1' },
-      signal: AbortSignal.timeout(CHAT_DEPTH_TIMEOUT_MS),
-    });
-    if (!response.ok) return null;
-    const document = await response.json() as { chat?: { max_in_flight?: unknown } } | null;
-    const stated = document?.chat?.max_in_flight;
-    if (typeof stated !== 'number' || !Number.isFinite(stated) || stated < 1) return null;
+    const activity = await clientFor(engine, { timeoutMs: CHAT_DEPTH_TIMEOUT_MS }).activity();
+    const stated = activity.chat.maxInFlight;
+    if (stated === null || !Number.isFinite(stated) || stated < 1) return null;
     return Math.floor(stated);
-  } catch {
+  } catch (err) {
+    if (err instanceof CrucibleProtocolError) throw new CrucibleTooOld(engine.name, err);
     /*
      * NOTHING IS LOGGED FROM THE CATCH, and that is not silence about a failure:
      * the caller says which number it settled on and why, in one line, on every
@@ -438,6 +445,38 @@ async function statedChatDepth(engine: CrucibleServerEntry): Promise<number | nu
      * is about to succeed.
      */
     return null;
+  }
+}
+
+/**
+ * THAT SERVER IS OLDER THAN THIS BUILD, AND THE DOCUMENT SAYS SO.
+ *
+ * Raised only from {@link statedChatDepth}, and only for a
+ * {@link CrucibleProtocolError} out of `client.activity()`. It is its own class
+ * rather than a re-thrown protocol error because `interpretFailure` already has
+ * a `CrucibleProtocolError` branch, and that branch's sentence is about the
+ * CAPABILITY document — *"answered about translate work with a document this
+ * build cannot read"* — which would be a true sentence about the wrong route and
+ * send whoever reads it to the wrong file on the wrong machine.
+ *
+ * THE SENTENCE NAMES THE CURE, because there is exactly one: the API version is
+ * not what is wrong here (a 1.0.12 server still answers `X-Crucible-Api: 1`);
+ * what is wrong is that this build's SDK reads fields that release does not
+ * send, and no amount of waiting changes it. `detail` is the SDK's own, so the
+ * missing field is named rather than guessed at.
+ */
+export class CrucibleTooOld extends Error {
+  readonly serverName: string;
+  readonly detail: string;
+
+  constructor(serverName: string, cause: CrucibleProtocolError) {
+    super(
+      `"${serverName}" speaks an older Crucible than this app; update it. `
+      + `Its /v1/activity is missing something this build reads: ${cause.detail}`,
+    );
+    this.name = 'CrucibleTooOld';
+    this.serverName = serverName;
+    this.detail = cause.detail;
   }
 }
 
@@ -1224,6 +1263,20 @@ async function placeOnCrucible(
   }
 
   /*
+   * ── THE DEPTH IS ASKED FOR BEFORE ANYTHING IS TAKEN OR LOADED ─────────────
+   *
+   * It used to be read inline in the returned placement, which put it AFTER the
+   * load and AFTER the lease. That was harmless while the read could not fail;
+   * since `statedChatDepth` became the SDK's it can ({@link CrucibleTooOld}),
+   * and a throw between `takeLease` and the `return` would abandon a lease this
+   * function had just taken — a card held for its whole TTL by a run that never
+   * started. Asked here, the only thing a refusal costs is a round trip, and a
+   * server this build cannot read is named before ninety seconds of loading
+   * rather than after.
+   */
+  const concurrency = await chatDepthFor(engine, capability, say);
+
+  /*
    * ── RESIDENCY: WE LOAD, AND WE NEVER UNLOAD — WITH ONE EXCEPTION ──────────
    *
    * One model is resident at a time and a load EVICTS whatever was there. That
@@ -1258,8 +1311,28 @@ async function placeOnCrucible(
   try {
     if (!resident.resident) {
       say(`Loading ${row.selected} on ${slot.name}…`);
-      const jobId = await client.loadModel(row.selected);
-      const load: SubmittedLoad = { jobId, cancelled: null };
+      /*
+       * ── THE LOAD CARRIES ITS OWN LEASE — Crucible 1.0.13 ─────────────────
+       *
+       * A load that succeeds cannot clear the card: its whole content is "be
+       * resident", so the server deliberately does not settle on it
+       * (`crucible/settle.py`: *"a load is not a holder letting go"*). That
+       * leaves the window between the `done` frame and this app's own
+       * `POST /v1/models/{id}/lease` held by NOTHING — and a client that dies in
+       * that window strands the card for ever, because a quiet hold has no end.
+       * It is the 21 GB Owen found on 2026-09-20 (BUG-HUNT §F.8), one request
+       * wide.
+       *
+       * 1.0.13 closes it at the source: ask for the lease ON the load and the
+       * model is held from the instant it exists. The same ttl and the same
+       * heartbeat as {@link takeLease}'s — one number, one cadence — and a
+       * lapsed lease now SETTLES the card there, so the same death costs two
+       * minutes instead of for ever.
+       */
+      const jobId = await client.loadModel(row.selected, {
+        lease: { act: capability, ttlSeconds: LEASE_TTL_SECONDS },
+      });
+      const load: SubmittedLoad = { jobId, cancelled: null, leaseId: null };
       ourLoad = load;
       /*
        * THE CANCEL IS KEPT, NOT DROPPED. It used to be `void client.cancel(…)`
@@ -1280,7 +1353,18 @@ async function placeOnCrucible(
         for await (const event of client.events(jobId)) {
           if (event.event === 'warming') say(`Loading ${row.selected} on ${slot.name}: ${warmingHeadline(event.data.message)}`);
           else if (event.event === 'progress') say(`Loading ${row.selected} on ${slot.name}: ${event.data.message}`);
-          else if (event.event === 'failed') {
+          else if (event.event === 'done') {
+            /*
+             * WHICHEVER ACT MADE THE RESIDENCY OURS HANDS US THE LEASE ID. The
+             * SDK models the two keys `load-model`'s `done` frame always had
+             * (`artifacts`, `resident`) and carries everything else verbatim in
+             * `extra` — so `lease_id` is read from there, by its server spelling,
+             * and its ABSENCE is an answer too: a server older than 1.0.13, or a
+             * load submitted without the option, leaves this null and the paths
+             * below take their own lease exactly as they always did.
+             */
+            load.leaseId = leaseIdIn(event.data.extra);
+          } else if (event.event === 'failed') {
             const code = event.data.error.code;
             /*
              * A LOAD THAT FAILED AFTER IT WAS ADMITTED. The codes that mean "this
@@ -1314,9 +1398,24 @@ async function placeOnCrucible(
      * (the server says so by name: `model_not_resident`), and one taken after the
      * spawn would leave a window in which another client's load evicts the model
      * this run is three blocks into using.
+     *
+     * ── AND WHEN WE LOADED IT, THE LOAD ALREADY TOOK IT ──────────────────────
+     *
+     * WHICHEVER ACT MADE THE RESIDENCY OURS HANDS US THE LEASE ID. A load of
+     * ours carried `lease: {act, ttl_seconds}` and the card has been held since
+     * the instant the model existed, so there is no second lease to open — the
+     * one that exists is ADOPTED, with the same heartbeat and the same
+     * `release()`, and `Placement.lease` is the same object every caller already
+     * has. The ALREADY-RESIDENT case (nothing was loaded, so nothing leased on
+     * our behalf) opens one the old way, which is what the separate
+     * `POST /v1/models/{id}/lease` is still for.
+     *
+     * NO SECOND TAKE ON A LEASED CARD, which is not a tidiness argument: our own
+     * lease would refuse it `409 leased`, naming us, and this function would
+     * wait for a card it is already holding.
      */
     signal?.throwIfAborted();
-    const lease = await takeLease(engine, row.selected, capability);
+    const lease = await takeLease(engine, row.selected, capability, ourLoad?.leaseId ?? null);
 
     return {
       verdict: 'go',
@@ -1326,13 +1425,14 @@ async function placeOnCrucible(
         /*
          * HOW DEEP TO GO ON THIS CARD — the server's number when it states one, and
          * four when it does not. See `Placement.concurrency`, which carries the whole
-         * argument and the night it is about, and `chatDepthFor`, which asks.
+         * argument and the night it is about, and `chatDepthFor`, which asks (above,
+         * before the load: a read that can refuse must not run after a lease).
          *
          * A READING STATES NONE HERE: `--vlm-concurrency` is the page reader's own
          * flag and the engine takes it from the server that serves the pages, so a
          * chat depth on a `pages` placement would be a number about the wrong door.
          */
-        concurrency: await chatDepthFor(engine, capability, say),
+        concurrency,
         /*
          * `openai` IS THE ENGINE'S DEFAULT AND IS LEFT UNSPELLED on the command
          * line — see `doorArgs` in job-queue.ts. It is named here anyway, because a
@@ -1391,6 +1491,66 @@ async function placeOnCrucible(
 interface SubmittedLoad {
   readonly jobId: string;
   cancelled: Promise<void> | null;
+  /**
+   * THE LEASE THE LOAD ITSELF OPENED, or null for a load that opened none.
+   *
+   * Read off the `done` frame's `extra`, so it is non-null only once the model
+   * is actually on the card. Null means one of two things and they want the same
+   * treatment: the load has not finished, or the server is older than 1.0.13 and
+   * ignored the `lease` param — either way nothing is held on our behalf and
+   * whoever needs the card held must take a lease of their own.
+   */
+  leaseId: string | null;
+}
+
+/**
+ * `lease_id` OFF A `done` FRAME'S `extra`, or null.
+ *
+ * `DoneData.extra` is `Record<string, unknown>` by construction — the SDK
+ * carries every key a job type put on its terminal frame verbatim rather than
+ * modelling each one — so the read is a type test, and a value that is not a
+ * non-empty string is NOT a lease id. Null rather than a throw: a server that
+ * sent something strange here is a server that leased nothing we can release,
+ * and the callers all have a working answer for "nothing is held".
+ */
+function leaseIdIn(extra: Readonly<Record<string, unknown>>): string | null {
+  const stated = extra['lease_id'];
+  return typeof stated === 'string' && stated.length > 0 ? stated : null;
+}
+
+/**
+ * THE LEASE A LOAD OPENED, READ BACK OFF ITS JOB RECORD — and the one field on
+ * this wire this file still reads by hand.
+ *
+ * Crucible 1.0.13 puts `lease_id` on `GET /v1/jobs/{id}` as well as on the `done`
+ * frame, in as many words *"a lease id you cannot recover is a hold nobody can
+ * release"*. `@crucible/client` 1.0.13's `JobStatus` does not carry it: the
+ * SDK's job reader models eleven keys and this is not one of them, and
+ * `client.job()` cannot hand back a field it never parsed. So this reads the
+ * document itself, with the entry's own token, exactly as {@link headerMapFor}
+ * composes it — the same shape, and the same standing note, the chat-depth read
+ * carried until 1.0.13 caught up with it: **the moment the SDK carries the field
+ * this becomes one line of `client.job()` and the fetch goes.** It is small and
+ * has one caller so that is a small edit.
+ *
+ * NULL FOR EVERY UNHAPPY ANSWER, because the caller has a working road for
+ * "nothing is held on our behalf" (the take-and-release dance) and no road at
+ * all for a throw: this runs inside a Stop's own tidying, where a failure to
+ * READ must never become a failure to STOP.
+ */
+async function leaseIdOfJob(entry: CrucibleServerEntry, jobId: string): Promise<string | null> {
+  const url = `${entry.url.replace(/\/+$/, '')}/v1/jobs/${encodeURIComponent(jobId)}`;
+  try {
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${entry.token}`, 'X-Crucible-Api': '1' },
+    });
+    if (!response.ok) return null;
+    const record = await response.json() as Record<string, unknown> | null;
+    return record === null ? null : leaseIdIn(record);
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -1442,6 +1602,21 @@ const ABANDONED_LOAD_CLEANUP_MS = 30_000;
  *      `unload-model` is the FALLBACK, for a server that refuses the lease for a
  *      reason that is not another client (`model_not_resident`: it has already
  *      gone, and the unload says so by name and costs nothing).
+ *
+ * ── AND SINCE 1.0.13, STEP 3 IS USUALLY ONE VERB ──────────────────────────
+ *
+ * The load now carries its own lease (`placeOnCrucible`), so a `done` load is
+ * ALREADY held by us and the id is on its `done` frame. Then this is a single
+ * `DELETE /v1/leases/{id}`: the take-and-release dance would be a second lease
+ * on a card our own first one holds, refused `409 leased` naming us, and the
+ * `unload-model` behind it refused for the same reason. So the dance survives
+ * for exactly the case it is still true of — a load that ended `done` with NO
+ * `lease_id`, which is an older server or a load submitted without the option.
+ *
+ * THE ID IS RE-READ FROM THE JOB RECORD WHEN THE STREAM DID NOT DELIVER IT,
+ * which is the same receipt-is-not-the-fact rule step 2 keeps: a socket that
+ * died before the `done` frame is not a load that did not land, and a lease id
+ * this app cannot recover is a hold nobody can release.
  *
  * ── And it never hangs and never fails ────────────────────────────────────
  *
@@ -1510,6 +1685,39 @@ export async function releaseAbandonedLoad(
     if (status.status !== 'done') {
       console.log(
         `[slots] cancelled placement: the load of ${where} ended ${status.status}; nothing is resident.`,
+      );
+      return;
+    }
+
+    /*
+     * ── THE LOAD'S OWN LEASE, WHICH IS THE WHOLE CLEANUP WHEN THERE IS ONE ──
+     *
+     * `load.leaseId` is set from the `done` frame. It is null when the stream
+     * broke before that frame arrived — the same reason step 2 reads the record
+     * rather than the receipt — so the record is asked before concluding the
+     * load leased nothing.
+     */
+    const heldByOurLoad = load.leaseId ?? await leaseIdOfJob(entry, load.jobId);
+    if (heldByOurLoad !== null) {
+      try {
+        await client.release(heldByOurLoad);
+      } catch (err) {
+        /*
+         * `unknown_lease` IS THE CARD ALREADY BACK, not a failed cleanup: since
+         * 1.0.13 a lapsed lease settles the card itself, so a ttl that ran out
+         * while this app was getting here did the job this function came to do.
+         * Anything else is a real failure and gets the outer catch's sentence,
+         * which names the model and the machine.
+         */
+        if (!(err instanceof CrucibleRefused && err.code === 'unknown_lease')) throw err;
+        console.log(
+          `[slots] cancelled placement: the lease the load of ${where} opened had already lapsed; `
+          + 'the card is back.',
+        );
+        return;
+      }
+      console.log(
+        `[slots] cancelled placement: the load of ${where} had landed holding its own lease; released it.`,
       );
       return;
     }
@@ -1680,16 +1888,39 @@ const LEASE_HEARTBEAT_MS = (LEASE_TTL_SECONDS / 3) * 1000;
  * the load must be on the same process, and two resolutions is two chances for
  * them not to be.
  */
+/*
+ * ── `adopt` — WHICHEVER ACT MADE THE RESIDENCY OURS HANDS US THE LEASE ID ───
+ *
+ * Crucible 1.0.13 lets a `load-model` carry `lease: {act, ttl_seconds}` and
+ * answers with the `lease_id` on its `done` frame, so a model this app loaded is
+ * held from the instant it exists rather than from the moment this function is
+ * reached. There is then nothing left to TAKE — passing that id here adopts the
+ * lease the load opened: the same heartbeat on the same cadence, the same
+ * `release()`, the same {@link Lease} object every caller already has. `null` is
+ * the old road (`POST /v1/models/{id}/lease`), which is what the ALREADY-RESIDENT
+ * case wants: nothing was loaded on our behalf, so nothing was leased on it.
+ *
+ * ADOPTING IS NOT A CHEAPER TAKE, and the difference matters on exactly one
+ * path: taking a second lease on a card OUR OWN load is already holding is
+ * refused `409 leased`, naming us, and would park the run waiting for a card it
+ * holds.
+ *
+ * THE `unknown_lease` RE-LEASE BELOW IS UNCHANGED AND IS RIGHT FOR BOTH. A
+ * server that forgot the id — a restart — forgot an adopted one exactly as it
+ * forgets a taken one, and the remedy is the same: ask for a new lease on the
+ * model, which succeeds only if it is still resident.
+ */
 export async function takeLease(
   entry: CrucibleServerEntry,
   model: string,
   capability: CapabilityClass,
+  adopt: string | null = null,
 ): Promise<Lease> {
   const client = clientFor(entry);
   const acquire = async (): Promise<string> => (
     await client.lease(model, { act: capability, ttlSeconds: LEASE_TTL_SECONDS })
   ).leaseId;
-  let id = await acquire();
+  let id = adopt ?? await acquire();
   let stopped = false;
   let beating = false;
   const releaseId = async (leaseId: string): Promise<void> => {
@@ -1974,6 +2205,19 @@ function interpretFailure(err: unknown, slotName: string, capability: Capability
     return isServerSpecificRefusal(err.code)
       ? transientWait(`"${slotName}" refused ${capability} work: ${err.serverMessage}`)
       : { verdict: 'refuse', reason: `"${slotName}" refused ${capability} work: ${err.serverMessage}` };
+  }
+  if (err instanceof CrucibleTooOld) {
+    /*
+     * THIS BUILD'S SDK READS A DOCUMENT THAT SERVER DOES NOT SEND — see
+     * {@link CrucibleTooOld}, which composes the sentence and names the cure.
+     *
+     * REFUSED, on the same argument as the `CrucibleProtocolError` branch below:
+     * it will say the same thing on the next pass, nothing on a timer changes
+     * it, and the alternative is a placement built on a number this app guessed
+     * about a machine it cannot read. It is said ONCE, on the row, rather than
+     * parked where it would look like a busy card.
+     */
+    return { verdict: 'refuse', reason: err.message };
   }
   if (err instanceof CrucibleCapabilityUndecided) {
     /*

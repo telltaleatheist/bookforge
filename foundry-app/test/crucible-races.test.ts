@@ -204,9 +204,17 @@ for (const [kind, capability, model] of [
     const client = {
       models: mock(async () => [{ id: model, resident: false }]),
       loadModel: mock(async () => 'load-native'),
-      events: async function* () { yield { event: 'done', data: {} }; },
+      /*
+       * `extra` IS ALWAYS ON A `done` FRAME — the SDK carries every key the job
+       * type put there verbatim and `{}` is the true answer to "what else was on
+       * the frame", never an absence. This one is empty because this fixture's
+       * server leases nothing on the load, which is what keeps the separate
+       * `client.lease` below under test.
+       */
+      events: async function* () { yield { event: 'done', data: { extra: {} } }; },
       lease: mock(async () => ({ leaseId: 'native-lease' })),
       release: mock(async () => {}),
+      activity: mock(async () => ({ chat: { maxInFlight: null, maxInFlightBasis: null } })),
       capability: async () => ({ backendKind: 'llama-windows', totalBytes: 24e9, classes: [{
         capability, enabled: true, selected: model, reason: 'native Windows', shortfallBytes: 0, route: 'local',
       }] }),
@@ -222,7 +230,10 @@ for (const [kind, capability, model] of [
     expect(result.verdict).toBe('go');
     if (result.verdict !== 'go') throw Error('native route was refused');
     try {
-      expect(client.loadModel).toHaveBeenCalledWith(model);
+      // THE LEASE RIDES ON THE LOAD (Crucible 1.0.13) — the act and the ttl both.
+      expect(client.loadModel).toHaveBeenCalledWith(model, {
+        lease: { act: capability, ttlSeconds: expect.any(Number) },
+      });
       expect(client.lease).toHaveBeenCalledWith(model, expect.objectContaining({ act: capability, ttlSeconds: expect.any(Number) }));
       expect(result.placement.model).toBe(model);
       expect(result.placement.endpoint).toBe('http://windows-pc:7100/openai');
