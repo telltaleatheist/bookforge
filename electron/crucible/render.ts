@@ -75,6 +75,7 @@ import type { RenderChunk, RenderResult } from '@crucible/client';
 import { CRUCIBLE_CLIENT_NAME, crucibleClientFor } from './servers';
 import { noteInFlightEvent, recordInFlight } from './in-flight-ledger';
 import { crucibleTransientLine } from './job';
+import { transportFailureCause } from './transport-failure';
 import {
   CrucibleStreamWentQuiet, describeStallInterval, withStreamStallClock,
 } from './stream-stall';
@@ -512,6 +513,28 @@ export function describeCrucibleRefusal(err: unknown, server: string): CrucibleR
     return new CrucibleRenderRefused(
       'crucible_client_misconfigured',
       `${at}: this client was built wrong — ${err.message}`,
+    );
+  }
+  /*
+   * A SOCKET THAT DIED MID-ANSWER, ASKED ABOUT LAST — after every SDK type,
+   * because the SDK's own classes are the better answer wherever it made one.
+   *
+   * The SDK maps a connection never established onto `CrucibleUnreachable`; it
+   * does not map a socket destroyed once the response was already coming,
+   * which undici hands us as a bare `TypeError: terminated`. That reached the
+   * `return err` below and FAILED an hours-long render for a server that was
+   * rebooting. Same wait, same code, same sentence — the question
+   * ("can this be waited out") is owned for both doors by
+   * `transport-failure.ts`, not answered twice.
+   */
+  const wire = transportFailureCause(err);
+  if (wire !== null) {
+    return new CrucibleRenderRefused(
+      'crucible_unreachable',
+      `${at} dropped the connection: ${wire}. A render is not retried here — the queue asks again `
+      + 'on its next admission tick; start the server, or pick another one.',
+      undefined,
+      crucibleTransientLine(server, wire),
     );
   }
   // Not one of the SDK's types. Returned UNCHANGED, with its stack, because an

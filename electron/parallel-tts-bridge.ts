@@ -23,7 +23,7 @@ import { findCachedSessionLayout } from './session-cache-layout';
 import * as os from 'os';
 import * as crypto from 'crypto';
 import * as logger from './audiobook-logger';
-import { getTTSLogger } from './rolling-logger';
+import { getTTSLogger, machineLogDirectory } from './rolling-logger';
 import type { JobStageProgress } from './job-stages';
 // The model behind the number pass is INJECTED into the door below, so this is a
 // type-only import: nothing here ever dials Ollama.
@@ -57,31 +57,37 @@ function appendCapped(buf: string, chunk: string, maxBytes: number = MAX_STDERR_
 // Worker log file for debugging - captures ALL worker output
 let workerLogPath: string | null = null;
 let workerLogStream: fsSync.WriteStream | null = null;
-// Where the worker log lives, kept so per-job diagnostics can sit beside it.
-let workerLogsDir: string | null = null;
 
-function initWorkerLog(libraryPath: string): void {
-  if (!workerLogStream) {
-    let logsDir: string;
-    const platform = os.platform();
-    if (platform === 'darwin') {
-      logsDir = path.join(os.homedir(), 'Library', 'Logs', 'BookForge');
-    } else if (platform === 'win32') {
-      const appData = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
-      logsDir = path.join(appData, 'BookForge', 'logs');
-    } else {
-      logsDir = path.join(os.homedir(), '.local', 'share', 'BookForge', 'logs');
-    }
-    fsSync.mkdirSync(logsDir, { recursive: true });
-    workerLogsDir = logsDir;
-    workerLogPath = path.join(logsDir, 'worker-output.log');
-    // Truncate on start
-    workerLogStream = fsSync.createWriteStream(workerLogPath, { flags: 'w' });
-    workerLogStream.write(`=== Worker Log Started ${new Date().toISOString()} ===\n`);
-  }
+/**
+ * Open `worker-output.log`, beside every other log this machine writes.
+ *
+ * IT TOOK A `libraryPath` IT NEVER READ, from the day it was written, and that
+ * lie cost a night: the 2026-09-20 bug hunt read the signature and filed the
+ * worker log as a twin of P4 (the audiobook log captured a pre-restore library
+ * root). It is not one. The directory is `machineLogDirectory()` and always
+ * was — a third hand-rolled copy of that platform switch lived here until now.
+ *
+ * AND IT MUST STAY MACHINE-LOCAL. The library is one Syncthing/SMB tree shared
+ * by two machines, every write to it must be atomic, and this is a WriteStream
+ * that TRUNCATES at start — two BookForges would clobber one file and the
+ * surviving log would belong to neither. The one owner of the directory says
+ * this in its own docstring so the question is answered once.
+ *
+ * Opened on demand rather than only from {@link initializeLogger}, so no
+ * startup order can leave a worker's output going nowhere.
+ */
+function initWorkerLog(): void {
+  if (workerLogStream) return;
+  const logsDir = machineLogDirectory();
+  fsSync.mkdirSync(logsDir, { recursive: true });
+  workerLogPath = path.join(logsDir, 'worker-output.log');
+  // Truncate on start
+  workerLogStream = fsSync.createWriteStream(workerLogPath, { flags: 'w' });
+  workerLogStream.write(`=== Worker Log Started ${new Date().toISOString()} ===\n`);
 }
 
 function writeWorkerLog(line: string): void {
+  initWorkerLog();
   if (workerLogStream) {
     workerLogStream.write(`${new Date().toISOString()} ${line}\n`);
   }
@@ -2869,7 +2875,7 @@ function spawnFailureDetail(stdoutTail: string, stderrTail: string, limit = 1200
 export async function initializeLogger(libraryPath: string): Promise<void> {
   if (!loggerInitialized) {
     await logger.initializeLogger(libraryPath);
-    initWorkerLog(libraryPath);
+    initWorkerLog();
     loggerInitialized = true;
     await logger.log('INFO', 'system', 'Parallel TTS bridge logger initialized');
   }

@@ -22,6 +22,10 @@
  *       holding a card for an app that no longer exists.
  *  Q4 — a hosted Foundry act refused by a HOLDER (Crucible `409 leased`) failed
  *       the row instead of parking it (Contract 2).
+ *  PK7 — and the correction to the round-2 list: `initWorkerLog(libraryPath)`
+ *       was filed as P4's twin, but it never read that parameter in its life.
+ *       `worker-output.log` is machine-local like every other streamed log, and
+ *       must stay that way; the signature that said otherwise is gone.
  *
  * No electron, no network, no GPU.
  */
@@ -200,6 +204,50 @@ it('P4: the log lands under whichever library is current when it writes', async 
   assert.ok(fs.readFileSync(moved, 'utf-8').includes('after the library root was restored'));
   assert.ok(!fs.readFileSync(moved, 'utf-8').includes('while the default root'),
     'and nothing is re-written backwards: each line lands where the library was at the time');
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PK7 · the worker log, and the signature that lied about it
+// ─────────────────────────────────────────────────────────────────────────────
+
+/*
+ * NOT OPENED HERE, ON PURPOSE. `initWorkerLog` truncates the real
+ * `worker-output.log` on this machine, so a keeper that called it would destroy
+ * the evidence from the run somebody is debugging. The rule is structural and
+ * is checked structurally.
+ */
+
+it('PK7: ONE module decides where this machine\'s logs go', async () => {
+  const rolling = require(path.join(DIST, 'rolling-logger.js'));
+  assert.strictEqual(typeof rolling.machineLogDirectory, 'function',
+    'the directory is a named export, not a private method copied by each caller');
+  const dir = rolling.machineLogDirectory();
+  assert.ok(path.isAbsolute(dir) && /BookForge/.test(dir), dir);
+  // The class must ask the same owner, or `worker-output.log` and `tts.log`
+  // could drift apart on a platform nobody re-tested.
+  assert.strictEqual(path.dirname(rolling.getMainLogger().logPath), dir,
+    'the rolling loggers resolve through machineLogDirectory() too');
+});
+
+it('PK7: the worker log is machine-local, and no library path can move it', async () => {
+  const src = fs.readFileSync(path.join(REPO, 'electron', 'parallel-tts-bridge.ts'), 'utf-8');
+  const body = src.slice(src.indexOf('function initWorkerLog'));
+  const fn = body.slice(0, body.indexOf('\n}\n') + 3);
+
+  assert.ok(/function initWorkerLog\(\): void/.test(fn),
+    'THE FINDING (PK7): it took a `libraryPath` it has never once read, and the bug hunt\'s '
+    + 'round-2 list filed the worker log as a twin of P4 on the strength of that signature');
+  assert.ok(/machineLogDirectory\(\)/.test(fn),
+    'the directory comes from the one owner, not a third hand-rolled platform switch');
+  assert.ok(!/Library', 'Logs'|APPDATA|\.local/.test(fn),
+    'and that third copy is gone');
+  assert.ok(!/library|Library root|getLibraryRoot/i.test(fn.replace(/'Library'/g, '')),
+    'MACHINE-LOCAL BY RULE: the library is one Syncthing tree shared by two machines, every '
+    + 'write to it must be atomic, and this is a WriteStream that truncates at start — two '
+    + 'BookForges would clobber one file and the survivor would belong to neither');
+
+  assert.ok(/initWorkerLog\(\);/.test(src.slice(src.indexOf('function writeWorkerLog'))),
+    'and it opens on demand, so no startup order can send a worker\'s output nowhere');
 });
 
 (async () => {

@@ -23,6 +23,11 @@
  *     describeCrucibleRefusal`.
  *  2. So does a 5xx. "The server broke" is not a run that needs repairing; it
  *     is the same wait with a different cause.
+ *  2b. So does a socket that died MID-ANSWER (PK7, 2026-09-20). The SDK maps a
+ *     connection never made; undici's bare `TypeError: terminated` for one
+ *     destroyed under a live response came back unchanged and reddened the row.
+ *     `crucible/transport-failure.ts` owns the question for both doors — and
+ *     answers NO for a `TypeError` that is only a programming mistake.
  *  3. The refusals that are NOT waits do not carry it: a 4xx, a bad token, an
  *     API-version disagreement, a protocol violation, a non-crucible. Those are
  *     misconfigurations somebody must repair, and parking on one is a row that
@@ -92,6 +97,52 @@ const asRender = (err) => render.describeCrucibleRefusal(err, 'the-mac');
     }
   });
 
+  /*
+   * PK7 — THE SOCKET THAT DIED MID-ANSWER.
+   *
+   * PK2 measured it and left it owed: undici answers a socket destroyed once
+   * the response had started with a bare `TypeError: terminated`, which is not
+   * one of the SDK's types, so both describers returned it UNCHANGED and the
+   * row went red for a server that was merely rebooting. One owner now —
+   * `crucible/transport-failure.ts` — and both doors mint the same
+   * `crucible_unreachable` refusal PK2 already marks transient.
+   */
+  await check('a socket destroyed MID-ANSWER is transient in both doors', () => {
+    const terminated = new TypeError('terminated');
+    for (const [door, refusal] of [['job', asJob(terminated)], ['render', asRender(terminated)]]) {
+      assert.strictEqual(refusal.code, 'crucible_unreachable',
+        `${door}: a dropped stream is the same wait a closed socket is`);
+      assert.strictEqual(refusal.transient, true,
+        `${door}: a Crucible restarting its engine must PARK the row, not redden it`);
+      assert.ok(/^crucible "the-mac" did not answer \(terminated\)/.test(refusal.transientLine),
+        `${door}: the line names the server and undici's own word — ${refusal.transientLine}`);
+      assert.strictEqual(refusal.busyLine, undefined, `${door}: nothing is holding the card`);
+    }
+  });
+
+  await check('a `fetch failed` carrying ECONNRESET is transient, with the errno in the line', () => {
+    const reset = new TypeError('fetch failed');
+    reset.cause = Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' });
+    for (const [door, refusal] of [['job', asJob(reset)], ['render', asRender(reset)]]) {
+      assert.strictEqual(refusal.code, 'crucible_unreachable', door);
+      assert.strictEqual(refusal.transient, true, door);
+      assert.ok(/ECONNRESET/.test(refusal.transientLine),
+        `${door}: the errno is the most specific TRUE thing and belongs in the sentence — `
+        + refusal.transientLine);
+      assert.ok(/asking again shortly/.test(refusal.transientLine), door);
+    }
+  });
+
+  await check('a programming mistake is NOT transient — a TypeError alone proves nothing', () => {
+    const bug = new TypeError('client.events is not a function');
+    for (const [door, refusal] of [['job', asJob(bug)], ['render', asRender(bug)]]) {
+      assert.strictEqual(refusal, bug,
+        `${door}: an unexpected exception comes back UNCHANGED, with its stack`);
+      assert.strictEqual(refusal.transient, undefined,
+        `${door}: parking on a bug is a row that waits forever with nobody told`);
+    }
+  });
+
   await check('a misconfiguration is NOT transient — parking on one waits forever', () => {
     const notWaits = [
       ['a 4xx', new sdk.CrucibleRefused(400, 'invalid_params', 'chunks must be a list', null)],
@@ -129,6 +180,13 @@ const asRender = (err) => render.describeCrucibleRefusal(err, 'the-mac');
     const src = fs.readFileSync(path.join(REPO, 'electron', 'crucible', 'render.ts'), 'utf-8');
     assert.ok(/crucibleTransientLine/.test(src) && /from '\.\/job'/.test(src),
       'render.ts composes through job.ts rather than writing its own sentence');
+    // PK7: and ONE module decides what counts as the wire dying, for the same
+    // reason — two readers of one question drift apart.
+    for (const door of ['job', 'render']) {
+      const text = fs.readFileSync(path.join(REPO, 'electron', 'crucible', `${door}.ts`), 'utf-8');
+      assert.ok(/from '\.\/transport-failure'/.test(text),
+        `${door}.ts asks transport-failure.ts rather than sniffing undici's messages itself`);
+    }
   });
 
   // ───────────────────────────────────────────────────────────────────────────

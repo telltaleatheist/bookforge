@@ -112,6 +112,7 @@ import { noteInFlightEvent, recordInFlight, settleInFlight } from './in-flight-l
 import {
   CrucibleStreamWentQuiet, describeStallInterval, withStreamStallClock,
 } from './stream-stall';
+import { transportFailureCause } from './transport-failure';
 /*
  * A CYCLE, AND IT IS CALL-TIME ONLY. `in-flight-sweep.ts` imports this module's
  * `cancelCrucibleJobById` and `describeCrucibleJobRefusal`; this one imports its
@@ -351,6 +352,28 @@ export function describeCrucibleJobRefusal(err: unknown, server: string, verb: s
   if (err instanceof CrucibleConfigError) {
     return new CrucibleJobRefused(
       'crucible_client_misconfigured', server, `${at}: this client was built wrong — ${err.message}`,
+    );
+  }
+  /*
+   * A SOCKET THAT DIED MID-ANSWER, ASKED ABOUT LAST — after every SDK type,
+   * because the SDK's own classes are the better answer wherever it made one.
+   *
+   * The SDK maps a connection never established onto `CrucibleUnreachable`;
+   * it does not map a socket destroyed once the response was already coming,
+   * which undici hands us as a bare `TypeError: terminated`. That fell to the
+   * `return err` below and FAILED the row, for a server that was rebooting.
+   * It is the same wait `CrucibleUnreachable` is, so it takes the same road
+   * and the same code — the reader asks "can this be waited out", not "which
+   * layer noticed". `transport-failure.ts` owns the question for both doors.
+   */
+  const wire = transportFailureCause(err);
+  if (wire !== null) {
+    return new CrucibleJobRefused(
+      'crucible_unreachable', server,
+      `${at} dropped the connection during ${verb}: ${wire}. Nothing is retried here — the queue `
+      + 'asks again on its next admission tick; start the server, or pick another one.',
+      undefined,
+      crucibleTransientLine(server, wire),
     );
   }
   return err;

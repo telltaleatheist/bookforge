@@ -20,6 +20,40 @@ const MAX_LOG_SIZE = 2 * 1024 * 1024;
 // Log levels
 export type LogLevel = 'DEBUG' | 'INFO' | 'WARN' | 'ERROR';
 
+/**
+ * WHERE THIS MACHINE'S LOGS GO — the one owner, for every diagnostic log the
+ * app streams to disk.
+ *
+ * MACHINE-LOCAL ON PURPOSE, and that is the whole point of the function. The
+ * library is a Syncthing/SMB tree shared by the Mac and the PC, every write to
+ * it must be atomic (CLAUDE.md, Unified Project Architecture), and an appending
+ * WriteStream is the opposite of atomic — two machines both truncating one
+ * `worker-output.log` at start would leave a log that is neither's. So
+ * `bookforge.log`, `tts.log`, `foundry.log`, `reassembly.log` and
+ * `worker-output.log` all live HERE, beside each other, where somebody
+ * debugging this machine looks.
+ *
+ * Exported since 2026-09-20 because `parallel-tts-bridge.ts` carried a THIRD
+ * copy of this platform switch behind a `libraryPath` parameter it never read —
+ * a signature that told every reader the worker log followed the library, which
+ * it never has (unchanged since the function was written). One owner, so the
+ * next reader cannot be told that again.
+ */
+export function machineLogDirectory(): string {
+  const platform = os.platform();
+  if (platform === 'darwin') {
+    // macOS: ~/Library/Logs/BookForge/
+    return path.join(os.homedir(), 'Library', 'Logs', 'BookForge');
+  }
+  if (platform === 'win32') {
+    // Windows: %APPDATA%/BookForge/logs/
+    const appData = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
+    return path.join(appData, 'BookForge', 'logs');
+  }
+  // Linux/other: ~/.local/share/BookForge/logs/
+  return path.join(os.homedir(), '.local', 'share', 'BookForge', 'logs');
+}
+
 interface LoggerConfig {
   name: string;           // Log file base name (e.g., 'bookforge' -> bookforge.log)
   maxSize?: number;       // Max size in bytes (default: 2MB)
@@ -44,23 +78,9 @@ class RollingLogger {
     this.consoleOutput = config.consoleOutput ?? (process.env.NODE_ENV !== 'production');
   }
 
-  /**
-   * Get platform-specific log directory
-   */
+  /** Where this machine's logs go — see {@link machineLogDirectory}. */
   private getLogDirectory(): string {
-    const platform = os.platform();
-
-    if (platform === 'darwin') {
-      // macOS: ~/Library/Logs/BookForge/
-      return path.join(os.homedir(), 'Library', 'Logs', 'BookForge');
-    } else if (platform === 'win32') {
-      // Windows: %APPDATA%/BookForge/logs/
-      const appData = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
-      return path.join(appData, 'BookForge', 'logs');
-    } else {
-      // Linux/other: ~/.local/share/BookForge/logs/
-      return path.join(os.homedir(), '.local', 'share', 'BookForge', 'logs');
-    }
+    return machineLogDirectory();
   }
 
   /**
