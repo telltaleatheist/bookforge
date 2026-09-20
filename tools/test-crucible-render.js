@@ -847,16 +847,20 @@ async function bridgeSeamChecks() {
     // `decideAndRememberVenue`, which records the answer on a session that
     // already exists.
     /*
-     * FIVE SINCE 2026-09-19, and the new one is PREP.
+     * FIVE SINCE 2026-09-19, and the new one is PREP — but it asks with a
+     * SERVER ALREADY NAMED.
      *
      * Owen split the prep off into its own CPU row that evening, and the two
      * halves ask this for two different reasons — which is why both must ask.
-     * `packSessionForNarration` asks it to know whose BAND to pack the chunks
-     * to (`GET /v1/voices`, the rendering machine's `max_chars`, never this
-     * machine's catalog); `startParallelConversion` asks it to know where to
-     * SUBMIT, which may be a different machine by the time the chunks exist.
-     * When the two answers differ, the render refuses by name if the packing
-     * cannot travel (`packingTravelsTo`).
+     * `startParallelConversion` asks it to know where to SUBMIT, which may be a
+     * different machine by the time the chunks exist. `bandThisPrepPacksTo`
+     * asks it only to MINT the venue for a machine `crucible/prep-band.ts` has
+     * already chosen (the card the book holds, the server its row named, or the
+     * tightest enabled band) — the caller-named arm, which pings nothing. It
+     * must NOT reach the unassigned rung: that rung is what packed a
+     * card-holding book to the ranked-first machine's band (bug hunt §H). When
+     * the two answers differ, the render refuses by name if the packing cannot
+     * travel (`packingTravelsTo`).
      */
     const asked = bridge.match(/decideGenerationVenue\(/g) || [];
     assert.strictEqual(asked.length, 5,

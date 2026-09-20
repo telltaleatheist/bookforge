@@ -744,3 +744,28 @@ elsewhere this week):
   differently, so ruling 7 overrides it. Keeper: `test-queue-admission` "A SERVER
   AT http://127.0.0.1:7100 TAKES THE RESERVE ROAD, like any other". The
   training-lock consequence stands as stated in ruling 7.
+- **Prepare packed for the wrong machine — FIXED (2026-09-19, night).** A row
+  whose Foundry step resolved the job's venue held THAT card for the rest of the
+  chain (ruling 9), but Prepare asked the venue DECISION which machine to pack
+  for and got "the first enabled server that answers, in rank order" — a rule
+  about work that has not been placed. Two books that night were packed to one
+  machine's 700-character band and rendered on the card the book was holding:
+  one surfaced as `crucible_chunk_over_venue_cap`, the other silently as a whole
+  book cut to chunks smaller than its card would have taken. The rule is now
+  `electron/crucible/prep-band.ts`, fed by the ROW (`queue-steps/prepare.ts`,
+  `assignedServerOf` over `waitForResolved` then `waitFor`, both read through
+  `runVenueOfRow`): a book that HOLDS a card packs for that card, with no
+  reachability poll and no "is it busy" — the hold's own tail rule answers that;
+  a row that NAMED a server packs for it, and parks when it does not answer; and
+  only an `any` row with no card held compares machines, asking every ENABLED
+  server for the voice's band and taking the SMALLEST packing ceiling (ties by
+  rank order), so the chunks fit wherever the pump later admits the render
+  (`packingTravelsTo`). Nothing is shrunk below the tightest server's own
+  numbers, and Prepare does NOT pin an `any` job to the machine it packed for —
+  admission stays the pump's and a 409 releases the venue. Which rung chose the
+  machine rides on the session (`PrepInfo.packedFor.because`), in the step's
+  `output.detail` (`packedForBecause`) and in the row's progress line. The venue
+  decision is no longer reachable from this seam at all, and with it went the
+  reachability ping it used to pay for before the voices call. Keeper:
+  `tools/test-queue-narration-plan.js` §7 (12 checks, incl. the held-card case
+  against a ranked-first other machine).
