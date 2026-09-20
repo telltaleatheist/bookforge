@@ -1281,9 +1281,24 @@ class HiggsV3Engine:
         width = int(self.BATCH_SIZE) if width is None else int(width)
         if width < 1:
             raise ValueError(f'render_many needs a width >= 1; got {width}.')
-        plan = truncation.GuardPlan(
-            sample_rate=self.SAMPLE_RATE, base_seed=self.config.seed,
-            tracker=tracker)
+        # THE PLAN IS WHAT VARIES; THE DRIVER AND THE WIDTH DO NOT.
+        # `tracker is None` means the batch said `retake: false` — it has no
+        # band, so nothing is judged, nothing re-rolled and nothing split. It
+        # does NOT mean `GuardPlan(tracker=None)`, which falls back to a fixed
+        # band and would judge a screening checkpoint against numbers belonging
+        # to some other model.
+        #
+        # Before 2026-09-20 an unjudged batch never reached here at all: the
+        # serve worker ran a sequential comprehension instead, so `retake:
+        # false` silently cost the caller its batching as well as its ladder
+        # (measured: `#running-req` pinned at 1 across 684 scheduler lines at
+        # width 4). One driver, one place that spends the width.
+        plan = (truncation.UnjudgedPlan(
+                    sample_rate=self.SAMPLE_RATE, base_seed=self.config.seed)
+                if tracker is None else
+                truncation.GuardPlan(
+                    sample_rate=self.SAMPLE_RATE, base_seed=self.config.seed,
+                    tracker=tracker))
         pool = ThreadPoolExecutor(max_workers=width, thread_name_prefix='higgs3-render')
         running = {}      # future -> RenderRequest
         outstanding = {}  # chunk index -> how many of its requests are in flight

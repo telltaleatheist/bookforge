@@ -2015,9 +2015,20 @@ class HiggsV3MlxEngine:
         # on the takes already shipped (Owen, 2026-09-08, "the calculated and
         # recorded characters per second"), and a plan per chunk would throw the
         # book's own pace away between every sentence.
-        plan = truncation.GuardPlan(sample_rate=self.SAMPLE_RATE,
-                                    base_seed=self.config.seed,
-                                    tracker=tracker)
+        # AND THE PLAN IS WHAT VARIES, exactly as on the served arm. A batch
+        # that said `retake: false` has no band, so it gets a plan that judges
+        # nothing — not `GuardPlan(tracker=None)`, which falls back to a fixed
+        # band and would judge a screening checkpoint against another model's
+        # numbers. The grouping below is untouched either way: the width is this
+        # engine's to spend, and an unjudged batch spends it the same as a
+        # judged one. Before 2026-09-20 an unjudged batch never reached here and
+        # was rendered one row at a time by the serve worker instead.
+        plan = (truncation.UnjudgedPlan(sample_rate=self.SAMPLE_RATE,
+                                        base_seed=self.config.seed)
+                if tracker is None else
+                truncation.GuardPlan(sample_rate=self.SAMPLE_RATE,
+                                     base_seed=self.config.seed,
+                                     tracker=tracker))
         ceiling = int(self.BATCH_SIZE or 1) if width is None else int(width)
         if ceiling < 1:
             raise ValueError(f'render_many needs a width >= 1; got {ceiling}.')
