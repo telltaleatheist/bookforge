@@ -1154,15 +1154,55 @@ async function writeSessionOwner(session: ConversionSession): Promise<void> {
   }
 }
 
-/** Read the ownership sidecar from a scratch session dir. Returns null when absent/unreadable. */
-export async function readSessionOwner(sessionDir: string): Promise<SessionOwnerInfo | null> {
+/**
+ * WHAT THE SIDECAR SAID — and "I could not read it" is one of the answers.
+ *
+ * ── The defect this shape exists to make impossible (bug hunt 2026-09-20, P3) ─
+ *
+ * This answered `SessionOwnerInfo | null` behind a bare `catch { return null; }`,
+ * which collapsed THREE different facts into one:
+ *
+ *   - there is no sidecar (a pre-sidecar session, or a run that died before prep)
+ *   - the sidecar is there but is not JSON
+ *   - the sidecar could not be READ — EIO, ETIMEDOUT, ESTALE on the SMB mount
+ *     the library lives on
+ *
+ * `foreignSessionHost` mapped all three to "not foreign", i.e. sweepable, and
+ * `scratch-sweep.ts` says of the ownership probe *"Not wrapped in a try, and
+ * that is the point: if ownership cannot be established at all, the sweep must
+ * not run"* — the try was one frame down and defeated it. One transient read
+ * error at startup and the OTHER machine's live render is a leftover: exactly
+ * the 2026-09-05 loss (Windows swept a session the Mac was eight minutes into),
+ * re-armed by an I/O blip.
+ *
+ * Three members, so the caller cannot accidentally read the third as the first.
+ * `absent` covers "no file" AND "the file is not an object", because both are
+ * answers the filesystem gave: the read SUCCEEDED and there is no owner in it.
+ */
+export type SessionOwnerRead =
+  | { kind: 'owner'; owner: SessionOwnerInfo }
+  | { kind: 'absent' }
+  | { kind: 'unreadable'; error: string };
+
+export async function readSessionOwner(sessionDir: string): Promise<SessionOwnerRead> {
+  const file = path.join(sessionDir, SESSION_OWNER_FILE);
+  let raw: string;
   try {
-    const raw = await fs.readFile(path.join(sessionDir, SESSION_OWNER_FILE), 'utf-8');
+    raw = await fs.readFile(file, 'utf-8');
+  } catch (err) {
+    // ENOENT is the honest "there is no sidecar"; every other errno is the
+    // volume or the share failing to answer, and that is NOT an absence.
+    if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') return { kind: 'absent' };
+    return { kind: 'unreadable', error: err instanceof Error ? err.message : String(err) };
+  }
+  try {
     const parsed = JSON.parse(raw) as SessionOwnerInfo;
-    if (!parsed || typeof parsed !== 'object') return null;
-    return parsed;
+    if (!parsed || typeof parsed !== 'object') return { kind: 'absent' };
+    return { kind: 'owner', owner: parsed };
   } catch {
-    return null;
+    // Read fine, not JSON: a half-written sidecar from a kill mid-write. There
+    // is no owner in it and never will be, so it is an absence, not a doubt.
+    return { kind: 'absent' };
   }
 }
 
@@ -1172,10 +1212,20 @@ export async function readSessionOwner(sessionDir: string): Promise<SessionOwner
  * `null` means "ours to sweep, rescue and delete": either the sidecar names this
  * host, or there is no sidecar (a pre-sidecar session, or a run that never reached
  * prep — both of which the sweep has always treated as leftovers).
+ *
+ * **AN UNREADABLE SIDECAR IS FOREIGN** (P3, above). Not because another machine
+ * certainly owns it — nobody knows, which is the point — but because the only
+ * two outcomes are "keep a leftover one more launch" and "delete a live render
+ * somebody is eight minutes into", and those are not the same size of mistake.
+ * The string is returned rather than a flag so `scratch-sweep.ts`'s own log line
+ * ("… is owned by X — not sweeping it") names the doubt by its cause.
  */
 export async function foreignSessionHost(sessionDir: string): Promise<string | null> {
-  const owner = await readSessionOwner(sessionDir);
-  const host = owner?.host;
+  const read = await readSessionOwner(sessionDir);
+  if (read.kind === 'unreadable') {
+    return `an unknown machine — its ownership sidecar could not be read (${read.error})`;
+  }
+  const host = read.kind === 'owner' ? read.owner.host : undefined;
   if (!host || host === os.hostname()) return null;
   return host;
 }
@@ -1242,8 +1292,23 @@ export async function rescueOrphanedScratchSessions(scratchDir: string): Promise
       // shared, so a session here may be mid-render on the Mac while this host
       // starts up. Promoting it would publish a partial render over a complete
       // cache, and the sweep that follows this pass would delete the live session
-      // out from under the renderer.
-      const foreign = await foreignSessionHost(sessionDir);
+      // out from under the renderer. ONE read answers both that question and
+      // "whose project does this belong to" — see `readSessionOwner`.
+      const read = await readSessionOwner(sessionDir);
+      if (read.kind === 'unreadable') {
+        // BY PATH, because this is the one line that tells an operator why a
+        // scratch dir is still there at the next launch, and the sweep behind
+        // this pass will leave it too (`foreignSessionHost`, P3).
+        ttsLog.warn('Scratch session ownership could not be read — leaving it alone', {
+          sessionDir, sidecar: path.join(sessionDir, SESSION_OWNER_FILE), error: read.error,
+        });
+        skipped++;
+        continue;
+      }
+      const owner = read.kind === 'owner' ? read.owner : undefined;
+
+      const foreign = owner?.host !== undefined && owner.host !== os.hostname()
+        ? owner.host : null;
       if (foreign) {
         ttsLog.info('Scratch session belongs to another machine — leaving it alone', {
           sessionDir, host: foreign,
@@ -1251,7 +1316,6 @@ export async function rescueOrphanedScratchSessions(scratchDir: string): Promise
         continue;
       }
 
-      const owner = await readSessionOwner(sessionDir);
       const ours = await countRenderedSentencesInSessionDir(sessionDir);
 
       if (!owner?.bfpPath) {
@@ -2081,19 +2145,83 @@ export interface PrepInfo {
 }
 
 /**
- * MAY CHUNKS PACKED TO ONE SERVER'S CEILING BE READ BY ANOTHER?
+ * MAY CHUNKS PACKED TO ONE NUMBER BE READ AGAINST ANOTHER?
  *
- * Yes exactly when the rendering server's ceiling is at least as high as the
- * one they were packed to. Chunking is the client's and the cap is the
- * server's — Crucible REFUSES an over-long chunk rather than re-splitting it
- * (`crucible/jobs/tts/render.py`) — so a tighter ceiling downstream is a book
- * that fails chunk by chunk, an hour in, for a reason nothing on the row says.
+ * Yes exactly when the rendering server's number is at least as high as the one
+ * they were packed to. Pure, and its own function, so the comparison is stated
+ * once and a keeper can drive it without a server
+ * (`tools/test-queue-narration-plan.js`).
  *
- * Pure, and its own function, so the rule is stated once and a keeper can drive
- * it without a server (`tools/test-queue-narration-plan.js`).
+ * WHICH number the caller passes as `renderCeiling` is the whole of C5 and it is
+ * decided in {@link packingVerdictFor}, not here: it is the server's CAP, the
+ * only number a refusal still measures.
  */
 export function packingTravelsTo(packedCeiling: number, renderCeiling: number): boolean {
   return renderCeiling >= packedCeiling;
+}
+
+/**
+ * WHAT THE RENDERING MACHINE WILL DO WITH CHUNKS PACKED SOMEWHERE ELSE — the
+ * whole rule, pure, in one place.
+ *
+ * ── The number this measures, and why it changed (bug hunt 2026-09-20, C5) ──
+ *
+ * It used to compare the packed ceiling against the render server's SAFE
+ * CEILING (`min(safeMaxChars, maxChars)`) and refuse a mismatch outright,
+ * saying "the over-long chunks would be refused one at a time". That reason was
+ * retired the day before: `chunk_too_long` is gone from both Crucible doors
+ * (`crucible/voice-band.ts`'s `refuseChunksOverVenueCap`, corrected 2026-09-19),
+ * and the ONLY refusal left anywhere is this app's own — which measures the
+ * venue's **cap**, never its safe ceiling, on purpose: the ceiling is where the
+ * packer aims, the cap is what the voice's row certifies.
+ *
+ * So the two answers are now different questions:
+ *
+ *  - **over the CAP** → refused, before a minute of GPU is spent: those chunks
+ *    are exactly the ones `refuseChunksOverVenueCap` will throw on, chunk by
+ *    chunk, once the book has crossed the wire.
+ *  - **inside the cap but over the safe ceiling** → a NOTE naming both numbers
+ *    and nothing else. It renders; it is simply aimed wider than this server's
+ *    packer would have aimed. Failing it was measured live on 2026-09-19: an
+ *    `any` row packed to the tightest enabled server (ceiling 700) and admitted
+ *    to another (ceiling 650, cap 800) hard-failed AFTER the venue was chosen
+ *    and the GPU slot taken, over chunks that machine would have read fine.
+ *
+ * Pure so a keeper can drive both arms without a server.
+ */
+export type PackingVerdict =
+  | { kind: 'travels' }
+  | { kind: 'note'; note: string }
+  | { kind: 'refused'; reason: string };
+
+export function packingVerdictFor(
+  packed: { server: string; ceilingChars: number },
+  venue: { server: string; maxChars: number; ceilingChars: number },
+): PackingVerdict {
+  if (!packingTravelsTo(packed.ceilingChars, venue.maxChars)) {
+    return {
+      kind: 'refused',
+      reason: 'crucible_packing_over_venue_cap: this book was packed to chunks of at most '
+        + `${packed.ceilingChars} characters, which is what crucible "${packed.server}" states for `
+        + `this voice, and the render was admitted to crucible "${venue.server}", whose cap for it `
+        + `is ${venue.maxChars}. Chunking is this client's and the cap is that server's `
+        + 'certificate, so the over-long chunks would be refused one at a time '
+        + '(crucible_chunk_over_venue_cap) after the book had crossed the wire. Name a server on '
+        + 'the book, or remove it and queue it again so it is packed for the machine it will run '
+        + 'on.',
+    };
+  }
+  if (packed.ceilingChars > venue.ceilingChars) {
+    return {
+      kind: 'note',
+      note: `these chunks were packed to at most ${packed.ceilingChars} characters for crucible `
+        + `"${packed.server}" and the render was admitted to crucible "${venue.server}", which `
+        + `aims at ${venue.ceilingChars} — wider than that server's own packer would have aimed, `
+        + `but inside the ${venue.maxChars}-character cap its row certifies, so it renders. Only `
+        + 'the cap is refused (bug hunt 2026-09-20, C5).',
+    };
+  }
+  return { kind: 'travels' };
 }
 
 export type ParallelMode = 'sentences' | 'chapters';
@@ -3287,9 +3415,19 @@ const QUIT_REMOTE_CANCEL_GRACE_MS = 10_000;
  * reaches it: the job goes on rendering the rest of the book on somebody else's
  * card, holding that server's exclusive lane, its claim and its resident voice,
  * and the next thing any client submits there is refused `server_busy` by a job
- * whose app is gone. Nothing persists `session.crucibleJobId` either, so a
- * relaunch cannot DELETE it — the app's own handle, while the app still exists,
- * is the only door there is.
+ * whose app is gone.
+ *
+ * ── AND THE RELAUNCH DOOR EXISTS NOW (corrected 2026-09-20, C9) ─────────────
+ *
+ * This used to say "nothing persists `session.crucibleJobId`, so a relaunch
+ * cannot DELETE it — the app's own handle is the only door there is." That
+ * stopped being true on 2026-09-19: `crucible/in-flight-ledger.ts` records
+ * every submitted job id against its server, and the startup sweep
+ * (`crucible/in-flight-sweep.ts`) DELETEs what a hard kill left behind. This
+ * handle is still the FIRST door and the better one — it stops the render while
+ * the app is orderly, seconds rather than a launch away — but it is no longer
+ * the only one, and a quit that cannot reach the server is a card given back at
+ * the next start rather than a card lost.
  *
  * Returns what happened, for the caller's log: `no-remote-render` (a local or
  * finished session), `cancelled` (the server said it stopped), `still-cancelling`
@@ -3354,21 +3492,60 @@ export async function cancelRemoteRenderOnQuit(
 }
 
 /**
+ * EVERY SESSION'S REMOTE RENDER, TOLD TO STOP AT ONCE.
+ *
+ * Its own door because the SHAPE is the rule (bug hunt 2026-09-20, C9): these
+ * cancels were awaited one at a time inside the teardown loop, so three
+ * sessions cost 3 × {@link QUIT_REMOTE_CANCEL_GRACE_MS} = 30 s of the whole
+ * "kill and flush TTS workers" quit step's 60 s budget — before the WSL
+ * teardown and the cache flush, which share the same budget, got any of it.
+ * They are independent HTTP DELETEs to (possibly different) servers and nothing
+ * orders them, so the honest cost of N of them is ONE grace, not N.
+ *
+ * Each is still individually bounded by `cancelRemoteRenderOnQuit`'s own clock,
+ * and a throw from one cannot take the others down with it: a quit must reach
+ * every server it can, and a handle that rejects synchronously is exactly the
+ * one whose server is already unreachable.
+ *
+ * Exported so a keeper can measure the wall time without an `activeSessions`
+ * map (`tools/test-bridge-quit-and-owner.js`).
+ */
+export async function cancelAllRemoteRendersOnQuit(
+  sessions: Iterable<{
+    jobId: string;
+    crucibleJobId?: string;
+    crucibleCancel?: () => Promise<void>;
+  }>,
+  graceMs = QUIT_REMOTE_CANCEL_GRACE_MS,
+): Promise<void> {
+  await Promise.all([...sessions].map(async (session) => {
+    try {
+      await cancelRemoteRenderOnQuit(session, graceMs);
+    } catch (err) {
+      console.error(`[PARALLEL-TTS] the crucible cancel for ${session.jobId} threw on quit `
+        + `(continuing — the in-flight ledger is the other door): ${
+          err instanceof Error ? err.message : String(err)}`);
+    }
+  }));
+}
+
+/**
  * Kill all active worker processes (called on app quit)
  */
 export async function killAllWorkers(clearSessions = true): Promise<void> {
   console.log('[PARALLEL-TTS] Killing all workers on app shutdown...');
   stopPowerBlock();
 
+  // FIRST, and ALL AT ONCE. These are the only teardowns here that are not
+  // processes and the only ones that outlive this machine: a render on a
+  // Crucible keeps going after BookForge exits unless it is DELETEd. Hoisted
+  // out of the loop below so N sessions cost one grace and not N — see
+  // `cancelAllRemoteRendersOnQuit`.
+  await cancelAllRemoteRendersOnQuit(activeSessions.values());
+
   for (const [jobId, session] of activeSessions) {
     console.log(`[PARALLEL-TTS] Killing workers for job ${jobId}`);
     const ttsEngine = session.config?.settings?.ttsEngine;
-
-    // FIRST, because it is the only teardown here that is not a process and the
-    // only one that outlives this machine: a render on a Crucible keeps going
-    // after BookForge exits unless it is DELETEd. Awaited under its own bound —
-    // see cancelRemoteRenderOnQuit.
-    await cancelRemoteRenderOnQuit(session);
 
     // Clear watchdog timer
     if (session.watchdogTimer) {
@@ -7595,13 +7772,38 @@ async function prepInfoForPreparedSession(prepared: PreparedSessionRef): Promise
 }
 
 /**
+ * IS THIS THROW A WAIT RATHER THAN A FAILURE? — the one reading this bridge
+ * does of a refusal it did not mint.
+ *
+ * Two facts, one from each owner, and neither re-derived here:
+ *
+ *  - a HOLDER'S LINE, read by `queue-steps/runtime.ts`'s `busyLineOf`, which is
+ *    the single place that knows every spelling a held card arrives under
+ *    (`busyLine`, the SDK's `leasedLine`);
+ *  - `transient: true`, the bug hunt's **Contract 1** — a door saying the
+ *    failure was the transport and not the book.
+ *
+ * Imported dynamically because this file is loaded by the CLI and by
+ * `main.ts`'s IPC door as well as by the step seam, and a static edge into the
+ * queue's runtime from a bridge that has no queue behind it is a dependency
+ * nobody wants to explain later. Exported so a keeper can drive the rule with
+ * three plain objects (`tools/test-bridge-quit-and-owner.js`).
+ */
+export async function refusalIsAWait(err: unknown): Promise<boolean> {
+  const { busyLineOf } = await import('./queue-steps/runtime.js');
+  if (busyLineOf(err) !== undefined) return true;
+  return err !== null && typeof err === 'object'
+    && (err as { transient?: unknown }).transient === true;
+}
+
+/**
  * THE RENDERING MACHINE WILL TAKE THESE CHUNKS, or this says why not.
  *
  * Asked only when the render is admitted to a DIFFERENT server from the one
- * whose band prep read. Null when the packing travels; a sentence naming both
- * ceilings when it does not — which is a repairable misconfiguration (name the
- * server on the book, or queue it again so it is packed for this one), not an
- * hour of GPU spent on chunks the server will refuse one at a time.
+ * whose band prep read. This half knows where the numbers come from on a real
+ * machine (`venueBandForPrep` — one `GET /v1/voices`); the RULE is
+ * {@link packingVerdictFor}, which is pure and states in one place that the cap
+ * refuses and the ceiling only notes (bug hunt 2026-09-20, C5).
  */
 async function packingRefusalFor(
   prepInfo: PrepInfo,
@@ -7611,13 +7813,15 @@ async function packingRefusalFor(
   const packed = prepInfo.packedFor;
   if (packed === undefined || packed.server === server) return null;
   const band = await venueBandForPrep(settings, server);
-  if (packingTravelsTo(packed.ceilingChars, band.ceilingChars)) return null;
-  return `crucible_packing_ceiling_too_low: this book was packed to chunks of at most `
-    + `${packed.ceilingChars} characters, which is what crucible "${packed.server}" states for `
-    + `this voice, and the render was admitted to crucible "${server}", which states `
-    + `${band.ceilingChars}. Chunking is this client's and the cap is that server's, so the `
-    + 'over-long chunks would be refused one at a time. Name a server on the book, or remove it '
-    + 'and queue it again so it is packed for the machine it will run on.';
+  const verdict = packingVerdictFor(packed, {
+    server, maxChars: band.maxChars, ceilingChars: band.ceilingChars,
+  });
+  if (verdict.kind === 'refused') return verdict.reason;
+  // A note, not a refusal — but SAID, because "packed for one machine, rendered
+  // on another" is the first thing anyone reconstructing an odd-sounding book
+  // needs to know, and the numbers are the whole of it.
+  if (verdict.kind === 'note') console.log(`[PARALLEL-TTS] ${verdict.note}`);
+  return null;
 }
 
 /**
@@ -7627,6 +7831,12 @@ async function packingRefusalFor(
  * WITHOUT it this door preps inline, exactly as it always did — which is what
  * the CLI, the language-learning wizard and a queue row restored from before
  * the prepare row existed all still do.
+ *
+ * It REPORTS a failure as `{ success: false, error }` and THROWS only a WAIT —
+ * a refusal carrying a holder's `busyLine` or Contract 1's `transient` flag,
+ * re-thrown from the band read below so the step seam can park the row instead
+ * of reddening it (bug hunt 2026-09-20, C5). Every non-queue caller already
+ * wraps this in a try (`main.ts`'s `parallel-tts:start-conversion`).
  */
 export async function startParallelConversion(
   jobId: string,
@@ -7740,6 +7950,28 @@ export async function startParallelConversion(
       return { success: false, error: refusal };
     }
   } catch (err) {
+    /*
+     * A HELD CARD IS NOT A FAILED BOOK, AND THIS IS THE WORST PLACE TO CONFUSE
+     * THE TWO (bug hunt 2026-09-20, C5's second half).
+     *
+     * The band read above is a live `GET /v1/voices` on the server this render
+     * was just admitted to, and it can be refused for reasons that are nothing
+     * to do with this book: a `409 server_busy`/`leased` from a holder
+     * (`busyLine`), or a transport fault the door marked `transient` (Contract
+     * 1). Flattening those into `emitJobFailure` turned a WAIT into a red row
+     * in *Needs you* — over a card somebody else was merely using. So a refusal
+     * that names a holder or says it is transient PROPAGATES, and the step seam
+     * (`queue-steps/runtime.ts`: `busyLineOf` / `transientLineOf`) parks the row
+     * on that sentence.
+     *
+     * Nothing has been spent at this point — no worker, no lease, no GPU
+     * second — so re-throwing loses no work; `stopPowerBlock` still runs, since
+     * the sleep block was taken at the top of this door.
+     */
+    if (await refusalIsAWait(err)) {
+      stopPowerBlock();
+      throw err;
+    }
     const error = `crucible "${venue.server}" would not state this voice's chunk length, so `
       + `there is no way to know whether the chunks already packed can be read there: ${
         err instanceof Error ? err.message : String(err)}`;
