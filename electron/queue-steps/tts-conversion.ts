@@ -655,19 +655,41 @@ export const ttsConversionStep: StepModule = {
       let processDir: string | undefined;
       let sentencesDir = result.outputPath;
       if (sessionDir && projectDir) {
-        try {
-          const cached = await cacheSessionToProject(
-            sessionDir, projectDir, config.language || 'en',
-          );
-          if (cached.success && cached.cachedSentencesDir) {
-            sentencesDir = cached.cachedSentencesDir;
-            // Only what the cache STATED. A publish that answered the sentences
-            // and nothing else is an older answer, not a licence to guess.
-            if (cached.cachedSessionDir) sessionDir = cached.cachedSessionDir;
-            processDir = cached.cachedProcessDir;
-          }
-        } catch (err) {
-          console.error('[QUEUE-STEP tts] could not cache the session to the project:', err);
+        /*
+         * A FAILED PUBLISH FAILS THE STEP, and it did not until 2026-09-20.
+         *
+         * Both arms were swallowed: a throw went to `console.error` and a
+         * `success: false` fell through the `if`, and either way the step
+         * RETURNED — naming the scratch sentences as its artifact — so the
+         * alignment and the assembly behind it read a cache that did not hold
+         * the render. On *Hitler's People* that is exactly what happened: the
+         * publish returned a five-chunk cache as success, the row went green,
+         * and the book stopped two steps later on "chapter 1 is missing chunk
+         * audio" with nothing anywhere naming the publish.
+         *
+         * The audio is not lost when this throws — it is in the scratch session
+         * the message names, and the next run resumes from it — so failing here
+         * costs a retry and buys a reason.
+         */
+        const cached = await cacheSessionToProject(
+          sessionDir, projectDir, config.language || 'en',
+        ).catch((err: unknown) => ({
+          success: false as const,
+          error: `${(err as Error)?.message ?? String(err)}`,
+        }));
+        if (!cached.success) {
+          throw new Error(
+            'The narration rendered but publishing it into the project cache did not: '
+            + `${cached.error} The rendered chunks are still in the scratch session `
+            + `(${sessionDir}); the alignment and the assembly read the project cache, so `
+            + 'this step stops here rather than letting them fail on audio that is missing.');
+        }
+        if (cached.cachedSentencesDir) {
+          sentencesDir = cached.cachedSentencesDir;
+          // Only what the cache STATED. A publish that answered the sentences
+          // and nothing else is an older answer, not a licence to guess.
+          if (cached.cachedSessionDir) sessionDir = cached.cachedSessionDir;
+          processDir = cached.cachedProcessDir;
         }
       }
 

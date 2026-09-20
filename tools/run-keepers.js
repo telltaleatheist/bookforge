@@ -696,6 +696,14 @@ const SUITES = [
   // Foundry-ordered run has no `projectId`, and the assembly chained under one
   // refused a project it was carrying in its own config.
   'test-chained-assembly-project',
+  // THE PUBLISH IS A MERGE, and its success is a set comparison. The shortcut
+  // this replaces asked only "is there a `chapters/sentences` in the
+  // destination" and answered `success: true` — so on 2026-09-20 a five-chunk
+  // cache published by a 02:39 interrupt stood in for a 2267-chunk render and
+  // the book stopped two rows later on "chapter 1 is missing chunk audio".
+  // Temp dirs, real filesystem: Owen's exact case is driven through the real
+  // bridge, along with the two sibling guards that compared COUNTS.
+  'test-session-cache-merge',
   // WHICH MACHINE A BOOK RENDERS ON. A named server is an instruction, so the
   // defects this defends are silent by construction: a row re-routed onto
   // slower hardware overnight, a default that manufactures a choice nobody

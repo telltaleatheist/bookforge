@@ -20,6 +20,16 @@ import * as fs from 'fs/promises';
 import * as fsSync from 'fs';
 import { flacDurationSeconds } from './flac-duration';
 import { findCachedSessionLayout } from './session-cache-layout';
+// ONE module owns "is the cache as complete as the render" — the publish, the
+// interrupt-cache and the startup rescue all ask it, by chunk INDEX.
+import {
+  cacheIsAtLeastAsComplete,
+  mergeSessionTree,
+  missingChunksSentence,
+  missingFrom,
+  publishPlan,
+  renderedChunkSet,
+} from './session-cache-merge';
 import * as os from 'os';
 import * as crypto from 'crypto';
 import * as logger from './audiobook-logger';
@@ -820,34 +830,104 @@ export async function cacheSessionToProject(
   console.log(`[PARALLEL-TTS]   projectDir: ${projectDir}`);
   console.log(`[PARALLEL-TTS]   language: ${language}`);
 
+  const publishLog = getTTSLogger();
   try {
     // Before anything is deleted or renamed: is there a session here at all?
-    await assertPublishableSession(sessionDir, 'Refusing to cache this session');
+    // What it hands back is the SOURCE's process dir — the directory holding
+    // `session-state.json` — which is also the relative shape the publish
+    // preserves, so the cache's own process dir is never guessed at below.
+    const sourceProcessDir = await assertPublishableSession(sessionDir, 'Refusing to cache this session');
+    const processRel = path.relative(sessionDir, sourceProcessDir);
+    const sourceSentencesDir = path.join(sourceProcessDir, 'chapters', 'sentences');
 
     const sessionFolderName = path.basename(sessionDir); // e.g. "ebook-{id}"
     const langSessionParent = path.join(projectDir, 'stages', '03-tts', 'sessions', language);
     const destDir = path.join(langSessionParent, sessionFolderName);
     const tempDestDir = path.join(langSessionParent, `.tmp-${sessionFolderName}`);
+    const destProcessDir = path.join(destDir, processRel);
+    const destSentencesDir = path.join(destProcessDir, 'chapters', 'sentences');
 
-    // Idempotency: if the destination already has a valid cached session, return early.
-    // This prevents a second call from deleting the just-cached session and failing mid-copy.
-    try {
-      await fs.access(destDir);
-      // destDir exists — is there a valid session in it (chapters/sentences,
-      // flat or one hash level down)? ONE probe answers all three names now
-      // (electron/session-cache-layout.ts), so the early return says as much
-      // about the session as the full publish below does.
-      const existing = await findCachedSessionLayout(destDir);
-      if (existing) {
-        console.log(`[PARALLEL-TTS] Session already cached at ${destDir}, skipping re-copy`);
-        return {
-          success: true,
-          cachedSentencesDir: existing.sentencesDir,
-          cachedSessionDir: existing.sessionDir,
-          cachedProcessDir: existing.processDir,
-        };
+    /*
+     * THE CACHE ALREADY EXISTS → MERGE INTO IT. NEVER SKIP, NEVER REPLACE.
+     *
+     * This branch used to be an idempotency shortcut: "the destination has a
+     * valid cached session, so there is nothing to do." It compared NOTHING —
+     * one `chapters/sentences` was proof of a complete publish — and on
+     * 2026-09-20 that turned *Hitler's People* into a five-chunk cache reported
+     * as a 2267-chunk success (see electron/session-cache-merge.ts for the
+     * timeline). The shortcut was not wrong about re-copying being wasteful; it
+     * was wrong that "a cache exists" and "the cache holds this render" are the
+     * same fact.
+     *
+     * The rule now: the cache is the UNION of everything ever rendered for this
+     * session. Every chunk the cache lacks is copied in, atomically and one at a
+     * time; nothing in the cache is deleted; and the publish reports success
+     * only after `renderedChunkSet(cache) ⊇ renderedChunkSet(source)`.
+     *
+     * The merge walks with `fs`, where the fresh publish below can route a WSL
+     * source through the guest. That is the `\\wsl$`-read-on-the-Windows-side arm
+     * of the same choice and is correct for every destination — and sessions are
+     * created on host-native paths now anyway ("THERE IS NOTHING TO BRING OUT OF
+     * THE GUEST", the completion path).
+     */
+    const existing = await findCachedSessionLayout(destDir).catch(() => null);
+    if (existing) {
+      const before = await publishPlan(sourceSentencesDir, destSentencesDir);
+      const merge = await mergeSessionTree(sessionDir, destDir);
+
+      if (!merge.samePath) {
+        // The state file the cache now holds names the scratch dir it was
+        // rendered in (the source's copy is newer, so the merge brought it
+        // over). Re-point it at the cache, exactly as a fresh publish does.
+        await rewriteSessionStatePaths(destDir, destDir);
       }
-    } catch { /* destDir doesn't exist — proceed with caching */ }
+
+      const after = await publishPlan(sourceSentencesDir, destSentencesDir);
+      const numbers = {
+        jobLanguage: language, destDir,
+        cacheHadChunks: before.cached, sourceChunks: before.source,
+        chunksMissingBefore: before.missing.length,
+        newerInSource: before.newerInSource.length,
+        filesCopied: merge.copied.length, filesKept: merge.kept,
+        cacheNowHasChunks: after.cached,
+        failures: merge.failures.length,
+      };
+
+      if (after.missing.length > 0) {
+        const error = `Failed to publish the session into the project cache: ${
+          missingChunksSentence(after.missing, after, { source: sourceSentencesDir, cache: destSentencesDir })}${
+          merge.failures.length
+            ? ` First copy failure: ${merge.failures[0].relPath} — ${merge.failures[0].error}.`
+            : ''}`;
+        console.error(`[PARALLEL-TTS] ${error}`);
+        publishLog.error('Session publish INCOMPLETE — the cache is missing rendered chunks', {
+          ...numbers, missingFirst: after.missing.slice(0, 10), error,
+        });
+        return { success: false, error };
+      }
+
+      console.log(
+        `[PARALLEL-TTS] Session merged into the cache at ${destDir}: cache had ${before.cached}, `
+        + `source had ${before.source}, copied ${merge.copied.length} file(s), cache now has ${after.cached}`);
+      publishLog.info(
+        merge.samePath
+          ? 'Session publish — the source IS the cache (resume), nothing to copy'
+          : 'Session merged into the project cache', numbers);
+      // The sentences dir the merge WROTE INTO, not whichever one a probe finds
+      // first: a cache can hold a second `<hash>/` level left by an older
+      // publish of the same session, and the answer must name the one this
+      // render's chunks are in. The probe stays as the fallback for a session
+      // that published no sentences dir at all.
+      const merged = await fs.access(destSentencesDir).then(() => true).catch(() => false);
+      return {
+        success: true,
+        cachedSentencesDir: merged
+          ? destSentencesDir
+          : (await findCachedSessionLayout(destDir))?.sentencesDir ?? destDir,
+        cachedSessionDir: destDir,
+        cachedProcessDir: destProcessDir,
+      };
+    }
 
     await fs.mkdir(langSessionParent, { recursive: true });
 
@@ -915,8 +995,29 @@ export async function cacheSessionToProject(
     const layout = await findCachedSessionLayout(destDir);
     const cachedSentencesDir = layout?.sentencesDir ?? destDir;
 
+    // THE SET IS CHECKED ON THIS BRANCH TOO. A whole-tree `fs.cp` is not proof
+    // that every chunk arrived — a clone that hit ENOSPC or an SMB hiccup
+    // halfway can still leave a directory that answers the layout probe — and a
+    // publish that reports success over a hole is the entire finding of
+    // 2026-09-20. Same comparison, same sentence, whichever branch ran.
+    const fresh = await publishPlan(sourceSentencesDir, destSentencesDir);
+    if (fresh.missing.length > 0) {
+      const error = `Failed to publish the session into the project cache: ${
+        missingChunksSentence(fresh.missing, fresh, { source: sourceSentencesDir, cache: destSentencesDir })}`;
+      console.error(`[PARALLEL-TTS] ${error}`);
+      publishLog.error('Fresh session publish INCOMPLETE — the copy dropped chunks', {
+        jobLanguage: language, destDir, sourceChunks: fresh.source,
+        cacheNowHasChunks: fresh.cached, missingFirst: fresh.missing.slice(0, 10),
+      });
+      return { success: false, error };
+    }
+
     console.log(`[PARALLEL-TTS] LL session cached: ${destDir}`);
     console.log(`[PARALLEL-TTS] Cached sentences dir: ${cachedSentencesDir}`);
+    publishLog.info('Session published to the project cache (fresh)', {
+      jobLanguage: language, destDir, cacheHadChunks: 0,
+      sourceChunks: fresh.source, cacheNowHasChunks: fresh.cached,
+    });
 
     return {
       success: true,
@@ -1237,11 +1338,17 @@ export async function foreignSessionHost(sessionDir: string): Promise<string | n
 }
 
 /**
- * Count rendered sentence files inside a session dir (ebook-{uuid}), handling both
- * the direct chapters/sentences layout and e2a's ebook-{uuid}/{hash}/chapters/sentences.
- * Returns 0 when there is nothing rendered.
+ * WHICH CHUNKS a session dir (ebook-{uuid}) holds — handling both the direct
+ * `chapters/sentences` layout and e2a's `ebook-{uuid}/{hash}/chapters/sentences`.
+ * The empty set when there is nothing rendered.
+ *
+ * A SET, not a count, and that is the 2026-09-20 finding: every "is the cache at
+ * least as complete" comparison in this file used to be `cached >= ours`, and a
+ * count cannot tell a cache holding {0,4,8} from one holding {0,1,2}. The
+ * comparison itself is `cacheIsAtLeastAsComplete` (session-cache-merge.ts) —
+ * one rule, three callers.
  */
-async function countRenderedSentencesInSessionDir(sessionDir: string): Promise<number> {
+async function renderedChunksInSessionDir(sessionDir: string): Promise<Set<number>> {
   const candidates: string[] = [path.join(sessionDir, 'chapters', 'sentences')];
   try {
     const entries = await fs.readdir(sessionDir, { withFileTypes: true });
@@ -1253,13 +1360,26 @@ async function countRenderedSentencesInSessionDir(sessionDir: string): Promise<n
   } catch { /* unreadable session dir */ }
 
   for (const dir of candidates) {
-    try {
-      const files = await fs.readdir(dir);
-      const count = files.filter(f => (f.endsWith('.flac') || f.endsWith('.wav')) && !f.startsWith('.')).length;
-      if (count > 0) return count;
-    } catch { /* not this one */ }
+    const chunks = await renderedChunkSet(dir);
+    if (chunks.size > 0) return chunks;
   }
-  return 0;
+  return new Set<number>();
+}
+
+/**
+ * The chunks the project's durable cache holds for a language, as a set. The
+ * counterpart of `renderedChunksInSessionDir` on the other side of a publish;
+ * `scanProjectSessions` already answers where that cache is.
+ */
+async function cachedChunksForLanguage(projectDir: string, language: string): Promise<Set<number>> {
+  try {
+    const sessions = await scanProjectSessions(projectDir);
+    const mine = sessions.find(s => s.language === language);
+    if (!mine) return new Set<number>();
+    return await renderedChunkSet(mine.sentencesDir);
+  } catch {
+    return new Set<number>(); // no cache yet — the publish will make one
+  }
 }
 
 /**
@@ -1273,9 +1393,12 @@ async function countRenderedSentencesInSessionDir(sessionDir: string): Promise<n
  * flushActiveSessionsToCache, so the only copy of the work lived in that scratch dir and
  * died at the next launch; the queue's auto-resume then found nothing and restarted at 0.
  *
- * Downgrade-guarded exactly like flushPartialSessionToCache: never replace a cache that
- * already holds at least as many sentences. Best-effort — a failure here must never
- * block startup, and the caller sweeps regardless.
+ * Downgrade-guarded exactly like flushPartialSessionToCache, and since 2026-09-20 by the
+ * SET rule both of them share (`cacheIsAtLeastAsComplete`, session-cache-merge.ts): the
+ * rescue skips only when the cache already holds every chunk INDEX this session has, and
+ * otherwise merges into it — `cached >= ours` said yes to a cache holding a different
+ * 5 chunks. Best-effort — a failure here must never block startup, and the caller sweeps
+ * regardless.
  */
 export async function rescueOrphanedScratchSessions(scratchDir: string): Promise<{ rescued: number; skipped: number }> {
   const ttsLog = getTTSLogger();
@@ -1322,49 +1445,56 @@ export async function rescueOrphanedScratchSessions(scratchDir: string): Promise
         continue;
       }
 
-      const ours = await countRenderedSentencesInSessionDir(sessionDir);
+      const ourChunks = await renderedChunksInSessionDir(sessionDir);
 
       if (!owner?.bfpPath) {
         // No owner recorded (pre-sidecar session, or a run that never reached prep).
         // Nothing we can safely promote — log it so a lost checkpoint is at least visible.
-        if (ours > 0) {
+        if (ourChunks.size > 0) {
           skipped++;
           ttsLog.warn('Scratch session has rendered sentences but no owning project — cannot rescue', {
-            sessionDir, renderedSentences: ours,
+            sessionDir, renderedSentences: ourChunks.size,
           });
         }
         continue;
       }
 
-      if (ours <= 0) continue; // nothing rendered → nothing to preserve
+      if (ourChunks.size === 0) continue; // nothing rendered → nothing to preserve
 
       const language = owner.language || 'en';
-      let existing = 0;
-      try {
-        const cached = await scanProjectSessions(owner.bfpPath);
-        existing = cached.find(s => s.language === language)?.sentenceCount ?? 0;
-      } catch { /* no cache yet */ }
+      const cachedChunks = await cachedChunksForLanguage(owner.bfpPath, language);
 
-      if (existing >= ours) {
+      // THE SET RULE, not `cached >= ours`. A cache holding MORE chunks than
+      // this scratch session can still be missing one the session has — a
+      // resume that re-rendered a stretch, a correction pass — and skipping on
+      // the count would leave that chunk to be deleted by the sweep three lines
+      // from now. Same question the publish and the interrupt-cache ask.
+      if (cacheIsAtLeastAsComplete(cachedChunks, ourChunks)) {
         skipped++;
-        ttsLog.info('Scratch rescue skipped — project cache is already at least as complete', {
-          jobId: owner.jobId, bfpPath: owner.bfpPath, language, scratchSentences: ours, cachedSentences: existing,
+        ttsLog.info('Scratch rescue skipped — project cache already holds every chunk this session has', {
+          jobId: owner.jobId, bfpPath: owner.bfpPath, language,
+          scratchSentences: ourChunks.size, cachedSentences: cachedChunks.size,
         });
         continue;
       }
 
+      const owed = missingFrom(cachedChunks, ourChunks);
       const result = await cacheSessionToProject(sessionDir, owner.bfpPath, language);
       if (result.success) {
         rescued++;
+        const nowCached = await cachedChunksForLanguage(owner.bfpPath, language);
         ttsLog.info('Rescued orphaned scratch session into the project cache', {
           jobId: owner.jobId, bfpPath: owner.bfpPath, language,
-          renderedSentences: ours, replacedCachedSentences: existing,
+          scratchSentences: ourChunks.size, cacheHadChunks: cachedChunks.size,
+          chunksOwed: owed.length, cacheNowHasChunks: nowCached.size,
           cachedPath: result.cachedSentencesDir,
         });
       } else {
         skipped++;
         ttsLog.error('Scratch rescue FAILED — rendered sentences will be lost by the sweep', {
-          jobId: owner.jobId, bfpPath: owner.bfpPath, language, renderedSentences: ours, error: result.error,
+          jobId: owner.jobId, bfpPath: owner.bfpPath, language,
+          scratchSentences: ourChunks.size, cacheHadChunks: cachedChunks.size,
+          chunksOwed: owed.length, missingFirst: owed.slice(0, 10), error: result.error,
         });
       }
     } catch (err) {
@@ -4916,10 +5046,17 @@ async function completeAfterWorkers(session: ConversionSession): Promise<void> {
             sessionDir: session.prepInfo.sessionDir, cachedPath: cacheResult.cachedSentencesDir,
           });
         } else {
+          // NOT a silent tail. `cachedSentencesDir` stays undefined, so the
+          // scratch session is kept (the audio is all still there) and the
+          // queue step fails on its own publish of the same session with the
+          // same sentence — see `tts-conversion.ts`. What must never happen
+          // again is this line being the ONLY record of an incomplete cache
+          // while the row goes green (2026-09-20, *Hitler's People*).
           console.error(`[PARALLEL-TTS] Session cache failed: ${cacheResult.error}`);
           completionTtsLog.error('Session cache FAILED on completion — no resume checkpoint written', {
             jobId: session.jobId, bfpPath: session.config.bfpPath, language,
             sessionDir: session.prepInfo.sessionDir, error: cacheResult.error,
+            scratchKept: true,
           });
         }
       } catch (err) {
@@ -8601,9 +8738,12 @@ export async function stopParallelConversion(jobId: string): Promise<boolean> {
  * the project cache, not the tmp session — and a fresh run's cleanSession deletes the
  * tmp). Best-effort and never throws.
  *
- * Guards against DOWNGRADING: cacheSessionToProject REPLACES the per-language cache,
- * so we only promote when our session has at least as many rendered sentences as the
- * cache already holds — never overwrite a more-complete cache with a partial one.
+ * Guards against DOWNGRADING — but by the SET rule since 2026-09-20, not by a count:
+ * we skip only when the cache already holds every chunk INDEX this session has
+ * (`cacheIsAtLeastAsComplete`), and otherwise MERGE into it. `cached >= ours` was two
+ * mistakes in one line: it said yes to a cache holding a DIFFERENT five chunks, and it
+ * measured `ours` from the worker counters — a number about this process, not about the
+ * files on disk, which is the only thing the next run can resume from.
  */
 async function flushPartialSessionToCache(session: ConversionSession): Promise<void> {
   const ttsLog = getTTSLogger();
@@ -8617,39 +8757,46 @@ async function flushPartialSessionToCache(session: ConversionSession): Promise<v
       return;
     }
 
-    // Sentences actually on disk for this session = prior-run baseline (resume) + this run.
-    const thisRun = session.workers.reduce((s, w) => s + w.completedSentences, 0);
-    const ours = (session.isResumeJob ? (session.baselineCompleted || 0) : 0) + thisRun;
-    if (ours <= 0) {
+    // Chunks actually ON DISK for this session — a resume's prior-run baseline is in
+    // there already, because the files are.
+    const ourChunks = await renderedChunksInSessionDir(sessionDir);
+    if (ourChunks.size === 0) {
       ttsLog.info('Interrupt-cache skipped — nothing rendered yet', { jobId: session.jobId, sessionDir });
       return; // nothing rendered → nothing to preserve
     }
 
     const language = session.config.settings.language || 'en';
-    let existing = 0;
-    try {
-      const sessions = await scanProjectSessions(bfpPath);
-      existing = sessions.find(s => s.language === language)?.sentenceCount ?? 0;
-    } catch { /* no cache yet */ }
-    if (existing >= ours) {
-      console.log(`[PARALLEL-TTS] Skip interrupt-cache for ${session.jobId}: cache already has ${existing} ≥ ${ours}`);
-      ttsLog.info('Interrupt-cache skipped — cache already at least as complete', {
-        jobId: session.jobId, bfpPath, language, cachedSentences: existing, ourSentences: ours,
+    const cachedChunks = await cachedChunksForLanguage(bfpPath, language);
+    if (cacheIsAtLeastAsComplete(cachedChunks, ourChunks)) {
+      console.log(
+        `[PARALLEL-TTS] Skip interrupt-cache for ${session.jobId}: the cache holds all `
+        + `${ourChunks.size} chunk(s) this session rendered (cache has ${cachedChunks.size})`);
+      ttsLog.info('Interrupt-cache skipped — cache already holds every chunk this session has', {
+        jobId: session.jobId, bfpPath, language,
+        cachedSentences: cachedChunks.size, ourSentences: ourChunks.size,
       });
       return;
     }
 
+    const owed = missingFrom(cachedChunks, ourChunks);
     const r = await cacheSessionToProject(sessionDir, bfpPath, language);
     if (r.success) {
-      console.log(`[PARALLEL-TTS] Interrupted session cached (${ours} sentences) → ${r.cachedSentencesDir}`);
+      const nowCached = await cachedChunksForLanguage(bfpPath, language);
+      console.log(
+        `[PARALLEL-TTS] Interrupted session merged into the cache: cache had ${cachedChunks.size}, `
+        + `source had ${ourChunks.size}, owed ${owed.length}, cache now has ${nowCached.size} `
+        + `→ ${r.cachedSentencesDir}`);
       ttsLog.info('Interrupted session cached to project', {
-        jobId: session.jobId, bfpPath, language, sentences: ours,
-        replacedCachedSentences: existing, cachedPath: r.cachedSentencesDir,
+        jobId: session.jobId, bfpPath, language, sentences: ourChunks.size,
+        cacheHadChunks: cachedChunks.size, chunksOwed: owed.length,
+        cacheNowHasChunks: nowCached.size, cachedPath: r.cachedSentencesDir,
       });
     } else {
       console.warn(`[PARALLEL-TTS] Interrupt-cache failed for ${session.jobId}: ${r.error}`);
       ttsLog.error('Interrupt-cache FAILED — partial render is only in scratch', {
-        jobId: session.jobId, bfpPath, language, sentences: ours, error: r.error,
+        jobId: session.jobId, bfpPath, language, sentences: ourChunks.size,
+        cacheHadChunks: cachedChunks.size, chunksOwed: owed.length,
+        missingFirst: owed.slice(0, 10), error: r.error,
       });
     }
   } catch (err) {

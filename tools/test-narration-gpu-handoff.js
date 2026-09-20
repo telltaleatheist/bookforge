@@ -208,7 +208,18 @@ const bridge = stub('parallel-tts-bridge.js', {
   checkResumeStatusFromProcessDir: async () => ({ success: false }),
   findResumableProjectSession: async () => null,
   resumeParallelConversion: async () => ({ success: true }),
-  cacheSessionToProject: async () => ({ success: false }),
+  /*
+   * A SUCCESSFUL publish, and since the PK9 fix (2026-09-20) that matters: a
+   * `success: false` from this door now FAILS the step — an incomplete project
+   * cache is what the alignment and the assembly read — so a stub that refuses
+   * would fail every case below for a reason none of them is about.
+   */
+  cacheSessionToProject: async (sessionDir) => ({
+    success: true,
+    cachedSentencesDir: `${sessionDir}/cached/chapters/sentences`,
+    cachedSessionDir: `${sessionDir}/cached`,
+    cachedProcessDir: `${sessionDir}/cached`,
+  }),
   stopAndCacheParallelConversion: async () => {},
   /** Set by each test: what the bridge does once the step has called it. */
   drive: null,
