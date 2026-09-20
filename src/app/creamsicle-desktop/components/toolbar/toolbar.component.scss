@@ -62,7 +62,11 @@
     padding: 0;
   }
 
-  &.toggle.active {
+  // ON, whoever owns the state: a toggle that flipped itself, or a plain
+  // button drawn from the caller's own fact (2026-09-19). The selector used to
+  // be `.toggle.active`, which left a caller-driven button with nowhere to
+  // show it was the state we are in.
+  &.active {
     background: var(--selected-bg-muted);
     color: var(--text-accent);
   }

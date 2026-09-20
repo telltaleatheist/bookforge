@@ -76,6 +76,32 @@ import { QueueService } from './services/queue.service';
 import { QueueTrayService } from './services/queue-tray.service';
 import type { BenchSectionView, BookPlanView, LaneView } from './services/queue-tray.service';
 
+/**
+ * WHAT RUNNING AND PAUSED MEAN — the words, once (2026-09-19).
+ *
+ * The state is drawn TWICE: on the Up next band header, where the rows it
+ * governs are, and in the toolbar, which is on screen even when Up next is
+ * empty. Two drawings of one fact is fine — two WORDINGS of it is not, and a
+ * copied tooltip is exactly the kind of thing that gets edited in one place a
+ * month from now. Both controls interpolate these strings and both press
+ * `setQueueRunning`; neither keeps a latch of its own.
+ *
+ * The titles say what the STATE means, not what the button does, because the
+ * one you are already in is still pressable (see `setQueueRunning`).
+ */
+const QUEUE_STATE_CONTROL = {
+  running: {
+    label: 'Running',
+    title: 'Steps start as slots free up. Pressing it while already running '
+      + 'picks up anything that was stopped.',
+  },
+  paused: {
+    label: 'Paused',
+    title: 'Books may still be added to the queue and reordered; nothing new '
+      + 'starts until Running. Work already on a slot finishes.',
+  },
+} as const;
+
 @Component({
   selector: 'app-queue',
   standalone: true,
@@ -421,9 +447,22 @@ import type { BenchSectionView, BookPlanView, LaneView } from './services/queue-
               for a state that existed with nothing on screen saying which one
               we were in.
 
-              The toolbar's Pause/Resume pair is gone: it was this same latch,
-              two screens' width from the queue it governs. Halt stays there as
-              the destructive sibling — it stops the running work too.
+              HERE *AND* IN THE TOOLBAR, because this band is not always on
+              screen. This header only exists while Up next has rows, so the
+              one press Owen most wants — arming Paused BEFORE queueing sixteen
+              books overnight — had nowhere to happen. The toolbar twin is
+              always drawn (see toolbarItems); this one is beside the rows it
+              governs, which is where you look once there are rows.
+
+              Twins, not a fork: both read tray.isRunning(), both call
+              setQueueRunning, and both take their words from
+              QUEUE_STATE_CONTROL. There is still exactly one latch, and it is
+              the engine's.
+
+              The toolbar's old Pause/Resume pair is gone — it named the same
+              latch in the language of ACTIONS rather than states, which is how
+              a queue could be paused with nothing on screen saying so. Halt
+              stays there as the destructive sibling — it stops running work.
             -->
             <div class="band-right">
               <div class="seg" role="group" aria-label="Queue state">
@@ -433,16 +472,16 @@ import type { BenchSectionView, BookPlanView, LaneView } from './services/queue-
                   [class.on]="tray.isRunning()"
                   [attr.aria-pressed]="tray.isRunning()"
                   (click)="setQueueRunning(true)"
-                  title="Steps start as slots free up. Pressing it while already running picks up anything that was stopped."
-                ><span class="seg-dot" aria-hidden="true"></span>Running</button>
+                  [title]="queueState.running.title"
+                ><span class="seg-dot" aria-hidden="true"></span>{{ queueState.running.label }}</button>
                 <button
                   type="button"
                   class="seg-btn paused"
                   [class.on]="!tray.isRunning()"
                   [attr.aria-pressed]="!tray.isRunning()"
                   (click)="setQueueRunning(false)"
-                  title="Books may still be added and reordered here; nothing new starts until Running. Work already on a slot finishes."
-                ><span class="seg-dot" aria-hidden="true"></span>Paused</button>
+                  [title]="queueState.paused.title"
+                ><span class="seg-dot" aria-hidden="true"></span>{{ queueState.paused.label }}</button>
               </div>
             </div>
           </header>
@@ -1978,21 +2017,54 @@ export class QueueComponent {
 
   readonly finished = computed(() => this.tray.finishedToday());
 
+  /** The band switch's half of the shared Running / Paused wording. */
+  readonly queueState = QUEUE_STATE_CONTROL;
+
   readonly toolbarItems = computed<ToolbarItem[]>(() => {
     // MOVEMENT, not the engine's latch, and not defined here: the tray draws
     // this same control and the two must not disagree. See
     // QueueTrayService.anythingRunning for the rule and why.
     const isRunning = this.tray.anythingRunning();
+    // THE LATCH ITSELF, which is a different question: is the queue admitting
+    // work, whether or not anything happens to be on a card this second.
+    const queueRunning = this.tray.isRunning();
     return [
-      // ONE STOPPING GESTURE LEFT UP HERE, and it is the destructive one.
+      // RUNNING / PAUSED, the toolbar twin of the Up next band switch (Owen,
+      // 2026-09-19: *"a running or paused option where it accepts new entries
+      // or doesn't accept new entries — that's what the pause button should
+      // handle probably"*).
       //
-      // The drain — "pause after current" — and its Resume twin were this
-      // toolbar's Start/Pause pair, and they were the engine's `running` latch
-      // said two screens' width from the queue they govern (Owen, 2026-09-19:
-      // *"the active queue should have a running or paused option"*). That
-      // latch is now the Running/Paused switch on the Up next band, which is
-      // the band it is about; drawing it in both places would be one fact with
-      // two owners, and they would disagree the moment one was pressed.
+      // ALWAYS DRAWN, which is the whole reason it is here: the band header
+      // exists only while Up next has rows, so Paused could not be armed on an
+      // empty queue — and arming it before queueing a night's worth of books is
+      // the press that most wants to happen on an empty queue.
+      //
+      // ONE FACT, TWO DRAWINGS. Both read `tray.isRunning()`, both call
+      // `setQueueRunning`, both take their words from QUEUE_STATE_CONTROL. The
+      // toolbar keeps no state of its own: `active` is rendered, never written
+      // (see ToolbarItem.active), so a press that main refuses leaves the pair
+      // showing what the engine actually holds.
+      //
+      // The state you are IN stays pressable, exactly as on the band: a Running
+      // press while running releases anything stopped (see `setQueueRunning`).
+      // Disabling it here would quietly make the twin a different control.
+      {
+        id: 'queue-running',
+        type: 'button' as const,
+        label: QUEUE_STATE_CONTROL.running.label,
+        active: queueRunning,
+        tooltip: QUEUE_STATE_CONTROL.running.title,
+      },
+      {
+        id: 'queue-paused',
+        type: 'button' as const,
+        label: QUEUE_STATE_CONTROL.paused.label,
+        active: !queueRunning,
+        tooltip: QUEUE_STATE_CONTROL.paused.title,
+      },
+      { id: 'sep0', type: 'divider' as const },
+
+      // ONE STOPPING GESTURE UP HERE, and it is the destructive one.
       //
       // Halt is NOT that latch and never was (Owen, 2026-08-29): it takes the
       // card back NOW, cancelling what is running. One button wearing the word
@@ -2126,8 +2198,10 @@ export class QueueComponent {
 
   // ── Running / Paused ─────────────────────────────────────────────────────
   //
-  // ONE fact — the engine's `running` latch — and this is the only control on
-  // the page that writes it. Both halves go through the doors that already
+  // ONE fact — the engine's `running` latch — and this is the only method on
+  // the page that writes it. The band switch and its toolbar twin are two
+  // drawings of it, both pressing here, so neither can hold a stale opinion of
+  // the state. Both halves go through the doors that already
   // existed: Start is `startQueue` (which also releases anything stopped),
   // Paused is `pauseQueue`, the DRAIN — the running steps finish what they are
   // doing and nothing new claims a slot.
@@ -2495,9 +2569,12 @@ export class QueueComponent {
 
   onToolbarAction(item: ToolbarItem): void {
     switch (item.id) {
+      // The toolbar twin of the Up next band switch — the SAME door, so the
+      // two cannot mean different things. See `setQueueRunning`.
+      case 'queue-running': this.setQueueRunning(true); break;
+      case 'queue-paused': this.setQueueRunning(false); break;
       // The hard stop: latch off AND every running step cancelled. The soft
-      // one — the latch by itself — is the Up next band's Running/Paused
-      // switch; see `setQueueRunning`.
+      // one — the latch by itself — is Running/Paused, above.
       case 'halt': this.report(this.queueService.stopQueue()); break;
       // The server list is NOT refreshed here any more and needs no door of its
       // own: it rides the snapshot this call re-reads (`waitForChoices`).

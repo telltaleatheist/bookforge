@@ -7,6 +7,16 @@ export interface ToolbarItem {
   icon?: string;
   label?: string;
   tooltip?: string;
+  /**
+   * DRAWN ON — and for a `button`, the toolbar never writes it (2026-09-19).
+   *
+   * A `toggle` owns its own `active` (it flips it on click, which is what makes
+   * it a toggle). A `button` does not: it renders whatever state the caller
+   * hands down and reports the press, so a pair of mutually exclusive buttons
+   * can show one fact the caller owns — the queue page's Running / Paused twin
+   * of the Up next band switch — without this component keeping a second copy
+   * of it that could disagree.
+   */
   active?: boolean;
   disabled?: boolean;
   items?: ToolbarDropdownItem[]; // for dropdown type
@@ -32,6 +42,8 @@ export interface ToolbarDropdownItem {
           @case ('button') {
             <button
               class="toolbar-button"
+              [class.active]="item.active"
+              [attr.aria-pressed]="item.active ?? null"
               [class.icon-only]="!item.label"
               [class.disabled]="item.disabled"
               [disabled]="item.disabled"
