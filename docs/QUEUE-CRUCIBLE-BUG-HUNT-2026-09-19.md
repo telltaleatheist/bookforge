@@ -511,6 +511,34 @@ Ruled 2026-09-19, later the same evening:
 6. **Busy polling** rides the 15 s reach sweep; the row shows the holder's line
    and progress. No ETA scheduling.
 
+### Later that night (2026-09-19)
+
+7. **There is no such thing as a local Crucible.** *"Crucible is configured to
+   be system agnostic. Doesn't matter if it's on this system or on a rented
+   DigitalOcean GPU, it should effectively be treated the same locally or
+   otherwise. Like Ollama."* → A9 as written (compare the server's identity to
+   the pairing file) is WRONG in direction: it would make "this server is local"
+   a stronger fact. The ruling deletes the notion instead — `isLoopbackUrl`,
+   `serversOnThisMachine`, the one-card interlock (`thisMachinesCardHeldBy`),
+   `SlotSet.onThisMachine`, the re-filing of in-app GPU steps onto a loopback
+   server's lane, and the local GPU lock + Ollama eviction taken before a render
+   bound for a loopback server. Every registered server takes the same road:
+   local slot gate → reserve → launch. The lock file and the arbiter are asked
+   only for the app's own in-app GPU work (`LONGFORM_ALIGN_SET`). **Consequence
+   stated, not hidden:** the PC's training chain's `external-gpu-job.lock` no
+   longer holds back a Crucible render on the same box — a fine-tune that wants
+   the card must take a Crucible lease (rollout plan §0b A4 asked exactly this),
+   or Crucible's own accelerator probe is the truth about the card.
+8. **Chaining is the ghost row, and it already exists.** *"A ghost row appears
+   where the finalized item would normally appear and we can apply things
+   against that ghost item … narrate gets attached to that queue item's clean
+   job."* Foundry mints a promised step per queued row (`promisedStepsIn`,
+   `withPending`), an act pressed on one plans as a deferral (`aimedAt`), and the
+   host's narration waits behind the minting row (`pendingRowAt` →
+   `HostInvokeContext.pendingRow`). OCR → clean → narrate chains through it today
+   when the user skips curation; the curated path stays manual by nature. No
+   design pass is owed. C2 (a chained act follows its run's server) is unchanged.
+
 ### Packet changes from the rulings
 
 - **P1** grows: admission reads `/v1/activity` through `reach()`; the lease is
@@ -609,3 +637,10 @@ What the fixers found on the way, and what is still owed:
   so beside the queue's three-row shape.
 - Owen's running `electron:dev` needs a restart to take the main-process changes;
   the renderer reloads on its own.
+- **C3 verified:** a refused Narrate press reaches the user three ways from one
+  wrapper (`invokeFoundryNarrate`, electron/main.ts): `sayToUser` → `jobs:notice`
+  in BookForge's renderer, the throw back over the mount to Foundry's notice
+  strip, and the log line. Every throw happens before the dialog is raised.
+- **A9 → ruling 7 (in progress):** the "on this machine" family is being deleted
+  on a branch; the training-lock consequence above is the one thing Owen may
+  still veto before it merges.
