@@ -1836,7 +1836,10 @@ class OrpheusStreamServer:
         # The row index goes with each call so a served engine seeds row i with
         # `seed + i` (see HiggsV3Engine._seed_for); Orpheus ignores it.
         #
-        # THE BARE ARM, AND IT IS A CHOICE NOW. Until 2026-09-13 this
+        # THE BARE ARM, AND IT IS A CHOICE NOW - BUT ITS SEQUENCE NEVER WAS.
+        # `generate_batch`'s `elif rows:` carries the measurement and the whole
+        # finding; in one line, a batch that asked not to be JUDGED also stops
+        # being BATCHED here, and no caller asked for that. Until 2026-09-13 this
         # comprehension was the whole of what the serve world did with a Higgs
         # engine: sequential AND unguarded, while the audiobook world ran the
         # same model through the PaceTracker, the re-roll and the split ladder
@@ -2726,6 +2729,45 @@ class OrpheusStreamServer:
                 # is attached because none was reached - a `guard` key here
                 # would be narrator claiming to have judged a row it was told
                 # not to judge.
+                #
+                # KNOWN DEFECT, MEASURED 2026-09-20: THIS ARM IS ALSO SERIAL,
+                # AND NOTHING ASKED IT TO BE.
+                #
+                # `retake` names one thing and decides two. The guarded arm
+                # above both JUDGES (PaceTracker, re-roll, split) and BATCHES
+                # (`render_many` keeps `width` rows in flight); this arm does
+                # neither, because it is the old pre-2026-09-13 comprehension
+                # and that comprehension was sequential. Judging and batching
+                # are unrelated, and only one of them was ever the subject of
+                # this branch.
+                #
+                # WHO PAYS: exactly the caller who can least afford it. A
+                # screening render of a fine-tuned checkpoint MUST send
+                # `retake: false` - it has no measured band, and measuring one
+                # is what the render is for (PHASE18-UNCERTIFIED.md) - so the
+                # one client that is rendering a thousand chunks for throughput
+                # is the one client guaranteed to get them one at a time.
+                # Nothing at the call site could tell you that.
+                #
+                # MEASURED on the training PC: a 128-chunk job at width 4 with
+                # `HIGGS_MAX_NUM_SEQS=4` exported and sglang willing (zero
+                # rejections across 1,024 renders at concurrency 4 on the same
+                # checkpoint, direct) sat at `#running-req: 1` on all 684
+                # sampled scheduler lines. 12.9 s/chunk against 4.16 s/render
+                # on the direct path - at least 2.4x, and bounded above by
+                # `width` because this arm is exactly one.
+                #
+                # THE FIX IS NOT A THREAD POOL HERE. The two Higgs engines
+                # parallelise differently - `v3_engine.render_many` pools
+                # threads, `mlx_backend.render_many` groups into a
+                # BatchGenerator - so the width has to be spent by the ENGINE,
+                # as the guarded arm already spends it. What is missing is an
+                # unjudged driver at width: `render_many` without a
+                # `GuardPlan`, which is a change inside `truncation` and not
+                # here. Until that exists, DO NOT paper over it with an
+                # executor around `_generate_audio`: it would be right for the
+                # served arm and wrong for MLX, and the caller cannot tell
+                # which engine it got.
                 rendered = self._generate_audio_batch(
                     [t for _, t, _, _, _ in rows],
                     [v for _, _, v, _, _ in rows],
