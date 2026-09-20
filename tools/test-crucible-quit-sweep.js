@@ -90,15 +90,45 @@ function job(over) {
  * a keeper actually varies; everything else is the idle answer.
  */
 function activityBody(state) {
+  const resident = state.resident ?? null;
+  /*
+   * ── CRUCIBLE 1.0.11: THE CARD SAYS WHO HOLDS IT ────────────────────────────
+   *
+   * `resident.held_by` and `resident.unclaimed_since` are READ STRICTLY by the
+   * 1.0.11 SDK — the keys must be on the wire, null or not — so a fake that
+   * left them out answered `crucible_protocol: activity.resident has no field
+   * "held_by"` and two checks here failed on a document that was merely a
+   * version behind. They are DERIVED from the state this keeper already varies,
+   * not taken as a fourteenth knob: a running job, a claim, a lease or a chat
+   * in flight IS a holder, and a fake that let a test say "nothing holds it"
+   * while a job ran would model a server that does not exist.
+   */
+  const holder = (state.running ?? []).length > 0
+    ? { fact: 'job', who: (state.running ?? [])[0].client ?? 'a client', details: {} }
+    : state.claim ? { fact: 'claim', who: state.claim.held_by ?? 'a client', details: {} }
+      : state.lease ? { fact: 'lease', who: state.lease.client ?? 'a client', details: {} }
+        : (state.chatInFlight ?? 0) > 0 ? { fact: 'chat', who: 'a client', details: {} }
+          : null;
   return {
-    server: { name: 'fake-crucible', version: '0.5.0', api_version: 1, backend: 'cuda-linux', uptime_s: 99 },
-    resident: state.resident ?? null,
+    server: { name: 'fake-crucible', version: '1.0.11', api_version: 1, backend: 'cuda-linux', uptime_s: 99 },
+    resident: resident === null ? null : {
+      ...resident,
+      held_by: holder,
+      // Non-null EXACTLY when nothing holds it: one fact, two spellings, and
+      // the stranded card is the pair (held_by null, unclaimed_since set).
+      unclaimed_since: holder === null ? '2026-09-19T22:05:00Z' : null,
+    },
     stopping: state.stopping ?? null,
     warming: null,
     claim: state.claim ?? null,
     streaming: null,
     lease: state.lease ?? null,
-    chat: { in_flight: state.chatInFlight ?? 0, rows: [] },
+    chat: {
+      in_flight: state.chatInFlight ?? 0,
+      max_in_flight: state.chatMaxInFlight ?? null,
+      max_in_flight_basis: state.chatMaxInFlightBasis ?? null,
+      rows: [],
+    },
     slots: { accelerated: { busy: 0, of: 1, queue_depth: 0, accepts_work: true } },
     running: state.running ?? [],
     queued: state.queued ?? [],

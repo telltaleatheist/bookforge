@@ -728,6 +728,18 @@ const SUITES = [
   // 2026-09-19, A5). Silent in the worst way: the row looks broken, and the
   // remedy — a Retry press hours later — looks like the queue working.
   'test-queue-step-parks',
+  // A WHOLE BOOK THROUGH A SERVER THAT MISBEHAVES — the fault-injection suite
+  // (PK13). Owen, 2026-09-20: "the system is entirely too fragile. harden it so
+  // it works correctly. the no fallbacks rule is about unexpected codepaths and
+  // band-aids." So every transient fault must end in COMPLETION or a PARK with
+  // a sentence, and never in a failed row: a reset keep-alive socket, a server
+  // restarted under a render, a 503 storm, a stream that goes quiet, a cancel
+  // refused `409 job_not_cancellable`. Each of those reddened a row on the
+  // night of Sep 19 and each was a machine that would have answered a minute
+  // later. It drives the REAL engine and the REAL Crucible doors against a fake
+  // on 127.0.0.1, so what is measured is the join the night turned on: a door
+  // mints a refusal and the engine classifies it.
+  'test-chaos-book',
   // HOW MANY BOOKS ARE IN FLIGHT, AND WHERE. One slot set per machine
   // (crucible `docs/PHASE7-LANES.md` §2.4). The defects are silent in both
   // directions: too few slots and a second registered server is never used at
