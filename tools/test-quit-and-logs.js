@@ -22,6 +22,10 @@
  *       holding a card for an app that no longer exists.
  *  Q4 — a hosted Foundry act refused by a HOLDER (Crucible `409 leased`) failed
  *       the row instead of parking it (Contract 2).
+ *  PK11 — a keeper that `require`d the built queue engine wrote INVENTED
+ *       failures into this machine's real `bookforge.log`, because the logger
+ *       opened its file on the first line anybody wrote. It opens on `init()`
+ *       now, which only the app calls.
  *  PK7 — and the correction to the round-2 list: `initWorkerLog(libraryPath)`
  *       was filed as P4's twin, but it never read that parameter in its life.
  *       `worker-output.log` is machine-local like every other streamed log, and
@@ -248,6 +252,73 @@ it('PK7: the worker log is machine-local, and no library path can move it', asyn
 
   assert.ok(/initWorkerLog\(\);/.test(src.slice(src.indexOf('function writeWorkerLog'))),
     'and it opens on demand, so no startup order can send a worker\'s output nowhere');
+});
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PK11 · the machine's log belongs to the app, not to whoever required a module
+// ─────────────────────────────────────────────────────────────────────────────
+
+/*
+ * THE FINDING. PK1 gave `settleStep` a `logFailure()` through `getMainLogger()`
+ * — the queue's first lines in `bookforge.log`, and right. But `write()` opened
+ * the file lazily, so when the queue keepers drove the real engine they wrote
+ * fabricated failures ("[QUEUE] Book — Narrate failed: the model would not
+ * load") into Owen's own log at 18:01Z, among the night's real ones.
+ *
+ * These checks CREATE NOTHING and write nothing. The first proves the guard on
+ * a logger with a name nothing else uses; the second proves it where it
+ * actually bit, by measuring the real `bookforge.log` across a write — which is
+ * a no-op when the rule holds and is the evidence when it does not.
+ */
+
+it('PK11: a logger nobody opened writes no file', async () => {
+  const rolling = require(path.join(DIST, 'rolling-logger.js'));
+  const name = `keeper-never-opened-${process.pid}-${Date.now()}`;
+  const logger = new rolling.RollingLogger({ name, consoleOutput: false });
+  const logPath = logger.getLogPath();
+  assert.strictEqual(path.dirname(logPath), rolling.machineLogDirectory(),
+    'it is aimed at the real log directory — that is the whole hazard');
+  logger.error('a failure this process invented', { book: 'not a real book' });
+  logger.info('and a line about nothing');
+  // The write path is async; give it every chance to misbehave.
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.ok(!fs.existsSync(logPath),
+    `a logger that was never init()ed must not create ${logPath}. init() is the app's own `
+    + 'declaration that it IS the app, and no test process can make it by accident');
+});
+
+it('PK11: and the real bookforge.log is untouched by one', async () => {
+  const rolling = require(path.join(DIST, 'rolling-logger.js'));
+  const logPath = rolling.getMainLogger().getLogPath();
+  assert.ok(/bookforge\.log$/.test(logPath), logPath);
+  const before = fs.existsSync(logPath) ? fs.statSync(logPath).size : null;
+
+  rolling.getMainLogger().error(
+    '[QUEUE] a book that does not exist — Narrate failed: a reason this keeper invented');
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  const after = fs.existsSync(logPath) ? fs.statSync(logPath).size : null;
+  assert.strictEqual(after, before,
+    `THE FINDING: a keeper's invented failure grew ${logPath} by ${after - before} bytes. A log `
+    + 'somebody debugs at 9am cannot contain a test\'s fabrications');
+});
+
+it('PK11: the rule is in the code, not in this file — write() has no lazy open', () => {
+  const src = fs.readFileSync(path.join(REPO, 'electron', 'rolling-logger.ts'), 'utf-8');
+  const write = src.slice(src.indexOf('private async write('));
+  const body = write.slice(0, write.indexOf('\n  }\n') + 5);
+  assert.ok(!/await this\.init\(\)/.test(body),
+    'the lazy open IS the defect: any process that requires a built module could write into '
+    + 'this machine\'s log directory');
+  assert.ok(/toConsole/.test(body),
+    'a dropped line goes to the console, where whoever is running the harness is looking — '
+    + 'it is not swallowed');
+  // And the one caller that opens a log of its own still says so out loud.
+  const textServer = fs.readFileSync(path.join(REPO, 'electron', 'text-server.ts'), 'utf-8');
+  assert.ok(/fileLog\.init\(\)/.test(textServer),
+    'text-server.ts builds its own RollingLogger and never called init(); with no lazy open it '
+    + 'has to declare itself, or `text-server.log` would silently stop existing');
 });
 
 (async () => {

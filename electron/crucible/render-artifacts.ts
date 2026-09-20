@@ -118,6 +118,24 @@ export interface DownloadRenderArtifactsOptions {
    */
   readonly lastEventId?: number;
   /**
+   * THE CALLER WILL RE-OPEN THIS STREAM, so the guard ledger for this render
+   * survives a throw (bug hunt S13, 2026-09-20).
+   *
+   * The catch below drops this render's verdicts because a FAILED ATTACH must
+   * not leave a partial map that a later, successful attach adds to — two
+   * attempts summarised as one run. A reconnect is not a later attempt: it is
+   * the same render continuing over a socket that died
+   * (`crucible/stream-reconnect.ts`), the server replays only the frames above
+   * `lastEventId`, and the chunks verdicted before the break are never
+   * announced again. Dropping them there would report a 2,267-chunk book's
+   * guard summary from whatever happened after its last blip.
+   *
+   * A caller that sets this OWNS the drop: `render.ts` calls
+   * `forgetChunkGuards` when the ladder has finished with the render, whichever
+   * way it ended.
+   */
+  readonly resumable?: boolean;
+  /**
    * INERT UNTIL THE SDK CARRIES IT, and kept because the caller that passes one
    * is already cancelling properly without it.
    *
@@ -261,7 +279,8 @@ export async function downloadRenderArtifacts(
     // The ledger is per-render state and this render is over. Dropping it here
     // keeps a failed attach from leaving a partial map behind that a later,
     // successful attach would then add to — two attempts summarised as one run.
-    forgetChunkGuards(renderId);
+    // Unless the caller says it is coming straight back (see `resumable`).
+    if (options.resumable !== true) forgetChunkGuards(renderId);
     throw err;
   }
 
