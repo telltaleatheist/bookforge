@@ -521,14 +521,27 @@ export interface StepMetrics {
   /** Timestamp (ms) of the last chunk completion. */
   chunkCompletedAt?: number;
   /**
-   * Timestamp (ms) of the FIRST chunk completion OF THIS RUN, and the session
-   * chunk count at that instant. Rate is measured over [stamp, now] containing
-   * (done - chunksAtFirstStamp) completions: measuring from startedAt would fold
-   * in model load, and measuring from the stamp WITHOUT its count assumes
-   * progress arrives one chunk at a time, which batched engines make false.
+   * Timestamp (ms) of the END of this run's FIRST BURST of chunk completions,
+   * and the session chunk count at that instant. Rate is measured over
+   * [stamp, last landing] containing (done - chunksAtFirstStamp) completions:
+   * measuring from startedAt would fold in model load, and measuring from the
+   * stamp WITHOUT its count assumes progress arrives one chunk at a time, which
+   * batched engines make false. `shared/queue/rate-window.ts` (`rateAnchor`)
+   * owns how both are chosen.
    */
   firstChunkCompletedAt?: number;
   chunksAtFirstStamp?: number;
+  /**
+   * When the anchoring burst began, and — by its PRESENCE — that the burst is
+   * still open and the anchor may still slide to its end.
+   *
+   * Cleared at the first real gap between landings, and never set again for this
+   * run: after that the anchor is fixed, so a later batch cannot re-open the
+   * window and throw away everything measured since. It also bounds the slide,
+   * for an engine whose chunks land closer together than the gap for ever —
+   * a stream with no bursts anchors at its first landing, as it always did.
+   */
+  anchorBurstOpenSince?: number;
   /** Counts for THIS session only — a resume must not divide prior work by new time. */
   chunksDoneInSession?: number;
   rawSentencesDoneInSession?: number;

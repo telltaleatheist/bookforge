@@ -126,6 +126,8 @@ import {
 import { crucibleRouteOf, crucibleUpstreamsOf, onCrucibleRecordChanged } from './crucible/routes';
 import { engineLanes } from './crucible/engine-lanes';
 import { JOB_GERUND } from '../shared/queue/job-words';
+// The rate anchor's rule lives beside the window it opens — see `rateAnchor`.
+import { rateAnchor, type RateAnchor } from '../shared/queue/rate-window';
 import { stopSentence, userStopped, type StopReason } from '../shared/queue/stop-reason';
 /*
  * THE ONE RULE FOR "WHICH PROJECT IS THIS ROW ABOUT", borrowed from the step
@@ -4897,6 +4899,13 @@ function applyReport(step: QueueStep, update: StepReport): void {
       const anchor = firstChunkAnchor(step, metrics, sessionDone);
       metrics.firstChunkCompletedAt = anchor.firstChunkCompletedAt;
       metrics.chunksAtFirstStamp = anchor.chunksAtFirstStamp;
+      // ASSIGNED EVEN WHEN ABSENT: dropping this marker is how the rule says
+      // the anchoring burst has closed, so a `delete` that never happened would
+      // leave the window able to re-open on the next batch.
+      metrics.anchorBurstOpenSince = anchor.anchorBurstOpenSince;
+      // AFTER the anchor, never before: the anchor's burst test reads the
+      // PREVIOUS landing, and stamping this one first would compare a landing
+      // with itself and make every burst look like a gap.
       if (sessionDone > (step.metrics.chunksDoneInSession ?? -1)) {
         metrics.chunkCompletedAt = Date.now();
       }
@@ -4907,36 +4916,32 @@ function applyReport(step: QueueStep, update: StepReport): void {
 }
 
 /**
- * The anchor every rate measurement is taken from: the time of the FIRST observed
- * session progress AND the chunk count at that instant. Set once per RUN.
+ * The anchor every rate measurement is taken from, asked of the ONE module that
+ * owns the rule (`shared/queue/rate-window.ts`, `rateAnchor`).
  *
- * Both halves are required. Measuring from startedAt would fold in model load and
- * planning; measuring from the stamp WITHOUT its count assumes progress arrives
- * one chunk at a time, which is false — Orpheus emits only when a whole batch of
- * 64 finishes, so the first observation is routinely already 128 chunks deep, and
- * crediting all of them to the window that opened at that instant overstates the
- * rate ~6x.
- *
- * Consequence: no rate exists until the SECOND flush lands. That is correct — one
- * observation cannot time anything.
+ * This is the wiring and nothing else: which of this step's numbers are the
+ * stamp, the previous landing and the previous count. The rule itself — anchor
+ * at the END of the first burst, because everything that lands together was
+ * generated together, before the window opened — is stated and tested there,
+ * beside the window it opens.
  */
 function firstChunkAnchor(
   step: QueueStep,
   metrics: StepMetrics,
   sessionDone: number,
-): { firstChunkCompletedAt?: number; chunksAtFirstStamp?: number } {
-  const stamped = metrics.firstChunkCompletedAt;
-  if (stamped !== undefined) {
-    // An anchor marks a chunk completing, and a chunk cannot complete before the
-    // run that rendered it started — so a stamp older than startedAt is a
-    // PREVIOUS run's, and re-stamping is the only honest reading.
-    const startedAt = step.startedAt ? new Date(step.startedAt).getTime() : null;
-    if (startedAt === null || stamped >= startedAt) {
-      return { firstChunkCompletedAt: stamped, chunksAtFirstStamp: metrics.chunksAtFirstStamp };
-    }
-  }
-  if (sessionDone <= 0) return {};
-  return { firstChunkCompletedAt: Date.now(), chunksAtFirstStamp: sessionDone };
+): RateAnchor {
+  return rateAnchor({
+    stampedAt: metrics.firstChunkCompletedAt,
+    anchorChunks: metrics.chunksAtFirstStamp,
+    // The landing before this report — `chunkCompletedAt` is stamped after this
+    // call, so it still names the previous one.
+    lastLandingAt: metrics.chunkCompletedAt,
+    chunksDone: sessionDone,
+    previousChunksDone: step.metrics.chunksDoneInSession,
+    burstOpenSince: metrics.anchorBurstOpenSince,
+    now: Date.now(),
+    runStartedAt: step.startedAt ? new Date(step.startedAt).getTime() : null,
+  });
 }
 
 // ────────────────────────────────────────────────────────────────────────────

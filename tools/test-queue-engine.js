@@ -46,6 +46,8 @@ if (!fs.existsSync(path.join(DIST, 'queue-engine.js'))) {
 
 const engine = require(path.join(DIST, 'queue-engine.js'));
 const types = require(path.join(REPO, 'dist', 'shared', 'queue', 'engine-types.js'));
+// The rate anchor's own gap, so this suite and the rule cannot drift apart.
+const { ANCHOR_BURST_GAP_MS } = require(path.join(REPO, 'dist', 'shared', 'queue', 'rate-window.js'));
 
 const SCRATCH = fs.mkdtempSync(path.join(os.tmpdir(), 'bf-queue-'));
 
@@ -1398,7 +1400,7 @@ test('clear-finished drops the runs that are over and nothing else', async () =>
 
 // ── Progress and the rate anchor ────────────────────────────────────────────
 
-test('a report merges, and the rate anchor is stamped once per run', async () => {
+test('a report merges, and the rate anchor lands at the END of the first burst', async () => {
   const gpu = fakeModule('tts-conversion');
   await fresh('progress', [gpu]);
   const job = engine.enqueue({
@@ -1412,19 +1414,40 @@ test('a report merges, and the rate anchor is stamped once per run', async () =>
   ctx.report({ percent: 10, message: 'first', stages: [{ name: 's', label: 'S', pct: 10, status: 'running' }], metrics: { chunksDoneInSession: 128 } });
   await settle();
   let step = stepsOf(job.id)[0];
-  const anchor = step.metrics.firstChunkCompletedAt;
-  assert.ok(anchor, 'the first observation opens the window');
+  const opened = step.metrics.firstChunkCompletedAt;
+  assert.ok(opened, 'the first observation opens the window');
   assert.strictEqual(step.metrics.chunksAtFirstStamp, 128,
     'and records the count at that instant — batched engines arrive 128 chunks deep');
+  assert.ok(step.metrics.anchorBurstOpenSince, 'the anchoring burst is open');
 
-  // A later report with no stages must not blank the bars.
+  // A second report in the same instant is the SAME landing: the chunks it
+  // carries were generated before the window opened, so the anchor takes them
+  // with it rather than crediting them to no time at all. (Over the Crucible
+  // seam a batch arrives as one report per downloaded chunk — see `rateAnchor`.)
   ctx.report({ percent: 40, message: 'second', metrics: { chunksDoneInSession: 192 } });
   await settle();
   step = stepsOf(job.id)[0];
   assert.strictEqual(step.progress.message, 'second');
   assert.strictEqual(step.progress.stages.length, 1, 'a one-off event must not erase the breakdown');
-  assert.strictEqual(step.metrics.firstChunkCompletedAt, anchor, 'the anchor is set once, never moved');
-  assert.strictEqual(step.metrics.chunksAtFirstStamp, 128);
+  assert.strictEqual(step.metrics.chunksAtFirstStamp, 192, 'the anchor slid to the end of the burst');
+  assert.ok(step.metrics.firstChunkCompletedAt >= opened);
+
+  // And a report after a real gap closes it: from here the window is fixed and
+  // everything that lands is measured.
+  await new Promise((r) => setTimeout(r, ANCHOR_BURST_GAP_MS + 100));
+  ctx.report({ percent: 50, message: 'third', metrics: { chunksDoneInSession: 256 } });
+  await settle();
+  step = stepsOf(job.id)[0];
+  const fixed = step.metrics.firstChunkCompletedAt;
+  assert.strictEqual(step.metrics.chunksAtFirstStamp, 192, 'the gap closed the anchoring burst');
+  assert.strictEqual(step.metrics.anchorBurstOpenSince, undefined);
+
+  // A later batch, landing chunk-by-chunk again, must not re-open the window.
+  ctx.report({ percent: 55, message: 'fourth', metrics: { chunksDoneInSession: 257 } });
+  await settle();
+  step = stepsOf(job.id)[0];
+  assert.strictEqual(step.metrics.firstChunkCompletedAt, fixed, 'the anchor is fixed for the run');
+  assert.strictEqual(step.metrics.chunksAtFirstStamp, 192);
 });
 
 // ── Reordering ──────────────────────────────────────────────────────────────

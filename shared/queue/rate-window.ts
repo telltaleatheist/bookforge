@@ -35,6 +35,36 @@
  */
 export const RATE_WINDOW_MIN_SECONDS = 45;
 
+/**
+ * How close two landings have to be to be the SAME landing.
+ *
+ * ── The finding (Owen, 2026-09-20) ────────────────────────────────────────
+ *
+ * Two books started within two seconds of each other: *Shift* on the PC and
+ * *Wool* on the Mac. Eleven minutes in, the PC was at 34% and the Mac at 7% —
+ * nearly five times the work — while the two Rate readouts differed by only
+ * 1.76x. *"seems like the speed doesnt quite add up here."*
+ *
+ * Measured off the two live sessions' own FLAC mtimes:
+ *
+ *   PC   61 landings of 4–12 chunks, ~3.8 s apart      → 58 chunks/min
+ *   Mac   3 landings of ~60 chunks, 5 s wide, 200 s apart → 18.6 chunks/min
+ *
+ * A Higgs MLX batch retires ~62 rows at once, and the artifacts then arrive one
+ * per chunk about a tenth of a second apart. The anchor recorded the count at
+ * the FIRST of those — 1 — so the other 56, generated over the three minutes
+ * BEFORE the window opened, were credited to the window as if they had cost
+ * nothing. That is the same defect the landing window was built to fix, at the
+ * other end of it: the fix of 2026-09-08 stopped the window closing mid-burst,
+ * and this stops it OPENING mid-burst. The Mac read 25.8 chunks/min for work
+ * running at 18.6 — 20.7x realtime for 11.6x, and an ETA a third short.
+ *
+ * The value has to sit above a burst's internal spacing and below the gap
+ * between bursts. Both shapes above clear it by a wide margin: ~0.1 s and
+ * ~0.7 s inside a burst, 3.8 s and 200 s between them.
+ */
+export const ANCHOR_BURST_GAP_MS = 2_000;
+
 /** The two landings and the counts at them — whatever the caller has of them. */
 export interface LandingWindow {
   /** `firstChunkCompletedAt`: the first completion OF THIS RUN. */
@@ -171,4 +201,100 @@ export function throughputSample(input: ThroughputInput): ThroughputSample | nul
   }
 
   return { ...window, sentencesPerMin, wordsPerMin, charsPerMin, realtimeFactor, etaSeconds };
+}
+
+/** What the caller knows when a progress report arrives. */
+export interface AnchorInput {
+  /** The anchor already stamped for this run, if any. */
+  readonly stampedAt?: number;
+  /** The chunk count recorded at that stamp. */
+  readonly anchorChunks?: number;
+  /** The most recent landing BEFORE this report — never this one. */
+  readonly lastLandingAt?: number;
+  /** The session chunk count this report carries. */
+  readonly chunksDone: number;
+  /** The session chunk count the previous report carried. */
+  readonly previousChunksDone?: number;
+  /**
+   * When the anchoring burst began — and, by its presence, that it is still
+   * open. Absent means a gap has already been seen and the anchor is fixed.
+   */
+  readonly burstOpenSince?: number;
+  /** When this report arrived. */
+  readonly now: number;
+  /** When the RUN started; an anchor older than this belongs to a previous one. */
+  readonly runStartedAt?: number | null;
+}
+
+/** An anchor, or nothing when there is not yet anything to anchor to. */
+export interface RateAnchor {
+  firstChunkCompletedAt?: number;
+  chunksAtFirstStamp?: number;
+  /** See {@link AnchorInput.burstOpenSince}. Absent once the anchor is fixed. */
+  anchorBurstOpenSince?: number;
+}
+
+/**
+ * THE ANCHOR THE WINDOW OPENS AT: the END of the first burst of landings.
+ *
+ * Both halves are required, and each answers a different way of being wrong:
+ *
+ *  - The TIME, because measuring from the step's start folds in the model load
+ *    and the planning — the Mac spent 4 m 53 s of an 11-minute step loading the
+ *    voice before its first chunk landed, the PC 1 m 43 s.
+ *  - The COUNT, because a batched engine's first observation is already deep
+ *    into the book (a local Orpheus flush arrives 128 chunks in), and crediting
+ *    those to an instant overstates the rate several-fold.
+ *
+ * And the anchor SLIDES while the landings keep arriving with no gap, which is
+ * the half that was missing until 2026-09-20: over the Crucible seam a batch
+ * arrives as one artifact per chunk, a tenth of a second apart, so recording
+ * the count at the first of them recorded 1 when the batch was 57. It stops
+ * sliding at the first real gap — {@link ANCHOR_BURST_GAP_MS} — and in any case
+ * once the window is old enough to be measurable, so a steady engine whose
+ * chunks land faster than the gap cannot slide it forever. The cost of the rule
+ * is that the anchoring burst is never measured, which is correct: it was
+ * generated before anyone was watching.
+ *
+ * Consequence, unchanged: no rate exists until a SECOND burst lands. One
+ * observation cannot time anything.
+ */
+export function rateAnchor(input: AnchorInput): RateAnchor {
+  const { stampedAt, anchorChunks, lastLandingAt, chunksDone, now } = input;
+  const stampIsThisRun = stampedAt !== undefined
+    && (input.runStartedAt === null || input.runStartedAt === undefined
+      || stampedAt >= input.runStartedAt);
+
+  if (!stampIsThisRun) {
+    // No anchor, or one left by a previous run — a chunk cannot have completed
+    // before the run that rendered it started. The burst opens here.
+    return chunksDone > 0
+      ? { firstChunkCompletedAt: now, chunksAtFirstStamp: chunksDone, anchorBurstOpenSince: now }
+      : {};
+  }
+
+  const openSince = input.burstOpenSince;
+  const kept: RateAnchor = {
+    firstChunkCompletedAt: stampedAt,
+    chunksAtFirstStamp: anchorChunks,
+    ...(openSince === undefined ? {} : { anchorBurstOpenSince: openSince }),
+  };
+  // The burst is closed: the anchor is fixed for the rest of the run. A later
+  // batch must never re-open the window — that would throw away everything
+  // measured since and start the job's speed over from nothing.
+  if (openSince === undefined) return kept;
+  // A report that landed nothing times nothing: it can neither move the anchor
+  // nor close the burst it is sitting in.
+  if (input.previousChunksDone !== undefined && chunksDone <= input.previousChunksDone) return kept;
+
+  const sinceLastLanding = now - (lastLandingAt ?? (stampedAt as number));
+  const burstAge = now - openSince;
+  if (sinceLastLanding < ANCHOR_BURST_GAP_MS && burstAge < RATE_WINDOW_MIN_SECONDS * 1000) {
+    // Still the same burst: everything so far was generated before the window
+    // opened, so the anchor moves to this landing and takes its count with it.
+    return { firstChunkCompletedAt: now, chunksAtFirstStamp: chunksDone, anchorBurstOpenSince: openSince };
+  }
+  // A gap — or a "burst" so long it is really a stream. Either way the anchor
+  // is now fixed: drop the marker.
+  return { firstChunkCompletedAt: stampedAt, chunksAtFirstStamp: anchorChunks };
 }
