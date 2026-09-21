@@ -727,8 +727,20 @@ function buildBar(): void {
   const rewind = skipBtn(-5, 'Back 5 seconds');
   // Always play/pause — even while buffering, pausing just holds playback while the
   // buffer keeps filling.
-  const playPause = iconBtn('pause', 30, 'Pause', () =>
-    send({ target: 'background', cmd: 'transport', op: 'toggle-pause' }));
+  //
+  // AND WITH NOTHING PLAYING, IT STARTS AT THE TOP. Owen, 2026-09-20, after an
+  // evening of "Load, then find a block's ▶": *"we could make it so the
+  // toolbar's play button just loads the chosen voice model and starts at the
+  // top."* A ▶ that only ever resumed was a ▶ that did nothing on a fresh page,
+  // and nothing on screen said why. The player loads the voice itself now
+  // (offscreen `ensureStream`), so this is the whole ritual in one press.
+  const playPause = iconBtn('pause', 30, 'Pause', () => {
+    const state = lastUi?.playback.state;
+    const nothingPlaying = !lastUi || lastUi.currentBlockId === null
+      && (state === undefined || state === 'idle' || state === 'ended' || state === 'error');
+    if (nothingPlaying && blocks.length > 0) { playFrom(blocks[0].id); return; }
+    send({ target: 'background', cmd: 'transport', op: 'toggle-pause' });
+  });
   playPause.classList.add('bfr-tbtn', 'bfr-play');
   const forward = skipBtn(5, 'Forward 5 seconds');
   transport.append(rewind, playPause, forward);

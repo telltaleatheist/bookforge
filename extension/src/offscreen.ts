@@ -1119,16 +1119,23 @@ async function ensureStream(): Promise<LiveStream | null> {
 }
 
 /**
- * OPEN THE SESSION, WAITING OUT OURSELVES.
+ * OPEN THE SESSION — EVICTING OUR OWN ORPHAN, WAITING OUT OUR OWN LOAD.
  *
- * Two refusals at the open are about THIS extension and are a wait, not an
- * answer: `stream_session_open` for a session this browser opened and whose
- * reader died (the server keeps it for a 15 s grace window), and
- * `engine_in_use` while our own load job is still settling its claim. Both
- * clear on their own within seconds, so the open is asked again once the
- * server's activity no longer names us as the holder — bounded, and said on
- * the bar as "Connecting…" the whole time. A holder that is NOT us is a real
- * refusal and comes straight back.
+ * Two refusals at the open are about THIS extension and are not answers:
+ *
+ *  - `stream_session_open` naming a session THIS browser opened. Its reader is
+ *    gone or stuck (the server saw one live for fourteen minutes on 2026-09-20,
+ *    seven rows rendered, nothing played, never closed — and every play after
+ *    it was refused). A session this browser opened is this browser's to close:
+ *    it is DELETEd and the open is asked again, at once. Waiting for it was the
+ *    first draft of this rule and it never cleared, because a reader that is
+ *    still attached keeps the session out of the server's grace window forever.
+ *  - `engine_in_use` while our own load job is settling its claim — seconds,
+ *    so a bounded wait and one more ask.
+ *
+ * A holder that is NOT us is a real refusal and comes straight back. "Us" is
+ * `describeHolder(...).ours`: the job id, this browser's User-Agent, or the
+ * name the SDK is asked to send.
  */
 async function openWaitingOutOurselves(
   bound: CrucibleClient,
@@ -1140,20 +1147,51 @@ async function openWaitingOutOurselves(
     if (!(err instanceof CrucibleRefused)) throw err;
     if (err.code !== 'stream_session_open' && err.code !== 'engine_in_use') throw err;
     const self = { userAgent: navigator.userAgent, clientName: CLIENT_NAME };
+    let activity: Activity;
+    try {
+      activity = await bound.activity();
+    } catch {
+      throw err;   // cannot tell whose it is; the original refusal stands
+    }
+    const holder = describeHolder(activity, self);
+    if (holder !== null && !holder.ours) throw err;   // somebody else's — a real refusal
+    if (activity.streaming !== null && holder?.ours) {
+      // OUR orphan. Close it and go again.
+      console.warn(`[BFR] evicting this browser's own stale session ${activity.streaming.sessionId}`);
+      await evictOwnSession(activity.streaming.sessionId);
+      return await bound.stream({ voice, language: LISTEN_LANGUAGE });
+    }
+    // Our own load settling: wait it out, bounded, then ask once more.
     const deadline = Date.now() + OUR_ORPHAN_WAIT_MS;
     while (Date.now() < deadline) {
-      let activity: Activity;
-      try {
-        activity = await bound.activity();
-      } catch {
-        throw err;   // cannot tell whose it is; the original refusal stands
-      }
-      const holder = describeHolder(activity, self);
-      if (holder !== null && !holder.ours) throw err;   // somebody else's — a real refusal
-      if (holder === null) break;                       // cleared — ask again
+      let now: Activity;
+      try { now = await bound.activity(); } catch { throw err; }
+      const h = describeHolder(now, self);
+      if (h === null) break;
+      if (!h.ours) throw err;
       await new Promise((r) => setTimeout(r, 1000));
     }
     return await bound.stream({ voice, language: LISTEN_LANGUAGE });
+  }
+}
+
+/**
+ * `DELETE /v1/tts/stream/{id}` for a session this browser opened and no longer
+ * has a handle to. The SDK closes only the session object it handed out, and
+ * an orphan by definition has none — so this speaks the one wire line the
+ * `crucible api stream close` door speaks, with the server the reader is bound
+ * to. A refusal here (already gone) is not news; the re-open decides.
+ */
+async function evictOwnSession(sessionId: string): Promise<void> {
+  const entry = server;
+  if (entry === null) return;
+  try {
+    await fetch(`${entry.url}/v1/tts/stream/${encodeURIComponent(sessionId)}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${entry.token}`, 'X-Crucible-Api': '1' },
+    });
+  } catch (err) {
+    console.warn('[BFR] could not close the stale session:', err);
   }
 }
 
