@@ -10,10 +10,26 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\<user>\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **04758be** — *fix(crucible): a capability refusal reads "can't read pages", not "cannot pages"* (was 8b9efb8) |
+| Source sha | **77a529d** — *Adopt Crucible 1.0.17: the Mac reads pages (dep-only)* (was 04758be) |
 | Engine | **NOT VENDORED AND NOT KNOWABLE FROM THIS FILE** — it is a spawned CLI resolved at RUNTIME (`FOUNDRY_BIN`, else `resolveFoundryPath`, `electron/main.ts`), so which build executes is a property of the machine and not of this copy. On a developer's Mac that resolves to Foundry's own checkout at `/Volumes/Callisto/Projects/foundry/dist/foundry-darwin-arm64`, which is whatever was last built there — `foundry 2.0.2 (04758be)` — REBUILT at this re-vendor (2026-09-21) so the engine carries fdba761's clean-text log change. **Ask the binary: `$FOUNDRY_BIN --version`.** See *The engine this file named was not the engine that ran* below. |
 | Copied on | 2026-09-19 (five times: 3738c01, 3436fc5, 806d44b, f349771, ca4754c) and 2026-09-20 (98a4344, 9e0b27d, dccc144, 7b98004, cc5fc5b, 93010d8, 77e1d6d) |
 | Copied by | Mechanical source sync, verified against Foundry `77e1d6d:app/` (`diff -rq`, clean but for this file, `IPC-CHANNELS.md` and `.gitignore` — see below); details below |
+
+## The `04758be → 77a529d` re-vendor — the 1.0.17 SDK adoption, the Mac reads pages (2026-09-21)
+
+Dependency-only. Foundry `77a529d` repins `@crucible/client` and `@crucible/bootstrap`
+to the 1.0.17 tarballs (`git diff --stat 04758be..77a529d -- app/`: package.json,
+package-lock.json and the two vendor tarballs, nothing else), and this copy takes the
+same four files. What 1.0.17 changes is on the SERVER: Crucible's own in-process dots
+server for `mlx-darwin` (`crucible/engines/mlx_vlm_serve.py`), a `[backends.mlx-darwin]`
+block on dots-ocr, and `pages.py`'s temperature citation — the SDK's wire is unchanged,
+which is why this is dep-only on both sides.
+
+Verified against Foundry `77a529d:app/` with `diff -rq` (excluding node_modules, dist,
+.angular, out-tsc, release, VENDORED.md, IPC-CHANNELS.md, .gitignore): every reported
+difference is line endings alone (`diff --strip-trailing-cr -q` clean on each). Gates:
+`node tools/test-foundry-adopt.js` 40/40; root `tsc -p tsconfig.electron.json --noEmit`
+exit 0 against the 1.0.17 SDK.
 
 ## The `8b9efb8 → 04758be` re-vendor — clean-text log + capability wording (2026-09-21)
 
