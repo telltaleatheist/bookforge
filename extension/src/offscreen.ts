@@ -79,10 +79,12 @@ import {
 import {
   NO_SERVER_SELECTED,
   clientFor,
-  type ServerEntry
+  type ServerEntry,
+  CLIENT_NAME,
 } from './servers';
 import {
   describeHolder,
+  type HolderNote,
   describeRefusal,
   loadVoice as loadVoiceJob,
   residentClipOf,
@@ -740,7 +742,7 @@ let engineBusy: 'loading' | 'unloading' | null = null;
 /** The job's latest line, or the refusal that ended it. */
 let engineNote: string | null = null;
 /** Who else holds the engine there, from `/v1/activity`, after a refusal. */
-let engineHolder: string | null = null;
+let engineHolder: HolderNote | null = null;
 /** Why nothing can be read right now, in the server's own words. */
 let connectionError: string | null = null;
 
@@ -1085,7 +1087,10 @@ async function noteHolder(): Promise<void> {
   const bound = client;
   if (bound === null) { engineHolder = null; return; }
   try {
-    engineHolder = describeHolder(await bound.activity());
+    engineHolder = describeHolder(await bound.activity(), {
+      userAgent: navigator.userAgent,
+      clientName: CLIENT_NAME,
+    });
   } catch {
     // The holder line is a courtesy; a server that will not answer /v1/activity
     // has already failed the thing the caller actually asked for.

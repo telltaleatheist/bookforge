@@ -510,7 +510,8 @@ function renderEngine(): void {
 
   // The note, in order of what a person needs to know first.
   if (!connected) { setNote(s?.connectionError ?? 'Pick a Crucible in Options.', 'bad'); return; }
-  if (engine?.holder) { setNote(engine.holder, 'bad'); return; }
+  // Our own load is a wait, not a refusal — see `describeHolder`.
+  if (engine?.holder) { setNote(engine.holder.text, engine.holder.ours ? '' : 'bad'); return; }
   if (engine?.note) { setNote(engine.note, engine.busy ? '' : 'bad'); return; }
   if (s?.switchingVoice) { setNote(`Loading ${s.switchingVoice}…`, ''); return; }
   if (engine?.residentKind && engine.residentKind !== 'tts') {

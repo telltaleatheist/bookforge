@@ -247,6 +247,67 @@ export async function residentClipOf(entry: ServerEntry): Promise<ResidentClip |
 }
 
 /**
+ * THE JOBS THIS EXTENSION SUBMITTED AND HAS NOT SEEN END — so that when the
+ * bench names the holder of the engine, this extension can recognise itself.
+ *
+ * Owen, 2026-09-20, reading the popup: *"Mozilla/5.0 (Macintosh …) Chrome/154
+ * … is running a load-voice job here (0%). it looks like an error. is it
+ * necessary info or can it be removed?"* It was this extension describing ITS
+ * OWN load — a Listen pressed while the voice was still loading was refused
+ * `engine_in_use`, and the holder line duly named the holder: this browser, by
+ * the only name Crucible had for it. A browser cannot set `User-Agent`, so the
+ * SDK's `clientName` never reached the server and the job was recorded under
+ * Chrome's own string.
+ *
+ * The job id is the strongest of the three ways {@link describeHolder} knows a
+ * holder is itself; the other two are the User-Agent this browser sends and the
+ * `clientName` it asks the SDK to send.
+ */
+const ownJobs = new Set<string>();
+
+/** What this extension knows about itself, for recognising its own name. */
+export interface SelfIdentity {
+  /** `navigator.userAgent` — what Crucible records when nothing better arrives. */
+  readonly userAgent: string;
+  /** The name the SDK is asked to send (`CLIENT_NAME`). */
+  readonly clientName: string;
+}
+
+/** A holder line for the popup: the sentence, and whether it is about ourselves. */
+export interface HolderNote {
+  readonly text: string;
+  /**
+   * TRUE when the engine is held by THIS extension. The popup then draws the
+   * line as information rather than as a refusal: waiting for your own load to
+   * finish is expected, not an error.
+   */
+  readonly ours: boolean;
+}
+
+/** Is this the name Crucible would have recorded for us? */
+function isOurs(client: string | null, jobId: string | null, self: SelfIdentity): boolean {
+  if (jobId !== null && ownJobs.has(jobId)) return true;
+  if (client === null) return false;
+  if (client === self.userAgent) return true;
+  // The SDK's spelling is `<clientName> crucible-client/<version>`; a server that
+  // reads `X-Crucible-Client` records the bare name.
+  return client === self.clientName || client.startsWith(`${self.clientName} `);
+}
+
+/**
+ * A holder's name as a person would say it.
+ *
+ * A User-Agent string is not a name — it is what a browser sends when nobody
+ * gave it one — so it is read for what it IS ("another browser") rather than
+ * printed. Everything else is a name somebody chose and is used as given.
+ */
+function holderName(client: string | null): string {
+  if (client === null || client === '') return 'a client that did not name itself';
+  if (/^Mozilla\//.test(client)) return 'another browser';
+  return client;
+}
+
+/**
  * Who is using the voice engine on that server, as one sentence — for the
  * popup, after an `engine_in_use` or a `stream_session_open`.
  *
@@ -254,20 +315,43 @@ export async function residentClipOf(entry: ServerEntry): Promise<ResidentClip |
  * module: a session belongs to whoever opened it, and taking one over is an
  * explicit act through the engine (plan §1), not something a Load button does
  * because the first attempt was refused.
+ *
+ * WHEN THE HOLDER IS OURSELVES the sentence says so, in the first person and
+ * about the wait rather than the refusal — see {@link ownJobs} for the evening
+ * this was a Chrome User-Agent string printed in red.
  */
-export function describeHolder(activity: Activity): string | null {
+export function describeHolder(activity: Activity, self: SelfIdentity): HolderNote | null {
   if (activity.streaming !== null) {
-    const who = activity.streaming.client ?? 'a client that did not name itself';
-    return `${who} is reading aloud on this server (${activity.streaming.voice}, `
-      + `${activity.streaming.finished} of ${activity.streaming.said} rows done).`;
+    const stream = activity.streaming;
+    if (isOurs(stream.client, null, self)) {
+      return {
+        ours: true,
+        text: `This browser is already reading aloud here (${stream.voice}, `
+          + `${stream.finished} of ${stream.said} rows done).`,
+      };
+    }
+    return {
+      ours: false,
+      text: `${holderName(stream.client)} is reading aloud on this server (${stream.voice}, `
+        + `${stream.finished} of ${stream.said} rows done).`,
+    };
   }
   if (activity.claim !== null) {
-    return `${activity.claim.heldBy} holds the voice engine on this server.`;
+    return { ours: false, text: `${activity.claim.heldBy} holds the voice engine on this server.` };
   }
   const running = activity.running[0];
   if (running !== undefined) {
-    const who = running.client ?? 'a client that did not name itself';
-    return `${who} is running a ${running.type} job here (${Math.round(running.progress * 100)}%).`;
+    const pct = Math.round(running.progress * 100);
+    if (isOurs(running.client, running.jobId, self)) {
+      const what = running.type === 'load-voice'
+        ? `Still loading the voice here (${pct}%) — Listen starts when it is resident.`
+        : `This browser is running a ${running.type} job here (${pct}%).`;
+      return { ours: true, text: what };
+    }
+    return {
+      ours: false,
+      text: `${holderName(running.client)} is running a ${running.type} job here (${pct}%).`,
+    };
   }
   return null;
 }
@@ -298,23 +382,29 @@ export async function loadVoice(
   const jobId = reference === null
     ? await client.loadVoice(voice)
     : await client.loadVoice(voice, { reference });
-  for await (const event of client.events(jobId)) {
-    if (event.event === 'warming') onProgress?.(event.data.message);
-    else if (event.event === 'queued') onProgress?.(`queued (position ${event.data.position})`);
-    else if (event.event === 'done') return;
-    else if (event.event === 'failed') {
-      throw new Error(`${event.data.error.code}: ${event.data.error.message}`);
-    } else if (event.event === 'cancelled') {
-      throw new Error(`the load of "${voice}" was cancelled on the server`);
+  // Ours, from the moment it exists until it ends — see `ownJobs`.
+  ownJobs.add(jobId);
+  try {
+    for await (const event of client.events(jobId)) {
+      if (event.event === 'warming') onProgress?.(event.data.message);
+      else if (event.event === 'queued') onProgress?.(`queued (position ${event.data.position})`);
+      else if (event.event === 'done') return;
+      else if (event.event === 'failed') {
+        throw new Error(`${event.data.error.code}: ${event.data.error.message}`);
+      } else if (event.event === 'cancelled') {
+        throw new Error(`the load of "${voice}" was cancelled on the server`);
+      }
     }
+    // `events()` ends only on a terminal event or a dead connection, and the SDK
+    // throws for the latter — so falling out of the loop means the contract
+    // changed under us, and that is said rather than treated as success.
+    throw new Error(
+      `the load of "${voice}" ended with no done, failed or cancelled event. The server's job `
+      + 'event stream did something API v1 does not describe.',
+    );
+  } finally {
+    ownJobs.delete(jobId);
   }
-  // `events()` ends only on a terminal event or a dead connection, and the SDK
-  // throws for the latter — so falling out of the loop means the contract
-  // changed under us, and that is said rather than treated as success.
-  throw new Error(
-    `the load of "${voice}" ended with no done, failed or cancelled event. The server's job `
-    + 'event stream did something API v1 does not describe.',
-  );
 }
 
 /**

@@ -14,6 +14,7 @@
 
 import { DEFAULT_RECORDINGS_DIR, RECORDER } from '../../shared/audio/tab-recording';
 import type { VoiceLengths } from './voice-band';
+import type { HolderNote } from './crucible';
 
 export type MessageTarget = 'background' | 'offscreen' | 'content' | 'popup';
 
@@ -196,8 +197,12 @@ export interface EngineStatus {
   busy: 'loading' | 'unloading' | null;
   /** The job's latest `warming` line, or a refusal, for the popup. */
   note: string | null;
-  /** Who else holds the engine there, from `/v1/activity`, after a refusal. */
-  holder: string | null;
+  /**
+   * Who holds the engine there, from `/v1/activity`, after a refusal — and
+   * whether that is this extension itself, which the popup draws as a wait
+   * rather than as an error (`describeHolder`).
+   */
+  holder: HolderNote | null;
   /** Minutes of no reading before this extension posts an unload (0 = never). */
   idleMinutes: number;
   /**
