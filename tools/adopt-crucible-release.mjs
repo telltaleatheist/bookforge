@@ -165,14 +165,51 @@ function repin(manifest, from, to) {
   for (const [key, value] of Object.entries(manifest.parsed)) {
     if (!/crucible/i.test(key) || typeof value !== 'string') continue;
     if (!value.includes(from)) continue;
-    const before = JSON.stringify(value);
-    const after = JSON.stringify(value.split(from).join(to));
-    if (!text.includes(before)) die(`could not find the prose for ${key} to update`);
-    text = text.replace(before, after);
+    // THE VALUE IS EDITED WHERE IT SITS, not matched as a whole string.
+    //
+    // `JSON.stringify(value)` re-serialises what the PARSER produced, and that
+    // is not what is in the file: a prose key written with an escaped em dash
+    // (`—`) comes back as the literal character, so the exact-text match
+    // could never hit and every repin after such an edit died with "could not
+    // find the prose". It happened on the 1.0.15 -> 1.0.16 repin and would have
+    // happened on every one after it.
+    //
+    // So the key's own value span is located in the raw text and the version is
+    // replaced inside it. That leaves every escape exactly as the author wrote
+    // it — this file is hand-edited prose and reformatting it would be a diff
+    // nobody asked for.
+    const span = valueSpan(text, key);
+    if (span === null) die(`could not find the prose for ${key} to update`);
+    const raw = text.slice(span.start, span.end);
+    if (!raw.includes(from)) die(`the prose for ${key} does not name ${from}`);
+    text = text.slice(0, span.start) + raw.split(from).join(to) + text.slice(span.end);
     changed.push(key);
   }
   fs.writeFileSync(manifest.file, text);
   return changed;
+}
+
+/**
+ * Where `"<key>": "<value>"`'s VALUE sits in the raw text, or null.
+ *
+ * Returns the offsets between the quotes, so a caller edits the bytes the
+ * author wrote rather than a re-serialisation of what the parser made of them.
+ * Escapes are walked rather than guessed at: a `\"` inside the prose is not the
+ * end of it, and these strings contain quoted phrases.
+ */
+function valueSpan(text, key) {
+  const at = text.indexOf(`"${key}":`);
+  if (at === -1) return null;
+  const open = text.indexOf('"', at + key.length + 3);
+  if (open === -1) return null;
+  for (let i = open + 1; i < text.length; i += 1) {
+    if (text[i] === '\\') {
+      i += 1;
+      continue;
+    }
+    if (text[i] === '"') return { start: open + 1, end: i };
+  }
+  return null;
 }
 
 /** Ask the installed package its own version — the only answer that is not a filename. */
