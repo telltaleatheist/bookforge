@@ -10,10 +10,23 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\<user>\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **fe44667** — *Adopt Crucible 1.0.19: Mac page batches key on the processor grid (dep-only)* (was b1c68fd) |
+| Source sha | **7ab80b5** — *Adopt Crucible 1.0.20: narrator repinned to 52807873 (dep-only)* (was fe44667) |
 | Engine | **NOT VENDORED AND NOT KNOWABLE FROM THIS FILE** — it is a spawned CLI resolved at RUNTIME (`FOUNDRY_BIN`, else `resolveFoundryPath`, `electron/main.ts`), so which build executes is a property of the machine and not of this copy. On a developer's Mac that resolves to Foundry's own checkout at `/Volumes/Callisto/Projects/foundry/dist/foundry-darwin-arm64`, which is whatever was last built there — `foundry 2.0.2 (04758be)` — REBUILT at this re-vendor (2026-09-21) so the engine carries fdba761's clean-text log change. **Ask the binary: `$FOUNDRY_BIN --version`.** See *The engine this file named was not the engine that ran* below. |
 | Copied on | 2026-09-19 (five times: 3738c01, 3436fc5, 806d44b, f349771, ca4754c) and 2026-09-20 (98a4344, 9e0b27d, dccc144, 7b98004, cc5fc5b, 93010d8, 77e1d6d) |
 | Copied by | Mechanical source sync, verified against Foundry `77e1d6d:app/` (`diff -rq`, clean but for this file, `IPC-CHANNELS.md` and `.gitignore` — see below); details below |
+
+## The `fe44667 → 7ab80b5` re-vendor — the 1.0.20 SDK adoption (2026-09-21)
+
+Dependency-only for THIS copy: `git diff --stat fe44667..7ab80b5 -- app/` is package.json,
+package-lock.json and the two vendor tarballs. The two Foundry commits between them —
+`ec47f45` (an explicit page deadline on the VLM endpoint, so a batch wait is not a death)
+and `714a233` (scanned pages snap to one canonical size, so a book batches as one grid) —
+live in Foundry's `src/`, the CLI engine this copy does not vendor and resolves at runtime
+(`FOUNDRY_BIN`); the engine on a machine carries them when its binary is rebuilt. 1.0.20
+itself repins narrator in both Crucible tts recipes to bookforge 52807873 (ed3724df's
+worker named `engine` where it holds `self.orph`; every non-streaming Higgs batch died).
+Verified with `diff -rq --strip-trailing-cr` (clean but for the excluded files). Gates:
+`node tools/test-foundry-adopt.js` 40/40; root `tsc -p tsconfig.electron.json --noEmit` exit 0.
 
 ## The `b1c68fd → fe44667` re-vendor — the 1.0.19 SDK adoption (2026-09-21)
 
