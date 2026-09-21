@@ -124,13 +124,22 @@
  * flag, and each list supplies its own wrapper — because every list here is a
  * drop list and `cdkDrag` has to be a real child of the list that owns the drag.
  *
- * The card is two columns: the BOOK on the left (grip, cover, title, one-line
- * summary) and the DECISION on the right (which machine, then what to do about
- * it). Owen, 2026-09-19: *"we have like 6 red cancel buttons listed, and
- * they're all the way on the other side of the screen from the name of the
- * job/book."* The actions now sit a hand's width from the title, there is one
- * primary per card, and the destructive pair lives in a `⋯` menu whose entries
- * say what each one KEEPS. Red survives only inside that menu.
+ * THE CARD IS ONE ROW, and the steps are behind a chevron. Owen, 2026-09-20:
+ * *"the whole card can be a rectangle that collapses down to see the tasks
+ * under it if the user wants to. otherwise its a single small unit, so it
+ * doesnt clutter everything"*, and on the Completed blocks: *"like the
+ * completed cards. this is a good size and structure. it expands downward to
+ * show more info. compact."* So it IS that block — grip, cover, title, one
+ * muted line saying what the book is and where it has got to, then the
+ * Ready/Pending pill and the ✕ at the right edge — and the row shape is
+ * declared once for both (`.fin-block, .book-block`) so they cannot drift.
+ * A book that is RUNNING opens by default, because its ladder is the live
+ * progress; it folds the same way as any other.
+ *
+ * Owen, 2026-09-19, on what the row replaced: *"we have like 6 red cancel
+ * buttons listed, and they're all the way on the other side of the screen from
+ * the name of the job/book."* The per-step controls are inside the fold now,
+ * on the row they act on and only under the hand.
  *
  * ── Detail expands in place ─────────────────────────────────────────────────
  *
@@ -151,7 +160,7 @@ import type { CdkDragDrop } from '@angular/cdk/drag-drop';
 import { CdkScrollable } from '@angular/cdk/scrolling';
 
 import { prepFraction, prepLabel } from '@shared/queue/bench';
-import type { BookPlan, FinishedRun } from '@shared/queue/bench';
+import type { BookPlan, FinishedRun, PlannedStep, StillReason } from '@shared/queue/bench';
 import type { JobType, ServerReach, StepStatus } from '@shared/queue/engine-types';
 import { LOCAL_WORK_SET, LONGFORM_ALIGN_SET } from '@shared/queue/slot-sets';
 import { DialogService } from '../../creamsicle-desktop/services/dialog.service';
@@ -719,6 +728,12 @@ interface ChainRung {
                             (click)="toggleFinishedBlock(block)"
                             [title]="'What ' + block.title + ' ran today'"
                           >
+                            <!-- ONE AFFORDANCE FOR "there is more under this".
+                                 These blocks already expanded downward; they
+                                 said so with nothing but a hover. Now they
+                                 carry the same chevron the waiting cards grew,
+                                 turning the same way. -->
+                            <span class="chev" aria-hidden="true">▸</span>
                             @if (block.cover) {
                               <img class="cover" [src]="block.cover" alt="" />
                             } @else {
@@ -1121,6 +1136,25 @@ interface ChainRung {
                 <div class="pct">{{ busy.percent | number:'1.0-0' }}%</div>
               }
             </div>
+            <!-- THE RUNNING CARD'S FOLD. Owen asked for the book cards to
+                 collapse to a single unit; this one is the exception that
+                 opens — its ladder is the live progress, which is the one case
+                 where the detail is what the reader came for. It still closes,
+                 through the same signal and the same chevron, because a lane
+                 whose book has six steps is six rows tall whether or not
+                 anyone is reading them. Drawn only when there is a ladder to
+                 fold: a single-step run has none. -->
+            @if (!compact && chainFor(busy.jobId).length > 1) {
+              <button
+                type="button"
+                class="lane-chev"
+                [class.open]="occupantOpen(busy.jobId)"
+                [attr.aria-expanded]="occupantOpen(busy.jobId)"
+                [attr.aria-label]="'The steps ' + busy.title + ' runs'"
+                (click)="toggleOccupantChain(busy.jobId)"
+                title="The steps this book runs. Click to open or close."
+              ><span class="chev" aria-hidden="true">▸</span></button>
+            }
             <!-- STOP, TOP RIGHT, POSITIONED LIKE AN X (Owen, 2026-09-20: *"put
                  Stop in the top right, positioned like its an X. and keep it
                  short"*). It is the narrow act and the tooltip says so: the
@@ -1179,7 +1213,7 @@ interface ChainRung {
                plan drops terminal steps by construction ('plansOf' skips
                them) and the rung a reader most wants is the one that is
                already DONE: it is the part a stop would keep. -->
-          @if (!compact) {
+          @if (!compact && occupantOpen(busy.jobId)) {
             @if (chainFor(busy.jobId); as chain) {
               @if (chain.length > 1) {
                 <div class="ladder">
@@ -1257,37 +1291,48 @@ interface ChainRung {
            passed so a Stop can say which card it frees, not so the body can
            decide anything differently. -->
       <ng-template #bookCard let-plan let-staged="staged" let-lane="lane">
-        <!-- ── X, TOP RIGHT ──────────────────────────────────────────────
-             Owen, 2026-09-20: *"get rid of the 'staged' text in the top right
-             and replace it with an X. if the user hits X, it removes it from
-             the queue completely."*
+        <!-- ── ONE SMALL RECTANGLE, AND THE STEPS UNDER IT ──────────────────
+             Owen, 2026-09-20: *"the whole card can be a rectangle that
+             collapses down to see the tasks under it if the user wants to.
+             otherwise its a single small unit, so it doesnt clutter
+             everything"* — and, shown the Completed blocks: *"like the
+             completed cards. this is a good size and structure. it expands
+             downward to show more info. compact."*
 
-             The word it replaced said the same thing the card's COLUMN now
-             says — a book under "Pending" has not been sent — so it was a
-             label repeating its own heading in the one corner a person looks
-             for a way out. Positioned like the running card's Stop-X and
-             neutral rather than red: red on this page is a failure that has
-             already happened, and this removes a book that has not run.
+             So this IS the Completed block, not a second drawing of one: the
+             same row shape, the same cover, the same title with one muted line
+             under it, the same pill holding the right edge, the same downward
+             expansion. A book waiting, a book running and a book that finished
+             are the same object at three moments, and the page had grown three
+             shapes for it. The shared rules are written once, on
+             '.fin-block, .book-block', so the two cannot drift apart.
 
-             ONE ACT, whichever state the card is in: 'removeFromQueue' takes
-             every run of the book out. Nothing already rendered is deleted,
-             which is what its tooltip says. Absent on a locked card — a book
-             holding a machine is stopped first, and Stop is its control. -->
-        @if (!isLocked(plan)) {
+             WHAT THE COLLAPSED ROW ANSWERS, in the order it is asked: which
+             book (cover, title), what it will do and where that has got to
+             (one muted line — the chain for a book not sent yet, the running
+             step and its ETA for a live one, and the machine it is bound to),
+             and what can be done about it (the Ready/Pending pill, and the ✕
+             beside it). Everything else — the ladder, each step's reason, each
+             step's own controls — is behind the chevron, because a column of
+             ten books is the normal case and detail on all ten at once is the
+             clutter this card exists to remove.
+
+             THE LADDER IS OPEN BY DEFAULT ON A BOOK THAT IS RUNNING, and only
+             there: its steps are the live progress, which is the one case
+             where the detail is what the reader came for. It still collapses —
+             see 'planOpen', where the signal holds the books whose fold is
+             FLIPPED from that default rather than the ones that are open, so a
+             press means the same thing on either kind of card. -->
+        <div class="book-block" [class.open]="planOpen(plan)">
           <button
             type="button"
-            class="kill-x"
-            (click)="removeFromQueue(plan)"
-            [attr.aria-label]="'Remove ' + plan.title + ' from the queue'"
-            title="Take this book out of the queue altogether. Nothing already rendered is deleted."
-          >✕</button>
-        }
-        <!-- TWO COLUMNS: the book on the left, the decision on the right.
-             The old card was one flex row with the actions pushed right by an
-             auto margin, so the name was flush left and its buttons flush right
-             across the whole page — the complaint this card exists to fix. -->
-        <div class="book-head">
-          <div class="who">
+            class="book-open"
+            [attr.aria-expanded]="planOpen(plan)"
+            [attr.aria-label]="'The steps ' + plan.title + ' runs'"
+            (click)="togglePlanChain(plan)"
+            title="The steps this book runs. Click to open or close."
+          >
+            <span class="chev" aria-hidden="true">▸</span>
             @if (plan.cover) {
               <img class="cover" [src]="plan.cover" alt="" />
             } @else {
@@ -1296,8 +1341,8 @@ interface ChainRung {
             <div class="min">
               <div class="title-row">
                 <h3>{{ plan.title }}</h3>
-                <!-- CPU, on a book that travels nowhere. It is in the Pending
-                     column with everything else waiting for a free machine, and
+                <!-- CPU, on a book that travels nowhere. It is in the sidebar
+                     with everything else waiting for a free machine, and
                      without this tag it would look like a book that simply has
                      not been given a server — which is the one thing it can
                      never be given. A pass or an assembly runs on this
@@ -1309,134 +1354,101 @@ interface ChainRung {
                   >CPU</span>
                 }
               </div>
-              @if (staged) {
-                <!-- THE CHAIN AS ONE LINE, and the rows folded away behind it.
-                     A staged book's steps all say "Pending — not sent to the
-                     queue yet", four times over, which is the band's own
-                     heading repeated per row. The arrow line says the same
-                     thing in the space of a sentence and still answers the
-                     question the chain was there for: what will this run? -->
-                <button
-                  type="button"
-                  class="sub chainline"
-                  [attr.aria-expanded]="expandedPlans().has(plan.key)"
-                  (click)="togglePlanChain(plan)"
-                  title="The chain this book will run. Click to see it step by step."
-                >{{ pendingSummary(plan) }}</button>
-              } @else {
-                <div class="sub">{{ planSummary(plan) }}</div>
-              }
+              <!-- THE ONE META LINE. 'bookLine' is the only place it is
+                   composed, so "4 steps · TTS 41m left · on <machine>" and the
+                   finished block's "4 steps · finished 7:52 PM" stay the same
+                   sentence in two tenses. The venue rode here from the "Runs
+                   on" chip that used to have a row of its own in a decision
+                   column: it is a standing fact about where the book sits,
+                   which is exactly what this line is for. -->
+              <div class="sub">{{ bookLine(plan, staged) }}</div>
             </div>
-          </div>
+          </button>
 
           <!--
-            THE DECISION COLUMN, and it is now ONE decision: ready, or not.
+            THE RIGHT EDGE, WHERE THE FINISHED BLOCK PUTS ITS STATUS.
 
-            ── The "Run on" picker is gone (Owen, 2026-09-20) ────────────────
+            ── READY / PENDING — ONE PILL, TWO STATES (Owen, 2026-09-20) ─────
 
-            *"remove the 'run on' dropdown. if theyre in the active queue and
-            not the pending queue then they're set automatically to 'any slot'
-            by nature of where they sit. if the user wants to pick a specific
-            slot, they dont do it by dropdown. they drag/drop it to that slot's
-            active queue."*
+            *"the send to queue button should be a toggle that says something
+            like 'ready' or 'pending' maybe. … if they click the ready button,
+            it jumps to the top of the queue list and waits for an open gpu."*
+            And the other way: *"the user can grab a queue item and drag it
+            from a gpu slot back to the pending list and it flips from ready to
+            pending again."*
 
-            WHERE THE CARD SITS IS THE ANSWER. Under "Up next · any slot" it
-            waits for the first free machine; under a lane's "Pinned here" it
-            waits for that one. A dropdown on the card was the page asking a
-            question its own layout had already answered, in a second grammar,
-            and the two could disagree on screen. The writes it used to make
-            have not gone anywhere — 'setPlanServer' is what every drop calls.
+            It replaced three primaries that were three words for two states —
+            "▶ Send to queue" on a staged card, "▶ Start this book" on a held
+            one, "Move to top" on a ready one — plus a "Send back to Pending"
+            buried in a menu. It was a two-button segmented control until this
+            card collapsed: two buttons and their labels are ~130px, and in a
+            320px sidebar that is most of the room the title needs. One pill
+            says which state the book is IN and flips on press, which is what
+            the segment said, in the shape the block beside it already uses for
+            a status.
 
-            An ADMITTED book still shows a read-only CHIP. That is not a choice
-            being offered; it is the engine's record that the work WENT
-            somewhere (crucible docs/PHASE7-LANES.md §4.3), and a book finishes
-            on the machine it started on.
+            READY MEANS THE TOP OF THE LIST, not merely membership: the engine
+            claims work by walking 'jobs[]' from the front, so "I pressed
+            Ready" and "this one next" are the same sentence. It goes through
+            the same 'applyPlanOrder' a drag does.
+
+            Drawn only where it can be honoured. A book that holds a card is
+            locked and its control is Stop; the lock's sentence is the pill's
+            tooltip, which is where a hand that failed to drag it looks.
           -->
-          <div class="decide">
-            @if (plan.travels && plan.waitForResolved.length > 0) {
-              <div class="venue-row">
-                <span class="venue-word">Runs on</span>
-                <span class="runs-on" title="A book finishes on the machine it started on.">
-                  <span class="dot" aria-hidden="true"></span>{{ plan.waitForResolved.join(' + ') }}
-                </span>
-              </div>
+          <div class="book-right">
+            @if (runningSteps(plan) > 0) {
+              <button
+                type="button"
+                class="btn stop xs"
+                (click)="stopBookAsked(plan, lane)"
+                title="Stop what this book is running and free its slots. It keeps everything it has rendered; Start picks it up from there. The rest of the queue carries on."
+              >■ Stop</button>
+            } @else if (isLocked(plan)) {
+              <span class="pill" [title]="lockedReason(plan)">on a card</span>
+            } @else {
+              <button
+                type="button"
+                class="pill state"
+                [class.on]="isReady(plan, staged)"
+                [attr.aria-pressed]="isReady(plan, staged)"
+                (click)="setReady(plan, staged, !isReady(plan, staged))"
+                [title]="readyHint(plan, staged)"
+              >{{ isReady(plan, staged) ? 'Ready' : 'Pending' }}</button>
+              <!-- ── THE ✕ ──────────────────────────────────────────────
+                   Owen, 2026-09-20: *"get rid of the 'staged' text in the top
+                   right and replace it with an X. if the user hits X, it
+                   removes it from the queue completely."*
+
+                   Beside the pill rather than absolutely placed in the card's
+                   corner, because the card no longer has a corner to spare —
+                   it is one row high. Neutral rather than red: red on this
+                   page is a failure that has already happened, and this
+                   removes a book that has not run. ONE ACT whichever state the
+                   card is in: 'removeFromQueue' takes every run of the book
+                   out, and nothing already rendered is deleted. -->
+              <button
+                type="button"
+                class="kill-x"
+                (click)="removeFromQueue(plan)"
+                [attr.aria-label]="'Remove ' + plan.title + ' from the queue'"
+                title="Take this book out of the queue altogether. Nothing already rendered is deleted."
+              >✕</button>
             }
-
-            <!--
-              READY / PENDING — ONE TOGGLE, TWO STATES (Owen, 2026-09-20).
-
-              *"the send to queue button should be a toggle that says something
-              like 'ready' or 'pending' maybe. … if they click the ready
-              button, it jumps to the top of the queue list and waits for an
-              open gpu."* And the other way: *"the user can grab a queue item
-              and drag it from a gpu slot back to the pending list and it flips
-              from ready to pending again."*
-
-              It replaces three primaries that were three different words for
-              two states — "▶ Send to queue" on a staged card, "▶ Start this
-              book" on a held one, "Move to top" on a ready one — plus a
-              "Send back to Pending" buried in a ⋯ menu. A person moving a book
-              between those states had to know which of the four they were
-              looking at. Now there is one control and it says which state the
-              book is IN, with the other half pressable beside it.
-
-              READY MEANS THE TOP OF THE LIST, not merely membership: the
-              engine claims work by walking 'jobs[]' from the front, so "I
-              pressed Ready" and "this one next" are the same sentence. It goes
-              through the same 'applyPlanOrder' a drag does.
-
-              Drawn only where it can be honoured. A book holding a card is
-              locked (§4.3) and its control is Stop; a running one likewise.
-            -->
-            <div class="acts">
-              @if (runningSteps(plan) > 0) {
-                <button
-                  type="button"
-                  class="btn grow"
-                  (click)="stopBookAsked(plan, lane)"
-                  title="Stop what this book is running and free its slots. It keeps everything it has rendered; Start picks it up from there. The rest of the queue carries on."
-                >■ Stop this book</button>
-              } @else if (isLocked(plan)) {
-                <!-- WHY THIS BOOK CANNOT BE MOVED, said on the card rather
-                     than inside a menu a hand has to find. It holds a machine;
-                     that is a fact about the engine, not a control. -->
-                <p class="locked-why">{{ lockedReason(plan) }}</p>
-              } @else {
-                <div class="seg ready-seg" role="group" [attr.aria-label]="'Is ' + plan.title + ' ready to run?'">
-                  <button
-                    type="button"
-                    class="seg-btn"
-                    [class.on]="isReady(plan, staged)"
-                    [attr.aria-pressed]="isReady(plan, staged)"
-                    (click)="setReady(plan, staged, true)"
-                    title="Put this book at the front of Up next. It starts on the first machine that will take it — or drag it onto a lane to name one."
-                  ><span class="seg-dot" aria-hidden="true"></span>Ready</button>
-                  <button
-                    type="button"
-                    class="seg-btn paused"
-                    [class.on]="!isReady(plan, staged)"
-                    [attr.aria-pressed]="!isReady(plan, staged)"
-                    (click)="setReady(plan, staged, false)"
-                    title="Hold this book. It keeps its settings and anything it has rendered, and nothing starts it until Ready."
-                  ><span class="seg-dot" aria-hidden="true"></span>Pending</button>
-                </div>
-              }
-            </div>
           </div>
         </div>
 
-        @if (!staged || expandedPlans().has(plan.key)) {
+        @if (planOpen(plan)) {
           <div class="chain">
             @for (step of plan.steps; track step.stepId) {
               @if (staged) {
                 <!-- Names only. Nothing staged has a queue position, a slot, or
-                     a reason to be still beyond "not sent yet" — and the one it
-                     does have is on the line above, once. -->
+                     a reason to be still beyond "not sent yet" — and the line
+                     above already carries that, once. -->
                 <div class="cstep staged-step">
                   <span class="spine" aria-hidden="true"></span>
                   <span class="sdot held" aria-hidden="true"></span>
                   <span class="cname plain">{{ step.label }}</span>
-                  <span class="cright"></span>
                 </div>
               } @else {
                 <div class="cstep" [class.on]="step.status === 'running'">
@@ -1449,18 +1461,57 @@ interface ChainRung {
                     aria-hidden="true"
                   ></span>
 
-                  <button type="button" class="cname" (click)="toggleStep(step.stepId)">
-                    {{ step.label }}
-                  </button>
+                  <!--
+                    HOW LONG, BESIDE THE TASK WORD — Owen, 2026-09-20: *"if
+                    it's timed we can give a small time estimate next to (not
+                    under) the task so the user can see it."*
 
+                    It used to sit at the right edge with the percentage, a
+                    column away from the name it was about, under a
+                    "not timed on this book" printed on every step that had
+                    never run — which is most of the steps on the page. Now:
+                    nothing when there is no measurement, and one small muted
+                    phrase against the label when there is.
+
+                    The name is the flexible half of this pair, so a long label
+                    ellipsises and the duration — the part a person is here
+                    for — is never the part that gets cut. 'etaFor' is null
+                    unless the step is running: an ETA for a run that has not
+                    started would be a prediction with nothing behind it.
+                  -->
+                  <span class="cnamewrap">
+                    <button type="button" class="cname" (click)="toggleStep(step.stepId)">
+                      {{ step.label }}
+                    </button>
+                    @if (etaFor(step.stepId); as eta) {
+                      <span class="ceta">· {{ eta }}</span>
+                    }
+                  </span>
+
+                  <!--
+                    WHY IT IS STILL — but only when the answer is not already
+                    in the shape of the list. Owen, 2026-09-20: *"the 'waiting
+                    for [x] to finish' can be removed too. the user can tell
+                    that by how the line is structured."* The ladder is drawn
+                    in chain order with a spine down it, so "waiting for the
+                    step above" is a sentence the drawing has already made.
+
+                    The rest stay, because they carry what the order cannot: an
+                    admission hold ("waiting for the card"), a machine that is
+                    not answering, a queue that is paused, a step you stopped
+                    and where it stopped, a book held behind something that is
+                    not simply the rung above it. 'stepReason' is the one place
+                    that decides.
+
+                    And a step with no reason at all now says nothing. It used
+                    to print "on the bench" as filler: a running step's state
+                    is its progress, and a queued step with nothing to say says
+                    nothing.
+                  -->
                   <span class="cmid">
-                    @if (step.reason; as reason) {
+                    @if (stepReason(step); as reason) {
                       <span class="why" [class.warn]="reason.kind === 'admission'">
                         <span class="dot" aria-hidden="true"></span>{{ reason.sentence }}
-                      </span>
-                    } @else {
-                      <span class="why on-bench">
-                        <span class="dot" aria-hidden="true"></span>on the bench
                       </span>
                     }
                   </span>
@@ -1468,22 +1519,6 @@ interface ChainRung {
                   <span class="cright">
                     @if (step.percent !== null) {
                       {{ step.percent | number:'1.0-0' }}%
-                    } @else if (step.status !== 'running') {
-                      not timed on this book
-                    }
-                    <!--
-                      HOW LONG, beside HOW FAR. A percentage answers "how much
-                      is done" and nothing else, and this row is where a person
-                      looks to decide whether to wait — the lane card above
-                      carries the ETA, but it shows only the step that happens
-                      to hold a slot, and a book's chain is read here.
-
-                      Running steps only: a waiting step's ETA would be a
-                      prediction about a run that has not started and has
-                      nothing measured about it.
-                    -->
-                    @if (step.status === 'running' && etaFor(step.stepId); as eta) {
-                      <span class="ceta">{{ eta }}</span>
                     }
                     <!--
                       THE PER-STEP CONTROLS APPEAR ON HOVER OR FOCUS. A book of
@@ -1781,8 +1816,7 @@ interface ChainRung {
       padding: 11px 14px;
     }
 
-    .card-head h3,
-    .book-head h3 {
+    .card-head h3 {
       margin: 0;
       font-size: 0.9375rem;
       font-weight: 600;
@@ -1797,37 +1831,19 @@ interface ChainRung {
     /* The book card's own sub-line only. The lane cards use .sub as well, and
        those were not the ones that were hard to read — scoping this keeps the
        GPU/CPU slots exactly as they were. */
-    .card-head .sub,
-    .book-head .sub { font-size: 0.8125rem; }
+    .card-head .sub { font-size: 0.8125rem; }
 
     .acts { margin-left: auto; display: flex; gap: 6px; flex: none; align-items: center; }
 
-    /* THE TOGGLE reuses the toolbar's segmented control verbatim — '.seg' and
-       '.seg-btn', green for moving and amber for holding — because it is the
-       same KIND of fact: two states of one latch, one of them current. A
-       second drawing of that idea in another shape is how a page ends up with
-       two vocabularies for "on". */
-    .ready-seg { width: 100%; }
-    .ready-seg .seg-btn { flex: 1; justify-content: center; }
-
-    /* WHY A LOCKED CARD HAS NO TOGGLE, where its toggle would have been. */
-    .locked-why {
-      margin: 0;
-      font-size: 0.6875rem;
-      line-height: 1.45;
-      color: var(--text-muted);
-    }
-
-    /* THE X, TOP RIGHT — positioned like the running card's Stop, and neutral
-       rather than red: red on this page is a failure that has already
-       happened, and this takes out a book that has not run. Faded until the
-       card is under the hand or holds focus, so a column of ten books is not a
-       column of ten ✕. */
+    /* THE X, BESIDE THE PILL — neutral rather than red: red on this page is a
+       failure that has already happened, and this takes out a book that has
+       not run. It was absolutely placed in the card's top-right corner; the
+       card is one row high now and has no corner to spare, so it sits at the
+       end of the row with the control it qualifies. Faded until the card is
+       under the hand or holds focus, so a column of ten books is not a column
+       of ten ✕. */
     .kill-x {
-      position: absolute;
-      top: 5px;
-      right: 6px;
-      z-index: 2;
+      flex: none;
       font-family: inherit;
       font-size: 0.6875rem;
       line-height: 1;
@@ -1848,25 +1864,65 @@ interface ChainRung {
     /* A touch screen has no hover to give. */
     @media (hover: none) { .kill-x { opacity: 1; } }
 
-    /* ── The book card: two columns ────────────────────────────────────────
-       Left is fluid and holds the book; right is a fixed decision column —
-       which machine, then what to do about it. The width is fixed so every
-       card's actions land in the same place down the page, and minmax(0,1fr)
-       so a long title ellipsises instead of pushing the column off-screen. */
-    .book-head {
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) 300px;
-      gap: 14px;
-      align-items: start;
-      padding: 11px 14px 10px 30px;
+    /* ── The book card: ONE ROW, and the steps behind a chevron ────────────
+       Owen, 2026-09-20: *"the whole card can be a rectangle that collapses
+       down to see the tasks under it if the user wants to. otherwise its a
+       single small unit, so it doesnt clutter everything"*, and on the
+       Completed blocks: *"like the completed cards. this is a good size and
+       structure. it expands downward to show more info. compact."*
+
+       WHAT THIS REPLACED: a two-column grid — a fluid book on the left, a
+       300px decision column on the right holding a venue row and a segmented
+       toggle — about 110px tall per book with its chain drawn under it. Ten
+       pending books were a page of their own, and nine of those chains were
+       detail nobody had asked for.
+
+       The row shape is declared ONCE for the waiting card and the finished
+       block: same padding, same gap, same cover, same two lines, same pill at
+       the right edge. A book waiting and the same book an hour later in the
+       drawer below cannot drift apart, because there is one rule. */
+    .fin-block,
+    .book-block {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      padding: 8px 10px;
     }
 
-    .who { display: flex; align-items: center; gap: 11px; min-width: 0; }
+    /* The drag grip is placed against the card's left edge, so the book side
+       starts clear of it — the same 24px whether or not a grip is drawn, so a
+       staged card's title lines up with a live one's. */
+    .book-block { padding-left: 24px; }
+
+    /* THE WHOLE BOOK SIDE IS THE DISCLOSURE. A chevron on its own is a 10px
+       target beside a row of text that looks pressable and is not; this way
+       the press lands wherever the eye already is, and the keyboard gets one
+       button carrying aria-expanded rather than a glyph that answers nothing.
+       The controls sit OUTSIDE it: a button inside a button is invalid, and a
+       press meant for Ready would also fold the card. */
+    .book-open {
+      font-family: inherit;
+      flex: 1;
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      padding: 0;
+      border: 0;
+      background: transparent;
+      color: inherit;
+      cursor: pointer;
+      text-align: left;
+    }
+
+    .book-right { flex: none; display: flex; align-items: center; gap: 4px; }
+
+    .fin-block:hover h3,
+    .book-open:hover h3 { color: var(--accent); }
 
     /* The tag is NOT inside the h3: the title ellipsises, and a tag inside it
-       would be the first thing a long title ate. Padded on the right so a long
-       title does not run under the ✕ in the corner above it. */
-    .title-row { display: flex; align-items: center; min-width: 0; padding-right: 20px; }
+       would be the first thing a long title ate. */
+    .title-row { display: flex; align-items: center; min-width: 0; }
 
     /* CPU — a book that travels nowhere, sitting in the sidebar with the books
        that are waiting for a card. The tag is the difference. */
@@ -1884,84 +1940,36 @@ interface ChainRung {
       padding: 1px 6px;
     }
 
-    /* The staged summary is a DISCLOSURE, not a label: it says what the chain
-       is and opens the chain. Styled as the text it replaced. */
-    .chainline {
+    /* READY / PENDING, in the slot the finished block gives its status word.
+       It wears the pill's shape because it is the same KIND of fact — one
+       word for the state the book is in — and it earns a hover and a pointer
+       because, unlike DONE, it is pressable and flips. */
+    .pill.state {
       font-family: inherit;
-      display: block;
-      text-align: left;
-      padding: 0;
-      border: 0;
-      background: transparent;
-      color: var(--text-tertiary);
-      cursor: pointer;
-      max-width: 100%;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-
-    .chainline:hover { color: var(--text-secondary); }
-
-    .decide { display: grid; gap: 7px; min-width: 0; }
-
-    /* Which machine the book waits for. Quiet: it is a standing answer, not an
-       action, and it must not compete with the button under it. */
-    .venue-row { display: flex; align-items: center; gap: 8px; }
-
-    .venue-word {
-      flex: none;
-      width: 52px;
-      font-size: 0.625rem;
-      color: var(--text-muted);
-      text-transform: uppercase;
-      letter-spacing: .05em;
-    }
-
-    /* THE SAME SLOT THE PICKER OCCUPIED, once the answer is settled: a book
-       finishes on the machine it started on, so this is a fact, not a control
-       that would refuse on press. */
-    .runs-on {
-      flex: 1;
-      min-width: 0;
-      display: inline-flex;
-      align-items: center;
-      gap: 7px;
-      font-size: 0.75rem;
+      border: 1px solid transparent;
+      padding: 2px 9px;
       font-weight: 600;
-      padding: 4px 9px;
-      border-radius: 6px;
-      background: var(--accent-subtle);
-      color: var(--accent);
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
+      cursor: pointer;
     }
 
-    .runs-on .dot {
-      width: 6px;
-      height: 6px;
-      border-radius: 50%;
-      background: currentColor;
-      flex: none;
-    }
-
-    .btn.grow { flex: 1; text-align: center; }
+    .pill.state:hover { border-color: var(--border-strong); color: var(--text-primary); }
+    .pill.state.on { background: var(--accent-subtle); color: var(--accent); }
+    .pill.state.on:hover { border-color: var(--accent); color: var(--accent); }
 
     /* ── A card inside a 300px lane ────────────────────────────────────────
-       The two-column book card is a page-width object: a fluid book on the
-       left and a 300px decision column on the right. In the Pending sidebar
-       and inside a lane it has no such width, so the decision stacks under the
-       book it is about — the same thing the 760px media query does to the
-       page-width card, decided by WHERE the card is rather than by the
-       viewport, because a narrow card can sit on a wide screen. */
-    .card.narrow .book-head {
-      grid-template-columns: minmax(0, 1fr);
-      gap: 8px;
-      padding: 9px 10px 9px 26px;
+       The row shape needs no narrowing — it is one row at any width — so what
+       is left here is the chain it opens, which still has four columns to fit
+       into a 280px card. TIGHT BETWEEN CARDS: 8px, the gap the Completed
+       blocks use, so a column of ten reads as ten units rather than ten
+       paragraphs. */
+    .card.narrow { margin-bottom: 8px; }
+    /* THE DRAWER, RULED OFF FROM THE ROW ABOVE IT — the same line and the same
+       padding the Completed block's ladder uses, so opening either one looks
+       like opening the same thing. */
+    .card.narrow .chain {
+      padding: 8px 10px;
+      border-top: 1px solid var(--border-subtle);
     }
-    .card.narrow .venue-word { width: auto; }
-    .card.narrow .chain { padding: 0 10px 8px; }
     /* The chain row wraps instead of trying to hold four columns in 280px:
        name on one line, then the reason and the numbers under it. 'justify-self'
        comes off .cright because there is no flexible column left to push it
@@ -1970,14 +1978,6 @@ interface ChainRung {
     .card.narrow .cmid, .card.narrow .cright { grid-column: 2; }
     .card.narrow .cright { justify-self: start; flex-wrap: wrap; }
     .card.narrow .cstep.staged-step { grid-template-columns: 14px minmax(0, 1fr); }
-
-    /* NARROW: the decision column stops being a column. Three buttons and a
-       picker beside a title is a wrap waiting to happen; stacked, it is a
-       block under the book it is about. */
-    @media (max-width: 760px) {
-      .book-head { grid-template-columns: minmax(0, 1fr); }
-      .venue-word { width: auto; }
-    }
 
     /* ── The floor ─────────────────────────────────────────────────────────
        Owen, 2026-09-20: *"maybe pending is along the left side and goes to the
@@ -2440,7 +2440,7 @@ interface ChainRung {
        needed, which was to look like a block. */
     .card.staged { border-style: solid; }
 
-    .cstep.staged-step { grid-template-columns: 16px minmax(0, 260px) 1fr; }
+    .cstep.staged-step { grid-template-columns: 16px minmax(0, 1fr); }
 
     .cname.plain { color: var(--text-tertiary); cursor: default; }
 
@@ -2456,7 +2456,10 @@ interface ChainRung {
     .grip {
       position: absolute;
       left: 6px;
-      top: 15px;
+      /* Against the COLLAPSED row's middle, and staying there when the card
+         opens: a centred grip would ride down into the middle of an expanded
+         book's ladder, nowhere near the row it drags. */
+      top: 20px;
       z-index: 2;
       width: 18px;
       padding: 0;
@@ -2481,7 +2484,7 @@ interface ChainRung {
        band. */
     .cdk-drop-list-disabled .grip { cursor: default; }
 
-    .cdk-drag-preview .book-head { background: var(--bg-elevated); }
+    .cdk-drag-preview .book-block { background: var(--bg-elevated); }
 
     /* A card lifted out of a 300px lane keeps its narrow shape in flight: the
        preview is re-parented to the body, where the 'card.narrow' rules still
@@ -2883,8 +2886,14 @@ interface ChainRung {
       50% { opacity: 1; transform: scale(1); }
     }
 
+    /* The name and its ETA are ONE thing in column two: the name is the half
+       that shrinks and ellipsises, so the duration — the part a person is
+       here for — is never the part that gets cut. */
+    .cnamewrap { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+
     .cname {
       font-family: inherit;
+      min-width: 0;
       font-size: 0.875rem;
       text-align: left;
       color: var(--text-secondary);
@@ -2922,7 +2931,6 @@ interface ChainRung {
     }
 
     .why.warn { color: var(--warning-text); background: var(--warning-bg); }
-    .why.on-bench { color: var(--accent); background: var(--accent-subtle); }
 
     .why .dot {
       width: 5px;
@@ -2944,11 +2952,17 @@ interface ChainRung {
       justify-self: end;
     }
 
-    /* Brighter than the percentage beside it, because it is the number a person
-       is actually here for: "how much longer" is the question, and "how far" is
-       the evidence for it. */
+    /* SMALL AND MUTED, against the task word rather than out at the right edge
+       — Owen, 2026-09-20: *"if it's timed we can give a small time estimate
+       next to (not under) the task so the user can see it."* Quieter than the
+       label it follows: the label is what the row IS, and this is one fact
+       about it. */
     .ceta {
-      color: var(--text-secondary);
+      flex: none;
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
     }
 
     /* ── The per-step controls ─────────────────────────────────────────────
@@ -3063,7 +3077,33 @@ interface ChainRung {
       flex: none;
     }
 
-    .finished.open .chev { transform: rotate(90deg); }
+    /* SCOPED TO THE DRAWER'S OWN HEADER. The blocks inside it carry the same
+       chevron now, and an unscoped rule turned every one of them the moment
+       the drawer opened. */
+    .finished.open > .fin-head .chev { transform: rotate(90deg); }
+
+    /* THE SAME AFFORDANCE ON EVERY BOOK, open or shut: the pending card, the
+       card pinned to a lane, the block in Completed, and the running card's
+       ladder. One glyph, one direction, one meaning. */
+    .book-block.open .chev,
+    .fin-card.on .chev,
+    .lane-chev.open .chev { transform: rotate(90deg); }
+
+    /* The running card's fold. Its ladder IS the live progress, so it opens by
+       default — this is how it closes. Top-aligned with the Stop beside it. */
+    .lane-chev {
+      flex: none;
+      align-self: flex-start;
+      padding: 4px 5px;
+      border: 0;
+      border-radius: 5px;
+      background: transparent;
+      color: var(--text-muted);
+      cursor: pointer;
+      line-height: 1;
+    }
+
+    .lane-chev:hover { color: var(--text-primary); }
 
     .fin-word { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
@@ -3120,10 +3160,6 @@ interface ChainRung {
     .fin-block {
       font-family: inherit;
       width: 100%;
-      display: flex;
-      align-items: center;
-      gap: 9px;
-      padding: 8px 10px;
       border: 0;
       background: transparent;
       color: inherit;
@@ -3131,9 +3167,11 @@ interface ChainRung {
       text-align: left;
     }
 
-    .fin-block:hover h3 { color: var(--accent); }
-    .fin-block .min { flex: 1; }
-    .fin-block h3 {
+    .fin-block .min,
+    .book-open .min { flex: 1; }
+
+    .fin-block h3,
+    .book-open h3 {
       margin: 0;
       font-size: 0.8125rem;
       font-weight: 600;
@@ -3142,7 +3180,8 @@ interface ChainRung {
       text-overflow: ellipsis;
       white-space: nowrap;
     }
-    .fin-block .sub { font-size: 0.6875rem; }
+    .fin-block .sub,
+    .book-open .sub { font-size: 0.6875rem; }
     .fin-block .pill { flex: none; }
 
     /* ── The steps inside a block ──────────────────────────────────────────
@@ -3239,7 +3278,9 @@ interface ChainRung {
     .kill-x:focus-visible,
     .fin-toggle:focus-visible,
     .fin-block:focus-visible,
-    .chainline:focus-visible,
+    .book-open:focus-visible,
+    .lane-chev:focus-visible,
+    .pill.state:focus-visible,
     .btn:focus-visible {
       outline: 2px solid var(--accent);
       outline-offset: 2px;
@@ -4205,27 +4246,125 @@ export class QueueComponent {
   }
 
   /**
-   * "4 steps · Narrate → Enhance (RVC) → Assemble M4B" — a staged card's line.
+   * THE COLLAPSED CARD'S ONE MUTED LINE — what this book is, and where that
+   * has got to. Owen, 2026-09-20: the card is *"a single small unit"* with the
+   * tasks behind a chevron, so this line is the whole of what a book says
+   * until someone opens it.
    *
-   * The chain, not a count and a shrug. It replaced four chain rows each saying
-   * *"Pending — not sent to the queue yet"*, which is the band's own heading
-   * repeated once per step: the rows are still there, folded behind this line,
-   * for when the names matter more than the shape.
+   * Composed in ONE place, in the same grammar the finished block uses
+   * ("4 steps · finished 7:52 PM"), so a book reads the same way in all three
+   * of its tenses:
+   *
+   *   staged   4 steps · Narrate → Enhance (RVC) → Assemble M4B
+   *   running  4 steps · Narrate 41m left · on <machine>
+   *   held     4 steps · held
+   *
+   * A BOOK NOT SENT YET SHOWS ITS CHAIN, because it has no state worth a word
+   * — "held" is what the column it sits in already says — and the chain is the
+   * question the card was carrying four repeated rows to answer.
+   *
+   * A LIVE ONE SHOWS THE STEP THAT IS MOVING and how long it has left, falling
+   * back to its percentage when nothing has been measured yet and to neither
+   * when there is nothing honest to say. The venue rode here from the "Runs
+   * on" chip: it is a standing fact about where the book sits, which is what
+   * this line is for.
    */
-  pendingSummary(plan: BookPlan): string {
-    const count = `${plan.steps.length} step${plan.steps.length === 1 ? '' : 's'}`;
-    const chain = plan.steps.map((step) => step.label).join(' → ');
-    return chain ? `${count} · ${chain}` : count;
+  bookLine(plan: BookPlan, staged: boolean): string {
+    const parts = [`${plan.steps.length} step${plan.steps.length === 1 ? '' : 's'}`];
+    if (staged) {
+      const chain = plan.steps.map((step) => step.label).join(' → ');
+      if (chain) parts.push(chain);
+      return parts.join(' · ');
+    }
+    const running = plan.steps.find((step) => step.status === 'running') ?? null;
+    if (running !== null) {
+      const measured = this.etaFor(running.stepId)
+        ?? (running.percent === null ? null : `${Math.round(running.percent)}%`);
+      parts.push(measured === null ? running.label : `${running.label} ${measured}`);
+    } else if (plan.allHeld) {
+      parts.push('held');
+    } else {
+      parts.push('waiting');
+    }
+    if (plan.travels && plan.waitForResolved.length > 0) {
+      parts.push(`on ${plan.waitForResolved.join(' + ')}`);
+    }
+    return parts.join(' · ');
   }
 
-  /** Staged books whose chain the user has unfolded. Folded is the default. */
+  /** Which way the Ready/Pending pill will flip, said before it is pressed. */
+  readyHint(plan: BookPlan, staged: boolean): string {
+    return this.isReady(plan, staged)
+      ? 'Ready — it starts on the first machine that will take it. Press to hold it instead, '
+        + 'or drag it onto a lane to name one.'
+      : 'Pending — nothing starts it, and it keeps its settings and anything it has rendered. '
+        + 'Press to put it at the front of Up next.';
+  }
+
+  /**
+   * THE BOOKS WHOSE FOLD IS FLIPPED FROM THE DEFAULT — not the ones that are
+   * open.
+   *
+   * The default is not the same on every card (`planOpen`): a book that is
+   * running opens, because its ladder is the live progress; every other book
+   * is one small rectangle. A set of "open" keys would have made the chevron
+   * mean *open* on one card and *close* on the next, and a running book would
+   * have snapped shut under the reader's hand the moment its last step
+   * settled. Holding the FLIP instead, one press always means "the other way",
+   * and the card follows the book's own state when nobody has pressed it.
+   */
   readonly expandedPlans = signal<ReadonlySet<string>>(new Set());
+
+  /** Open by default while something is on a card; folded otherwise. */
+  planOpen(plan: BookPlan): boolean {
+    const flipped = this.expandedPlans().has(plan.key);
+    return this.runningSteps(plan) > 0 ? !flipped : flipped;
+  }
 
   togglePlanChain(plan: BookPlan): void {
     const next = new Set(this.expandedPlans());
     if (next.has(plan.key)) next.delete(plan.key);
     else next.add(plan.key);
     this.expandedPlans.set(next);
+  }
+
+  /**
+   * The same fold, reached from a lane's "On the card now" — which draws the
+   * SLOT rather than the book, and so knows a job id and not a plan key.
+   *
+   * Open when the job belongs to no plan the tray can see: that is the beat
+   * between a run starting and the next snapshot describing it, and folding a
+   * running book away because the page has not caught up yet would hide the
+   * one readout the lane exists for.
+   */
+  occupantOpen(jobId: string): boolean {
+    const plan = this.planForJob(jobId);
+    return plan === null ? true : this.planOpen(plan);
+  }
+
+  toggleOccupantChain(jobId: string): void {
+    const plan = this.planForJob(jobId);
+    if (plan !== null) this.togglePlanChain(plan);
+  }
+
+  /**
+   * WHY A STEP IS STILL, or null when the ladder has already said it.
+   *
+   * Owen, 2026-09-20: *"the 'waiting for [x] to finish' can be removed too. the
+   * user can tell that by how the line is structured."* The chain is drawn in
+   * order, with a spine down it, so `waiting-parent` is the drawing's own
+   * sentence written out a second time under every step but the first.
+   *
+   * EVERY OTHER KIND STAYS. They carry what the order cannot: an admission
+   * hold ("waiting for the card"), a machine that is not answering, a paused
+   * queue, a step you stopped and the percentage it stopped at, a book held
+   * behind something that is not simply the rung above it. One place decides,
+   * so a new kind in `shared/queue/bench.ts` arrives on screen rather than
+   * arriving silent.
+   */
+  stepReason(step: PlannedStep): StillReason | null {
+    if (step.reason === null) return null;
+    return step.reason.kind === 'waiting-parent' ? null : step.reason;
   }
 
   // ── What a live card's ONE primary button is ─────────────────────────────
@@ -4423,14 +4562,6 @@ export class QueueComponent {
   /** Both shared, so the shelf and this card word the prep pass identically. */
   readonly prepLabel = prepLabel;
   readonly prepFraction = prepFraction;
-
-  /** "3 steps · 1 on the bench", or "2 steps · held". */
-  planSummary(plan: BookPlan): string {
-    const count = `${plan.steps.length} step${plan.steps.length === 1 ? '' : 's'}`;
-    if (plan.allHeld) return `${count} · held, not started`;
-    const running = plan.steps.filter(s => s.status === 'running').length;
-    return running > 0 ? `${count} · ${running} on the bench` : `${count} · waiting`;
-  }
 
   /**
    * The mirror's legacy row for a step, or null.
