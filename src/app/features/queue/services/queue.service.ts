@@ -48,7 +48,7 @@ import type {
   QueueStep as EngineStep,
   StepStatus,
 } from '@shared/queue/engine-types';
-import { jobPercent, jobStatus, SOURCE_PARENT } from '@shared/queue/engine-types';
+import { jobPercent, jobStatus } from '@shared/queue/engine-types';
 import type { PassJobResult, ProcessingChainPlan, ProcessingChainRequest } from '@shared/processing/pass-types';
 import { passResultNotes } from '@shared/processing/pass-notes';
 import { buildConversionConfig, type VlmConvertJobConfig } from '../jobs/vlm-convert-job';
@@ -354,19 +354,6 @@ export class QueueService {
     return this.jobs().filter(j => j.parentJobId === masterJobId);
   }
 
-  /**
-   * Runs COMPOSED here that the engine has not been told about yet.
-   *
-   * `addJob` is called once for the master and once per child — the narration
-   * modal and the LL wizard both do this — and the engine will not take a run
-   * with no steps, because a run with no steps has no status to read. So a master
-   * `addJob` opens a composition and returns a row with a local id; the first
-   * child creates the real job; every later child appends to it. The local id is
-   * swapped for the engine's the moment there is one, so a caller holding the
-   * master's id can still address the run.
-   */
-  private readonly compositions = new Map<string, { jobId?: string; lastStepId?: string; spec: CreateJobRequest }>();
-
   constructor() {
     void this.seed();
 
@@ -460,146 +447,27 @@ export class QueueService {
   // ── Composition ───────────────────────────────────────────────────────────
 
   /**
-   * Add a job. The shape callers already speak, translated into the engine's.
+   * Add ONE job — the shape callers already speak, translated into the engine's.
    *
-   * A `type: 'audiobook'` request is a CONTAINER and always was: it ran nothing,
-   * it existed to group the rows under it. It opens a composition here and
-   * queues nothing, which is why the retired-type table now fails one that is
-   * found in an old queue file.
+   * ONE ROW, ALWAYS. A run made of several steps is composed WHOLE and queued in
+   * one call (`submitNarration`, `submitProcessingRun`); this door queues a
+   * single step and nothing else. It used to do both: a `type: 'audiobook'`
+   * request opened a local COMPOSITION and every later call appended to it, and
+   * that is the machinery removed on 2026-09-21. See `submitNarration` for what
+   * it cost.
    */
   async addJob(request: CreateJobRequest): Promise<QueueJob> {
     if (request.type === 'audiobook') {
-      const token = `pending_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
-      this.compositions.set(token, { spec: request });
-      return {
-        id: token,
-        type: 'audiobook',
-        epubPath: request.epubPath,
-        epubFilename: request.epubPath ? jobFileLabel(request.epubPath) : undefined,
-        status: 'pending',
-        addedAt: new Date(),
-        metadata: request.metadata,
-        workflowId: token,
-        bfpPath: request.bfpPath,
-        projectDir: request.projectDir,
-      };
+      throw new Error(
+        '"audiobook" is the row the queue tab DRAWS around a run\'s steps, not a job anything '
+        + 'runs. A multi-step run is queued whole — submitNarration for a narration, '
+        + 'submitProcessingRun for a pass chain.',
+      );
     }
 
     const bridge = this.requireBridge();
     const config = this.buildJobConfig(request);
-    const label = request.metadata?.title ?? request.type;
-    /*
-     * WHAT THE FIRST STEP READS. Almost every run in this app starts by reading
-     * the document it names, and that is what the absent case means — but a
-     * narration composed as "convert the sentences this project already has"
-     * starts on a session instead, and the engine refuses the chain at compose
-     * time if it is told otherwise. Only the caller knows which; the shared
-     * narration description is the caller that says so.
-     */
-    const sourceRef: ArtifactRef = request.sourceRef !== undefined
-      ? request.sourceRef
-      : { kind: 'epub', path: request.epubPath };
-
-    const parentToken = request.parentJobId;
-    const composition = parentToken ? this.compositions.get(parentToken) : undefined;
-
-    if (composition) {
-      if (!composition.jobId) {
-        const master = composition.spec;
-        /*
-         * CHAINED UNDER A STEP OF A RUN THAT ALREADY EXISTS: the master named
-         * the `foundry-export-landing` row a pending-export narrate hangs from
-         * (CreateJobRequest.chainAfter). No run of its own, no sourceRef — the
-         * landing step's artifact is the book, and the engine hands it over
-         * when that step lands. Everything after joins this same run as usual.
-         */
-        if (master.chainAfter !== undefined) {
-          const appended = await bridge.appendStep(master.chainAfter.jobId, {
-            type: request.type,
-            label,
-            config,
-            parentStepId: master.chainAfter.stepId,
-          });
-          QueueService.settle(appended, 'Queueing this run behind the export it waits for');
-          composition.jobId = master.chainAfter.jobId;
-          composition.lastStepId = appended.data!.id;
-          return this.rowFor(appended.data!.id) ?? this.stubRow(appended.data!, request);
-        }
-        const created = await bridge.enqueue({
-          title: master.metadata?.title ?? label,
-          projectId: master.bfpPath ?? master.projectDir ?? request.bfpPath ?? request.projectDir,
-          // The MASTER's, never this step's: the lineage is a fact about the run,
-          // and the steps that follow are appended to this same job.
-          ...(master.foundry === undefined ? {} : { foundry: master.foundry }),
-          documentPath: master.epubPath ?? request.epubPath,
-          documentLabel: (master.epubPath ?? request.epubPath)
-            ? jobFileLabel((master.epubPath ?? request.epubPath)!) : undefined,
-          steps: [{ type: request.type, label, config, sourceRef } as StepSpec],
-        });
-        QueueService.settle(created, 'Queueing this run');
-        composition.jobId = created.data!.id;
-        /*
-         * A SIDE BRANCH AT THE HEAD OF THE RUN DOES NOT BECOME THE PARENT OF
-         * WHAT FOLLOWS — it branches off the SOURCE, and so does the next step.
-         *
-         * Leaving `lastStepId` unset is what makes the NEXT step a SIBLING of
-         * this one (it is appended at SOURCE_PARENT with its own sourceRef,
-         * which its composer must give it) instead of its child.
-         *
-         * NOTHING SETS THIS TODAY. Its one caller was the narration run's align
-         * row — an audit beside the assembly — and Owen removed that row on
-         * 2026-09-08 ("remove the align the narration checkbox"). The rule stays
-         * here because it is the queue's own vocabulary for a leaf step, not the
-         * narration's; the branch is simply never taken until something asks for
-         * one again.
-         */
-        if (request.sideBranch !== true) composition.lastStepId = created.data!.steps[0].id;
-        return this.rowFor(created.data!.steps[0].id) ?? projectStep(created.data!, created.data!.steps[0], false);
-      }
-      const appended = await bridge.appendStep(composition.jobId, {
-        type: request.type,
-        label,
-        config,
-        parentStepId: composition.lastStepId ?? SOURCE_PARENT,
-        ...(composition.lastStepId ? {} : { sourceRef }),
-      });
-      QueueService.settle(appended, `Adding ${label} to this run`);
-      /*
-       * A SIDE BRANCH DOES NOT BECOME THE NEXT STEP'S PARENT.
-       *
-       * The composition is a straight line by default — each step waits on the
-       * one appended before it. A step that says `sideBranch` hangs off the step
-       * in front of it and the NEXT step hangs off that same step, so the two
-       * run in tandem instead of in series.
-       *
-       * NEVER, not even at the head of the run: see the branch above, where the
-       * run's first step is created.
-       *
-       * NOTHING SETS IT TODAY — the align row was its one user and it is gone
-       * (Owen, 2026-09-08). Kept as the queue's own vocabulary for a leaf.
-       */
-      if (request.sideBranch !== true) composition.lastStepId = appended.data!.id;
-      return this.rowFor(appended.data!.id) ?? this.stubRow(appended.data!, request);
-    }
-
-    // A row of its own. `parentJobId` naming a run the engine already knows is
-    // an append onto that run's last step — that is what chaining onto work
-    // which has not run yet MEANS, and it is a first-class act now.
-    if (parentToken) {
-      const parentJob = this._snapshot().jobs.find(j => j.id === parentToken);
-      if (parentJob) {
-        const last = parentJob.steps[parentJob.steps.length - 1];
-        const appended = await bridge.appendStep(parentJob.id, {
-          type: request.type,
-          label,
-          config,
-          parentStepId: last ? last.id : SOURCE_PARENT,
-          ...(last ? {} : { sourceRef }),
-        });
-        QueueService.settle(appended, `Adding ${label} to this run`);
-        return this.rowFor(appended.data!.id) ?? this.stubRow(appended.data!, request);
-      }
-    }
+    const label = QueueService.stepLabel(request);
 
     const created = await bridge.enqueue({
       title: label,
@@ -607,31 +475,127 @@ export class QueueService {
       ...(request.foundry === undefined ? {} : { foundry: request.foundry }),
       documentPath: request.epubPath,
       documentLabel: request.epubPath ? jobFileLabel(request.epubPath) : undefined,
-      steps: [{ type: request.type, label, config, sourceRef } as StepSpec],
+      steps: [{
+        type: request.type, label, config, sourceRef: QueueService.sourceRefOf(request),
+      } as StepSpec],
     });
     QueueService.settle(created, 'Queueing this job');
     return this.rowFor(created.data!.steps[0].id)
       ?? projectStep(created.data!, created.data!.steps[0], false);
   }
 
+  /** A step's row label: what the caller titled it, else the act's own name. */
+  private static stepLabel(request: CreateJobRequest): string {
+    return request.metadata?.title ?? request.type;
+  }
+
+  /**
+   * WHAT THE FIRST STEP OF A RUN READS.
+   *
+   * Almost every run in this app starts by reading the document it names, and
+   * that is what the absent case means — but a narration composed as "convert
+   * the sentences this project already has" starts on a session instead, and the
+   * engine refuses the chain at compose time if it is told otherwise. Only the
+   * caller knows which; the shared narration description is the caller that says
+   * so. Consulted for the head of a run and nowhere else: every step after it
+   * reads the step before it.
+   */
+  private static sourceRefOf(request: CreateJobRequest): ArtifactRef {
+    return request.sourceRef !== undefined
+      ? request.sourceRef
+      : { kind: 'epub', path: request.epubPath };
+  }
+
+  /**
+   * A NARRATION RUN, QUEUED WHOLE — one book, one `enqueue`, one decision.
+   *
+   * ── The defect this exists to end (measured 2026-09-21) ─────────────────────
+   *
+   * The dialog used to compose the run a step at a time: a `type: 'audiobook'`
+   * master opened a local composition, the FIRST child created the engine job and
+   * every later child was appended to it. The engine asks whether a book stages
+   * into Pending only when the run is BORN (`jobIsStageable`,
+   * electron/queue-engine.ts), so the answer was decided by whichever step
+   * happened to be first — and since the prepare row split (2026-09-19) that step
+   * is `prepare`: CPU, non-travelling, not a staged act. The run was therefore
+   * born un-staged, and with the queue already moving its prepare row was
+   * `queued` rather than `held`. job_mubw3zxx ("Mutineer's Moon") was created at
+   * 23:42:22Z with `pending` never set, `waitFor` defaulted to
+   * `crucible@owens-pc-wsl`, and prepare started at 23:43:00Z on a server nobody
+   * had chosen. Prepare packs the generation chunks to THE CHOSEN SERVER's voice
+   * band, so starting it before the server is picked is not merely early — it is
+   * packed for a card nobody agreed to.
+   *
+   * ── Why WHOLE, rather than one more guard ──────────────────────────────────
+   *
+   * `enqueue` pumps, so the first step could be CLAIMED before the second was
+   * even appended. No order of appends closes that window; the only composition
+   * with no window is one call. (The engine gained the rule's second owner too —
+   * `appendStep` re-asks the staging question — but that is a net under this, not
+   * the fix.)
+   *
+   * `chainAfter` is the one case that still appends: the run lands UNDER an
+   * existing step of an existing run (a narration ordered from a pending export),
+   * and a chained request is not staged a second time — it joins the decision its
+   * host run already made. One book, one decision.
+   */
+  async submitNarration(master: CreateJobRequest, children: CreateJobRequest[]): Promise<void> {
+    if (children.length === 0) {
+      throw new Error('A narration run with no steps would do nothing, so nothing was queued.');
+    }
+    const bridge = this.requireBridge();
+
+    if (master.chainAfter !== undefined) {
+      /*
+       * No `sourceRef` on the first one: the landing step's artifact IS the book,
+       * and the engine hands it over when that step lands. Everything after it
+       * waits on the step appended before it, exactly as the whole-run arm below.
+       */
+      const head = master.chainAfter.stepId;
+      let parentStepId = head;
+      for (const job of children) {
+        const label = QueueService.stepLabel(job);
+        const appended = await bridge.appendStep(master.chainAfter.jobId, {
+          type: job.type,
+          label,
+          config: this.buildJobConfig(job),
+          parentStepId,
+        });
+        QueueService.settle(appended, parentStepId === head
+          ? 'Queueing this run behind the export it waits for'
+          : `Adding ${label} to this run`);
+        parentStepId = appended.data!.id;
+      }
+      return;
+    }
+
+    const first = children[0];
+    // The MASTER's, never a step's: what the run is ABOUT is a fact about the
+    // run, and every step here belongs to that one job.
+    const documentPath = master.epubPath ?? first.epubPath;
+    const created = await bridge.enqueue({
+      title: master.metadata?.title ?? QueueService.stepLabel(first),
+      projectId: master.bfpPath ?? master.projectDir ?? first.bfpPath ?? first.projectDir,
+      ...(master.foundry === undefined ? {} : { foundry: master.foundry }),
+      documentPath,
+      documentLabel: documentPath ? jobFileLabel(documentPath) : undefined,
+      // A straight line: every step reads the one queued before it, and only the
+      // head reads a file the user picked.
+      steps: children.map((job, index) => ({
+        type: job.type,
+        label: QueueService.stepLabel(job),
+        config: this.buildJobConfig(job),
+        ...(index === 0
+          ? { sourceRef: QueueService.sourceRefOf(job) }
+          : { parentIndex: index - 1 }),
+      }) as StepSpec),
+    });
+    QueueService.settle(created, 'Queueing this run');
+  }
+
   /** The mirrored row for a step id, once `queue:changed` has landed. */
   private rowFor(stepId: string): QueueJob | undefined {
     return this.jobs().find(j => j.id === stepId);
-  }
-
-  /** The row as the engine just described it, for the beat before the push lands. */
-  private stubRow(step: EngineStep, request: CreateJobRequest): QueueJob {
-    return {
-      id: step.id,
-      type: step.type,
-      epubPath: request.epubPath,
-      status: 'pending',
-      addedAt: new Date(step.addedAt),
-      metadata: request.metadata,
-      config: step.config as unknown as JobConfig,
-      bfpPath: request.bfpPath,
-      projectDir: request.projectDir,
-    };
   }
 
   /**

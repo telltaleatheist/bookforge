@@ -2176,21 +2176,31 @@ export class NarrationModalComponent {
         return;
       }
 
-      const workflowId = `tts-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`;
-      const master = await this.queue.addJob({
+      /*
+       * ── THE WHOLE RUN, IN ONE CALL ──────────────────────────────────────
+       *
+       * Not a master row and then a child per step. That composition decided
+       * whether the book staged into Pending by WHICH STEP HAPPENED TO BE FIRST,
+       * and since the prepare row split (2026-09-19) the first one is `prepare` —
+       * CPU, non-travelling — so the run was born un-staged and, on a queue that
+       * was already moving, prepare started on a server nobody had chosen
+       * (job_mubw3zxx, "Mutineer's Moon", 2026-09-21). `submitNarration` carries
+       * the measurement and the mechanism.
+       *
+       * The master is still composed here because it is still the run's own
+       * facts — the book, the project, the title, and the export landing this run
+       * chains under when Narrate was pressed on a pending export.
+       */
+      await this.queue.submitNarration({
         type: 'audiobook',
         epubPath: book.epubPath,
         variantId: book.variantId,
         ...(book.isArticle ? { projectDir: book.projectDir } : { bfpPath: book.projectDir }),
         metadata: { title: book.title, author: book.author },
         config: { type: 'audiobook' },
-        workflowId,
         // Under the landing step of a pending export, when that is what was pressed.
         ...(book.landing === undefined ? {} : { chainAfter: book.landing }),
-      });
-      for (const job of jobs) {
-        await this.queue.addJob({ ...job, workflowId, parentJobId: master.id });
-      }
+      }, jobs);
       this.queued.emit({ jobs: jobs.length });
     } catch (err) {
       this.error.set(err instanceof Error ? err.message : String(err));

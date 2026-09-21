@@ -278,6 +278,45 @@ page read. **Reads stage in Pending, and their server picker is live.**
 A **chained** request is not staged a second time — it is appended onto the run that
 owns the row it follows, so one book is one decision.
 
+### And the run must be composed WHOLE, or the question is asked of the wrong step
+
+**2026-09-21.** Owen pressed *Add to queue* in the narration modal while the queue
+was moving and the book went straight to a card: job_mubw3zxx (*Mutineer's Moon*)
+created 23:42:22Z, `pending` never set, `waitFor` defaulted to
+`crucible@owens-pc-wsl`, prepare started 23:43:00Z on a server nobody had chosen.
+
+Nothing in the scheduler was wrong. The modal composed the run a step at a time —
+a `type: 'audiobook'` master opened a renderer-side composition, the FIRST child
+created the engine job and every later child was appended — and `jobIsStageable`
+is asked only when a run is BORN. Since **A narration is THREE rows** (2026-09-19)
+the first child is `prepare`: CPU, `travels: false`, not a member of
+`STAGED_JOB_TYPES`. So the run was born un-staged, and on a moving queue its
+prepare row was `queued` rather than `held`. Before the prepare split the first
+child was `tts-conversion` and the same composition staged correctly, which is why
+nothing said anything for two days. Prepare packs to the CHOSEN server's voice
+band, so this is not merely early — the chunks are packed for a card nobody agreed
+to.
+
+Two things now:
+
+- **A narration is enqueued in ONE call** (`QueueService.submitNarration`). The
+  step-at-a-time composition — the `compositions` map, the `pending_` master token,
+  the `parentJobId` child path, and `sideBranch` with it — is gone. `enqueue` also
+  pumps, so with an append-per-step there is no ordering that stops the head from
+  being CLAIMED before the second step exists; the only composition with no window
+  is one call. The `chainAfter` arm still appends, because that run lands under
+  another run's step and joins its decision.
+- **`appendStep` re-asks the staging question**, so the rule has a second owner and
+  the next composer to arrive a step at a time cannot un-stage a book in silence:
+  if the run was not stageable before the append and is after it, and NO step of it
+  has left `held`/`queued`/`waiting`, it stages exactly as `enqueue` would (one
+  function, `stageRun`). If a step has already STARTED it is not staged — a running
+  step is not one the engine may hold — and that is logged by name, because it is
+  the race the whole-run enqueue exists to avoid.
+
+Keepers: `tools/test-queue-engine.js`, *a narration enqueued WHOLE…* and the two
+beside it.
+
 ## Chaining — as far as it can go, and no further
 
 Owen, **2026-09-19**: try to make chaining available all the way from OCR to narrate,

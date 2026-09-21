@@ -470,6 +470,16 @@ export interface JobSpec {
 export interface AppendStepSpec extends Omit<StepSpec, 'parentIndex'> {
   /** An existing step's id, or SOURCE_PARENT. */
   parentStepId: string;
+  /**
+   * THE SAME STATEMENT {@link JobSpec.release} MAKES, asked at this door.
+   *
+   * It is here because the staging rule is here too: an append can be the moment
+   * a run first acquires a step that asks for a card (`appendStep`'s staging
+   * block), and a caller that has already made the scheduling decision must be
+   * able to say so at BOTH doors rather than only at the one that happened to be
+   * written first. Nothing passes it today, exactly as nothing passes `JobSpec`'s.
+   */
+  release?: boolean;
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -1315,10 +1325,7 @@ export function enqueue(spec: JobSpec, opts?: EnqueueOptions): QueueJob {
    * two differ, and this settles it: the steps are forced held, because a staged
    * book that started itself would be Pending in name only.
    */
-  if (jobIsStageable(job) && spec.release !== true) {
-    job.pending = true;
-    for (const step of job.steps) step.status = 'held';
-  }
+  if (jobIsStageable(job) && spec.release !== true) stageRun(job);
 
   jobs.push(job);
   changed();
@@ -1362,6 +1369,9 @@ export function appendStep(jobId: string, spec: AppendStepSpec, opts?: EnqueueOp
   // pressed Start for this run, and holding the new step would leave it sitting
   // behind a queue that is already moving.
   const jobIsHeld = jobStatus(job) === 'held';
+  // Asked BEFORE the push, because the whole question below is whether this
+  // append is what made the answer change.
+  const wasStageable = jobIsStageable(job);
   const step = buildStep(spec, parentStepId, jobIsHeld);
   checkLineage(step, parent);
   if (parent && parent.status === 'done') step.status = jobIsHeld ? 'held' : 'queued';
@@ -1373,6 +1383,52 @@ export function appendStep(jobId: string, spec: AppendStepSpec, opts?: EnqueueOp
     const wanted = crucibleHost.defaultWaitFor();
     if (wanted !== null) job.waitFor = wanted;
   }
+
+  /*
+   * ── AND THE STAGING QUESTION, WHICH THIS APPEND CAN HAVE CHANGED THE ANSWER TO
+   *
+   * `enqueue` used to be the only place the question was ever asked, and that
+   * was true only while a run's FIRST step was the one that decided it. On
+   * 2026-09-19 the narration run grew a `prepare` row in front of the render —
+   * CPU, `travels: false`, not a {@link STAGED_JOB_TYPES} member — and a
+   * composer that created the run from that first step and appended the rest was
+   * therefore composing a run that was not stageable at birth and was never
+   * asked again. Measured on 2026-09-21: job_mubw3zxx ("Mutineer's Moon")
+   * created 23:42:22Z, `pending` never set, `waitFor` defaulted to
+   * `crucible@owens-pc-wsl`, prepare started 23:43:00Z on a server nobody chose.
+   *
+   * The renderer's door now enqueues a narration WHOLE, which is the real fix.
+   * This is the rule's second owner, so the next composer that arrives a step at
+   * a time cannot un-stage a book in silence: the same question, the same
+   * staging, asked at the only other door that can add a travelling step.
+   *
+   * ── WHY IT IS ASKED SO NARROWLY ────────────────────────────────────────────
+   *
+   * `!wasStageable` — a run that was ALREADY stageable has already answered it,
+   * and a chained request joins its run's decision rather than asking twice about
+   * one book (docs/PENDING-QUEUE-AND-GPU-DIAL.md, §What "adding a book" means).
+   *
+   * Nothing may have STARTED. Staging holds every step, and a step that is
+   * running cannot be held — reaching into one would be rewriting the status of
+   * work already on a card. If something has started, this book already went
+   * somewhere, which is precisely the race the whole-run enqueue exists to
+   * avoid; it is logged by name rather than papered over, because a book that
+   * reached a card without a Send press is a defect in whoever composed it.
+   */
+  if (!wasStageable && spec.release !== true && !isPending(job) && jobIsStageable(job)) {
+    const live = job.steps.find((s) => s.status !== 'held' && s.status !== 'queued'
+      && s.status !== 'waiting');
+    if (live) {
+      console.warn(
+        `[QUEUE-ENGINE] ${job.title} acquired its first travelling step (${step.label}) after `
+        + `${live.label} was already ${live.status}, so it cannot be staged — a running step is `
+        + 'not one this engine may hold. This run went to a machine without a Send to queue '
+        + 'press; whatever composed it must enqueue the whole run at once.');
+    } else {
+      stageRun(job);
+    }
+  }
+
   if (job.finishedAt) job.finishedAt = undefined;
   changed();
   // Deferred on the same reasoning as `enqueue`'s: the Foundry host queue
@@ -3169,6 +3225,22 @@ function jobTravels(job: QueueJob): boolean {
  */
 function jobIsStageable(job: QueueJob): boolean {
   return job.steps.some((step) => STAGED_JOB_TYPES.has(step.type) && step.travels === true);
+}
+
+/**
+ * PUT A RUN IN PENDING — the whole of what staging IS, in one function.
+ *
+ * Both halves or neither. The flag alone would leave a book drawn in Pending
+ * whose steps `pump` is free to claim; the held steps alone would leave a run
+ * nothing can release, because `sendToQueue` is the only door that releases them
+ * and it refuses a run that is not `pending`. Two doors compose runs — `enqueue`
+ * and `appendStep` — and a rule performed in two places is a rule that gets half
+ * of it right in one of them, which is exactly how a narration run came to be
+ * born un-staged (see the block in `appendStep`).
+ */
+function stageRun(job: QueueJob): void {
+  job.pending = true;
+  for (const step of job.steps) step.status = 'held';
 }
 
 function stepTravels(type: JobType, config: Record<string, unknown>): boolean {

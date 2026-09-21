@@ -1047,33 +1047,29 @@ export interface CreateJobRequest {
    * reads that run's last step and this is ignored.
    */
   sourceRef?: ArtifactRef;
-  /**
-   * THIS STEP HANGS OFF THE ONE BEFORE IT AND NOTHING HANGS OFF IT.
+  /*
+   * ── NO `sideBranch`, NO `parentJobId`, NO `workflowId` (2026-09-21) ────────
    *
-   * A composition appends its steps one at a time and each waits on the last, so
-   * a run is a straight line unless a step says otherwise.
+   * All three belonged to the renderer-side COMPOSITION that is gone: a master
+   * request opened a local run and each later request named it as its parent,
+   * with `sideBranch` saying "and nothing hangs off this one". A multi-step run
+   * is now composed whole and handed to the engine in one call
+   * (`QueueService.submitNarration`, `submitProcessingRun`), where lineage is the
+   * order of the steps and a leaf would be `parentIndex` pointing twice at the
+   * same step. Nothing set `sideBranch` for the last two weeks of its life and
+   * nothing would have honoured it after the composition went — a field read by
+   * no one is a promise the next composer would discover was never kept.
    *
-   * NO COMPOSER SAYS OTHERWISE TODAY. The one that did was the narration run's
-   * align row — an audit of the render that nothing downstream consumed, so the
-   * assembly behind it must not wait twenty CPU minutes for it — and Owen
-   * removed that row on 2026-09-08 ("remove the align the narration checkbox").
-   * The field stays because "this step is a leaf" is the queue's own idea, not
-   * the narration's, and `QueueService.addJob` is where it is honoured.
-   *
-   * Only meaningful on a step that HAS a parent in the composition; a side
-   * branch queued first becomes the run's head like any other first step.
+   * `QueueJob.parentJobId` / `.workflowId` are a different thing and still real:
+   * they are how the queue TAB draws a run's steps under a master row, written by
+   * `projectJobs` from the engine's own shape.
    */
-  sideBranch?: boolean;
-  // Job grouping for multi-step workflows
-  parentJobId?: string;
-  workflowId?: string;
   /**
    * Foundry ordered this run — which project, and which ledger step.
    *
-   * Set only on the `type: 'audiobook'` MASTER of a composition (or on a
-   * standalone request), because it is a fact about the run: the engine records
-   * it on the JOB, and every step appended afterwards belongs to that same job.
-   * See {@link FoundryJobLineage}.
+   * Set on the MASTER a run is described by (or on a standalone request),
+   * because it is a fact about the RUN: the engine records it on the JOB, and
+   * every step of that run belongs to it. See {@link FoundryJobLineage}.
    */
   foundry?: FoundryJobLineage;
   /**
