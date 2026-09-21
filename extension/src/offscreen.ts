@@ -43,7 +43,8 @@
  * blob is rebuilt only at sentence boundaries, so swaps are inaudible.
  */
 
-import type { CrucibleClient, TtsStreamSession, VoiceInfo } from '@crucible/client';
+import { CrucibleRefused } from '@crucible/client';
+import type { Activity, CrucibleClient, TtsStreamSession, VoiceInfo } from '@crucible/client';
 import {
   BYTES_PER_SECOND,
   CLOSE_AUTH,
@@ -816,6 +817,22 @@ let residentClip: ResidentClip | null = null;
 let residentClipNote: string | null = null;
 /** A load-voice job for this voice is in flight. */
 let switchingVoice: string | null = null;
+/**
+ * THE LOAD IN FLIGHT, as a promise a reader can wait on.
+ *
+ * Owen, 2026-09-20: *"it says its loaded in memory but the extension isnt
+ * playing it."* Crucible (1.0.11+) clears the card the moment nothing holds it,
+ * so a voice leaves the card every time a reading session closes. The next
+ * play then fired two things at once — the reader's prewarm `engine load`, and
+ * `ensureStream`'s open — and the open lost: `409 engine_in_use` while the load
+ * job held the claim, a refusal the session path treated as final. The user
+ * saw the voice arrive on the card and nothing read.
+ *
+ * `ensureStream` now waits for this before it opens, and starts it itself when
+ * nothing is on the card and a voice is picked — the same act the prewarm
+ * performs, in the order that works.
+ */
+let loading: Promise<void> | null = null;
 /** Bumped per voice switch, so an earlier one that is still loading can tell it
  *  has been superseded and bow out instead of restarting playback late. */
 let voiceSwitchToken = 0;
@@ -1020,10 +1037,31 @@ async function ensureStream(): Promise<LiveStream | null> {
     const bound = client;
     const named = server;
     if (bound === null || named === null) return null;
-    const voice = voiceForSpeak();
+    /*
+     * THE VOICE FIRST, THEN THE SESSION — in that order, and never racing.
+     *
+     * Crucible clears the card the moment nothing holds it, so the ordinary
+     * state at the start of a read is "nothing resident": the previous session
+     * closed and took the voice with it. A load may already be in flight (the
+     * reader prewarms on show); if so this waits for it. If nothing is on the
+     * card and a voice is picked, this performs the load itself — the same act
+     * the prewarm performs, so no new permission is being taken here — and a
+     * card holding something ELSE (a model, another kind) is left exactly as
+     * the popup's warning says: this extension does not take it from whatever
+     * put it there.
+     */
+    if (loading !== null) {
+      await loading.catch(() => { /* the load said why, in engineNote */ });
+    }
+    let voice = voiceForSpeak();
+    if (voice === null && residentKind === null && chosenVoice !== null) {
+      await loadPickedVoice(chosenVoice, { open: false });
+      voice = voiceForSpeak();
+    }
     if (voice === null) {
-      connectionError = `Nothing is loaded on Crucible "${named.name}". Open this extension's `
-        + 'popup and press "Load voice" — a reading session never loads one itself.';
+      connectionError = engineNote
+        ?? `Nothing is loaded on Crucible "${named.name}". Open this extension's `
+          + 'popup and press "Load voice" — a reading session never loads one itself.';
       return null;
     }
     let band: ListenChunkBand;
@@ -1035,7 +1073,7 @@ async function ensureStream(): Promise<LiveStream | null> {
     }
     let session: TtsStreamSession;
     try {
-      session = await bound.stream({ voice, language: LISTEN_LANGUAGE });
+      session = await openWaitingOutOurselves(bound, voice);
     } catch (err) {
       connectionError = describeRefusal(err, named.name);
       await noteHolder();
@@ -1063,12 +1101,64 @@ async function ensureStream(): Promise<LiveStream | null> {
     void rows.run().then((reason) => {
       if (live === opened) live = null;
       console.log(`[BFR] session ${session.sessionId} ended: ${reason}`);
+      /*
+       * A LOOP THAT ENDED WITHOUT THE SERVER CLOSING THE SESSION LEAVES AN
+       * ORPHAN: the server keeps it for its grace window, the next open here is
+       * refused `stream_session_open` for a session nobody is reading, and only
+       * then does the server close it and clear the card (2026-09-20, seen as
+       * `409` → "closed" → "unloaded" in the server log, once per play). Closing
+       * it here is what the reader owes; a close the server has already done is
+       * refused and that refusal is not news.
+       */
+      void session.close().catch(() => { /* already gone */ });
       broadcast();
     });
     return opened;
   })();
   try { return await opening; } finally { opening = null; }
 }
+
+/**
+ * OPEN THE SESSION, WAITING OUT OURSELVES.
+ *
+ * Two refusals at the open are about THIS extension and are a wait, not an
+ * answer: `stream_session_open` for a session this browser opened and whose
+ * reader died (the server keeps it for a 15 s grace window), and
+ * `engine_in_use` while our own load job is still settling its claim. Both
+ * clear on their own within seconds, so the open is asked again once the
+ * server's activity no longer names us as the holder — bounded, and said on
+ * the bar as "Connecting…" the whole time. A holder that is NOT us is a real
+ * refusal and comes straight back.
+ */
+async function openWaitingOutOurselves(
+  bound: CrucibleClient,
+  voice: string,
+): Promise<TtsStreamSession> {
+  try {
+    return await bound.stream({ voice, language: LISTEN_LANGUAGE });
+  } catch (err) {
+    if (!(err instanceof CrucibleRefused)) throw err;
+    if (err.code !== 'stream_session_open' && err.code !== 'engine_in_use') throw err;
+    const self = { userAgent: navigator.userAgent, clientName: CLIENT_NAME };
+    const deadline = Date.now() + OUR_ORPHAN_WAIT_MS;
+    while (Date.now() < deadline) {
+      let activity: Activity;
+      try {
+        activity = await bound.activity();
+      } catch {
+        throw err;   // cannot tell whose it is; the original refusal stands
+      }
+      const holder = describeHolder(activity, self);
+      if (holder !== null && !holder.ours) throw err;   // somebody else's — a real refusal
+      if (holder === null) break;                       // cleared — ask again
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+    return await bound.stream({ voice, language: LISTEN_LANGUAGE });
+  }
+}
+
+/** How long this reader waits for its own orphaned session or settling load to clear. */
+const OUR_ORPHAN_WAIT_MS = 20_000;
 
 /** Close the session (and free the voice's claim) without unloading the voice. */
 async function closeStream(reason: string): Promise<void> {
@@ -2420,7 +2510,13 @@ async function handleEngine(op: 'load' | 'unload', requested?: string): Promise<
   else await unloadResidentVoice();
 }
 
-async function loadPickedVoice(voice: string | null): Promise<void> {
+/**
+ * Load the picked voice, and — unless `open` is false — open the reading
+ * session on it once it is resident. `open: false` is `ensureStream`'s: it IS
+ * the session opener, and a load that opened the session back would be a
+ * promise awaiting itself.
+ */
+async function loadPickedVoice(voice: string | null, opts: { open?: boolean } = {}): Promise<void> {
   if (!(await refreshServer())) { broadcast(); return; }
   const bound = client;
   const named = server;
@@ -2475,7 +2571,7 @@ async function loadPickedVoice(voice: string | null): Promise<void> {
       && (chosenClip === null || residentClipIsTheChosenOne(chosenClip))) {
     // Already on the card — and for a cloned voice, cloned from the SAME clip.
     // Opening the session is the rest of what Load means.
-    await ensureStream();
+    if (opts.open !== false) await ensureStream();
     broadcast();
     return;
   }
@@ -2488,18 +2584,31 @@ async function loadPickedVoice(voice: string | null): Promise<void> {
   engineHolder = null;
   switchingVoice = voice;
   broadcast();
+  // Held in `loading` for the whole of the job AND the server re-read after it,
+  // so a reader that waits on it wakes to `serverVoice` already saying the
+  // voice is there — see `loading`.
+  const inFlight = (async (): Promise<void> => {
+    try {
+      await loadVoiceJob(bound, voice, reference, (line) => { engineNote = line; broadcast(); });
+      engineNote = null;
+    } catch (err) {
+      engineNote = describeRefusal(err, named.name);
+      await noteHolder();
+      throw err;
+    } finally {
+      engineBusy = null;
+      switchingVoice = null;
+      await refreshServer();
+      broadcast();
+    }
+  })();
+  loading = inFlight;
   try {
-    await loadVoiceJob(bound, voice, reference, (line) => { engineNote = line; broadcast(); });
-    engineNote = null;
-  } catch (err) {
-    engineNote = describeRefusal(err, named.name);
-    await noteHolder();
-    return;
+    await inFlight;
+  } catch {
+    return;   // said in engineNote by the catch above
   } finally {
-    engineBusy = null;
-    switchingVoice = null;
-    await refreshServer();
-    broadcast();
+    if (loading === inFlight) loading = null;
   }
   noteReadActivity();
 }
