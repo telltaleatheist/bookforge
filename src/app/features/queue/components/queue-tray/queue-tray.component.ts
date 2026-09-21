@@ -9,8 +9,13 @@
  *                 the shelf's centre of gravity: allocating one GPU slot and two
  *                 CPU slots is the entire job of the scheduler, and until this
  *                 redesign no surface drew them.
- *   Up next     — everything waiting, each row saying WHY it is waiting in a
- *                 sentence. Five distinct reasons that used to render alike.
+ *   Up next     — ONE SMALL CARD PER BOOK, cover · title · meta · pill, which
+ *                 opens downward into that book's chain. Owen, 2026-09-20:
+ *                 *"they should be small cards, not big long expanded lists of
+ *                 work"* — the band had been one tall row per STEP, so two
+ *                 books filled the panel with nine rows, each repeating the
+ *                 book's title and each carrying its own ✕.
+ *   Pending     — the same card for books that have been staged but not sent.
  *   Finished    — one line. History, drawn as history.
  *
  * A band with nothing in it is not drawn, so the panel is short when the queue
@@ -20,7 +25,10 @@
  *
  * The old shelf could start a held run and pause the engine, and every other
  * intent ended at "Open queue details →" — which re-listed what you were already
- * looking at. Stop, retry, start and remove all live here now. Nothing here
+ * looking at. Stop, retry, start and remove all live here now — and since the
+ * 2026-09-20 redesign the last two are said about a BOOK rather than a step,
+ * because five presses to take one book out is five chances to leave a chain
+ * that can no longer finish. Nothing here
  * DECIDES anything: every control is a sentence sent through QueueTrayService to
  * main, which owns the queue.
  *
@@ -30,17 +38,29 @@
  * twice.
  */
 
-import { DecimalPipe } from '@angular/common';
-import { ChangeDetectionStrategy, Component, ElementRef, inject, output } from '@angular/core';
+import { DecimalPipe, NgTemplateOutlet } from '@angular/common';
+import { ChangeDetectionStrategy, Component, ElementRef, inject, output, signal } from '@angular/core';
 import { Router } from '@angular/router';
 
-import { prepFraction } from '@shared/queue/bench';
-import { QueueTrayService } from '../../services/queue-tray.service';
+import { prepFraction, type PlannedStep } from '@shared/queue/bench';
+import { QueueTrayService, type BookPlanView } from '../../services/queue-tray.service';
+
+/**
+ * Where a BOOK stands, in one word and one tone.
+ *
+ * One word, because the card has room for one and because the states a user
+ * acts on differently are few: it is moving, it is the next one to move, it is
+ * waiting its turn, or something is holding it.
+ */
+interface CardState {
+  word: string;
+  tone: 'run' | 'next' | 'wait' | 'pause' | 'held' | 'staged';
+}
 
 @Component({
   selector: 'app-queue-tray',
   standalone: true,
-  imports: [DecimalPipe],
+  imports: [DecimalPipe, NgTemplateOutlet],
   changeDetection: ChangeDetectionStrategy.OnPush,
   host: {
     'role': 'dialog',
@@ -161,7 +181,12 @@ import { QueueTrayService } from '../../services/queue-tray.service';
                   @if (busy.percent !== null) {
                     <div class="pct">{{ busy.percent | number:'1.0-0' }}%</div>
                   }
-                  <div class="eta">{{ lane.eta ?? 'not timed yet' }}</div>
+                  <!-- Nothing, rather than "not timed yet". An unmeasured step
+                       has no time to report, and a line saying so is a line of
+                       the panel spent on an absence. -->
+                  @if (lane.eta; as left) {
+                    <div class="eta">{{ left }}</div>
+                  }
                   <!-- The shelf's per-slot Stop, matching the queue page's. At
                        452px the label is the verb alone and the sentence lives
                        in the tooltip — but it is a LABELLED button, not a bare
@@ -228,42 +253,58 @@ import { QueueTrayService } from '../../services/queue-tray.service';
         </div>
       }
 
-      <!-- ── Up next ───────────────────────────────────────────────────── -->
-      @if (tray.waiting().length > 0) {
+      <!-- ── Up next ───────────────────────────────────────────────────────
+           ONE CARD PER BOOK, not one row per step.
+
+           Owen, 2026-09-20: *"lets do the same for the dropdown/toast style
+           queue in the top right corner of bookforge. they should be small
+           cards, not big long expanded lists of work"* — "the same" being the
+           queue page's Completed blocks, which he had approved minutes before:
+           *"this is a good size and structure. it expands downward to show more
+           info. compact."*
+
+           What that replaced: two books drawn as NINE tall rows, every one of
+           them repeating the book's name, carrying a grey box saying "Waiting
+           for <the previous step> to finish", and its own red ✕ Cancel. A book
+           is one object — cover, title, what it has left, one word for where it
+           stands, one ✕ that takes the whole book out. Its chain is one click
+           down, which is where somebody who wants it will look. -->
+      @if (tray.plans().length > 0) {
         <div class="sec">
-          <span>Up next · {{ tray.waiting().length }}</span>
+          <!-- BOOKS, not steps. The heading that read "Up next · 11" was
+               counting the steps of two books — the number the old shape was
+               made of, and the one nothing below it named. -->
+          <span>Up next · {{ tray.plans().length }}</span>
           <span class="rule"></span>
         </div>
-        @for (row of tray.waiting(); track row.stepId) {
-          <div class="qrow">
-            @if (row.cover) {
-              <img class="cover xs" [src]="row.cover" alt="" />
-            } @else {
-              <span class="cover xs blank" aria-hidden="true"></span>
-            }
-            <div class="min">
-              <div class="qact">{{ row.label }} <em>· {{ row.title }}</em></div>
-              <span class="why" [class.warn]="row.reason.kind === 'admission'">
-                <span class="dot" aria-hidden="true"></span>{{ row.reason.sentence }}
-              </span>
-            </div>
-            <div class="qright">
-              @if (row.startable) {
-                <button type="button" class="tiny go" (click)="start(row.stepId)">
-                  ▶ {{ row.reason.kind === 'stopped' ? 'Resume' : 'Start' }}
-                </button>
-              }
-              <!-- "Cancel", not "Remove". Removing sounds like deleting the
-                   book; what this does is take the step out of the queue and
-                   leave every file it produced alone. -->
-              <button type="button" class="tiny stop" (click)="remove(row.stepId)"
-                      title="Take this step out of the queue. Nothing already rendered is deleted.">✕ Cancel</button>
-            </div>
-          </div>
+        @for (plan of tray.plans(); track plan.key) {
+          <ng-container
+            [ngTemplateOutlet]="bookCard"
+            [ngTemplateOutletContext]="{ $implicit: plan, staged: false, first: $first }"
+          />
         }
       }
 
-      @if (tray.lanes().length > 0 && busyLanes() === 0 && tray.waiting().length === 0) {
+      <!-- Staged books get the SAME card under their own heading. They are not
+           "up next" — nothing has been sent — and the pill says so on each one.
+           Send to queue is deliberately not here: it commits a book to a
+           machine (docs/PENDING-QUEUE-AND-GPU-DIAL.md), and the choice it
+           commits lives on the page. -->
+      @if (tray.pending().length > 0) {
+        <div class="sec">
+          <span>Pending · {{ tray.pending().length }}</span>
+          <span class="rule"></span>
+        </div>
+        @for (plan of tray.pending(); track plan.key) {
+          <ng-container
+            [ngTemplateOutlet]="bookCard"
+            [ngTemplateOutletContext]="{ $implicit: plan, staged: true, first: false }"
+          />
+        }
+      }
+
+      @if (tray.lanes().length > 0 && busyLanes() === 0
+           && tray.plans().length === 0 && tray.pending().length === 0) {
         <div class="empty">
           Nothing is queued. Narrate a book from its versions page, or order a read in the
           Foundry window.
@@ -291,6 +332,89 @@ import { QueueTrayService } from '../../services/queue-tray.service';
         <span class="ambient">live in every window</span>
       </div>
     </div>
+
+    <!-- ── The book card ───────────────────────────────────────────────────
+         Drawn ONCE for both bands. A staged book and a queued one are the same
+         object on two sides of one press, and two drawings of it is how the
+         two bands drift into two vocabularies for the same thing.
+
+         Collapsed it is cover · title · meta · pill · ✕, about 64px tall. Open
+         it grows DOWNWARD in place into the chain, which is the Completed
+         block's behaviour and therefore already learned. -->
+    <ng-template #bookCard let-plan let-staged="staged" let-first="first">
+      @let state = cardState(plan, staged, first);
+      <article class="bcard" [class.on]="openKey() === plan.key">
+        <div class="bcard-row">
+          <button
+            type="button"
+            class="face"
+            [attr.aria-expanded]="openKey() === plan.key"
+            (click)="toggleCard(plan.key)"
+            [title]="'What ' + plan.title + ' still has to run'"
+          >
+            <span class="chev" aria-hidden="true">▸</span>
+            @if (plan.cover) {
+              <img class="cover bk" [src]="plan.cover" alt="" />
+            } @else {
+              <span class="cover bk blank" aria-hidden="true"></span>
+            }
+            <span class="min grow">
+              <span class="bk-title">{{ plan.title }}</span>
+              <span class="bk-meta">{{ cardMeta(plan, state) }}</span>
+            </span>
+            <span [class]="'pill ' + state.tone">{{ state.word }}</span>
+          </button>
+
+          <!-- ONE ▶ PER BOOK, and only when the whole book is held: the
+               shelf's principle is that it is not a dead end, and without this
+               "start this one book" would be reachable only by starting the
+               whole queue from the header. -->
+          @if (state.tone === 'held' && !staged) {
+            <button
+              type="button"
+              class="mini go"
+              (click)="startBook(plan)"
+              [title]="'Start ' + plan.title + ' — it claims a slot as soon as one is free.'"
+              [attr.aria-label]="'Start ' + plan.title"
+            >▶</button>
+          }
+
+          <!-- ONE ✕ PER BOOK, after the pill. Nine ✕ for two books was the
+               screenshot's loudest line; a book leaves the queue as a book. -->
+          <button
+            type="button"
+            class="mini kill"
+            (click)="cancelBook(plan)"
+            [title]="'Take ' + plan.title + ' out of the queue. Nothing it has already rendered is deleted.'"
+            [attr.aria-label]="'Take ' + plan.title + ' out of the queue'"
+          >✕</button>
+        </div>
+
+        @if (openKey() === plan.key) {
+          <!-- The chain, as the queue page draws it: a dot, a name, and only a
+               number when one has been measured. -->
+          <div class="ladder">
+            @for (step of plan.steps; track step.stepId) {
+              <div class="rung" [class.now]="step.status === 'running'">
+                <span class="rdot" aria-hidden="true"></span>
+                <span class="rname">{{ step.label }}</span>
+                @if (step.status === 'running' && step.percent !== null) {
+                  <span class="rval">{{ step.percent | number:'1.0-0' }}%</span>
+                }
+                @if (tray.etaForStep(step.stepId); as left) {
+                  <span class="rval soft">{{ left }}</span>
+                }
+              </div>
+              @if (stepNote(step); as note) {
+                <span class="why" [class.warn]="step.reason?.kind === 'admission'">
+                  <span class="dot" aria-hidden="true"></span>{{ note }}
+                </span>
+              }
+            }
+          </div>
+        }
+      </article>
+    </ng-template>
   `,
   styles: [`
     :host {
@@ -605,29 +729,168 @@ import { QueueTrayService } from '../../services/queue-tray.service';
       flex: none;
     }
 
-    /* ── Up next ───────────────────────────────────────────────────────── */
+    /* ── Up next: one card per book ─────────────────────────────────────
+       The Completed block from the queue page, at the shelf's scale: a raised
+       rounded rectangle, a 44px cover, one line of title, one muted meta line,
+       one pill — about 64px of panel per book, where a book used to take five
+       rows of ninety. */
 
-    .qrow {
-      display: grid;
-      grid-template-columns: 20px 1fr auto;
-      align-items: center;
-      gap: 9px;
-      padding: 7px 14px;
+    .bcard {
+      position: relative;
+      margin: 0 14px 7px;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
     }
 
-    .qrow + .qrow { border-top: 1px solid var(--border-subtle); }
+    .bcard.on { border-color: var(--border-default); }
 
-    .qact {
-      font-size: 12px;
+    .bcard-row { display: flex; align-items: center; }
+
+    .face {
+      font-family: inherit;
+      flex: 1;
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      padding: 8px 4px 8px 9px;
+      border: 0;
+      background: transparent;
+      color: inherit;
+      cursor: pointer;
+      text-align: left;
+    }
+
+    .face:hover .bk-title { color: var(--accent); }
+
+    /* A CHEVRON THAT TURNS, so the card says which way it will go before it is
+       pressed — the same affordance the page's Completed drawer uses. */
+    .chev {
+      font-size: 9px;
+      line-height: 1;
+      color: var(--text-muted);
+      transition: transform 0.2s ease;
+      flex: none;
+    }
+
+    .bcard.on .chev { transform: rotate(90deg); }
+
+    .cover.bk { width: 30px; height: 44px; border-radius: 3px; }
+
+    .bk-title {
+      display: block;
+      font-size: 12.5px;
+      font-weight: 600;
       color: var(--text-primary);
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
     }
 
-    .qact em { font-style: normal; color: var(--text-tertiary); }
+    .bk-meta {
+      display: block;
+      margin-top: 2px;
+      font-size: 10.5px;
+      color: var(--text-tertiary);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
 
-    .qright { display: flex; align-items: center; gap: 6px; }
+    /* ONE WORD FOR WHERE THE BOOK STANDS, in the tray's own tones: accent for
+       moving, success for the one that goes next, amber for anything a person
+       or a pause is holding, muted for the rest. */
+    .pill {
+      flex: none;
+      font-size: 9px;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      padding: 2px 8px;
+      border-radius: 9px;
+      background: var(--bg-input);
+      color: var(--text-tertiary);
+    }
+
+    .pill.run { background: var(--accent-subtle); color: var(--accent); }
+    .pill.next { color: var(--success); }
+    .pill.pause,
+    .pill.held { background: var(--warning-bg); color: var(--warning-text); }
+    .pill.staged { color: var(--text-muted); }
+
+    /* The two book-level controls, small and quiet: neither is the card's
+       point, and a column of ten books must not read as a column of twenty
+       glyphs. They take their colour on hover, where the hand already is. */
+    .mini {
+      flex: none;
+      font-family: inherit;
+      font-size: 11px;
+      line-height: 1;
+      padding: 5px 6px;
+      margin-right: 3px;
+      border: 0;
+      border-radius: 5px;
+      background: transparent;
+      color: var(--text-muted);
+      cursor: pointer;
+    }
+
+    .mini.go:hover { color: var(--accent); background: var(--accent-subtle); }
+    .mini.kill:hover { color: var(--color-danger); background: var(--warning-bg); }
+
+    /* ── The chain, once the card is open ─────────────────────────────── */
+
+    .ladder {
+      display: grid;
+      gap: 5px;
+      padding: 7px 11px 9px;
+      border-top: 1px solid var(--border-subtle);
+    }
+
+    .rung {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      font-size: 10.5px;
+      color: var(--text-muted);
+      min-width: 0;
+    }
+
+    .rung.now { color: var(--text-primary); }
+
+    .rdot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      border: 1px dashed var(--text-muted);
+      flex: none;
+    }
+
+    .rung.now .rdot { background: var(--accent); border: 0; }
+
+    /* The name takes the free space, so both numbers land against the card's
+       right edge whether there are two of them or one. */
+    .rname {
+      flex: 1;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .rval {
+      flex: none;
+      font-variant-numeric: tabular-nums;
+      font-weight: 600;
+      color: var(--accent);
+    }
+
+    /* A measured time left follows the percentage rather than competing with
+       it: the number that moves is the one nearest the name. */
+    .rval.soft { color: var(--text-tertiary); font-weight: 400; }
+
+    .ladder .why { margin: 0 0 0 14px; }
 
     .tiny {
       font-size: 10.5px;
@@ -642,13 +905,6 @@ import { QueueTrayService } from '../../services/queue-tray.service';
     }
 
     .tiny:hover { color: var(--text-primary); border-color: var(--border-strong); }
-
-    .tiny.go {
-      border-color: transparent;
-      background: var(--accent-subtle);
-      color: var(--accent);
-      font-weight: 600;
-    }
 
     .tiny.bad {
       border-color: transparent;
@@ -752,6 +1008,15 @@ export class QueueTrayComponent {
    */
   readonly prepFraction = prepFraction;
 
+  /**
+   * The one book whose chain is open, by plan key — or null.
+   *
+   * ONE at a time, like the page's Completed blocks: the shelf is 452px of a
+   * window somebody is working in, and a panel that can be expanded into a
+   * wall is the shape this redesign took out.
+   */
+  readonly openKey = signal<string | null>(null);
+
   /** How many slots are in use, for the band's own heading. */
   busyLanes(): number {
     return this.tray.lanes().filter(lane => lane.occupant !== null).length;
@@ -778,8 +1043,93 @@ export class QueueTrayComponent {
     await this.tray.clearFinished();
   }
 
-  async start(stepId: string): Promise<void> {
-    await this.tray.startStep(stepId);
+  /** Open one book's chain, or close the one that is open. */
+  toggleCard(key: string): void {
+    this.openKey.update(open => (open === key ? null : key));
+  }
+
+  /**
+   * WHERE A BOOK STANDS, in one word.
+   *
+   * Asked of the book and not of its steps, because that is the object the
+   * card is: the nine rows this replaced each carried their own status and
+   * left the reader to work out what the BOOK was doing.
+   *
+   * The order of the tests is the order of specificity. A staged book is
+   * `Pending` before anything else is asked of it — it is not in the queue, so
+   * no queue fact applies. `Held` outranks `Paused` because it is the narrower
+   * truth: the queue being paused is true of every card at once, and the one a
+   * person has held is a thing they did to this book. `Next` is the front of
+   * the released list, and it is the only positional word here — everything
+   * behind it is `Waiting`, since a number for its place would be a promise
+   * about an order the pump is free to revise.
+   */
+  cardState(plan: BookPlanView, staged: boolean, first: boolean): CardState {
+    if (staged) return { word: 'Pending', tone: 'staged' };
+    if (plan.steps.some(step => step.status === 'running')) return { word: 'Running', tone: 'run' };
+    if (plan.allHeld) return { word: 'Held', tone: 'held' };
+    if (!this.tray.isRunning()) return { word: 'Paused', tone: 'pause' };
+    return first ? { word: 'Next', tone: 'next' } : { word: 'Waiting', tone: 'wait' };
+  }
+
+  /**
+   * The card's one muted line: HOW MUCH is left, and WHAT IS NEXT.
+   *
+   * The steps a plan carries are the ones that have not finished
+   * (`bookPlans` drops terminal steps), so the count is work remaining and the
+   * first of them is the act the book is about to perform — the two facts the
+   * ladder underneath would otherwise have to be opened to learn.
+   */
+  cardMeta(plan: BookPlanView, state: CardState): string {
+    const count = `${plan.steps.length} step${plan.steps.length === 1 ? '' : 's'}`;
+    const running = plan.steps.find(step => step.status === 'running');
+    if (running) return `${count} · ${running.label} running`;
+    if (state.tone === 'staged') return `${count} · not sent yet`;
+    if (state.tone === 'held' || state.tone === 'pause') return `${count} · held`;
+    const next = plan.steps[0];
+    return next ? `${count} · ${next.label} next` : count;
+  }
+
+  /**
+   * WHAT A STEP HAS TO SAY THAT THE CARD DOES NOT ALREADY SAY — or null.
+   *
+   * Owen's screenshot was nine rows of grey boxes reading "Waiting for <the
+   * previous step> to finish", which is the chain restating its own order once
+   * per rung. A reason earns its line only when it carries something the
+   * ladder's shape cannot: the card is waiting on a machine, on a slot, on an
+   * admission the scheduler is holding.
+   *
+   * The three silences:
+   *  - a RUNNING step has no reason at all (`bookPlans` sets it null); its
+   *    percentage is beside its name.
+   *  - `waiting-parent`, and a `held` step that is not startable — both of
+   *    which mean "behind the one above it", which the order already says.
+   *  - `pending`, which is a fact about the whole run and is already the
+   *    card's pill; repeating it on five rungs is the same sentence five times.
+   */
+  stepNote(step: PlannedStep): string | null {
+    const reason = step.reason;
+    if (reason === null) return null;
+    if (reason.kind === 'waiting-parent' || reason.kind === 'pending') return null;
+    if (reason.kind === 'held' && !step.startable) return null;
+    return reason.sentence;
+  }
+
+  /** Start every held run of one book, the shelf's answer to "just this one". */
+  async startBook(plan: BookPlanView): Promise<void> {
+    await this.tray.startPlan(plan);
+  }
+
+  /**
+   * Take a whole BOOK out of the queue.
+   *
+   * The old shelf cancelled one step at a time, which on a chain of five meant
+   * five presses to undo one intention — and the four it left behind were a
+   * book that could no longer finish. `cancelPlan` removes every run of the
+   * group and leaves every file they wrote alone.
+   */
+  async cancelBook(plan: BookPlanView): Promise<void> {
+    await this.tray.cancelPlan(plan);
   }
 
   async retry(stepId: string): Promise<void> {
@@ -792,13 +1142,11 @@ export class QueueTrayComponent {
   }
 
   /**
-   * Take one row out of the queue — a whole run (the failure cards) or a single
-   * step (the Up next rows), whichever id the caller holds.
+   * Take one row out of the queue — the failure cards, which hold a run id.
    *
-   * Up next passes the STEP id deliberately. A chain is one run of several
-   * steps, so removing by run id took out the steps beside the one the button
-   * sat on; `removeRun` cancels just the step when its run has others, and
-   * removes the run when it does not.
+   * `removeRun` cancels just the step when its run has others and removes the
+   * run when it does not, so either id is a safe thing to hand it. Up next no
+   * longer calls this: a book leaves the queue as a book ({@link cancelBook}).
    */
   async remove(rowId: string): Promise<void> {
     await this.tray.removeRun(rowId);
