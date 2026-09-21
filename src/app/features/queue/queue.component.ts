@@ -3985,14 +3985,38 @@ export class QueueComponent {
     const siblings = this.lanePinned(lane).filter((row) => row.key !== plan.key);
     const pinning = this.serverOf(plan) !== lane.setId;
     this.report((async () => {
+      /*
+       * PIN BEFORE RELEASE, and refuse an already-running book before anything
+       * is started.
+       *
+       * `applyMove` pins AFTER a release, and for a drop onto a SPECIFIC slot
+       * that order is the bug Owen hit (2026-09-21): `release` (startPlan) makes
+       * the book runnable with NO server named, and main's pump launches it on
+       * the first reachable card — "any" — in the gap before the pin lands. That
+       * stamps `waitForResolved` on the wrong machine and then REFUSES the pin
+       * the drop actually asked for, so a book dropped on the WSL slot flipped to
+       * "any" and ran on the Mac. Pinning while the row is still editable makes
+       * it START on the slot it was dropped on. A row already taken by a card is
+       * refused HERE by name (`setWaitFor` throws `venue_fixed_at_admission`)
+       * with NOTHING released — the cancel-and-re-queue path §4.3 requires, not a
+       * second start on the wrong card.
+       */
+      const memo = {
+        waitFor: this.waitForValue(plan) || 'any',
+        index: this.tray.plans().findIndex((row) => row.key === plan.key),
+      };
+      if (pinning) await this.setPlanServer(plan, lane.setId);
       const released = await this.release(plan);
       const now = released ?? plan;
-      await this.applyMove(
-        now,
-        pinning ? lane.setId : null,
-        this.targetFor(siblings, event.currentIndex),
-        pinning ? `Ready on ${lane.setLabel}` : 'Moved up this lane',
-      );
+      await this.placeBefore(now, this.targetFor(siblings, event.currentIndex));
+      this.toasts.show({
+        tone: 'success',
+        kicker: pinning ? `Ready on ${lane.setLabel}` : 'Moved up this lane',
+        title: now.title,
+        meta: pinning ? 'Its server changed for every step of the book.' : 'Moved in the queue.',
+        cover: now.cover,
+        action: { label: 'Undo', run: () => this.report(this.undoMove(now, memo)) },
+      });
     })());
   }
 
