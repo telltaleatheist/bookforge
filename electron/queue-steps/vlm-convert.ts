@@ -116,6 +116,15 @@ export const vlmConvertStep: StepModule = {
         percent: event.total > 0 ? Math.min(100, Math.round((event.done / event.total) * 100)) : 0,
         message: event.message,
         stages: lastStages,
+        // The page counts, so the queue times the read the way it times a TTS
+        // job: the engine stamps the rate anchor when this count first advances
+        // (queue-engine metrics), JobEtaService measures pages/min off it, and
+        // the row shows a real ETA instead of "not timed yet". These are the
+        // READ counts — `event.total` is 0 through the render pass, so no anchor
+        // is stamped for the fast local rasterise, only for the GPU read. On a
+        // resume foundry counts this session's pages (22/308), which is exactly
+        // the session-relative pair the rate window wants.
+        metrics: { chunksCompletedInJob: event.done, totalChunksInJob: event.total },
       });
     });
 
