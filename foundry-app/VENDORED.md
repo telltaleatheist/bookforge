@@ -10,10 +10,18 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\<user>\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **b1c68fd** — *Adopt Crucible 1.0.18: a running server follows its config.toml (dep-only)* (was 77a529d) |
+| Source sha | **fe44667** — *Adopt Crucible 1.0.19: Mac page batches key on the processor grid (dep-only)* (was b1c68fd) |
 | Engine | **NOT VENDORED AND NOT KNOWABLE FROM THIS FILE** — it is a spawned CLI resolved at RUNTIME (`FOUNDRY_BIN`, else `resolveFoundryPath`, `electron/main.ts`), so which build executes is a property of the machine and not of this copy. On a developer's Mac that resolves to Foundry's own checkout at `/Volumes/Callisto/Projects/foundry/dist/foundry-darwin-arm64`, which is whatever was last built there — `foundry 2.0.2 (04758be)` — REBUILT at this re-vendor (2026-09-21) so the engine carries fdba761's clean-text log change. **Ask the binary: `$FOUNDRY_BIN --version`.** See *The engine this file named was not the engine that ran* below. |
 | Copied on | 2026-09-19 (five times: 3738c01, 3436fc5, 806d44b, f349771, ca4754c) and 2026-09-20 (98a4344, 9e0b27d, dccc144, 7b98004, cc5fc5b, 93010d8, 77e1d6d) |
 | Copied by | Mechanical source sync, verified against Foundry `77e1d6d:app/` (`diff -rq`, clean but for this file, `IPC-CHANNELS.md` and `.gitignore` — see below); details below |
+
+## The `b1c68fd → fe44667` re-vendor — the 1.0.19 SDK adoption (2026-09-21)
+
+Dependency-only, the same four files. 1.0.19 is server-side: the Mac page engine keys
+batches on the processor's grid rather than raw pixel size, so scanned pages that differ
+by a few pixels batch together (the first whole book through the Mac read one row at a
+time and died at page 76 when a queued page aged past Foundry's request timeout). Gates:
+`node tools/test-foundry-adopt.js` 40/40; root `tsc -p tsconfig.electron.json --noEmit` exit 0.
 
 ## The `77a529d → b1c68fd` re-vendor — the 1.0.18 SDK adoption (2026-09-21)
 
