@@ -53,25 +53,56 @@ import { conversionEtaSeconds, formatEta, formatPageRate } from '@shared/vlm/eta
               </div>
             </div>
 
-            <!-- Indeterminate until foundry names a page count. A bar sitting at
-                 0% for the model-load minute reads as a stall; a bar that is
-                 obviously "working on it" does not claim a number nobody has. -->
-            <div class="bar" [class.waiting]="r.total === 0"
-                 role="progressbar" [attr.aria-valuenow]="r.total > 0 ? r.done : null"
-                 [attr.aria-valuemin]="0" [attr.aria-valuemax]="r.total || null">
-              <div class="fill" [style.width.%]="r.total > 0 ? percent() : 100"></div>
-            </div>
-            <div class="counts">
-              @if (r.total > 0) {
-                <span class="pages">{{ r.done }} of {{ r.total }} pages</span>
-                <span class="pct">{{ percent() }}%</span>
-              } @else {
-                <span class="pages">Loading the model and rendering the first page…</span>
+            <!-- One small bar per step, like the queue's stacked stage bars.
+                 An endpoint read renders the whole book locally and THEN reads
+                 it on the GPU, so those are two passes; a single bar filling
+                 0-100 twice hid that. When there is no render pass (the MLX
+                 route reads each page as it draws it) only the read step shows. -->
+            <div class="steps">
+              @if (r.render; as rnd) {
+                <div class="step" [class.done]="renderComplete()">
+                  <div class="step-head">
+                    <span class="step-name">Render pages</span>
+                    <span class="step-pct">{{ rnd.total > 0 ? renderPct() + '%' : '' }}</span>
+                  </div>
+                  <div class="bar" [class.waiting]="rnd.total === 0"
+                       role="progressbar" [attr.aria-valuenow]="rnd.total > 0 ? rnd.done : null"
+                       [attr.aria-valuemin]="0" [attr.aria-valuemax]="rnd.total || null">
+                    <div class="fill" [style.width.%]="rnd.total > 0 ? renderPct() : 100"></div>
+                  </div>
+                  <div class="step-sub">
+                    @if (rnd.total > 0) {
+                      <span>{{ rnd.done }} of {{ rnd.total }} pages</span>
+                    } @else {
+                      <span>Rendering the pages…</span>
+                    }
+                  </div>
+                </div>
               }
+
+              <div class="step" [class.pending]="readState() === 'up-next'">
+                <div class="step-head">
+                  <span class="step-name">Read pages</span>
+                  <span class="step-pct">{{ r.total > 0 ? percent() + '%' : '' }}</span>
+                </div>
+                <div class="bar" [class.waiting]="r.total === 0 && readState() !== 'up-next'"
+                     role="progressbar" [attr.aria-valuenow]="r.total > 0 ? r.done : null"
+                     [attr.aria-valuemin]="0" [attr.aria-valuemax]="r.total || null">
+                  <div class="fill"
+                       [style.width.%]="r.total > 0 ? percent() : (readState() === 'loading' ? 100 : 0)"></div>
+                </div>
+                <div class="step-sub">
+                  @if (r.total > 0) {
+                    <span>{{ r.done }} of {{ r.total }} pages</span>
+                    @if (rateLine(); as rate) { <span class="eta">{{ rate }}</span> }
+                  } @else if (readState() === 'loading') {
+                    <span>Loading the model and reading the first page…</span>
+                  } @else {
+                    <span>Up next</span>
+                  }
+                </div>
+              </div>
             </div>
-            @if (rateLine(); as rate) {
-              <div class="counts eta"><span>{{ rate }}</span></div>
-            }
 
             <!-- foundry's own line, verbatim. It names the page, its size and how
                  many characters came back, which is the only running evidence
@@ -144,13 +175,21 @@ import { conversionEtaSeconds, formatEta, formatPageRate } from '@shared/vlm/eta
     .route-copy { min-width: 0; display: flex; flex: 1; flex-direction: column; gap: 2px; }
     .route-copy strong { overflow: hidden; font-size: 0.86rem; text-overflow: ellipsis; white-space: nowrap; }
     .route-kicker { color: var(--text-secondary); font-size: 0.68rem; }
+    .steps { display: flex; flex-direction: column; gap: 13px; }
+    .step { display: flex; flex-direction: column; gap: 5px; }
+    .step.pending { opacity: 0.6; }
+    .step-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+    .step-name { color: var(--text-primary); font-size: 0.78rem; font-weight: 620; letter-spacing: -0.01em; }
+    .step.done .step-name { color: var(--text-secondary); }
+    .step-pct { color: var(--text-primary); font-variant-numeric: tabular-nums; font-weight: 650; font-size: 0.74rem; }
+    .step-sub { display: flex; justify-content: space-between; gap: 10px;
+      color: var(--text-secondary); font-size: 0.72rem; font-variant-numeric: tabular-nums; }
+    .step-sub .eta { color: var(--text-tertiary); }
     .bar { height: 8px; overflow: hidden; border-radius: 99px; background: var(--progress-track); }
     .fill { height: 100%; border-radius: 99px; background: var(--progress-fill);
       transition: width 0.25s ease-out; }
     .bar.waiting .fill { opacity: 0.35; }
-    .counts { margin-top: 7px; display: flex; justify-content: space-between; gap: 10px;
-      color: var(--text-secondary); font-size: 0.74rem; }
-    .pct { color: var(--text-primary); font-variant-numeric: tabular-nums; font-weight: 650; }
+    .step.done .fill { background: color-mix(in srgb, var(--progress-fill) 55%, var(--bg-elevated)); }
     .line { margin-top: 12px; padding: 8px 10px; overflow: hidden; border-radius: 7px;
       color: var(--text-secondary); background: var(--bg-elevated); font-family: var(--font-mono, ui-monospace, monospace);
       font-size: 0.7rem; text-overflow: ellipsis; white-space: nowrap; }
@@ -159,7 +198,6 @@ import { conversionEtaSeconds, formatEta, formatPageRate } from '@shared/vlm/eta
     .modal-actions { display: flex; justify-content: flex-end; gap: 9px;
       padding: 14px 22px calc(14px + env(safe-area-inset-bottom));
       border-top: 1px solid var(--border-default); background: var(--bg-surface); }
-    .counts.eta { margin-top: 4px; color: var(--text-tertiary); font-variant-numeric: tabular-nums; }
     .stop-btn, .bg-btn, .queue-btn { padding: 9px 15px; border-radius: 8px; cursor: pointer; font-size: 0.78rem; font-weight: 650; }
     .queue-btn { color: var(--text-primary); border: 1px solid var(--border-default); background: var(--bg-elevated); }
     .stop-btn { color: #ef4444; border: 1px solid color-mix(in srgb, #ef4444 40%, var(--border-default));
@@ -189,6 +227,35 @@ export class StudioConvertModalComponent {
     const r = this.run();
     if (!r || r.total <= 0) return 0;
     return Math.min(100, Math.round((r.done / r.total) * 100));
+  });
+
+  /** The rasterise step's own fill, from its own counts. */
+  readonly renderPct = computed(() => {
+    const rnd = this.run()?.render;
+    if (!rnd || rnd.total <= 0) return 0;
+    return Math.min(100, Math.round((rnd.done / rnd.total) * 100));
+  });
+
+  /** Every page has been drawn — the read step is what is left. */
+  readonly renderComplete = computed(() => {
+    const rnd = this.run()?.render;
+    return rnd !== undefined && rnd.total > 0 && rnd.done >= rnd.total;
+  });
+
+  /**
+   * Where the read step is, so its bar and its sentence agree:
+   *  - `reading`  foundry has named a page count and is reading — a real %.
+   *  - `loading`  no count yet AND rendering is done (or there was none): the
+   *               GPU is loading the model and reading the first page — the
+   *               indeterminate "working on it" fill, not a stall at 0.
+   *  - `up-next`  no count yet and the render pass is still going: this step is
+   *               genuinely queued behind it, so it sits empty, not pulsing.
+   */
+  readonly readState = computed<'reading' | 'loading' | 'up-next'>(() => {
+    const r = this.run();
+    if (r && r.total > 0) return 'reading';
+    if (r?.render !== undefined && !this.renderComplete()) return 'up-next';
+    return 'loading';
   });
 
   /**

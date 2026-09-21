@@ -89,6 +89,15 @@ export interface ConversionRun {
   message: string;
   done: number;
   total: number;
+  /**
+   * The rasterise pass, when there is one, so the modal can draw it as its own
+   * step. An endpoint read renders the WHOLE book locally (PyMuPDF) before it
+   * posts the first page to the GPU, so render and read are two 0-100 passes,
+   * not one — which is exactly why a single bar filled twice. Absent on the MLX
+   * route, which renders and reads each page in one pass; the modal then shows
+   * the read step alone. Straight off `DocumentStageProgressEvent.render`.
+   */
+  render?: { done: number; total: number };
   /** A stop has been asked for and foundry has not exited yet. */
   stopping: boolean;
   /**
@@ -584,6 +593,10 @@ export class BookConversionService {
         message: event.message,
         done: event.done,
         total: event.total,
+        // Present on the endpoint route (render-then-read), absent on MLX. The
+        // rate is still measured on the READ counts alone — render is local and
+        // fast and its pace says nothing about how long the GPU will take.
+        render: event.render,
         rate: sampleConversionRate(previous, event.done, event.total, Date.now()),
       });
     });

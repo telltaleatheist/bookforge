@@ -38,8 +38,16 @@
 export interface ConversionRateSample {
   /** Pages completed when this sample was measured. */
   done: number;
-  /** When the FIRST page completed — the anchor everything is measured from. */
+  /** When the anchor page completed — the moment everything is measured from. */
   firstDoneAt: number;
+  /**
+   * `done` at the anchor. A fresh run anchors at page 1, but a RESUMED run
+   * anchors at the first page it reads this session (page 77 of a 76-banked
+   * book), so the rate is `(done - anchorDone) / elapsed` — never `done - 1`,
+   * which counted the 76 banked pages against the seconds since the resume and
+   * reported a wildly fast, then absent, ETA.
+   */
+  anchorDone: number;
   /** When this sample was taken. */
   stampedAt: number;
   /** Pages per minute at the last completion. */
@@ -71,14 +79,14 @@ export function sampleConversionRate(
   // The first completed page starts the clock; it cannot also be measured by it,
   // because the time before it includes loading the model.
   if (previous === null || done < previous.done) {
-    return { done, firstDoneAt: now, stampedAt: now, pagesPerMin: 0, etaSeconds: null };
+    return { done, firstDoneAt: now, stampedAt: now, anchorDone: done, pagesPerMin: 0, etaSeconds: null };
   }
 
   // Held: same page count, so the previous measurement still stands.
   if (done === previous.done) return previous;
 
   const elapsedSec = (now - previous.firstDoneAt) / 1000;
-  const pagesSinceAnchor = done - 1;
+  const pagesSinceAnchor = done - previous.anchorDone;
   if (elapsedSec <= 0 || pagesSinceAnchor <= 0) {
     return { ...previous, done, stampedAt: now };
   }
@@ -88,6 +96,7 @@ export function sampleConversionRate(
   return {
     done,
     firstDoneAt: previous.firstDoneAt,
+    anchorDone: previous.anchorDone,
     stampedAt: now,
     pagesPerMin: pagesPerSec * 60,
     etaSeconds: remaining === null ? null : remaining / pagesPerSec,
