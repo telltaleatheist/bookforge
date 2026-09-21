@@ -203,9 +203,25 @@ chrome.runtime.onMessage.addListener((raw: RuntimeMessage, sender, sendResponse)
       return;
     }
     case 'sync':
-      if (sender.tab?.id !== undefined) activeTabId = sender.tab.id;
-      // Give the popup whatever we last knew, instantly, then refresh.
-      if (latestSnapshot) pushToPopup(latestSnapshot);
+      /*
+       * A SYNC DOES NOT MOVE THE POINTER. It did until 2026-09-20, and that is
+       * how a page went deaf while its own audio was still rendering: the
+       * content script sends `sync` whenever its UI is shown, so a SECOND tab
+       * with the reader visible took `activeTabId`, every later `ui` went there,
+       * and the tab that had pressed play heard nothing — its 3 s watchdog then
+       * announced "No response from the player" over a player that was
+       * streaming for it (Owen: *"i can see memory going up and down like its
+       * loading into memory, but it isnt actually playing"*). And when that
+       * second tab navigated, `onUpdated` closed the FIRST tab's stream.
+       *
+       * The tab that asked gets its own state back, directly and at once, and
+       * the run's own tab keeps receiving the run. Pressing play is what makes
+       * a tab the run's tab; asking how things are is not.
+       */
+      if (latestSnapshot) {
+        pushToPopup(latestSnapshot);
+        if (sender.tab?.id !== undefined) relaySnapshotTo(latestSnapshot, sender.tab.id);
+      }
       void sendToOffscreen({ target: 'offscreen', cmd: 'sync' });
       return;
 
@@ -329,9 +345,31 @@ function noteRecordingLiveness(snapshot: QueueSnapshot): void {
 
 // ─── Snapshot → per-tab UiState ───────────────────────────────────────────────
 
+/**
+ * THE TAB A RUN BELONGS TO — the one whose block is playing, else the one whose
+ * block is next — and, with nothing queued, the tab that last pressed a control.
+ *
+ * Read off the snapshot rather than kept as state, because the queue already
+ * says whose blocks it holds (`QueueItem.tabId` is baked in at `play`), and a
+ * second copy of that fact is what went stale under `sync` (see that case).
+ */
+function ownerTabOf(snapshot: QueueSnapshot | null): number | null {
+  if (snapshot === null) return activeTabId;
+  return snapshot.current?.tabId ?? snapshot.upcoming[0]?.tabId ?? activeTabId;
+}
+
 function relaySnapshot(snapshot: QueueSnapshot): void {
-  if (activeTabId === null) return;
-  const tabId = activeTabId;
+  const owner = ownerTabOf(snapshot);
+  if (owner === null) return;
+  relaySnapshotTo(snapshot, owner);
+  // The tab that last pressed a control still hears the state while its block
+  // has not yet reached the queue (the beat between `play` and the offscreen
+  // document's first snapshot) — one extra message, never a stolen one.
+  if (activeTabId !== null && activeTabId !== owner) relaySnapshotTo(snapshot, activeTabId);
+}
+
+/** One tab's view of the snapshot: its own blocks, everybody's engine. */
+function relaySnapshotTo(snapshot: QueueSnapshot, tabId: number): void {
   const mine = (item: QueueItem | null) => !!item && item.tabId === tabId;
   // Queue ids are "tabId:blockId"; the page only knows the block half.
   const blocksOfThisTab = (ids: string[]) =>
@@ -375,13 +413,21 @@ chrome.storage.onChanged.addListener((changes, area) => {
   });
 });
 
+// THE RUN'S TAB, not merely the last tab that spoke — see `ownerTabOf` and the
+// `sync` case for the evening a bystander tab's reload closed the reading one's
+// stream.
+function isRunsTab(tabId: number): boolean {
+  return tabId === ownerTabOf(latestSnapshot) || tabId === activeTabId;
+}
+
 chrome.tabs.onRemoved.addListener((tabId) => {
-  if (tabId === activeTabId) { void sendToOffscreen({ target: 'offscreen', cmd: 'transport', op: 'close' }); activeTabId = null; }
+  if (!isRunsTab(tabId)) return;
+  void sendToOffscreen({ target: 'offscreen', cmd: 'transport', op: 'close' });
+  if (tabId === activeTabId) activeTabId = null;
 });
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
-  if (tabId === activeTabId && changeInfo.status === 'loading') {
-    void sendToOffscreen({ target: 'offscreen', cmd: 'transport', op: 'close' });
-    activeTabId = null;
-  }
+  if (changeInfo.status !== 'loading' || !isRunsTab(tabId)) return;
+  void sendToOffscreen({ target: 'offscreen', cmd: 'transport', op: 'close' });
+  if (tabId === activeTabId) activeTabId = null;
 });
