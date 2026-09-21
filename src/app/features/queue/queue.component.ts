@@ -27,19 +27,47 @@
  * reconstruct that shape in their head from N separate answers. So the shape is
  * drawn:
  *
+ *   Pending       — the left column, floor to ceiling. Every book waiting for
+ *                   ANY machine: released books with no server named, staged
+ *                   books not yet sent, and books that travel nowhere (they run
+ *                   on the local CPU slots and cannot be pinned — tagged "CPU").
+ *   Finished      — a drawer docked at that column's foot: today's work as
+ *                   history, one BLOCK per book, its steps inside it.
  *   Needs you     — failures, with the engine's own sentence and the controls
- *                   that resolve them. Not drawn when there are none.
- *   Pending       — the sticky left column. Every book waiting for ANY machine:
- *                   released books with no server named, staged books not yet
- *                   sent, and books that travel nowhere (they run on the local
- *                   CPU slots and cannot be pinned — tagged "CPU").
+ *                   that resolve them. Not drawn when there are none. First in
+ *                   the right column, so it cannot shorten the sidebar.
  *   Local slots   — this machine's own lanes, as compact tiles. Not drop
  *                   targets: nothing is pinned to a CPU slot, work simply
  *                   arrives there.
  *   GPU slots     — one LANE per Crucible server, each drawing what is on its
  *                   card now and the books pinned behind it, in queue order.
- *   Finished      — today's work as history: what it produced and how long it
- *                   took, in a table, not as more rows that look live.
+ *
+ * ── TWO COLUMNS, TWO SCROLLBARS, NO PAGE SCROLL (Owen, 2026-09-20) ──────────
+ *
+ * *"i think the pending list should stretch to the bottom of the tab. like a
+ * sidebar. and on the bottom can be an accordion that slides up and shows
+ * completed jobs. the completed jobs can be blocks, just like they were when
+ * they were pending. not plain text like they are now. a single block that,
+ * when clicked, expand to show which job was done. cleanup, tts, assembly,
+ * etc."*
+ *
+ * The page used to own the only scrollbar, which made "the bottom of the tab" a
+ * place nothing could be put: every column was as tall as its own contents, so
+ * Pending drew a stub on a quiet day and pushed the machines off screen on a
+ * busy one. Now `.page` is a fixed-height flex column that clips, `.layout`
+ * takes the whole of it, and the two panes scroll themselves — the pending list
+ * inside the aside, everything else inside `.floor`. Below 960px all of that is
+ * undone and the page scrolls again, because stacked columns with private
+ * scrollbars are three nested scrollers and a drawer pinned to the middle of a
+ * page.
+ *
+ * And Finished stopped being a table. Six columns at the very bottom of the
+ * page, below the fold, drawn in a shape nothing else here uses, with a book's
+ * four chained steps appearing as four unrelated rows sharing a title cell. It
+ * is now one card per BOOK from the same family the book had while it waited,
+ * and clicking it opens the chain it ran — reusing the running card's own
+ * `.rung` ladder, because "what this book ran, in order" must not have two
+ * drawings.
  *
  * DRAG IS THE ACCELERATOR, NEVER THE ONLY DOOR. Pending → lane pins, lane →
  * Pending un-pins, and either way the same `chooseWaitFor` the ⋯ menu's
@@ -79,6 +107,7 @@ import {
   CdkDrag, CdkDragHandle, CdkDropList, CdkDropListGroup, moveItemInArray,
 } from '@angular/cdk/drag-drop';
 import type { CdkDragDrop } from '@angular/cdk/drag-drop';
+import { CdkScrollable } from '@angular/cdk/scrolling';
 
 import { prepFraction, prepLabel } from '@shared/queue/bench';
 import type { BookPlan, FinishedRun } from '@shared/queue/bench';
@@ -166,6 +195,65 @@ type OrderTarget =
   | { kind: 'end' }
   | { kind: 'before'; plan: BookPlanView };
 
+/**
+ * WHERE THE DRAWER REMEMBERS WHETHER IT IS OPEN.
+ *
+ * The renderer's own key, like every other per-machine preference on this side
+ * (the library path is the standing example): what a person wants their queue
+ * page to look like is a fact about this screen, not about the library, and
+ * nothing in main has an opinion about it. Default CLOSED — the page is about
+ * what is running, and history that opens itself takes half the sidebar from
+ * the list Owen asked to stretch to the bottom.
+ */
+const FINISHED_OPEN_KEY = 'bookforge.queue.finishedOpen';
+
+/**
+ * ONE FINISHED BOOK, with everything it ran today inside it.
+ *
+ * Owen, 2026-09-20: *"a single block that, when clicked, expand to show which
+ * job was done. cleanup, tts, assembly, etc."* — so the unit here is the BOOK
+ * and the steps are its contents, which is the opposite of what the table did
+ * (one row per step, the title repeated down the page).
+ */
+interface FinishedBlock {
+  /** Stable across re-groupings: the first jobId the book was seen under. */
+  key: string;
+  title: string;
+  cover: string | null;
+  /** Oldest first — the order they ran, which is how a chain is read. */
+  runs: FinishedRun[];
+  /** The worst thing that happened to any step of it. */
+  status: 'done' | 'failed' | 'cancelled';
+  /** The latest finish in the group. */
+  finishedAt?: string;
+}
+
+/**
+ * Read the drawer's remembered state without letting a storage failure take
+ * the page with it. A locked-down or full localStorage is a real thing on a
+ * desktop app, and it must cost a preference, never a render.
+ */
+function readFinishedOpen(): boolean {
+  try {
+    return localStorage.getItem(FINISHED_OPEN_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * A finished step's place in time, as a number that sorts.
+ *
+ * A step with no 'finishedAt' sorts LAST rather than first: an unstamped row
+ * is one the engine never got to write a time for, and putting it at the head
+ * of a chain would claim it ran before the ones that did.
+ */
+function finishedMs(run: FinishedRun): number {
+  if (!run.finishedAt) return Number.POSITIVE_INFINITY;
+  const ms = new Date(run.finishedAt).getTime();
+  return Number.isFinite(ms) ? ms : Number.POSITIVE_INFINITY;
+}
+
 /** One rung of the step ladder a busy card draws. */
 interface ChainRung {
   stepId: string;
@@ -183,7 +271,7 @@ interface ChainRung {
   imports: [
     DatePipe, DecimalPipe, NgTemplateOutlet, FormsModule,
     DesktopSelectComponent, JobStepComponent, JobDetailsComponent, StageBarsComponent,
-    CdkDropList, CdkDropListGroup, CdkDrag, CdkDragHandle,
+    CdkDropList, CdkDropListGroup, CdkDrag, CdkDragHandle, CdkScrollable,
   ],
   template: `
     <!-- ── The toolbar row ─────────────────────────────────────────────────
@@ -268,37 +356,6 @@ interface ChainRung {
 
     <div class="page">
 
-      <!-- ── Needs you ─────────────────────────────────────────────────── -->
-      @if (tray.failures().length > 0) {
-        <section class="band">
-          <header class="band-head bad">
-            <h2>Needs you · {{ tray.failures().length }}</h2>
-          </header>
-
-          @for (run of tray.failures(); track run.stepId) {
-            <article class="card failed">
-              <div class="card-head">
-                @if (run.cover) {
-                  <img class="cover" [src]="run.cover" alt="" />
-                } @else {
-                  <span class="cover blank" aria-hidden="true"></span>
-                }
-                <div class="min">
-                  <h3>{{ run.title }} · {{ run.label }}</h3>
-                  @if (run.finishedAt) {
-                    <div class="sub">Failed {{ run.finishedAt | date:'shortTime' }}</div>
-                  }
-                </div>
-                <div class="acts">
-                  <button type="button" class="btn bad" (click)="retry(run.stepId)">Retry this step</button>
-                  <button type="button" class="btn" (click)="remove(run.jobId)">Remove</button>
-                </div>
-              </div>
-              <p class="error">{{ run.error }}</p>
-            </article>
-          }
-        </section>
-      }
 
       <!-- ── The floor: Pending down the left, the machines on the right ───
            Owen, 2026-09-20: *"maybe pending is along the left side and goes to
@@ -311,14 +368,30 @@ interface ChainRung {
            connects the lists; nothing here maintains a list of ids. -->
       <div class="layout" cdkDropListGroup>
 
-        <!-- ── Pending, the sticky column ───────────────────────────────────
+        <!-- ── Pending, the column that runs floor-to-ceiling ─────────────
+             Owen, 2026-09-20: *"i think the pending list should stretch to the
+             bottom of the tab. like a sidebar."*
+
+             It USED to be 'position: sticky' inside the page's own scroller,
+             which is a different thing wearing the same look: it was as tall
+             as its contents and slid along as the page moved, so a short
+             queue drew a short stub and a long one grew the page until the
+             machines beside it scrolled away. Now the aside IS the height of
+             the floor — a flex column that owns two children, the pending
+             list (which takes what is left and scrolls inside itself) and the
+             Finished drawer docked at its foot.
+
              DRAWN LIKE A SLOT, deliberately: it is the answer "any machine",
              and a book sitting in it is queued exactly as hard as one pinned to
              a card. It is the only list here that is not a machine, so it says
              which machine it is — the first free one.
 
              The SECTION is the drop list, header included: a wide target, and
-             no wrapper between the column and its cards. -->
+             no wrapper between the column and its cards. It is also the
+             SCROLLER, which is why the header inside it is sticky rather than
+             lifted out — CDK auto-scrolls the drop list's own element while a
+             book is dragged near its edge, and a scroller nested one level
+             deeper is not one it knows to move. -->
         <aside class="sidebar">
           <section
             class="slotcol"
@@ -388,9 +461,197 @@ interface ChainRung {
               </p>
             }
           </section>
+
+          <!-- ── Finished today, docked at the sidebar's foot ────────────────
+               Owen, 2026-09-20: *"on the bottom can be an accordion that
+               slides up and shows completed jobs. the completed jobs can be
+               blocks, just like they were when they were pending. not plain
+               text like they are now. a single block that, when clicked,
+               expand to show which job was done. cleanup, tts, assembly,
+               etc."*
+
+               THIS REPLACES THE TABLE. The old band was a six-column
+               '<table class="ftable">' at the very bottom of the page —
+               below the lanes, below the fold, seen by nobody, and written in
+               a shape nothing else on this page uses. A book that ran four
+               steps appeared as four unrelated rows sharing a title cell.
+
+               The BLOCK is the answer to both: one card per BOOK, drawn from
+               the same family as the card it was five minutes ago in Pending,
+               and its steps are inside it rather than beside it. The card's
+               own step ladder ('.rung') is what the expansion reuses, because
+               "what this book ran, in order" is the same question a running
+               card answers and must not have two drawings.
+
+               Only drawn when something finished today — an empty accordion
+               is a control that promises a drawer with nothing in it. -->
+          @if (finishedBlocks().length > 0) {
+            <section class="finished" [class.open]="finishedOpen()">
+              <!-- TWO BUTTONS, not one: the header toggles, and Clear is its
+                   own act. Nesting Clear inside the toggle would make it a
+                   button in a button (invalid, and a press of it would also
+                   open the drawer it just emptied). -->
+              <div class="fin-head">
+                <button
+                  type="button"
+                  class="fin-toggle"
+                  [attr.aria-expanded]="finishedOpen()"
+                  (click)="toggleFinished()"
+                  title="Today’s finished books. Click to open or close."
+                >
+                  <span class="chev" aria-hidden="true">▸</span>
+                  <span class="fin-word">Finished today</span>
+                  <!-- BOOKS, not steps. The drawer under this header lists
+                       books, and a count of the STEPS inside them — which is
+                       what the table's heading carried, because the table's
+                       rows were steps — would name a number nothing below it
+                       adds up to. -->
+                  <span class="fin-count">{{ finishedBlocks().length }}</span>
+                  @if (finishedFailed() > 0) {
+                    <span class="fin-bad">{{ finishedFailed() }} failed</span>
+                  }
+                </button>
+                <button
+                  type="button"
+                  class="btn quiet xs fin-clear"
+                  (click)="clearFinished()"
+                  title="Clear today’s history. Nothing on disk is touched."
+                >Clear</button>
+              </div>
+
+              <!-- THE SLIDE IS 0fr → 1fr on a grid row, not a max-height
+                   guess: a max-height animation has to name a number bigger
+                   than the content, and any number big enough is also a
+                   visibly wrong speed for a short drawer. The clip is what
+                   hides the closed content; the list inside it owns the
+                   scroll and its own ceiling. -->
+              <div class="fin-body">
+                <div class="fin-clip">
+                  <div class="fin-list">
+                    @for (block of finishedBlocks(); track block.key) {
+                      <article class="card narrow fin-card" [class.on]="openFinished() === block.key">
+                        <button
+                          type="button"
+                          class="fin-block"
+                          [attr.aria-expanded]="openFinished() === block.key"
+                          (click)="toggleFinishedBlock(block)"
+                          [title]="'What ' + block.title + ' ran today'"
+                        >
+                          @if (block.cover) {
+                            <img class="cover" [src]="block.cover" alt="" />
+                          } @else {
+                            <span class="cover blank" aria-hidden="true"></span>
+                          }
+                          <div class="min">
+                            <div class="title-row"><h3>{{ block.title }}</h3></div>
+                            <div class="sub">
+                              {{ block.runs.length }} step{{ block.runs.length === 1 ? '' : 's' }}
+                              @if (block.finishedAt) {
+                                · finished {{ block.finishedAt | date:'shortTime' }}
+                              }
+                            </div>
+                          </div>
+                          <span
+                            class="pill"
+                            [class.ok]="block.status === 'done'"
+                            [class.bad]="block.status === 'failed'"
+                          >{{ block.status }}</span>
+                        </button>
+
+                        <!-- WHICH JOB WAS DONE — cleanup, TTS, assembly — in
+                             the order it ran, which is the order a person
+                             reads a chain in and the reverse of the order the
+                             engine hands them over (newest first). -->
+                        @if (openFinished() === block.key) {
+                          <div class="ladder fin-ladder">
+                            @for (run of block.runs; track run.stepId) {
+                              <div class="fin-step">
+                                <div class="rung fin-rung" [class.done]="run.status === 'done'">
+                                  <span class="rdot" aria-hidden="true"></span>
+                                  <span class="rname">{{ run.label }}</span>
+                                  <span
+                                    class="mk pill"
+                                    [class.ok]="run.status === 'done'"
+                                    [class.bad]="run.status === 'failed'"
+                                  >{{ run.status }}</span>
+                                </div>
+                                <div class="fin-meta">
+                                  <span class="fin-num">{{ took(run) }}</span>
+                                  @if (run.finishedAt) {
+                                    <span aria-hidden="true">·</span>
+                                    <span class="fin-num">{{ run.finishedAt | date:'shortTime' }}</span>
+                                  }
+                                  <!-- The produced file, still a real door:
+                                       the table's one genuinely useful cell
+                                       was this one, and it is the same
+                                       'showInFolder' it always was. -->
+                                  @if (run.outputPath; as out) {
+                                    <button
+                                      type="button"
+                                      class="link fin-file"
+                                      [title]="out"
+                                      (click)="showInFolder(out)"
+                                    >{{ fileName(out) }}</button>
+                                  }
+                                </div>
+                              </div>
+                            }
+                          </div>
+                        }
+                      </article>
+                    }
+                  </div>
+                </div>
+              </div>
+            </section>
+          }
         </aside>
 
-        <div class="floor">
+        <!-- 'cdkScrollable' EARNS ITS KEEP THE MOMENT THIS COLUMN SCROLLS
+             ITSELF. CDK finds a drop list's scrollable ANCESTORS through the
+             ScrollDispatcher, and only registered ones are in that answer — so
+             without this, a book dragged toward the bottom of the floor would
+             hover over a lane that never came up to meet it. Nothing else
+             about the drag changed: the group still connects every list. -->
+        <div class="floor" cdkScrollable>
+
+          <!-- ── Needs you, at the head of the right column ──────────────
+               It used to sit ABOVE the whole floor, which meant one failed
+               step pushed Pending, the tiles and every lane down the page —
+               the sidebar now runs floor-to-ceiling and nothing may shorten
+               it. Here it is the first thing in the column that scrolls, so a
+               failure is still the first thing read and the machines below it
+               do not move. -->
+          @if (tray.failures().length > 0) {
+            <section class="band">
+              <header class="band-head bad">
+                <h2>Needs you · {{ tray.failures().length }}</h2>
+              </header>
+
+              @for (run of tray.failures(); track run.stepId) {
+                <article class="card failed">
+                  <div class="card-head">
+                    @if (run.cover) {
+                      <img class="cover" [src]="run.cover" alt="" />
+                    } @else {
+                      <span class="cover blank" aria-hidden="true"></span>
+                    }
+                    <div class="min">
+                      <h3>{{ run.title }} · {{ run.label }}</h3>
+                      @if (run.finishedAt) {
+                        <div class="sub">Failed {{ run.finishedAt | date:'shortTime' }}</div>
+                      }
+                    </div>
+                    <div class="acts">
+                      <button type="button" class="btn bad" (click)="retry(run.stepId)">Retry this step</button>
+                      <button type="button" class="btn" (click)="remove(run.jobId)">Remove</button>
+                    </div>
+                  </div>
+                  <p class="error">{{ run.error }}</p>
+                </article>
+              }
+            </section>
+          }
 
           <!-- ── Local slots ───────────────────────────────────────────────
                This machine's own lanes — the 'local-work' CPU pair, and the
@@ -613,6 +874,27 @@ interface ChainRung {
                     />
                   </article>
                 }
+              </div>
+            </section>
+          }
+
+          <!-- NOTHING AT ALL, at the foot of the floor. The lane layout
+               above draws machines whether or not anything is queued, so this
+               only replaces the whole floor when there is no work, no failure
+               and no machine holding anything.
+
+               It sat BELOW the layout until the sidebar grew to full height;
+               with '.page' a fixed-height flex column there is no "below" any
+               more, so it lives at the end of the column that scrolls. -->
+          @if (visiblePlans().length === 0 && busyLanes() === 0 && tray.failures().length === 0
+               && tray.pending().length === 0) {
+            <section class="band">
+              <div class="empty">
+                <h2>Nothing is queued</h2>
+                <p>
+                  Narrate a book from its versions page, or order a read in the Foundry window.
+                  Work started anywhere in BookForge is scheduled here.
+                </p>
               </div>
             </section>
           }
@@ -1121,77 +1403,6 @@ interface ChainRung {
           </div>
         }
       </ng-template>
-
-      <!-- NOTHING AT ALL. The lane layout above draws machines whether or not
-           anything is queued, so this only replaces the whole floor when there
-           is no work, no failure and no machine holding anything. -->
-      @if (visiblePlans().length === 0 && busyLanes() === 0 && tray.failures().length === 0
-           && tray.pending().length === 0) {
-        <section class="band">
-          <div class="empty">
-            <h2>Nothing is queued</h2>
-            <p>
-              Narrate a book from its versions page, or order a read in the Foundry window.
-              Work started anywhere in BookForge is scheduled here.
-            </p>
-          </div>
-        </section>
-      }
-
-      <!-- ── Finished ──────────────────────────────────────────────────── -->
-      @if (finished().length > 0) {
-        <section class="band">
-          <header class="band-head">
-            <h2>Finished today · {{ finished().length }}</h2>
-            <span class="note left">{{ tray.finished().failed.length }} failed</span>
-            <!-- A BUTTON AT THE BAND'S EDGE, not a button inside the sentence
-                 beside it. It lived in the "N failed" note span, where it read
-                 as part of a status line rather than as the one act this band
-                 offers. -->
-            <div class="band-right">
-              <button
-                type="button"
-                class="btn"
-                (click)="clearFinished()"
-                title="Clear today's history. Nothing on disk is touched."
-              >Clear finished</button>
-            </div>
-          </header>
-
-          <table class="ftable">
-            <thead>
-              <tr>
-                <th>Book</th><th>Act</th><th>Produced</th>
-                <th class="num">Took</th><th class="num">Finished</th><th></th>
-              </tr>
-            </thead>
-            <tbody>
-              @for (run of finished(); track run.stepId) {
-                <tr>
-                  <td class="b">{{ run.title }}</td>
-                  <td>{{ run.label }}</td>
-                  <td class="path">
-                    @if (run.outputPath) {
-                      <button type="button" class="link" (click)="showInFolder(run.outputPath!)">
-                        {{ fileName(run.outputPath) }}
-                      </button>
-                    } @else {
-                      —
-                    }
-                  </td>
-                  <td class="num">{{ took(run) }}</td>
-                  <td class="num">{{ run.finishedAt | date:'shortTime' }}</td>
-                  <td>
-                    <span class="pill" [class.ok]="run.status === 'done'" [class.bad]="run.status === 'failed'">
-                      {{ run.status }}
-                    </span>
-                  </td>
-                </tr>
-              }
-            </tbody>
-          </table>
-        </section>
-      }
     </div>
   `,
   styles: [`
@@ -1203,10 +1414,24 @@ interface ChainRung {
       min-height: 0;
     }
 
+    /* THE PAGE NO LONGER SCROLLS — its two columns do (Owen, 2026-09-20:
+       *"i think the pending list should stretch to the bottom of the tab. like
+       a sidebar"*).
+
+       While '.page' owned 'overflow-y', "the bottom of the tab" was not a place
+       anything could reach: every column was as tall as its own contents and
+       the page grew to the tallest of them. So the page is now a FIXED-HEIGHT
+       flex column that clips, '.layout' inside it takes the whole remainder,
+       and the scroll is pushed down one level to the two things that actually
+       have lists in them — the pending column and the floor. Below 960px this
+       is all undone and the page scrolls again (see NARROW). */
     .page {
       flex: 1;
-      overflow-y: auto;
-      padding: 4px 20px 40px;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      padding: 4px 20px 14px;
       background: var(--bg-base);
     }
 
@@ -1695,23 +1920,38 @@ interface ChainRung {
     .layout {
       display: grid;
       grid-template-columns: 320px minmax(0, 1fr);
+      /* ONE ROW, minmax(0, 1fr) — the row that decides whether this works.
+         An 'auto' row is sized to its tallest item, so a floor full of lanes
+         would make the row taller than the grid box, spill past the clipped
+         page, and leave both columns' own overflow rules with nothing to do.
+         Pinned to the container's height, the two panes are shorter than their
+         contents and their scrollbars are the ones that appear. */
+      grid-template-rows: minmax(0, 1fr);
       gap: 16px;
-      align-items: start;
+      /* STRETCH, not 'start'. Both columns are full-height panes now: the
+         aside has a drawer that has to sit at ITS bottom, not at the bottom of
+         whatever it happens to contain. */
+      align-items: stretch;
+      flex: 1;
+      min-height: 0;
       margin-top: 16px;
     }
 
-    /* STICKY, and sticky to the PAGE's scroller (.page owns overflow-y).
-       'align-self: start' is what lets it be shorter than the floor beside it;
-       without it the grid stretches the aside to the row's height and sticky
-       has nothing to move within. Its own overflow so a column of eleven
-       pending books scrolls inside the sidebar instead of growing the page. */
+    /* THE SIDEBAR IS A FULL-HEIGHT COLUMN OF TWO PARTS: the pending list,
+       which takes everything that is left and scrolls inside itself, and the
+       Finished drawer docked at its foot. It is not sticky and has no
+       max-height of its own — it is exactly as tall as the floor beside it,
+       which is what "stretches to the bottom of the tab" means.
+
+       It does NOT scroll. A scroller here would scroll the drawer off the
+       bottom, and the drawer is the one thing on this column that must be
+       where the hand expects it. */
     .sidebar {
-      position: sticky;
-      top: 4px;
-      align-self: start;
-      max-height: calc(100vh - 120px);
-      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
       min-width: 0;
+      min-height: 0;
     }
 
     /* PENDING, DRAWN LIKE A SLOT. It is the answer "any machine", and a book in
@@ -1723,11 +1963,35 @@ interface ChainRung {
       border: 1px solid var(--border-subtle);
       border-top: 2px solid var(--accent);
       border-radius: 8px;
-      padding: 11px 11px 12px;
+      padding: 0 11px 12px;
+      /* THE SCROLLING MIDDLE. It takes the sidebar's leftover height, so
+         opening the drawer below shortens this list rather than pushing it
+         off the screen.
+
+         'min-height: 160px' does two jobs at once and both are wanted: it is
+         a floor, so an empty queue still draws a column and not a hairline,
+         and — because it is not 'auto' — it is also what lets this flex item
+         be SHORTER than its contents, which is the whole reason the scrollbar
+         lands here instead of on the page. */
+      flex: 1;
       min-height: 160px;
+      overflow-y: auto;
     }
 
-    .slot-head { margin-bottom: 10px; }
+    /* STICKY INSIDE ITS OWN SCROLLER. The section is the drop list AND the
+       scroller (CDK auto-scrolls the drop list's own element, and only that
+       one), so the header cannot be lifted out to a fixed sibling — it stays
+       a child and pins itself. Opaque, because pending cards pass underneath
+       it. The 11px of top padding moved here from the section so the sticky
+       edge is flush with the accent rule above it. */
+    .slot-head {
+      position: sticky;
+      top: 0;
+      z-index: 2;
+      padding-top: 11px;
+      margin-bottom: 10px;
+      background: var(--bg-surface);
+    }
 
     .slot-line { display: flex; align-items: baseline; gap: 8px; }
 
@@ -1773,7 +2037,21 @@ interface ChainRung {
       color: var(--text-muted);
     }
 
-    .floor { min-width: 0; }
+    /* THE RIGHT COLUMN SCROLLS ON ITS OWN. Needs-you, the tiles, the lanes
+       and the empty state all live here, and none of them may move the
+       sidebar: Owen's whole point is that Pending holds its place while the
+       machines are read. */
+    .floor {
+      min-width: 0;
+      min-height: 0;
+      overflow-y: auto;
+      /* Room for its scrollbar so a lane's right edge is not sat on. */
+      padding-right: 4px;
+    }
+
+    /* The first band in a column that starts at the top of the pane needs no
+       20px of air above it. */
+    .floor > .band:first-of-type { margin-top: 0; }
 
     /* ── Local slots ───────────────────────────────────────────────────────
        TILES, two across, because a CPU slot has a fraction of a lane's content
@@ -1986,11 +2264,40 @@ interface ChainRung {
     /* ── NARROW ────────────────────────────────────────────────────────────
        Below ~960px the sidebar stops being a sidebar: it stacks ABOVE the
        machines, because Pending is the thing you add to and the machines are
-       the thing you watch. Sticky comes off with it — a sticky full-width block
-       would cover the lanes it is meant to sit beside. */
+       the thing you watch.
+
+       AND THE PANES GO BACK TO BEING ONE PAGE. Full-height columns are a
+       two-column idea; stacked, they would give a phone-width screen three
+       scrollbars inside each other and a drawer pinned to the bottom of a
+       block halfway down it. So '.page' takes its 'overflow-y' back and every
+       inner scroller is released — the same normal flow this page had before
+       the sidebar grew. */
     @media (max-width: 960px) {
-      .layout { grid-template-columns: minmax(0, 1fr); }
-      .sidebar { position: static; max-height: none; overflow: visible; }
+      .page {
+        display: block;
+        overflow-y: auto;
+        padding-bottom: 40px;
+      }
+      .layout {
+        grid-template-columns: minmax(0, 1fr);
+        grid-template-rows: auto;
+        align-items: start;
+        flex: none;
+        min-height: auto;
+      }
+      .sidebar { display: block; min-height: auto; }
+      .slotcol {
+        flex: none;
+        overflow: visible;
+        padding-top: 11px;
+      }
+      .slot-head { position: static; padding-top: 0; }
+      .floor { overflow: visible; padding-right: 0; }
+      .finished { margin-top: 12px; }
+      /* Stacked, the drawer has no column to take a share of, so it takes a
+         share of the window instead. */
+      .finished.open { max-height: none; }
+      .finished.open .fin-clip { max-height: 60vh; }
       .tiles { grid-template-columns: minmax(0, 1fr); }
     }
 
@@ -2556,34 +2863,208 @@ interface ChainRung {
 
     @media (max-width: 900px) { .expand-cols { grid-template-columns: 1fr; } }
 
-    /* ── Finished ──────────────────────────────────────────────────────── */
+    /* ── Finished: the drawer at the sidebar's foot ────────────────────────
+       It replaced a '<table class="ftable">' six columns wide at the bottom of
+       the page. Nothing of that is kept — a table is a shape for comparing
+       rows, and these rows are not compared, they are a book's own history.
 
-    .ftable {
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 0.75rem;
+       Docked, never scrolled with the list above it: it is 'flex: none' in the
+       sidebar's column, which is what puts it AT the bottom rather than after
+       whatever Pending happens to contain. */
+    .finished {
+      flex: none;
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
+      overflow: hidden;
     }
 
-    .ftable th {
+    /* ROUGHLY THE LOWER 45% OF THE SIDEBAR, and a real ceiling rather than a
+       guess in viewport units: the aside is a stretched grid item with a
+       definite height, so a percentage here is a percentage of the column it
+       is docked in. It is a MAXIMUM — two finished books draw two books tall,
+       not a half-empty drawer — and everything above it keeps the rest. */
+    .finished.open {
+      flex: 0 1 auto;
+      max-height: 45%;
+    }
+
+    .fin-head { flex: none; }
+
+    .fin-head {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 0 8px 0 0;
+    }
+
+    .fin-step { min-width: 0; }
+
+    .fin-toggle {
+      font-family: inherit;
+      flex: 1;
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      padding: 9px 4px 9px 10px;
+      border: 0;
+      background: transparent;
+      color: var(--text-tertiary);
+      cursor: pointer;
       text-align: left;
-      font-size: 0.5625rem;
-      font-weight: 400;
-      letter-spacing: 0.11em;
+      font-size: 0.6875rem;
+      font-weight: 700;
+      letter-spacing: 0.13em;
       text-transform: uppercase;
+    }
+
+    .fin-toggle:hover { color: var(--text-primary); }
+
+    /* A CHEVRON THAT TURNS, so the header says which way the drawer will go
+       before it is pressed. */
+    .chev {
+      display: inline-block;
+      font-size: 0.625rem;
+      line-height: 1;
       color: var(--text-muted);
-      padding: 0 10px 6px 0;
-      border-bottom: 1px solid var(--border-subtle);
+      transition: transform 0.22s ease;
+      flex: none;
     }
 
-    .ftable td {
-      padding: 7px 10px 7px 0;
-      border-bottom: 1px solid var(--border-subtle);
-      color: var(--text-secondary);
+    .finished.open .chev { transform: rotate(90deg); }
+
+    .fin-word { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+    .fin-count {
+      font-size: 0.8125rem;
+      font-weight: 600;
+      letter-spacing: 0;
+      color: var(--text-primary);
+      font-variant-numeric: tabular-nums;
+      flex: none;
     }
 
-    .ftable td.b { color: var(--text-primary); }
-    .ftable td.num { text-align: right; font-variant-numeric: tabular-nums; }
-    .ftable th.num { text-align: right; }
+    /* SAID ONLY WHEN IT IS TRUE, and in the danger colour, because "0 failed"
+       is a sentence nobody needs and a number in red that means nothing. */
+    .fin-bad {
+      margin-left: auto;
+      font-size: 0.625rem;
+      font-weight: 600;
+      letter-spacing: 0;
+      text-transform: none;
+      color: var(--color-danger);
+      flex: none;
+    }
+
+    .fin-clear { flex: none; }
+
+    /* 0fr → 1fr: the row itself animates, so the drawer slides to whatever its
+       content is instead of to a number this stylesheet had to guess. */
+    .fin-body {
+      flex: 0 1 auto;
+      min-height: 0;
+      display: grid;
+      grid-template-rows: 0fr;
+      transition: grid-template-rows 0.22s ease;
+    }
+
+    .finished.open .fin-body { grid-template-rows: 1fr; }
+
+    /* THE CLIP IS ALSO THE SCROLLER. Closed, the 0fr row gives it no height
+       and it hides what is inside; open and capped by the 45%, the 1fr row
+       hands it a definite height that is shorter than its contents, and the
+       scrollbar lands exactly there. Open and NOT capped — a short day's
+       history — it is content-tall and never scrolls at all. */
+    .fin-clip { min-height: 0; overflow: hidden; }
+    .finished.open .fin-clip { overflow: hidden auto; }
+
+    .fin-list { padding: 2px 9px 9px; }
+
+    /* ── A finished BOOK, as a block ───────────────────────────────────────
+       Owen: *"the completed jobs can be blocks, just like they were when they
+       were pending."* Same '.card.narrow' family, so a book that finished
+       reads as the same object it was while it waited — one card, one cover,
+       one title — and the only difference is that its chain is history. */
+    .fin-card { margin-bottom: 8px; }
+    .fin-card:last-child { margin-bottom: 0; }
+    .fin-card.on { border-color: var(--border-default); }
+
+    .fin-block {
+      font-family: inherit;
+      width: 100%;
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      padding: 8px 10px;
+      border: 0;
+      background: transparent;
+      color: inherit;
+      cursor: pointer;
+      text-align: left;
+    }
+
+    .fin-block:hover h3 { color: var(--accent); }
+    .fin-block .min { flex: 1; }
+    .fin-block h3 {
+      margin: 0;
+      font-size: 0.8125rem;
+      font-weight: 600;
+      color: var(--text-primary);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .fin-block .sub { font-size: 0.6875rem; }
+    .fin-block .pill { flex: none; }
+
+    /* ── The steps inside a block ──────────────────────────────────────────
+       THE RUNNING CARD'S LADDER, reused: '.rung' with its dot and its
+       ellipsising name, because "what this book ran, in order" is the same
+       readout and a second drawing of it would drift from the first. What
+       changes is the last column — a live rung ends in a percentage, a
+       finished one ends in what it turned out to be. */
+    .fin-ladder {
+      gap: 7px;
+      margin: 0;
+      padding: 0 10px 9px 10px;
+      border-top: 1px solid var(--border-subtle);
+      padding-top: 8px;
+    }
+
+    .fin-rung { grid-template-columns: 10px minmax(0, 1fr) auto; }
+
+    /* A cancelled or failed step keeps the dashed, unfilled dot a waiting rung
+       has: it did not finish, and the ladder should not say it did. */
+    .mk {
+      justify-self: end;
+      flex: none;
+    }
+
+    /* The measurements under the step's own name, indented to the dot's
+       column, so a 320px sidebar reads down rather than across. */
+    .fin-meta {
+      display: flex;
+      align-items: baseline;
+      flex-wrap: wrap;
+      gap: 5px;
+      margin: 2px 0 0 17px;
+      font-size: 0.625rem;
+      color: var(--text-muted);
+    }
+
+    .fin-num { font-variant-numeric: tabular-nums; }
+
+    .fin-file {
+      font-size: 0.625rem;
+      max-width: 100%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
 
     .link {
       font-family: inherit;
@@ -2643,6 +3124,8 @@ interface ChainRung {
       .sdot.run::after { animation: none; opacity: 1; }
       .bar i { transition: none; }
       .ctl, .grip { transition: none; }
+      /* The drawer still opens and closes — it just stops sliding there. */
+      .fin-body, .chev { transition: none; }
     }
   `],
 })
@@ -2658,6 +3141,106 @@ export class QueueComponent {
   readonly expanded = signal<ReadonlySet<string>>(new Set());
 
   readonly finished = computed(() => this.tray.finishedToday());
+
+  /**
+   * How many finished BOOKS ended badly — counted the same way the header's
+   * total is, so "3 · 1 failed" means one of those three books. A step count
+   * here would disagree with the number beside it, and a book with two failed
+   * steps is still one book that needs looking at.
+   */
+  readonly finishedFailed = computed(
+    () => this.finishedBlocks().filter(b => b.status === 'failed').length);
+
+  /** Whether the Finished drawer is open. Remembered per machine. */
+  readonly finishedOpen = signal<boolean>(readFinishedOpen());
+
+  /** Which finished book has its steps showing. One at a time. */
+  readonly openFinished = signal<string | null>(null);
+
+  /**
+   * TODAY'S FINISHED STEPS, GROUPED INTO ONE BLOCK PER BOOK.
+   *
+   * Two passes, and both are needed:
+   *
+   *  - BY jobId first, because that is the engine's own idea of "these steps
+   *    belong together" and it is exact. Every step of one narration run
+   *    carries the same job id whatever its label says.
+   *
+   *  - THEN BY TITLE, because a book's work is not one job. A read that was
+   *    converted, then simplified, then narrated is three jobs against one
+   *    book, and drawing it as three blocks would put the same cover and the
+   *    same title on screen three times — the exact complaint about the table,
+   *    reshaped into cards. The title is what a person calls the book, so it
+   *    is what the merge is on; case and surrounding space are ignored because
+   *    they are typing, not identity.
+   *
+   * The engine hands these over NEWEST FIRST ('finishedSince'), so the block
+   * order here is "most recently finished book first" — and the runs inside
+   * each block are reversed into the order they actually ran, which is the
+   * only order a chain reads in.
+   */
+  readonly finishedBlocks = computed<readonly FinishedBlock[]>(() => {
+    const byJob = new Map<string, FinishedBlock>();
+    const byTitle = new Map<string, FinishedBlock>();
+    const order: FinishedBlock[] = [];
+
+    for (const run of this.finished()) {
+      const titleKey = run.title.trim().toLowerCase();
+      let block = byJob.get(run.jobId) ?? byTitle.get(titleKey);
+      if (!block) {
+        block = {
+          key: run.jobId,
+          title: run.title,
+          cover: null,
+          runs: [],
+          status: 'done',
+        };
+        order.push(block);
+        byTitle.set(titleKey, block);
+      }
+      byJob.set(run.jobId, block);
+      block.runs.push(run);
+      // The cover is the book's, not the step's, so the first job that can
+      // answer answers for all of them.
+      if (block.cover === null) block.cover = this.tray.coverForJobId(run.jobId);
+    }
+
+    for (const block of order) {
+      // THE WORST THING THAT HAPPENED WINS. A book whose narration succeeded
+      // and whose assembly failed did not have a good day, and a green pill on
+      // it would be the page lying about work that needs attention.
+      block.status = block.runs.some(r => r.status === 'failed')
+        ? 'failed'
+        : block.runs.some(r => r.status === 'cancelled')
+          ? 'cancelled'
+          : 'done';
+
+      block.runs.sort((a, b) => finishedMs(a) - finishedMs(b));
+      const last = block.runs[block.runs.length - 1];
+      block.finishedAt = last?.finishedAt;
+    }
+
+    return order;
+  });
+
+  /**
+   * OPEN OR CLOSED, and remembered. A write that throws costs the memory of
+   * the choice and nothing else — the drawer still opens.
+   */
+  toggleFinished(): void {
+    const next = !this.finishedOpen();
+    this.finishedOpen.set(next);
+    try {
+      localStorage.setItem(FINISHED_OPEN_KEY, next ? '1' : '0');
+    } catch {
+      // A preference is not worth failing a page for.
+    }
+  }
+
+  /** One book's steps at a time; pressing the open one closes it. */
+  toggleFinishedBlock(block: FinishedBlock): void {
+    this.openFinished.set(this.openFinished() === block.key ? null : block.key);
+  }
 
   /** The toolbar's half of the shared Running / Paused wording. */
   readonly queueState = QUEUE_STATE_CONTROL;
