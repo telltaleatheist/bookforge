@@ -3815,12 +3815,28 @@ export class QueueComponent {
    */
   lockedReason(plan: BookPlan): string | null {
     if (!this.isLocked(plan)) return null;
-    return 'This book holds a card. Stop it first; it keeps what it has finished.';
+    return 'This book is on a card right now. Stop it first; it keeps what it has finished.';
   }
 
+  /**
+   * LOCKED MEANS ON THE CARD RIGHT NOW — a running step, and nothing else.
+   *
+   * Owen, 2026-09-20: *"i canceled one that was currently in the queue but its
+   * still taking up the slot. i cant move it out."* This read `true` for any
+   * book with a resolved venue, so a book he STOPPED — held, not running, but
+   * still pinned to the machine it started on (kept for §4.3, "a job finishes
+   * where it started", so a resume lands on the same card) — was undraggable
+   * and drawn as a card occupant. A stopped book is not on the card; pinning it
+   * only says WHERE it would resume.
+   *
+   * So the pin no longer locks. Dragging a stopped book to Pending routes
+   * through `returnToPending`, which clears the pin when nothing stands on the
+   * card and keeps it when the book is genuinely mid-hold across GPU acts — the
+   * same guarded release the engine already owns. Only a running step forbids
+   * the drag, because you cannot move a render off a card mid-chunk.
+   */
   isLocked(plan: BookPlan): boolean {
-    return plan.waitForResolved.length > 0
-      || plan.steps.some((step) => step.status === 'running');
+    return plan.steps.some((step) => step.status === 'running');
   }
 
   /**
