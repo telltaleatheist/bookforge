@@ -108,6 +108,22 @@ function deriveBilingualAssemblyStages(job: QueueJob): JobStageProgress[] {
 }
 
 /** The stage bars to render under a job's own progress bar. Empty = no breakdown. */
+/**
+ * The noun the throughput readouts name a unit of work by — "page" for a page
+ * read (a dots convert, or a hosted Foundry render/read), "chunk" for everything
+ * else (TTS chunks, translate blocks). A convert's chunk IS a page, so calling it
+ * a chunk read right but landed in the wrong vocabulary; this is the one place
+ * that decides which word the lane, the rate and the count all use.
+ */
+export function readUnitNoun(job: QueueJob | null | undefined): 'page' | 'chunk' {
+  if (!job) return 'chunk';
+  if (job.type === 'vlm-convert') return 'page';
+  if (job.type === 'foundry-job' && (job.foundryPhase === 'read' || job.foundryPhase === 'render')) {
+    return 'page';
+  }
+  return 'chunk';
+}
+
 export function stagesFor(job: QueueJob): JobStageProgress[] {
   switch (job.type) {
     // Bridge-reported. The bridge knows which optional passes this run performed;
@@ -121,6 +137,14 @@ export function stagesFor(job: QueueJob): JobStageProgress[] {
     // magnitude apart. The MLX route reads each page as it draws it and reports
     // NO stages, which renders as the single overall bar: one phase, one bar.
     case 'vlm-convert':
+      return job.stages ?? [];
+
+    // Hosted Foundry work (`foundry-job`). A conversion on the endpoint route
+    // reports a render bar and a read bar (see `queue-steps/foundry-job.ts`); a
+    // single-phase act (translate / clean / analyze) reports none and renders as
+    // the single overall bar. Bridge-reported either way — an empty result is
+    // "not yet", never an invented breakdown.
+    case 'foundry-job':
       return job.stages ?? [];
 
     // Bridge-reported when available (parallel-tts-bridge knows the model-load

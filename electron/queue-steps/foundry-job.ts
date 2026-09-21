@@ -36,7 +36,7 @@
  */
 import { noteStepStopped } from '../queue-engine';
 import type { StepModule, StepRunContext } from '../queue-engine';
-import type { ArtifactRef, StepResource } from '../../shared/queue/engine-types';
+import type { ArtifactRef, JobStageProgress, StepResource } from '../../shared/queue/engine-types';
 import {
   FOUNDRY_VERSION_FOR_CLEAN_TEXT, foundryRowFailure, foundryRunner, foundryTooOldForCleanText,
   parseFoundryProgressLine,
@@ -115,6 +115,31 @@ function resourceFor(config: Record<string, unknown>): StepResource {
   return kind === 'read' || kind === 'translate' || kind === 'simplify' || kind === 'clean'
     ? 'gpu'
     : 'cpu';
+}
+
+/**
+ * The two bars a conversion has when a render pre-pass runs ahead of the read,
+ * and none for a single-phase act (translate / clean / analyze). Mirrors
+ * `vlm-convert`'s own `stagesOf`, deliberately: a book must read the same in a
+ * queue lane whichever door started it.
+ *
+ * The render pass is PREPARATION, not the counted GPU work. Keeping it a separate
+ * bar is also what keeps the read-rate honest — see the render branch in
+ * `onProgress`, where the render count is refused the chunk metric so it cannot
+ * stamp the rate anchor above where the read phase then restarts.
+ */
+function renderReadStages(
+  render: { done: number; total: number } | null,
+  readPage: number,
+  readTotal: number,
+): JobStageProgress[] {
+  if (!render || render.total <= 0) return [];
+  const renderPct = Math.min(100, Math.round((render.done / render.total) * 100));
+  const readPct = readTotal > 0 ? Math.min(100, Math.round((readPage / readTotal) * 100)) : 0;
+  return [
+    { name: 'render', label: 'Rasterising pages', pct: renderPct, status: renderPct >= 100 ? 'complete' : 'running' },
+    { name: 'read', label: 'Reading pages', pct: readPct, status: readPct >= 100 ? 'complete' : (renderPct >= 100 ? 'running' : 'pending') },
+  ];
 }
 
 export const foundryJobStep: StepModule = {
@@ -472,7 +497,17 @@ export const foundryJobStep: StepModule = {
      * the one placement this run was given.
      */
     const recorded: { server: string; jobId: string }[] = [];
-    const run = async (): Promise<FoundryRunOutcome> => foundryRunner()(config.request, {
+    const run = async (): Promise<FoundryRunOutcome> => {
+      /*
+       * THE RASTERISING PRE-PASS THIS ATTEMPT HAS SEEN, or null. Only the READ
+       * phase feeds the rate anchor (see onProgress): a render count that stamped
+       * it would land ABOVE where the read phase restarts its own counter,
+       * leaving the rate window's chunk span negative and the ETA "not timed yet"
+       * for the whole read. Per-attempt, so a retry rasterises and re-reads from
+       * a clean slate.
+       */
+      let render: { done: number; total: number } | null = null;
+      return foundryRunner()(config.request, {
       parentStep: config.parentStep,
       signal: ctx.signal,
       /*
@@ -529,6 +564,37 @@ export const foundryJobStep: StepModule = {
           ctx.report({ message: line, detail: line });
           return;
         }
+        if (counted.phase === 'render') {
+          /*
+           * THE RASTERISING PRE-PASS, ON ITS OWN BAR AND OFF THE RATE ANCHOR.
+           *
+           * The endpoint route renders every page before the first is read, so a
+           * render line's page count climbs to the book's length while zero pages
+           * have been read. Reported as a chunk metric it stamped the read-rate
+           * anchor at ~the whole book (155 of 213, 53 s in), and the read phase
+           * then restarted its counter from 1 — so `chunksDone (133) < anchor
+           * (155)`, the rate window stayed negative, and the lane read "not timed
+           * yet" for the entire read (Owen, 2026-09-21). It carries NO metric:
+           * only real read landings feed the anchor. The read percent is still 0
+           * here, so the main bar waits while this sub-bar fills.
+           */
+          render = { done: counted.page, total: counted.total };
+          ctx.report({
+            percent: 0,
+            message: line,
+            detail: null,
+            foundryPhase: counted.phase,
+            stages: renderReadStages(render, 0, counted.total),
+          });
+          return;
+        }
+        /*
+         * READING — or a single-phase act (translate / clean / analyze), which
+         * ran no render pass and shows one bar. If a render pass DID run, the
+         * first read line means it is finished (foundry renders the whole book
+         * before posting a page), so its bar lands full.
+         */
+        if (render !== null) render = { done: render.total, total: render.total };
         ctx.report({
           percent: counted.total > 0
             ? Math.min(100, Math.round((counted.page / counted.total) * 100))
@@ -542,10 +608,16 @@ export const foundryJobStep: StepModule = {
            */
           detail: null,
           foundryPhase: counted.phase,
+          ...(render !== null
+            ? { stages: renderReadStages(render, counted.page, counted.total) }
+            : {}),
           /*
            * THE COUNTS ARE KEPT, not just divided into a percentage. Their shelf
            * renders them back as "Reading 41 / 317 pages", and a percentage
            * cannot be un-divided, so the round trip has to carry the originals.
+           * These are the READ counts only — the render pre-pass above sends
+           * none, so the rate anchor is stamped at the first read and nowhere
+           * else.
            */
           metrics: { chunksCompletedInJob: counted.page, totalChunksInJob: counted.total },
         });
@@ -591,7 +663,8 @@ export const foundryJobStep: StepModule = {
           submittedAt: new Date().toISOString(),
         });
       },
-    });
+      });
+    };
     /*
      * NOTHING TO BRACKET ANY MORE, AND THAT IS THE POINT. This used to sit
      * inside a `try/finally` that stopped BookForge's own vLLM afterwards

@@ -19,6 +19,7 @@ import { Injectable, OnDestroy, signal } from '@angular/core';
 import { runElapsedSeconds, taskWorkingSeconds } from '@shared/queue/job-timing';
 import { throughputSample } from '@shared/queue/rate-window';
 import { JobStageProgress, QueueJob } from '../models/queue.types';
+import { readUnitNoun } from '../models/job-stages';
 
 /** The stage fields the ETA math needs — accepts any stage list the UI renders. */
 type StageView = Pick<JobStageProgress, 'name' | 'pct' | 'status' | 'weight'>;
@@ -333,7 +334,11 @@ export class JobEtaService implements OnDestroy {
       textRates.push(`${Math.round(sample.sentencesPerMin)} sent/min`);
     }
     if (textRates.length === 0) {
-      textRates.push(`${Math.round(sample.chunksPerMin * 10) / 10} chunks/min`);
+      // A page read has no sentence or word breakdown, so it always lands here —
+      // and its unit is PAGES, not the generic "chunks". readUnitNoun is the one
+      // place that word is decided (job-stages.ts).
+      const unit = readUnitNoun(job);
+      textRates.push(`${Math.round(sample.chunksPerMin * 10) / 10} ${unit}s/min`);
     }
 
     const text = textRates.join(' · ');

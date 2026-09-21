@@ -219,6 +219,7 @@ function projectStep(job: EngineJob, step: EngineStep, multi: boolean): QueueJob
     status: legacyStatus(step),
     progress: step.progress.percent,
     stages: step.progress.stages,
+    foundryPhase: step.progress.foundryPhase,
     stageDetail: step.progress.detail,
     activeBatch: step.progress.activeBatch,
     prep: step.progress.prep,

@@ -1251,7 +1251,7 @@ interface ChainRung {
                    sentences — so this read ~3.6x lower than the book's real
                    sentence count and disagreed with the sent/min beside it,
                    which IS raw sentences (Owen, 2026-08-20). -->
-              <div class="ro"><div class="k">Chunks</div><div class="v">{{ lane.count }}</div></div>
+              <div class="ro"><div class="k">{{ lane.countNoun }}</div><div class="v">{{ lane.count }}</div></div>
             }
             @if (lane.speed) {
               <div class="ro"><div class="k">Rate</div><div class="v">{{ lane.speed }}</div></div>

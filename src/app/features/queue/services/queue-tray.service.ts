@@ -43,7 +43,7 @@ import {
 import { ElectronService } from '../../../core/services/electron.service';
 import { LibraryService } from '../../../core/services/library.service';
 import type { AudiobookMetadata } from '../models/queue.types';
-import { stagesFor } from '../models/job-stages';
+import { readUnitNoun, stagesFor } from '../models/job-stages';
 import { JobEtaService, formatDuration } from './job-eta.service';
 import { QueueService } from './queue.service';
 
@@ -68,8 +68,10 @@ export interface LaneView extends BenchLane {
    * that says whether tonight is going well, not the percentage.
    */
   speed: string | null;
-  /** "128 / 1,617" — chunks done over total, when the step counts them. */
+  /** "128 / 1,617" — units done over total, when the step counts them. */
   count: string | null;
+  /** The noun for `count` — "Pages" for a page read, "Chunks" otherwise. */
+  countNoun: string;
   /** Ticking elapsed for the step in this lane. Null before it has begun. */
   elapsed: string | null;
 }
@@ -234,6 +236,7 @@ export class QueueTrayService {
       count: row?.totalChunksInJob
         ? `${(row.chunksCompletedInJob ?? 0).toLocaleString()} / ${row.totalChunksInJob.toLocaleString()}`
         : null,
+      countNoun: row && readUnitNoun(row) === 'page' ? 'Pages' : 'Chunks',
       elapsed: row && row.startedAt ? this.eta.elapsedDisplay(row) : null,
     };
   }
