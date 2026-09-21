@@ -10,10 +10,20 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\<user>\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **77a529d** — *Adopt Crucible 1.0.17: the Mac reads pages (dep-only)* (was 04758be) |
+| Source sha | **b1c68fd** — *Adopt Crucible 1.0.18: a running server follows its config.toml (dep-only)* (was 77a529d) |
 | Engine | **NOT VENDORED AND NOT KNOWABLE FROM THIS FILE** — it is a spawned CLI resolved at RUNTIME (`FOUNDRY_BIN`, else `resolveFoundryPath`, `electron/main.ts`), so which build executes is a property of the machine and not of this copy. On a developer's Mac that resolves to Foundry's own checkout at `/Volumes/Callisto/Projects/foundry/dist/foundry-darwin-arm64`, which is whatever was last built there — `foundry 2.0.2 (04758be)` — REBUILT at this re-vendor (2026-09-21) so the engine carries fdba761's clean-text log change. **Ask the binary: `$FOUNDRY_BIN --version`.** See *The engine this file named was not the engine that ran* below. |
 | Copied on | 2026-09-19 (five times: 3738c01, 3436fc5, 806d44b, f349771, ca4754c) and 2026-09-20 (98a4344, 9e0b27d, dccc144, 7b98004, cc5fc5b, 93010d8, 77e1d6d) |
 | Copied by | Mechanical source sync, verified against Foundry `77e1d6d:app/` (`diff -rq`, clean but for this file, `IPC-CHANNELS.md` and `.gitignore` — see below); details below |
+
+## The `77a529d → b1c68fd` re-vendor — the 1.0.18 SDK adoption (2026-09-21)
+
+Dependency-only, the same four files as the 1.0.17 entry below. 1.0.18 is one
+server-side fix: a running Crucible re-reads its own config.toml when the file moves,
+so a `crucible install` or `capability --write` from another process reaches the
+wire without a restart — the thing that kept the Mac's `/v1/capability` saying
+"no mlx-darwin block" for two minutes after 1.0.17 while its own CLI said yes. The
+SDK's wire is unchanged. Gates: `node tools/test-foundry-adopt.js` 40/40; root
+`tsc -p tsconfig.electron.json --noEmit` exit 0.
 
 ## The `04758be → 77a529d` re-vendor — the 1.0.17 SDK adoption, the Mac reads pages (2026-09-21)
 
