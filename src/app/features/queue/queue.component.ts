@@ -3895,10 +3895,10 @@ export class QueueComponent {
    * WHY THIS LANE WILL NOT TAKE THIS BOOK, or null when it will.
    *
    * Every refusal is a fact the SNAPSHOT already states — the operator's switch,
-   * the transport's last answer, the step module's own `travels`. Nothing is
-   * re-measured here and nothing is invented: a page that decided for itself
-   * whether a machine was reachable would be a second opinion about a decision
-   * the scheduler has already made.
+   * the transport's last answer, the step module's own `travels`, the engine's
+   * published capability. Nothing is re-measured here and nothing is invented: a
+   * page that decided for itself whether a machine was reachable would be a
+   * second opinion about a decision the scheduler has already made.
    */
   pinRefusal(lane: LaneView, plan: BookPlanView | null): string | null {
     if (plan === null) return null;
@@ -3910,6 +3910,19 @@ export class QueueComponent {
       return `${lane.setLabel} is switched off. Switch it on to send work there.`;
     }
     if (lane.down) return `${lane.setLabel} is not answering — ${lane.down}`;
+    /*
+     * THIS ENGINE HAS PUBLISHED IT CANNOT SERVE THE BOOK'S CLASS — the drop
+     * refused at the lane, mirroring what the scheduler does at admission (Owen's
+     * pages-refused report, 2026-09-21). Only an EXPLICIT `false` refuses: a
+     * class this engine has said nothing about is `unknown`, which is capable, so
+     * a fresh lane never turns a book away. Crucible has no `summary` on the
+     * capability decision yet, so the line is derived from the class name rather
+     * than pasting the engine's internal reason.
+     */
+    const refused = plan.classes.filter((klass) => lane.servedClasses[klass] === false);
+    if (refused.length > 0) {
+      return `${lane.setLabel} can't serve ${refused.join(', ')} — drop it on a server that can.`;
+    }
     return null;
   }
 

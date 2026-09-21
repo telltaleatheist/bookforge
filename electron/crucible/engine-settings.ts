@@ -84,6 +84,7 @@ import { CRUCIBLE_TEXT_ACTS } from './text-acts';
 import { crucibleClientFor, CRUCIBLE_CLIENT_NAME } from './servers';
 import {
   noteCrucibleRoutes,
+  noteCrucibleServedClasses,
   noteCrucibleUpstreams,
   routesFromCapability,
   routesFromSettings,
@@ -597,6 +598,18 @@ export async function crucibleCapabilityWithRoutes(
     route: row.route,
   }));
   noteCrucibleRoutes(server, routesFromCapability(classes));
+  /*
+   * A READ OF CAPABILITY IS A READ OF WHAT WILL BE SERVED, so it is recorded on
+   * the same pass — the routing record answers "does this class run on the card
+   * or upstream", and this half answers the prior question "will this engine
+   * serve it at all" (`crucible/routes.ts`, `noteCrucibleServedClasses`). It is
+   * what lets the scheduler route around a server that has published
+   * `enabled: false` for a class rather than land a book there and be refused
+   * (Owen's pages-refused report, 2026-09-21).
+   */
+  noteCrucibleServedClasses(server, classes.map((row) => ({
+    capability: row.capability, enabled: row.enabled,
+  })));
   return {
     backendKind: record.backendKind,
     totalBytes: record.totalBytes,

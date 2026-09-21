@@ -123,7 +123,10 @@ import {
   type SetOccupancy,
   type SlotSet,
 } from '../shared/queue/slot-sets';
-import { crucibleRouteOf, crucibleUpstreamsOf, onCrucibleRecordChanged } from './crucible/routes';
+import {
+  crucibleRouteOf, crucibleServedClassesOf, crucibleServesClass, crucibleUpstreamsOf,
+  onCrucibleRecordChanged,
+} from './crucible/routes';
 import { engineLanes } from './crucible/engine-lanes';
 import { JOB_GERUND } from '../shared/queue/job-words';
 // The rate anchor's rule lives beside the window it opens — see `rateAnchor`.
@@ -742,13 +745,18 @@ function currentServerReach(): ServerReach[] {
      * surface that turned "unreachable" into "off" would disable hardware
      * nobody chose to disable.
      */
+    // What this engine has published it will serve, for the bench's drop
+    // refusal. Empty until coordination reads it, so nothing is refused on a
+    // fresh launch (`crucible/routes.ts`, `crucibleServedClassesOf`).
+    const served = crucibleServedClassesOf(row.name);
+    const base = { name: row.name, enabled: row.enabled, servedClasses: served };
     switch (state.kind) {
-      case 'ready': return { name: row.name, enabled: row.enabled, reach: 'ready', detail: null };
+      case 'ready': return { ...base, reach: 'ready' as const, detail: null };
       case 'unreachable':
-        return { name: row.name, enabled: row.enabled, reach: 'unreachable', detail: state.detail };
+        return { ...base, reach: 'unreachable' as const, detail: state.detail };
       case 'busy':
-        return { name: row.name, enabled: row.enabled, reach: 'busy', detail: state.line };
-      default: return { name: row.name, enabled: row.enabled, reach: 'unknown', detail: null };
+        return { ...base, reach: 'busy' as const, detail: state.line };
+      default: return { ...base, reach: 'unknown' as const, detail: null };
     }
   });
 }
@@ -1048,6 +1056,9 @@ function buildStep(
     sourceRef: spec.sourceRef,
     resource: spec.resource ?? mod.resource(spec.config),
     travels: mod.machines !== undefined && mod.machines(spec.config) === 'any',
+    // The class the module names for a Crucible, copied on so the scheduler and
+    // the bench read it without the registry. Absent when the module names none.
+    ...(mod.crucibleClass?.(spec.config) ? { crucibleClass: mod.crucibleClass(spec.config)! } : {}),
     status: held ? 'held' : (parentStepId === SOURCE_PARENT ? 'queued' : 'waiting'),
     progress: {},
     metrics: {},
@@ -3167,6 +3178,17 @@ function stepTravels(type: JobType, config: Record<string, unknown>): boolean {
 }
 
 /**
+ * The capability class a step asks a Crucible for, or undefined — the module's
+ * own answer, copied onto the step for the scheduler and the bench to read
+ * without the registry (`QueueStep.crucibleClass`). Re-asked on every load, like
+ * `stepTravels`, because the module is the authority.
+ */
+function stepCrucibleClass(type: JobType, config: Record<string, unknown>): string | undefined {
+  const mod = modules.get(type);
+  return mod?.crucibleClass?.(config ?? {}) ?? undefined;
+}
+
+/**
  * WHERE THIS STEP RUNS, or why it is not running yet.
  *
  * Synchronous on purpose — the pump is — so every network answer it needs has
@@ -3188,6 +3210,15 @@ function crucibleAdmission(
    * answer differently in the same tick.
    */
   cardHeld: boolean,
+  /*
+   * THE CAPABILITY CLASS THIS STEP NEEDS, or undefined when its module names
+   * none. Passed in for `gpuSlotTaken`'s reason — the pump has already computed
+   * it (`step.crucibleClass`), and re-deriving it here would be a second owner
+   * of a per-step fact. `canServe` reads the coordination record (`routes.ts`),
+   * where `unknown` is capable, so this filters a venue out ONLY on an explicit
+   * `enabled: false` (Owen's pages-refused report, 2026-09-21).
+   */
+  needClass: string | undefined,
 ): CrucibleAdmission {
   const host = crucibleHost;
   if (host === null) {
@@ -3222,6 +3253,12 @@ function crucibleAdmission(
     // `docs/PHASE7-LANES.md` §2.4). It is what lets two books render on two
     // machines while two books bound for one machine take turns.
     gpuSlotTaken: (server) => gpuSlotTakenAt(server),
+    // THE CAPABILITY FILTER. `undefined` needClass switches it off entirely;
+    // otherwise a server is a candidate only if it has not published
+    // `enabled: false` for this class — `unknown` (unread, or class unmentioned)
+    // is CAPABLE (`crucibleServesClass`, `routes.ts`).
+    needClass,
+    canServe: (server) => crucibleServesClass(server, needClass ?? '') !== 'refused',
   });
 
   switch (verdict.kind) {
@@ -3921,8 +3958,20 @@ export function pump(): void {
           if (parkedUntil > Date.now()) { heldTailParked = true; continue; }
           heldTailParks.delete(step.id);
         }
+        /*
+         * THE CLASS THIS STEP NEEDS, computed ONCE and used twice: the
+         * capability filter in `crucibleAdmission` (route around a server that
+         * cannot serve it) and the cloud-route check below (does this engine
+         * run it locally or forward it). `step.crucibleClass` is the module's
+         * answer, derived on build and re-derived on load, so both readers
+         * agree. Only a travelling step has a venue to filter, so a local step
+         * carries `undefined` here.
+         */
+        const stepClass = step.travels === true
+          ? (step.crucibleClass ?? undefined)
+          : undefined;
         const routed = step.travels === true
-          ? crucibleAdmission(job, cardHeld)
+          ? crucibleAdmission(job, cardHeld, stepClass)
           : { ok: true as const, venue: LONGFORM_ALIGN_SET };
         if (!routed.ok) {
           admissionBlocked = true;
@@ -3990,9 +4039,10 @@ export function pump(): void {
          * Assuming `local` would park an upstream-routed class on a card
          * nothing runs on; assuming `upstream` would do the mirror.
          */
-        const routableClass = step.travels === true
-          ? (moduleFor(step.type).crucibleClass?.(step.config ?? {}) ?? null)
-          : null;
+        // The SAME class the capability filter used above (`stepClass`), read
+        // back as `null` for a step that names none — the shape this block has
+        // always taken.
+        const routableClass = stepClass ?? null;
         let venue = routed.venue;
         if (routableClass !== null && routed.venue !== LONGFORM_ALIGN_SET) {
           const route = crucibleRouteOf(routed.venue, routableClass);
@@ -5144,6 +5194,12 @@ function reviveInterrupted(): void {
           // step can travel, and a build that teaches one to must be able to
           // say so about work already in the queue.
           step.travels = stepTravels(step.type, step.config ?? {});
+          // …and on which capability class it asks a Crucible for, for the same
+          // reason: a queue file predating this field, or a build that taught a
+          // step its class, must read the module's current answer.
+          const klass = stepCrucibleClass(step.type, step.config ?? {});
+          if (klass === undefined) delete step.crucibleClass;
+          else step.crucibleClass = klass;
         }
       }
       const retired = RETIRED_JOB_TYPES.get(step.type);

@@ -504,6 +504,18 @@ export interface BenchLane {
    */
   down: string | null;
   /**
+   * WHICH CAPABILITY CLASSES THIS LANE'S ENGINE HAS PUBLISHED IT WILL SERVE —
+   * class → `enabled` — for the page's drop refusal (Owen's pages-refused
+   * report, 2026-09-21).
+   *
+   * A class ABSENT from this map is `unknown`, which is CAPABLE: the drop is
+   * allowed, matching the scheduler exactly (`crucible/routes.ts`). Empty on a
+   * lane with no engine (`local-work`, the aligner, a cloud lane) and on an
+   * engine nobody has read yet — so a drop is refused only on an explicit
+   * `enabled: false`, never on absence of knowledge.
+   */
+  servedClasses: Readonly<Record<string, boolean>>;
+  /**
    * The card's latest reading, on the GPU lane only, while something samples.
    * `throttleSustained` on it is the warning: the driver itself saying the card is
    * slowing down — which is what "the run is mysteriously slow" looked like
@@ -665,6 +677,11 @@ export function benchLanes(snapshot: QueueSnapshot): BenchLane[] {
           occupant,
           hold,
           down: laneDown(snapshot, set.id, resource, set.disabled),
+          // What the engine behind this lane has published it serves. Keyed by
+          // server name, so a cloud lane (`<server>:cloud`) and this app's own
+          // sets never match and answer `{}` — nothing refused (`laneDown`'s
+          // reasoning, same keying).
+          servedClasses: snapshot.servers.find((s) => s.name === set.id)?.servedClasses ?? {},
           /*
            * THE THERMAL READING IS THIS MACHINE'S CARD, so it goes on no
            * remote set's lane. `gpuThermal` is sampled by nvidia-smi here; a
@@ -959,6 +976,17 @@ export interface BookPlan {
    * started on (§4.3).
    */
   waitForResolved: string[];
+  /**
+   * THE CAPABILITY CLASSES THIS BOOK'S TRAVELLING STEPS NEED — `pages`,
+   * `clean`, … — distinct, in the order found. For the page's drop refusal: a
+   * lane whose engine has published `enabled: false` for one of these cannot
+   * take the book (Owen's pages-refused report, 2026-09-21).
+   *
+   * A LIST for `waitFor`'s reason — a book can spread across runs — and empty
+   * for a step that names no class, which is most of them; the refusal only
+   * fires when a class here is explicitly refused by the lane's engine.
+   */
+  classes: string[];
 }
 
 /** A step inside a book plan: running ones are marked, not re-drawn. */
@@ -1139,7 +1167,7 @@ function plansOf(snapshot: QueueSnapshot, pending: boolean): BookPlan[] {
     if (plan === undefined) {
       plan = {
         key, title: job.title, jobIds: [], steps: [], allHeld: true,
-        travels: false, waitFor: [], waitForResolved: [],
+        travels: false, waitFor: [], waitForResolved: [], classes: [],
       };
       byKey.set(key, plan);
     }
@@ -1153,6 +1181,12 @@ function plansOf(snapshot: QueueSnapshot, pending: boolean): BookPlan[] {
       if (!plan.waitFor.includes(says)) plan.waitFor.push(says);
       if (job.waitForResolved !== undefined && !plan.waitForResolved.includes(job.waitForResolved)) {
         plan.waitForResolved.push(job.waitForResolved);
+      }
+      // The classes its travelling steps ask a Crucible for, distinct — what
+      // the drop refusal matches against the lane's published capability.
+      for (const step of job.steps) {
+        if (step.travels !== true || step.crucibleClass === undefined) continue;
+        if (!plan.classes.includes(step.crucibleClass)) plan.classes.push(step.crucibleClass);
       }
     }
 

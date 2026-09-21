@@ -621,6 +621,19 @@ export interface QueueStep {
    */
   travels?: boolean;
   /**
+   * THE CAPABILITY CLASS THIS STEP ASKS A CRUCIBLE FOR — `pages`, `clean`,
+   * `translate`, `simplify`, `analysis` — or absent when its module names none.
+   *
+   * DERIVED, like `travels` and `resource`, and re-asked from the module on
+   * every load (`StepModule.crucibleClass`): the module is the authority, this
+   * is the copy the scheduler reads inside a synchronous pump and the copy the
+   * bench reads to refuse a drop onto an engine that cannot serve it (Owen's
+   * pages-refused report, 2026-09-21). It is what a server's `GET /v1/capability`
+   * decision is matched against — a book routed to a server that published
+   * `enabled: false` for this class holds rather than landing and being refused.
+   */
+  crucibleClass?: string;
+  /**
    * WHERE THIS STEP'S WORK ACTUALLY WENT — a registered server's name, a cloud
    * lane, or `local-longform-align` for the one GPU act that cannot travel.
    *
@@ -934,6 +947,18 @@ export interface ServerReach {
    * is nothing to add (`ready`, `unknown`).
    */
   readonly detail: string | null;
+  /**
+   * WHICH CAPABILITY CLASSES THIS ENGINE HAS PUBLISHED A DECISION ABOUT —
+   * class → `enabled`, straight from its `GET /v1/capability`.
+   *
+   * For the bench, which refuses a drop onto a lane whose server cannot serve
+   * the book's class (`shared/queue/bench.ts`, `BenchLane.servedClasses`; the
+   * page's `pinRefusal`). A class ABSENT from this map is `unknown`, which is
+   * CAPABLE — the drop is allowed, matching the scheduler (`crucible/routes.ts`,
+   * `crucibleServesClass`). Empty for an engine nobody has read yet, so nothing
+   * is refused on a fresh launch (Owen's pages-refused report, 2026-09-21).
+   */
+  readonly servedClasses: Readonly<Record<string, boolean>>;
 }
 
 /** The engine's whole published state. */

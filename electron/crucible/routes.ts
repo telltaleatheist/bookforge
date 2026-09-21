@@ -64,6 +64,43 @@ type ServerRoutes = Readonly<Record<string, CrucibleRouteKind>>;
 const byServer = new Map<string, ServerRoutes>();
 
 /**
+ * …AND WHETHER EACH ENGINE WILL SERVE EACH CLASS AT ALL — capability →
+ * `enabled`, straight off the same `GET /v1/capability` the routes come from.
+ *
+ * ── The gap this closes (Owen's pages-refused report, 2026-09-21) ──────────
+ *
+ * A `pages` job routed to the Mac's Crucible was refused AFTER it landed: that
+ * engine's capability record publishes `enabled: false` for `pages` on its
+ * mlx-darwin backend (the model runs in-process but not over the HTTP server
+ * Crucible drives — correct and, for now, permanent). The scheduler placed the
+ * book there anyway, because routing consulted the RANK and the enable SWITCH
+ * and never the per-class capability. So *"a book should never be ROUTED to a
+ * server that has published that it cannot serve the job's capability class"*.
+ *
+ * ── Why it lives here, beside the routes ────────────────────────────────────
+ *
+ * It is the same fact from the same document read at the same two moments
+ * (coordination on every connect, and a settings write's own answer), answered
+ * inside the same synchronous pump (`crucibleAdmission`), and it must be
+ * forgotten by {@link forgetCrucibleRoutes} together with the routes — a server
+ * removed while this half still named it would be answered about for a row that
+ * can no longer be placed there. Two facts, one owner (crucible
+ * `docs/ARCHITECTURE.md` R1).
+ *
+ * ── UNKNOWN IS CAPABLE, and that is the whole shape of it ───────────────────
+ *
+ * An engine that has published nothing about a class — never read, or a class
+ * its record does not mention — is treated as CAPABLE. This record only ever
+ * FILTERS a server out on an explicit `enabled: false`. Assuming an unread
+ * engine cannot serve a class would strand every book on every fresh launch
+ * until coordination answered; assuming it CAN is the behaviour this app had
+ * before the record existed, corrected the instant the engine speaks.
+ */
+type ServerServed = Readonly<Record<string, boolean>>;
+
+const servedByServer = new Map<string, ServerServed>();
+
+/**
  * …AND WHETHER EACH ENGINE HAS ANYWHERE TO SEND WORK AT ALL.
  *
  * A second fact in the same record, and deliberately not a second module: it is
@@ -361,6 +398,63 @@ export function crucibleRouteOf(server: string, capability: string): CrucibleRou
   return route === undefined ? 'unknown' : route;
 }
 
+/** What this record can say about one engine serving one class. */
+export type CrucibleClassService = 'served' | 'unknown' | 'refused';
+
+/**
+ * Will this engine serve this class — `served`, `refused` (it published
+ * `enabled: false`), or `unknown` because it has said nothing about it.
+ *
+ * `unknown` is the CAPABLE answer, deliberately: see {@link ServerServed}. The
+ * scheduler routes AROUND `refused` only (`shared/queue/wait-for.ts`), so an
+ * unread engine keeps every lane it had before this record existed.
+ */
+export function crucibleServesClass(server: string, capability: string): CrucibleClassService {
+  const served = servedByServer.get(server);
+  if (served === undefined) return 'unknown';
+  const enabled = served[capability];
+  if (enabled === undefined) return 'unknown';
+  return enabled ? 'served' : 'refused';
+}
+
+/**
+ * Every class this engine has published a decision about, class → `enabled`.
+ *
+ * For the bench, which draws the drop refusal off the snapshot rather than
+ * re-asking the record (`shared/queue/bench.ts`, `ServerReach.servedClasses`).
+ * An engine nobody has read answers `{}` — nothing refused, so nothing filtered.
+ */
+export function crucibleServedClassesOf(server: string): Readonly<Record<string, boolean>> {
+  return servedByServer.get(server) ?? {};
+}
+
+/**
+ * Record what one engine said about which classes it will serve, out of the
+ * capability document the caller already read.
+ *
+ * One caller: {@link crucibleCapabilityWithRoutes} in `engine-settings.ts`,
+ * the one funnel every capability read passes through — the same read that
+ * fills the routes. Recorded there rather than at each call site for the reason
+ * `noteCrucibleRoutes` is: a second reader that forgot would answer stale.
+ */
+export function noteCrucibleServedClasses(
+  server: string,
+  classes: readonly { capability: string; enabled: boolean }[],
+): void {
+  const table: Record<string, boolean> = {};
+  for (const row of classes) table[row.capability] = row.enabled;
+  const before = servedByServer.get(server);
+  servedByServer.set(server, table);
+  if (before === undefined || !sameServed(before, table)) recordChanged();
+}
+
+/** Do two served tables agree about the same classes? */
+function sameServed(a: ServerServed, b: Readonly<Record<string, boolean>>): boolean {
+  const keys = Object.keys(a);
+  if (keys.length !== Object.keys(b).length) return false;
+  return keys.every((key) => a[key] === b[key]);
+}
+
 /**
  * Forget one engine's routes, or all of them.
  *
@@ -371,8 +465,10 @@ export function crucibleRouteOf(server: string, capability: string): CrucibleRou
  */
 export function forgetCrucibleRoutes(server?: string): void {
   if (server === undefined) {
-    const had = byServer.size > 0 || upstreamsByServer.size > 0 || rolesByServer.size > 0 || resolvedEngineUrls.size > 0;
+    const had = byServer.size > 0 || servedByServer.size > 0 || upstreamsByServer.size > 0
+      || rolesByServer.size > 0 || resolvedEngineUrls.size > 0;
     byServer.clear();
+    servedByServer.clear();
     upstreamsByServer.clear();
     rolesByServer.clear();
     resolvedEngineUrls.clear();
@@ -383,11 +479,12 @@ export function forgetCrucibleRoutes(server?: string): void {
     return;
   }
   const had = byServer.delete(server);
+  const hadServed = servedByServer.delete(server);
   const hadUpstream = upstreamsByServer.delete(server);
   const hadRole = rolesByServer.delete(server);
   const hadEngine = resolvedEngineUrls.delete(server);
   saveUpstreams();
-  if (had || hadUpstream || hadRole || hadEngine) recordChanged();
+  if (had || hadServed || hadUpstream || hadRole || hadEngine) recordChanged();
 }
 
 /**

@@ -182,6 +182,31 @@ export const foundryJobStep: StepModule = {
    */
   machines: (config: Record<string, unknown>): 'local' | 'any' =>
     (resourceFor(config) === 'gpu' ? 'any' : 'local'),
+  /**
+   * WHICH CAPABILITY CLASS A TRAVELLING FOUNDRY ACT ASKS A CRUCIBLE FOR — the
+   * mirror of the vendored dispatcher's `capabilityClassOf`
+   * (`foundry-app/electron/crucible-dispatch.ts`), so the scheduler names the
+   * class BEFORE it places the book instead of learning it after the engine
+   * refuses one it cannot serve (Owen's pages-refused report, 2026-09-21: a
+   * `read` routed to the Mac, whose mlx-darwin backend publishes `pages`
+   * `enabled: false`).
+   *
+   * A READ IS `pages`. A cleanup/translate/simplify carries its own text class.
+   * A RENDERING (epub/txt/pdf) names NONE and answers `null` — it travels
+   * nowhere (`cpu`, `resourceFor`), asks no model, and has no class to be
+   * matched against a server's capability. `analysis` is not a Foundry request
+   * kind here — that class belongs to the `book-analysis` step.
+   */
+  crucibleClass: (config: Record<string, unknown>): string | null => {
+    const kind = (config as unknown as FoundryJobStepConfig).request?.kind;
+    switch (kind) {
+      case 'read': return 'pages';
+      case 'clean': return 'clean';
+      case 'translate': return 'translate';
+      case 'simplify': return 'simplify';
+      default: return null;
+    }
+  },
   /*
    * NO `leasesModel` HERE, AND ITS ABSENCE IS THE STATEMENT.
    *

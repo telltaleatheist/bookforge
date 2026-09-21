@@ -45,6 +45,15 @@ if (!fs.existsSync(path.join(DIST, 'queue-engine.js'))) {
 const engine = require(path.join(DIST, 'queue-engine.js'));
 const waitFor = require(path.join(REPO, 'dist', 'shared', 'queue', 'wait-for.js'));
 const bench = require(path.join(REPO, 'dist', 'shared', 'queue', 'bench.js'));
+/*
+ * THE COORDINATION RECORD, driven directly — same seam the scheduler reads
+ * `crucibleServesClass` from (`electron/crucible/routes.ts`). A capability the
+ * queue routes around is a fact this record holds, so the capability cases below
+ * SEED it with `noteCrucibleServedClasses` and clear it in `fresh` rather than
+ * scripting a second prober. `routing.ts` is the injected host; this is the
+ * per-class published fact, and the two are deliberately different seams.
+ */
+const routes = require(path.join(DIST, 'crucible', 'routes.js'));
 
 const SCRATCH = fs.mkdtempSync(path.join(os.tmpdir(), 'bf-waitfor-'));
 
@@ -88,6 +97,9 @@ function fakeModule(type, opts = {}) {
     cancel() {},
   };
   if (opts.travels === true) mod.machines = () => 'any';
+  // The capability class this step asks a Crucible for, when the case is about
+  // routing around a server that cannot serve it (`StepModule.crucibleClass`).
+  if (opts.crucibleClass !== undefined) mod.crucibleClass = () => opts.crucibleClass;
   return mod;
 }
 
@@ -121,6 +133,11 @@ function fakeHost(initial) {
 
 /** A fresh engine with a scripted host. */
 async function fresh(name, mods, host, configureExtra = {}) {
+  // The per-class capability record is process-global (it mirrors a machine's
+  // published decision, not a test's), so a case that seeded it must not leak
+  // into the next. Cleared before the engine is configured, so no listener the
+  // new engine registers is fired by the clear.
+  routes.forgetCrucibleRoutes();
   engine.clearStepModules();
   for (const mod of mods) engine.registerStepModule(mod);
   engine.setGpuLockProbe(() => null);
@@ -176,6 +193,26 @@ function enqueueSent(spec) {
 }
 
 const TWO_SERVERS = [{ name: 'local', enabled: true }, { name: 'mac', enabled: true }];
+
+/**
+ * Seed one engine's published capability the way a real `GET /v1/capability`
+ * read does — the SERVED decision AND the per-class ROUTE together, because
+ * `crucibleCapabilityWithRoutes` fills both from the one document. A run only
+ * reaches the card once BOTH are known (the capability filter chooses the
+ * venue; the route check confirms the class runs local and not upstream), so a
+ * capability case that expects a book to RUN must state both, exactly as the
+ * machine would.
+ *
+ * `route` defaults to `'local'` — every non-llm class (pages, tts, asr) answers
+ * `local`, and a refused class still carries a route in the document.
+ */
+function seedCapability(server, entries) {
+  routes.noteCrucibleServedClasses(
+    server, entries.map((e) => ({ capability: e.capability, enabled: e.enabled })));
+  const routeTable = {};
+  for (const e of entries) routeTable[e.capability] = e.route ?? 'local';
+  routes.noteCrucibleRoutes(server, routeTable);
+}
 
 // ── The default is a setting, and it is written into the row ───────────────
 
@@ -379,6 +416,122 @@ test('`any` with nothing enabled says THAT, which is a different sentence', asyn
   await settle();
   assert.match(firstStep(job.id).progress.admissionHold,
     /none of the 2 you have is enabled \(local, mac\)/);
+});
+
+// ── The capability filter, through the whole scheduler (2026-09-21) ─────────
+//
+// The pure decision is pinned in "THE CAPABILITY FILTER" below; these drive the
+// SAME rule through admission, with the per-class fact seeded on the same record
+// the live scheduler reads (`crucible/routes.ts`, `noteCrucibleServedClasses`).
+
+test('`any` skips a server that cannot serve the class and takes the capable one', async () => {
+  const gpu = fakeModule('tts-conversion', { travels: true, crucibleClass: 'pages' });
+  const host = fakeHost({
+    ranked: [{ name: 'local', enabled: true }, { name: 'mac', enabled: true }],
+    defaultWaitFor: 'any',
+    reach: { local: { reachable: true }, mac: { reachable: true } },
+  });
+  await fresh('any-incapable-skip', [gpu], host);
+  // local is top-ranked but cannot read pages; mac can.
+  seedCapability('local', [{ capability: 'pages', enabled: false }]);
+  seedCapability('mac', [{ capability: 'pages', enabled: true }]);
+
+  const job = enqueueSent(narrate('Read the pages'));
+  engine.start();
+  await settle();
+  assert.strictEqual(jobOf(job.id).waitForResolved, 'mac',
+    'the capable server took it, not top-ranked local');
+  assert.ok(!host.asked.includes('local'),
+    'and the incapable server was never even asked whether it was reachable');
+});
+
+test('`any` with NO capable server holds by name, naming the class', async () => {
+  const gpu = fakeModule('tts-conversion', { travels: true, crucibleClass: 'pages' });
+  const host = fakeHost({
+    ranked: TWO_SERVERS,
+    defaultWaitFor: 'any',
+    reach: { local: { reachable: true }, mac: { reachable: true } },
+  });
+  await fresh('any-none-capable', [gpu], host);
+  seedCapability('local', [{ capability: 'pages', enabled: false }]);
+  seedCapability('mac', [{ capability: 'pages', enabled: false }]);
+
+  const job = enqueueSent(narrate('Nowhere to read'));
+  engine.start();
+  await settle();
+  assert.strictEqual(gpu.runs.length, 0, 'it did not start on a machine that cannot serve it');
+  assert.strictEqual(firstStep(job.id).progress.admissionHold,
+    'Waiting for any server; none of the 2 enabled serve pages work (local, mac).');
+});
+
+test('a book pinned to a server that cannot serve its class HOLDS, naming the capable one', async () => {
+  const gpu = fakeModule('tts-conversion', { travels: true, crucibleClass: 'pages' });
+  const host = fakeHost({
+    ranked: [{ name: 'mac', enabled: true }, { name: 'pc', enabled: true }],
+    defaultWaitFor: 'mac',
+    reach: { mac: { reachable: true }, pc: { reachable: true } },
+  });
+  await fresh('pinned-incapable', [gpu], host);
+  seedCapability('mac', [{ capability: 'pages', enabled: false }]);
+  seedCapability('pc', [{ capability: 'pages', enabled: true }]);
+
+  const job = enqueueSent(narrate('Pinned to the Mac'));
+  engine.start();
+  await settle();
+  assert.strictEqual(gpu.runs.length, 0,
+    'it holds rather than launching into an after-the-fact refusal');
+  assert.match(firstStep(job.id).progress.admissionHold,
+    /Waiting for mac: it has published that it cannot serve pages work/);
+  assert.match(firstStep(job.id).progress.admissionHold, /pc can/,
+    'and the hold names the capable alternative, which a named row is never silently moved to');
+  assert.strictEqual(jobOf(job.id).waitForResolved, undefined,
+    'the incapable machine never took the card');
+  assert.strictEqual(jobOf(job.id).waitFor, 'mac', "and the operator's own answer is untouched");
+});
+
+test('a class EVERY server serves routes exactly as today', async () => {
+  const gpu = fakeModule('tts-conversion', { travels: true, crucibleClass: 'clean' });
+  const host = fakeHost({
+    ranked: TWO_SERVERS,
+    defaultWaitFor: 'any',
+    reach: { local: { reachable: true }, mac: { reachable: true } },
+  });
+  await fresh('class-served-everywhere', [gpu], host);
+  seedCapability('local', [{ capability: 'clean', enabled: true }]);
+  seedCapability('mac', [{ capability: 'clean', enabled: true }]);
+
+  const job = enqueueSent(narrate('Clean everywhere'));
+  engine.start();
+  await settle();
+  assert.strictEqual(jobOf(job.id).waitForResolved, 'local',
+    'top-ranked wins, exactly as it does with no capability filter at all');
+});
+
+test('an engine that published a ROUTE but no SERVED decision is capable', async () => {
+  /*
+   * `unknown` served is CAPABLE — the capability filter removes only an explicit
+   * `enabled: false`. The route is seeded (so the separate route check, which
+   * holds any engine whose class-route is unread, is satisfied) while the SERVED
+   * decision is deliberately left unstated, which is the fact under test: with
+   * the class-route known and nothing said about whether it will serve it, the
+   * book routes exactly as it would have before this filter existed.
+   */
+  const gpu = fakeModule('tts-conversion', { travels: true, crucibleClass: 'pages' });
+  const host = fakeHost({
+    ranked: TWO_SERVERS,
+    defaultWaitFor: 'any',
+    reach: { local: { reachable: true }, mac: { reachable: true } },
+  });
+  await fresh('unread-served-is-capable', [gpu], host);
+  // Route known, served UNKNOWN — no `noteCrucibleServedClasses` for either.
+  routes.noteCrucibleRoutes('local', { pages: 'local' });
+  routes.noteCrucibleRoutes('mac', { pages: 'local' });
+
+  const job = enqueueSent(narrate('Unknown capability'));
+  engine.start();
+  await settle();
+  assert.strictEqual(jobOf(job.id).waitForResolved, 'local',
+    'unknown served is capable, so routing is unchanged until an engine refuses the class');
 });
 
 // ── A 409 is a wait ─────────────────────────────────────────────────────────
@@ -853,6 +1006,11 @@ function facts(over) {
     ranked: [{ name: '3090 Ti', enabled: true }, { name: 'M1 Ultra', enabled: true }],
     state: () => ({ kind: 'ready' }),
     gpuSlotTaken: () => null,
+    // The capability filter is OFF by default — no class to filter on — which is
+    // the ordinary case for a step whose module names none. A case that is about
+    // capability supplies both.
+    needClass: undefined,
+    canServe: () => true,
     ...over,
   };
 }
@@ -912,6 +1070,89 @@ test('THE DIAL IS GONE: a `dial` fact on the call changes nothing', () => {
     'and the constant that spelled it is gone from the module');
   assert.strictEqual(waitFor.gpuDialLabel, undefined);
   assert.strictEqual(waitFor.holdDialElsewhere, undefined);
+});
+
+// ── THE CAPABILITY FILTER (Owen's pages-refused report, 2026-09-21) ─────────
+//
+// A `pages` job routed to the Mac's Crucible was refused AFTER it landed: that
+// engine publishes `enabled: false` for `pages` on mlx-darwin (the model runs
+// in-process but not over the HTTP server Crucible drives — correct, and for now
+// permanent). So a book must never be ROUTED to a server that has published it
+// cannot serve the class. `unknown` (a server that has said nothing) is CAPABLE:
+// the filter only ever removes an explicit `enabled: false`.
+
+test('a NAMED server that cannot serve the class holds, naming the capable alternative', () => {
+  const verdict = waitFor.decideWaitFor(facts({
+    waitFor: '3090 Ti',
+    needClass: 'pages',
+    canServe: (server) => server !== '3090 Ti',
+  }));
+  assert.strictEqual(verdict.kind, 'hold', 'a named server is an instruction — never re-routed');
+  assert.match(verdict.sentence, /cannot serve pages work/);
+  assert.match(verdict.sentence, /M1 Ultra can/, 'and it names the machine that could take it');
+});
+
+test('`any` skips the incapable server and runs the capable one, in rank order', () => {
+  assert.deepStrictEqual(
+    waitFor.decideWaitFor(facts({
+      waitFor: 'any', needClass: 'pages', canServe: (server) => server === 'M1 Ultra',
+    })),
+    { kind: 'run', server: 'M1 Ultra' },
+    'the top-ranked server cannot serve it, so the next capable one wins');
+});
+
+test('`any` with no capable server holds, naming the class (not "unreachable")', () => {
+  const verdict = waitFor.decideWaitFor(facts({
+    waitFor: 'any', needClass: 'pages', canServe: () => false,
+  }));
+  assert.strictEqual(verdict.kind, 'hold');
+  assert.match(verdict.sentence, /none of the 2 enabled serve pages work \(3090 Ti, M1 Ultra\)/,
+    'a capability hold names its own cause; the network is fine');
+});
+
+test('an incapable server is never even ASKED — it is not a candidate', () => {
+  const asked = [];
+  const verdict = waitFor.decideWaitFor(facts({
+    waitFor: 'any',
+    needClass: 'pages',
+    canServe: (server) => server === 'M1 Ultra',
+    state: (server) => { asked.push(server); return { kind: 'ready' }; },
+  }));
+  assert.deepStrictEqual(verdict, { kind: 'run', server: 'M1 Ultra' });
+  assert.deepStrictEqual(asked, ['M1 Ultra'],
+    'the reach state of a server that cannot serve the class is never consulted');
+});
+
+test('a class every server serves routes exactly as with no filter', () => {
+  assert.deepStrictEqual(
+    waitFor.decideWaitFor(facts({ waitFor: 'any', needClass: 'clean', canServe: () => true })),
+    { kind: 'run', server: '3090 Ti' },
+    'top-ranked wins, unchanged');
+  assert.deepStrictEqual(
+    waitFor.decideWaitFor(facts({ waitFor: '3090 Ti', needClass: 'clean', canServe: () => true })),
+    { kind: 'run', server: '3090 Ti' });
+});
+
+test('needClass undefined switches the filter OFF: canServe is never consulted', () => {
+  assert.deepStrictEqual(
+    waitFor.decideWaitFor(facts({
+      waitFor: 'any', needClass: undefined, canServe: () => false,
+    })),
+    { kind: 'run', server: '3090 Ti' },
+    'an all-false predicate changes nothing when there is no class to filter on');
+});
+
+test('a RESOLVED book pinned to an incapable server is told to cancel, not to re-point', () => {
+  const verdict = waitFor.decideWaitFor(facts({
+    resolved: '3090 Ti',
+    needClass: 'pages',
+    canServe: (server) => server !== '3090 Ti',
+  }));
+  assert.strictEqual(verdict.kind, 'hold', 'never moved to the other card on its own (§4.3)');
+  assert.match(verdict.sentence, /cannot serve pages work/);
+  assert.match(verdict.sentence, /Cancel this book to send it back to Pending/,
+    'a resolved row cannot be re-pointed, so its way out is the one that works');
+  assert.ok(!/set this book to Any/.test(verdict.sentence));
 });
 
 // ── A RESOLVED ROW'S HOLD NAMES A CONTROL THAT WILL ANSWER (A6) ────────────
@@ -1196,9 +1437,9 @@ test('the snapshot carries what each server said, beside the switch', async () =
   assert.deepStrictEqual(rows.map((r) => r.name), ['local', 'mac'],
     'in rank order, so the rows line up with the lanes the bench builds');
   assert.deepStrictEqual(rows.find((r) => r.name === 'local'),
-    { name: 'local', enabled: true, reach: 'ready', detail: null });
+    { name: 'local', enabled: true, reach: 'ready', detail: null, servedClasses: {} });
   assert.deepStrictEqual(rows.find((r) => r.name === 'mac'),
-    { name: 'mac', enabled: true, reach: 'unreachable', detail: 'Nothing answered at http://mac:7100.' },
+    { name: 'mac', enabled: true, reach: 'unreachable', detail: 'Nothing answered at http://mac:7100.', servedClasses: {} },
     "the transport's own sentence travels with the answer — the lane has nothing to say without it");
 });
 
@@ -1218,7 +1459,7 @@ test('a disabled server is REPORTED, as `unknown` — off is not a diagnosis', a
   await settle();
 
   assert.deepStrictEqual(engine.snapshot().servers,
-    [{ name: 'mac', enabled: false, reach: 'unknown', detail: null }],
+    [{ name: 'mac', enabled: false, reach: 'unknown', detail: null, servedClasses: {} }],
     'a machine the operator owns never vanishes from the list they reason with');
 });
 

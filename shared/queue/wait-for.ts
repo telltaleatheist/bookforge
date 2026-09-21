@@ -168,6 +168,31 @@ export interface WaitForFacts {
    * (`shared/queue/slot-sets.ts`), off the run's own steps.
    */
   readonly holdsThisCard: boolean;
+  /**
+   * THE CAPABILITY CLASS THIS BOOK'S GPU STEP NEEDS — `pages`, `clean`,
+   * `translate`, … — or `undefined` when there is nothing to filter on.
+   *
+   * `undefined` is the ordinary case for every step that has not been given a
+   * class (a narration `tts` step whose module names none, an older queue file),
+   * and it switches the capability filter OFF completely: the decision is then
+   * exactly "first reachable enabled in rank order", unchanged. A class is
+   * present only when the step's module states one (`StepModule.crucibleClass`).
+   */
+  readonly needClass: string | undefined;
+  /**
+   * WILL THIS SERVER SERVE {@link needClass} — the one capability fact routing
+   * consults, and the gap Owen's pages-refused report of 2026-09-21 closed.
+   *
+   * `true` means the engine published `enabled: true` for the class OR has said
+   * nothing about it: **unknown is capable** (`crucible/routes.ts`,
+   * `crucibleServesClass`), so an unread engine keeps every lane it had before
+   * this fact existed. `false` means, and only means, the engine published
+   * `enabled: false` — the mlx-darwin `pages` case, correct and for now
+   * permanent. Read ONLY when {@link needClass} is present; the engine wires it
+   * from the coordination record, and a keeper scripts it, so this module and
+   * the scheduler stay pure.
+   */
+  readonly canServe: (server: string) => boolean;
 }
 
 export type WaitForVerdict =
@@ -362,6 +387,50 @@ function holdAnyNoneReachable(tried: readonly string[]): string {
     + `${tried.length === 1 ? 'is' : 'are'} reachable (${tried.join('; ')}).`;
 }
 
+/**
+ * `any`, and NO enabled server will serve the class it needs.
+ *
+ * A different sentence from {@link holdAnyNoneReachable} for the same reason
+ * "disabled" is different from "unreachable": the cause is different and the fix
+ * is different. An incapable server is not down and not busy — it has published
+ * that this class does not run on it, and no amount of waiting changes that.
+ */
+function holdAnyNoneServes(needClass: string, enabled: readonly WaitForServer[]): string {
+  return `Waiting for any server; none of the ${enabled.length} enabled `
+    + `${enabled.length === 1 ? 'serves' : 'serve'} ${needClass} work `
+    + `(${enabled.map((r) => r.name).join(', ')}).`;
+}
+
+/** "owens-pc", "owens-pc and droplet", "owens-pc, droplet and the box". */
+function andList(names: readonly string[]): string {
+  if (names.length <= 1) return names[0] ?? '';
+  return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
+}
+
+/**
+ * A NAMED (or resolved) server that has published it cannot serve the class —
+ * held rather than launched into an after-the-fact refusal, and NAMING the
+ * capable alternative(s) so the operator's next move is one they can make.
+ *
+ * A named server is still an instruction, so this never re-routes on its own
+ * (§4.2.2); it holds and says who could take it. The full internal reason is
+ * NOT pasted (Crucible has no `summary` on the decision yet — when it ships one,
+ * quote it here); the class name is the honest short line.
+ */
+function holdIncapable(
+  server: string, needClass: string, facts: WaitForFacts, source: VenueSource,
+): string {
+  const alts = facts.ranked
+    .filter((row) => row.enabled && row.name !== server && facts.canServe(row.name))
+    .map((row) => row.name);
+  const tail = alts.length === 0
+    ? ' No other enabled server serves it either'
+    : ` ${andList(alts)} can`;
+  return `Waiting for ${server}: it has published that it cannot serve ${needClass} work. `
+    + `A named server is an instruction, so this book is not sent anywhere else —${tail}`
+    + `${wayOut(source)}`;
+}
+
 function asking(server: string): string {
   return `Checking whether ${server} is reachable…`;
 }
@@ -383,13 +452,19 @@ function asking(server: string): string {
  *     machine's `busy` and `unknown` differently — see
  *     {@link WaitForFacts.holdsThisCard}; every other answer on this rung is
  *     unchanged.
- *  2. **The row names a server.** It runs there if it is enabled and reachable,
- *     and otherwise HOLDS AND SAYS WHICH. It is never re-routed: a named server
- *     is an instruction, and the queue-level enable switch is about availability
- *     rather than about overriding what a person asked for (§4.2.2).
- *  5. **The row says `any`.** The first enabled server, in rank order, that will
- *     take it. Disabled, unreachable and busy servers are simply not candidates;
- *     when none is left the hold NAMES that, rather than sitting silent.
+ *  2. **The row names a server.** It runs there if it is enabled, reachable and
+ *     can serve the step's class, and otherwise HOLDS AND SAYS WHICH. It is
+ *     never re-routed: a named server is an instruction, and the queue-level
+ *     enable switch is about availability rather than about overriding what a
+ *     person asked for (§4.2.2). A server that has published it cannot serve the
+ *     class holds NAMING the capable alternative(s) — Owen's pages-refused
+ *     report, 2026-09-21.
+ *  5. **The row says `any`.** The first enabled, CAPABLE server, in rank order,
+ *     that will take it. Disabled, incapable, unreachable and busy servers are
+ *     simply not candidates; when none is left the hold NAMES why, rather than
+ *     sitting silent. An incapable one is filtered like a disabled one, so an
+ *     `any` book with a capable server beside an incapable one takes the capable
+ *     one (2026-09-21).
  */
 export function decideWaitFor(facts: WaitForFacts): WaitForVerdict {
   const { resolved } = facts;
@@ -414,6 +489,22 @@ export function decideWaitFor(facts: WaitForFacts): WaitForVerdict {
   const enabled = facts.ranked.filter((row) => row.enabled);
   if (enabled.length === 0) return { kind: 'hold', sentence: holdAnyNoneEnabled(facts.ranked) };
 
+  /*
+   * A SERVER THAT CANNOT SERVE THE CLASS IS NOT A CANDIDATE — the same shape as
+   * a disabled one, and for the same reason (Owen's pages-refused report,
+   * 2026-09-21). It is filtered out BEFORE the loop, so it is never asked and
+   * never chosen, and an `any` book that has nowhere to go says THAT — not
+   * "none reachable", which would send the operator to check a network that is
+   * fine. `undefined` needClass leaves every enabled server a candidate, which
+   * is the pre-2026-09-21 behaviour exactly.
+   */
+  const capable = facts.needClass === undefined
+    ? enabled
+    : enabled.filter((row) => facts.canServe(row.name));
+  if (capable.length === 0) {
+    return { kind: 'hold', sentence: holdAnyNoneServes(facts.needClass as string, enabled) };
+  }
+
   const tried: string[] = [];
   /*
    * AN `unknown` SERVER DOES NOT STOP THE LOOP — it is remembered and the loop
@@ -432,7 +523,7 @@ export function decideWaitFor(facts: WaitForFacts): WaitForVerdict {
    * server nobody has asked is the one asked now.
    */
   let firstUnknown: string | null = null;
-  for (const row of enabled) {
+  for (const row of capable) {
     // §2.4: "a book set to `any` takes the first server whose GPU slot is free,
     // in rank order". Ours is the slot we can be certain about, so it is asked
     // before the network is.
@@ -465,6 +556,19 @@ function forOneServer(
     return { kind: 'hold', sentence: holdUnknownServer(server, facts.ranked, source) };
   }
   if (!row.enabled) return { kind: 'hold', sentence: holdDisabled(server, source) };
+  /*
+   * IT CANNOT SERVE THE CLASS — held here, before the card is ever asked about,
+   * so a book pinned to a server that has published `enabled: false` for its
+   * class parks with a sentence naming the capable alternative rather than
+   * launching and being refused after it lands (Owen, 2026-09-21). Asked before
+   * `holdsThisCard` and the reach state on purpose: those are about whether the
+   * machine is FREE, and a machine that will never serve this class being free
+   * is not a reason to send it there. `needClass === undefined` skips this
+   * entirely, so a class every server serves routes exactly as it did before.
+   */
+  if (facts.needClass !== undefined && !facts.canServe(server)) {
+    return { kind: 'hold', sentence: holdIncapable(server, facts.needClass, facts, source) };
+  }
   /*
    * OUR OWN SLOT IS NOT ASKED ABOUT HERE, deliberately.
    *
