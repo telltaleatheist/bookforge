@@ -3536,8 +3536,33 @@ export class QueueComponent {
    * screen.
    */
   private async setPlanServer(plan: BookPlan, value: string): Promise<void> {
-    // Every run of the book, because the book is the unit the answer is about.
-    for (const jobId of plan.jobIds) await this.queueService.setWaitFor(jobId, value);
+    /*
+     * ONE CHAIN, ONE GPU — WHILE IT IS ACTIVE, and no memory of it after.
+     *
+     * Owen, 2026-09-21: *"one chain gets one gpu ... if a book is split up and
+     * done at different times with different chains, its perfectly fine for it to
+     * take any gpu. the chain stays on one gpu while its active."* The hold is a
+     * fact about a CHAIN (an engine job, `waitForResolved` set once at launch),
+     * never about the book. So re-pinning a book moves only the chains still free
+     * to move; a chain already taken by a card keeps it (§4.3, it finishes where
+     * it started) and is SKIPPED rather than refused — which is what lets a
+     * clean/tts chain go to the WSL card while an OCR chain of the same book runs
+     * or already ran on the Mac. It also stops one running chain in the group
+     * from failing the whole re-pin, which is the bug Owen hit.
+     */
+    const jobs = this.queueService.snapshot().jobs;
+    const fixed = (jobId: string): boolean =>
+      jobs.find((row) => row.id === jobId)?.waitForResolved !== undefined;
+    const movable = plan.jobIds.filter((jobId) => !fixed(jobId));
+    if (movable.length === 0) {
+      // Every chain of this book is already on a card, so there is genuinely
+      // nothing to move. Re-pin the first anyway, so main answers with the
+      // cancel-and-re-queue refusal in its own words rather than the drop
+      // silently doing nothing.
+      if (plan.jobIds.length > 0) await this.queueService.setWaitFor(plan.jobIds[0], value);
+      return;
+    }
+    for (const jobId of movable) await this.queueService.setWaitFor(jobId, value);
   }
 
   // ── Running / Paused ─────────────────────────────────────────────────────
