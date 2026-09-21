@@ -202,17 +202,34 @@ export class QueueTrayService {
       lanes: section.lanes.map((lane) => this.decorate(lane)),
     })));
 
+  /**
+   * THE MEASURED TIME LEFT FOR ONE STEP — "1h 04m left" — or null when nothing
+   * has been measured.
+   *
+   * Null is the honest answer and the surfaces draw nothing for it: an
+   * unmeasured step has no time to report, and a line saying "not timed yet"
+   * spends a row of a 452px panel on an absence.
+   *
+   * Public because the shelf's book cards ask it per rung, and it is the same
+   * measurement the bench lane above them shows — one spelling, so a step
+   * cannot read one way in a lane and another in the chain it belongs to.
+   */
+  etaForStep(stepId: string): string | null {
+    // The legacy row is the ETA adapter: JobEtaService measures against it.
+    const row = this.queue.jobs().find(r => r.id === stepId) ?? null;
+    const seconds = row ? this.eta.etaSeconds(row, stagesFor(row)) : null;
+    return seconds === null ? null : `${formatDuration(seconds)} left`;
+  }
+
   /** A bench lane with what only this side knows: the cover, and the measurements. */
   private decorate(lane: BenchLane): LaneView {
-    // The legacy row is the ETA adapter: JobEtaService measures against it.
     const row = lane.occupant
       ? this.queue.jobs().find(r => r.id === lane.occupant!.stepId) ?? null
       : null;
-    const seconds = row ? this.eta.etaSeconds(row, stagesFor(row)) : null;
     return {
       ...lane,
       cover: lane.occupant ? this.coverForJobId(lane.occupant.jobId) : null,
-      eta: seconds === null ? null : `${formatDuration(seconds)} left`,
+      eta: lane.occupant ? this.etaForStep(lane.occupant.stepId) : null,
       speed: row ? this.eta.speedLabel(row) : null,
       count: row?.totalChunksInJob
         ? `${(row.chunksCompletedInJob ?? 0).toLocaleString()} / ${row.totalChunksInJob.toLocaleString()}`
