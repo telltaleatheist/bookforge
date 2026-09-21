@@ -588,10 +588,12 @@ class FakeHiggsEngine(FakeEngine):
         """THE GUARDED DRIVER, serial - `(index, audio, verdict, measure)` per
         chunk.
 
-        `tracker` is REQUIRED and is the band this call judges against, exactly
-        as on both real engines (Owen, 2026-09-19): on the serve door it is
-        built from the band the BATCH carried, and there is no other source for
-        it. This fake used to build its own from its class constants, which was
+        `tracker` is the band this call judges against, exactly as on both
+        real engines (Owen, 2026-09-19): on the serve door it is built from the
+        band the BATCH carried, and there is no other source for it. None means
+        the batch asked for no judging (`retake: false`) and the rows render
+        once, unjudged, through an `UnjudgedPlan` - the same arm the real
+        engines take since 2026-09-20. This fake used to build its own from its class constants, which was
         the second owner the ruling removed.
 
         `width` is how many rows this call may keep in flight. This driver is
@@ -650,9 +652,18 @@ class FakeHiggsEngine(FakeEngine):
         self._call_width = None if width is None else int(width)
         self._full_text = {}
         self._attempts = {}
-        plan = truncation.GuardPlan(
-            sample_rate=self.SAMPLE_RATE, base_seed=getattr(self.config, 'seed', None),
-            tracker=tracker)
+        # THE SAME CHOICE BOTH REAL ENGINES MAKE (`HiggsV3Engine.render_many`,
+        # `HiggsV3MlxEngine.render_many`, 2026-09-20): no tracker means the
+        # batch asked for no judging, so it renders through an `UnjudgedPlan` -
+        # one take per row, `verdict` None, no `guard` key on the wire. This
+        # fake kept building a GuardPlan around a None tracker after that
+        # ruling, so the serve tests of `retake: false` judged rows the real
+        # engines would have shipped bare.
+        base_seed = getattr(self.config, 'seed', None)
+        plan = (truncation.UnjudgedPlan(sample_rate=self.SAMPLE_RATE, base_seed=base_seed)
+                if tracker is None else
+                truncation.GuardPlan(sample_rate=self.SAMPLE_RATE, base_seed=base_seed,
+                                     tracker=tracker))
         for index, text in rows:
             self._full_text[int(index)] = text
             rung_for(index)     # refuse an unnamed row at the door, not mid-ladder
