@@ -114,6 +114,27 @@ import type { JobKind, ModelClass } from '../shared/types';
 export type CapabilityClass = ModelClass;
 
 /**
+ * A CAPABILITY CLASS IS A NOUN A SERVER FILES A MODEL UNDER — `pages`, `clean`,
+ * `translate` — and it is NOT a verb. A user line built as `"${name}" cannot
+ * ${capability}` reads "cannot pages", which is engine grammar and exactly the
+ * "inner workings" Owen ruled out of user text twice in one night (2026-09-21:
+ * *"say what it's doing generically … no inner workings"*).
+ *
+ * So every user-facing sentence that names the ACT reads it from here, in two
+ * shapes: `verb` for "<server> can't <verb>" / "no server can <verb>", and
+ * `noun` for "route <noun> work". ONE map, so the five classes read the same in
+ * every sentence — and a new class is a compile error here until someone gives
+ * it words a person would say, rather than leaking its token into a screen.
+ */
+const CAPABILITY_WORDS: Record<CapabilityClass, { verb: string; noun: string }> = {
+  pages: { verb: 'read pages', noun: 'page-reading' },
+  clean: { verb: 'clean text', noun: 'text-cleanup' },
+  translate: { verb: 'translate', noun: 'translation' },
+  simplify: { verb: 'simplify text', noun: 'simplification' },
+  analysis: { verb: 'analyse text', noun: 'analysis' },
+};
+
+/**
  * THE ACT A JOB IS, as the server names it — and the value of `X-Crucible-Act`.
  *
  * The header is required on our side by Owen's naming ruling and is exactly one
@@ -856,7 +877,7 @@ export async function placeJob(
   return allStanding
     ? {
       verdict: 'refuse',
-      reason: `no slot can ${capability} — ${reasons.join('; ')}. ${whatToDoAbout(capability)}`,
+      reason: `no server can ${CAPABILITY_WORDS[capability].verb} — ${reasons.join('; ')}. ${whatToDoAbout(capability)}`,
     }
     : transientWait(`no slot is free — ${reasons.join('; ')}`);
 }
@@ -895,8 +916,34 @@ function orAnyWords(source: VenueSource): string {
  * row. A third, "buy a bigger card", is real and is not something an app says.
  */
 function whatToDoAbout(capability: CapabilityClass): string {
-  return `Nothing here will change that on its own: ${UPSTREAM_SETTINGS} to route ${capability} `
+  return `Nothing here will change that on its own: ${UPSTREAM_SETTINGS} to route ${CAPABILITY_WORDS[capability].noun} `
     + 'work to an upstream, or choose a different server for this job.';
+}
+
+/**
+ * THE USER'S HALF OF A CAPABILITY REFUSAL — the server's own words, said the way
+ * a person reads them rather than the way an operator logs them.
+ *
+ * Owen, 2026-09-21, twice in one night: a user line should *"say what it's doing
+ * generically … no inner workings"*. A class's `reason` is the OPERATOR's field:
+ * it carries the door name ("the VLM door"), the backend block ("mlx-darwin")
+ * and a leading `disabled:` that only restates the verdict the sentence already
+ * gave ("can't read pages") — the double-`disabled:` we were shipping into the
+ * user line.
+ *
+ * So the USER line prefers `row.summary`, the person-first sentence Crucible is
+ * adding beside `reason` in the `GET /v1/capability` decision. `reason` is kept
+ * full and untouched — it still travels to the logs and to `crucible doctor`.
+ * Until Crucible ships `summary` (the vendored SDK type predates it, so
+ * `readCapability` threads it through a widening cast and it is simply absent for
+ * now) this falls back to `reason` with the redundant `disabled:` prefix
+ * stripped, so the line reads on both vintages — the internals only fully leave
+ * the user line once the server sends the summary.
+ */
+function personReasonOf(row: CapabilityRow): string {
+  const summary = row.summary?.trim();
+  if (summary) return summary;
+  return row.reason.replace(/^\s*disabled:\s*/i, '') || 'no model fits its card';
 }
 
 /**
@@ -1071,7 +1118,7 @@ function placeOnCloud(slot: ComputeSlot, capability: CapabilityClass): Placement
   if (capability === 'pages') {
     return {
       verdict: 'refuse',
-      reason: `${entry.name} cannot read pages; page reading stays on this machine or a Crucible.`,
+      reason: `${entry.name} can't ${CAPABILITY_WORDS[capability].verb}; page reading stays on this machine or a Crucible.`,
     };
   }
   return {
@@ -1186,7 +1233,7 @@ async function placeOnCrucible(
       ? ` (${(row.shortfallBytes / 1024 ** 3).toFixed(1)} GiB short)`
       : '';
     return standingWait(
-      `"${slot.name}" cannot ${capability}: ${row.reason || 'no model fits its card'}${shortfall}`,
+      `"${slot.name}" can't ${CAPABILITY_WORDS[capability].verb} — ${personReasonOf(row)}${shortfall}`,
     );
   }
 
@@ -2362,6 +2409,16 @@ export async function readCapability(
       enabled: row.enabled,
       selected: row.selected,
       reason: row.reason,
+      /*
+       * THE PERSON-FIRST HALF, WHEN THE SERVER SENDS IT. Crucible is adding a
+       * `summary` beside `reason` in the per-class decision — a plain sentence
+       * for a user, with `reason` kept full for operators and `crucible doctor`.
+       * The `@crucible/client` type this build vendors predates the field, so it
+       * is read through a widening cast and is `undefined` until the server
+       * ships it; `personReasonOf` prefers it over `reason` for the composed
+       * refusal and falls back to `reason`, so this reads on both vintages.
+       */
+      summary: (row as { summary?: string }).summary,
       shortfallBytes: row.shortfallBytes,
       route: row.route,
     })),

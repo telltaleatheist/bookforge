@@ -10,10 +10,34 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\<user>\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **8b9efb8** — *Adopt Crucible 1.0.14: a loader states its lease_id even when there is none* |
-| Engine | **NOT VENDORED AND NOT KNOWABLE FROM THIS FILE** — it is a spawned CLI resolved at RUNTIME (`FOUNDRY_BIN`, else `resolveFoundryPath`, `electron/main.ts`), so which build executes is a property of the machine and not of this copy. On a developer's Mac that resolves to Foundry's own checkout at `/Volumes/Callisto/Projects/foundry/dist/foundry-darwin-arm64`, which is whatever was last built there — `foundry 2.0.2 (1c1eaa3)` as of 2026-09-18. **Ask the binary: `$FOUNDRY_BIN --version`.** See *The engine this file named was not the engine that ran* below. |
+| Source sha | **04758be** — *fix(crucible): a capability refusal reads "can't read pages", not "cannot pages"* (was 8b9efb8) |
+| Engine | **NOT VENDORED AND NOT KNOWABLE FROM THIS FILE** — it is a spawned CLI resolved at RUNTIME (`FOUNDRY_BIN`, else `resolveFoundryPath`, `electron/main.ts`), so which build executes is a property of the machine and not of this copy. On a developer's Mac that resolves to Foundry's own checkout at `/Volumes/Callisto/Projects/foundry/dist/foundry-darwin-arm64`, which is whatever was last built there — `foundry 2.0.2 (04758be)` — REBUILT at this re-vendor (2026-09-21) so the engine carries fdba761's clean-text log change. **Ask the binary: `$FOUNDRY_BIN --version`.** See *The engine this file named was not the engine that ran* below. |
 | Copied on | 2026-09-19 (five times: 3738c01, 3436fc5, 806d44b, f349771, ca4754c) and 2026-09-20 (98a4344, 9e0b27d, dccc144, 7b98004, cc5fc5b, 93010d8, 77e1d6d) |
 | Copied by | Mechanical source sync, verified against Foundry `77e1d6d:app/` (`diff -rq`, clean but for this file, `IPC-CHANNELS.md` and `.gitignore` — see below); details below |
+
+## The `8b9efb8 → 04758be` re-vendor — clean-text log + capability wording (2026-09-21)
+
+Two foundry commits since 8b9efb8, in two trees, both landed here:
+
+- **fdba761** (`src/clean/`) — the clean-text pass logs `clean-text: cleaning
+  with <model>` instead of the endpoint/temperature/window paragraph BookForge
+  drew on the queue slot; the server, window and sampling move into the written
+  receipt (`ModelServerFacts`). This is the ENGINE, so the binary was rebuilt:
+  `tools/release-build.sh darwin-arm64` → `foundry 2.0.2 (04758be)`, verified
+  (`strings … | grep 'cleaning with'` present, `NOTHING IS PINNED` gone).
+- **04758be** (`app/electron/`, `app/shared/`) — a capability refusal reads
+  `"<server>" can't read pages` via one `CAPABILITY_WORDS` verb/noun map, and
+  prefers a person-first `summary` (a field Crucible is adding beside `reason`)
+  over the internal reason for the user line. This is the APP, so the vendored
+  `dist` was rebuilt in a staging copy and swapped while BookForge was down;
+  verified `read pages`/`CAPABILITY_WORDS` present and `cannot ${` gone in the
+  built `dist/electron/crucible-dispatch.js`, both `dist/electron/mount.js` and
+  `dist/renderer/browser/index.html` present.
+
+No dep change (`@crucible/client` stays `1.0.14`, matching the deployed
+Crucible; repin on the next Crucible release). Sources archived with
+`git -C foundry archive 04758be app | tar -x`, `diff -rq` clean but for the
+local files.
 
 ## The `77e1d6d → 8b9efb8` re-vendor — the 1.0.14 SDK adoption (2026-09-20, evening)
 

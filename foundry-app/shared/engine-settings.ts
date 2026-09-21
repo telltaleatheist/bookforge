@@ -324,8 +324,21 @@ export interface CapabilityRow {
    */
   selected: string;
   enabled: boolean;
-  /** The server's own words for why, present whether enabled or not. */
+  /**
+   * THE OPERATOR'S WORDS for why, present whether enabled or not — the full
+   * sentence with the door name and the backend block in it, which is what a
+   * log and `crucible doctor` want and what a user line must NOT carry raw.
+   */
   reason: string;
+  /**
+   * THE USER'S WORDS for why — a person-first summary Crucible sends beside
+   * `reason` in the capability decision, kept short and free of engine
+   * internals so a refusal reads plainly on a screen. Optional because it is a
+   * NEW field: a Crucible from before it, and the SDK type this build vendors,
+   * do not carry it, and the dispatcher falls back to a cleaned `reason`
+   * (`personReasonOf`) until it arrives.
+   */
+  summary?: string;
   /** How much bigger the card would have to be. 0 on an enabled class. */
   shortfallBytes: number;
   /**
