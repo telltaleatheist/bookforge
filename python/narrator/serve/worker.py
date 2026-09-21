@@ -2718,7 +2718,7 @@ class OrpheusStreamServer:
                 rows.append((it, normalize_for_tts(it.get('text', ''), language),
                              v, rung, take))
 
-            if rows and _can_guard_its_own_batch(engine):
+            if rows and _can_guard_its_own_batch(self.orph):
                 # THE ENGINE'S OWN BATCHED DRIVER, judged or not (Owen,
                 # 2026-09-13; asked for per batch since 2026-09-19; unjudged
                 # batches routed here 2026-09-20).
