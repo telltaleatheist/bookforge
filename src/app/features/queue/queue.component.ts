@@ -1833,6 +1833,17 @@ interface ChainRung {
        GPU/CPU slots exactly as they were. */
     .card-head .sub { font-size: 0.8125rem; }
 
+    /* THE META LINE IS ALWAYS ONE LINE. A collapsed card is a fixed small
+       rectangle; a sub that wrapped (a long step label, a long venue) grew it
+       into a paragraph (Owen, 2026-09-20). It ellipsises instead — the ladder
+       the card opens to carries the full text. */
+    .book-open .sub {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      max-width: 100%;
+    }
+
     .acts { margin-left: auto; display: flex; gap: 6px; flex: none; align-items: center; }
 
     /* THE X, BESIDE THE PILL — neutral rather than red: red on this page is a
@@ -4288,8 +4299,13 @@ export class QueueComponent {
   bookLine(plan: BookPlan, staged: boolean): string {
     const parts = [`${plan.steps.length} step${plan.steps.length === 1 ? '' : 's'}`];
     if (staged) {
-      const chain = plan.steps.map((step) => step.label).join(' → ');
-      if (chain) parts.push(chain);
+      // NOT the chain. Owen, 2026-09-20: a staged card's meta was every step's
+      // full label joined with " → ", and a step label carries the whole book
+      // ("Read the pages — Unspeakable Truths… (2022).pdf"), so a one-step read
+      // wrapped the collapsed card to six lines while a queued card stayed one.
+      // The chain lives in the ladder the card opens to; the collapsed line just
+      // says the book is parked.
+      parts.push('not sent yet');
       return parts.join(' · ');
     }
     const running = plan.steps.find((step) => step.status === 'running') ?? null;
