@@ -14,26 +14,45 @@
  * Both read `shared/queue/bench.ts` now, so there is one description of the
  * queue and one set of words for it.
  *
- * ── The bands ───────────────────────────────────────────────────────────────
+ * ── LANES, not one list with a machine dropdown (Owen, 2026-09-20) ──────────
  *
- *   Needs you    — failures, with the engine's own sentence and the controls
- *                  that resolve them. Not drawn when there are none.
- *   On the bench — the three slots, always all three. The GPU card is the
- *                  largest object on the page because the card is the resource
- *                  the user schedules their day around.
- *   Pending      — staged books, nothing committed, waiting for Send to queue.
- *   Up next      — grouped by BOOK, each group drawing its chain with real
- *                  lineage, every still step saying why it is still.
- *   Finished     — today's work as history: what it produced and how long it
- *                  took, in a table, not as more rows that look live.
+ * *"maybe pending is along the left side and goes to the bottom, like a side
+ * bar… the two cpu slots sit at the top, and then the GPU slots are in a grid
+ * underneath"* — and, on what a GPU slot IS: *"gpu slots are crucible servers,
+ * and in this case we have 2, so they should be slots 1 of 2 and 2 of 2"*.
  *
- * ── Pending and Up next are ONE card in two states ──────────────────────────
+ * The old page drew ONE "Up next" list and put the machine question inside each
+ * card as a dropdown. The queue's actual shape is a set of MACHINES with books
+ * queued behind each of them, and a list plus a dropdown makes the reader
+ * reconstruct that shape in their head from N separate answers. So the shape is
+ * drawn:
+ *
+ *   Needs you     — failures, with the engine's own sentence and the controls
+ *                   that resolve them. Not drawn when there are none.
+ *   Pending       — the sticky left column. Every book waiting for ANY machine:
+ *                   released books with no server named, staged books not yet
+ *                   sent, and books that travel nowhere (they run on the local
+ *                   CPU slots and cannot be pinned — tagged "CPU").
+ *   Local slots   — this machine's own lanes, as compact tiles. Not drop
+ *                   targets: nothing is pinned to a CPU slot, work simply
+ *                   arrives there.
+ *   GPU slots     — one LANE per Crucible server, each drawing what is on its
+ *                   card now and the books pinned behind it, in queue order.
+ *   Finished      — today's work as history: what it produced and how long it
+ *                   took, in a table, not as more rows that look live.
+ *
+ * DRAG IS THE ACCELERATOR, NEVER THE ONLY DOOR. Pending → lane pins, lane →
+ * Pending un-pins, and either way the same `chooseWaitFor` the ⋯ menu's
+ * *Run on…* picker calls is what actually writes the answer. A person on a
+ * keyboard, or a person who simply does not want to drag, loses nothing.
+ *
+ * ── Pending and the lanes are ONE card in two states ────────────────────────
  *
  * They were two loops drawing two nearly-identical cards, and they drifted:
  * different action sets, different pickers, different words for the same fact.
- * The body of both is now a single `#bookCard` template with a `staged` flag,
- * and each band supplies its own wrapper — Up next's because only IT is a drop
- * list and `cdkDrag` has to be a real child of the band that owns the drag.
+ * The body of all of them is now a single `#bookCard` template with a `staged`
+ * flag, and each list supplies its own wrapper — because every list here is a
+ * drop list and `cdkDrag` has to be a real child of the list that owns the drag.
  *
  * The card is two columns: the BOOK on the left (grip, cover, title, one-line
  * summary) and the DECISION on the right (which machine, then what to do about
@@ -56,20 +75,23 @@
 import { Component, HostListener, computed, inject, signal } from '@angular/core';
 import { DatePipe, DecimalPipe, NgTemplateOutlet } from '@angular/common';
 import { FormsModule } from '@angular/forms';
-import { CdkDrag, CdkDragHandle, CdkDropList, moveItemInArray } from '@angular/cdk/drag-drop';
+import {
+  CdkDrag, CdkDragHandle, CdkDropList, CdkDropListGroup, moveItemInArray,
+} from '@angular/cdk/drag-drop';
 import type { CdkDragDrop } from '@angular/cdk/drag-drop';
 
-import { benchRows, prepFraction, prepLabel } from '@shared/queue/bench';
+import { prepFraction, prepLabel } from '@shared/queue/bench';
 import type { BookPlan, FinishedRun } from '@shared/queue/bench';
-import type { ServerReach } from '@shared/queue/engine-types';
+import type { JobType, ServerReach, StepStatus } from '@shared/queue/engine-types';
 import { LOCAL_WORK_SET, LONGFORM_ALIGN_SET } from '@shared/queue/slot-sets';
-import { DesktopSelectComponent, ToolbarComponent, ToolbarItem } from '../../creamsicle-desktop';
+import { DesktopSelectComponent } from '../../creamsicle-desktop';
 import type { DesktopSelectItems } from '../../creamsicle-desktop';
 import { DialogService } from '../../creamsicle-desktop/services/dialog.service';
 import { ElectronService } from '../../core/services/electron.service';
 import { ToastService } from '../../core/services/toast.service';
 import { JobDetailsComponent } from './components/job-details/job-details.component';
 import { JobStepComponent } from './components/job-step/job-step.component';
+import { StageBarsComponent } from './components/stage-bars/stage-bars.component';
 import { stagesFor } from './models/job-stages';
 import { JobEtaService } from './services/job-eta.service';
 import { QueueService } from './services/queue.service';
@@ -79,39 +101,170 @@ import type { BenchSectionView, BookPlanView, LaneView } from './services/queue-
 /**
  * WHAT RUNNING AND PAUSED MEAN — the words, once (2026-09-19).
  *
- * The state is drawn TWICE: on the Up next band header, where the rows it
- * governs are, and in the toolbar, which is on screen even when Up next is
- * empty. Two drawings of one fact is fine — two WORDINGS of it is not, and a
- * copied tooltip is exactly the kind of thing that gets edited in one place a
- * month from now. Both controls interpolate these strings and both press
- * `setQueueRunning`; neither keeps a latch of its own.
+ * The state used to be drawn TWICE — on the Up next band header and in the
+ * toolbar — because the band header vanished with its rows. The lane layout
+ * removed that band, so there is now ONE drawing of it, in the toolbar, where
+ * it is on screen over an empty queue as well as a full one. The table stays
+ * where it is: two WORDINGS of one fact is the thing to avoid, and a copied
+ * tooltip is exactly what gets edited in one place a month from now.
  *
  * The titles say what the STATE means, not what the button does, because the
  * one you are already in is still pressable (see `setQueueRunning`).
+ *
+ * `caption` is the sentence under the pill (Owen, 2026-09-20 — the segmented
+ * control has to say what the state DOES, not just name it). It is a full
+ * sentence rather than the tooltip's paragraph because it is always on screen.
  */
 const QUEUE_STATE_CONTROL = {
   running: {
     label: 'Running',
     title: 'Steps start as slots free up. Pressing it while already running '
       + 'picks up anything that was stopped.',
+    caption: 'Accepting books and starting them as machines free up.',
   },
   paused: {
     label: 'Paused',
     title: 'Books may still be added to the queue and reordered; nothing new '
       + 'starts until Running. Work already on a slot finishes.',
+    caption: 'Accepting books; nothing new starts. Work already on a card finishes.',
   },
 } as const;
+
+/** The Pending column's identity as a drop target. Not a server's name. */
+const PENDING_LIST = '__pending__';
+
+/**
+ * How many pinned books a lane draws before it folds (Owen's mockup).
+ *
+ * Four, and the fold is PER LANE: a server with eleven books behind it must not
+ * push the server beside it off the bottom of the screen, and "+ 7 more pinned
+ * here" is a more useful sentence about that lane than seven more cards are.
+ */
+const PINNED_FOLD = 4;
+
+/**
+ * A row of the Pending column: a book's plan, and which side of the Send-to-
+ * queue press it is on. One list, because to the reader they are one kind of
+ * thing — *not behind a particular machine* — and the card body is the same
+ * `#bookCard` in its two states.
+ */
+interface PendingEntry {
+  plan: BookPlanView;
+  staged: boolean;
+}
+
+/**
+ * WHERE A DROPPED BOOK GOES IN THE ENGINE'S ONE ORDER.
+ *
+ * `none` is a real answer and not an absence: a book pinned to an EMPTY lane
+ * has said nothing about its rank, and moving it anyway — to the back, which is
+ * the other plausible reading of "dropped last" — would demote a book for the
+ * crime of being given a free machine.
+ */
+type OrderTarget =
+  | { kind: 'none' }
+  | { kind: 'end' }
+  | { kind: 'before'; plan: BookPlanView };
+
+/** One rung of the step ladder a busy card draws. */
+interface ChainRung {
+  stepId: string;
+  label: string;
+  status: StepStatus;
+  type: JobType;
+  percent: number | null;
+  /** Finished successfully — the part of the chain a Stop would keep. */
+  done: boolean;
+}
 
 @Component({
   selector: 'app-queue',
   standalone: true,
   imports: [
     DatePipe, DecimalPipe, NgTemplateOutlet, FormsModule,
-    ToolbarComponent, DesktopSelectComponent, JobStepComponent, JobDetailsComponent,
-    CdkDropList, CdkDrag, CdkDragHandle,
+    DesktopSelectComponent, JobStepComponent, JobDetailsComponent, StageBarsComponent,
+    CdkDropList, CdkDropListGroup, CdkDrag, CdkDragHandle,
   ],
   template: `
-    <desktop-toolbar [items]="toolbarItems()" (itemClicked)="onToolbarAction($event)" />
+    <!-- ── The toolbar row ─────────────────────────────────────────────────
+         HAND-DRAWN, not \'desktop-toolbar\' (2026-09-20). ToolbarItem is a flat
+         list of buttons, dropdowns and dividers; what this row has to say is a
+         LABELLED STATE — the word "Queue", a segmented pill, and a caption
+         underneath that changes with the state — which no combination of those
+         item types expresses without lying about which control owns what.
+
+         Everything it presses is the same door it pressed before:
+         \'setQueueRunning\' for the pill, \'stopQueue\' for Halt, and
+         \'refreshFromBackend\' for the arrow. The queue page is the only page
+         with a toolbar of its own shape; every other page still uses the
+         component. -->
+    <div class="qbar">
+      <div class="qstate">
+        <span class="qword">Queue</span>
+        <!-- Two states of ONE fact (the engine's running latch), drawn as one
+             control so it cannot look like two independent buttons. Colour
+             carries the meaning: green is moving, amber is holding — never red,
+             because pausing throws nothing away.
+
+             PAUSED ACCEPTS ROWS (Owen, 2026-09-19: *"if the queue isn't active
+             then it just sits in the active queue doing nothing"*). Send to
+             queue is not refused while paused. That is what the caption says,
+             and it is why this needed no engine change at all: \'pump()\' has
+             always been gated on the latch. -->
+        <div class="seg" role="group" aria-label="Queue state">
+          <button
+            type="button"
+            class="seg-btn"
+            [class.on]="tray.isRunning()"
+            [attr.aria-pressed]="tray.isRunning()"
+            (click)="setQueueRunning(true)"
+            [title]="queueState.running.title"
+          ><span class="seg-dot" aria-hidden="true"></span>{{ queueState.running.label }}</button>
+          <button
+            type="button"
+            class="seg-btn paused"
+            [class.on]="!tray.isRunning()"
+            [attr.aria-pressed]="!tray.isRunning()"
+            (click)="setQueueRunning(false)"
+            [title]="queueState.paused.title"
+          ><span class="seg-dot" aria-hidden="true"></span>{{ queueState.paused.label }}</button>
+        </div>
+        <span class="qcaption">{{ stateCaption() }}</span>
+      </div>
+
+      <span class="qspacer"></span>
+
+      <!-- The same slot readout the old "On the bench" heading carried. It
+           belongs up here now that the bench is two separate bands and neither
+           of them can honestly claim the whole count. -->
+      <span class="qslots">{{ slotSummary() }}</span>
+
+      <!-- ONE STOPPING GESTURE UP HERE, and it is the destructive one.
+           Halt is NOT the latch and never was (Owen, 2026-08-29): it takes the
+           card back NOW, cancelling what is running. One button wearing the
+           word Pause while doing the halt is how an hour of denoise got
+           cancelled to prevent the NEXT hour of denoise. Offered only while
+           something is actually running, because there is nothing to halt
+           otherwise — and now SAYING HOW MUCH it would stop, behind its own
+           rule, so it cannot be pressed as though it were the pill's sibling. -->
+      @if (tray.anythingRunning()) {
+        <span class="qrule" aria-hidden="true"></span>
+        <button
+          type="button"
+          class="btn halt"
+          (click)="halt()"
+          title="Stop the queue AND everything it is running, now. Anything stopped resumes from what it has already rendered. To stop just one book, use the Stop on its card."
+        >■ Stop running work · {{ runningBooks() }} book{{ runningBooks() === 1 ? '' : 's' }}</button>
+      }
+
+      <button
+        type="button"
+        class="qicon"
+        (click)="refresh()"
+        aria-label="Refresh the queue"
+        title="Re-read the queue from the app’s main process."
+      >↻</button>
+    </div>
 
     <div class="page">
 
@@ -147,379 +300,487 @@ const QUEUE_STATE_CONTROL = {
         </section>
       }
 
-      <!-- ── On the bench ──────────────────────────────────────────────────
-           GROUPED, not one flat grid (Owen, 2026-09-15: "they look kind of ugly
-           clustered together randomly. and its hard to tell which slot im
-           looking at unless i look closely at the names"). The sections and
-           their order come from benchSections, which is pure and keeper-driven
-           and never draws an empty heading; this draws them. The overall count
-           stays, because "3 of 6 in use" is the sentence somebody reads first. -->
-      <section class="band">
-        <header class="band-head">
-          <h2>On the bench</h2>
-          <span class="note">{{ busyLanes() }} of {{ tray.lanes().length }} slots in use</span>
-        </header>
+      <!-- ── The floor: Pending down the left, the machines on the right ───
+           Owen, 2026-09-20: *"maybe pending is along the left side and goes to
+           the bottom, like a side bar… the two cpu slots sit at the top, and
+           then the GPU slots are in a grid underneath"*.
 
-        @for (section of tray.sections(); track section.group) {
-        <div class="sect">
-          <div class="sect-head">
-            <h3>{{ section.heading }}</h3>
-            <span class="sect-note">{{ section.note }}</span>
-            <!--
-              THE DIAL IS GONE FROM HERE, replaced by the per-slot switches
-              above each card (Owen, 2026-09-15: *"instead of having a dropdown
-              that chooses whether to have 'any' or the given crucible servers,
-              lets have a big checkbox above each gpu slot"*).
+           ONE cdkDropListGroup around the whole thing, because a book dragged
+           out of Pending has to be able to land on any lane and a book dragged
+           off a lane has to be able to land back in Pending. The group is what
+           connects the lists; nothing here maintains a list of ids. -->
+      <div class="layout" cdkDropListGroup>
 
-              They are not the same control wearing different clothes and the
-              swap is the point. The dial STEERED — one machine at a time, every
-              book, and a book that named another waited. The switches say what
-              each machine is FOR, independently, so two cards can be on and a
-              third off; "any" stops being a setting and becomes what is left
-              switched on. The per-book picker is untouched and still chooses
-              between them (Owen: *"the dropdown can remain for queue items"*).
-            -->
-            <!-- OF THE ONES THAT ARE ON. Counting a switched-off card among
-                 the slots you have would make "1 of 3 in use" read as two idle
-                 machines when one of them is off on purpose. -->
-            <span class="sect-count">{{ section.inUse }} of {{ liveLanes(section) }} in use</span>
-          </div>
+        <!-- ── Pending, the sticky column ───────────────────────────────────
+             DRAWN LIKE A SLOT, deliberately: it is the answer "any machine",
+             and a book sitting in it is queued exactly as hard as one pinned to
+             a card. It is the only list here that is not a machine, so it says
+             which machine it is — the first free one.
 
-        <!--
-          THE GRID, Owen 2026-09-15: one across, then two, then three, then
-          2+2, 3+2, 3+3. 'benchRows' owns the arithmetic (and a keeper holds it
-          to his numbers); this draws each row as its own grid of exactly that
-          many columns, which is what makes the two lanes of a 3+2 second row
-          take half the width each instead of sitting under the first two
-          columns with a hole on the right.
-        -->
-        @for (row of rowsOf(section.lanes); track $index) {
-        <div class="lane-row" [style.grid-template-columns]="'repeat(' + row.length + ', minmax(0, 1fr))'">
-          @for (lane of row; track lane.setId + lane.resource + lane.index) {
-          <div class="lane-cell">
-            <!--
-              THE SWITCH, ABOVE THE SLOT IT GOVERNS, and only above a slot it
-              can govern. Owen: "each one should have an enable/disable checkbox
-              above it with its name" — and of the CPU pair, "those belong to
-              the local system... they obviously cant be disabled."
-              'switchOf' answers with the SERVER NAME or null, so the local
-              aligner's GPU row gets no switch either: there is no registered
-              server behind it to switch off.
-
-              It writes 'routing.disabled' through the same 'setEnabled' the
-              Settings panel has always called. One fact, two doors — and the
-              queue has honoured it all along ('decideWaitFor' holds a named
-              server that is off, and 'any' never tries one).
-
-              AND 'down' IS A SECOND WORD FOR A SECOND FACT, never for this one.
-              The switch is what the operator decided this machine is for;
-              'lane.down' is what the machine said when the scheduler last asked
-              it (QueueSnapshot.servers, one reach cache, no second poll). A
-              sleeping Mac used to draw a lane indistinguishable from a working
-              one, with its books silently never starting. The checkbox stays
-              live and nothing here writes 'routing.disabled' from it: switching
-              a machine off because it is asleep would leave it off after it
-              woke, and the operator never chose that. The reason is on the
-              label's tooltip, one hover away, because the transport's sentence
-              is too long to draw and too useful to drop.
-            -->
-            @if (switchOf(lane); as server) {
-              <label
-                class="lane-switch"
-                [class.off]="lane.disabled"
-                [class.down]="!lane.disabled && lane.down"
-                [title]="lane.down || ''"
-              >
-                <input
-                  type="checkbox"
-                  [checked]="!lane.disabled"
-                  [disabled]="switching() === server"
-                  (change)="toggleServer(server, $any($event.target).checked)"
-                />
-                <span class="lane-switch-name">{{ server }}</span>
-                @if (lane.disabled) {
-                  <span class="lane-switch-word">off</span>
-                } @else if (lane.down) {
-                  <span class="lane-switch-word">down</span>
-                }
-              </label>
-            } @else {
-              <div class="lane-switch none">
-                <span class="lane-switch-name">{{ lane.setLabel }}</span>
+             The SECTION is the drop list, header included: a wide target, and
+             no wrapper between the column and its cards. -->
+        <aside class="sidebar">
+          <section
+            class="slotcol"
+            cdkDropList
+            [cdkDropListDisabled]="reordering()"
+            [cdkDropListEnterPredicate]="acceptUnpin"
+            (cdkDropListDropped)="onPendingDrop($event)"
+            (cdkDropListEntered)="hoverList.set(pendingList)"
+            (cdkDropListExited)="clearHover(pendingList)"
+            (mouseenter)="hoverList.set(pendingList)"
+            (mouseleave)="clearHover(pendingList)"
+          >
+            <header class="slot-head">
+              <div class="slot-line">
+                <h2>Pending</h2>
+                <span class="slot-count">{{ pendingColumn().length }}</span>
               </div>
+              <div class="slot-where">Any machine</div>
+              <span class="slot-pill">first free machine</span>
+            </header>
+
+            @if (dragNote(pendingList); as note) {
+              <p class="drop-note">{{ note }}</p>
             }
-            <article
-              class="lcard"
-              [class.gpu]="lane.resource === 'gpu'"
-              [class.warn]="lane.hold"
-              [class.hot]="lane.thermal?.throttleSustained"
-              [class.idle]="!lane.occupant && !lane.hold"
-            >
-              <!-- The per-slot Stop, restored 2026-08-21.
-                   It was left out on the reasoning that Pause already stopped
-                   the run, so a second control would be the same act twice. It
-                   is not the same act: Pause stops the ENGINE too, so nothing
-                   starts after it, while this frees one slot and lets the queue
-                   carry on. Without it, "take this book off the card and get on
-                   with the next one" had no button anywhere, and Owen went
-                   looking for one. The wording says which is which. -->
-              <div class="lcard-slot">
-                <span>{{ lane.setLabel }} · {{ lane.resource === 'gpu' ? 'GPU' : 'CPU' }} · slot {{ lane.index }} of {{ lane.of }}</span>
-                @if (lane.retiring) { <span class="retiring">finishing — no new work goes here</span> }
-                @if (lane.thermal; as thermal) {
-                  <span class="temp" [class.hot]="thermal.throttleSustained">
-                    {{ thermal.tempC }}°C
-                    @if (thermal.fanPct !== undefined) { · fan {{ thermal.fanPct }}% }
-                  </span>
-                }
-                @if (lane.occupant; as running) {
+
+            @for (entry of pendingColumn(); track entry.plan.key) {
+              <article
+                class="card narrow"
+                [class.staged]="entry.staged"
+                cdkDrag
+                [cdkDragData]="entry.plan"
+                [cdkDragDisabled]="isLocked(entry.plan)"
+                (cdkDragStarted)="dragStarted(entry.plan)"
+                (cdkDragEnded)="dragEnded()"
+              >
+                <!-- HANDLE, not the whole card. The card body carries a
+                     primary, an overflow menu and a step name per row that
+                     expands it; making the card itself draggable would arm a
+                     drag under every one of those presses.
+
+                     It stays HERE rather than inside the shared body because
+                     cdkDrag finds its handle by content query, and a handle
+                     rendered from a template declared elsewhere is not in that
+                     scope — the card would silently become draggable
+                     everywhere. Absent on a book that holds a card: there is
+                     nothing a drag of it could honestly mean. -->
+                @if (!isLocked(entry.plan)) {
                   <button
                     type="button"
-                    class="btn stop"
-                    (click)="stopStep(running.stepId)"
-                    title="Stop this step and free the slot. It keeps everything it has already rendered, and Start picks it up from there. The rest of the queue keeps running — use Pause queue in the toolbar to stop everything."
-                  >■ Stop this step</button>
+                    class="grip"
+                    cdkDragHandle
+                    aria-label="Drag this book onto a machine, or up and down the queue"
+                    title="Drag this book onto a machine, or up and down the queue"
+                  >⠿</button>
+                }
+                <ng-container
+                  [ngTemplateOutlet]="bookCard"
+                  [ngTemplateOutletContext]="{ $implicit: entry.plan, staged: entry.staged, lane: null }"
+                />
+              </article>
+            }
+
+            @if (pendingColumn().length === 0) {
+              <p class="slot-free">
+                Nothing is waiting for a free machine. Books pinned to a
+                particular server are on that server’s lane.
+              </p>
+            }
+          </section>
+        </aside>
+
+        <div class="floor">
+
+          <!-- ── Local slots ───────────────────────────────────────────────
+               This machine's own lanes — the 'local-work' CPU pair, and the
+               in-app aligner's GPU row when it is on the bench. TILES, not
+               lanes, and NOT drop targets: nothing is ever pinned to a CPU
+               slot. Work that travels nowhere simply arrives on one, which is
+               why those books sit in Pending tagged "CPU" rather than in a
+               queue behind a tile. -->
+          @if (localLanes().length > 0) {
+            <section class="band">
+              <header class="band-head">
+                <h2>Local slots</h2>
+                <span class="note">Assembly, muxing, exports — work this machine does and never sends anywhere.</span>
+              </header>
+              <div class="tiles">
+                @for (lane of localLanes(); track laneKey(lane)) {
+                  <article class="lcard tile" [class.idle]="!lane.occupant && !lane.hold">
+                    <div class="tile-head">
+                      <span class="tile-where">This machine</span>
+                      <span class="tile-slot">{{ localSlotLabel(lane) }}</span>
+                    </div>
+                    <ng-container
+                      [ngTemplateOutlet]="slotBody"
+                      [ngTemplateOutletContext]="{ $implicit: lane, compact: true }"
+                    />
+                  </article>
                 }
               </div>
+            </section>
+          }
 
-              <!-- The driver's own verdict, not a threshold this app invented.
-                   Said above the work because it explains the number below it:
-                   a throttled card is why a healthy run misses its band. -->
-              @if (lane.thermal?.throttleSustained) {
-                <div class="hot-note">
-                  Running hot — the card is throttling itself, so this run is
-                  slower than the machine can go. Check fans and airflow.
-                </div>
-              }
+          <!-- ── GPU slots ─────────────────────────────────────────────────
+               ONE LANE PER CRUCIBLE SERVER. Owen, 2026-09-20: *"gpu slots are
+               crucible servers, and in this case we have 2, so they should be
+               slots 1 of 2 and 2 of 2"* — so the ordinal drawn on a lane head
+               is its place among the SERVERS, not 'lane.index'/'lane.of', which
+               count slots inside one machine's own pool and read "1 of 1" on
+               every card in a two-server bench.
 
-              @if (lane.occupant; as busy) {
-                <div class="lcard-book">
-                  @if (lane.cover) {
-                    <img class="cover lg" [src]="lane.cover" alt="" />
-                  } @else {
-                    <span class="cover lg blank" aria-hidden="true"></span>
-                  }
-                  <div class="min grow">
-                    <div class="act">{{ busy.verb }} <span>· {{ busy.label }}</span></div>
-                    <div class="sub">{{ busy.title }}</div>
-                  </div>
-                  <!-- The percentage alone up here. The ETA moved down to the
-                       measurements (Owen, 2026-08-22): it is a measurement, it
-                       belongs with the others, and it reads better ending the
-                       row than tucked under the headline number. -->
-                  <div class="right">
-                    @if (busy.percent !== null) {
-                      <div class="pct">{{ busy.percent | number:'1.0-0' }}%</div>
-                    }
-                  </div>
-                </div>
+               A Crucible server is a Crucible server wherever it runs (ruling
+               7, 2026-09-19), so a loopback engine gets exactly this lane and
+               exactly these controls. -->
+          @if (gpuLanes().length > 0) {
+            <section class="band">
+              <header class="band-head">
+                <h2>GPU slots · {{ gpuLanes().length }} Crucible server{{ gpuLanes().length === 1 ? '' : 's' }}</h2>
+                <span class="note">Drag a book onto a lane to pin it there. Switch one off to keep new work away from it.</span>
+              </header>
+              <div class="lanes">
+                @for (lane of gpuLanes(); track laneKey(lane); let i = $index) {
+                  <section
+                    class="lane"
+                    [class.off]="lane.disabled"
+                    [class.down]="!lane.disabled && lane.down"
+                    cdkDropList
+                    [cdkDropListData]="lane"
+                    [cdkDropListDisabled]="reordering()"
+                    [cdkDropListEnterPredicate]="acceptPin"
+                    (cdkDropListDropped)="onLaneDrop(lane, $event)"
+                    (cdkDropListEntered)="hoverList.set(lane.setId)"
+                    (cdkDropListExited)="clearHover(lane.setId)"
+                    (mouseenter)="hoverList.set(lane.setId)"
+                    (mouseleave)="clearHover(lane.setId)"
+                  >
+                    <!-- THE SWITCH, ON THE LANE IT GOVERNS, and only on a lane
+                         it can govern. Owen: "each one should have an
+                         enable/disable checkbox above it with its name."
+                         'switchOf' answers with the SERVER NAME or null, so
+                         nothing on the local tiles gets one: there is no
+                         registered server behind them to switch off.
 
-                <div class="bar" [class.dim]="busy.percent === null">
-                  <i [style.width.%]="busy.percent ?? 0"></i>
-                </div>
+                         It writes 'routing.disabled' through the same
+                         'setEnabled' the Settings panel has always called. One
+                         fact, two doors — and the queue has honoured it all
+                         along ('decideWaitFor' holds a named server that is
+                         off, and 'any' never tries one).
 
-                <!-- The stage breakdown, because the headline number alone cannot
-                     show life: an Orpheus batch reports no completions for
-                     minutes while the stages under it are moving. -->
-                @if (busy.stages.length > 0) {
-                  <div class="stages">
-                    @for (stage of busy.stages; track stage.name) {
-                      <div class="stage-row" [class.on]="stage.status === 'running'">
-                        <span class="s-name">{{ stage.label }}</span>
-                        <span class="bar thin" [class.done]="stage.status === 'complete'">
-                          <i [style.width.%]="stage.pct"></i>
+                         AND 'down' IS A SECOND WORD FOR A SECOND FACT, never
+                         for this one. The switch is what the operator decided
+                         this machine is for; 'lane.down' is what the machine
+                         said when the scheduler last asked it. A sleeping Mac
+                         used to draw a lane indistinguishable from a working
+                         one, with its books silently never starting. Nothing
+                         here writes 'routing.disabled' from it: switching a
+                         machine off because it is asleep would leave it off
+                         after it woke, and the operator never chose that. -->
+                    <header class="lane-head">
+                      @if (switchOf(lane); as server) {
+                        <label class="lane-switch" [title]="lane.down || ''">
+                          <input
+                            type="checkbox"
+                            [checked]="!lane.disabled"
+                            [disabled]="switching() === server"
+                            (change)="toggleServer(server, $any($event.target).checked)"
+                          />
+                          <span class="lane-name">{{ lane.setLabel }}</span>
+                        </label>
+                      } @else {
+                        <span class="lane-name">{{ lane.setLabel }}</span>
+                      }
+                      <span class="lane-slot">GPU slot {{ i + 1 }} of {{ gpuLanes().length }}</span>
+                      <!-- Per-class bindings, not [class]="tone": a whole-class
+                           binding beside a static class attribute is a rule
+                           about merging that nobody should have to remember
+                           while reading a lane header. -->
+                      <span
+                        class="lane-state"
+                        [class.live]="laneState(lane).tone === 'live'"
+                        [class.warn]="laneState(lane).tone === 'warn'"
+                        [class.bad]="laneState(lane).tone === 'bad'"
+                      >
+                        <span class="dot" aria-hidden="true"></span>{{ laneState(lane).word }}
+                      </span>
+                      @if (lane.thermal; as thermal) {
+                        <span class="temp" [class.hot]="thermal.throttleSustained">
+                          {{ thermal.tempC }}°C
+                          @if (thermal.fanPct !== undefined) { · fan {{ thermal.fanPct }}% }
                         </span>
-                        <span class="s-val">
-                          @if (stage.status === 'complete') { done }
-                          @else if (stage.status === 'pending') { — }
-                          @else { {{ stage.pct | number:'1.0-0' }}% }
-                        </span>
+                      }
+                    </header>
+
+                    <!-- The driver's own verdict, not a threshold this app
+                         invented. Said above the work because it explains the
+                         number below it: a throttled card is why a healthy run
+                         misses its band. -->
+                    @if (lane.thermal?.throttleSustained) {
+                      <div class="hot-note">
+                        Running hot — the card is throttling itself, so this run is
+                        slower than the machine can go. Check fans and airflow.
                       </div>
                     }
-                  </div>
-                }
 
-                @if (tray.detailFor(lane); as detail) {
-                  <div class="detail">{{ detail }}</div>
-                }
-
-                <!-- Inside the PREPARING stage, before e2a exists. "Preparing
-                     book" is honestly at 0% while the number-normalization pass
-                     walks the whole book through a local model, which on a long
-                     book is minutes of a card that otherwise says nothing. -->
-                @if (busy.prep; as prep) {
-                  <div class="batch-row">
-                    @if (prepFraction(prep) !== undefined) {
-                      <span class="bar thin batch">
-                        <i [style.width.%]="prepFraction(prep)! * 100"></i>
-                      </span>
-                    }
-                    <span class="batch-text">{{ prepLabel(prep) }}</span>
-                  </div>
-                }
-
-                <!-- There is no second bar for the MLX batch any more (removed
-                     2026-09-11). The batch's rows retire one at a time and the
-                     bridge folds them into the chunk count, so the CHUNK bar is
-                     what moves during the decode — the same thing the PC shows,
-                     and one bar instead of two. The detail line above still says
-                     what is being rendered together. -->
-
-                <!-- The measurements. Rate is the number a long render is judged
-                     by; absent until an honest window exists, never estimated.
-
-                     Drawn whenever the slot is busy, rather than only when
-                     something has been measured: the ETA cell below always says
-                     something — a duration or "not timed yet" — and a row that
-                     appeared partway through a run would move every other
-                     number down the card at the moment the reader was watching
-                     them. -->
-                <div class="measures">
-                    @if (lane.count) {
-                      <!-- CHUNKS, not sentences. lane.count is
-                           chunksCompletedInJob/totalChunksInJob, and a chunk packs
-                           2-3 sentences — so this read ~3.6x lower than the book's
-                           real sentence count and disagreed with the sent/min beside
-                           it, which IS raw sentences (Owen, 2026-08-20). Same
-                           distinction the analytics panel already draws. -->
-                      <div class="ro"><div class="k">Chunks</div><div class="v">{{ lane.count }}</div></div>
-                    }
-                    @if (lane.speed) {
-                      <div class="ro"><div class="k">Rate</div><div class="v">{{ lane.speed }}</div></div>
-                    }
-                    @if (lane.elapsed) {
-                      <div class="ro"><div class="k">Elapsed</div><div class="v">{{ lane.elapsed }}</div></div>
-                    }
-                    <!-- Last, and pushed to the right edge so it lands under the
-                         stage rows' "done" column. Elapsed and ETA end up beside
-                         each other, which is the pairing a person actually reads:
-                         how long this has taken, and how long is left. -->
-                    <div class="ro eta-ro">
-                      <div class="k">ETA</div>
-                      <div class="v">{{ lane.eta ?? 'not timed yet' }}</div>
+                    <div class="on-card">
+                      <div class="on-card-label">On the card now</div>
+                      <ng-container
+                        [ngTemplateOutlet]="slotBody"
+                        [ngTemplateOutletContext]="{ $implicit: lane, compact: false }"
+                      />
                     </div>
-                </div>
-              } @else if (lane.hold) {
-                <div class="held-off">
-                  <div class="act warn-text">Waiting for the card</div>
-                  <p class="why-long">{{ lane.hold }}</p>
-                </div>
-              } @else {
-                <div class="free">
-                  <div class="free-head">Free</div>
-                  <div class="free-sub">Nothing queued wants this slot</div>
+
+                    <div class="pinned">
+                      <div class="pinned-head">
+                        Pinned here · {{ lanePinned(lane).length }}
+                      </div>
+
+                      @if (dragNote(lane.setId); as note) {
+                        <p class="drop-note" [class.no]="pinRefusal(lane, dragging()) !== null">{{ note }}</p>
+                      }
+
+                      @for (plan of laneRows(lane); track plan.key) {
+                        <article
+                          class="card narrow"
+                          cdkDrag
+                          [cdkDragData]="plan"
+                          [cdkDragDisabled]="isLocked(plan)"
+                          (cdkDragStarted)="dragStarted(plan)"
+                          (cdkDragEnded)="dragEnded()"
+                        >
+                          @if (!isLocked(plan)) {
+                            <button
+                              type="button"
+                              class="grip"
+                              cdkDragHandle
+                              aria-label="Drag this book to another machine, or up and down this lane"
+                              title="Drag this book to another machine, or up and down this lane"
+                            >⠿</button>
+                          }
+                          <ng-container
+                            [ngTemplateOutlet]="bookCard"
+                            [ngTemplateOutletContext]="{ $implicit: plan, staged: false, lane: lane }"
+                          />
+                        </article>
+                      }
+
+                      @if (lanePinned(lane).length === 0) {
+                        <p class="pinned-none">Nothing is waiting for this machine.</p>
+                      }
+
+                      <!-- THE FOLD IS PER LANE. Expanding one server's queue
+                           must not move the server beside it, which is what a
+                           page-wide "show all" would do. -->
+                      @if (lanePinned(lane).length > laneRows(lane).length) {
+                        <button type="button" class="fold" (click)="toggleLaneFold(lane)">
+                          + {{ lanePinned(lane).length - laneRows(lane).length }} more pinned here
+                        </button>
+                      } @else if (lanePinned(lane).length > pinnedFold) {
+                        <button type="button" class="fold" (click)="toggleLaneFold(lane)">
+                          Show fewer
+                        </button>
+                      }
+                    </div>
+                  </section>
+                }
+              </div>
+            </section>
+          }
+
+          <!-- ── Routed elsewhere ──────────────────────────────────────────
+               An engine forwarding a request to its upstream (crucible PHASE15
+               §5.3). Neither this machine's CPU nor a card anybody here owns,
+               so it is neither a tile nor a lane you can pin to — drawn as
+               tiles, with the section's own words, only when such a lane
+               exists. -->
+          @for (section of cloudSections(); track section.group) {
+            <section class="band">
+              <header class="band-head">
+                <h2>{{ section.heading }}</h2>
+                <span class="note">{{ section.note }}</span>
+              </header>
+              <div class="tiles">
+                @for (lane of section.lanes; track laneKey(lane)) {
+                  <article class="lcard tile" [class.idle]="!lane.occupant && !lane.hold">
+                    <div class="tile-head">
+                      <span class="tile-where">{{ lane.setLabel }}</span>
+                      <span class="tile-slot">slot {{ lane.index }} of {{ lane.of }}</span>
+                    </div>
+                    <ng-container
+                      [ngTemplateOutlet]="slotBody"
+                      [ngTemplateOutletContext]="{ $implicit: lane, compact: true }"
+                    />
+                  </article>
+                }
+              </div>
+            </section>
+          }
+        </div>
+      </div>
+
+      <!-- ── What is on a slot ──────────────────────────────────────────────
+           ONE body for a tile and for a lane's "On the card now", because a
+           slot is a slot: the same occupant, the same measurements, the same
+           three empty states (held off, free, or simply nothing wants it). The
+           'compact' flag drops the step ladder, which a 2-across tile has no
+           room for and a CPU assembly has little to say in. -->
+      <ng-template #slotBody let-lane let-compact="compact">
+        @if (lane.occupant; as busy) {
+          <div class="lcard-book">
+            @if (lane.cover) {
+              <img class="cover lg" [src]="lane.cover" alt="" />
+            } @else {
+              <span class="cover lg blank" aria-hidden="true"></span>
+            }
+            <div class="min grow">
+              <div class="act">{{ busy.verb }} <span>· {{ busy.label }}</span></div>
+              <div class="sub">{{ busy.title }}</div>
+            </div>
+            <!-- The percentage alone up here. The ETA is down in the
+                 measurements (Owen, 2026-08-22): it is a measurement, it
+                 belongs with the others. -->
+            <div class="right">
+              @if (busy.percent !== null) {
+                <div class="pct">{{ busy.percent | number:'1.0-0' }}%</div>
+              }
+            </div>
+            <!-- STOP, TOP RIGHT, POSITIONED LIKE AN X (Owen, 2026-09-20: *"put
+                 Stop in the top right, positioned like its an X. and keep it
+                 short"*). It is the narrow act and the tooltip says so: the
+                 queue keeps running, the book keeps what it rendered.
+
+                 It is NOT wired to 'returnToPending', which resets progress —
+                 a known engine defect (PK16) being fixed on its own. A stopped
+                 book stays exactly where it is, held, with "Start this book".
+                 Asking first, because what a stop keeps is the only thing
+                 worth knowing before pressing it. -->
+            <button
+              type="button"
+              class="stop-x"
+              (click)="stopLane(lane)"
+              title="Stops this step and frees the card. The book keeps everything it has rendered; Start picks it up from there."
+            >■ Stop</button>
+          </div>
+
+          <div class="bar" [class.dim]="busy.percent === null">
+            <i [style.width.%]="busy.percent ?? 0"></i>
+          </div>
+
+          <!-- The stage breakdown, because the headline number alone cannot
+               show life: an Orpheus batch reports no completions for minutes
+               while the stages under it are moving. Drawn by the same
+               'app-stage-bars' the expanded step readout uses, so a stage
+               cannot read one way here and another there. -->
+          @if (busy.stages.length > 0) {
+            <app-stage-bars
+              [stages]="busy.stages"
+              [detail]="tray.detailFor(lane) || undefined"
+              [prep]="busy.prep"
+            />
+          } @else {
+            @if (tray.detailFor(lane); as detail) {
+              <div class="detail">{{ detail }}</div>
+            }
+            <!-- Inside the PREPARING stage, before e2a exists. "Preparing
+                 book" is honestly at 0% while the number-normalization pass
+                 walks the whole book through a local model, which on a long
+                 book is minutes of a card that otherwise says nothing. -->
+            @if (busy.prep; as prep) {
+              <div class="batch-row">
+                @if (prepFraction(prep) !== undefined) {
+                  <span class="bar thin batch">
+                    <i [style.width.%]="prepFraction(prep)! * 100"></i>
+                  </span>
+                }
+                <span class="batch-text">{{ prepLabel(prep) }}</span>
+              </div>
+            }
+          }
+
+          <!-- THE STEP LADDER — where this book has got to in its own chain.
+               Read off the mirror rather than off 'plan.steps', because a
+               plan drops terminal steps by construction ('plansOf' skips
+               them) and the rung a reader most wants is the one that is
+               already DONE: it is the part a stop would keep. -->
+          @if (!compact) {
+            @if (chainFor(busy.jobId); as chain) {
+              @if (chain.length > 1) {
+                <div class="ladder">
+                  @for (rung of chain; track rung.stepId) {
+                    <div class="rung" [class.now]="rung.status === 'running'" [class.done]="rung.done">
+                      <span class="rdot" aria-hidden="true"></span>
+                      <span class="rname">{{ rung.label }}</span>
+                      @if (rung.status === 'running') {
+                        <span class="bar thin"><i [style.width.%]="rung.percent ?? 0"></i></span>
+                        <span class="rval">
+                          @if (rung.percent !== null) { {{ rung.percent | number:'1.0-0' }}% } @else { now }
+                        </span>
+                      } @else {
+                        <span class="rval">{{ rung.done ? 'done' : 'waiting' }}</span>
+                      }
+                    </div>
+                  }
                 </div>
               }
-            </article>
-          </div>
+            }
           }
-        </div>
-        }
-        </div>
-        }
-      </section>
 
-      <!-- ── Up next ───────────────────────────────────────────────────── -->
-      <!-- The band IS the drop list, header included — a wide target, and no
-           wrapper between the section and its cards. Only THIS band: order is a
-           statement about work not yet claimed, so the bench, Needs-you and
-           Finished bands have nothing a drag could mean. -->
-      @if (visiblePlans().length > 0) {
-        <section
-          class="band"
-          cdkDropList
-          [cdkDropListDisabled]="reordering() || visiblePlans().length < 2"
-          (cdkDropListDropped)="onPlanDrop($event)"
-        >
-          <header class="band-head">
-            <h2>Up next · {{ visiblePlans().length }}</h2>
-            <span class="note left">{{ plannedSteps() }} steps across {{ visiblePlans().length }} books</span>
+          <!-- The measurements. Rate is the number a long render is judged by;
+               absent until an honest window exists, never estimated.
 
-            <!--
-              RUNNING OR PAUSED, said on the band it is about (Owen, 2026-09-19:
-              *"the active queue should have a running or paused option where it
-              accepts new entries or doesn't accept new entries — that's what the
-              pause button should handle probably"*).
-
-              PAUSED ACCEPTS ROWS. Send to queue still works and a book added
-              while paused sits here until Resume; the engine has always behaved
-              this way — the running latch gates its pump — so this is the WORD
-              for a state that existed with nothing on screen saying which one
-              we were in.
-
-              HERE *AND* IN THE TOOLBAR, because this band is not always on
-              screen. This header only exists while Up next has rows, so the
-              one press Owen most wants — arming Paused BEFORE queueing sixteen
-              books overnight — had nowhere to happen. The toolbar twin is
-              always drawn (see toolbarItems); this one is beside the rows it
-              governs, which is where you look once there are rows.
-
-              Twins, not a fork: both read tray.isRunning(), both call
-              setQueueRunning, and both take their words from
-              QUEUE_STATE_CONTROL. There is still exactly one latch, and it is
-              the engine's.
-
-              The toolbar's old Pause/Resume pair is gone — it named the same
-              latch in the language of ACTIONS rather than states, which is how
-              a queue could be paused with nothing on screen saying so. Halt
-              stays there as the destructive sibling — it stops running work.
-            -->
-            <div class="band-right">
-              <div class="seg" role="group" aria-label="Queue state">
-                <button
-                  type="button"
-                  class="seg-btn"
-                  [class.on]="tray.isRunning()"
-                  [attr.aria-pressed]="tray.isRunning()"
-                  (click)="setQueueRunning(true)"
-                  [title]="queueState.running.title"
-                ><span class="seg-dot" aria-hidden="true"></span>{{ queueState.running.label }}</button>
-                <button
-                  type="button"
-                  class="seg-btn paused"
-                  [class.on]="!tray.isRunning()"
-                  [attr.aria-pressed]="!tray.isRunning()"
-                  (click)="setQueueRunning(false)"
-                  [title]="queueState.paused.title"
-                ><span class="seg-dot" aria-hidden="true"></span>{{ queueState.paused.label }}</button>
-              </div>
+               Drawn whenever the slot is busy, rather than only when something
+               has been measured: the ETA cell always says something — a
+               duration or "not timed yet" — and a row that appeared partway
+               through a run would move every other number down the card at the
+               moment the reader was watching them. -->
+          <div class="measures">
+            @if (lane.count) {
+              <!-- CHUNKS, not sentences. lane.count is
+                   chunksCompletedInJob/totalChunksInJob, and a chunk packs 2-3
+                   sentences — so this read ~3.6x lower than the book's real
+                   sentence count and disagreed with the sent/min beside it,
+                   which IS raw sentences (Owen, 2026-08-20). -->
+              <div class="ro"><div class="k">Chunks</div><div class="v">{{ lane.count }}</div></div>
+            }
+            @if (lane.speed) {
+              <div class="ro"><div class="k">Rate</div><div class="v">{{ lane.speed }}</div></div>
+            }
+            @if (lane.elapsed) {
+              <div class="ro"><div class="k">Elapsed</div><div class="v">{{ lane.elapsed }}</div></div>
+            }
+            <!-- Last, and pushed to the right edge so it lands under the stage
+                 rows' "done" column. Elapsed and ETA end up beside each other,
+                 which is the pairing a person actually reads: how long this has
+                 taken, and how long is left. -->
+            <div class="ro eta-ro">
+              <div class="k">ETA</div>
+              <div class="v">{{ lane.eta ?? 'not timed yet' }}</div>
             </div>
-          </header>
+          </div>
+        } @else if (lane.hold) {
+          <div class="held-off">
+            <div class="act warn-text">Waiting for the card</div>
+            <p class="why-long">{{ lane.hold }}</p>
+          </div>
+        } @else {
+          <div class="free">
+            <div class="free-head">Free</div>
+            <div class="free-sub">Nothing queued wants this slot.</div>
+          </div>
+        }
+      </ng-template>
 
-          @for (plan of visiblePlans(); track plan.key) {
-            <article class="card" cdkDrag [cdkDragData]="plan">
-              <!-- HANDLE, not the whole card. The card body carries Stop this
-                   book, an overflow menu and a step name per row that expands
-                   it; making the card itself draggable would arm a drag under
-                   every one of those presses.
+      <!-- ── The book card, every list ──────────────────────────────────────
+           Declared once and rendered by the Pending column (staged books with
+           staged: true, released ones with false) and by every lane's pinned
+           list. The WRAPPER stays with each list because every list here is a
+           drop list and cdkDrag must be its own child.
 
-                   It stays HERE rather than inside the shared body because
-                   cdkDrag finds its handle by content query, and a handle
-                   rendered from a template declared elsewhere is not in that
-                   scope — the card would silently become draggable everywhere.
-                   Absolutely placed, so both bands' titles line up whether or
-                   not the card has a grip. -->
-              <button
-                type="button"
-                class="grip"
-                cdkDragHandle
-                aria-label="Drag to change this book's place in the queue"
-                title="Drag to change this book's place in the queue"
-              >⠿</button>
-              <ng-container
-                [ngTemplateOutlet]="bookCard"
-                [ngTemplateOutletContext]="{ $implicit: plan, staged: false }"
-              />
-            </article>
-          }
-        </section>
-      }
-
-      <!-- ── The book card, both bands ──────────────────────────────────────
-           Declared once and rendered by Pending (staged: true) and Up next
-           (staged: false). The WRAPPER stays with each band because only Up
-           next is a drop list and cdkDrag must be its own child. -->
-      <ng-template #bookCard let-plan let-staged="staged">
+           'lane' is the lane this card is drawn ON, or null in Pending. It is
+           passed so a Stop can say which card it frees, not so the body can
+           decide anything differently. -->
+      <ng-template #bookCard let-plan let-staged="staged" let-lane="lane">
         <!-- TWO COLUMNS: the book on the left, the decision on the right.
              The old card was one flex row with the actions pushed right by an
              auto margin, so the name was flush left and its buttons flush right
@@ -535,6 +796,18 @@ const QUEUE_STATE_CONTROL = {
               <div class="title-row">
                 <h3>{{ plan.title }}</h3>
                 @if (staged) { <span class="staged-tag">Staged</span> }
+                <!-- CPU, on a book that travels nowhere. It is in the Pending
+                     column with everything else waiting for a free machine, and
+                     without this tag it would look like a book that simply has
+                     not been given a server — which is the one thing it can
+                     never be given. A pass or an assembly runs on this
+                     machine's local slots; there is nothing to pin it to. -->
+                @if (!plan.travels) {
+                  <span
+                    class="cpu-tag"
+                    title="This book's work runs on this machine's CPU slots. It cannot be pinned to a Crucible server."
+                  >CPU</span>
+                }
               </div>
               @if (staged) {
                 <!-- THE CHAIN AS ONE LINE, and the rows folded away behind it.
@@ -561,10 +834,25 @@ const QUEUE_STATE_CONTROL = {
 
             WHICH SERVER THIS BOOK WAITS FOR (crucible docs/PHASE7-LANES.md
             §4.2.1). One field, on the book, because one book is one GPU: every
-            step of it follows this answer. Read-only once the book has been
-            ASSIGNED — a job finishes on the machine it started on (§4.3) — and
-            then it is a CHIP in the same slot the picker occupied, so the eye
-            finds the machine in one place whether the book is chosen or fixed.
+            step of it follows this answer.
+
+            ── Why the live card's picker moved into the ⋯ menu (2026-09-20) ──
+
+            THE LANE IS NOW THE ANSWER. A card drawn under "sonnet · GPU slot 1
+            of 2" has already said which machine it waits for, and a dropdown on
+            it repeating that is the page asking a question it just answered.
+            The picker is not gone — it is the menu's *Run on…* row, which is
+            the keyboard and the precise path, because DRAG IS AN ACCELERATOR
+            AND NEVER THE ONLY DOOR.
+
+            A STAGED book keeps its picker on the card face: choosing a machine
+            while nothing is committed is the whole point of staging it
+            (docs/PENDING-QUEUE-AND-GPU-DIAL.md §2), and a staged card in the
+            Pending column has no lane heading above it to say the answer.
+
+            An ASSIGNED book still shows a read-only CHIP: a job finishes on the
+            machine it started on (§4.3), and the chip says so where the picker
+            would have been rather than leaving the fact to the lane alone.
           -->
           <div class="decide">
             @if (staged) {
@@ -580,28 +868,13 @@ const QUEUE_STATE_CONTROL = {
                   (ngModelChange)="chooseWaitFor(plan, $event)"
                 />
               </div>
-            } @else if (plan.travels) {
-              @if (plan.waitForResolved.length > 0) {
-                <div class="venue-row">
-                  <span class="venue-word">Runs on</span>
-                  <span class="runs-on" title="A book finishes on the machine it started on.">
-                    <span class="dot" aria-hidden="true"></span>{{ plan.waitForResolved.join(' + ') }}
-                  </span>
-                </div>
-              } @else {
-                <div class="venue-row">
-                  <span class="venue-word">Wait for</span>
-                  <desktop-select
-                    class="pick"
-                    size="sm"
-                    placeholder="No server chosen"
-                    ariaLabel="Which machine this book renders on"
-                    [options]="liveServerOptions()"
-                    [ngModel]="waitForValue(plan)"
-                    (ngModelChange)="chooseWaitFor(plan, $event)"
-                  />
-                </div>
-              }
+            } @else if (plan.travels && plan.waitForResolved.length > 0) {
+              <div class="venue-row">
+                <span class="venue-word">Runs on</span>
+                <span class="runs-on" title="A book finishes on the machine it started on.">
+                  <span class="dot" aria-hidden="true"></span>{{ plan.waitForResolved.join(' + ') }}
+                </span>
+              </div>
             }
 
             <!--
@@ -640,7 +913,7 @@ const QUEUE_STATE_CONTROL = {
                   <button
                     type="button"
                     class="btn grow"
-                    (click)="stopBook(plan)"
+                    (click)="stopBookAsked(plan, lane)"
                     title="Stop what this book is running and free its slots. It keeps everything it has rendered; Start picks it up from there. The rest of the queue carries on."
                   >■ Stop this book</button>
                 } @else if (plan.allHeld) {
@@ -657,7 +930,7 @@ const QUEUE_STATE_CONTROL = {
                     [disabled]="!canMoveToTop(plan)"
                     (click)="moveToTop(plan)"
                     [title]="canMoveToTop(plan)
-                      ? 'Put this book at the front of Up next — the engine claims work from the top.'
+                      ? 'Put this book at the front of the whole queue — the engine claims work from the top.'
                       : 'This book is already at the front of the queue.'"
                   >Move to top</button>
                 }
@@ -669,10 +942,40 @@ const QUEUE_STATE_CONTROL = {
                     aria-haspopup="menu"
                     [attr.aria-expanded]="menuFor() === plan.key"
                     [attr.aria-label]="'More actions for ' + plan.title"
+                    [title]="lockedReason(plan) ?? 'More actions for this book'"
                     (click)="toggleMenu(plan, $event)"
                   >⋯</button>
                   @if (menuFor() === plan.key) {
                     <div class="menu" role="menu">
+                      <!-- RUN ON… — the keyboard's door to the pin, and the
+                           precise one. Everything a drag from Pending onto a
+                           lane does, this row does: it is the same
+                           'chooseWaitFor' on the same book, and the card simply
+                           appears under the machine it now names. Drag is an
+                           accelerator, never the only way to say this. -->
+                      @if (plan.travels && plan.waitForResolved.length === 0) {
+                        <div class="menu-pick" (click)="$event.stopPropagation()">
+                          <span class="k">Run on…</span>
+                          <desktop-select
+                            class="pick"
+                            size="sm"
+                            placeholder="No server chosen"
+                            ariaLabel="Which machine this book renders on"
+                            [options]="liveServerOptions()"
+                            [ngModel]="waitForValue(plan)"
+                            (ngModelChange)="chooseWaitFor(plan, $event)"
+                          />
+                        </div>
+                      }
+                      <!-- WHY THIS BOOK CANNOT BE DRAGGED, said where the hand
+                           that failed to drag it will look next. A book that
+                           holds a card is finishing on the machine it started
+                           on (§4.3); moving it is not a thing the engine can
+                           do, and a grip that silently refused would read as a
+                           broken page. -->
+                      @if (lockedReason(plan); as why) {
+                        <p class="menu-note">{{ why }}</p>
+                      }
                       @if (plan.travels) {
                         <button type="button" class="menu-item" role="menuitem" (click)="menuReturnToPending(plan)">
                           <span class="k">Send back to Pending</span>
@@ -819,37 +1122,9 @@ const QUEUE_STATE_CONTROL = {
         }
       </ng-template>
 
-      <!-- ── Pending ───────────────────────────────────────────────────────
-           Adding a book stages it here: nothing about it is committed, its
-           server is chosen while that is still free, and Send to queue is the
-           press that commits it (docs/PENDING-QUEUE-AND-GPU-DIAL.md §1-§3).
-
-           BELOW Up next, not above it (Owen, 2026-09-19: *"put pending at the
-           bottom and active items/up next above it"*). The live queue is what a
-           person watches; a staged book is parked until they come back for it,
-           so it reads last. -->
-      @if (tray.pending().length > 0) {
-        <section class="band">
-          <header class="band-head">
-            <h2>Pending · {{ tray.pending().length }}</h2>
-            <span class="note left">
-              Staged, not queued — choose a machine, then send
-            </span>
-          </header>
-
-          @for (plan of tray.pending(); track plan.key) {
-            <!-- The SAME body Up next draws, in its staged state: dashed, tagged,
-                 no grip (nothing here has a queue position to drag). -->
-            <article class="card staged">
-              <ng-container
-                [ngTemplateOutlet]="bookCard"
-                [ngTemplateOutletContext]="{ $implicit: plan, staged: true }"
-              />
-            </article>
-          }
-        </section>
-      }
-
+      <!-- NOTHING AT ALL. The lane layout above draws machines whether or not
+           anything is queued, so this only replaces the whole floor when there
+           is no work, no failure and no machine holding anything. -->
       @if (visiblePlans().length === 0 && busyLanes() === 0 && tray.failures().length === 0
            && tray.pending().length === 0) {
         <section class="band">
@@ -935,6 +1210,86 @@ const QUEUE_STATE_CONTROL = {
       background: var(--bg-base);
     }
 
+    /* ── The queue page's own toolbar row ──────────────────────────────────
+       Matching 'desktop-toolbar' exactly where it can — same ground, same
+       bottom rule, same left padding — because it sits where that component
+       sits on every other page and must not read as a different chrome. What
+       it adds is the LABELLED state: a word, a pill, and a caption that
+       changes with the state. */
+    .qbar {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-shrink: 0;
+      padding: 8px 12px;
+      background: var(--bg-toolbar);
+      border-bottom: 1px solid var(--border-subtle);
+      flex-wrap: wrap;
+    }
+
+    .qstate { display: flex; align-items: center; gap: 10px; min-width: 0; }
+
+    .qword {
+      font-size: 0.6875rem;
+      font-weight: 700;
+      letter-spacing: 0.13em;
+      text-transform: uppercase;
+      color: var(--text-tertiary);
+    }
+
+    .qcaption {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .qspacer { flex: 1; }
+
+    .qslots {
+      font-size: 0.6875rem;
+      color: var(--text-tertiary);
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+
+    /* A REAL RULE between the state control and Halt (Owen's mockup). They are
+       not siblings: one says whether the queue admits work, the other cancels
+       what is on the cards right now, and side by side with nothing between
+       them the second reads as the third position of the first. */
+    .qrule {
+      width: 1px;
+      height: 22px;
+      background: var(--border-default);
+      flex: none;
+    }
+
+    /* Halt, outlined in the danger colour and never filled: filled red is what
+       this page uses for a failure that already happened. */
+    .btn.halt {
+      border-color: var(--color-danger);
+      color: var(--color-danger);
+      font-weight: 600;
+    }
+    .btn.halt:hover { background: var(--warning-bg); color: var(--color-danger); }
+
+    .qicon {
+      font-family: inherit;
+      font-size: 0.9375rem;
+      line-height: 1;
+      width: 30px;
+      height: 28px;
+      border-radius: 6px;
+      border: 1px solid var(--border-default);
+      background: var(--bg-surface);
+      color: var(--text-secondary);
+      cursor: pointer;
+      flex: none;
+    }
+    .qicon:hover { color: var(--text-primary); border-color: var(--border-strong); }
+
     .min { min-width: 0; }
     .grow { flex: 1; }
 
@@ -975,7 +1330,7 @@ const QUEUE_STATE_CONTROL = {
 
     /* A note that BELONGS TO THE HEADING rather than holding the right edge.
        The bench's "3 of 6 slots in use" is a readout and stays right; Pending,
-       Up next and Finished read as "<band> · <count> — <what that means>", and
+       Finished reads as "<band> · <count> — <what that means>", and
        their right edge is where the band's control goes. */
     .band-head .note.left { margin-left: 0; }
 
@@ -1107,6 +1462,23 @@ const QUEUE_STATE_CONTROL = {
       text-transform: uppercase;
       color: var(--text-tertiary);
       border: 1px solid var(--border-default);
+      border-radius: 4px;
+      padding: 1px 6px;
+    }
+
+    /* CPU — a book that travels nowhere, sitting in Pending with the books that
+       are waiting for a card. The tag is the difference, and it is stated in
+       the same shape as Staged so the two read as one vocabulary. */
+    .cpu-tag {
+      flex: none;
+      margin-left: 8px;
+      font-size: 0.5625rem;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--text-secondary);
+      background: var(--bg-subtle);
+      border: 1px solid var(--border-subtle);
       border-radius: 4px;
       padding: 1px 6px;
     }
@@ -1246,10 +1618,63 @@ const QUEUE_STATE_CONTROL = {
 
     .menu-item.danger .k { color: var(--color-danger); }
 
+    /* RUN ON… — a picker inside the menu, which is the keyboard's door to the
+       pin a drag makes. Not a menu-item: it does not act on click, it holds a
+       control, so it gets the row's padding and none of its hover. */
+    .menu-pick {
+      display: grid;
+      gap: 5px;
+      padding: 8px 10px;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+
+    .menu-pick .k {
+      font-size: 0.75rem;
+      font-weight: 600;
+      color: var(--text-primary);
+    }
+
+    /* WHY a book cannot be moved. A sentence, not an entry — there is nothing
+       to press, and a greyed-out entry would invite the press anyway. */
+    .menu-note {
+      margin: 0;
+      padding: 8px 10px;
+      font-size: 0.6875rem;
+      line-height: 1.45;
+      color: var(--text-muted);
+      border-bottom: 1px solid var(--border-subtle);
+    }
+
     /* The card holding an open menu comes forward. Cards are stacked in
        document order, so without this the NEXT book's card paints over the
        menu of the one above it. */
     .card:has(.menu) { z-index: 5; }
+
+    /* ── A card inside a 300px lane ────────────────────────────────────────
+       The two-column book card is a page-width object: a fluid book on the
+       left and a 300px decision column on the right. In the Pending sidebar
+       and inside a lane it has no such width, so the decision stacks under the
+       book it is about — the same thing the 760px media query does to the
+       page-width card, decided by WHERE the card is rather than by the
+       viewport, because a narrow card can sit on a wide screen. */
+    .card.narrow .book-head {
+      grid-template-columns: minmax(0, 1fr);
+      gap: 8px;
+      padding: 9px 10px 9px 26px;
+    }
+    .card.narrow .venue-word { width: auto; }
+    .card.narrow .chain { padding: 0 10px 8px; }
+    /* The chain row wraps instead of trying to hold four columns in 280px:
+       name on one line, then the reason and the numbers under it. 'justify-self'
+       comes off .cright because there is no flexible column left to push it
+       against. */
+    .card.narrow .cstep { grid-template-columns: 14px minmax(0, 1fr); row-gap: 3px; }
+    .card.narrow .cmid, .card.narrow .cright { grid-column: 2; }
+    .card.narrow .cright { justify-self: start; flex-wrap: wrap; }
+    .card.narrow .cstep.staged-step { grid-template-columns: 14px minmax(0, 1fr); }
+    /* The menu is 262px wide and the card is barely more; hung off the LEFT it
+       stays inside the lane instead of over the one beside it. */
+    .card.narrow .menu { right: auto; left: 0; min-width: 0; width: 260px; }
 
     /* NARROW: the decision column stops being a column. Three buttons and a
        picker beside a title is a wrap waiting to happen; stacked, it is a
@@ -1259,51 +1684,321 @@ const QUEUE_STATE_CONTROL = {
       .venue-word { width: auto; }
     }
 
-    /* ── The bench's sections ──────────────────────────────────────────────
-       Owen, 2026-09-15: the slots "look kind of ugly clustered together
-       randomly. and its hard to tell which slot im looking at unless i look
-       closely at the names." The heading carries the name of the group and a
-       line saying what is in it, so the answer is above the cards rather than
-       inside them. */
+    /* ── The floor ─────────────────────────────────────────────────────────
+       Owen, 2026-09-20: *"maybe pending is along the left side and goes to the
+       bottom, like a side bar… the two cpu slots sit at the top, and then the
+       GPU slots are in a grid underneath"*.
 
-    .sect + .sect { margin-top: 16px; }
+       The sidebar is a FIXED column and the floor takes what is left —
+       minmax(0, 1fr) so a long book title inside a lane ellipsises instead of
+       widening the whole grid. */
+    .layout {
+      display: grid;
+      grid-template-columns: 320px minmax(0, 1fr);
+      gap: 16px;
+      align-items: start;
+      margin-top: 16px;
+    }
 
-    .sect-head {
+    /* STICKY, and sticky to the PAGE's scroller (.page owns overflow-y).
+       'align-self: start' is what lets it be shorter than the floor beside it;
+       without it the grid stretches the aside to the row's height and sticky
+       has nothing to move within. Its own overflow so a column of eleven
+       pending books scrolls inside the sidebar instead of growing the page. */
+    .sidebar {
+      position: sticky;
+      top: 4px;
+      align-self: start;
+      max-height: calc(100vh - 120px);
+      overflow-y: auto;
+      min-width: 0;
+    }
+
+    /* PENDING, DRAWN LIKE A SLOT. It is the answer "any machine", and a book in
+       it is queued exactly as hard as one pinned to a card — so it gets a
+       slot's frame rather than a list's. Accent-topped like a GPU lane because
+       it is where the GPU work goes when nobody has named a machine. */
+    .slotcol {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-top: 2px solid var(--accent);
+      border-radius: 8px;
+      padding: 11px 11px 12px;
+      min-height: 160px;
+    }
+
+    .slot-head { margin-bottom: 10px; }
+
+    .slot-line { display: flex; align-items: baseline; gap: 8px; }
+
+    .slot-line h2 {
+      margin: 0;
+      font-size: 0.6875rem;
+      font-weight: 700;
+      letter-spacing: 0.13em;
+      text-transform: uppercase;
+      color: var(--text-tertiary);
+    }
+
+    .slot-count {
+      margin-left: auto;
+      font-size: 0.8125rem;
+      font-weight: 600;
+      color: var(--text-primary);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .slot-where {
+      margin-top: 3px;
+      font-size: 0.8125rem;
+      font-weight: 600;
+      color: var(--text-primary);
+    }
+
+    .slot-pill {
+      display: inline-block;
+      margin-top: 5px;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 0.625rem;
+      font-weight: 600;
+      background: var(--accent-subtle);
+      color: var(--accent);
+    }
+
+    .slot-free {
+      margin: 6px 0 0;
+      font-size: 0.6875rem;
+      line-height: 1.5;
+      color: var(--text-muted);
+    }
+
+    .floor { min-width: 0; }
+
+    /* ── Local slots ───────────────────────────────────────────────────────
+       TILES, two across, because a CPU slot has a fraction of a lane's content
+       and no queue behind it — nothing is ever pinned to one. */
+    .tiles {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .lcard.tile { border-top-color: var(--border-default); }
+
+    .tile-head {
       display: flex;
       align-items: baseline;
-      gap: 10px;
+      gap: 8px;
       margin-bottom: 8px;
-      flex-wrap: wrap;
     }
 
-    .sect-head h3 {
-      margin: 0;
-      font-size: 0.75rem;
+    .tile-where {
+      font-size: 0.8125rem;
       font-weight: 600;
-      color: var(--text-secondary);
+      color: var(--text-primary);
     }
 
-    .sect-note { font-size: 0.6875rem; color: var(--text-muted); }
-
-    .sect-count {
+    .tile-slot {
       margin-left: auto;
       font-size: 0.6875rem;
       color: var(--text-muted);
       font-variant-numeric: tabular-nums;
     }
 
-    /* ONE LANE NOW DOES STRETCH, reversing the cap that used to be here.
-       It read: "a section with one lane must not stretch it across the whole
-       page... alone it would be six times the width of the words in it", and
-       capped it at 420px. Owen, 2026-09-15, ruled the other way: *"if theres one
-       gpu available, the gpu slot stretches across the whole screen, left to
-       right."* His is the later call on his own bench, and the card has more in
-       it now than it did — a switch, a name, a thermal reading and an ETA. */
+    /* ── GPU lanes ─────────────────────────────────────────────────────────
+       auto-fill at a 300px floor: two servers share the width, six wrap into
+       rows, and a bench that grows needs no arithmetic here. This replaced
+       'benchRows' on this section — that function cut a FLAT list of slots into
+       Owen's 1/2/3-per-row shape, and a lane is no longer a slot-sized card: it
+       carries a header, an occupant and a queue of its own. */
+    .lanes {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+      gap: 12px;
+      align-items: start;
+    }
+
+    .lane {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-top: 2px solid var(--accent);
+      border-radius: 8px;
+      padding: 10px 12px 12px;
+      min-width: 0;
+    }
+
+    /* SWITCHED OFF or NOT ANSWERING: greyed, still legible, still there. Owen:
+       *"if a crucible slot is unchecked, it grays it out until it's
+       re-checked/re-enabled."* The lane HEADER keeps full contrast, because the
+       switch that undoes it lives there and a greyed-out control is one you
+       cannot find. */
+    .lane.off, .lane.down { border-top-color: var(--border-default); }
+    .lane.off .on-card, .lane.down .on-card,
+    .lane.off .pinned, .lane.down .pinned { opacity: 0.55; }
+
+    .lane-head {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      padding-bottom: 8px;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+
+    /* Owen: *"each one should have an enable/disable checkbox above it with its
+       name."* Big enough to hit without aiming — it is the control that decides
+       whether a machine works at all. */
+    .lane-switch {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      cursor: pointer;
+      user-select: none;
+      min-width: 0;
+    }
+    .lane-switch input { width: 16px; height: 16px; cursor: pointer; accent-color: var(--accent); }
+    .lane-switch input:disabled { cursor: progress; }
+
+    .lane-name {
+      font-size: 0.875rem;
+      font-weight: 600;
+      color: var(--text-primary);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .lane-slot {
+      font-size: 0.6875rem;
+      color: var(--text-muted);
+      font-variant-numeric: tabular-nums;
+    }
+
+    /* THE STATE WORD. Five facts the snapshot already states, said in one place
+       so a lane cannot look busy and idle at once: off, unreachable, finishing,
+       waiting for the card, rendering/assembling, idle. The tone is the colour;
+       the word is the answer. */
+    .lane-state {
+      margin-left: auto;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 0.625rem;
+      font-weight: 600;
+      white-space: nowrap;
+      background: var(--bg-subtle);
+      color: var(--text-tertiary);
+    }
+    .lane-state .dot { width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+    .lane-state.live { background: var(--accent-subtle); color: var(--accent); }
+    .lane-state.warn { background: var(--warning-bg); color: var(--warning-text); }
+    .lane-state.bad { background: var(--warning-bg); color: var(--color-danger); }
+
+    .on-card { padding-top: 10px; }
+
+    .on-card-label {
+      font-size: 0.625rem;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      margin-bottom: 7px;
+    }
+
+    .pinned {
+      margin-top: 12px;
+      padding-top: 10px;
+      border-top: 1px dashed var(--border-subtle);
+      /* The drop target has to be catchable even when the lane is empty: a
+         book cannot be pinned to a machine whose queue is a 0px strip. */
+      min-height: 72px;
+    }
+
+    .pinned-head {
+      font-size: 0.625rem;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      margin-bottom: 7px;
+    }
+
+    .pinned-none, .drop-note {
+      margin: 0 0 8px;
+      font-size: 0.6875rem;
+      line-height: 1.45;
+      color: var(--text-muted);
+    }
+
+    /* WHAT A DROP HERE WOULD MEAN, said inside the target while the hand is
+       over it. A refusal reads in the warning tone and still SAYS the reason —
+       'cdkDropListEnterPredicate' refuses the drop silently, and a target that
+       just will not take a card with no sentence attached is the failure this
+       whole page exists to remove. */
+    .drop-note {
+      padding: 6px 8px;
+      border-radius: 6px;
+      background: var(--accent-subtle);
+      color: var(--accent);
+      font-weight: 600;
+    }
+    .drop-note.no { background: var(--warning-bg); color: var(--warning-text); }
+
+    .fold {
+      font-family: inherit;
+      font-size: 0.6875rem;
+      font-weight: 600;
+      padding: 4px 0;
+      border: 0;
+      background: transparent;
+      color: var(--text-tertiary);
+      cursor: pointer;
+    }
+    .fold:hover { color: var(--accent); }
+
+    /* ── The step ladder on a busy card ────────────────────────────────────
+       Where this book has got to in its own chain, at a glance: a done rung, a
+       moving one with its bar, and the rest waiting. */
+    .ladder { display: grid; gap: 4px; margin-top: 9px; }
+
+    .rung {
+      display: grid;
+      grid-template-columns: 10px minmax(0, 1fr) 46px 40px;
+      align-items: center;
+      gap: 7px;
+      font-size: 0.6875rem;
+      color: var(--text-muted);
+    }
+    .rung.now { color: var(--text-primary); }
+    .rung .rdot {
+      width: 7px; height: 7px; border-radius: 50%;
+      border: 1px dashed var(--text-muted);
+    }
+    .rung.done .rdot { background: var(--text-tertiary); border-style: solid; }
+    .rung.now .rdot { background: var(--accent); border: 0; }
+    .rname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .rval { text-align: right; font-variant-numeric: tabular-nums; }
+    .rung .bar.thin { height: 4px; margin: 0; }
+
+    /* ── NARROW ────────────────────────────────────────────────────────────
+       Below ~960px the sidebar stops being a sidebar: it stacks ABOVE the
+       machines, because Pending is the thing you add to and the machines are
+       the thing you watch. Sticky comes off with it — a sticky full-width block
+       would cover the lanes it is meant to sit beside. */
+    @media (max-width: 960px) {
+      .layout { grid-template-columns: minmax(0, 1fr); }
+      .sidebar { position: static; max-height: none; overflow: visible; }
+      .tiles { grid-template-columns: minmax(0, 1fr); }
+    }
 
     /* ── Pending ───────────────────────────────────────────────────────────
        Dashed, because nothing about a staged book is committed: it is a plan on
-       the bench, not work in the queue. Otherwise the SAME card as Up next, so
-       the press between them is the only difference a reader has to hold. */
+       the bench, not work in the queue. Otherwise the SAME card a released book
+       gets, so the press between them is the only difference a reader has to
+       hold. */
 
     .card.staged {
       border-style: dashed;
@@ -1314,7 +2009,7 @@ const QUEUE_STATE_CONTROL = {
 
     .cname.plain { color: var(--text-tertiary); cursor: default; }
 
-    /* ── Reordering "Up next" ──────────────────────────────────────────────
+    /* ── Reordering ────────────────────────────────────────────────────────
        Styled after studio-list's list rows (the house precedent for CdkDrag):
        a handle that fades in on hover, a dimmed placeholder, a lifted preview.
        Sizes and colours are this page's tokens, not that component's.
@@ -1346,10 +2041,17 @@ const QUEUE_STATE_CONTROL = {
     .grip:active { cursor: grabbing; }
 
     /* A disabled drop list still draws its handles, and a handle that cannot be
-       dragged must not say it can — one book, or a drop still settling. */
-    .band.cdk-drop-list-disabled .grip { cursor: default; }
+       dragged must not say it can — a drop still settling. The selector follows
+       the lists, which are now the Pending column and each lane rather than one
+       band. */
+    .cdk-drop-list-disabled .grip { cursor: default; }
 
     .cdk-drag-preview .book-head { background: var(--bg-elevated); }
+
+    /* A card lifted out of a 300px lane keeps its narrow shape in flight: the
+       preview is re-parented to the body, where the 'card.narrow' rules still
+       apply because they are class-based and the class rides with it. */
+    .cdk-drag-preview .grip { opacity: 0.65; }
 
     .cdk-drag-preview {
       background: var(--bg-surface);
@@ -1460,81 +2162,12 @@ const QUEUE_STATE_CONTROL = {
       color: var(--color-danger);
     }
 
-    /* ── Lanes ─────────────────────────────────────────────────────────── */
-
-    /* ── The grid ──────────────────────────────────────────────────────────
-       One ROW at a time, each its own grid of exactly the columns that row
-       holds — the count comes from 'benchRows' and is written inline on the
-       element. Columns are equal ('1fr' each, 'minmax(0, …)' so a long book
-       title cannot push its lane wider than its share), because Owen's rule is
-       about halves and thirds of the width: *"if there are two, the two are
-       split so the left half is taken up by slot 1 and the right half by slot
-       2."* The old three-column '1.7fr 1fr 1fr' is gone with the flat list it
-       belonged to. */
-    .lane-row {
-      display: grid;
-      gap: 12px;
-      margin-bottom: 12px;
-    }
-    .lane-row:last-child { margin-bottom: 0; }
-
-    .lane-cell { display: flex; flex-direction: column; min-width: 0; }
-
-    /* NARROW: one lane per row, whatever the arithmetic said. The inline
-       'grid-template-columns' is overridden here on purpose — three cards side
-       by side under 1000px is three unreadable cards. */
-    @media (max-width: 1000px) {
-      .lane-row { grid-template-columns: minmax(0, 1fr) !important; }
-    }
-
-    /* ── The switch above each slot ────────────────────────────────────────
-       Owen: *"each one should have an enable/disable checkbox above it with its
-       name."* Big enough to hit without aiming — it is the control that decides
-       whether a machine works at all. */
-    .lane-switch {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      padding: 6px 10px;
-      margin-bottom: 6px;
-      border-radius: 6px;
-      cursor: pointer;
-      user-select: none;
-      font-weight: 600;
-      font-size: 13px;
-      color: var(--text-primary);
-      background: var(--bg-subtle);
-      border: 1px solid var(--border-subtle);
-    }
-    .lane-switch input { width: 18px; height: 18px; cursor: pointer; accent-color: var(--accent); }
-    .lane-switch input:disabled { cursor: progress; }
-    .lane-switch-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .lane-switch-word {
-      margin-left: auto;
-      font-size: 11px;
-      font-weight: 700;
-      letter-spacing: 0.06em;
-      text-transform: uppercase;
-      color: var(--text-secondary);
-    }
-    .lane-switch.off { opacity: 0.75; }
-    /* NOT ANSWERING. Greyed like the off state because the lane is equally not
-       going to run anything — but the word is different, and so is the cure:
-       off is undone with the box beside it, down by waking the machine. */
-    .lane-switch.down { opacity: 0.75; }
-    .lane-switch.down .lane-switch-word { color: var(--warning-text); }
-    /* The CPU pair and the local aligner: a name, no box, and NOT a disabled
-       checkbox — an unclickable control invites the question of how to click
-       it. Padded to the same height so the cards below stay on one line. */
-    .lane-switch.none { cursor: default; background: transparent; border-color: transparent; }
-
-    /* SWITCHED OFF: greyed, still legible, still there. Owen: *"if a crucible
-       slot is unchecked, it grays it out until it's re-checked/re-enabled."* */
-    .lane-cell:has(.lane-switch.off) .lcard,
-    .lane-cell:has(.lane-switch.down) .lcard {
-      opacity: 0.45;
-      filter: grayscale(1);
-    }
+    /* ── The slot card ─────────────────────────────────────────────────
+       The shared frame for a local TILE and for the occupant area inside a GPU
+       lane. The per-slot switch moved onto the lane header (it belongs to the
+       MACHINE, not to the card drawn inside it), and the row of small-caps slot
+       words moved there with it — a lane says its own name, ordinal and state
+       in one line now, so the card below is nothing but the work. */
 
     .lcard {
       background: var(--bg-surface);
@@ -1572,24 +2205,33 @@ const QUEUE_STATE_CONTROL = {
       margin-bottom: 10px;
     }
 
-    .lcard-slot {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      margin-bottom: 10px;
-      font-size: 0.5625rem;
-      letter-spacing: 0.12em;
-      text-transform: uppercase;
-      color: var(--text-muted);
+    /* ── Stop, positioned like an X ────────────────────────────────────────
+       Owen, 2026-09-20: *"put Stop in the top right, positioned like its an X.
+       and keep it short"*. Top-right of the busy card, the size and place a
+       close button would take, and two words long. It is a real destructive-ish
+       act, so it wears the stop colours on hover rather than the close glyph's
+       silence — but it is NOT red at rest: red at rest on the one card that is
+       working reads as an error. */
+    .stop-x {
+      flex: none;
+      align-self: flex-start;
+      font-family: inherit;
+      font-size: 0.625rem;
+      font-weight: 600;
+      line-height: 1;
+      padding: 4px 7px;
+      border-radius: 5px;
+      border: 1px solid var(--border-default);
+      background: var(--bg-surface);
+      color: var(--text-tertiary);
+      cursor: pointer;
+      white-space: nowrap;
     }
 
-    /* The slot strip is set in small uppercase tracking; a button inside it is a
-       button, not more of the strip's label. */
-    .lcard-slot .btn {
-      margin-left: auto;
-      font-size: 0.6875rem;
-      letter-spacing: 0;
-      text-transform: none;
+    .stop-x:hover {
+      border-color: var(--color-danger);
+      background: var(--warning-bg);
+      color: var(--color-danger);
     }
 
     .lcard-book { display: flex; gap: 10px; align-items: flex-start; }
@@ -2017,82 +2659,59 @@ export class QueueComponent {
 
   readonly finished = computed(() => this.tray.finishedToday());
 
-  /** The band switch's half of the shared Running / Paused wording. */
+  /** The toolbar's half of the shared Running / Paused wording. */
   readonly queueState = QUEUE_STATE_CONTROL;
 
-  readonly toolbarItems = computed<ToolbarItem[]>(() => {
-    // MOVEMENT, not the engine's latch, and not defined here: the tray draws
-    // this same control and the two must not disagree. See
-    // QueueTrayService.anythingRunning for the rule and why.
-    const isRunning = this.tray.anythingRunning();
-    // THE LATCH ITSELF, which is a different question: is the queue admitting
-    // work, whether or not anything happens to be on a card this second.
-    const queueRunning = this.tray.isRunning();
-    return [
-      // RUNNING / PAUSED, the toolbar twin of the Up next band switch (Owen,
-      // 2026-09-19: *"a running or paused option where it accepts new entries
-      // or doesn't accept new entries — that's what the pause button should
-      // handle probably"*).
-      //
-      // ALWAYS DRAWN, which is the whole reason it is here: the band header
-      // exists only while Up next has rows, so Paused could not be armed on an
-      // empty queue — and arming it before queueing a night's worth of books is
-      // the press that most wants to happen on an empty queue.
-      //
-      // ONE FACT, TWO DRAWINGS. Both read `tray.isRunning()`, both call
-      // `setQueueRunning`, both take their words from QUEUE_STATE_CONTROL. The
-      // toolbar keeps no state of its own: `active` is rendered, never written
-      // (see ToolbarItem.active), so a press that main refuses leaves the pair
-      // showing what the engine actually holds.
-      //
-      // The state you are IN stays pressable, exactly as on the band: a Running
-      // press while running releases anything stopped (see `setQueueRunning`).
-      // Disabling it here would quietly make the twin a different control.
-      {
-        id: 'queue-running',
-        type: 'button' as const,
-        label: QUEUE_STATE_CONTROL.running.label,
-        active: queueRunning,
-        tooltip: QUEUE_STATE_CONTROL.running.title,
-      },
-      {
-        id: 'queue-paused',
-        type: 'button' as const,
-        label: QUEUE_STATE_CONTROL.paused.label,
-        active: !queueRunning,
-        tooltip: QUEUE_STATE_CONTROL.paused.title,
-      },
-      { id: 'sep0', type: 'divider' as const },
+  /** The sentence under the pill — what the state the queue is IN does. */
+  stateCaption(): string {
+    return this.tray.isRunning()
+      ? QUEUE_STATE_CONTROL.running.caption
+      : QUEUE_STATE_CONTROL.paused.caption;
+  }
 
-      // ONE STOPPING GESTURE UP HERE, and it is the destructive one.
-      //
-      // Halt is NOT that latch and never was (Owen, 2026-08-29): it takes the
-      // card back NOW, cancelling what is running. One button wearing the word
-      // Pause while doing the halt is how an hour of denoise got cancelled to
-      // prevent the NEXT hour of denoise. Offered only while something is
-      // actually running, because there is nothing to halt otherwise.
-      ...(isRunning ? [
-        {
-          id: 'halt',
-          type: 'button' as const,
-          icon: '■',
-          label: 'Halt processing',
-          tooltip: 'Stop the queue AND everything it is running, now. Anything '
-            + 'stopped resumes from what it has already rendered. To stop just '
-            + 'one step, use the Stop button on its slot.',
-        },
-      ] : []),
-      {
-        id: 'refresh',
-        type: 'button',
-        icon: '↻',
-        label: 'Refresh',
-        tooltip: 'Re-read the queue from the app’s main process.',
-      },
-      { id: 'sep1', type: 'divider' },
-      { id: 'spacer', type: 'spacer' },
-    ];
-  });
+  /**
+   * "GPU 1 of 2 busy · CPU 0 of 2" — the readout the old "On the bench"
+   * heading carried, moved to the toolbar now that the bench is two bands and
+   * neither can honestly claim the whole count.
+   *
+   * GPU counts the SERVER lanes, because that is what a GPU slot is (Owen,
+   * 2026-09-20: *"gpu slots are crucible servers"*) — the in-app aligner's own
+   * GPU row is this machine's and is counted with the local slots, where it is
+   * drawn.
+   */
+  slotSummary(): string {
+    const gpu = this.gpuLanes();
+    const local = this.localLanes();
+    const busy = (lanes: readonly LaneView[]) => lanes.filter((l) => l.occupant !== null).length;
+    return `GPU ${busy(gpu)} of ${gpu.length} busy · CPU ${busy(local)} of ${local.length}`;
+  }
+
+  /** How many BOOKS Halt would stop. Books, not steps: it is a book's card. */
+  runningBooks(): number {
+    return this.visiblePlans().filter((plan) => this.runningSteps(plan) > 0).length;
+  }
+
+  /**
+   * THE HARD STOP: latch off AND every running step cancelled. The soft one —
+   * the latch by itself — is Running / Paused.
+   *
+   * Halt is NOT that latch and never was (Owen, 2026-08-29): it takes the card
+   * back NOW. One button wearing the word Pause while doing the halt is how an
+   * hour of denoise got cancelled to prevent the NEXT hour of denoise.
+   */
+  halt(): void {
+    this.report(this.queueService.stopQueue());
+  }
+
+  /**
+   * Re-read the queue from main.
+   *
+   * The server list is NOT refreshed separately and needs no door of its own:
+   * it rides the snapshot this call re-reads (`waitForChoices`).
+   */
+  refresh(): void {
+    this.report(this.queueService.refreshFromBackend());
+  }
 
   // ── Which server a book waits for ────────────────────────────────────────
   //
@@ -2177,10 +2796,24 @@ export class QueueComponent {
     return plan.waitFor[0] ?? '';
   }
 
+  /**
+   * WRITE THE BOOK'S ANSWER, and let a refusal out.
+   *
+   * The one door: the picker, the ⋯ menu's *Run on…*, a drag onto a lane and a
+   * drag back to Pending all come through here, so a pin made by hand and a pin
+   * made by dragging cannot be two different acts. It THROWS, because a drag
+   * that was refused must not go on to reorder the queue for a pin that never
+   * happened (see `applyMove`); `chooseWaitFor` below is the same call with the
+   * refusal put on screen, which is what a bare picker wants.
+   */
+  private async setPlanServer(plan: BookPlan, value: string): Promise<void> {
+    // Every run of the book, because the book is the unit the answer is about.
+    for (const jobId of plan.jobIds) await this.queueService.setWaitFor(jobId, value);
+  }
+
   async chooseWaitFor(plan: BookPlan, value: string): Promise<void> {
     try {
-      // Every run of the book, because the book is the unit the answer is about.
-      for (const jobId of plan.jobIds) await this.queueService.setWaitFor(jobId, value);
+      await this.setPlanServer(plan, value);
     } catch (err) {
       /*
        * THE EDIT LOST THE RACE, and the toast says so in main's own words —
@@ -2208,8 +2841,8 @@ export class QueueComponent {
   //
   // PAUSED ACCEPTS ROWS (Owen, 2026-09-19, from the admission ruling: *"if the
   // queue isn't active then it just sits in the active queue doing nothing"*).
-  // Send to queue is not refused while paused; a book added lands in Up next
-  // and waits there. That is why this needed no engine change at all: `pump()`
+  // Send to queue is not refused while paused; a book added lands in Pending
+  // or on its machine's lane and waits there. That is why this needed no engine change at all: `pump()`
   // has always been gated on the latch.
 
   // PRESSING THE STATE IT IS ALREADY IN IS NOT A NO-OP, and the guard that
@@ -2222,14 +2855,457 @@ export class QueueComponent {
     this.report(running ? this.queueService.startQueue() : this.queueService.pauseQueue());
   }
 
-  /** The section's lanes, cut into Owen's rows. The arithmetic lives in `bench`. */
-  rowsOf(lanes: readonly LaneView[]): LaneView[][] {
-    return benchRows(lanes);
+  // ── The floor: which lane draws what ─────────────────────────────────────
+  //
+  // Every one of these is a CUT of `tray.sections()`, which is `benchSections`
+  // plus the decoration only a renderer can add. Nothing here re-derives a lane
+  // or decides where work goes — the scheduler owns that, and a second opinion
+  // drawn on the page is how a surface comes to disagree with the engine it is
+  // reporting on.
+  //
+  // `benchRows` is gone from this page. It cut a FLAT list of slots into Owen's
+  // 1/2/3-per-row shape (2026-09-15) and is still the right answer for a list of
+  // slot-sized cards — the tray still draws one. A LANE is not a slot-sized
+  // card: it carries a header, an occupant and a queue of its own, so the
+  // section is a CSS auto-fill grid instead and the arithmetic has nowhere to
+  // apply.
+
+  /**
+   * THE CRUCIBLE SERVERS' LANES — one per registered engine, in rank order.
+   *
+   * Owen, 2026-09-20: *"gpu slots are crucible servers, and in this case we have
+   * 2, so they should be slots 1 of 2 and 2 of 2."* So the GPU section is the
+   * `gpu` group MINUS the lanes that have no server behind them: `local-work`
+   * (this app's CPU pair, which can hold a GPU row only in theory) and
+   * `local-longform-align` (the in-app aligner). That is the same test
+   * {@link switchOf} makes about the switch, and for the same reason — a lane
+   * with no registered server is not a machine you can be told to stop sending
+   * work to, and it is not a slot you can pin a book to either.
+   */
+  readonly gpuLanes = computed<LaneView[]>(() =>
+    this.tray.sections()
+      .filter((section) => section.group === 'gpu')
+      .flatMap((section) => section.lanes)
+      .filter((lane) => this.switchOf(lane) !== null));
+
+  /**
+   * WHAT THIS MACHINE DOES FOR ITSELF — the `local-work` CPU pair, plus the
+   * in-app aligner's GPU row when it is on the bench.
+   *
+   * Drawn as tiles above the lanes and NOT as drop targets, because nothing is
+   * ever pinned to one: assembly, muxing and the passes travel nowhere (crucible
+   * `docs/PHASE7-LANES.md` §4), so the work simply arrives here. A book of those
+   * waits in Pending tagged "CPU" rather than in a queue behind a tile.
+   */
+  readonly localLanes = computed<LaneView[]>(() =>
+    this.tray.sections()
+      .filter((section) => section.group === 'gpu' || section.group === 'cpu')
+      .flatMap((section) => section.lanes)
+      .filter((lane) => lane.resource !== 'gpu' || this.switchOf(lane) === null));
+
+  /** The `cloud` sections, with the bench's own words, drawn only when present. */
+  readonly cloudSections = computed<BenchSectionView[]>(() =>
+    this.tray.sections().filter((section) => section.group === 'cloud'));
+
+  /** A lane's identity for `track`: machine, pool and slot together. */
+  laneKey(lane: LaneView): string {
+    return `${lane.setId}|${lane.resource}|${lane.index}`;
   }
 
-  /** How many of this section's lanes are switched ON — the honest denominator. */
-  liveLanes(section: BenchSectionView): number {
-    return section.lanes.filter((lane) => !lane.disabled).length;
+  /** "CPU slot 2 of 2" — the tile's own pool position, which IS `index`/`of`. */
+  localSlotLabel(lane: LaneView): string {
+    return `${lane.resource === 'gpu' ? 'GPU' : 'CPU'} slot ${lane.index} of ${lane.of}`;
+  }
+
+  /**
+   * WHAT A LANE IS DOING, in one word, from facts the snapshot already states.
+   *
+   * The order is the order a person needs them in. `disabled` first because a
+   * switched-off machine is not being asked anything, so nothing else said
+   * about it would be a measurement. `down` next, because an unreachable
+   * machine's idleness is not idleness. Then the work, then the reasons a free
+   * lane is free.
+   */
+  laneState(lane: LaneView): { word: string; tone: string } {
+    if (lane.disabled) return { word: 'off', tone: 'off' };
+    if (lane.down) return { word: 'unreachable', tone: 'bad' };
+    const occupant = lane.occupant;
+    if (occupant) {
+      const assembling = /assembl/i.test(occupant.verb) || /assembl/i.test(occupant.label);
+      return { word: assembling ? 'assembling' : 'rendering', tone: 'live' };
+    }
+    if (lane.retiring) return { word: 'finishing', tone: 'warn' };
+    if (lane.hold) return { word: 'waiting for the card', tone: 'warn' };
+    return { word: 'idle', tone: 'off' };
+  }
+
+  // ── Which books belong to which lane ─────────────────────────────────────
+
+  /**
+   * THE SERVER A RELEASED BOOK IS BEHIND, or null for "any machine".
+   *
+   * `waitForResolved` wins because it is where the work ACTUALLY went and the
+   * answer is no longer a question (§4.3 — a job finishes on the machine it
+   * started on). Otherwise the book's own `waitFor`, with `any` and the two
+   * honest absences (`null`, nothing recorded) all meaning the same thing here:
+   * it is waiting for the first free machine, which is the Pending column.
+   */
+  private serverOf(plan: BookPlan): string | null {
+    const resolved = plan.waitForResolved[0];
+    if (resolved !== undefined) return resolved;
+    const says = plan.waitFor[0];
+    if (says === undefined || says === null || says === 'any') return null;
+    return says;
+  }
+
+  /** The job ids currently holding a slot, anywhere on the bench. */
+  private readonly onSlotJobIds = computed<ReadonlySet<string>>(() => {
+    const ids = new Set<string>();
+    for (const lane of this.tray.lanes()) {
+      if (lane.occupant) ids.add(lane.occupant.jobId);
+    }
+    return ids;
+  });
+
+  /**
+   * EVERY RELEASED BOOK, FILED UNDER THE MACHINE IT NAMES.
+   *
+   * Keyed by `setId`, and only for servers that actually have a lane: a book
+   * naming a server that has since been removed must not vanish, so it falls
+   * through to Pending (see {@link pendingColumn}) rather than into a map entry
+   * nothing draws.
+   *
+   * A book that is ON a slot is not ALSO in the queue behind it. It is drawn
+   * once, as the lane's occupant, because two cards for one book reads as two
+   * books.
+   */
+  private readonly pinnedByLane = computed<ReadonlyMap<string, BookPlanView[]>>(() => {
+    const lanes = new Set(this.gpuLanes().map((lane) => lane.setId));
+    const busy = this.onSlotJobIds();
+    const out = new Map<string, BookPlanView[]>();
+    for (const plan of this.visiblePlans()) {
+      const server = this.serverOf(plan);
+      if (server === null || !lanes.has(server)) continue;
+      if (plan.jobIds.some((jobId) => busy.has(jobId))) continue;
+      const list = out.get(server);
+      if (list === undefined) out.set(server, [plan]);
+      else list.push(plan);
+    }
+    return out;
+  });
+
+  /** Every book pinned to this lane, in the engine's own order. */
+  lanePinned(lane: LaneView): BookPlanView[] {
+    return this.pinnedByLane().get(lane.setId) ?? [];
+  }
+
+  /** The ones actually drawn — the first {@link PINNED_FOLD} unless unfolded. */
+  laneRows(lane: LaneView): BookPlanView[] {
+    const all = this.lanePinned(lane);
+    if (this.expandedLanes().has(lane.setId)) return all;
+    return all.slice(0, PINNED_FOLD);
+  }
+
+  readonly pinnedFold = PINNED_FOLD;
+
+  /** Lanes whose pinned queue the user has unfolded. Folded is the default. */
+  readonly expandedLanes = signal<ReadonlySet<string>>(new Set());
+
+  toggleLaneFold(lane: LaneView): void {
+    const next = new Set(this.expandedLanes());
+    if (next.has(lane.setId)) next.delete(lane.setId);
+    else next.add(lane.setId);
+    this.expandedLanes.set(next);
+  }
+
+  /**
+   * THE PENDING COLUMN — everything waiting for ANY machine, in one list.
+   *
+   * Three kinds of book end up here and they are one kind to the reader: *this
+   * is not behind a particular machine.*
+   *
+   *  - a released book that names no server, or names `any`;
+   *  - a STAGED book, which has not been sent at all (its server is chosen here
+   *    while nothing is committed — docs/PENDING-QUEUE-AND-GPU-DIAL.md §1-§3);
+   *  - a book that TRAVELS NOWHERE, tagged "CPU": it runs on this machine's
+   *    local slots and there is no card to pin it to.
+   *
+   * AND ANYTHING THE LANES DID NOT CLAIM. The filter is "not pinned to a lane
+   * that exists, and not on a slot" rather than a list of the three cases
+   * above, so a book naming a server that has since been unregistered lands
+   * here instead of disappearing off the page. A queue page that can silently
+   * stop drawing a queued book is worse than one that draws it in the wrong
+   * column.
+   *
+   * Released first, staged after: the live queue is what a person watches; a
+   * staged book is parked until they come back for it (Owen, 2026-09-19: *"put
+   * pending at the bottom and active items/up next above it"* — the same
+   * ordering, now down a column instead of down the page).
+   */
+  readonly pendingColumn = computed<PendingEntry[]>(() => {
+    const busy = this.onSlotJobIds();
+    const pinned = new Set<string>();
+    for (const list of this.pinnedByLane().values()) for (const plan of list) pinned.add(plan.key);
+    const released: PendingEntry[] = this.visiblePlans()
+      .filter((plan) => !pinned.has(plan.key))
+      .filter((plan) => !plan.jobIds.some((jobId) => busy.has(jobId)))
+      .map((plan) => ({ plan, staged: false }));
+    const staged: PendingEntry[] = this.tray.pending().map((plan) => ({ plan, staged: true }));
+    return [...released, ...staged];
+  });
+
+  /** The released half of the column — the only part that has a queue order. */
+  private pendingOrdered(): BookPlanView[] {
+    return this.pendingColumn().filter((entry) => !entry.staged).map((entry) => entry.plan);
+  }
+
+  // ── Dragging a book onto a machine ───────────────────────────────────────
+  //
+  // Owen, 2026-09-20, on the shape this replaces: a list with a machine
+  // dropdown made the reader reconstruct "which books are behind which
+  // machine" from N separate answers. Dragging a card onto a lane IS the
+  // answer, and it writes the same `waitFor` the dropdown wrote.
+  //
+  // THE ENGINE HAS ONE ORDER. There is no per-lane queue in `queue.json` —
+  // `pump()` walks a single flat `jobs[]` from the front — so a lane-local drop
+  // has to be translated into a statement about the global order. The rule is
+  // the only one that survives a book being pinned anywhere:
+  //
+  //   the dropped book goes BEFORE the lane-neighbour that now follows it;
+  //   dropped last in a lane, before the next global plan after that lane's
+  //   last book; and with no neighbours at all, nowhere — the order is left
+  //   exactly as it was.
+  //
+  // That last case is deliberate. Pinning a book to an EMPTY lane says nothing
+  // about where it belongs in the queue, and sending it to the back (the other
+  // plausible reading of "dropped last") would demote a book for the crime of
+  // being given a free machine.
+
+  /** The plan under the hand, while a drag is in flight. Null the rest of the time. */
+  readonly dragging = signal<BookPlanView | null>(null);
+
+  /** Which list the hand is over: a lane's `setId`, or {@link PENDING_LIST}. */
+  readonly hoverList = signal<string | null>(null);
+
+  readonly pendingList = PENDING_LIST;
+
+  dragStarted(plan: BookPlanView): void {
+    this.dragging.set(plan);
+  }
+
+  dragEnded(): void {
+    this.dragging.set(null);
+    this.hoverList.set(null);
+  }
+
+  clearHover(key: string): void {
+    if (this.hoverList() === key) this.hoverList.set(null);
+  }
+
+  /**
+   * A BOOK THAT HOLDS A CARD CANNOT BE MOVED, and this says why.
+   *
+   * `waitForResolved` is the engine's own record that the work WENT somewhere
+   * (§4.3), and a running step is the same fact happening. Either way the
+   * answer to "put it on the other machine" is not one the engine can give, so
+   * the card carries no grip at all rather than a grip that silently refuses.
+   * The sentence is on the ⋯ button's tooltip and inside the menu, which is
+   * where a hand that failed to drag it looks next.
+   */
+  lockedReason(plan: BookPlan): string | null {
+    if (!this.isLocked(plan)) return null;
+    return 'This book holds a card. Stop it first; it keeps what it has finished.';
+  }
+
+  isLocked(plan: BookPlan): boolean {
+    return plan.waitForResolved.length > 0
+      || plan.steps.some((step) => step.status === 'running');
+  }
+
+  /**
+   * WHY THIS LANE WILL NOT TAKE THIS BOOK, or null when it will.
+   *
+   * Every refusal is a fact the SNAPSHOT already states — the operator's switch,
+   * the transport's last answer, the step module's own `travels`. Nothing is
+   * re-measured here and nothing is invented: a page that decided for itself
+   * whether a machine was reachable would be a second opinion about a decision
+   * the scheduler has already made.
+   */
+  pinRefusal(lane: LaneView, plan: BookPlanView | null): string | null {
+    if (plan === null) return null;
+    if (!plan.travels) {
+      return `${plan.title} runs on this machine's CPU slots. It cannot be pinned to a card.`;
+    }
+    if (this.isLocked(plan)) return this.lockedReason(plan);
+    if (lane.disabled) {
+      return `${lane.setLabel} is switched off. Switch it on to send work there.`;
+    }
+    if (lane.down) return `${lane.setLabel} is not answering — ${lane.down}`;
+    return null;
+  }
+
+  /**
+   * THE DROP PREDICATES. Stable arrow properties, not methods called from the
+   * template: a predicate rebuilt on every change-detection pass would hand CDK
+   * a new function mid-drag.
+   *
+   * The lane reads its refusal off its OWN `cdkDropListData`, so one predicate
+   * serves every lane.
+   */
+  readonly acceptPin = (drag: CdkDrag<BookPlanView>, drop: CdkDropList<LaneView>): boolean =>
+    this.pinRefusal(drop.data, drag.data ?? null) === null;
+
+  /** Pending takes anything that could be dragged at all. "Any machine" refuses nobody. */
+  readonly acceptUnpin = (drag: CdkDrag<BookPlanView>): boolean =>
+    drag.data === undefined || !this.isLocked(drag.data);
+
+  /**
+   * WHAT A DROP HERE WOULD MEAN, said inside the target while the hand is over
+   * it — or why it would be refused.
+   *
+   * The refusal sentence is shown even though `cdkDropListEnterPredicate` has
+   * already refused the drop, and that is the point: a target that simply will
+   * not take a card, with nothing on screen saying why, is exactly the failure
+   * this page exists to remove.
+   */
+  dragNote(key: string): string | null {
+    const plan = this.dragging();
+    if (plan === null || this.hoverList() !== key) return null;
+    if (key === PENDING_LIST) {
+      return `Back to Pending — ${plan.title} takes the first free machine.`;
+    }
+    const lane = this.gpuLanes().find((row) => row.setId === key);
+    if (lane === undefined) return null;
+    const refusal = this.pinRefusal(lane, plan);
+    if (refusal !== null) return refusal;
+    return `Pin ${plan.title} to ${lane.setLabel}; it runs after the books above it.`;
+  }
+
+  onLaneDrop(lane: LaneView, event: CdkDragDrop<LaneView>): void {
+    const plan = event.item.data as BookPlanView | undefined;
+    if (plan === undefined) return;
+    const siblings = this.lanePinned(lane).filter((row) => row.key !== plan.key);
+    const pinning = this.serverOf(plan) !== lane.setId;
+    this.report(this.applyMove(
+      plan,
+      pinning ? lane.setId : null,
+      this.targetFor(siblings, event.currentIndex),
+      pinning ? `Pinned to ${lane.setLabel}` : 'Moved up this lane',
+    ));
+  }
+
+  onPendingDrop(event: CdkDragDrop<unknown>): void {
+    const plan = event.item.data as BookPlanView | undefined;
+    if (plan === undefined) return;
+    const siblings = this.pendingOrdered().filter((row) => row.key !== plan.key);
+    // A STAGED book has no place in the global order (it is not in `jobs[]` as
+    // far as the pump is concerned), so the released half of the column is the
+    // only part a position can be about. A drop among the staged cards at the
+    // bottom clamps to the end of the released ones rather than inventing a
+    // rank for a book that has none.
+    const index = Math.min(event.currentIndex, siblings.length);
+    const unpinning = this.serverOf(plan) !== null;
+    this.report(this.applyMove(
+      plan,
+      unpinning ? 'any' : null,
+      this.targetFor(siblings, index),
+      unpinning ? 'Back to Pending' : 'Moved up Pending',
+    ));
+  }
+
+  /**
+   * WHICH GLOBAL PLAN THE DROPPED BOOK GOES IN FRONT OF.
+   *
+   * `siblings` is the destination list WITHOUT the dragged book, which is what
+   * `currentIndex` counts against in both of CDK's cases (a move within a list
+   * reports the index after the lift; a move between lists reports the
+   * insertion index in a list that never held it).
+   *
+   * The folded tail needs no special case: `laneRows` draws a PREFIX of
+   * `lanePinned`, so an index past the drawn cards lands on the first folded
+   * one — which is exactly where the eye says the card went.
+   */
+  private targetFor(siblings: BookPlanView[], index: number): OrderTarget {
+    const before = siblings[index];
+    if (before !== undefined) return { kind: 'before', plan: before };
+    const last = siblings[siblings.length - 1];
+    if (last === undefined) return { kind: 'none' };
+    const plans = this.tray.plans();
+    const at = plans.findIndex((row) => row.key === last.key);
+    const next = at < 0 ? undefined : plans[at + 1];
+    return next === undefined ? { kind: 'end' } : { kind: 'before', plan: next };
+  }
+
+  /**
+   * PIN, THEN PLACE — and say so, with an Undo.
+   *
+   * The order of the two halves is load-bearing: `setWaitFor` is the one main
+   * can REFUSE (the book was taken by a card before the change arrived), and a
+   * reorder applied first would leave the queue rearranged for a pin that never
+   * happened. A refusal is rethrown to `report`, which puts main's own sentence
+   * on screen.
+   *
+   * THE UNDO IS BEST-EFFORT AND SAYS SO BY BEING AN UNDO RATHER THAN A REVERT:
+   * it puts the book's server back and moves it back to the index it held, in
+   * the queue AS IT STANDS THEN. If the queue moved on — a book finished, two
+   * more were added — the index is the honest target, not a promise that the
+   * whole queue returns to a previous state. Nothing here caches a queue; main
+   * owns it.
+   */
+  private async applyMove(
+    plan: BookPlanView, server: string | null, target: OrderTarget, kicker: string,
+  ): Promise<void> {
+    const memo = {
+      waitFor: this.waitForValue(plan) || 'any',
+      index: this.tray.plans().findIndex((row) => row.key === plan.key),
+    };
+    if (server !== null) await this.setPlanServer(plan, server);
+    await this.placeBefore(plan, target);
+    this.toasts.show({
+      tone: 'success',
+      kicker,
+      title: plan.title,
+      meta: server === null ? 'Moved in the queue.' : 'Its server changed for every step of the book.',
+      cover: plan.cover,
+      action: { label: 'Undo', run: () => this.report(this.undoMove(plan, memo)) },
+    });
+  }
+
+  private async undoMove(plan: BookPlanView, memo: { waitFor: string; index: number }): Promise<void> {
+    await this.setPlanServer(plan, memo.waitFor);
+    if (memo.index < 0) return;
+    const plans = this.tray.plans();
+    const from = plans.findIndex((row) => row.key === plan.key);
+    if (from < 0 || from === memo.index) return;
+    const optimistic = [...plans];
+    moveItemInArray(optimistic, from, memo.index);
+    this.droppedPlans.set(optimistic);
+    await this.applyPlanOrder(plans, from, memo.index);
+  }
+
+  /**
+   * Put a book in front of another one, in the engine's ONE order.
+   *
+   * Goes through the SAME `applyPlanOrder` a Move-to-top does, so the optimistic
+   * redraw, the refusal and the re-read are one path with one set of rules.
+   */
+  private async placeBefore(plan: BookPlanView, target: OrderTarget): Promise<void> {
+    if (target.kind === 'none') return;
+    const plans = this.tray.plans();
+    const from = plans.findIndex((row) => row.key === plan.key);
+    // A STAGED book is not in `plans()` at all — it has been pinned, which is
+    // the whole of what a drop onto a lane means for it, and it has no rank to
+    // change. It still needs Send to queue.
+    if (from < 0) return;
+    const remaining = plans.filter((_, index) => index !== from);
+    const to = target.kind === 'end'
+      ? remaining.length
+      : remaining.findIndex((row) => row.key === target.plan.key);
+    if (to < 0 || to === from) return;
+    const optimistic = [...plans];
+    moveItemInArray(optimistic, from, to);
+    this.droppedPlans.set(optimistic);
+    await this.applyPlanOrder(plans, from, to);
   }
 
   /**
@@ -2376,6 +3452,107 @@ export class QueueComponent {
     this.report(this.tray.stopPlan(plan));
   }
 
+  // ── Stopping, and what a stop KEEPS ──────────────────────────────────────
+  //
+  // Owen, 2026-09-20: *"put Stop in the top right, positioned like its an X.
+  // and keep it short"*. The button is two words; the sentence about what it
+  // keeps is the dialog, because that is the only thing worth knowing before
+  // pressing it and it is different for every book.
+  //
+  // STOP IS NOT "SEND BACK TO PENDING". That path currently resets progress —
+  // a defect in the engine (PK16), being fixed on its own — so this side does
+  // not reach for it. A stopped book stays exactly where it is, held, with
+  // "Start this book", which resumes from what is already rendered.
+  //
+  // There is NO "start over" here. That lives in the Narrate modal, where the
+  // settings a fresh run would use are also on screen.
+
+  /** Stop what is on a lane's card, after saying what it keeps. */
+  async stopLane(lane: LaneView): Promise<void> {
+    const occupant = lane.occupant;
+    if (occupant === null) return;
+    const plan = this.planForJob(occupant.jobId);
+    if (plan !== null && !(await this.confirmStop(plan, lane))) return;
+    this.stopStep(occupant.stepId);
+  }
+
+  /** Stop every step of a book that holds a slot, after saying what it keeps. */
+  async stopBookAsked(plan: BookPlanView, lane: LaneView | null): Promise<void> {
+    if (!(await this.confirmStop(plan, lane))) return;
+    this.stopBook(plan);
+  }
+
+  /**
+   * "Here is what it keeps" — the dialog, built from the book's own chain.
+   *
+   * True with no dialog when nothing is running: there is no progress to be
+   * anxious about and a confirmation would be ceremony.
+   */
+  private async confirmStop(plan: BookPlanView, lane: LaneView | null): Promise<boolean> {
+    if (this.runningSteps(plan) === 0) return true;
+    const lines = this.chainFor(plan.jobIds[0] ?? '').map((rung) => this.keepLine(rung, lane));
+    return this.dialog.confirm({
+      title: 'Stop this book?',
+      message: `${plan.title} comes off the card and stays here, held. Start picks it up from `
+        + 'what it has already rendered.',
+      detail: lines.join('\n'),
+      confirmLabel: 'Stop, keep what’s done',
+      cancelLabel: 'Keep going',
+      type: 'warning',
+    });
+  }
+
+  /**
+   * ONE LINE PER STEP, saying whether the stop keeps it.
+   *
+   * The count comes from the LANE (`lane.count` is chunks done over total,
+   * measured by the bridge) rather than from a number this page works out, for
+   * the reason every measurement on this page goes through one owner: two
+   * opinions about how much is rendered is the worst possible thing to show
+   * somebody deciding whether to stop.
+   *
+   * ALIGNMENT IS THE EXCEPTION AND IS NAMED. A coverage align has no resumable
+   * state — it re-measures the whole book — so promising it is kept would be a
+   * promise about a file that does not exist.
+   */
+  private keepLine(rung: ChainRung, lane: LaneView | null): string {
+    if (rung.done) return `KEEP · ${rung.label}`;
+    if (rung.status !== 'running') return `—    · ${rung.label}`;
+    if (rung.type === 'align') return `—    · ${rung.label} (starts over — nothing to keep)`;
+    const onThisLane = lane?.occupant?.stepId === rung.stepId;
+    const count = onThisLane ? lane?.count ?? null : null;
+    if (count !== null) return `KEEP · ${rung.label} — ${count} rendered so far`;
+    return `KEEP · ${rung.label} — what it has rendered so far`;
+  }
+
+  /**
+   * A RUN'S WHOLE CHAIN, terminal steps included — the step ladder, and the
+   * keep-list above.
+   *
+   * Read off the mirrored snapshot rather than off `BookPlan.steps`, because a
+   * plan drops terminal steps by construction (`plansOf` skips them) and the
+   * rung a reader most wants is the one that is already DONE: it is the part a
+   * stop would keep, and a ladder that begins at the running step cannot show
+   * a book is three-quarters through its chain.
+   */
+  chainFor(jobId: string): ChainRung[] {
+    const job = this.queueService.snapshot().jobs.find((row) => row.id === jobId);
+    if (job === undefined) return [];
+    return job.steps.map((step) => ({
+      stepId: step.id,
+      label: step.label,
+      status: step.status,
+      type: step.type,
+      percent: step.progress.percent ?? null,
+      done: step.status === 'done',
+    }));
+  }
+
+  /** The plan a run belongs to, or null while the snapshot catches up. */
+  planForJob(jobId: string): BookPlanView | null {
+    return this.tray.plans().find((plan) => plan.jobIds.includes(jobId)) ?? null;
+  }
+
   /** False for the book already at the front, and for a queue of one. */
   canMoveToTop(plan: BookPlan): boolean {
     if (this.reordering()) return false;
@@ -2405,11 +3582,7 @@ export class QueueComponent {
     return this.tray.lanes().filter(lane => lane.occupant !== null).length;
   }
 
-  plannedSteps(): number {
-    return this.visiblePlans().reduce((total, plan) => total + plan.steps.length, 0);
-  }
-
-  // ── Reordering "Up next" ─────────────────────────────────────────────────
+  // ── Reordering ───────────────────────────────────────────────────────────
   //
   // Owen, 2026-08-27: "give me the ability to drag/drop queue items to different
   // spots in the queue." Order is a real lever here and not decoration — the
@@ -2420,6 +3593,14 @@ export class QueueComponent {
   // `reorder` lives in QueueTrayService.reorderPlans, with the whole book's
   // runs. This half is the affordance and the beat between the drop and main's
   // answer.
+  //
+  // THE ONE FLAT-LIST DROP HANDLER IS GONE with the band it served. It read
+  // `previousIndex`/`currentIndex` straight off the event, which only works
+  // while every queued book is in ONE list; a lane-local drop says nothing
+  // about a global index, so `targetFor` + `placeBefore` above translate it
+  // into the statement the engine can take. `moveToTop` still comes through
+  // `applyPlanOrder` for the same reason it always did: one path, one set of
+  // rules for the optimistic redraw, the refusal and the re-read.
 
   /**
    * The order the user just dropped, held only while its reorder calls are in
@@ -2427,11 +3608,11 @@ export class QueueComponent {
    */
   private readonly droppedPlans = signal<BookPlanView[] | null>(null);
 
-  /** True while a drop is being applied. The band refuses a second drag then. */
+  /** True while a drop is being applied. Move to top is refused meanwhile. */
   readonly reordering = computed(() => this.droppedPlans() !== null);
 
   /**
-   * What the band draws.
+   * What the lists draw.
    *
    * Normally the tray's plans, which are the engine's answer and the only order
    * worth believing. During a drop it is the array the user made, because one
@@ -2445,16 +3626,6 @@ export class QueueComponent {
     if (dropped !== null) return dropped;
     return this.tray.plans();
   });
-
-  onPlanDrop(event: CdkDragDrop<unknown>): void {
-    const { previousIndex, currentIndex } = event;
-    if (previousIndex === currentIndex) return;
-    const plans = this.tray.plans();
-    const optimistic = [...plans];
-    moveItemInArray(optimistic, previousIndex, currentIndex);
-    this.droppedPlans.set(optimistic);
-    this.report(this.applyPlanOrder(plans, previousIndex, currentIndex));
-  }
 
   /**
    * Apply a drop, then take main's word for the result.
@@ -2565,21 +3736,6 @@ export class QueueComponent {
     void work.catch((err: unknown) => {
       this.toasts.problem(err instanceof Error ? err.message : String(err));
     });
-  }
-
-  onToolbarAction(item: ToolbarItem): void {
-    switch (item.id) {
-      // The toolbar twin of the Up next band switch — the SAME door, so the
-      // two cannot mean different things. See `setQueueRunning`.
-      case 'queue-running': this.setQueueRunning(true); break;
-      case 'queue-paused': this.setQueueRunning(false); break;
-      // The hard stop: latch off AND every running step cancelled. The soft
-      // one — the latch by itself — is Running/Paused, above.
-      case 'halt': this.report(this.queueService.stopQueue()); break;
-      // The server list is NOT refreshed here any more and needs no door of its
-      // own: it rides the snapshot this call re-reads (`waitForChoices`).
-      case 'refresh': this.report(this.queueService.refreshFromBackend()); break;
-    }
   }
 
   start(stepId: string): void {
