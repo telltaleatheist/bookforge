@@ -30,7 +30,8 @@ if (!fs.existsSync(MODULE)) {
 }
 
 const {
-  ANCHOR_BURST_GAP_MS, RATE_WINDOW_MIN_SECONDS, landingSpanRate, rateAnchor, throughputSample,
+  ANCHOR_BURST_GAP_MS, RATE_WINDOW_MIN_SECONDS, landingSpanRate, rateAnchor,
+  rateSeriesChanged, throughputSample,
 } = require(MODULE);
 
 const tests = [];
@@ -334,6 +335,72 @@ test("a previous run's anchor is replaced, not carried into this one", () => {
   });
   assert.strictEqual(a.firstChunkCompletedAt, T + 1_000);
   assert.strictEqual(a.chunksAtFirstStamp, 3);
+});
+
+// ── Two counted series in one step (the Crucible align row) ─────────────────
+
+/*
+ * MEASURED, 2026-09-21, on a 1,697-chunk book. The align row is two passes over
+ * the same chunks: the card placed the words in 5.4 min (≈314 chunk/min) and
+ * this machine then measured the book in 2.3 min (≈735 chunk/min), counting the
+ * SAME chunks from zero again. With one anchor across both, at 460/1,697 of the
+ * second pass the row read "75.9 chunks/min, ETA 16m 18s" — and finished 1.7
+ * minutes later.
+ */
+test('a report that names no series keeps the stored one — every other step', () => {
+  assert.strictEqual(rateSeriesChanged(undefined, undefined), false);
+  assert.strictEqual(rateSeriesChanged('place', undefined), false);
+});
+
+test('the same series is not a change — a burst cannot re-open the window', () => {
+  assert.strictEqual(rateSeriesChanged('place', 'place'), false);
+});
+
+test('a NEW named series is a change, and so is the first one named', () => {
+  assert.strictEqual(rateSeriesChanged('place', 'measure'), true);
+  assert.strictEqual(rateSeriesChanged(undefined, 'place'), true);
+});
+
+test('the second pass anchors on its own first burst, not the first pass\'s', () => {
+  // The state the row carried at the end of the placing pass: anchored 5.4 min
+  // ago at chunk 1 of 1,697, every chunk landed.
+  const placedAt = T + 324_000;
+  const carried = {
+    stampedAt: T, anchorChunks: 1, lastLandingAt: placedAt, burstOpenSince: undefined,
+  };
+  // WITHOUT the restart, the measuring pass's 460th chunk is divided by the
+  // whole row's elapsed — the defect, reproduced.
+  const stale = throughputSample({
+    anchorAt: carried.stampedAt, anchorChunks: carried.anchorChunks,
+    lastLandingAt: placedAt + 38_000, chunksDone: 460,
+    totalChunks: 1697, totalChunksForEta: 1697, chunksCompletedInJob: 460,
+  });
+  assert.ok(stale, 'the stale window is measurable, which is why it was believed');
+  near(stale.chunksPerMin, 76, 1, 'the number the row actually showed');
+  near(stale.etaSeconds, 978, 20, 'and the 16m 18s it showed with it');
+
+  // WITH it: the anchor and the landing are dropped before the anchor rule runs,
+  // so the measuring pass anchors at its own first landing.
+  assert.strictEqual(rateSeriesChanged('place', 'measure'), true);
+  const first = rateAnchor({
+    stampedAt: undefined, anchorChunks: undefined, lastLandingAt: undefined,
+    chunksDone: 12, previousChunksDone: undefined, burstOpenSince: undefined,
+    now: placedAt + 1_000, runStartedAt: T - 60_000,
+  });
+  assert.strictEqual(first.firstChunkCompletedAt, placedAt + 1_000);
+  assert.strictEqual(first.chunksAtFirstStamp, 12);
+
+  // And the rate it then measures is the measuring pass's own: 448 chunks in
+  // the 37 s after that anchor — ~727/min, against the 76 the row was showing.
+  const measured = throughputSample({
+    anchorAt: first.firstChunkCompletedAt, anchorChunks: first.chunksAtFirstStamp,
+    lastLandingAt: placedAt + 38_000, chunksDone: 460,
+    totalChunks: 1697, totalChunksForEta: 1697, chunksCompletedInJob: 460,
+    minWindowSeconds: 30,
+  });
+  assert.ok(measured, 'the new window is measurable');
+  near(measured.chunksPerMin, 727, 5, 'the measuring pass\'s own rate');
+  near(measured.etaSeconds, 102, 10, 'and an ETA that matches a pass ending in ~1.7 min');
 });
 
 test('nothing rendered yet is no anchor at all', () => {

@@ -130,7 +130,7 @@ import {
 import { engineLanes } from './crucible/engine-lanes';
 import { JOB_GERUND } from '../shared/queue/job-words';
 // The rate anchor's rule lives beside the window it opens — see `rateAnchor`.
-import { rateAnchor, type RateAnchor } from '../shared/queue/rate-window';
+import { rateAnchor, rateSeriesChanged, type RateAnchor } from '../shared/queue/rate-window';
 import { stopSentence, userStopped, type StopReason } from '../shared/queue/stop-reason';
 /*
  * THE ONE RULE FOR "WHICH PROJECT IS THIS ROW ABOUT", borrowed from the step
@@ -4943,10 +4943,28 @@ function applyReport(step: QueueStep, update: StepReport): void {
       if (value === undefined) continue;
       (metrics as Record<string, unknown>)[key] = value;
     }
+    /*
+     * A NEW COUNTED SERIES STARTS A NEW MEASUREMENT — asked of the ONE module
+     * that owns the rule and answered BEFORE the anchor is computed, so the
+     * anchoring below sees a step with nothing stamped on it.
+     *
+     * The landing goes with the anchor. A second pass that counts the same
+     * chunks from zero lands at a count BELOW the stored one, and a stale
+     * `chunkCompletedAt` / `chunksDoneInSession` would make every report of the
+     * new series look like a report that landed nothing.
+     */
+    const seriesRestarted = rateSeriesChanged(step.metrics.rateSeries, update.metrics.rateSeries);
+    if (seriesRestarted) {
+      delete metrics.firstChunkCompletedAt;
+      delete metrics.chunksAtFirstStamp;
+      delete metrics.anchorBurstOpenSince;
+      delete metrics.chunkCompletedAt;
+    }
+    const previousSessionDone = seriesRestarted ? undefined : step.metrics.chunksDoneInSession;
     const sessionDone = update.metrics.chunksDoneInSession
       ?? update.metrics.chunksCompletedInJob;
     if (sessionDone !== undefined) {
-      const anchor = firstChunkAnchor(step, metrics, sessionDone);
+      const anchor = firstChunkAnchor(step, metrics, sessionDone, previousSessionDone);
       metrics.firstChunkCompletedAt = anchor.firstChunkCompletedAt;
       metrics.chunksAtFirstStamp = anchor.chunksAtFirstStamp;
       // ASSIGNED EVEN WHEN ABSENT: dropping this marker is how the rule says
@@ -4956,7 +4974,7 @@ function applyReport(step: QueueStep, update: StepReport): void {
       // AFTER the anchor, never before: the anchor's burst test reads the
       // PREVIOUS landing, and stamping this one first would compare a landing
       // with itself and make every burst look like a gap.
-      if (sessionDone > (step.metrics.chunksDoneInSession ?? -1)) {
+      if (sessionDone > (previousSessionDone ?? -1)) {
         metrics.chunkCompletedAt = Date.now();
       }
     }
@@ -4979,6 +4997,9 @@ function firstChunkAnchor(
   step: QueueStep,
   metrics: StepMetrics,
   sessionDone: number,
+  // The count the previous report of THIS SERIES carried — undefined when the
+  // caller has just dropped the anchor because the series changed.
+  previousChunksDone: number | undefined,
 ): RateAnchor {
   return rateAnchor({
     stampedAt: metrics.firstChunkCompletedAt,
@@ -4987,7 +5008,7 @@ function firstChunkAnchor(
     // call, so it still names the previous one.
     lastLandingAt: metrics.chunkCompletedAt,
     chunksDone: sessionDone,
-    previousChunksDone: step.metrics.chunksDoneInSession,
+    previousChunksDone,
     burstOpenSince: metrics.anchorBurstOpenSince,
     now: Date.now(),
     runStartedAt: step.startedAt ? new Date(step.startedAt).getTime() : null,

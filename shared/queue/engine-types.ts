@@ -554,6 +554,21 @@ export interface StepMetrics {
    * it should say its doing that."*
    */
   renderSettledAt?: number;
+  /**
+   * THE NAME OF THE SERIES THESE COUNTS BELONG TO, for a step that counts more
+   * than one thing in a row.
+   *
+   * A Crucible alignment is the case it exists for: two passes over one book —
+   * the server places every word, then this machine measures the book from the
+   * items it placed — each counting the SAME chunks from zero against the same
+   * total. A count that restarts is a new measurement, not a continuation, and
+   * the engine drops the rate anchor when this changes (`applyReport`, rule in
+   * `shared/queue/rate-window.ts` → `rateSeriesChanged`).
+   *
+   * ABSENT IS "NO OPINION" and is every other step in the queue: one series per
+   * run, the anchor behaves exactly as it always has.
+   */
+  rateSeries?: string;
   /** Counts for THIS session only — a resume must not divide prior work by new time. */
   chunksDoneInSession?: number;
   rawSentencesDoneInSession?: number;

@@ -139,6 +139,14 @@ export function stagesFor(job: QueueJob): JobStageProgress[] {
     case 'vlm-convert':
       return job.stages ?? [];
 
+    // Two passes over one book on the Crucible route — the server places every
+    // word, then this machine measures the book from the items it placed, at
+    // rates a factor apart (`electron/queue-steps/align.ts`). Bridge-reported:
+    // a legacy local align is ONE pass, reports no stages, and renders as the
+    // single overall bar.
+    case 'align':
+      return job.stages ?? [];
+
     // Hosted Foundry work (`foundry-job`). A conversion on the endpoint route
     // reports a render bar and a read bar (see `queue-steps/foundry-job.ts`); a
     // single-phase act (translate / clean / analyze) reports none and renders as
