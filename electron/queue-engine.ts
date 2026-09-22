@@ -1844,19 +1844,52 @@ export async function cancel(
     throw new Error('Cancelling needs to be told what to cancel.');
   }
 
+  /*
+   * EVERY STOP IS WRITTEN DOWN, hop by hop, in bookforge.log (Owen, 2026-09-22:
+   * he pressed Stop on God's People on the Mac, confirmed, and "it didnt do
+   * anything after that". The step stayed `running`, no DELETE ever reached the
+   * Mac, and nothing anywhere said why — this whole path logged to the main
+   * process's console, which on an ordinary launch is written nowhere. A stop
+   * that can vanish without a trace cannot be debugged, so each hop is on disk.
+   */
+  const log = getMainLogger();
+  const unstoppable: string[] = [];
+  log.info(`[QUEUE] Stop asked (${stopReason}${opts?.resumable ? ', resumable' : ''}) for `
+    + (target.stepId ? `step ${target.stepId}` : `run ${target.jobId}`)
+    + `: ${targets.length} step(s) — ${targets.map(({ step }) => `${step.label} [${step.status}]`).join(', ')}`);
+
   for (const { job, step } of targets) {
     if (TERMINAL_STEP_STATUSES.has(step.status)) continue;
     if (step.status === 'running') {
       const live = runningSteps.get(step.id);
-      if (live) {
+      if (!live) {
+        /*
+         * A RUNNING STEP THIS ENGINE HOLDS NO HANDLE FOR, which it cannot stop.
+         * It used to fall through silently — the stop "succeeded" and nothing
+         * happened. Refused BY NAME instead, so the press says so.
+         */
+        const sentence = `${job.title} — ${step.label} reads running, but this app holds no live `
+          + 'handle for it, so there is nothing here to stop. It may be finishing on its own; if '
+          + 'it is still running on a Crucible server, stop it there.';
+        log.error(`[QUEUE] ${sentence}`, { stepId: step.id });
+        unstoppable.push(sentence);
+        continue;
+      }
+      {
         live.stopRequested = true;
         // Recorded BEFORE the module is asked to stop: the module's own bridge
         // can settle the step inside that await, and `settleStep` reads this.
         live.stopReason = stopReason;
+        log.info(`[QUEUE] Stopping ${job.title} — ${step.label} (${step.type}, ${step.id})`);
+        const t0 = Date.now();
         try {
           await moduleFor(step.type).cancel(step.id, step, { reason: stopReason });
+          log.info(`[QUEUE] ${step.label} (${step.id}) stop returned after `
+            + `${Math.round((Date.now() - t0) / 1000)}s`);
         } catch (err) {
           console.error(`[QUEUE-ENGINE] ${step.label} did not stop cleanly:`, err);
+          log.error(`[QUEUE] ${step.label} (${step.id}) did not stop cleanly: `
+            + `${err instanceof Error ? err.message : String(err)}`);
         }
         // The ONE abort in this file that may be anything but bare — see
         // `setResumableStopReason`. A run stopped here can be started again, so
@@ -1890,6 +1923,7 @@ export async function cancel(
    * dials that stop everything, and they are their own presses.
    */
   changed();
+  if (unstoppable.length > 0) throw new Error(unstoppable.join(' '));
 }
 
 function settleNotStarted(job: QueueJob, step: QueueStep, reason: string): void {

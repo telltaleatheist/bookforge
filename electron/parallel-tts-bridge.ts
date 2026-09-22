@@ -9289,6 +9289,11 @@ export async function stopParallelConversion(
   opts?: { reason?: StopReason },
 ): Promise<boolean> {
   const reason: StopReason = opts?.reason ?? (appIsClosing ? 'closed' : 'user');
+  // ON DISK, not the console — see the stop note in queue-engine `cancel`.
+  getTTSLogger().info('Stop reached the TTS bridge', {
+    jobId, reason, preparing: isPreparing(jobId), hasSession: activeSessions.has(jobId),
+    remote: activeSessions.get(jobId)?.crucibleJobId ?? null,
+  });
   /*
    * A RENDER THAT IS STILL PREPPING IS STOPPED HERE TOO (2026-09-19).
    *
@@ -9353,8 +9358,10 @@ export async function stopParallelConversion(
   if (session.crucibleCancel) {
     const cancel = session.crucibleCancel;
     session.crucibleCancel = undefined;
+    getTTSLogger().info('Cancelling the remote render', { jobId, crucibleJobId: session.crucibleJobId });
     try {
       await cancel();
+      getTTSLogger().info('The remote render has stopped writing', { jobId, crucibleJobId: session.crucibleJobId });
     } catch (err) {
       // Reported, never swallowed and never fatal: the local stop must still
       // finish, and a job left running on a server is something the operator
