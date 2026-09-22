@@ -10,10 +10,66 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\<user>\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **7ab80b5** — *Adopt Crucible 1.0.20: narrator repinned to 52807873 (dep-only)* (was fe44667) |
+| Source sha | **753dca8** — *app/queue: exit 75 from the engine is a park, not a failure* (was 7ab80b5) |
 | Engine | **NOT VENDORED AND NOT KNOWABLE FROM THIS FILE** — it is a spawned CLI resolved at RUNTIME (`FOUNDRY_BIN`, else `resolveFoundryPath`, `electron/main.ts`), so which build executes is a property of the machine and not of this copy. On a developer's Mac that resolves to Foundry's own checkout at `/Volumes/Callisto/Projects/foundry/dist/foundry-darwin-arm64`, which is whatever was last built there — `foundry 2.0.2 (04758be)` — REBUILT at this re-vendor (2026-09-21) so the engine carries fdba761's clean-text log change. **Ask the binary: `$FOUNDRY_BIN --version`.** See *The engine this file named was not the engine that ran* below. |
-| Copied on | 2026-09-19 (five times: 3738c01, 3436fc5, 806d44b, f349771, ca4754c) and 2026-09-20 (98a4344, 9e0b27d, dccc144, 7b98004, cc5fc5b, 93010d8, 77e1d6d) |
-| Copied by | Mechanical source sync, verified against Foundry `77e1d6d:app/` (`diff -rq`, clean but for this file, `IPC-CHANNELS.md` and `.gitignore` — see below); details below |
+| Copied on | 2026-09-19 (five times: 3738c01, 3436fc5, 806d44b, f349771, ca4754c), 2026-09-20 (98a4344, 9e0b27d, dccc144, 7b98004, cc5fc5b, 93010d8, 77e1d6d) and 2026-09-21 (753dca8) |
+| Copied by | Mechanical source sync, verified against Foundry `753dca8:app/` (`diff -rq`, clean but for this file, `IPC-CHANNELS.md` and `.gitignore` — see below); details below |
+
+## The `7ab80b5 → 753dca8` re-vendor — a weather-parked page read is a park, not a failure (2026-09-21)
+
+Two Foundry commits, and only the second touches `app/` — but the first is why the
+second exists, so both are named here.
+
+`d7f9712` is in Foundry's `src/`, the CLI engine this copy does NOT vendor: the VLM
+endpoint reader now treats a `502`/`503`/`504`/`429` and a socket fault as WEATHER.
+It retries through an eight-try budget with the Crucible lease kept alive, the pages
+in flight beside a failing worker still land in the readings bank, and only when the
+budget is spent does the run PARK BY NAME — the CLI exiting `75`, sysexits'
+`EX_TEMPFAIL`. A machine gets it when its binary is rebuilt; ask `$FOUNDRY_BIN
+--version`.
+
+`753dca8` is the app half, and it is what this copy takes:
+
+- `shared/types.ts` states `ENGINE_PARKED_EXIT = 75` — written in two places on
+  purpose, beside `PARKED_EXIT_CODE` in the engine's `src/vlm/endpoint.ts`, under the
+  same pairing rule `DEFAULT_VLM_CONCURRENCY` already lives under; and `RunOutcome`
+  gains a FIFTH arm, `{ outcome: 'parked'; reason; stderrTail }`, carrying no row
+  because nothing landed.
+- `electron/job-queue.ts` reads exit 75 as its own arm: a pump-driven row goes back
+  to `queued` wearing the engine's park sentence and sits out a minute on
+  `parkedUntil`; a detached run — `runJob`, which is BookForge's seam — is discarded
+  like a wait and answered `parked`, so the host re-queues by the engine's own words.
+  The readings are kept either way, which is the whole reason a park costs nothing.
+- `electron/mount.ts` lists five outcomes where it listed four.
+
+**The measured defect.** 2026-09-21, *Everyday Denazification*, page 32 of 329: a
+`502 ReadError` from a proxy over a stale socket. Every non-zero exit was a failure,
+so Foundry ended the run, the dispatcher's settle handed the Crucible lease back,
+Crucible unloaded dots-ocr under the eleven pages still in flight, and BookForge
+reddened the row — which, since `af25c6d7`, also IDLES the whole queue. One socket
+that answered again a minute later cost a lease, an engine load, eleven pages and a
+night of board time.
+
+BookForge's half of the seam lands in the commit beside this one: `FoundryRunOutcome`
+mirrors the fifth arm, and `queue-steps/foundry-job.ts` turns it into
+`stepFailure(reason, undefined, reason)` — the TRANSIENT park, not the `busyLine` one,
+because a stale socket is not a holder and recording one would hold every other book
+off that server.
+
+Verified with `diff -rq` against `753dca8:app/` (excluding node_modules, dist,
+.angular, out-tsc, release, VENDORED.md, IPC-CHANNELS.md, .gitignore): clean.
+Built in a staging copy INSIDE this repo (`.foundry-stage-753dca8/`, `node_modules`
+symlinked to `foundry-app/node_modules`), electron and renderer both, and the built
+`dist` checked three ways — `parked` in `dist/electron/mount.js` (2) and
+`dist/electron/job-queue.js` (47), `ENGINE_PARKED_EXIT` in `dist/shared/types.js` (2),
+`dist/renderer/browser/index.html` present. **NOT SWAPPED at this commit**: BookForge
+was running, and the electron half cannot be swapped under a live app. The swap is
+`tools/swap-foundry-dist.sh .foundry-stage-753dca8 --expect ENGINE_PARKED_EXIT`, which
+is new in this commit and REFUSES on any of the three checks or on a running app —
+the tool the 2026-09-20 no-renderer swap owed. Gates: root
+`tsc -p tsconfig.electron.json --noEmit` exit 0; in a scratch worktree
+`tools/test-foundry-host-queue.js` 32/36 (the four failures predate tonight) and
+`tools/test-queue-engine.js` 62/62.
 
 ## The `fe44667 → 7ab80b5` re-vendor — the 1.0.20 SDK adoption (2026-09-21)
 

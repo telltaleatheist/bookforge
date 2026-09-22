@@ -221,12 +221,17 @@ export { RESUMABLE_STOP } from '../shared/types';
  *     setHostQueueRows(projectDir, rows)                  what your queue holds
  *     hostQueueDrained()                                  and when it is empty
  *
- * `runJob` resolves with a typed {@link RunOutcome} — `done`, `failed`, `wait` or
- * `cancelled`. The three that ran carry the settled `Job` ROW, because a result
- * type that could not say CANCELLED was the first thing this seam got wrong: a
- * cancel filed as a failure is how a host's retry restarts work a person just
- * stopped. `wait` carries no row, because nothing ran — it is the holder's own
- * sentence plus whether time alone will ever clear it, and the host parks.
+ * `runJob` resolves with a typed {@link RunOutcome} — `done`, `failed`, `wait`,
+ * `parked` or `cancelled`. The three that landed or were stopped carry the
+ * settled `Job` ROW, because a result type that could not say CANCELLED was the
+ * first thing this seam got wrong: a cancel filed as a failure is how a host's
+ * retry restarts work a person just stopped. `wait` carries no row, because
+ * nothing ran — it is the holder's own sentence plus whether time alone will
+ * ever clear it, and the host parks. `parked` carries no row either: the engine
+ * ran, the model server's weather outlasted its retry budget, and it exited
+ * `ENGINE_PARKED_EXIT` with the pages it read banked — the host re-queues the
+ * same request and the resume is free (see `ENGINE_PARKED_EXIT` in
+ * shared/types.ts, and the arm in the queue that answers exit 75).
  *
  * THE REQUEST THAT CROSSES IS IDENTITY ONLY. It names the row this work is made
  * from (`at`, or `deferred.from`) and never a path under `derived/`: the book, the

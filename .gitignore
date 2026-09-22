@@ -112,3 +112,8 @@ python/*.egg-info/
 # deploy:nas — the NAS host and health URL are that machine's facts, never the repo's
 # (deploy/bookshelf-server/.env.example is the tracked template).
 deploy/bookshelf-server/.env
+
+# Foundry re-vendor staging builds — `tools/swap-foundry-dist.sh <dir>` swaps one
+# into foundry-app/dist when BookForge is down. Build output, and it must live
+# INSIDE this repo (the memory says why: @crucible/* resolve up the tree).
+/.foundry-stage-*/
