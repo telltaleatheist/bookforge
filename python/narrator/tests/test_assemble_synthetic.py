@@ -306,6 +306,37 @@ class TestParallelPath(unittest.TestCase):
         self.assertEqual(probe["format"]["tags"]["year"], "1993")
         self.assertEqual(probe["format"]["tags"]["language"], "en")
 
+    def test_progress_moves_between_chapter_completions(self):
+        """The bar reports audio WRITTEN, not chapters FINISHED (2026-09-22).
+
+        A nine-chapter book used to move in 11% steps minutes apart and the row
+        read "ETA not timed yet" for the whole encode. Each chapter's encoder is
+        handed a position mid-chapter here, before the real encode runs, and the
+        log must say it — which the old per-completion count never could: with
+        three chapters it only ever printed 33.3, 66.7 and 100.
+        """
+        real = E.encode_chapter
+        seen_callbacks = []
+
+        def encode_with_an_early_position(ffmpeg, concat_list, out_path, channels,
+                                          on_position=None):
+            seen_callbacks.append(on_position)
+            if on_position is not None:
+                on_position(0.5)
+            real(ffmpeg, concat_list, out_path, channels, on_position=on_position)
+
+        E.encode_chapter = encode_with_an_early_position
+        self.addCleanup(setattr, E, "encode_chapter", real)
+        self.encode_all()
+
+        self.assertTrue(all(cb is not None for cb in seen_callbacks),
+                        "every chapter's encoder is told where to report")
+        pcts = [float(l[len("Export - "):-1]) for l in self.lines if l.startswith("Export - ")]
+        self.assertTrue(any(round(p, 1) not in (33.3, 66.7, 100.0) for p in pcts),
+                        f"a position between completions is reported: {pcts}")
+        self.assertEqual(pcts, sorted(pcts), "and the bar never runs backwards")
+        self.assertEqual(pcts[-1], 100.0)
+
     def test_pre_encoded_chapters_are_reused_verbatim(self):
         encoded = self.encode_all()
         # Hand chapter 2 back as a pre-encoded file named <chapterNum>.m4a,

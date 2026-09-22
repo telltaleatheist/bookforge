@@ -41,6 +41,7 @@ import os
 import re
 import subprocess
 import tempfile
+import threading
 
 from ..manifest import Manifest
 from ..render.flac_header import StreamInfo, read_streaminfo
@@ -632,20 +633,28 @@ def encode_chapter(
     concat_list: str,
     out_path: str,
     channels: int,
+    on_position=None,
 ) -> None:
     """One chapter, straight from its sentence FLACs to AAC.
 
     e2a encodes from a chapter FLAC it built first (lib/core.py:4445-4459); the
     PCM handed to the encoder is identical either way, because that FLAC was a
     lossless concat of exactly these files.
+
+    `on_position`, when given, is told the seconds of this chapter written so
+    far as ffmpeg reports them — how the parallel encode says where it is
+    between chapter completions.
     """
+    what = f"chapter encode -> {os.path.basename(out_path)}"
     cmd = [
         ffmpeg, "-hide_banner", "-nostats", "-v", "error",
         "-f", "concat", "-safe", "0", "-i", concat_list,
         *_aac_args(channels),
-        "-y", out_path,
     ]
-    run(cmd, f"chapter encode -> {os.path.basename(out_path)}")
+    if on_position is None:
+        run([*cmd, "-y", out_path], what)
+    else:
+        _run_reporting_position([*cmd, "-progress", "pipe:1", "-y", out_path], what, on_position)
     if not os.path.isfile(out_path) or os.path.getsize(out_path) == 0:
         raise FfmpegError(
             f"chapter encode exited 0 but produced no output: {out_path}"
@@ -698,13 +707,41 @@ def encode_chapters_parallel(
         # so say so once rather than leaving the bar parked where it was.
         log("Export - 100.0%")
 
+    # WHERE THE ENCODE IS, IN AUDIO — every worker's ffmpeg position, summed
+    # against the length of what is being encoded (Owen, 2026-09-22: assembly
+    # read "ETA not timed yet" after eight minutes). This used to report only
+    # when a whole chapter FINISHED, so a nine-chapter book moved in 11% steps
+    # minutes apart and the row had nothing to time between them. The chapter
+    # durations are the plans' own (the same figure `check_duration` holds each
+    # encode to), so 100% means every chapter's audio is written.
+    lengths = {i: plan.audio_duration(sample_rate) for i, plan in todo}
+    total_seconds = sum(lengths.values())
+    written = {i: 0.0 for i, _ in todo}
+    progress_lock = threading.Lock()
+    last_pct = -1.0
+
+    def report_position(i: int, seconds: float) -> None:
+        nonlocal last_pct
+        if total_seconds <= 0:
+            return
+        with progress_lock:
+            written[i] = min(seconds, lengths[i])
+            pct = min(100.0, sum(written.values()) / total_seconds * 100.0)
+            if pct - last_pct < 0.5:
+                return
+            last_pct = pct
+        log(f"Export - {pct:.1f}%")
+
     def work(item: tuple[int, ChapterPlan]) -> tuple[int, str, str | None]:
         i, plan = item
         list_path = os.path.join(chunk_dir, f"{plan.index}.txt")
         out_path = os.path.join(chunk_dir, f"{plan.index}.m4a")
         try:
             write_concat_list(plan.paths, list_path)
-            encode_chapter(ffmpeg, list_path, out_path, channels)
+            encode_chapter(
+                ffmpeg, list_path, out_path, channels,
+                on_position=lambda seconds: report_position(i, seconds),
+            )
             actual = probe_duration(out_path, ffprobe)
             # concat_tolerance, NOT PRE_ENCODED_TOLERANCE_S: this is the guard
             # concat_tolerance was ported for. ffmpeg has just consumed a concat
@@ -725,7 +762,6 @@ def encode_chapters_parallel(
             return i, out_path, str(e)
         return i, out_path, None
 
-    completed = 0
     failures: list[str] = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
         futures = [pool.submit(work, item) for item in todo]
@@ -735,8 +771,11 @@ def encode_chapters_parallel(
                 failures.append(f"chapter {plans[i].index}: {err}")
             else:
                 outputs[i] = out_path
-            completed += 1
-            log(f"Export - {completed / len(todo) * 100:.1f}%")
+                # A finished chapter is its whole length, whatever ffmpeg's last
+                # progress line said before it exited.
+                report_position(i, lengths[i])
+    if todo and not failures:
+        log("Export - 100.0%")
 
     if failures:
         raise FfmpegError(
@@ -890,13 +929,34 @@ def encode_serial(
 
 
 def _run_with_progress(cmd: list[str], total_seconds: float, what: str, log) -> None:
-    """Run ffmpeg with `-progress pipe:1` and report `Export - N%`.
+    """Run ffmpeg with `-progress pipe:1` and report `Export - N%`."""
+    last_pct = -1.0
+
+    def on_position(seconds: float) -> None:
+        nonlocal last_pct
+        if total_seconds <= 0:
+            return
+        pct = min(100.0, seconds / total_seconds * 100.0)
+        if pct - last_pct >= 0.5:
+            last_pct = pct
+            log(f"Export - {pct:.1f}%")
+
+    _run_reporting_position(cmd, what, on_position)
+    log("Export - 100.0%")
+
+
+def _run_reporting_position(cmd: list[str], what: str, on_position) -> None:
+    """Run ffmpeg with `-progress pipe:1`, handing each output position (seconds
+    of audio written) to `on_position` as ffmpeg reports it.
+
+    The ONE reader of ffmpeg's progress stream: the serial encode turns the
+    position into a percentage of the book, the parallel encode sums it across
+    its workers (`encode_chapters_parallel`).
 
     stderr goes to a temp file rather than a pipe: with stdout already being read
     line by line, a second unread pipe is how a long encode deadlocks against
     ffmpeg's own buffer.
     """
-    last_pct = -1.0
     with tempfile.TemporaryFile(mode="w+", encoding="utf-8", errors="replace") as errf:
         proc = subprocess.Popen(
             cmd, stdout=subprocess.PIPE, stderr=errf, text=True,
@@ -916,11 +976,8 @@ def _run_with_progress(cmd: list[str], total_seconds: float, what: str, log) -> 
                 if raw.isdigit():
                     # ffmpeg's out_time_ms is microseconds despite the name.
                     value = int(raw) / 1_000_000.0
-            if value is not None and total_seconds > 0:
-                pct = min(100.0, value / total_seconds * 100.0)
-                if pct - last_pct >= 0.5:
-                    last_pct = pct
-                    log(f"Export - {pct:.1f}%")
+            if value is not None:
+                on_position(value)
         stdout.close()
         code = proc.wait()
         if code != 0:
@@ -931,7 +988,6 @@ def _run_with_progress(cmd: list[str], total_seconds: float, what: str, log) -> 
                 f"  command: {' '.join(cmd)}\n"
                 f"  stderr: {tail.strip()}"
             )
-    log("Export - 100.0%")
 
 
 def verify_export(out_path: str, source_duration: float, ffprobe: str) -> float:
