@@ -189,8 +189,10 @@ no reserved name for a server on this computer: it is a registry entry like any 
 — every spawn carries a `--session_dir` derived from the one that was stated — so
 this door states it exactly as the app does at startup (`main.ts`
 `applyNarratorScratchRoot`): the **Settings → Narrator scratch folder** override if
-there is one, else **`<library>/tmp`**, which also holds the content-addressed
-`narration-cuts/` a later run reuses. The library is the one this machine chose in
+there is one, else **`~/Documents/BookForge/scratch`** — MACHINE-LOCAL since
+2026-09-21, where it was `<library>/tmp` (rendering into a shared NAS library put
+thousands of in-progress files on the share and wedged the Mac's SMB client). It
+also holds the content-addressed `narration-cuts/` a later run reuses. The library is the one this machine chose in
 BookForge, read from the file main persists for exactly this question
 (`<userData>/library-root.json`); **`--library <root>` overrides it for one run**,
 and a machine that has never chosen a library is **refused by name** rather than

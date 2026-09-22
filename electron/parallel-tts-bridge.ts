@@ -33,6 +33,11 @@ import {
 } from './render-carryover';
 // ONE module owns "is the cache as complete as the render" — the publish, the
 // interrupt-cache and the startup rescue all ask it, by chunk INDEX.
+import { copyTreeBounded } from './bounded-copy';
+import { discardLibraryTree } from './library-trash';
+// A resume brings the cached session DOWN before it renders — see the module's
+// header for the SMB traffic that rendering into the cache made.
+import { materializeSessionLocally } from './resume-materialize';
 import {
   cacheIsAtLeastAsComplete,
   mergeSessionTree,
@@ -739,7 +744,10 @@ export async function cacheSessionToBfp(
     await fs.mkdir(sessionParent, { recursive: true });
 
     // Clean up any leftover temp dir from a previous failed attempt
-    try { await fs.rm(tempDestDir, { recursive: true, force: true }); } catch { /* may not exist */ }
+    // Also a library tree — a publish that died half-way left a `.tmp-` holding
+    // most of a book's chunks — so it leaves the same way, by rename.
+    try { await discardLibraryTree(tempDestDir, 'clearing a leftover publish temp'); }
+    catch { /* may not exist */ }
 
     // Determine if the session is in WSL filesystem (handles \\wsl$\ and \\wsl.localhost\)
     const isWslSession = isWslUncPath(sessionDir);
@@ -767,7 +775,10 @@ export async function cacheSessionToBfp(
       for (const entry of existingEntries) {
         if (entry.isDirectory() && entry.name.startsWith('ebook-')) {
           const oldDir = path.join(sessionParent, entry.name);
-          await fs.rm(oldDir, { recursive: true, force: true });
+          // A session is thousands of chunk files on the shared library, so it
+          // leaves by ONE rename into `.trash` and is unlinked at a pace that
+          // does not wedge the SMB client (library-trash.ts).
+          await discardLibraryTree(oldDir, `replacing the cached session ${entry.name}`);
           console.log(`[PARALLEL-TTS] Removed old session: ${entry.name}`);
         }
       }
@@ -869,6 +880,39 @@ async function chunkFileCount(dir: string): Promise<number> {
     return (await fs.readdir(dir)).filter((f) => f.endsWith('.flac')).length;
   } catch {
     return 0;
+  }
+}
+
+/**
+ * REMOVE THE LOCAL SOURCE OF A VERIFIED HAND-OVER, and only then.
+ *
+ * `consumeSource` means the caller has finished with the session: the render is
+ * over, the cache holds every chunk it made (checked by set, above every call
+ * site), and `repointSessionAtCache` has moved every remaining reader onto the
+ * cache. What is left in scratch is a duplicate on a local disk, and leaving it
+ * for the next startup sweep means a machine carrying a book's worth of audio
+ * around for no reason.
+ *
+ * THREE THINGS IT WILL NOT DO. It will not touch the destination (`samePath`, a
+ * resume that rendered straight into the cache — deleting there deletes the
+ * book). It will not touch a path that IS the cache by another spelling. And it
+ * never throws: a publish that succeeded is not undone by a leftover directory,
+ * and the sweep will get it.
+ */
+async function consumeLocalSource(
+  sessionDir: string,
+  destDir: string,
+  samePath: boolean,
+): Promise<void> {
+  if (samePath) return;
+  if (path.resolve(sessionDir).toLowerCase() === path.resolve(destDir).toLowerCase()) return;
+  try {
+    await fs.rm(sessionDir, { recursive: true, force: true });
+    console.log(`[PARALLEL-TTS] Removed the handed-over scratch session ${sessionDir}`);
+  } catch (err) {
+    console.warn(
+      `[PARALLEL-TTS] The handed-over scratch session ${sessionDir} could not be removed `
+      + `(${(err as Error).message}); the startup sweep will take it.`);
   }
 }
 
@@ -979,9 +1023,18 @@ export async function cacheSessionToProject(
     if (existing) {
       const before = await publishPlan(sourceSentencesDir, destSentencesDir);
       const stopWatching = watchPublish(destSentencesDir, owed, opts?.onProgress);
-      const merge = await mergeSessionTree(
-        sessionDir, destDir, placeFile === undefined ? {} : { copyFile: placeFile },
-      ).finally(stopWatching);
+      const merge = await mergeSessionTree(sessionDir, destDir, {
+        ...(placeFile === undefined ? {} : { copyFile: placeFile }),
+        // A file that cannot be reached is WEATHER on a soft-mounted share, and
+        // it is waited out inside the merge (bounded-copy.ts). Said out loud so
+        // a publish that is waiting does not read as a publish that is hung.
+        onRetry: (rel, attempt, waitMs, err) => {
+          console.warn(
+            `[PARALLEL-TTS] Publishing ${rel} into ${destDir} failed with `
+            + `${(err as NodeJS.ErrnoException)?.code ?? 'an error'}; retry ${attempt} in `
+            + `${Math.round(waitMs / 1000)}s`);
+        },
+      }).finally(stopWatching);
 
       if (!merge.samePath) {
         // The state file the cache now holds names the scratch dir it was
@@ -1033,6 +1086,9 @@ export async function cacheSessionToProject(
       // so a full bar means "the cache holds every chunk this render made", not
       // "the copy loop ran out of files".
       opts?.onProgress?.({ copied: owed, total: owed });
+      // The hand-over is complete and VERIFIED (`stillMissing` is empty above),
+      // so the local source has no reader left — see `consumeLocalSource`.
+      if (handingOver) await consumeLocalSource(sessionDir, destDir, merge.samePath);
       const merged = await fs.access(destSentencesDir).then(() => true).catch(() => false);
       return {
         success: true,
@@ -1047,11 +1103,18 @@ export async function cacheSessionToProject(
     await fs.mkdir(langSessionParent, { recursive: true });
 
     // Clean up any leftover temp dir from a previous failed attempt
-    try { await fs.rm(tempDestDir, { recursive: true, force: true }); } catch { /* may not exist */ }
+    // Also a library tree — a publish that died half-way left a `.tmp-` holding
+    // most of a book's chunks — so it leaves the same way, by rename.
+    try { await discardLibraryTree(tempDestDir, 'clearing a leftover publish temp'); }
+    catch { /* may not exist */ }
 
     // Determine if the session is in WSL filesystem (handles \\wsl$\ and \\wsl.localhost\)
     const isWslSession = isWslUncPath(sessionDir);
 
+    // The first file the copy below gave up on, if any — named in the refusal
+    // when the set comparison finds the cache short, so the operator has a file
+    // and an errno rather than only a count.
+    let firstCopyFailure: string | null = null;
     // The bar, over the TEMP copy this branch writes into — the publish's real
     // destination until the rename below puts it in place.
     const stopWatching = watchPublish(
@@ -1085,13 +1148,37 @@ export async function cacheSessionToProject(
         // appear under /mnt — the NAS library's Z: is the live case).
         await copyDirOutOfWsl(sessionDir, tempDestDir);
       } else {
-        // Clone-on-write where the filesystem supports it (APFS/ReFS) — with the
-        // scratch dir on the library volume this is near-instant regardless of
-        // session size. Falls back to a regular copy automatically elsewhere.
-        await fs.cp(sessionDir, tempDestDir, {
-          recursive: true,
-          mode: fsSync.constants.COPYFILE_FICLONE,
+        /*
+         * ONE BOUNDED COPY ACROSS THE WIRE, and it is the ordinary road now.
+         *
+         * `fs.cp(recursive)` walks one file at a time, which was free while the
+         * scratch was on the library volume (a clone) and is 0.21 s per file
+         * now that the scratch is machine-local: ~3,400 files for a 1,700-chunk
+         * book, all of them over SMB. `copyTreeBounded` keeps four in flight
+         * and retries each one through the weather budget — see
+         * `electron/bounded-copy.ts` for both numbers.
+         *
+         * Failures are NOT thrown here: the set comparison below is what
+         * decides whether this publish succeeded, and it should see every hole
+         * rather than the first. The first failure's name is carried into the
+         * refusal so an operator has a file to look at.
+         */
+        const report = await copyTreeBounded(sessionDir, tempDestDir, {
+          onRetry: (rel, attempt, waitMs, err) => {
+            console.warn(
+              `[PARALLEL-TTS] Publishing ${rel} to the library failed with `
+              + `${(err as NodeJS.ErrnoException)?.code ?? 'an error'}; retry ${attempt} in `
+              + `${Math.round(waitMs / 1000)}s`);
+          },
         });
+        firstCopyFailure = report.failures[0]
+          ? `${report.failures[0].rel} — ${report.failures[0].error}`
+          : null;
+        if (report.failures.length > 0) {
+          console.error(
+            `[PARALLEL-TTS] ${report.failures.length} file(s) could not be copied into the `
+            + `library; first: ${firstCopyFailure}`);
+        }
       }
     } finally {
       stopWatching();
@@ -1121,7 +1208,8 @@ export async function cacheSessionToProject(
           if (path.resolve(oldDir).toLowerCase() === path.resolve(sessionDir).toLowerCase()) {
             continue;
           }
-          await fs.rm(oldDir, { recursive: true, force: true });
+          await discardLibraryTree(
+            oldDir, `replacing the cached ${language} session ${entry.name}`);
           console.log(`[PARALLEL-TTS] Removed old ${language} session: ${entry.name}`);
         }
       }
@@ -1151,7 +1239,8 @@ export async function cacheSessionToProject(
     const fresh = { cached: cacheNow.size, source: renderedSet.size };
     if (dropped.length > 0) {
       const error = `Failed to publish the session into the project cache: ${
-        missingChunksSentence(dropped, fresh, { source: sourceSentencesDir, cache: destSentencesDir })}`;
+        missingChunksSentence(dropped, fresh, { source: sourceSentencesDir, cache: destSentencesDir })}${
+        firstCopyFailure === null ? '' : ` First copy failure: ${firstCopyFailure}.`}`;
       console.error(`[PARALLEL-TTS] ${error}`);
       publishLog.error('Fresh session publish INCOMPLETE — the copy dropped chunks', {
         jobLanguage: language, destDir, sourceChunks: fresh.source,
@@ -1163,6 +1252,11 @@ export async function cacheSessionToProject(
     // The full bar, after the set comparison and never before it — see the merge
     // branch's copy of this line.
     opts?.onProgress?.({ copied: owed, total: owed });
+
+    // Handed over and verified: the scratch tree is a duplicate now. A `rename`
+    // took it away already; a cross-volume copy did not, and that is the
+    // ordinary road since the scratch went machine-local.
+    if (handingOver) await consumeLocalSource(sessionDir, destDir, false);
 
     console.log(`[PARALLEL-TTS] LL session cached: ${destDir}`);
     console.log(`[PARALLEL-TTS] Cached sentences dir: ${cachedSentencesDir}`);
@@ -1375,11 +1469,18 @@ export interface SessionOwnerInfo {
   epubPath: string;
   createdAt: string;
   /**
-   * WHICH MACHINE IS RENDERING THIS. The scratch dir is `<library>/tmp`, and the
-   * library is a share both machines mount (Z: on Windows, /Volumes/<share> on the
-   * Mac), so "this scratch dir" is not "this computer's scratch dir". The startup
-   * sweep's licence — "nothing is converting yet at startup, so everything here is
-   * from a dead run" — is only ever true of THIS host's sessions.
+   * WHICH MACHINE IS RENDERING THIS. The scratch dir was `<library>/tmp` until
+   * 2026-09-21, and the library is a share both machines mount (Z: on Windows,
+   * /Volumes/<share> on the Mac), so "this scratch dir" was not "this computer's
+   * scratch dir". The startup sweep's licence — "nothing is converting yet at
+   * startup, so everything here is from a dead run" — is only ever true of THIS
+   * host's sessions.
+   *
+   * THE DEFAULT ROOT IS MACHINE-LOCAL NOW, so on an ordinary install no other
+   * host can be here at all. The field stays, and so does the sweep's ownership
+   * probe: "Narrator scratch folder" can still be pointed at a shared volume,
+   * and this sidecar is load-bearing for THIS machine anyway — it is the only
+   * thing that says which project an orphaned session belongs to.
    *
    * MEASURED, 2026-09-05: Windows started while the Mac was 8 minutes into a
    * render, swept `Z:\<library>\tmp\ebook-83fa5cb8-…` out from under it, and took
@@ -1540,7 +1641,7 @@ async function cachedChunksForLanguage(projectDir: string, language: string): Pr
  * cache, BEFORE the scratch dir is swept.
  *
  * This is the fix for the destructive resume: the startup sweep used to wipe
- * <library>/tmp unconditionally on the premise that "nothing is converting yet, so any
+ * the scratch root unconditionally on the premise that "nothing is converting yet, so any
  * leftovers are from prior/failed/interrupted runs" — but an INTERRUPTED run's leftovers
  * are precisely the resume checkpoint. A jetsam/force kill skips before-quit's
  * flushActiveSessionsToCache, so the only copy of the work lived in that scratch dir and
@@ -1938,9 +2039,9 @@ export function sessionHomeFor(
     // copies when it has the drive mounted, Windows copies through \\wsl$ when
     // it does not), so a Z:\ root works on either road; the 2026-09-14 failure
     // on exactly that root was the probe (`test -d` on a stale mount point),
-    // fixed in `wslSeesDrive`. Refusing a network root would refuse the default
-    // root (`<library>/tmp`, and the library is on the NAS) for every legacy
-    // render on this PC.
+    // fixed in `wslSeesDrive`. Refusing a network root would refuse a root
+    // somebody deliberately put on the NAS. (The DEFAULT root has been
+    // machine-local since 2026-09-21, so this only ever concerns a stated one.)
     narratorScratchRoot();
 
     // The session is created in the GUEST sessions root — BookForge's own
@@ -1956,7 +2057,8 @@ export function sessionHomeFor(
       sessionDirForReading: wslToWindowsPath(sessionDir),
     };
   }
-  // Native session dir — the "Narrator scratch folder" setting, or <library>/tmp.
+  // Native session dir — the "Narrator scratch folder" setting, or the
+  // machine-local default (`defaultNarratorScratchRoot`).
   // Must match where the spawned narrator writes it (buildToolsSpawnEnv passes
   // the same resolution as NARRATOR_SESSIONS_ROOT).
   const sessionDir = path.join(narratorScratchRoot(), `ebook-${sessionId}`);
@@ -2809,7 +2911,7 @@ export interface ParallelConversionResult {
 // Configuration
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { narratorScratchRoot, shouldUseWsl2ForOrpheus, getWslDistro, getWslSessionsRoot, windowsToWslPath, wslToWindowsPath, impliedExportDirOf } from './narrator-paths';
+import { narratorScratchRoot, shouldUseWsl2ForOrpheus, getWslDistro, getWslSessionsRoot, windowsToWslPath, wslToWindowsPath, impliedExportDirOf, renderSessionDirOf } from './narrator-paths';
 
 export function isHiggsJob(settings: ParallelTtsSettings): boolean {
   return settings.ttsEngine === 'higgs';
@@ -8746,7 +8848,7 @@ export async function startParallelConversion(
 
   // Record which project owns this scratch session, so a crash-killed run (no
   // before-quit flush) can still be rescued into the durable cache at next startup
-  // instead of being swept away with the rest of <library>/tmp.
+  // instead of being swept away with the rest of the scratch root.
   await writeSessionOwner(session);
   ttsLog.info('TTS session prepared (fresh)', {
     jobId,
@@ -9734,7 +9836,8 @@ function normalizePathForComparison(p: string): string {
 function getSessionTmpDirs(): string[] {
   const dirs: string[] = [];
 
-  // The host scratch root: the "Narrator scratch folder" setting, or <library>/tmp.
+  // The host scratch root: the "Narrator scratch folder" setting, or the
+  // machine-local default (`defaultNarratorScratchRoot`).
   const nativeTmp = narratorScratchRoot();
   dirs.push(nativeTmp);
 
@@ -10611,6 +10714,103 @@ async function resolveResumeFromProjectCache(
 }
 
 /**
+ * BRING A CACHED SESSION DOWN AND RE-READ IT — the resume's workplace move.
+ *
+ * Copies the skip set and the pack into local scratch
+ * (`materializeSessionLocally`), re-points the copy's own
+ * `session-state.json` at where it now lives, and then asks
+ * `checkResumeStatusFromProcessDir` about the LOCAL directory. That last step is
+ * not bookkeeping: it is the verification. The resume's `missingIndices` must
+ * describe the directory the workers will write into, and re-reading it is the
+ * only way to know the copy arrived — a count carried over from the cache would
+ * be a second opinion about a directory the render can see for itself.
+ *
+ * A COPY THAT COULD NOT FINISH FAILS THE RUN, BY NAME. The share not answering
+ * is weather and is waited out inside the copy (three retries, 2/5/10 s per
+ * file); if the budget is spent the answer is that the library is not readable
+ * right now, and starting a render that cannot publish — or, worse, quietly
+ * re-reading a whole book because its skip set did not arrive — is not a better
+ * outcome than stopping and saying so.
+ */
+async function localizeResumeSession(
+  jobId: string,
+  resumeInfo: ResumeCheckResult,
+): Promise<{ success: boolean; resumeInfo: ResumeCheckResult; error?: string }> {
+  const ttsLog = getTTSLogger();
+  const cachedSessionDir = resumeInfo.sessionDir!;
+  const cachedProcessDir = resumeInfo.processDir!;
+  let scratchRoot: string;
+  try {
+    scratchRoot = narratorScratchRoot();
+  } catch (err) {
+    return { success: false, resumeInfo, error: (err as Error).message };
+  }
+
+  try {
+    const report = await materializeSessionLocally(
+      cachedSessionDir, cachedProcessDir, scratchRoot,
+      {
+        onRetry: (rel, attempt, waitMs, err) => {
+          console.warn(
+            `[PARALLEL-TTS] Reading ${rel} from the library failed with `
+            + `${(err as NodeJS.ErrnoException)?.code ?? 'an error'}; retry ${attempt} in `
+            + `${Math.round(waitMs / 1000)}s`);
+        },
+      });
+
+    if (report.failures.length > 0) {
+      const first = report.failures[0]!;
+      const error =
+        `The rendered chunks this resume keeps could not be read out of the project cache `
+        + `(${cachedProcessDir}) — ${report.failures.length} file(s) gave up after their `
+        + `retries, first ${first.rel}: ${first.error}. The render would have had to read `
+        + 'those chunks again, so it is not started. Nothing was changed: the cached session '
+        + 'is exactly as it was.';
+      ttsLog.error('Resume localization FAILED — the cache could not be read', {
+        jobId, cachedSessionDir, localSessionDir: report.sessionDir,
+        failures: report.failures.length, first: first.rel, error: first.error,
+      });
+      return { success: false, resumeInfo, error };
+    }
+
+    // The copy's `session-state.json` still names the cache. Re-point it at the
+    // local session, exactly as a publish re-points it at the cache.
+    await rewriteSessionStatePaths(report.sessionDir, report.sessionDir);
+
+    const local = await checkResumeStatusFromProcessDir(report.processDir);
+    if (!local.success) {
+      const error =
+        `The resume session was copied to ${report.sessionDir} but could not be read back: `
+        + `${local.error}. The cached session at ${cachedSessionDir} is untouched.`;
+      ttsLog.error('Resume localization FAILED — the local copy did not read back', {
+        jobId, cachedSessionDir, localSessionDir: report.sessionDir, error: local.error,
+      });
+      return { success: false, resumeInfo, error };
+    }
+
+    console.log(
+      `[PARALLEL-TTS] Resume localized: ${report.copied.length} file(s) copied down, `
+      + `${report.kept} already local → ${report.sessionDir} `
+      + `(${local.completedSentences}/${local.totalSentences} chunks on disk)`);
+    ttsLog.info('Resume localized to machine-local scratch', {
+      jobId, cachedSessionDir, localSessionDir: report.sessionDir,
+      filesCopied: report.copied.length, filesAlreadyLocal: report.kept,
+      completedSentences: local.completedSentences, totalSentences: local.totalSentences,
+    });
+    // The LOCAL reading wins on every field it states — the paths, the counts
+    // and the missing indices all have to describe the directory the workers
+    // will write into. What the cache said about the render settings is kept.
+    return { success: true, resumeInfo: { ...resumeInfo, ...local } };
+  } catch (err) {
+    const error =
+      `The resume session at ${cachedSessionDir} could not be brought onto this machine: `
+      + `${(err as Error).message}`;
+    ttsLog.error('Resume localization errored', { jobId, cachedSessionDir, error });
+    return { success: false, resumeInfo, error };
+  }
+}
+
+/**
  * Resume a partially completed conversion
  * Uses missing ranges from checkResumeStatus to only process incomplete sentences
  */
@@ -10683,6 +10883,36 @@ export async function resumeParallelConversion(
     // Merge fresh info into resumeInfo
     resumeInfo = { ...resumeInfo, ...freshInfo };
     console.log(`[PARALLEL-TTS] Re-fetched: sessionId=${resumeInfo.sessionId}, missingIndices=${resumeInfo.missingIndices?.length}`);
+  }
+
+  /*
+   * ── THE RESUME RENDERS ON THIS MACHINE (2026-09-21) ──────────────────────
+   *
+   * Everything above has bound the resume to the durable project cache, which
+   * is the right SOURCE and the wrong WORKPLACE: the cache is on the shared
+   * library, so rendering into it put every new chunk, every downloaded
+   * artifact and every state rewrite onto the SMB share as the run made them.
+   * `resume-materialize.ts` carries the finding.
+   *
+   * So the cached session is brought DOWN into local scratch — the same
+   * `ebook-<uuid>` name, so ids and the publish's destination are unchanged —
+   * the render fills in what is missing locally, and the ordinary publish
+   * merges it back by the union rule.
+   *
+   * NOT WHEN IT IS ALREADY LOCAL (`renderSessionDirOf` answers for a path under
+   * the scratch root) and NOT FOR A GUEST SESSION: a `\\wsl$` path has its own
+   * normalizer (`normalizeWslSessionToWindows`) and its own copy-out, and a
+   * second one here would be two owners of one move.
+   */
+  if (resumeInfo.sessionDir && resumeInfo.processDir
+    && renderSessionDirOf(resumeInfo.sessionDir) === null
+    && !isWslUncPath(resumeInfo.sessionDir)) {
+    const localized = await localizeResumeSession(jobId, resumeInfo);
+    if (!localized.success) {
+      emitJobFailure(jobId, localized.error!);
+      return { success: false, error: localized.error };
+    }
+    resumeInfo = localized.resumeInfo;
   }
 
   // Determine effective output directory (same logic as startParallelConversion)

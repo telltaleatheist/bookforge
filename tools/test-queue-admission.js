@@ -1006,9 +1006,9 @@ test('THE HAND-OVER NO LONGER FREES THE CARD, and cancelling the book does', asy
   assert.strictEqual(firstStep(second.id).status, 'queued');
 
   /*
-   * The user stops the book. A stop idles the queue by design — you stop a GPU
-   * job to get the card back — so Start is pressed again, which is the gesture
-   * a person makes and the one that proves the card is genuinely free.
+   * The user stops the book. A stop no longer idles the queue (Owen,
+   * 2026-09-21); Start is still pressed on the other book below, because a
+   * targeted Start is the gesture that releases ITS held rows.
    */
   await engine.cancel({ jobId: book.id });
   render.runs[0].reject(new Error('Stopped by the user.'));
@@ -1146,7 +1146,8 @@ test("A HELD NEXT ACT FREES THE CARD: the second book takes the PC (Owen's Pursu
   assert.strictEqual(jobOf(pursuit.id).waitForResolved, 'pc', '§4.3: the book stays on its machine');
 
   /*
-   * A stop idles the queue, so the queue is started again — on the OTHER book.
+   * Start is pressed on the OTHER book (a stop leaves the queue running, but
+   * this book's held rows are released by a targeted Start).
    * Targeted on purpose: a bare `start()` releases every held step in the queue
    * (`release`), which would un-hold the very row this test is about. Pressing
    * Start on one book is what leaves the shape Owen was looking at: a running

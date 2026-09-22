@@ -171,7 +171,7 @@ function occupantWords(
   if (resource === 'gpu') {
     for (const job of snapshot.jobs) {
       if (!gpuHoldCharges(job, setId)) continue;
-      const held = gpuHoldWords(job);
+      const held = gpuHoldWords(job, { queueRunning: snapshot.running });
       if (held === null) continue;
       words.push(held.charAt(0).toUpperCase() + held.slice(1));
     }
@@ -583,9 +583,9 @@ function occupantOf(job: QueueJob, step: QueueStep): LaneOccupant {
  * is holding the card for, which is precisely the gesture that gives the card
  * back (a stopped step is `held`, and a held step ends the hold).
  */
-function heldOccupant(job: QueueJob): LaneOccupant | null {
+function heldOccupant(job: QueueJob, queueRunning: boolean): LaneOccupant | null {
   const step = gpuHoldStep(job);
-  const words = gpuHoldWords(job);
+  const words = gpuHoldWords(job, { queueRunning });
   if (step === null || words === null) return null;
   return {
     jobId: job.id,
@@ -647,7 +647,7 @@ export function benchLanes(snapshot: QueueSnapshot): BenchLane[] {
       if (resource === 'gpu') {
         for (const job of snapshot.jobs) {
           if (!gpuHoldCharges(job, set.id)) continue;
-          const held = heldOccupant(job);
+          const held = heldOccupant(job, snapshot.running);
           if (held !== null) occupants.push(held);
         }
       }

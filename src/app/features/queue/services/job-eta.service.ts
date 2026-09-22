@@ -182,6 +182,86 @@ export class JobEtaService implements OnDestroy {
   }
 
   /**
+   * WHEN THE CURRENT STAGE STARTED, kept once for the job and re-stamped the
+   * moment a different stage becomes the running one.
+   *
+   * ONE piece of bookkeeping, because there is one question: both the per-stage
+   * ETA (which measures how fast this stage is moving) and the pending-stage
+   * pricing below (which needs how long this stage has been running) are asking
+   * how far into the CURRENT stage this job is, and two maps that answered it
+   * separately would drift apart at exactly the transition that matters.
+   */
+  private stageState(job: QueueJob, running: StageView): StageEtaState {
+    const held = this.stageEta.get(job.id);
+    if (held && held.stageName === running.name) {
+      /*
+       * THE CLOCK STARTS AT THE FIRST MOVEMENT, not at the first sighting.
+       *
+       * A stage is reported at its opening percentage for as long as its setup
+       * takes — the Crucible alignment's `place` stage sits at 0 % through the
+       * chunk upload and the aligner's model load — and a clock stamped at the
+       * first sighting folds all of that into the per-percent cost. Owen,
+       * 2026-09-21, on a row reading 196 / 1,647 after 2 m 21 s with 23 m 56 s
+       * left, against a stage that finishes in about five: "it counts the time
+       * it spends at startup just prepping for the align phase — model loading
+       * and such." So while the percentage has not left the number it was
+       * first seen at, the start keeps moving with the clock; the moment it
+       * advances, the start is fixed and the measurement begins there — the
+       * same rule the chunk-rate window applies at its anchor (`rateAnchor`).
+       */
+      if (running.pct <= held.startPct) {
+        held.startedAt = Date.now();
+        held.startPct = running.pct;
+      }
+      return held;
+    }
+    const fresh: StageEtaState = {
+      stageName: running.name, startedAt: Date.now(), startPct: running.pct,
+    };
+    this.stageEta.set(job.id, fresh);
+    return fresh;
+  }
+
+  /**
+   * WHAT THE STAGES AFTER THIS ONE WILL COST, for a job whose remaining time in
+   * the CURRENT stage is measured (a chunk rate) but whose row has more stages
+   * to run after it.
+   *
+   * The case it exists for is the Crucible alignment: the server places the
+   * words and then this machine measures the book from them, and the chunk rate
+   * only ever times the half that is running. A row that said "16m 18s" while
+   * the card still had a third of the book to place, and then said it again for
+   * a measuring pass that was nearly done, was quoting one half's ETA as the
+   * row's.
+   *
+   * The arithmetic is the stage weights and nothing else: project this stage's
+   * WHOLE cost as (what it has already spent + what the rate says is left), then
+   * price the stages after it by their declared weight against this one's. No
+   * weights — a stage list derived from phase fields carries none — or nothing
+   * pending, and the answer is 0: the ETA is what it always was.
+   */
+  private pendingStagesSeconds(
+    job: QueueJob, stages: StageView[], remainingInStage: number,
+  ): number {
+    const running = stages.find(s => s.status === 'running');
+    if (!running) return 0;
+    const runningWeight = running.weight;
+    if (typeof runningWeight !== 'number' || runningWeight <= 0) return 0;
+
+    let pendingWeight = 0;
+    for (const stage of stages.slice(stages.indexOf(running) + 1)) {
+      if (stage.status === 'complete') continue;
+      if (typeof stage.weight === 'number' && stage.weight > 0) pendingWeight += stage.weight;
+    }
+    if (pendingWeight <= 0) return 0;
+
+    const state = this.stageState(job, running);
+    const elapsedInStage = Math.max(0, (Date.now() - state.startedAt) / 1000);
+    const projectedStageTotal = elapsedInStage + Math.max(0, remainingInStage);
+    return Math.round(projectedStageTotal * (pendingWeight / runningWeight));
+  }
+
+  /**
    * Seconds remaining for a job whose progress is a stage sequence (reassembly).
    *
    * Measured WITHIN the current stage and extrapolated to the whole remaining plan by
@@ -194,12 +274,7 @@ export class JobEtaService implements OnDestroy {
     const running = stages.find(s => s.status === 'running');
     if (!running) return null;
 
-    const state = this.stageEta.get(job.id);
-    if (!state || state.stageName !== running.name) {
-      this.stageEta.set(job.id, { stageName: running.name, startedAt: Date.now(), startPct: running.pct });
-      return null;                                // no elapsed inside this stage yet
-    }
-
+    const state = this.stageState(job, running);
     const elapsedSec = (Date.now() - state.startedAt) / 1000;
     const advanced = running.pct - state.startPct;
     // Need real movement inside the stage before the per-percent cost means anything.
@@ -270,7 +345,9 @@ export class JobEtaService implements OnDestroy {
         const done = job.chunksCompletedInJob || 0;
         if (total > 0 && done < total) return null;
       }
-      return Math.max(0, remainingNow);
+      // The rate times the RUNNING stage. A row with stages still to come owes
+      // their cost too — see `pendingStagesSeconds`.
+      return Math.max(0, remainingNow) + this.pendingStagesSeconds(job, stages, remainingNow);
     }
 
     return this.stageEtaSeconds(job, stages);

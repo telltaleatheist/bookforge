@@ -324,17 +324,18 @@ check('--tts states the narrator scratch root, as the app does at startup', () =
   const m = /\[batch\] scratch: (.+)/.exec(res.out);
   assert.ok(m, `the scratch root is stated and printed\n${res.out.slice(0, 700)}`);
   // The SAME two rules the app applies (`main.ts applyNarratorScratchRoot`): a
-  // Settings override wins, else `<library>/tmp`. Read the override rather than
-  // assuming it is unset, so this passes on a machine that has one.
+  // Settings override wins, else the MACHINE-LOCAL default — which since
+  // 2026-09-21 is `~/Documents/BookForge/scratch` and no longer derives from the
+  // library at all (narrator-paths.ts's header: rendering into a NAS library
+  // wedged the Mac's SMB client twice in two days). Read both from the compiled
+  // modules rather than spelling either here, so this passes on a machine that
+  // has an override and cannot drift from the app's own answer.
   const override = require('../dist/electron/tool-paths.js').getConfig().narratorScratchPath;
   const expected = typeof override === 'string' && override.trim()
     ? override.trim()
-    // realpath: the wrapper resolves --library against the user's cwd, and on
-    // macOS /var is a symlink to /private/var — so the path that reaches the
-    // adapter is the resolved one.
-    : path.join(fs.realpathSync(TMP), 'tmp');
+    : require('../dist/electron/narrator-paths.js').defaultNarratorScratchRoot();
   assert.strictEqual(m[1].trim(), expected,
-    'the stated root is the Settings override, else <library>/tmp');
+    'the stated root is the Settings override, else the machine-local default');
 });
 
 check('a --tts run with no library and no recorded one is refused by name', () => {

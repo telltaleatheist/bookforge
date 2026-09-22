@@ -35,6 +35,8 @@
 import { promises as fs, type Dirent } from 'node:fs';
 import * as path from 'node:path';
 
+import { COPY_CONCURRENCY, retryWeather, runBounded } from './bounded-copy';
+
 /**
  * The extensions a rendered chunk can have. `.flac` is what every engine writes
  * today; `.wav` is what older sessions in the library have, and the counters
@@ -202,12 +204,13 @@ export interface MergeReport {
  *
  * ── Why this exists (measured, 2026-09-20) ────────────────────────────────
  *
- * The scratch session and the project cache are the SAME FILESYSTEM whenever
- * the scratch root is derived from the library root, which is every ordinary
- * install — and that has nothing to do with which machine rendered the book:
- * a Crucible's artifacts are downloaded into this machine's scratch wherever
- * they were generated. So publishing *Shift* dragged 2.5 GB across SMB to land
- * it a few directories away. Measured on the live share that evening:
+ * The scratch session and the project cache were the SAME FILESYSTEM whenever
+ * the scratch root was derived from the library root, which was every ordinary
+ * install until 2026-09-21 — and that has nothing to do with which machine
+ * rendered the book: a Crucible's artifacts are downloaded into this machine's
+ * scratch wherever they were generated. So publishing *Shift* dragged 2.5 GB
+ * across SMB to land it a few directories away. Measured on the live share that
+ * evening:
  *
  *   one 20 MB file, copied          27.9 MB/s
  *   100 chunk-sized files, copied    4.7 files/s   (0.21 s each — round trips)
@@ -218,6 +221,16 @@ export interface MergeReport {
  * fails `EXDEV`, which is the operating system stating a fact rather than this
  * code guessing one. No probe, no configuration, and no branch on which server
  * rendered the book.
+ *
+ * ── AND SINCE 2026-09-21 THE `EXDEV` ARM IS THE ORDINARY ONE ───────────────
+ *
+ * The scratch root is machine-local now (`narrator-paths.ts` header: a burst of
+ * ~2,700 metadata ops on the share wedged the Mac's SMB client, twice in two
+ * days), so a publish always crosses a volume and always lands in the copy
+ * below. That is the trade taken deliberately: the share is written ONCE, with
+ * finished files, instead of carrying every chunk of the render as it is made.
+ * The copy is bounded and retried — `bounded-copy.ts` — and the rename arm
+ * stays for whoever points "Narrator scratch folder" back at the library.
  *
  * `rename` is atomic by itself, so unlike {@link copyFileAtomic} there is no
  * `.tmp-` dance: a reader either sees the old file or the new one.
@@ -242,6 +255,16 @@ export interface MergeOptions {
    * fail.
    */
   readonly copyFile?: (sourcePath: string, destPath: string) => Promise<void>;
+  /**
+   * How many files may be in flight. Defaults to `COPY_CONCURRENCY` (4) —
+   * `bounded-copy.ts` carries the measurement and the reason the ceiling is
+   * low. The walk used to copy strictly one at a time, which was free while the
+   * scratch and the cache were one volume and is 0.21 s per file now that the
+   * scratch is machine-local and every file crosses SMB.
+   */
+  readonly concurrency?: number;
+  /** Told when one file is waiting out weather, so a long publish can say so. */
+  readonly onRetry?: (relPath: string, attempt: number, waitMs: number, err: unknown) => void;
 }
 
 /**
@@ -270,11 +293,36 @@ export async function mergeSessionTree(
   let kept = 0;
 
   if (path.resolve(sourceDir).toLowerCase() === path.resolve(destDir).toLowerCase()) {
-    // A resume job renders straight into the cache: source IS destination. There
-    // is nothing to copy, and copying a file onto itself would truncate it.
+    /*
+     * SOURCE IS DESTINATION. There is nothing to copy, and copying a file onto
+     * itself would truncate it.
+     *
+     * THE QUEUE NO LONGER REACHES THIS ARM. It was the resume's ordinary state
+     * — a resume rendered straight into the project cache — until 2026-09-21,
+     * when the render's workplace moved onto the machine doing the work
+     * (`resume-materialize.ts`). What still reaches it is a caller that hands a
+     * CACHE directory as the session: the `session-cache:save-to-project` IPC
+     * door (whatever path the renderer passes it) and anything that regenerates
+     * into an already-published session — Correct Sentences, the CLI's partial
+     * cache on Ctrl-C. So the arm stays, and it stays correct: publishing a
+     * directory onto itself is a no-op, not a hole.
+     */
     return { samePath: true, copied, kept, failures };
   }
 
+  /*
+   * THE WALK IS THE PLAN; THE COPYING IS BOUNDED AND OVERLAPPED.
+   *
+   * Reading the directories is cheap and ordered; deciding and moving each file
+   * is a round trip, and since 2026-09-21 every one of those round trips is
+   * across SMB (the scratch is machine-local now, so the cache is always the far
+   * side). Four at a time, each retried through `retryWeather` — see
+   * `bounded-copy.ts` for both numbers and why the ceiling is deliberately low.
+   *
+   * The report stays in PLAN ORDER, so two runs of the same publish can be
+   * compared line by line.
+   */
+  const planned: string[] = [];
   const walk = async (relDir: string): Promise<void> => {
     let entries: Dirent[];
     try {
@@ -290,6 +338,15 @@ export async function mergeSessionTree(
       const rel = relDir ? path.join(relDir, entry.name) : entry.name;
       if (entry.isDirectory()) { await walk(rel); continue; }
       if (!entry.isFile()) continue;
+      planned.push(rel);
+    }
+  };
+
+  await walk('');
+
+  type Outcome = 'kept' | 'copied' | MergeFailure;
+  const outcomes = await runBounded<string, Outcome>(
+    planned, options.concurrency ?? COPY_CONCURRENCY, async (rel) => {
       const from = path.join(sourceDir, rel);
       const to = path.join(destDir, rel);
       let needed = true;
@@ -298,17 +355,24 @@ export async function mergeSessionTree(
         const srcStat = await fs.stat(from).catch(() => null);
         needed = !!srcStat && srcStat.mtimeMs > dstStat.mtimeMs + NEWER_BY_MS;
       }
-      if (!needed) { kept += 1; continue; }
+      if (!needed) return 'kept';
       try {
-        await copyFile(from, to);
-        copied.push(rel);
+        await retryWeather(() => copyFile(from, to), {
+          onRetry: (attempt, waitMs, err) => options.onRetry?.(rel, attempt, waitMs, err),
+        });
+        return 'copied';
       } catch (err) {
-        failures.push({ relPath: rel, error: (err as Error).message });
+        return { relPath: rel, error: (err as Error).message };
       }
-    }
-  };
+    });
 
-  await walk('');
+  for (let i = 0; i < planned.length; i++) {
+    const outcome = outcomes[i];
+    if (outcome === 'kept') kept += 1;
+    else if (outcome === 'copied') copied.push(planned[i]!);
+    else if (outcome !== undefined) failures.push(outcome);
+  }
+
   return { samePath: false, copied, kept, failures };
 }
 

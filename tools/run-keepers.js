@@ -998,6 +998,9 @@ const SUITES = [
   // The library's write paths: moving an artifact into place, deleting, resetting.
   'test-artifact-movement',
   'test-deletion-write-path',
+  // Deleting a library tree is a rename into `.trash` and a paced drain, because
+  // 2,694 unlinks in 28 s wedged the Mac's SMB client.
+  'test-library-trash',
   'test-reset-book',
   'test-retired-passes',
   'test-version-family',

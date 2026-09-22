@@ -96,7 +96,7 @@ import { onBridgeEvent } from '../bridge-events';
 import { runCoverageAlign, stopCoverageAlign } from '../coverage-align-job';
 import { getBfpCachedSession } from '../reassembly-bridge';
 import type { StepModule, StepRunContext } from '../queue-engine';
-import type { ArtifactRef } from '../../shared/queue/engine-types';
+import type { ArtifactRef, JobStageProgress } from '../../shared/queue/engine-types';
 import { projectDirForStep, queueMainWindow, stepFailure } from './runtime';
 import {
   RETIRED_LOCAL_NARRATOR_VENUE, WAIT_FOR_ANY, retiredVenueReason,
@@ -110,7 +110,66 @@ interface AlignProgressEvent {
   progress: {
     phase: string; percentage: number;
     processed?: number; total?: number; message?: string; error?: string;
+    /** Which half of a routed alignment this counts — `CoverageAlignProgress.stage`. */
+    stage?: 'place' | 'measure';
+    /** The server placing the words, on the `place` events that know it. */
+    server?: string;
   };
+}
+
+/*
+ * ── THE TWO HALVES OF A ROUTED ALIGNMENT, AND WHAT EACH COSTS ──────────────
+ *
+ * MEASURED, 2026-09-21, on a 1,697-chunk book: the card placed the words in
+ * 5.4 min (≈314 chunk/min) and this machine measured the book from them in
+ * 2.3 min (≈735 chunk/min) — 0.70 / 0.30 of the row, which is what these
+ * weights are. They are what the ETA prices the pending half by, so they are
+ * a measurement with a date rather than a guess that looked reasonable.
+ *
+ * Re-measure them if the aligner's backend changes; a Crucible that reads the
+ * chunks twice as fast moves the split and nothing here would notice.
+ */
+const PLACE_WEIGHT = 0.7;
+const MEASURE_WEIGHT = 0.3;
+
+/**
+ * The row's two bars, from the stage the bridge just reported.
+ *
+ * Same shape as `queue-steps/vlm-convert.ts`'s `stagesOf`: the bridge says which
+ * pass is running and how far into it, and this turns that into the whole list —
+ * the pass behind the running one is complete, the pass ahead of it is pending.
+ * The RUNNING stage stays `running` at 100 %, because between the server's last
+ * chunk and this machine's first there is no other stage to be running and a
+ * list with none in it would read as a finished row.
+ *
+ * Only a ROUTED alignment has two halves. The legacy local spawn reports no
+ * stage, nothing calls this, and the row draws its single bar (`stagesFor`).
+ */
+function alignStagesOf(
+  stage: 'place' | 'measure',
+  percent: number,
+  server: string | undefined,
+): JobStageProgress[] {
+  const pct = Math.max(0, Math.min(100, Math.round(percent)));
+  return [
+    {
+      name: 'place',
+      // Named without the server only if a `place` event never carried one,
+      // which would be a defect in the bridge rather than a second venue.
+      label: server === undefined
+        ? 'Placing the words' : `Placing words on crucible "${server}"`,
+      pct: stage === 'place' ? pct : 100,
+      status: stage === 'place' ? 'running' : 'complete',
+      weight: PLACE_WEIGHT,
+    },
+    {
+      name: 'measure',
+      label: 'Measuring the book',
+      pct: stage === 'measure' ? pct : 0,
+      status: stage === 'measure' ? 'running' : 'pending',
+      weight: MEASURE_WEIGHT,
+    },
+  ];
 }
 
 interface AlignStepConfig {
@@ -287,18 +346,47 @@ export const alignStep: StepModule = {
       });
     }
 
+    let lastStages: JobStageProgress[] = [];
+    let placeServer: string | undefined;
+
     const unsubscribe = onBridgeEvent<AlignProgressEvent>('coverage-align:progress', (event) => {
       if (event.jobId !== ctx.stepId) return;
       const p = event.progress;
+      if (p.server !== undefined) placeServer = p.server;
+      if (p.stage !== undefined) lastStages = alignStagesOf(p.stage, p.percentage, placeServer);
       ctx.report({
-        percent: p.percentage,
+        // THE HEADLINE IS THE WHOLE, weighted, when the row has two halves: the
+        // place stage owns the first 70 points and the measure stage the last
+        // 30. Reporting the running stage's own percentage sent the master bar
+        // back to 0 at the seam — a card read "9 %" over a place bar at 100 %
+        // (Owen, 2026-09-21). The legacy one-spawn path has no stage and
+        // reports its percentage as before.
+        percent: p.stage === 'place'
+          ? Math.round(p.percentage * PLACE_WEIGHT)
+          : p.stage === 'measure'
+            ? Math.round(100 * PLACE_WEIGHT + p.percentage * MEASURE_WEIGHT)
+            : p.percentage,
         message: p.message,
+        // Reported from the first staged event on, and never invented: a legacy
+        // local align says no stage, `lastStages` stays empty, and the row draws
+        // the one bar it always drew.
+        ...(lastStages.length > 0 ? { stages: lastStages } : {}),
         metrics: {
           // Chunks mapped onto the chunk fields, so the row gets the same
           // rate-based ETA every other counted step does.
           chunksCompletedInJob: p.processed,
           totalChunksInJob: p.total,
           chunksDoneInSession: p.processed,
+          /*
+           * WHICH SERIES THESE COUNTS BELONG TO. The two halves each count the
+           * same chunks from zero, so the second half's counts are NOT a
+           * continuation of the first's: naming the series is what re-opens the
+           * rate anchor at the seam (`shared/queue/rate-window.ts`,
+           * `rateSeriesChanged`). Without it the row divided the second half's
+           * count by the whole row's elapsed and read 75.9 chunk/min with
+           * "16m 18s" left on a step that finished 1.7 minutes later.
+           */
+          ...(p.stage === undefined ? {} : { rateSeries: p.stage }),
         },
       });
     });
@@ -365,7 +453,16 @@ export const alignStep: StepModule = {
       const summary = `${result.chunksAligned ?? 0} aligned, ${result.chunksFailed ?? 0} failed `
         + `coverage, ${result.chunksErrored ?? 0} could not be placed`
         + (retake.length > 0 ? ` — retake: ${retake.join(',')}` : '');
-      ctx.report({ percent: 100, message: summary });
+      ctx.report({
+        percent: 100,
+        message: summary,
+        // BOTH BARS FULL. The last staged event this row saw was a chunk of the
+        // second half, so without this the row completes with a `measure` bar
+        // frozen wherever narrator's last progress line left it.
+        ...(lastStages.length > 0
+          ? { stages: lastStages.map((s) => ({ ...s, pct: 100, status: 'complete' as const })) }
+          : {}),
+      });
       /*
        * THE PARENT'S ARTIFACT, PASSED THROUGH — this step changes no audio.
        *

@@ -130,7 +130,7 @@ import {
 import { engineLanes } from './crucible/engine-lanes';
 import { JOB_GERUND } from '../shared/queue/job-words';
 // The rate anchor's rule lives beside the window it opens — see `rateAnchor`.
-import { rateAnchor, type RateAnchor } from '../shared/queue/rate-window';
+import { rateAnchor, rateSeriesChanged, type RateAnchor } from '../shared/queue/rate-window';
 import { stopSentence, userStopped, type StopReason } from '../shared/queue/stop-reason';
 /*
  * THE ONE RULE FOR "WHICH PROJECT IS THIS ROW ABOUT", borrowed from the step
@@ -470,6 +470,16 @@ export interface JobSpec {
 export interface AppendStepSpec extends Omit<StepSpec, 'parentIndex'> {
   /** An existing step's id, or SOURCE_PARENT. */
   parentStepId: string;
+  /**
+   * THE SAME STATEMENT {@link JobSpec.release} MAKES, asked at this door.
+   *
+   * It is here because the staging rule is here too: an append can be the moment
+   * a run first acquires a step that asks for a card (`appendStep`'s staging
+   * block), and a caller that has already made the scheduling decision must be
+   * able to say so at BOTH doors rather than only at the one that happened to be
+   * written first. Nothing passes it today, exactly as nothing passes `JobSpec`'s.
+   */
+  release?: boolean;
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -1315,10 +1325,7 @@ export function enqueue(spec: JobSpec, opts?: EnqueueOptions): QueueJob {
    * two differ, and this settles it: the steps are forced held, because a staged
    * book that started itself would be Pending in name only.
    */
-  if (jobIsStageable(job) && spec.release !== true) {
-    job.pending = true;
-    for (const step of job.steps) step.status = 'held';
-  }
+  if (jobIsStageable(job) && spec.release !== true) stageRun(job);
 
   jobs.push(job);
   changed();
@@ -1362,6 +1369,9 @@ export function appendStep(jobId: string, spec: AppendStepSpec, opts?: EnqueueOp
   // pressed Start for this run, and holding the new step would leave it sitting
   // behind a queue that is already moving.
   const jobIsHeld = jobStatus(job) === 'held';
+  // Asked BEFORE the push, because the whole question below is whether this
+  // append is what made the answer change.
+  const wasStageable = jobIsStageable(job);
   const step = buildStep(spec, parentStepId, jobIsHeld);
   checkLineage(step, parent);
   if (parent && parent.status === 'done') step.status = jobIsHeld ? 'held' : 'queued';
@@ -1373,6 +1383,52 @@ export function appendStep(jobId: string, spec: AppendStepSpec, opts?: EnqueueOp
     const wanted = crucibleHost.defaultWaitFor();
     if (wanted !== null) job.waitFor = wanted;
   }
+
+  /*
+   * ── AND THE STAGING QUESTION, WHICH THIS APPEND CAN HAVE CHANGED THE ANSWER TO
+   *
+   * `enqueue` used to be the only place the question was ever asked, and that
+   * was true only while a run's FIRST step was the one that decided it. On
+   * 2026-09-19 the narration run grew a `prepare` row in front of the render —
+   * CPU, `travels: false`, not a {@link STAGED_JOB_TYPES} member — and a
+   * composer that created the run from that first step and appended the rest was
+   * therefore composing a run that was not stageable at birth and was never
+   * asked again. Measured on 2026-09-21: job_mubw3zxx ("Mutineer's Moon")
+   * created 23:42:22Z, `pending` never set, `waitFor` defaulted to
+   * `crucible@owens-pc-wsl`, prepare started 23:43:00Z on a server nobody chose.
+   *
+   * The renderer's door now enqueues a narration WHOLE, which is the real fix.
+   * This is the rule's second owner, so the next composer that arrives a step at
+   * a time cannot un-stage a book in silence: the same question, the same
+   * staging, asked at the only other door that can add a travelling step.
+   *
+   * ── WHY IT IS ASKED SO NARROWLY ────────────────────────────────────────────
+   *
+   * `!wasStageable` — a run that was ALREADY stageable has already answered it,
+   * and a chained request joins its run's decision rather than asking twice about
+   * one book (docs/PENDING-QUEUE-AND-GPU-DIAL.md, §What "adding a book" means).
+   *
+   * Nothing may have STARTED. Staging holds every step, and a step that is
+   * running cannot be held — reaching into one would be rewriting the status of
+   * work already on a card. If something has started, this book already went
+   * somewhere, which is precisely the race the whole-run enqueue exists to
+   * avoid; it is logged by name rather than papered over, because a book that
+   * reached a card without a Send press is a defect in whoever composed it.
+   */
+  if (!wasStageable && spec.release !== true && !isPending(job) && jobIsStageable(job)) {
+    const live = job.steps.find((s) => s.status !== 'held' && s.status !== 'queued'
+      && s.status !== 'waiting');
+    if (live) {
+      console.warn(
+        `[QUEUE-ENGINE] ${job.title} acquired its first travelling step (${step.label}) after `
+        + `${live.label} was already ${live.status}, so it cannot be staged — a running step is `
+        + 'not one this engine may hold. This run went to a machine without a Send to queue '
+        + 'press; whatever composed it must enqueue the whole run at once.');
+    } else {
+      stageRun(job);
+    }
+  }
+
   if (job.finishedAt) job.finishedAt = undefined;
   changed();
   // Deferred on the same reasoning as `enqueue`'s: the Foundry host queue
@@ -1814,14 +1870,25 @@ export async function cancel(
     // Not started: it is cancelled here and now, and so is everything under it.
     settleNotStarted(job, step, reason);
   }
-  // A user stop idles the queue: you stop a GPU job to get the card back, and
-  // auto-starting the next one would defeat the purpose.
-  running = false;
-  // And getting the card back means the LEASE too, on every row the idled
-  // queue will not be starting anything for — the same sentence `pause()`
-  // says, because this is the same dial. A row stopped here has already given
-  // its own back through `cascadeCancel`; this is for the others.
-  closeRowLeasesTheQueueWillNotStart();
+  /*
+   * A STOP OR A REMOVE DOES NOT IDLE THE QUEUE (Owen, 2026-09-21).
+   *
+   * Until tonight this door ended with `running = false` under the rule "you
+   * stop a GPU job to get the card back, and auto-starting the next one would
+   * defeat the purpose" (2026-08-23). The rule was written for one machine with
+   * one card. On 2026-09-21 Owen removed a running clean on the Mac's card and
+   * the whole queue went idle: Black Sun's align, holding the PC's card, sat
+   * in `waiting` for fifteen minutes under a hold sentence that never said
+   * why. His ruling: *"I can't think of a situation in which it should
+   * automatically go idle … if I remove something, it shouldn't pause. If I
+   * move something from one slot to another or back to pending, it shouldn't
+   * pause."* The one case that DOES idle the queue on its own is a step
+   * failing with an error — see `settleStep`'s failed arm.
+   *
+   * So a stop frees its own card and its own lease (`cascadeCancel` has done
+   * that above) and the queue keeps running. Pause and Halt processing are the
+   * dials that stop everything, and they are their own presses.
+   */
   changed();
 }
 
@@ -3169,6 +3236,22 @@ function jobTravels(job: QueueJob): boolean {
  */
 function jobIsStageable(job: QueueJob): boolean {
   return job.steps.some((step) => STAGED_JOB_TYPES.has(step.type) && step.travels === true);
+}
+
+/**
+ * PUT A RUN IN PENDING — the whole of what staging IS, in one function.
+ *
+ * Both halves or neither. The flag alone would leave a book drawn in Pending
+ * whose steps `pump` is free to claim; the held steps alone would leave a run
+ * nothing can release, because `sendToQueue` is the only door that releases them
+ * and it refuses a run that is not `pending`. Two doors compose runs — `enqueue`
+ * and `appendStep` — and a rule performed in two places is a rule that gets half
+ * of it right in one of them, which is exactly how a narration run came to be
+ * born un-staged (see the block in `appendStep`).
+ */
+function stageRun(job: QueueJob): void {
+  job.pending = true;
+  for (const step of job.steps) step.status = 'held';
 }
 
 function stepTravels(type: JobType, config: Record<string, unknown>): boolean {
@@ -4886,6 +4969,19 @@ function settleStep(job: QueueJob, step: QueueStep, outcome: StepOutcome): void 
     // with the reason, not left pending — a workflow that silently sits forever
     // is the failure mode this replaces.
     cascadeCancel(job, step.id, `Skipped: ${step.label} failed. Fix it and run the job again.`);
+    /*
+     * AN ERROR IDLES THE QUEUE — the ONE automatic idle (Owen, 2026-09-21:
+     * *"one case in which the queue should pause on its own is if there's an
+     * error like that"* — a page read whose engine was taken off the card
+     * mid-run). A busy or transient park never reaches this arm (it returned
+     * above), a stop is the arm before it, and neither idles anything. A
+     * genuine failure is a person's problem to read before the next row takes
+     * the same card and meets the same fault, so nothing else is admitted
+     * until Start is pressed; the leases the idled queue would have been
+     * holding for rows it will not start go back with it, as `pause()` does.
+     */
+    running = false;
+    closeRowLeasesTheQueueWillNotStart();
   }
 
   const status = jobStatus(job);
@@ -4943,10 +5039,28 @@ function applyReport(step: QueueStep, update: StepReport): void {
       if (value === undefined) continue;
       (metrics as Record<string, unknown>)[key] = value;
     }
+    /*
+     * A NEW COUNTED SERIES STARTS A NEW MEASUREMENT — asked of the ONE module
+     * that owns the rule and answered BEFORE the anchor is computed, so the
+     * anchoring below sees a step with nothing stamped on it.
+     *
+     * The landing goes with the anchor. A second pass that counts the same
+     * chunks from zero lands at a count BELOW the stored one, and a stale
+     * `chunkCompletedAt` / `chunksDoneInSession` would make every report of the
+     * new series look like a report that landed nothing.
+     */
+    const seriesRestarted = rateSeriesChanged(step.metrics.rateSeries, update.metrics.rateSeries);
+    if (seriesRestarted) {
+      delete metrics.firstChunkCompletedAt;
+      delete metrics.chunksAtFirstStamp;
+      delete metrics.anchorBurstOpenSince;
+      delete metrics.chunkCompletedAt;
+    }
+    const previousSessionDone = seriesRestarted ? undefined : step.metrics.chunksDoneInSession;
     const sessionDone = update.metrics.chunksDoneInSession
       ?? update.metrics.chunksCompletedInJob;
     if (sessionDone !== undefined) {
-      const anchor = firstChunkAnchor(step, metrics, sessionDone);
+      const anchor = firstChunkAnchor(step, metrics, sessionDone, previousSessionDone);
       metrics.firstChunkCompletedAt = anchor.firstChunkCompletedAt;
       metrics.chunksAtFirstStamp = anchor.chunksAtFirstStamp;
       // ASSIGNED EVEN WHEN ABSENT: dropping this marker is how the rule says
@@ -4956,7 +5070,7 @@ function applyReport(step: QueueStep, update: StepReport): void {
       // AFTER the anchor, never before: the anchor's burst test reads the
       // PREVIOUS landing, and stamping this one first would compare a landing
       // with itself and make every burst look like a gap.
-      if (sessionDone > (step.metrics.chunksDoneInSession ?? -1)) {
+      if (sessionDone > (previousSessionDone ?? -1)) {
         metrics.chunkCompletedAt = Date.now();
       }
     }
@@ -4979,6 +5093,9 @@ function firstChunkAnchor(
   step: QueueStep,
   metrics: StepMetrics,
   sessionDone: number,
+  // The count the previous report of THIS SERIES carried — undefined when the
+  // caller has just dropped the anchor because the series changed.
+  previousChunksDone: number | undefined,
 ): RateAnchor {
   return rateAnchor({
     stampedAt: metrics.firstChunkCompletedAt,
@@ -4987,7 +5104,7 @@ function firstChunkAnchor(
     // call, so it still names the previous one.
     lastLandingAt: metrics.chunkCompletedAt,
     chunksDone: sessionDone,
-    previousChunksDone: step.metrics.chunksDoneInSession,
+    previousChunksDone,
     burstOpenSince: metrics.anchorBurstOpenSince,
     now: Date.now(),
     runStartedAt: step.startedAt ? new Date(step.startedAt).getTime() : null,

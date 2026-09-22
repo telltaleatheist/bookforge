@@ -2477,10 +2477,15 @@ export class StudioComponent implements OnInit, OnDestroy {
     if (!confirmed) return;
 
     const failures: string[] = [];
+    const notes: string[] = [];
     for (const id of ids) {
       const result = await this.studioService.deleteItem(id);
       if (result.success) {
         if (this.selectedItemId() === id) this.selectedItemId.set(null);
+        // The delete HAPPENED — the project is invisible and the library's trash
+        // remover finishes its folder — but something still has a file in it
+        // open (a Finder preview, the other machine). A sentence, not a failure.
+        if (result.note) notes.push(result.note);
       } else {
         failures.push(result.error || 'Unknown error');
       }
@@ -2488,6 +2493,8 @@ export class StudioComponent implements OnInit, OnDestroy {
     if (failures.length > 0) {
       // Surface the failure instead of silently leaving the folder on disk.
       this.exportStatus.set(`Couldn't delete ${failures.length} item${failures.length > 1 ? 's' : ''}: ${failures[0]}`);
+    } else if (notes.length > 0) {
+      this.exportStatus.set(notes[0]);
     }
   }
 

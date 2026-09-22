@@ -184,6 +184,30 @@ export interface CoverageAlignProgress {
   total?: number;
   message?: string;
   error?: string;
+  /**
+   * WHICH HALF OF A CRUCIBLE ALIGNMENT THIS IS COUNTING.
+   *
+   * A routed alignment is two passes over the same book, and each counts the
+   * same chunks from zero: the server PLACES every word (`place`), and then
+   * this machine MEASURES the book from the items it placed (`measure`,
+   * `runCoverageAlignLocally` over a precomputed alignment). They run at
+   * different speeds — 314 chunk/min on the card against 735 chunk/min here,
+   * measured on a 1,697-chunk book on 2026-09-21 — so a reader given one bar
+   * and one rate is told the row is a third of the way through when the first
+   * pass finishes, and then handed an ETA measured across both.
+   *
+   * ABSENT IS NOT A THIRD STAGE. The legacy local path — the model running here
+   * in one spawn, no `alignmentPath` — is ONE pass and says nothing, which the
+   * queue renders as the single bar it has always rendered.
+   */
+  stage?: 'place' | 'measure';
+  /**
+   * The Crucible server placing the words, on the `place` events that know it.
+   * The row LABELS its first bar with this; it is carried as a field rather
+   * than read back out of `message`, because a bar wired to prose stops the day
+   * somebody rewords the sentence.
+   */
+  server?: string;
 }
 
 export interface CoverageAlignResult {
@@ -752,6 +776,9 @@ async function runCoverageAlignOnCrucible(
   const total = selection.chunks.length;
   sendProgress(mainWindow, stepId, {
     phase: 'preparing', percentage: 0, processed: 0, total,
+    // THE FIRST BAR OPENS HERE — see CoverageAlignProgress.stage. Everything
+    // this function sends is the server's half of the row.
+    stage: 'place', server,
     message: `Uploading ${total} chunk(s) to crucible "${server}"…`,
   });
   try {
@@ -767,6 +794,7 @@ async function runCoverageAlignOnCrucible(
         if (p.stage === 'warming') {
           sendProgress(mainWindow, stepId, {
             phase: 'preparing', percentage: 0, processed: 0, total,
+            stage: 'place', server,
             message: `Loading the aligner on crucible "${server}"… ${p.message}`,
           });
           return;
@@ -777,6 +805,7 @@ async function runCoverageAlignOnCrucible(
           percentage: Math.round(p.fraction * 100),
           processed,
           total: p.total ?? total,
+          stage: 'place', server,
           message: `Aligning on crucible "${server}"… (chunk ${processed}/${p.total ?? total})`,
         });
       },
@@ -1015,8 +1044,20 @@ export async function runCoverageAlignLocally(
   console.log('[COVERAGE-ALIGN] →', plan.describe());
 
   const startedAt = Date.now();
+  /*
+   * WHICH BAR THIS SPAWN IS. Over a precomputed alignment this pass is the
+   * SECOND half of a routed row — the server placed the words, this measures the
+   * book from them — and its chunk count restarts at zero over the same total,
+   * so it says so and the queue draws (and times) it as its own stage.
+   *
+   * The legacy arm — the model running here, in this spawn — is the whole row
+   * and names no stage, which renders as the single bar it always has.
+   */
+  const stageOfThisPass: Pick<CoverageAlignProgress, 'stage'> =
+    fromAlignment === undefined ? {} : { stage: 'measure' };
   sendProgress(mainWindow, stepId, {
     phase: 'preparing', percentage: 0,
+    ...stageOfThisPass,
     message: fromAlignment === undefined
       ? `Loading the aligner (${device})…`
       : 'Measuring the book against the items the server placed…',
@@ -1057,6 +1098,7 @@ export async function runCoverageAlignLocally(
         total = Number(totalHit[1]);
         sendProgress(mainWindow, stepId, {
           phase: 'aligning', percentage: 0, processed: 0, total,
+          ...stageOfThisPass,
           message: fromAlignment === undefined
             ? `Aligning ${total} chunk(s) against the book on ${device}…`
             : `Measuring ${total} chunk(s) against the items the server placed…`,
@@ -1072,7 +1114,14 @@ export async function runCoverageAlignLocally(
           percentage: total > 0 ? Math.round((aligned / total) * 100) : 0,
           processed: aligned,
           total,
-          message: `Aligning… (chunk ${aligned}/${total})`,
+          ...stageOfThisPass,
+          // THE SAME SPLIT THE FIRST LINE MAKES. Over a precomputed alignment
+          // nothing here is aligning anything — the words are placed and this
+          // is the audit — and a per-chunk line that said "Aligning…" was the
+          // row's ONLY visible sentence for the whole second half.
+          message: fromAlignment === undefined
+            ? `Aligning… (chunk ${aligned}/${total})`
+            : `Measuring the book here… (chunk ${aligned}/${total})`,
         });
       }
     };
@@ -1131,7 +1180,7 @@ export async function runCoverageAlignLocally(
           : `Alignment complete ${ran} — ${aligned} chunk(s) checked.`;
         console.log(`[COVERAGE-ALIGN] ${message}`);
         sendProgress(mainWindow, stepId, {
-          phase: 'complete', percentage: 100, processed: aligned, total, message,
+          phase: 'complete', percentage: 100, processed: aligned, total, ...stageOfThisPass, message,
         });
         resolve({
           success: true,

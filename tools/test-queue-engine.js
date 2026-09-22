@@ -956,7 +956,8 @@ test('cancelling a running step cascades to everything waiting on it', async () 
   assert.strictEqual(assemble.status, 'cancelled');
   assert.match(assemble.error, /Skipped: Narrate was stopped/,
     'a skipped step says why it was skipped');
-  assert.strictEqual(engine.isRunning(), false, 'a stop idles the queue');
+  assert.strictEqual(engine.isRunning(), true,
+    'a stop frees its own card and leaves the queue running (Owen, 2026-09-21)');
 });
 
 test('stopping a RESUMABLE step leaves it held and interrupted, not cancelled', async () => {
@@ -1021,6 +1022,8 @@ test('a failed step fails its job and cancels what came after it, with a reason'
   assert.strictEqual(narrate.status, 'failed');
   assert.strictEqual(narrate.error, 'the model would not load');
   assert.strictEqual(assemble.status, 'cancelled');
+  assert.strictEqual(engine.isRunning(), false,
+    'an error is the ONE automatic idle: nothing else is admitted until Start (Owen, 2026-09-21)');
   assert.match(assemble.error, /Skipped: Narrate failed/);
   assert.strictEqual(asm.runs.length, 0, 'nothing runs on input that was never written');
   assert.strictEqual(types.jobStatus(engine.snapshot().jobs[0]), 'failed',
@@ -1848,6 +1851,142 @@ test('a CHAINED Foundry request joins its parent run and is not staged a second 
   assert.strictEqual(stepsOf(job.id).length, 2);
   assert.ok(chained.id, 'the chained row exists under the row it follows');
 });
+
+// ── A NARRATION IS FOUR ROWS, AND THE FIRST ONE DOES NOT TRAVEL ─────────────
+//
+// The defect these three guard, measured 2026-09-21: job_mubw3zxx ("Mutineer's
+// Moon") was created at 23:42:22Z, `pending` was never set, `waitFor` defaulted
+// to `crucible@owens-pc-wsl`, and its prepare row started at 23:43:00Z on a
+// server nobody had chosen. The mechanism was composition, not scheduling — the
+// narration modal created the run from its FIRST child and appended the rest,
+// and since the prepare row split (2026-09-19) the first child is `prepare`:
+// CPU, non-travelling, not a member of STAGED_JOB_TYPES. So the run was born
+// un-staged, and `enqueue` was the only place the staging question was ever
+// asked. Before the split the first child was `tts-conversion` and the same
+// composition worked, which is why nothing said anything for two days.
+//
+// Prepare packs the generation chunks to THE CHOSEN SERVER's voice band
+// (docs/PENDING-QUEUE-AND-GPU-DIAL.md, §A narration is THREE rows), so a prepare
+// that starts before the server is picked is not merely early.
+
+/** The four rows of a narration run, in the order they execute. */
+function narrationModules() {
+  return {
+    prepare: fakeModule('prepare', { resource: () => 'cpu' }),
+    tts: fakeModule('tts-conversion', { machines: () => 'any' }),
+    align: fakeModule('align', { machines: () => 'any' }),
+    assemble: fakeModule('reassembly', { resource: () => 'cpu' }),
+  };
+}
+
+const narrationSteps = () => [
+  { type: 'prepare', label: 'Prepare', config: {}, sourceRef: { kind: 'epub', path: '/moon.epub' } },
+  { type: 'tts-conversion', label: 'Narrate', config: {}, parentIndex: 0 },
+  { type: 'align', label: 'Align', config: {}, parentIndex: 1 },
+  { type: 'reassembly', label: 'Assemble', config: {}, parentIndex: 2 },
+];
+
+/** Something on the card, so the queue is genuinely MOVING rather than latched. */
+async function aMovingQueue(mods) {
+  const decoy = fakeModule('rvc');
+  await fresh('narration-whole', [decoy, ...Object.values(mods)]);
+  engine.enqueue({
+    title: 'Something already running',
+    steps: [{ type: 'rvc', label: 'Enhance', config: {}, sourceRef: { kind: 'epub', path: '/x.epub' } }],
+  });
+  engine.start();
+  await settle();
+  assert.strictEqual(decoy.runs.length, 1, 'the queue is moving, which is the whole premise');
+  return decoy;
+}
+
+test('a narration enqueued WHOLE stages into Pending even on a queue that is moving', async () => {
+  const mods = narrationModules();
+  await aMovingQueue(mods);
+
+  const job = engine.enqueue({ title: "Mutineer's Moon", steps: narrationSteps() });
+  await settle();
+
+  assert.strictEqual(job.pending, true,
+    'the run carries a travelling tts-conversion, so it is a book being added: it stages');
+  assert.deepStrictEqual(stepsOf(job.id).map((s) => s.status), ['held', 'held', 'held', 'held'],
+    'a staged book is all-held — one that started itself would be Pending in name only');
+  assert.strictEqual(mods.prepare.runs.length, 0,
+    'and prepare above all: it packs the chunks to the chosen server, which has not been chosen');
+  assert.strictEqual(mods.tts.runs.length, 0);
+
+  // The press that commits it, and the only one.
+  engine.sendToQueue(job.id);
+  await settle();
+  assert.strictEqual(engine.snapshot().jobs.find((j) => j.id === job.id).pending, undefined);
+  assert.strictEqual(mods.prepare.runs.length, 1, 'THEN prepare runs — the CPU row needs no card');
+});
+
+test('a narration composed a step at a time stages too, while nothing of it has started', async () => {
+  /*
+   * The engine's own second owner of the rule. The renderer now enqueues a
+   * narration whole, which is the fix; this is the net under it, so the next
+   * composer that arrives a step at a time cannot un-stage a book in silence.
+   */
+  const mods = narrationModules();
+  const decoy = fakeModule('rvc');
+  await fresh('narration-appended', [decoy, ...Object.values(mods)]);
+
+  const [head, ...rest] = narrationSteps();
+  const job = engine.enqueue({ title: "Mutineer's Moon", steps: [head] });
+  await settle();
+  assert.strictEqual(job.pending, undefined,
+    'prepare is CPU and does not travel, so at birth this run had no machine to choose');
+
+  let parentStepId = stepsOf(job.id)[0].id;
+  for (const step of rest) {
+    parentStepId = engine.appendStep(job.id, {
+      type: step.type, label: step.label, config: step.config, parentStepId,
+    }).id;
+  }
+  await settle();
+
+  assert.strictEqual(engine.snapshot().jobs.find((j) => j.id === job.id).pending, true,
+    'the append is what made it a book bound for a card, so the append is where it stages');
+  assert.deepStrictEqual(stepsOf(job.id).map((s) => s.status), ['held', 'held', 'held', 'held']);
+  assert.strictEqual(mods.prepare.runs.length, 0);
+
+  engine.sendToQueue(job.id);
+  await settle();
+  assert.strictEqual(engine.snapshot().jobs.find((j) => j.id === job.id).pending, undefined,
+    'and it is genuinely in Pending — Send to queue is the door that takes it out');
+});
+
+test('a run whose first step has ALREADY STARTED is not staged by an append', async () => {
+  /*
+   * Staging holds every step, and a running step is not one this engine may
+   * hold — reaching into one would be rewriting the status of work already on a
+   * machine. This is exactly the race the whole-run enqueue exists to avoid
+   * (`enqueue` pumps, so the head can be claimed before the second step is even
+   * appended), so it is logged by name rather than papered over.
+   */
+  const mods = narrationModules();
+  await fresh('narration-append-too-late', Object.values(mods));
+
+  const [head, ...rest] = narrationSteps();
+  const job = engine.enqueue({ title: "Mutineer's Moon", steps: [head] });
+  engine.start();
+  await settle();
+  assert.strictEqual(mods.prepare.runs.length, 1, 'prepare is on the CPU before anything is appended');
+
+  for (const step of rest) {
+    engine.appendStep(job.id, {
+      type: step.type, label: step.label, config: step.config,
+      parentStepId: stepsOf(job.id)[stepsOf(job.id).length - 1].id,
+    });
+  }
+  await settle();
+
+  assert.strictEqual(engine.snapshot().jobs.find((j) => j.id === job.id).pending, undefined,
+    'it cannot be staged now: holding a running step is not a thing this engine may do');
+  assert.strictEqual(stepsOf(job.id)[0].status, 'running', 'and the running row is left alone');
+});
+
 
 /*
  * ── WHICH BUTTON DESTROYS A HOSTED READING'S PAGES ──────────────────────────

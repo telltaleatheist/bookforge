@@ -4,16 +4,21 @@
  *
  * The app (electron/main.ts `applyNarratorScratchRoot`) points the sessions root
  * at the Settings override `narratorScratchPath` when one is stated, else at
- * `<library>/tmp`. The narration cuts and the number-normalized copies live under
- * that tmp, in `narration-cuts/`, content-addressed — so a `--prep` that resolved
- * the directory differently from the app would write a copy the app never finds,
- * and the app would pay for the model pass again. Measured 2026-09-02: the CLI's
- * first `--prep` landed in `<e2a>/tmp` while the app's own run had used
- * `Z:\<library>\tmp`.
+ * `defaultNarratorScratchRoot()` — `~/Documents/BookForge/scratch`, MACHINE-LOCAL
+ * since 2026-09-21 (it was `<library>/tmp`; narrator-paths.ts's header carries
+ * the SMB wedge that moved it). The narration cuts and the number-normalized
+ * copies live under that root, in `narration-cuts/`, content-addressed — so a
+ * `--prep` that resolved the directory differently from the app would write a
+ * copy the app never finds, and the app would pay for the model pass again.
+ * Measured 2026-09-02: the CLI's first `--prep` landed in `<e2a>/tmp` while the
+ * app's own run had used `Z:\<library>\tmp`.
  *
- * One function, the same two rules, in the same order. A headless run that has
- * no library root (`--prep --input file.txt`, `--tts --text …`) cannot make the
- * second choice and is left on the default, which the door logs.
+ * One function, the same two rules, in the same order — and the default is not
+ * spelled here twice: it is READ FROM the app's own `defaultNarratorScratchRoot`,
+ * because two spellings of one path is two places for it to drift. The library
+ * root no longer decides it, so a headless run that has no library at all
+ * (`--prep --input file.txt`, `--tts --text …`) resolves the same directory the
+ * app would.
  *
  * WHY THIS MATTERS MORE AFTER THE NARRATOR CUT-OVER. `setNarratorScratchRoot`
  * decides the value of `NARRATOR_SESSIONS_ROOT`, which
@@ -68,13 +73,19 @@ function readPersistedLibraryRoot() {
 }
 
 /**
- * @param {string} libraryRoot  the library the project belongs to
+ * @param {string} [_libraryRoot]  the library the project belongs to — kept in the
+ *   signature because every door states it, and NOT read: the scratch root has
+ *   been machine-local since 2026-09-21, so the library does not decide it.
  * @returns {string} the scratch directory now in force
  */
-function applyNarratorSessionsRoot(libraryRoot) {
+function applyNarratorSessionsRoot(_libraryRoot) {
   const toolPaths = require('../dist/electron/tool-paths.js');
   const narratorPaths = require('../dist/electron/narrator-paths.js');
-  for (const [obj, fn] of [[toolPaths, 'getConfig'], [narratorPaths, 'setNarratorScratchRoot']]) {
+  for (const [obj, fn] of [
+    [toolPaths, 'getConfig'],
+    [narratorPaths, 'setNarratorScratchRoot'],
+    [narratorPaths, 'defaultNarratorScratchRoot'],
+  ]) {
     if (typeof obj[fn] !== 'function') {
       throw new Error(`compiled bridge missing ${fn} — rebuild (npx tsc -p tsconfig.electron.json)`);
     }
@@ -82,7 +93,7 @@ function applyNarratorSessionsRoot(libraryRoot) {
   const override = toolPaths.getConfig().narratorScratchPath;
   const dir = typeof override === 'string' && override.trim() !== ''
     ? override.trim()
-    : path.join(libraryRoot, 'tmp');
+    : narratorPaths.defaultNarratorScratchRoot();
   narratorPaths.setNarratorScratchRoot(dir);
   return dir;
 }

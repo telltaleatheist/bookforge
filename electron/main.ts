@@ -38,6 +38,8 @@ import { setQueueMainWindow } from './queue-steps';
 // and has to hear that the book changed just as much as the main one does.
 import { broadcastToAllWindows } from './document-stage-run';
 import * as manifestService from './manifest-service';
+import { discardLibraryTree, startLibraryTrashRemover, type TrashRemoverHandle }
+  from './library-trash';
 import { appendJobAnalytics } from './job-analytics';
 import {
   currentEpubEditorLayout,
@@ -150,7 +152,9 @@ import {
 import type { NarrateTarget } from '../shared/queue/narrate-target';
 import type { QueueJob, QueueStep } from '../shared/queue/engine-types';
 import { TERMINAL_STEP_STATUSES } from '../shared/queue/engine-types';
-import { setNarratorScratchRoot, narratorScratchRoot, mintImpliedExportPath } from './narrator-paths';
+import {
+  setNarratorScratchRoot, narratorScratchRoot, defaultNarratorScratchRoot, mintImpliedExportPath,
+} from './narrator-paths';
 import { getOrpheusBatchConfig, setOrpheusMaxBatch } from './orpheus-batch';
 import { getOrpheusMemoryTier, setOrpheusMemoryTier, orpheusMemoryProfile, resolveConcreteOrpheusTier, fitOrpheusTier, getOrpheusAutoCeiling, type OrpheusMemoryTier } from './orpheus-memory';
 import { getGpuMemMB } from './gpu-arbiter';
@@ -2998,29 +3002,71 @@ async function openFoundryWindowAndReconcileOnClose(
 }
 
 /**
- * Point narrator's session scratch at <library>/tmp — a plain tmp folder INSIDE
- * the library (not a separate sibling). It's on the library volume (so caching a
- * finished session into the library is a same-volume clone) and is swept
- * religiously (cleanNarratorScratchRoot at startup; sessions also removed once
- * cached), so it never accumulates. Called at startup and whenever the library
- * root changes.
+ * Point narrator's session scratch at the MACHINE-LOCAL default —
+ * `~/Documents/BookForge/scratch` (`defaultNarratorScratchRoot`), beside the
+ * render cache and the foundry run dirs. Called at startup and whenever the
+ * library root changes (the Settings override can still name anything, so the
+ * call is kept on both paths).
+ *
+ * IT WAS `<library>/tmp` UNTIL 2026-09-21, for the same-volume publish rename.
+ * The library is one shared NAS tree over SMB, so that put every downloaded
+ * chunk, every session-state rewrite and the whole prepare row on the share
+ * DURING the run — and a burst of ~2,700 metadata ops wedged the Mac's SMB
+ * client and the machine with it, twice in two days. The rule is now: the share
+ * holds FINISHED things, each placed once, atomically; work in progress lives on
+ * the machine doing the work. narrator-paths.ts's header carries the full note.
  *
  * THE ONE OWNER of the value `NARRATOR_SESSIONS_ROOT` carries. The CLI states the
- * same two rules (cli/narrator-sessions-root.js), because a headless run that
- * resolved it differently names a session directory the app never looks in.
- *
- * NOTE: if the library is Syncthing-synced, add `tmp/` to its .stignore so the
- * transient per-sentence churn isn't synced.
+ * same two rules (cli/narrator-sessions-root.js) through the same function,
+ * because a headless run that resolved it differently names a session directory
+ * the app never looks in.
  */
 function applyNarratorScratchRoot(): void {
-  // A user-configured scratch path wins; otherwise use <library>/tmp. loadConfig()
-  // is safe before app-ready (it only reads a JSON file under userData).
+  // A user-configured scratch path wins; otherwise the machine-local default.
+  // loadConfig() is safe before app-ready (it only reads a JSON file under userData).
   const override = loadToolPathsConfig().narratorScratchPath;
   if (typeof override === 'string' && override.trim()) {
     setNarratorScratchRoot(override.trim());
     return;
   }
-  setNarratorScratchRoot(path.join(getLibraryRoot(), 'tmp'));
+  setNarratorScratchRoot(defaultNarratorScratchRoot());
+}
+
+/**
+ * SAY WHAT THE OLD SCRATCH STILL HOLDS, AND DO NOTHING ELSE TO IT.
+ *
+ * Before 2026-09-21 every render session lived in `<library>/tmp`, and a library
+ * carried across the change can still hold `ebook-<uuid>` sessions there — an
+ * interrupted render's only copy of its sentences, in a directory this app no
+ * longer sweeps, rescues or looks in. Migrating them automatically is exactly
+ * the trade this codebase has refused before (the retired library-wide sweep
+ * that renamed and adopted stray EPUBs): touching a user's files to save them a
+ * step is a trade nobody asked for, and the old tmp is also SHARED — the other
+ * machine may be rendering into it right now.
+ *
+ * So: ONE line, naming the directory and the count, so an operator can go and
+ * rescue them by hand. Never a delete, never a move, and never an error — an
+ * unreadable or absent directory is the ordinary answer.
+ */
+async function noteLegacyLibraryScratch(): Promise<void> {
+  // EVERYTHING IN ONE GUARD, including `narratorScratchRoot()`, which refuses by
+  // name when its volume is not mounted. This runs on the startup path inside a
+  // `void`ed IIFE, where an unhandled rejection has no handler at all (P11,
+  // 2026-09-20) — and a line of log is never worth a windowless main process.
+  try {
+    const legacy = path.join(getLibraryRoot(), 'tmp');
+    if (path.resolve(legacy) === path.resolve(narratorScratchRoot())) return; // still stated
+    const names = await fs.readdir(legacy);
+    const sessions = names.filter((n) => n.startsWith('ebook-'));
+    if (sessions.length === 0) return;
+    console.log(
+      `[MAIN] The pre-2026-09-21 scratch dir ${legacy} still holds ${sessions.length} render `
+      + `session(s) (${sessions.slice(0, 5).join(', ')}${sessions.length > 5 ? ', …' : ''}). `
+      + 'The scratch root is machine-local now, so nothing in that folder is swept, rescued or '
+      + 'read by this app any more — publish or delete them by hand.');
+  } catch {
+    /* no old tmp, or the library volume is not mounted — nothing to say */
+  }
 }
 
 /**
@@ -5529,6 +5575,8 @@ function setupIpcHandlers(): void {
     applyNarratorScratchRoot();
     // Sync to manifest service
     manifestService.setLibraryBasePath(libraryPath);
+    // The drain walks a tree under the old root; point it at the new one.
+    void restartLibraryTrashRemover();
     // Re-point the audiobook job log at the new root's logs/ — it holds an
     // absolute file path from whenReady and would keep writing to the old
     // library (or spam ENOENT if that root is gone) after a move.
@@ -12392,7 +12440,7 @@ ipcMain.handle('narration:text-readiness', async (
           const itemPath = path.join(translateDir, item);
           const stats = await fs.stat(itemPath);
           if (stats.isDirectory()) {
-            await fs.rm(itemPath, { recursive: true, force: true });
+            await discardLibraryTree(itemPath, 'deleting the translation stage');
             deletedItems.push(`${item}/`);
           } else {
             await fs.unlink(itemPath);
@@ -12453,7 +12501,7 @@ ipcMain.handle('narration:text-readiness', async (
       if (monoCacheDir) {
         const cacheDir = path.join(translateDir, 'chapter-cache');
         if (fsSync.existsSync(cacheDir)) {
-          await fs.rm(cacheDir, { recursive: true, force: true });
+          await discardLibraryTree(cacheDir, `deleting ${base}'s chapter cache`);
           deletedItems.push('chapter-cache/');
         }
       }
@@ -12465,7 +12513,7 @@ ipcMain.handle('narration:text-readiness', async (
       const remaining = await fs.readdir(translateDir);
       const epubsLeft = remaining.some((f) => /\.epub$/i.test(f));
       if (!epubsLeft) {
-        await fs.rm(translateDir, { recursive: true, force: true });
+        await discardLibraryTree(translateDir, 'sweeping the emptied translation stage');
         deletedItems.push('(swept remaining stage files)');
       } else {
         const sentencesDir = path.join(translateDir, 'sentences');
@@ -12501,7 +12549,7 @@ ipcMain.handle('narration:text-readiness', async (
         // Delete specific language session
         const langDir = path.join(sessionsDir, language);
         if (fsSync.existsSync(langDir)) {
-          await fs.rm(langDir, { recursive: true, force: true });
+          await discardLibraryTree(langDir, `deleting the ${language} TTS cache`);
           deletedSessions.push(language);
         }
       } else {
@@ -12511,7 +12559,7 @@ ipcMain.handle('narration:text-readiness', async (
           const langPath = path.join(sessionsDir, lang);
           const stats = await fs.stat(langPath);
           if (stats.isDirectory()) {
-            await fs.rm(langPath, { recursive: true, force: true });
+            await discardLibraryTree(langPath, `deleting the ${lang} TTS cache`);
             deletedSessions.push(lang);
           }
         }
@@ -12607,7 +12655,7 @@ ipcMain.handle('narration:text-readiness', async (
             const itemPath = path.join(translateDir, item);
             const stats = await fs.stat(itemPath);
             if (stats.isDirectory()) {
-              await fs.rm(itemPath, { recursive: true, force: true });
+              await discardLibraryTree(itemPath, 'deleting the translation stage');
               deletedItems.push(`${item}/`);
             } else {
               await fs.unlink(itemPath);
@@ -12634,7 +12682,7 @@ ipcMain.handle('narration:text-readiness', async (
             const langPath = path.join(sessionsDir, lang);
             const stats = await fs.stat(langPath);
             if (stats.isDirectory()) {
-              await fs.rm(langPath, { recursive: true, force: true });
+              await discardLibraryTree(langPath, `deleting the ${lang} TTS cache`);
               deletedSessions.push(lang);
             }
           }
@@ -13492,6 +13540,11 @@ app.whenReady().then(async () => {
     manifestService.setLibraryBasePath(persistedRoot);
     console.log('[Startup] Restored persisted library root:', persistedRoot);
   }
+  // Begin draining `<library>/.trash` — the trees earlier sessions (and the
+  // other machine) discarded, plus anything a quit left half-removed. Paced, so
+  // it costs the share 40 metadata operations a second and nothing else.
+  void restartLibraryTrashRemover();
+
   startingUp('clearing the scratch root');
   applyNarratorScratchRoot();
   /*
@@ -13539,6 +13592,9 @@ app.whenReady().then(async () => {
       console.error('[Startup] The narrator scratch sweep failed and was abandoned:',
         (err as Error).message);
     }
+    // And say what the pre-2026-09-21 `<library>/tmp` still holds, if anything.
+    // A statement, never an act — see noteLegacyLibraryScratch.
+    await noteLegacyLibraryScratch();
   })();
 
   // ── Mount the hosted Foundry ─────────────────────────────────────────────
@@ -14284,6 +14340,25 @@ function quitStepWithDeadline(label: string, ms: number, run: () => Promise<void
   return Promise.race([run(), deadline]).finally(() => clearTimeout(timer));
 }
 
+/**
+ * THE PACED DRAIN OF `<library>/.trash`, and there is exactly one of it.
+ *
+ * Every library tree this app discards leaves by a single rename into `.trash`
+ * (electron/library-trash.ts, and the 2,694-unlink burst that wedged the SMB
+ * client is in its header); this loop is what actually unlinks them, at 40 a
+ * second, in the background. Restarted after `library:set-root` because the
+ * loop reads the root through the manifest service on every pass but its
+ * in-flight walk is against the OLD one.
+ */
+let libraryTrashRemover: TrashRemoverHandle | null = null;
+
+async function restartLibraryTrashRemover(): Promise<void> {
+  const previous = libraryTrashRemover;
+  libraryTrashRemover = null;
+  if (previous) await previous.stop();
+  libraryTrashRemover = startLibraryTrashRemover();
+}
+
 app.on('before-quit', async (event) => {
   isQuitting = true;
   if (cleanupDone) return;
@@ -14311,6 +14386,15 @@ app.on('before-quit', async (event) => {
   // processes, and a queue that started the next narration while the sweep was
   // running would be spawning workers into a teardown.
   await queueEngine.shutdown();
+
+  // The trash drain stops between files, so this returns in well under the time
+  // one unlink takes. A half-removed tree left in `.trash` is a CORRECT state —
+  // it is already out of the library — and the next start finishes it.
+  {
+    const remover = libraryTrashRemover;
+    libraryTrashRemover = null;
+    if (remover) await remover.stop();
+  }
 
   // The absolute backstop behind the per-step deadlines: if the whole chain has
   // not reached app.quit() in this long, something outside a deadline is stuck

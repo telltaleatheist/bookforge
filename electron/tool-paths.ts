@@ -44,8 +44,10 @@ export interface ToolPathsConfig {
   toolsEnvPath?: string;
 
   /**
-   * Where in-progress narrator sessions are written before being cached into the
-   * project — the value of `NARRATOR_SESSIONS_ROOT`. Empty = `<library>/tmp`.
+   * Where in-progress narrator sessions are written before being published into
+   * the project — the value of `NARRATOR_SESSIONS_ROOT`. Empty =
+   * `defaultNarratorScratchRoot()`, `~/Documents/BookForge/scratch`, which is
+   * MACHINE-LOCAL (it was `<library>/tmp` until 2026-09-21).
    *
    * Called `ttsScratchPath` until Phase 6; `migrateLegacyConfigKeys()` renames a
    * stored value once, on load, so there are never two live spellings.

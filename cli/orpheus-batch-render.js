@@ -417,7 +417,9 @@ async function main() {
   // `path.dirname(path.dirname(projectDir))`); this is the same call with the
   // library resolved the way `electron/main.ts applyNarratorScratchRoot` resolves
   // it at startup: the Settings override wins inside
-  // `applyNarratorSessionsRoot`, else `<library>/tmp`.
+  // `applyNarratorSessionsRoot`, else the machine-local default
+  // (`defaultNarratorScratchRoot`, `~/Documents/BookForge/scratch`, since
+  // 2026-09-21 — it was `<library>/tmp`).
   //
   // THE LIBRARY IS THE ONE MAIN RECORDED, and if there isn't one this refuses.
   // `getLibraryRoot()` ends at `~/Documents/BookForge` and may: the app has a

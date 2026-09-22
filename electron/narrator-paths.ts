@@ -21,7 +21,8 @@
  * So there is now ONE owner of each, and neither derives from an e2a path:
  *
  *   scratch root : the configured `narratorScratchPath` (Settings → "Narrator
- *                  scratch folder"), else `<library>/tmp`. `main.ts`'s
+ *                  scratch folder"), else {@link defaultNarratorScratchRoot} —
+ *                  `~/Documents/BookForge/scratch`, MACHINE-LOCAL. `main.ts`'s
  *                  `applyNarratorScratchRoot()` states it at startup and again
  *                  whenever the library root changes; `cli/narrator-sessions-root.js`
  *                  states the same two rules for a headless run, because a CLI
@@ -35,6 +36,27 @@
  *                  worker with an ImportError that names a package instead of an
  *                  environment.
  *
+ * ── Why the scratch left the library (2026-09-21) ───────────────────────────
+ *
+ * It was `<library>/tmp` until this date, INSIDE the library, so that publishing
+ * a finished session into `stages/03-tts/sessions/` was a same-volume rename.
+ * That trade is backwards once the library is a NAS share: the library is ONE
+ * shared tree reached over SMB by both machines, and a render put every chunk it
+ * downloaded (`<index>.flac` + `<index>.flac.provenance.json`, ~3,400 files for a
+ * 1,700-chunk book), every `session-state.json` rewrite and the whole prepare row
+ * on the share DURING the run — then copied them all again into the publish's
+ * `.tmp-ebook-…` before the one rename. On 2026-09-21 a burst of ~2,700 metadata
+ * ops wedged the Mac's SMB client and with it the whole machine, for the second
+ * time in two days.
+ *
+ * The rule now: THE SHARE HOLDS FINISHED THINGS, EACH PLACED ONCE, ATOMICALLY;
+ * work in progress lives on the machine doing the work. The scratch root sits
+ * beside the other two machine-local caches under `~/Documents/BookForge`
+ * (`render-cache.ts`'s `cache/`, `vlm-convert.ts`'s `foundry-runs/`). A publish
+ * is now one bounded copy across the wire plus the existing atomic rename, and
+ * `moveFileAtomic`'s `EXDEV` arm is what carries it — the same code, answering
+ * the operating system instead of guessing at a volume.
+ *
  * Paths can still be overridden, in this order:
  *   1. Tool paths config file (managed by tool-paths.ts)
  *   2. `BOOKFORGE_TOOLS_ENV` (the tools env only)
@@ -45,6 +67,7 @@
 import { app } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as crypto from 'crypto';
 import {
   getCondaPath as getToolCondaPath,
@@ -75,13 +98,31 @@ import {
 let scratchRoot: string | null = null;
 
 /**
+ * WHERE A RENDER WORKS WHEN NOBODY HAS SAID OTHERWISE — machine-local, always.
+ *
+ * `~/Documents/BookForge/scratch`, beside the render cache and the foundry run
+ * dirs, which are machine-local for the same reason: they are the noise a
+ * machine makes while it works, and the library is a shared, synced tree that
+ * must only ever receive finished things. See this file's header for the SMB
+ * wedge that moved it here.
+ *
+ * ONE derivation, stated once, because `cli/narrator-sessions-root.js` resolves
+ * the identical default through this same function — a CLI that answered
+ * differently would name a session directory the app never looks in.
+ */
+export function defaultNarratorScratchRoot(): string {
+  return path.join(os.homedir(), 'Documents', 'BookForge', 'scratch');
+}
+
+/**
  * State the machine-local scratch root for narrator sessions.
  *
- * `main.ts` derives this from the library root (`<library>/tmp`, INSIDE the
- * library so a finished session caches into the project as a same-volume clone),
- * unless Settings names one. Every native spawn carries it as
+ * `main.ts` states {@link defaultNarratorScratchRoot} unless Settings names one
+ * ("Narrator scratch folder"). Every native spawn carries it as
  * `NARRATOR_SESSIONS_ROOT`, and every render door passes `--session_dir` derived
- * from it.
+ * from it. Everything under it moves with it: `ebook-<uuid>` sessions,
+ * `implied-<uuid>` exports, `closed-<sessionId>` chapter sets and the shared
+ * `narration-cuts/` cache.
  */
 export function setNarratorScratchRoot(dir: string | null): void {
   scratchRoot = dir && dir.trim() ? dir.trim() : null;
@@ -91,9 +132,10 @@ export function setNarratorScratchRoot(dir: string | null): void {
 /**
  * The scratch root IF IT CAN BE USED RIGHT NOW, else null.
  *
- * The root normally lives on the library volume, which can be an external drive
- * or a network share that is not mounted — and a Listen session, a voice test or
- * a metadata probe needs neither the library nor a session directory. So this
+ * The default root is machine-local, but a stated one (Settings → "Narrator
+ * scratch folder") can live on an external drive or a network share that is not
+ * mounted — and a Listen session, a voice test or a metadata probe needs neither
+ * the library nor a session directory. So this
  * answers "is there a usable sessions root" without inventing one: the caller
  * that can proceed without it (the spawn-env builder) omits the variable, and
  * narrator then REFUSES BY NAME in the two doors that actually need it
@@ -105,8 +147,18 @@ export function setNarratorScratchRoot(dir: string | null): void {
  */
 export function narratorScratchRootIfAvailable(): string | null {
   if (!scratchRoot) return null;
-  const volume = path.dirname(scratchRoot);
-  if (!fs.existsSync(volume)) return null;
+  /*
+   * THE PARENT-EXISTS PROBE IS ABOUT AN UNMOUNTED VOLUME, and the default root
+   * is not on one. `~/Documents/BookForge` may not exist yet on a fresh machine
+   * — the render cache creates its own sibling lazily too — and refusing there
+   * would refuse every session on a new install. So the default is ours to
+   * create, parents and all; any OTHER root still has to prove its volume is
+   * mounted, because that is where "point it at the library" put it.
+   */
+  if (path.resolve(scratchRoot) !== path.resolve(defaultNarratorScratchRoot())) {
+    const volume = path.dirname(scratchRoot);
+    if (!fs.existsSync(volume)) return null;
+  }
   try {
     fs.mkdirSync(scratchRoot, { recursive: true });
   } catch {
@@ -126,17 +178,17 @@ export function narratorScratchRoot(): string {
   if (dir) return dir;
   if (!scratchRoot) {
     throw new Error(
-      'No narrator scratch root has been stated. The app states it at startup from the ' +
-        'library root (<library>/tmp) or from the "Narrator scratch folder" setting; a ' +
-        'headless run states it through cli/narrator-sessions-root.js. It is where every ' +
-        'render session is written, so there is no default to guess.',
+      'No narrator scratch root has been stated. The app states it at startup — ' +
+        `${defaultNarratorScratchRoot()}, or the "Narrator scratch folder" setting when one ` +
+        'is set; a headless run states it through cli/narrator-sessions-root.js. It is where ' +
+        'every render session is written, so there is no default to guess here.',
     );
   }
   throw new Error(
     `The narrator scratch root ${scratchRoot} cannot be used: its parent volume ` +
       `(${path.dirname(scratchRoot)}) is not mounted. Sessions are written there, so ` +
-      'this is not something to work around — mount the library volume, or point ' +
-      '"Narrator scratch folder" at a local path in Settings.',
+      'this is not something to work around — mount that volume, or clear "Narrator ' +
+      `scratch folder" in Settings to go back to ${defaultNarratorScratchRoot()}.`,
   );
 }
 

@@ -3677,6 +3677,13 @@ export class ElectronService {
   async manifestDelete(projectId: string): Promise<{
     success: boolean;
     error?: string;
+    /**
+     * Set when the project was deleted but its folder could not be moved yet —
+     * something has a file in it open (a Finder preview, the other machine).
+     * A sentence to SHOW, not an error: the project is already invisible and
+     * the library's trash remover finishes the folder when the holder lets go.
+     */
+    note?: string;
   }> {
     if (this.isElectron && (window as any).electron.manifest) {
       return (window as any).electron.manifest.delete(projectId);

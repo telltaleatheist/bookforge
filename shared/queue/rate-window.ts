@@ -203,6 +203,36 @@ export function throughputSample(input: ThroughputInput): ThroughputSample | nul
   return { ...window, sentencesPerMin, wordsPerMin, charsPerMin, realtimeFactor, etaSeconds };
 }
 
+/**
+ * HAS THIS STEP STARTED A NEW COUNTED SERIES?
+ *
+ * The anchor never re-opens once its burst has closed, and that rule is about
+ * BURSTS WITHIN ONE SERIES: everything that landed together was generated
+ * together, so a later batch must not throw away what has been measured since.
+ * It says nothing about a step that starts COUNTING SOMETHING ELSE.
+ *
+ * A Crucible alignment does exactly that. It is two passes over one book — the
+ * server places every word, then this machine measures the book from the items
+ * it placed — and the second pass counts the SAME chunks from zero against the
+ * same total. Measured 2026-09-21 on a 1,697-chunk book: 5.4 min on the card
+ * (≈314 chunk/min), 2.3 min here (≈735 chunk/min). With one anchor across both,
+ * the row divided the second pass's count by the elapsed since the FIRST pass's
+ * first chunk and showed "75.9 chunks/min, ETA 16m 18s" at 460/1,697 — on a step
+ * that finished 1.7 minutes later.
+ *
+ * So a report that NAMES a series different from the stored one drops the anchor
+ * and the landing with it, and the new series anchors on its own first burst.
+ *
+ * A report that names NO series is every other step in the queue: it keeps
+ * whatever is stored, which is how each of them has always behaved.
+ */
+export function rateSeriesChanged(
+  stored: string | undefined, reported: string | undefined,
+): boolean {
+  if (reported === undefined) return false;
+  return stored !== reported;
+}
+
 /** What the caller knows when a progress report arrives. */
 export interface AnchorInput {
   /** The anchor already stamped for this run, if any. */

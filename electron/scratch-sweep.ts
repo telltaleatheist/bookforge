@@ -11,7 +11,8 @@
  *     (2026-08-19: e2a answered "Sentences directory not found" for a path we
  *     had written 90 seconds earlier);
  *   • `<library>/tmp/ebook-83fa…` deleted while the OTHER machine was rendering
- *     into it (2026-09-05: the session sidecar and `session-state.json` died,
+ *     into it (2026-09-05, back when the scratch root was inside the shared
+ *     library: the session sidecar and `session-state.json` died,
  *     the FLACs did not, and the render published audio with no text over a
  *     complete cache);
  *   • the unconditional wipe that destroyed a resume checkpoint, so "resume"
@@ -23,8 +24,22 @@
  *
  * ── The scratch root ────────────────────────────────────────────────────────
  *
- * `<library>/tmp` (`narrator-paths.ts`). Two kinds of thing live at its top
- * level and both are named for what they are:
+ * `~/Documents/BookForge/scratch` (`narrator-paths.ts`
+ * `defaultNarratorScratchRoot`), or whatever "Narrator scratch folder" names.
+ * It was `<library>/tmp` until 2026-09-21 — INSIDE the shared NAS library, which
+ * is what the 2026-09-05 incident above is made of — and is MACHINE-LOCAL now.
+ *
+ * THE FOREIGN-OWNER ARM STAYS, and deliberately. With the default root no other
+ * machine can reach this directory at all, so `keptForeign` is unreachable on an
+ * ordinary install; the Settings override can still put the scratch on a shared
+ * volume, and that is the configuration the arm was written for. A rule that
+ * only holds for the default is a rule that breaks the first time somebody
+ * changes the default, so the ownership probe and the sidecar it reads are
+ * untouched — and the sidecar is load-bearing for THIS machine anyway: it is the
+ * only thing that says which project an orphaned session belongs to, which is
+ * what the rescue reads.
+ *
+ * Two kinds of thing live at its top level and both are named for what they are:
  *
  *   `ebook-<uuid>/`   a render session — narrator's own scratch, and after an
  *                     interrupted run the ONLY copy of the sentences rendered

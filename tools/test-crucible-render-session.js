@@ -13,7 +13,8 @@
  * which answers for the ENGINE, and the Higgs engine's env is a guest env — so
  * the artifacts were downloaded into a `\\wsl$` path and
  * `normalizeWslSessionToWindows` then had to copy the whole session onto the
- * scratch root. The scratch root is `<library>/tmp` on the NAS share (Z:), the
+ * scratch root. The scratch root was `<library>/tmp` on the NAS share (Z:) then
+ * (it is machine-local since 2026-09-21), the
  * guest's `/mnt/z` was a stale root-owned mount point that `test -d` called
  * "mounted", and the copy died on `mkdir: cannot create directory
  * '/mnt/z/bookforge': Permission denied`. After a finished render.
