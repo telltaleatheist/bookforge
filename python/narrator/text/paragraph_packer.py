@@ -769,13 +769,31 @@ def _hard_sentence_pattern():
     # KNOWN COST: '...in 1994. 1995 was worse.' now shares one cue. Rarer than
     # the citation case, and cosmetic either way - the audio is already rendered
     # by the time a cue list is built.
-    guarded_dot = rf'(?<!\b[A-Za-z]){guards}\.(?!\s+\d)'
-    others = [re.escape(p) for p in punctuation_split_hard_set if p != '.']
+    # THE ELLIPSIS RULE (Owen, 2026-09-21). A dot that is part of an ellipsis
+    # run - '...', the typeset '. . .', or the one-character '…' - is not a full
+    # stop. Before this rule every dot followed by whitespace ended a sentence,
+    # so a book's "'. . . a tic.'" arrived in the transcript as four cues:
+    # "'." / "." / "." / "a tic.'" - one per dot, each aligned to nothing.
+    #
+    # An ellipsis DOES end a sentence when a sentence follows it: whitespace and
+    # then a capital (with at most one opening quote or bracket in front), as in
+    # "He did not answer... Then he did." Followed by a lowercase word it is a
+    # pause inside the sentence and the cue runs on. The single-dot rule below
+    # excludes a dot that has another dot beside it (one optional space away) on
+    # either side, so the run is only ever judged as a whole by this branch.
     closing_run = r'["\'’”»)\]]*'
-    return re.compile(
-        rf"(?:{'|'.join([guarded_dot] + others)}){closing_run}(?=\s|$)",
-        re.DOTALL,
-    )
+    # 'I' is the one capital that is not a sentence signal: "Well . . . I
+    # suppose so." is one sentence. Known cost: "He stopped... I left." shares
+    # a cue - the words are right, the cut is one boundary late.
+    ellipsis = (rf'(?:…|\.(?:\s?\.){{2,}}){closing_run}'
+                rf'(?=\s+["“‘\'(\[]?(?!I\b)[A-Z])')
+    not_in_a_run = r'(?<!\.)(?<!\.\s)'   # not the 2nd or 3rd dot of a run
+    not_starting_a_run = r'(?!\s?\.)'     # not the 1st or 2nd dot of a run
+    guarded_dot = (rf'(?<!\b[A-Za-z]){guards}{not_in_a_run}\.{not_starting_a_run}'
+                   rf'(?!\s+\d){closing_run}(?=\s|$)')
+    others = [f'{re.escape(p)}{closing_run}(?=\\s|$)'
+              for p in punctuation_split_hard_set if p not in ('.', '…')]
+    return re.compile('|'.join([ellipsis, guarded_dot] + others), re.DOTALL)
 
 
 _HARD_SENTENCE_RE = _hard_sentence_pattern()

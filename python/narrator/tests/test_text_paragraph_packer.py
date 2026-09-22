@@ -758,6 +758,43 @@ class SentenceSplitterTest(unittest.TestCase):
                      'It is in Ch. 12 of the report.'):
             self.assertEqual(len(pp.split_sentences(text)), 1, text)
 
+    # -------------------------------------------------------------------------
+    # An ellipsis is a pause, not three full stops (Owen, 2026-09-21)
+    # -------------------------------------------------------------------------
+    #
+    # "every ellipsis is split into its own sentence during alignment:
+    #  he hesitated, didn't want to talk about it. / '. / . / . / a tic.'"
+
+    def test_owens_case_a_typeset_ellipsis_is_one_cue(self):
+        """The chunk from the live book. Before the rule this was five pieces,
+        three of them a lone dot, each aligned to nothing."""
+        self.assertEqual(
+            pp.split_sentences("he hesitated, didn't want to talk about it. '. . . a tic.'"),
+            ["he hesitated, didn't want to talk about it.", "'. . . a tic.'"])
+
+    def test_an_ellipsis_inside_a_sentence_never_splits_it(self):
+        for text in ('Well . . . I suppose so.',   # 'I' is a pronoun, not a signal
+                     'She waited… nothing came.',
+                     'He said... and then stopped.',
+                     "'. . . a tic.'"):
+            self.assertEqual(len(pp.split_sentences(text)), 1, text)
+
+    def test_an_ellipsis_followed_by_a_new_sentence_ends_the_old_one(self):
+        """A capital after the run is a sentence starting, whatever the run's
+        spelling; one opening quote or bracket may stand in front of it."""
+        self.assertEqual(pp.split_sentences('He did not answer... Then he did.'),
+                         ['He did not answer...', 'Then he did.'])
+        self.assertEqual(pp.split_sentences('She waited… Then a knock.'),
+                         ['She waited…', 'Then a knock.'])
+        self.assertEqual(pp.split_sentences('Well . . . "Fine."'),
+                         ['Well . . .', '"Fine."'])
+
+    def test_an_ellipsis_never_yields_a_lone_dot(self):
+        for text in ("'. . . a tic.' He left.", 'Wait... no... yes... Go.',
+                     '. . . and so it went. Then it ended.'):
+            for piece in pp.split_sentences(text):
+                self.assertTrue(any(ch.isalpha() for ch in piece), (text, piece))
+
     def test_narrators_own_abbreviations_do_not_end_a_sentence(self):
         for text in ('Rev. Smith said hello.',
                      'The passage in Col. carries the same idea.',
