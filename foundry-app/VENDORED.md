@@ -10,10 +10,21 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\<user>\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **8ee48b7** — *Adopt Crucible 1.0.22 (dep-only): done/total + a pace on the job read, DELETE /v1/voices idempotent, `orphan` on the voice row* (was 95593b0) |
+| Source sha | **7185764** — *Adopt Crucible 1.0.23 (dep-only): the Mac's load guard sizes the pool instead of sampling it* (was 8ee48b7) |
 | Engine | **NOT VENDORED AND NOT KNOWABLE FROM THIS FILE** — it is a spawned CLI resolved at RUNTIME (`FOUNDRY_BIN`, else `resolveFoundryPath`, `electron/main.ts`), so which build executes is a property of the machine and not of this copy. On a developer's Mac that resolves to Foundry's own checkout at `/Volumes/Callisto/Projects/foundry/dist/foundry-darwin-arm64`, which is whatever was last built there — `foundry 2.0.2 (04758be)` — REBUILT at this re-vendor (2026-09-21) so the engine carries fdba761's clean-text log change. **Ask the binary: `$FOUNDRY_BIN --version`.** See *The engine this file named was not the engine that ran* below. |
-| Copied on | 2026-09-19 (five times: 3738c01, 3436fc5, 806d44b, f349771, ca4754c), 2026-09-20 (98a4344, 9e0b27d, dccc144, 7b98004, cc5fc5b, 93010d8, 77e1d6d) and 2026-09-21 (753dca8, 3e26e53, f9bebb6, 95593b0, 8ee48b7) |
-| Copied by | Mechanical source sync, verified against Foundry `8ee48b7:app/` (`diff -rq`, clean but for this file, `IPC-CHANNELS.md` and `.gitignore` — see below); details below |
+| Copied on | 2026-09-19 (five times: 3738c01, 3436fc5, 806d44b, f349771, ca4754c), 2026-09-20 (98a4344, 9e0b27d, dccc144, 7b98004, cc5fc5b, 93010d8, 77e1d6d) 2026-09-21 (753dca8, 3e26e53, f9bebb6, 95593b0, 8ee48b7) and 2026-09-22 (7185764) |
+| Copied by | Mechanical source sync, verified against Foundry `7185764:app/` (`diff -rq`, clean but for this file, `IPC-CHANNELS.md` and `.gitignore` — see below); details below |
+
+## The `8ee48b7 → 7185764` re-vendor — the 1.0.23 SDK adoption (2026-09-22)
+
+Dependency-only, the same four files (package.json, package-lock.json, the two
+`vendor/` tarballs). Server-side change only (crucible 65a770a: the Mac's load
+guard sizes unified memory instead of sampling vm_stat); no wire change. Blob
+shas 198/198 against `7185764:app/`; `.gitignore` kept as ours. `npm ci` +
+`npm run build` run here — the PC's `dist/` had been two days stale (built
+2026-09-20), which is what made every hosted run end in a `toUpperCase`
+TypeError on 2026-09-22. A re-vendor pulled by git does NOT rebuild this
+subtree on the other machine.
 
 ## The `95593b0 → 8ee48b7` re-vendor — the 1.0.22 SDK adoption (2026-09-22)
 
