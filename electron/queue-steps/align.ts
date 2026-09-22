@@ -355,7 +355,17 @@ export const alignStep: StepModule = {
       if (p.server !== undefined) placeServer = p.server;
       if (p.stage !== undefined) lastStages = alignStagesOf(p.stage, p.percentage, placeServer);
       ctx.report({
-        percent: p.percentage,
+        // THE HEADLINE IS THE WHOLE, weighted, when the row has two halves: the
+        // place stage owns the first 70 points and the measure stage the last
+        // 30. Reporting the running stage's own percentage sent the master bar
+        // back to 0 at the seam — a card read "9 %" over a place bar at 100 %
+        // (Owen, 2026-09-21). The legacy one-spawn path has no stage and
+        // reports its percentage as before.
+        percent: p.stage === 'place'
+          ? Math.round(p.percentage * PLACE_WEIGHT)
+          : p.stage === 'measure'
+            ? Math.round(100 * PLACE_WEIGHT + p.percentage * MEASURE_WEIGHT)
+            : p.percentage,
         message: p.message,
         // Reported from the first staged event on, and never invented: a legacy
         // local align says no stage, `lastStages` stays empty, and the row draws

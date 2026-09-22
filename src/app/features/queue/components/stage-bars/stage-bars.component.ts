@@ -8,7 +8,7 @@
  * that isn't running yet is noise, and the dimmed row already says "not yet".
  */
 
-import { Component, input } from '@angular/core';
+import { Component, computed, input } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { JobStageProgress, PrepSubProgress } from '../../models/queue.types';
 import { prepFraction, prepLabel } from '@shared/queue/bench';
@@ -34,32 +34,44 @@ import { prepFraction, prepLabel } from '@shared/queue/bench';
             @if (stage.status === 'pending') { -- } @else { {{ stage.pct | number:'1.0-0' }}% }
           </span>
         </div>
-        @if (detail() && stage.status === 'running') {
+      }
+      <!-- THE DETAIL AND THE PREP SUB-BAR SIT UNDER THE WHOLE LIST, not under
+           the running stage. Until 2026-09-21 they were emitted inside the loop
+           after the running row, which put a line of text BETWEEN two stage
+           bars (the align row's "Placing words" and "Measuring the book") and,
+           indented to the label column, left it floating mid-card. Owen: "put
+           the text somewhere else … same location for all messages so
+           progress bars are aligned relative to each other." One place, flush
+           with the bars, whichever stage is running.
+           The MLX batch had its own row here until 2026-09-11. Its rows retire
+           one at a time, the bridge folds them into the chunk count, and the
+           CONVERT stage bar moves during the decode — so a second bar saying
+           the same thing in a different unit was removed. The detail line
+           still names what is being rendered together. -->
+      @if (hasRunning()) {
+        @if (detail()) {
           <div class="stage-detail">{{ detail() }}</div>
         }
         @if (prep(); as p) {
-          @if (stage.status === 'running') {
-            <div class="batch-row">
-              @if (prepFraction(p) !== undefined) {
-                <div class="batch-track">
-                  <div class="batch-fill" [style.width.%]="prepFraction(p)! * 100"></div>
-                </div>
-              }
-              <span class="batch-text">{{ prepLabel(p) }}</span>
-            </div>
-          }
+          <div class="batch-row">
+            @if (prepFraction(p) !== undefined) {
+              <div class="batch-track">
+                <div class="batch-fill" [style.width.%]="prepFraction(p)! * 100"></div>
+              </div>
+            }
+            <span class="batch-text">{{ prepLabel(p) }}</span>
+          </div>
         }
-        <!-- The MLX batch had its own row here until 2026-09-11. Its rows retire
-             one at a time, the bridge folds them into the chunk count, and the
-             CONVERT stage bar above now moves during the decode — so a second bar
-             saying the same thing in a different unit was removed. The detail
-             line still names what is being rendered together. -->
       }
     </div>
   `,
   styles: [`
     :host {
       display: block;
+      /* Room between the master bar above and the first stage row, so the two
+         read as a headline and a breakdown rather than one bar sitting on
+         another (Owen, 2026-09-21: "a little too close to the master"). */
+      margin-top: 0.55rem;
     }
 
     .stage-bars {
@@ -109,10 +121,10 @@ import { prepFraction, prepLabel } from '@shared/queue/bench';
       font-variant-numeric: tabular-nums;
     }
 
-    /* Indented under the running stage's label so it reads as that stage's detail
-       rather than a second message about the job as a whole. */
+    /* Under the whole stage list, flush with the labels: one place for every
+       message, so the bars above it stay contiguous and aligned. */
     .stage-detail {
-      margin: -0.1rem 0 0.15rem 10.125rem;
+      margin: 0.1rem 0 0 0;
       font-size: 0.6875rem;
       color: var(--text-tertiary);
       overflow: hidden;
@@ -128,7 +140,7 @@ import { prepFraction, prepLabel } from '@shared/queue/bench';
       display: flex;
       align-items: center;
       gap: 0.5rem;
-      margin: 0 0 0.2rem 10.125rem;
+      margin: 0.1rem 0 0 0;
     }
 
     .batch-track {
@@ -221,6 +233,8 @@ export class StageBarsComponent {
   readonly prep = input<PrepSubProgress | undefined>(undefined);
 
   /** Both from shared/queue/bench.ts, so every card words this pass alike. */
+  /** Whether any stage is running — the detail and the prep bar belong to a live list only. */
+  readonly hasRunning = computed(() => this.stages().some((s) => s.status === 'running'));
   readonly prepLabel = prepLabel;
   readonly prepFraction = prepFraction;
 }
