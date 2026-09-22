@@ -183,7 +183,7 @@ check('every server disabled: ranked/top/waitFor refuse by name and the message 
   const { store } = fresh();
   for (const name of KNOWN) store.setEnabled(name, false, KNOWN);
   const err = refuses(() => store.ranked(KNOWN), 'no_enabled_server');
-  assert.ok(err.message.includes('every Crucible server is disabled') && err.message.includes('local, mac, droplet'), err.message);
+  assert.ok(err.message.includes('every Crucible server is paused') && err.message.includes('local, mac, droplet'), err.message);
   refuses(() => store.top(KNOWN), 'no_enabled_server');
   refuses(() => store.waitForNewJob(KNOWN), 'no_enabled_server');
 });

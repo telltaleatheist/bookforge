@@ -19,6 +19,7 @@ export * from './components/split-pane/split-pane.component';
 export * from './components/tree-view/tree-view.component';
 export * from './components/desktop-button/desktop-button.component';
 export * from './components/desktop-select/desktop-select.component';
+export * from './components/state-switch/state-switch.component';
 export * from './components/desktop-dialog/desktop-dialog.component';
 export * from './components/context-menu/context-menu.component';
 export * from './components/cascade-list/cascade-list.component';

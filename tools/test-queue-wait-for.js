@@ -292,8 +292,8 @@ test('a row naming a DISABLED server holds and says which, and is never re-route
   assert.strictEqual(gpu.runs.length, 0, 'it did not start');
   assert.strictEqual(firstStep(job.id).status, 'queued');
   assert.strictEqual(firstStep(job.id).progress.admissionHold,
-    'Waiting for local: disabled. A named server is an instruction, so this book is not sent '
-    + 'anywhere else — enable it in Settings → Crucible Servers, or set this book to Any.');
+    'Waiting for local: paused. A named server is an instruction, so this book is not sent '
+    + 'anywhere else — set it to Running in Settings → Crucible Servers, or set this book to Any.');
   assert.strictEqual(jobOf(job.id).waitForResolved, undefined,
     'and mac, which IS enabled and reachable, was not silently used instead');
 });
@@ -399,7 +399,7 @@ test('`any` with none reachable holds and NAMES that', async () => {
   engine.start();
   await settle();
   assert.strictEqual(firstStep(job.id).progress.admissionHold,
-    'Waiting for any server; none of the 2 enabled are reachable '
+    'Waiting for any server; none of the 2 running are reachable '
     + '(local: nothing at 127.0.0.1:7100.; mac: nothing at mac:7100.).');
 });
 
@@ -415,7 +415,7 @@ test('`any` with nothing enabled says THAT, which is a different sentence', asyn
   engine.start();
   await settle();
   assert.match(firstStep(job.id).progress.admissionHold,
-    /none of the 2 you have is enabled \(local, mac\)/);
+    /none of the 2 you have is running \(local, mac\)/);
 });
 
 // ── The capability filter, through the whole scheduler (2026-09-21) ─────────
@@ -1044,14 +1044,17 @@ test('THE PARKED SENTENCES NAME DIFFERENT CAUSES, and never each other\'s', () =
     state: () => ({ kind: 'busy', line: 'Foundry is reading Mistborn.' }),
   })).sentence;
 
-  assert.match(disabled, /disabled/);
+  // "paused" since 2026-09-22, when the switch that causes it stopped saying
+  // Enabled/Disabled and started saying Running/Paused. The distinctness below
+  // is the point of the test; the word is the control's.
+  assert.match(disabled, /paused/);
   assert.match(unreachable, /unreachable/);
   assert.match(busy, /Foundry is reading Mistborn\./);
   assert.strictEqual(new Set([disabled, unreachable, busy]).size, 3,
     'three causes, three sentences, never collapsed');
   // Collapsing these would name the wrong cause, which is the failure shape this
   // whole feature exists to close.
-  assert.ok(!/disabled/.test(unreachable));
+  assert.ok(!/paused/.test(unreachable));
   assert.ok(!/unreachable/.test(disabled));
 });
 

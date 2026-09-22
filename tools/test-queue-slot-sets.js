@@ -1219,7 +1219,9 @@ test('a DISABLED server finishes what it has and takes nothing new', async () =>
   await settle(40);
 
   assert.strictEqual(gpu.runs.length, 1, 'no new claim goes to a disabled server');
-  assert.match(jobById(b.id).steps[0].progress.admissionHold, /disabled/);
+  // "paused" since 2026-09-22 — the switch says Running/Paused now, and the
+  // hold sentence names the control the operator has to press.
+  assert.match(jobById(b.id).steps[0].progress.admissionHold, /paused/);
 
   const snap = engine.snapshot();
   const mac = snap.slotSets.find((s) => s.id === 'mac');

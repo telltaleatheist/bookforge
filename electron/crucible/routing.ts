@@ -389,8 +389,8 @@ export class Routing {
         ranked.length === 0
           ? 'no Crucible server is available to the queue: this machine has none, and none is '
             + 'registered. Add one in Settings → Crucible Servers.'
-          : `every Crucible server is disabled (${ranked.map((row) => row.name).join(', ')}). `
-            + 'Enable one in Settings → Crucible Servers.',
+          : `every Crucible server is paused (${ranked.map((row) => row.name).join(', ')}). `
+            + 'Set one to Running in Settings → Crucible Servers.',
       );
     }
     return enabled;

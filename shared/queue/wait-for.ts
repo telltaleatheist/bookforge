@@ -240,8 +240,8 @@ function wayOut(source: VenueSource): string {
 }
 
 function holdDisabled(server: string, source: VenueSource): string {
-  return `Waiting for ${server}: disabled. A named server is an instruction, so this book is not `
-    + `sent anywhere else — enable it in ${SETTINGS_ROW}${wayOut(source)}`;
+  return `Waiting for ${server}: paused. A named server is an instruction, so this book is not `
+    + `sent anywhere else — set it to Running in ${SETTINGS_ROW}${wayOut(source)}`;
 }
 
 function holdUnreachable(server: string, detail: string, source: VenueSource): string {
@@ -378,12 +378,12 @@ function holdAnyNoneEnabled(ranked: readonly WaitForServer[]): string {
   return ranked.length === 0
     ? 'Waiting for any server; this machine has no Crucible server and none is registered. '
       + `Add one in ${SETTINGS_ROW}.`
-    : `Waiting for any server; none of the ${ranked.length} you have is enabled `
-      + `(${ranked.map((r) => r.name).join(', ')}). Enable one in ${SETTINGS_ROW}.`;
+    : `Waiting for any server; none of the ${ranked.length} you have is running `
+      + `(${ranked.map((r) => r.name).join(', ')}). Set one to Running in ${SETTINGS_ROW}.`;
 }
 
 function holdAnyNoneReachable(tried: readonly string[]): string {
-  return `Waiting for any server; none of the ${tried.length} enabled `
+  return `Waiting for any server; none of the ${tried.length} running `
     + `${tried.length === 1 ? 'is' : 'are'} reachable (${tried.join('; ')}).`;
 }
 

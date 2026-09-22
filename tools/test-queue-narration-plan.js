@@ -649,7 +649,7 @@ function narrationRun(title, epubPath = '/a.epub') {
     const { threw } = await askedFor(prepHost({
       enabled: () => {
         throw refusal('no_enabled_server',
-          'every Crucible server is disabled (M1 Ultra, 3090 Ti). Enable one in Settings.');
+          'every Crucible server is paused (M1 Ultra, 3090 Ti). Set one to Running in Settings.');
       },
       band: async () => { throw new Error('the band must not be asked for'); },
       roster: () => [{ name: 'M1 Ultra', enabled: false }, { name: '3090 Ti', enabled: false }],

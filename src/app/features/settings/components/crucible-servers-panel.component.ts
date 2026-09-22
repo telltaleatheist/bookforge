@@ -4,7 +4,8 @@ import { CommonModule } from '@angular/common';
 // and the Name / Address / Access key triple gone there is no `ngModel` left on
 // this panel at all.
 
-import { DesktopButtonComponent } from '../../../creamsicle-desktop';
+import { DesktopButtonComponent, DesktopStateSwitchComponent } from '../../../creamsicle-desktop';
+import { SERVER_STATE_CONTROL } from '@shared/queue/state-switch';
 import { ElectronService } from '../../../core/services/electron.service';
 import { CrucibleDoorsComponent } from './crucible-doors.component';
 import { CrucibleEngineControlsComponent } from './crucible-engine-controls.component';
@@ -70,7 +71,10 @@ import { coordinationWords } from './crucible-words';
 @Component({
   selector: 'app-crucible-servers-panel',
   standalone: true,
-  imports: [CommonModule, DesktopButtonComponent, CrucibleDoorsComponent, CrucibleEngineControlsComponent],
+  imports: [
+    CommonModule, DesktopButtonComponent, DesktopStateSwitchComponent,
+    CrucibleDoorsComponent, CrucibleEngineControlsComponent,
+  ],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="cru">
@@ -101,8 +105,8 @@ import { coordinationWords } from './crucible-words';
       <p class="cru-sub">
         Drag to set the order — the first one that is free gets the work. The order IS the
         priority; there are no rank numbers. A newly connected engine starts at the bottom.
-        Switching one off is how you say “not that one”: BookForge then asks it for nothing at
-        all.
+        Pausing one is how you say “not that one”: BookForge then asks it for nothing at
+        all, while work already on its card finishes.
       </p>
 
       @if (ranked().length === 0) {
@@ -122,10 +126,27 @@ import { coordinationWords } from './crucible-words';
         >
           <div class="cru-row-head">
             <span class="cru-grip" title="Drag to re-order">⠿</span>
-            <label class="cru-toggle" [title]="row.enabled ? 'The queue may use this server' : 'The queue will not use this server'">
-              <input type="checkbox" [checked]="row.enabled" (change)="setEnabled(row.name, $any($event.target).checked)" />
-              <span>{{ row.enabled ? 'Enabled' : 'Disabled' }}</span>
-            </label>
+            <!--
+              RUNNING / PAUSED, not a checkbox (Owen, 2026-09-22: *"instead of
+              having a checkmark for enabled/disabled crucible servers, maybe we
+              can replace it with a running/paused switch, just like the
+              master"*).
+
+              The same control the queue's toolbar draws and the same one on the
+              GPU lane, from the same words — and it writes the same
+              routing.disabled the checkbox always wrote. What changed is that
+              it now says what the QUEUE will do with the machine rather than
+              naming a property of the machine: a paused server is resting, and
+              "Disabled" read like broken.
+            -->
+            <desktop-state-switch
+              size="sm"
+              [label]="row.name"
+              [running]="row.enabled"
+              [wording]="serverState"
+              [busy]="switching() === row.name"
+              (stateChange)="setEnabled(row.name, $event)"
+            />
             <span class="cru-name">{{ row.name }}</span>
             <span class="cru-spacer"></span>
             <!--
@@ -213,9 +234,9 @@ import { coordinationWords } from './crucible-words';
             <p class="cru-queued" [class.warn]="!row.enabled">
               {{ queuedFor(row.name) }}
               queued {{ queuedFor(row.name) === 1 ? 'book is' : 'books are' }} waiting for
-              {{ row.name }}@if (!row.enabled) {, which is now disabled}.
+              {{ row.name }}@if (!row.enabled) {, which is now paused}.
               @if (!row.enabled) {
-                They hold until it is enabled again — nothing is re-routed on its own.
+                They hold until it is set back to Running — nothing is re-routed on its own.
               }
               <desktop-button
                 variant="ghost"
@@ -474,7 +495,7 @@ import { coordinationWords } from './crucible-words';
     .cru-badge { font-size: 11px; padding: 1px 6px; border-radius: 4px; background: var(--bg-elevated, var(--surface-2)); color: var(--text-secondary); }
     .cru-badge.good { background: color-mix(in srgb, var(--success) 18%, transparent); color: var(--success); }
     .cru-badge.bad, .cru-badge.stale { background: color-mix(in srgb, var(--error, #d05a5a) 18%, transparent); color: var(--error, #d05a5a); }
-    .cru-toggle, .cru-radio { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--text-secondary); cursor: pointer; }
+    .cru-radio { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--text-secondary); cursor: pointer; }
     .cru-confirm { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-secondary); }
     .cru-activity, .cru-models { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
     .cru-job, .cru-model { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-secondary); }
@@ -666,20 +687,38 @@ export class CrucibleServersPanelComponent {
 
   // ── Rank, enablement, the default ──────────────────────────────────────
 
+  /** The two words this row's switch draws — the queue toolbar's, one scope down. */
+  readonly serverState = SERVER_STATE_CONTROL;
+  /**
+   * The server whose switch is mid-flight, so it cannot be double-pressed.
+   *
+   * The write is two round trips (the routing record, then the waiting-row
+   * counts), and on a slow library that is long enough to press again — which
+   * would land two writes for one intention and leave the row showing whichever
+   * answered last.
+   */
+  readonly switching = signal<string | null>(null);
+
   async setEnabled(name: string, enabled: boolean): Promise<void> {
-    const res = await this.electron.crucible.setEnabled(name, enabled);
-    if (!res.success || !res.data) {
-      this.setRowError(name, res.error ?? 'That switch could not be saved, and nothing said why.');
-      return;
+    if (this.switching() !== null) return;
+    this.switching.set(name);
+    try {
+      const res = await this.electron.crucible.setEnabled(name, enabled);
+      if (!res.success || !res.data) {
+        this.setRowError(name, res.error ?? 'That switch could not be saved, and nothing said why.');
+        return;
+      }
+      this.applyRouting(res.data);
+      // The whole point of the count: it appears the moment a server is paused.
+      await this.reloadWaitForCounts();
+    } finally {
+      this.switching.set(null);
     }
-    this.applyRouting(res.data);
-    // The whole point of the count: it appears the moment a switch goes off.
-    await this.reloadWaitForCounts();
   }
 
   // ── Queued books that name a server (crucible §4.2.1a) ─────────────────
   //
-  // "12 rows are waiting for this PC, which is now disabled." They are TOLD,
+  // "12 rows are waiting for this PC, which is now paused." They are TOLD,
   // never moved — a named server is an instruction, and re-routing twenty
   // books onto slower hardware without being asked is the failure the whole
   // section exists to prevent. The bulk button is the one click that moves

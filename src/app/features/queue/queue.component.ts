@@ -163,6 +163,12 @@ import { prepFraction, prepLabel } from '@shared/queue/bench';
 import type { BookPlan, FinishedRun, PlannedStep, StillReason } from '@shared/queue/bench';
 import type { JobType, ServerReach, StepStatus } from '@shared/queue/engine-types';
 import { LOCAL_WORK_SET, LONGFORM_ALIGN_SET } from '@shared/queue/slot-sets';
+import {
+  QUEUE_STATE_CONTROL, SERVER_STATE_CONTROL, serverHeldByMaster,
+} from '@shared/queue/state-switch';
+import {
+  DesktopStateSwitchComponent,
+} from '../../creamsicle-desktop/components/state-switch/state-switch.component';
 import { DialogService } from '../../creamsicle-desktop/services/dialog.service';
 import { ElectronService } from '../../core/services/electron.service';
 import { ToastService } from '../../core/services/toast.service';
@@ -175,37 +181,20 @@ import { QueueService } from './services/queue.service';
 import { QueueTrayService } from './services/queue-tray.service';
 import type { BenchSectionView, BookPlanView, LaneView } from './services/queue-tray.service';
 
-/**
- * WHAT RUNNING AND PAUSED MEAN — the words, once (2026-09-19).
+/*
+ * WHAT RUNNING AND PAUSED MEAN — the words, once (2026-09-19), and since
+ * 2026-09-22 in `shared/queue/state-switch.ts` rather than in this file.
  *
- * The state used to be drawn TWICE — on the Up next band header and in the
- * toolbar — because the band header vanished with its rows. The lane layout
- * removed that band, so there is now ONE drawing of it, in the toolbar, where
- * it is on screen over an empty queue as well as a full one. The table stays
- * where it is: two WORDINGS of one fact is the thing to avoid, and a copied
- * tooltip is exactly what gets edited in one place a month from now.
+ * They moved when the Crucible servers' Enabled/Disabled checkboxes became the
+ * same switch one scope down (Owen: *"maybe we can replace it with a
+ * running/paused switch, just like the master"*): the same tooltip would
+ * otherwise have been spelled here AND in the Settings panel, two features
+ * apart, and a copied tooltip is the one that gets edited in one place a month
+ * from now. The table's own reasoning travelled with it.
  *
- * The titles say what the STATE means, not what the button does, because the
- * one you are already in is still pressable (see `setQueueRunning`).
- *
- * `caption` is the sentence under the pill (Owen, 2026-09-20 — the segmented
- * control has to say what the state DOES, not just name it). It is a full
- * sentence rather than the tooltip's paragraph because it is always on screen.
+ * What is drawn here is `<desktop-state-switch>`, which is also the lane
+ * headers' switch and the Settings rows'. One drawing, one dialect.
  */
-const QUEUE_STATE_CONTROL = {
-  running: {
-    label: 'Running',
-    title: 'Steps start as slots free up. Pressing it while already running '
-      + 'picks up anything that was stopped.',
-    caption: 'Accepting books and starting them as machines free up.',
-  },
-  paused: {
-    label: 'Paused',
-    title: 'Books may still be added to the queue and reordered; nothing new '
-      + 'starts until Running. Work already on a slot finishes.',
-    caption: 'Accepting books; nothing new starts. Work already on a card finishes.',
-  },
-} as const;
 
 /**
  * THE SIDEBAR'S TWO DROP TARGETS, and they mean different things.
@@ -369,6 +358,7 @@ interface ChainRung {
   imports: [
     DatePipe, DecimalPipe, NgTemplateOutlet,
     JobStepComponent, JobDetailsComponent, StageBarsComponent,
+    DesktopStateSwitchComponent,
     CdkDropList, CdkDropListGroup, CdkDrag, CdkDragHandle, CdkScrollable,
   ],
   template: `
@@ -397,24 +387,12 @@ interface ChainRung {
              queue is not refused while paused. That is what the caption says,
              and it is why this needed no engine change at all: \'pump()\' has
              always been gated on the latch. -->
-        <div class="seg" role="group" aria-label="Queue state">
-          <button
-            type="button"
-            class="seg-btn"
-            [class.on]="tray.isRunning()"
-            [attr.aria-pressed]="tray.isRunning()"
-            (click)="setQueueRunning(true)"
-            [title]="queueState.running.title"
-          ><span class="seg-dot" aria-hidden="true"></span>{{ queueState.running.label }}</button>
-          <button
-            type="button"
-            class="seg-btn paused"
-            [class.on]="!tray.isRunning()"
-            [attr.aria-pressed]="!tray.isRunning()"
-            (click)="setQueueRunning(false)"
-            [title]="queueState.paused.title"
-          ><span class="seg-dot" aria-hidden="true"></span>{{ queueState.paused.label }}</button>
-        </div>
+        <desktop-state-switch
+          label="Queue"
+          [running]="tray.isRunning()"
+          [wording]="queueState"
+          (stateChange)="setQueueRunning($event)"
+        />
         <span class="qcaption">{{ stateCaption() }}</span>
       </div>
 
@@ -926,10 +904,21 @@ interface ChainRung {
                   >
                     <!-- THE SWITCH, ON THE LANE IT GOVERNS, and only on a lane
                          it can govern. Owen: "each one should have an
-                         enable/disable checkbox above it with its name."
-                         'switchOf' answers with the SERVER NAME or null, so
-                         nothing on the local tiles gets one: there is no
-                         registered server behind them to switch off.
+                         enable/disable checkbox above it with its name" — and,
+                         2026-09-22, "replace it with a running/paused switch,
+                         just like the master. the individual ones pause the gpu
+                         slots." Same fact, same door; the control now says what
+                         the queue will DO with the machine rather than naming a
+                         property of it. 'switchOf' answers with the SERVER NAME
+                         or null, so nothing on the local tiles gets one: there
+                         is no registered server behind them to switch off.
+
+                         THE MASTER SITS ABOVE IT ('masterHold'). With the queue
+                         paused a Running server starts nothing either, so the
+                         lit side is muted and the tooltip says why — but the
+                         switch is NOT rewritten to read Paused and is still
+                         pressable. What the operator decided this machine is for
+                         is theirs, and it must survive a pause.
 
                          It writes 'routing.disabled' through the same
                          'setEnabled' the Settings panel has always called. One
@@ -947,18 +936,17 @@ interface ChainRung {
                          machine off because it is asleep would leave it off
                          after it woke, and the operator never chose that. -->
                     <header class="lane-head">
+                      <span class="lane-name" [title]="lane.down || ''">{{ lane.setLabel }}</span>
                       @if (switchOf(lane); as server) {
-                        <label class="lane-switch" [title]="lane.down || ''">
-                          <input
-                            type="checkbox"
-                            [checked]="!lane.disabled"
-                            [disabled]="switching() === server"
-                            (change)="toggleServer(server, $any($event.target).checked)"
-                          />
-                          <span class="lane-name">{{ lane.setLabel }}</span>
-                        </label>
-                      } @else {
-                        <span class="lane-name">{{ lane.setLabel }}</span>
+                        <desktop-state-switch
+                          size="sm"
+                          [label]="lane.setLabel"
+                          [running]="!lane.disabled"
+                          [wording]="serverState"
+                          [busy]="switching() === server"
+                          [heldReason]="masterHold()"
+                          (stateChange)="toggleServer(server, $event)"
+                        />
                       }
                       <span class="lane-slot">GPU slot {{ laneOrdinal(lane) }} of {{ gpuLanes().length }}</span>
                       <!-- Per-class bindings, not [class]="tone": a whole-class
@@ -1745,48 +1733,10 @@ interface ChainRung {
     }
 
     /* ── Running / Paused ──────────────────────────────────────────────────
-       Two states of ONE fact (the engine's running latch), drawn as one
-       control so it cannot look like two independent buttons. Colour carries
-       the meaning: green is moving, amber is holding — never red, because
-       pausing throws nothing away. */
-    .seg {
-      display: inline-flex;
-      border: 1px solid var(--border-default);
-      border-radius: 7px;
-      overflow: hidden;
-      background: var(--bg-surface);
-    }
-
-    .seg-btn {
-      font-family: inherit;
-      font-size: 0.6875rem;
-      font-weight: 600;
-      padding: 4px 11px;
-      border: 0;
-      background: transparent;
-      color: var(--text-muted);
-      cursor: pointer;
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      white-space: nowrap;
-    }
-
-    .seg-btn + .seg-btn { border-left: 1px solid var(--border-default); }
-    .seg-btn:hover { color: var(--text-primary); }
-    .seg-btn.on { background: var(--accent-subtle); color: var(--accent); }
-    .seg-btn.paused.on { background: var(--warning-bg); color: var(--warning-text); }
-
-    .seg-dot {
-      width: 6px;
-      height: 6px;
-      border-radius: 50%;
-      background: currentColor;
-      flex: none;
-      opacity: 0.35;
-    }
-
-    .seg-btn.on .seg-dot { opacity: 1; }
+       The pill itself is the desktop-state-switch component since 2026-09-22 —
+       its styles went with it, because the lane headers and the Settings rows
+       draw the same control, and three copies of one border-radius is three
+       chances to disagree. */
 
     /* ── Cards ─────────────────────────────────────────────────────────── */
 
@@ -2265,20 +2215,6 @@ interface ChainRung {
       padding-bottom: 8px;
       border-bottom: 1px solid var(--border-subtle);
     }
-
-    /* Owen: *"each one should have an enable/disable checkbox above it with its
-       name."* Big enough to hit without aiming — it is the control that decides
-       whether a machine works at all. */
-    .lane-switch {
-      display: flex;
-      align-items: center;
-      gap: 7px;
-      cursor: pointer;
-      user-select: none;
-      min-width: 0;
-    }
-    .lane-switch input { width: 16px; height: 16px; cursor: pointer; accent-color: var(--accent); }
-    .lane-switch input:disabled { cursor: progress; }
 
     .lane-name {
       font-size: 0.875rem;
@@ -3285,7 +3221,8 @@ interface ChainRung {
     /* ── Focus ─────────────────────────────────────────────────────────────
        The controls this page grew have their own backgrounds, and a borderless
        one shows no default ring against them. Said once, for all of them. */
-    .seg-btn:focus-visible,
+    /* (.seg-btn used to head this list. The switch is its own component now
+       and carries its own ring — a parent's styles do not reach into it.) */
     .kill-x:focus-visible,
     .fin-toggle:focus-visible,
     .fin-block:focus-visible,
@@ -3421,6 +3358,16 @@ export class QueueComponent {
 
   /** The toolbar's half of the shared Running / Paused wording. */
   readonly queueState = QUEUE_STATE_CONTROL;
+  /** The lane headers' half of it — the same two words, one scope down. */
+  readonly serverState = SERVER_STATE_CONTROL;
+  /**
+   * Why a Running server will not start anything anyway, or null.
+   *
+   * The hierarchy the master owns: with the queue paused, every server switch is
+   * held whatever it says. Computed here rather than per lane because it is one
+   * fact about the whole page.
+   */
+  readonly masterHold = computed(() => serverHeldByMaster(this.tray.isRunning()));
 
   /** The sentence under the pill — what the state the queue is IN does. */
   stateCaption(): string {
@@ -4255,7 +4202,7 @@ export class QueueComponent {
    *
    * A refusal is SAID. The only one main can give is a name this machine does
    * not have, which would mean the bench and the registry had come apart — and
-   * a checkbox that silently sprang back would be the worst way to learn it.
+   * a switch that silently sprang back would be the worst way to learn it.
    */
   async toggleServer(server: string, enabled: boolean): Promise<void> {
     if (this.switching() !== null) return;
