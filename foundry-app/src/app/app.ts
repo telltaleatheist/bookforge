@@ -991,6 +991,29 @@ export class App {
    * sooner — the work is the rasterizing, and it is already using the machine.
    * It also keeps the progress card telling one true story rather than two
    * interleaved ones.
+   *
+   * ── THE TWO BUTTONS ARE NAMED FOR THE PERSON WHO DID NOT BUILD THIS ────────
+   *
+   * They said *Open it* and *Make a book from its pages*, and Owen retired both
+   * (2026-09-21): *"maybe we can rename those buttons to make sense for somebody
+   * who doesnt know what theyre for exactly. maybe it can just be 'edit book' or
+   * 'open book'. that might be more logical."* — and the sentence he gave for why
+   * is the whole ruling: *"that makes sense to me because i know what i
+   * programmed it to do."*
+   *
+   * "Make a book from its pages" describes the MACHINERY — an explosion, a light
+   * table, a selection, a mint — to somebody who has not met any of it. *Edit
+   * book* describes the OUTCOME, which is the only thing they can have an opinion
+   * about; that it happens by taking the book apart is what the detail paragraphs
+   * are for, and they now say it in words nobody has to already know.
+   *
+   * THE PAIR IS DELIBERATELY SYMMETRICAL — *Open book* / *Edit book*, one verb
+   * apart — because the question this card asks is which of two things the person
+   * means, and two labels of different shapes read as two unrelated offers. The
+   * same two words name the door inside an open book (`ActionMenuComponent`'s
+   * *Edit book*, which does exactly this to a project's own PDF), and that is not
+   * a coincidence to be tidied away: one gesture with one name, wherever it is
+   * reached from.
    */
   private async sortPdfs(pdfs: readonly File[]): Promise<void> {
     const one = pdfs.length === 1;
@@ -1001,15 +1024,22 @@ export class App {
         : 'What are these?',
       detail: [
         one
-          ? 'Open it to read it, or take it apart into one image per page — for a scan whose '
-            + 'pages are photographs that still need cropping, splitting and straightening.'
-          : 'Open them to read them, or take them apart into one image per page — for scans whose '
-            + 'pages are photographs that still need cropping, splitting and straightening.',
+          ? 'Open book reads it exactly as it is: the pages go through Foundry the ordinary way, '
+            + 'and everything after that is made from what they say.'
+          : 'Open books reads them exactly as they are: the pages go through Foundry the ordinary '
+            + 'way, and everything after that is made from what they say.',
+        one
+          ? 'Edit book takes it apart first, into one picture per page, so you can crop them, '
+            + 'split a two-page spread into two pages, and turn a page the right way up. The book '
+            + 'is rebuilt out of the pages you fixed, and read from there.'
+          : 'Edit books takes them apart first, into one picture per page, so you can crop them, '
+            + 'split a two-page spread into two pages, and turn a page the right way up. Each book '
+            + 'is rebuilt out of the pages you fixed, and read from there.',
         'Pages land in the workspace, where you choose which of them become a book.',
       ],
       choices: [
-        { key: 'open', label: one ? 'Open it' : 'Open them' },
-        { key: 'pages', label: one ? 'Make a book from its pages' : 'Make books from their pages' },
+        { key: 'open', label: one ? 'Open book' : 'Open books' },
+        { key: 'pages', label: one ? 'Edit book' : 'Edit books' },
       ],
       preferred: 'open',
       dismissed: 'nothing',

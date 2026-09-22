@@ -9,12 +9,13 @@ import {
   viewChild,
 } from '@angular/core';
 
-import { joinedQuad, mintedPageIds, sameShape, turnedLike } from '@shared/capture';
+import { joinedQuad, mintedPageIds, turnedLike } from '@shared/capture';
 import type { CaptureQuad } from '@shared/types';
 
 import { CaptureMintService } from '../../core/capture-mint.service';
 import { ConfirmService } from '../../core/confirm.service';
 import { CaptureService, isComplete } from '../../core/capture.service';
+import { NoticeService } from '../../core/notice.service';
 import type { Tab } from '../../core/documents.service';
 import {
   CaptureEditorModalComponent,
@@ -224,6 +225,7 @@ import { ProjectsService } from '../../core/projects.service';
 })
 export class CaptureViewComponent {
   protected readonly captures = inject(CaptureService);
+  private readonly notices = inject(NoticeService);
   protected readonly mint = inject(CaptureMintService);
   private readonly confirm = inject(ConfirmService);
   private readonly projects = inject(ProjectsService);
@@ -424,7 +426,7 @@ export class CaptureViewComponent {
     const crop = id === null ? undefined : this.captures.standingFor(id)?.crop;
     if (id === null || recipe === null || crop === undefined) return null;
     const photo = recipe.photos.find((one) => one.id === id);
-    if (photo === undefined || !sameShape(crop, photo)) return null;
+    if (photo === undefined) return null;
     const facing = photo.pages[0]?.quad;
     if (facing === undefined) return null;
     const book = turnedLike(crop.quad, facing);
@@ -582,7 +584,7 @@ export class CaptureViewComponent {
       const wanted = new Set(photos);
       return this.captures.cards().filter((card) => wanted.has(card.photoId)).map((card) => card.id);
     };
-    return { follow: pagesOf(members.takes), complete: pagesOf(members.complete), shape: pagesOf(members.shape) };
+    return { follow: pagesOf(members.takes), complete: pagesOf(members.complete) };
   });
 
   /**
@@ -971,7 +973,16 @@ export class CaptureViewComponent {
      * and from the arrangement recorded beside it, which means nothing on the
      * surface would ever say so.
      */
-    await this.captures.flush();
+    // A DISK THAT IS BEHIND THE SCREEN IS NOT MINTED (Owen, 2026-09-21: the
+    // product's cuts were not where the stage drew them). `flush` throws when
+    // the write it owes could not be made, and the mint is not started over
+    // a recipe two gestures old.
+    try {
+      await this.captures.flush();
+    } catch (err) {
+      this.notices.notice.set(err instanceof Error ? err.message : String(err));
+      return;
+    }
     const step = await this.mint.mint(this.tab().path);
     if (step === null) return;
     await this.captures.refreshMintedFrom();

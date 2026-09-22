@@ -391,6 +391,26 @@ export function isResumableStop(reason: unknown): boolean {
 }
 
 /**
+ * THE ENGINE'S EXIT CODE FOR A PARKED RUN — sysexits' EX_TEMPFAIL, 75.
+ *
+ * The page reader (`src/vlm/endpoint.ts`, `PARKED_EXIT_CODE`) exits with it
+ * when the model server's weather — a 502 from a proxy over a stale socket, a
+ * busy card, a connect timeout — outlasted its stated retry budget. The run is
+ * not failed: every page that landed is banked, the resume is free, and the
+ * stderr's last line names the endpoint and the page. Before this (2026-09-21,
+ * Everyday Denazification page 32) every non-zero exit was a failure, the
+ * hosted dispatcher let the lease go, Crucible unloaded the engine and eleven
+ * in-flight pages were thrown away with the process.
+ *
+ * WRITTEN IN TWO PLACES ON PURPOSE. The engine and this app are built and
+ * vendored separately, so the number cannot be imported across; it is stated
+ * here and there with the same docblock, and a change to one is a change to
+ * both in the same commit — the pairing rule `DEFAULT_VLM_CONCURRENCY` and
+ * `band.ts` already live under.
+ */
+export const ENGINE_PARKED_EXIT = 75;
+
+/**
  * RENDER THE BOOK. `foundry vlm-convert --reuse-readings --format <kind>`.
  *
  * OFFLINE, AGAINST A BANK THAT IS ALREADY COMPLETE. No model, no server, no GPU
@@ -1891,6 +1911,15 @@ export interface RunVenue {
  * `cancelled` IS NOT `failed`, which is the distinction the row carried and this
  * keeps: somebody spent GPU and took it back, and filing that as a failure is how
  * a retry restarts work a person just stopped.
+ *
+ * `parked` IS NOT `failed` EITHER (2026-09-21). The engine ran, met the model
+ * server's weather, retried it through its stated budget and exited
+ * `ENGINE_PARKED_EXIT` with a sentence naming the endpoint and the page. Like
+ * `wait` it carries no row, because nothing LANDED — the pages that were read
+ * are in the readings bank and the same request, run again, resumes from them.
+ * The host re-queues it (re-acquiring its lease on the way back) rather than
+ * reddening the row; filing a park as a failure is how one stale socket cost a
+ * lease, an engine load and a night's pages.
  */
 export type RunOutcome =
   | { outcome: 'done'; row: FoundryJobRow }
@@ -1915,7 +1944,17 @@ export type RunOutcome =
     /** True when only a person can clear it. See the type header. */
     standing: boolean;
   }
-  | { outcome: 'cancelled'; row: FoundryJobRow };
+  | { outcome: 'cancelled'; row: FoundryJobRow }
+  | {
+    outcome: 'parked';
+    /**
+     * The engine's own park sentence — the endpoint, the page, what it last
+     * answered, and that the banked pages make the resume free. For the row.
+     */
+    reason: string;
+    /** The last of the engine's stderr, for the host's log: every weather line. */
+    stderrTail: string;
+  };
 
 /**
  * WHERE THIS RUN WAS PLACED, announced ONCE before the engine is spawned.
@@ -5084,6 +5123,52 @@ export interface CaptureSplit {
   b: CapturePoint;
 }
 
+/**
+ * WHERE THE FOLD APPEARS TO BE ON ONE PHOTOGRAPH — measured, not placed.
+ *
+ * Owen asked for it on 2026-09-21: *"is there any way we could detect a book
+ * gutter and try to place page splits roughly where the gutter is, which might
+ * be different on each page? just a rudimentary gutter detector? not perfect,
+ * just estimate based on page coloring or something?"* — and the answer is this
+ * field, `shared/gutter.ts` which computes it, and `seated` in the renderer's
+ * capture service which spends it.
+ *
+ * ── NOT A SPLIT, AND THE DIFFERENCE IS THE POINT ──────────────────────────
+ *
+ * A `CaptureSplit` is a decision: two endpoints somebody let go of, or the
+ * book's own line landed on this page. This is an OBSERVATION about pixels, and
+ * it has no lean, no endpoints and no authority. It cannot cut anything; all it
+ * can do is offer a better place to put a line that was going to be placed
+ * anyway. Nothing downstream of the recipe reads it — not the mint, not the
+ * validator beyond checking its shape — and the quads stay authoritative.
+ *
+ * ── FRAME COORDINATES, UNTURNED, EXACTLY LIKE A PAGE QUAD ─────────────────
+ *
+ * Axis 'x' is a vertical line at `at` of the frame's WIDTH; axis 'y' is a
+ * horizontal line at `at` of its HEIGHT. Both are fractions of the working copy
+ * as the decoder handed it over, which is the same space every other coordinate
+ * here lives in and the reason a reader can compare this with a split without
+ * converting anything.
+ *
+ * WHICH AXIS IS THE FRAME'S SHAPE. A landscape frame is a spread lying the way
+ * a book lies, so its fold runs down it ('x'); a portrait frame in a book of
+ * spreads is the same spread photographed sideways, so its fold runs across it
+ * ('y') and its halves are stacked. See `gutterOf` for how it is measured and
+ * `cutOf` for the reading a split gives of the same fact.
+ */
+export interface CaptureGutter {
+  axis: 'x' | 'y';
+  /** 0..1 along the axis named above. */
+  at: number;
+  /**
+   * The detector's rule this was measured under (`GUTTER_RULE` in
+   * shared/gutter.ts). Absent on a measurement from before rules were
+   * numbered, which reads as the first rule; a book whose gutters were read
+   * under an older rule is read again on its next open.
+   */
+  rule?: number;
+}
+
 /** One page of the book: a quad on some photo, struck or not. */
 export interface CapturePage {
   /** `<photoId>:<n>`. */
@@ -5211,6 +5296,31 @@ export interface CapturePhoto {
    * the top and bottom edges of the page it was cutting.
    */
   split: CaptureSplit | null;
+  /**
+   * WHERE THE FOLD LOOKED TO BE when this photograph was measured — an
+   * estimate from the thumbnail's own pixels, and never a decision.
+   *
+   * See `CaptureGutter` for what it means and `gutterOf` for how it is read off
+   * the picture. It is stored rather than measured on demand because measuring
+   * it needs a decoded bitmap, and the renderer that spends it has fractions
+   * and nothing else: a light table drawing 272 cards cannot decode 272
+   * thumbnails to find out where a line should go.
+   *
+   * ── THREE STATES, AND THE THIRD ONE IS WHY THIS IS NOT A PLAIN OPTIONAL ───
+   *
+   * A gutter is MEASURED AND FOUND. Null is MEASURED AND THERE IS NO FOLD TO
+   * SEE, which is a real answer about a cover, a loose leaf, or a spread shot
+   * in flat light — and one the surface must be able to tell from the third
+   * state, because "the middle is a guess" is worth saying out loud.
+   *
+   * Absent is NEVER MEASURED: every recipe written before 2026-09-21. It is not
+   * a false and it is not a null, and intake distinguishes it for exactly that
+   * reason — an absent field is measured from `derived/<thumb>` the next time
+   * the project opens and written back once, so a book intaken last week gets
+   * its gutters without being re-intaken, while a null survives the open
+   * untouched rather than being re-measured to the same null forever.
+   */
+  gutter?: CaptureGutter | null;
   /**
    * One before a split, two after, in the original's slot.
    *

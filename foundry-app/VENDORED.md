@@ -10,10 +10,35 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\<user>\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **7ab80b5** — *Adopt Crucible 1.0.20: narrator repinned to 52807873 (dep-only)* (was fe44667) |
+| Source sha | **f9bebb6** — *Adopt Crucible 1.0.21 (dep-only): the proxy sends a request the wire loses once more on a fresh socket* (was 7ab80b5) |
 | Engine | **NOT VENDORED AND NOT KNOWABLE FROM THIS FILE** — it is a spawned CLI resolved at RUNTIME (`FOUNDRY_BIN`, else `resolveFoundryPath`, `electron/main.ts`), so which build executes is a property of the machine and not of this copy. On a developer's Mac that resolves to Foundry's own checkout at `/Volumes/Callisto/Projects/foundry/dist/foundry-darwin-arm64`, which is whatever was last built there — `foundry 2.0.2 (04758be)` — REBUILT at this re-vendor (2026-09-21) so the engine carries fdba761's clean-text log change. **Ask the binary: `$FOUNDRY_BIN --version`.** See *The engine this file named was not the engine that ran* below. |
-| Copied on | 2026-09-19 (five times: 3738c01, 3436fc5, 806d44b, f349771, ca4754c) and 2026-09-20 (98a4344, 9e0b27d, dccc144, 7b98004, cc5fc5b, 93010d8, 77e1d6d) |
-| Copied by | Mechanical source sync, verified against Foundry `77e1d6d:app/` (`diff -rq`, clean but for this file, `IPC-CHANNELS.md` and `.gitignore` — see below); details below |
+| Copied on | 2026-09-19 (five times: 3738c01, 3436fc5, 806d44b, f349771, ca4754c) and 2026-09-20 (98a4344, 9e0b27d, dccc144, 7b98004, cc5fc5b, 93010d8, 77e1d6d) and 2026-09-21 (77a529d, b1c68fd, fe44667, 7ab80b5, f9bebb6) |
+| Copied by | Mechanical source sync, verified against Foundry `f9bebb6:app/` (`diff -rq`, clean but for this file, `IPC-CHANNELS.md` and `.gitignore` — see below); details below |
+
+## The `7ab80b5 → f9bebb6` re-vendor — the 1.0.21 SDK adoption, plus three Foundry commits (2026-09-21)
+
+NOT dependency-only this time. `git diff --stat 7ab80b5..f9bebb6 -- app/` is 17 files: the
+four SDK files (package.json, package-lock.json, the two vendor tarballs) and thirteen source
+files from the three Foundry commits that landed on main between the two pins, all taken
+mechanically because a copy that matched no Foundry sha would be exactly the fork this file
+forbids:
+
+- `d7f9712` *vlm/endpoint: weather is retried within a budget, then the run parks by name* —
+  the client half of the 22:03 incident: a 5xx/timeout/reset on one page no longer ends the
+  run, drops the lease and closes every other request. (Engine-side, in Foundry `src/`; the
+  app half here is the park surface.)
+- `753dca8` *app/queue: exit 75 from the engine is a park, not a failure* —
+  `electron/job-queue.ts`: the queue reads a parked run as parked.
+- `3e26e53` *capture: Global reaches every page, the cut finds the fold, and a PDF can be
+  edited* — capture rail/view, `shared/gutter.ts` (new), `core/book-edit.service.ts` (new).
+
+1.0.21 itself is server-side (crucible 5eb3bb1): the proxy's httpx pool expires an idle
+socket at 2 s, below vLLM's 5 s keep-alive, and a request the wire loses is sent once more on
+a fresh socket; timeouts are never retried. The SDK's wire is unchanged. Verified with
+`diff -rq --strip-trailing-cr` (clean but for the excluded files). Gates:
+`node tools/test-foundry-adopt.js` 40/40; root `tsc -p tsconfig.electron.json --noEmit`
+exit 0; `test-foundry-host-queue.js`, `test-foundry-host.js`,
+`test-foundry-hosted-crucible-seam.js`, `test-foundry-runner-seam.js` (results in the commit).
 
 ## The `fe44667 → 7ab80b5` re-vendor — the 1.0.20 SDK adoption (2026-09-21)
 

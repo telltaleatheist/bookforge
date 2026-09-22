@@ -15,7 +15,7 @@ export type PrepareVerb = keyof CapturePrepared;
  * three photographs: a number on this rail and the cards it lights have to be
  * one answer or the count is a claim nobody can check.
  */
-export type Population = 'follow' | 'complete' | 'shape';
+export type Population = 'follow' | 'complete';
 
 /** What a task row draws. Composed here so the template stays a list. */
 interface Task {
@@ -374,14 +374,6 @@ interface Task {
             title="Show me the ones the book leaves alone"
             (click)="select.emit('complete')"
           ><span class="pip"></span>{{ cost().complete }} complete</button>
-        }
-        @if (cost().shape > 0) {
-          <button
-            class="pop odd"
-            type="button"
-            title="Show me the ones this leaves out"
-            (click)="select.emit('shape')"
-          ><span class="pip"></span>{{ cost().shape }} a different shape</button>
         }
       </div>
     </ng-template>
@@ -781,7 +773,7 @@ export class CaptureRailComponent {
    * a second button that appears and disappears.
    */
   protected readonly cropCost = computed<string>(() => {
-    const { takes, complete, shape } = this.cost();
+    const { takes, complete } = this.cost();
     const cut = this.bookCut();
     const said: string[] = [];
     /*
@@ -808,13 +800,13 @@ export class CaptureRailComponent {
         ? `${takes} take the book’s crop and cut, two pages each.`
         : `${takes} take the book’s crop.`);
     }
-    said.push(...spared(complete, shape));
+    said.push(...spared(complete));
     return said.join(' ');
   });
 
   /** The same sentence for the cut, which lands on the crops already there. */
   protected readonly cutCost = computed<string>(() => {
-    const { takes, complete, shape } = this.cost();
+    const { takes, complete } = this.cost();
     const said: string[] = [];
     // In the split pass the count is of photographs whose side of the book has a
     // CUT to give them, so nobody in it is going to be left whole — which is
@@ -830,7 +822,7 @@ export class CaptureRailComponent {
         ? `${takes} are cut where their side of the book is cut, two pages each.`
         : `${takes} are cut where the book is cut, two pages each.`);
     }
-    said.push(...spared(complete, shape));
+    said.push(...spared(complete));
     // Every crop stays put, and it has to be said: the word "apply" has just
     // meant "take the book's corners" one step above this one.
     said.push('Every crop stays where it is.');
@@ -871,24 +863,20 @@ export class CaptureRailComponent {
 }
 
 /**
- * WHO IS LEFT ALONE, AND WHY — the two spared populations, in the Apply's own
- * words.
+ * WHO IS LEFT ALONE, AND WHY — the spared population, in the Apply's own words.
  *
- * One body for both passes, because both skip on the same two tests in the same
- * order (`applyCost` asks shape first, then complete). Two sentences written
- * twice would be two chances to describe one walk differently.
+ * One body for both passes, because both skip on the same test (`applyCost`
+ * asks completeness, and since 2026-09-21 nothing else: "a different shape"
+ * was the second population, and it went when Owen ruled that a global reaches
+ * every page). Two sentences written twice would be two chances to describe
+ * one walk differently.
  */
-function spared(complete: number, shape: number): string[] {
+function spared(complete: number): string[] {
   const said: string[] = [];
   if (complete > 0) {
     said.push(complete === 1
       ? 'One is complete and keeps its own.'
       : `${complete} complete keep their own.`);
-  }
-  if (shape > 0) {
-    said.push(shape === 1
-      ? 'One is a different shape and is left out.'
-      : `${shape} are a different shape and are left out.`);
   }
   return said;
 }

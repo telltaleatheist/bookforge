@@ -229,7 +229,7 @@ import type {
   FoundryJobRow, Job, JobKind, JobRequest, RunOutcome, RunPlacement, RunVenue, SimplifyRequest,
   TextPassRequest, TranslateRequest,
 } from '../shared/types';
-import { isResumableStop } from '../shared/types';
+import { ENGINE_PARKED_EXIT, isResumableStop } from '../shared/types';
 /*
  * WHERE A JOB'S COMPUTE GOES, and the two modules that answer it (docs/SLOTS.md
  * §6, Package C). A one-way edge exactly like the plans above: neither has ever
@@ -4569,6 +4569,30 @@ async function runInSlot(job: Job, slot: Slot): Promise<void> {
 const parkedUntil = new Map<string, number>();
 
 /**
+ * RUNS THE ENGINE PARKED — the park sentence by job id, from the arm that read
+ * exit `ENGINE_PARKED_EXIT` to the door that has to say it.
+ *
+ * A pump-driven row never lands here: the arm re-queues it itself, after the
+ * settle, with `parkedUntil`. A detached run (`runJob` at the host's seam, or the
+ * dialog's own) has no pump to come back to, so the sentence is left for
+ * `runDetached` to pick up and answer with as `parked` — the fifth outcome, and
+ * the one that keeps a stale socket from being filed as a failed row.
+ */
+const parkedRuns = new Map<string, string>();
+
+/**
+ * HOW LONG A PUMP-DRIVEN ROW SITS OUT AFTER THE ENGINE PARKED — one minute.
+ *
+ * Not `parkDelay`'s three-seconds-doubling: that backoff is for a placement that
+ * was refused before anything ran, and the engine has just spent about eight
+ * minutes of its own budget waiting on the same server. A minute is long enough
+ * that the next attempt is not the ninth try at a socket that has been dead for
+ * nine, and short enough that a proxy that came back is used while somebody is
+ * still watching.
+ */
+const PARK_AFTER_WEATHER_MS = 60_000;
+
+/**
  * THE LEASE EACH RUNNING ROW HOLDS ON A CRUCIBLE'S RESIDENT MODEL.
  *
  * Off the row for `parkedUntil`'s reason and one stronger: a lease is a live
@@ -6300,6 +6324,41 @@ async function carry(
       // the file, the working tree, and both of their catalogue rows. The tray
       // obeys the same invariant through its own receipt: a cancelled export
       // leaves the document somebody filed earlier exactly where it was.
+    } else if (result.code === ENGINE_PARKED_EXIT) {
+      /*
+       * THE ENGINE PARKED, AND A PARK IS NOT A FAILURE (2026-09-21).
+       *
+       * Exit 75 is the page reader saying the model server's weather -- a
+       * 502 over a stale proxy socket, a busy card, a connect timeout --
+       * outlasted its stated retry budget. Nothing is lost: every page that
+       * landed is in the readings bank, and the same request run again
+       * resumes from them. Filing this as `failed` is exactly what turned one
+       * stale socket into a released lease, an unloaded engine and eleven
+       * thrown-away pages (Bookforge-Mac-1's finding, Everyday Denazification
+       * page 32).
+       *
+       * THE ROW GOES BACK TO QUEUED, wearing the engine's own sentence -- the
+       * last stderr line, which names the endpoint and the page and says the
+       * resume is free. Who runs it again depends on who ordered it: a
+       * pump-driven row sits out `PARK_AFTER_WEATHER_MS` on `parkedUntil` and
+       * the pump takes it back (wired after the settle below, because
+       * `settled` forgets every park); a detached run is answered through
+       * `parkedRuns` and the host, or the dialog, decides.
+       *
+       * THE READINGS ARE KEPT, as after a resumable stop and unlike a cancel:
+       * the bank is the whole reason a park costs nothing.
+       */
+      const line = result.stderr.trim().split(/\r?\n/).reverse().find((one) => /^foundry: parked:/.test(one));
+      const sentence = (line ?? '').replace(/^foundry: /, '')
+        || result.stderr.trim()
+        || `The engine parked (exit ${result.code}) with nothing to say.`;
+      next.state = 'queued';
+      next.message = sentence;
+      next.note = null;
+      delete next.startedAt;
+      parkedRuns.set(next.id, sentence);
+      lastEngineStderr.set(next.id, result.stderr);
+      console.log(`\n[job] ${next.kind} PARKED — ${path.basename(next.inputPath)}\n${sentence}\n`);
     } else {
       next.state = 'failed';
       // foundry's own stderr is the message a user needs — it names the missing
@@ -6386,8 +6445,25 @@ async function carry(
   changed();
   // The three arms above return before this line, each saying it for itself
   // after whatever that landing produced; what reaches here is a cancel, a
-  // failure, and the rendering whose landing is a catalogue row.
+  // failure, a park, and the rendering whose landing is a catalogue row.
   settle();
+  /*
+   * A PUMP-DRIVEN ROW THE ENGINE PARKED GOES BACK ON THE BOARD, after the
+   * settle and not before: `settled` gives the lease back and FORGETS every
+   * park on the row, so a `parkedUntil` set in the arm above would be gone by
+   * here. `slots` still names the row -- the pump's own `finally` clears it
+   * only once this returns -- which is how a pump-driven run is told from a
+   * detached one, whose sentence stays in `parkedRuns` for `runDetached`.
+   */
+  const parkedSentence = parkedRuns.get(next.id);
+  if (parkedSentence !== undefined && slots.has(next.id)) {
+    parkedRuns.delete(next.id);
+    lastEngineStderr.delete(next.id);
+    parkedUntil.set(next.id, Date.now() + PARK_AFTER_WEATHER_MS);
+    const timer = setTimeout(() => { void pump(); }, PARK_AFTER_WEATHER_MS);
+    timer.unref?.();
+    changed();
+  }
   // NOTHING WAS WAITED FOR: this run ran. See `Placed`, and `runDetached`, which
   // is the only caller that can do anything with the other answer.
   return null;
@@ -6442,14 +6518,20 @@ export async function runJob(request: EngineRequest, opts: RunOptions = {}): Pro
    * there that its run is nobody's twin. So "a host scheduled this" is a fact
    * about WHICH DOOR WAS OPENED rather than a claim passed in and trusted.
    */
-  const { job, wait, stderrTail } = await runDetached(request, opts, true);
+  const { job, wait, parked, stderrTail } = await runDetached(request, opts, true);
   /*
-   * ── THE FOUR ANSWERS, AND WHY THEY ARE FOUR ───────────────────────────────
+   * ── THE FIVE ANSWERS, AND WHY THEY ARE FIVE ───────────────────────────────
    *
    * A WAIT IS NOT A ROW. Nothing ran, nothing was spent, and the row minted for
    * the attempt has already been discarded (`runDetached`) — so handing one back
    * would be handing over residue and inviting the host to draw it. What the host
    * needs is the holder's own sentence and whether time alone will fix it.
+   *
+   * A PARK IS NOT A ROW EITHER, and it is not a failure (2026-09-21). The engine
+   * ran, the model server's weather outlasted its retry budget, and it exited
+   * `ENGINE_PARKED_EXIT` with the pages it read banked. The row is discarded the
+   * way a wait's is; what the host needs is the engine's sentence to re-queue by,
+   * and the stderr for its log, which holds every weather line before the park.
    *
    * THE OTHER THREE ARE THE ROW, exactly as this door has always answered, and
    * `cancelled` stays distinct from `failed` for the reason it always was:
@@ -6463,6 +6545,7 @@ export async function runJob(request: EngineRequest, opts: RunOptions = {}): Pro
   if (wait !== null) {
     return { outcome: 'wait', busyLine: wait.reason, standing: wait.standing };
   }
+  if (parked !== null) return { outcome: 'parked', reason: parked, stderrTail };
   if (job.state === 'cancelled') return { outcome: 'cancelled', row: job };
   if (job.state === 'failed') {
     return {
@@ -6556,7 +6639,7 @@ async function runDetached(
    * so it is marked nothing and stays drawn for as long as it lasts.
    */
   viaHost: boolean,
-): Promise<{ job: Job; wait: PlacementWait | null; stderrTail: string }> {
+): Promise<{ job: Job; wait: PlacementWait | null; parked: string | null; stderrTail: string }> {
   const parentStep = opts.parentStep ?? null;
   /*
    * THE ROW, BORN RUNNING. Every field is composed exactly as `enqueueHere` and
@@ -6648,7 +6731,7 @@ async function runDetached(
   if (opts.signal?.aborted === true) {
     abort();
     opts.signal.removeEventListener('abort', abort);
-    return { job: copyOf(job), wait: null, stderrTail: '' };
+    return { job: copyOf(job), wait: null, parked: null, stderrTail: '' };
   }
 
   /*
@@ -6698,6 +6781,16 @@ async function runDetached(
    */
   if (waited !== null) discardUnrun(job);
   /*
+   * AND A PARK LEAVES THE SAME WAY A WAIT DOES: nothing landed, the row is
+   * discarded, and the caller gets the engine's sentence to re-queue by. The
+   * readings bank, not the row, is what the resume is made from.
+   */
+  const parked = parkedRuns.get(job.id) ?? null;
+  if (parked !== null) {
+    parkedRuns.delete(job.id);
+    discardUnrun(job);
+  }
+  /*
    * ── AND IT DOES NOT PUMP, WHICH IS THE LINE THE READING SERVER LIVES ON ────
    *
    * Every other ending in this file calls `pump()`, because every other ending is
@@ -6721,7 +6814,7 @@ async function runDetached(
    */
   const stderrTail = lastEngineStderr.get(job.id) ?? '';
   lastEngineStderr.delete(job.id);
-  return { job: copyOf(job), wait: waited, stderrTail };
+  return { job: copyOf(job), wait: waited, parked, stderrTail };
 }
 
 /**
@@ -6827,7 +6920,7 @@ export async function runNow(
   // NOT `runJob`: that door is the seam's and marks its row as a host's twin.
   // This run was decided here, at the button, and nothing anywhere else holds a
   // row for it — see the paragraph above and `hostScheduled`.
-  const { job, wait } = await runDetached(request, { parentStep }, false);
+  const { job, wait, parked } = await runDetached(request, { parentStep }, false);
   /*
    * ── A WAIT HERE IS A FAILED EXPORT, BY NAME ───────────────────────────────
    *
@@ -6838,12 +6931,16 @@ export async function runNow(
    * theirs can wait — and "close to" is where the expensive failures live. So the
    * holder's own sentence becomes the dialog's answer rather than a promise that
    * never resolves.
+   *
+   * A PARK ANSWERS THE SAME WAY, for the same reason: nobody is here to re-queue
+   * it, and the engine's sentence already says the pages are banked and the
+   * same press resumes.
    */
-  if (wait !== null) {
+  if (wait !== null || parked !== null) {
     return {
       ...job,
       state: 'failed',
-      error: wait.reason,
+      error: wait?.reason ?? parked ?? 'The run was parked.',
       finishedAt: Date.now(),
     };
   }
