@@ -63,6 +63,7 @@ import { app, nativeImage } from 'electron';
 import { PDFDocument } from 'pdf-lib';
 
 import type {
+  CaptureGutter,
   CaptureIntakeProgress,
   CaptureLines,
   CaptureMintBegun,
@@ -92,6 +93,7 @@ import {
   splitFromFraction,
   WHOLE_FRAME,
 } from '../shared/capture';
+import { GUTTER_RULE, gutterOf, lumaFromBgra } from '../shared/gutter';
 import { beginMint, cancelHere, mintCancelled, noteMintPage, settleMint } from './job-queue';
 import { currentArrangement, ledgerOf, readManifest, recordMint } from './projects';
 import { writeAtomically } from './atomic';
@@ -636,6 +638,51 @@ function validRecipe(value: unknown, file: string): CaptureRecipe {
       fail(file, `photograph ${index} says it is complete in something that is not a yes or a no`);
     }
 
+    /*
+     * WHERE THE FOLD LOOKED TO BE -- carried, checked, and read by nothing in
+     * main except the backfill that writes it.
+     *
+     * `byHand`'s contract for the fifth time, and the fifth telling earns
+     * itself on the THIRD state. A dropped `gutter` would not merely lose a
+     * measurement: absent means NEVER MEASURED (see `CapturePhoto.gutter`), so
+     * dropping it on every save would send `openCapture`'s backfill back to
+     * work on the next open, decoding every thumbnail in the book, forever,
+     * to write a field the save would drop again. An optional field main
+     * "ignores" is not free here; it is a loop.
+     *
+     * NULL IS LEGAL AND IS NOT ABSENT. It is the honest answer for a page with
+     * no visible fold, and the whole reason `gutterOf` is allowed to return
+     * one rather than guessing the middle.
+     *
+     * THE AXIS IS A CLOSED SET AND `at` IS A FRACTION, on the same argument
+     * `validPoint` makes: the unit is a share of the working copy, and outside
+     * [0,1] is off the photograph. An axis this side accepted and did not
+     * understand would be compared against a split's direction and silently
+     * never match, which is a feature that quietly does nothing.
+     */
+    const noticed = photo['gutter'];
+    let gutter: CaptureGutter | null | undefined;
+    if (noticed === null) gutter = null;
+    else if (noticed !== undefined) {
+      if (typeof noticed !== 'object' || Array.isArray(noticed)) {
+        fail(file, `photograph ${index} has a gutter that is not a measurement`);
+      }
+      const measured = noticed as Record<string, unknown>;
+      const axis = measured['axis'];
+      if (axis !== 'x' && axis !== 'y') {
+        fail(file, `photograph ${index} says its gutter runs along ${String(axis)}, and a gutter runs along x or y`);
+      }
+      const at = measured['at'];
+      if (typeof at !== 'number' || !Number.isFinite(at) || at < 0 || at > 1) {
+        fail(file, `photograph ${index} has its gutter at ${String(at)}, which is not a fraction of the frame`);
+      }
+      const rule = measured['rule'];
+      if (rule !== undefined && (typeof rule !== 'number' || !Number.isInteger(rule) || rule < 1)) {
+        fail(file, `photograph ${index} says its gutter was measured under rule ${String(rule)}`);
+      }
+      gutter = { axis, at, ...(rule === undefined ? {} : { rule }) };
+    }
+
     return {
       id,
       file: text('file'),
@@ -647,6 +694,7 @@ function validRecipe(value: unknown, file: string): CaptureRecipe {
       takenAt: text('takenAt'),
       takenAtSource: source as CaptureTimeSource,
       split,
+      ...(gutter === undefined ? {} : { gutter }),
       pages: checkedPages,
       ...(typeof said === 'boolean' ? { complete: said } : {}),
     };
@@ -876,18 +924,97 @@ function validLines(
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
+ * EVERY PHOTOGRAPH'S GUTTER MEASURED ONCE, for a project intaken before there
+ * was such a thing — and the recipe written back so it is measured once only.
+ *
+ * ── Why a backfill at all, and why it is not a migration ──────────────────
+ *
+ * The fragebogen scan is 272 photographs already on this machine, and it is the
+ * book the feature was asked for. Its recipe has no gutters and cannot get them
+ * from anything stored: the measurement needs the pixels. Re-intaking is not an
+ * answer — it would re-copy 272 originals to arrive at the same recipe with one
+ * field added — so the gutters are read off the thumbnails that are already in
+ * `derived/`, which is exactly the picture intake would have measured.
+ *
+ * It is not `handsRead`'s kind of migration, which re-derives a mark from
+ * geometry on EVERY read and writes nothing. This reads files, so it writes
+ * what it found: absent means NEVER MEASURED (see `CapturePhoto.gutter`), so a
+ * backfill that did not persist would decode the whole book on every open,
+ * forever, for a number it already had.
+ *
+ * ── AND IT IS TOLERANT ALL THE WAY THROUGH, WHICH IS THE POINT ────────────
+ *
+ * A gutter is a convenience. A project that will not open is the loss this
+ * whole module is written around, so nothing here is allowed to be the reason
+ * one does not: a thumbnail that is missing or will not decode leaves the field
+ * ABSENT (not null — nothing was measured), the photograph opens as it always
+ * did, and the next open tries again. A write that fails is swallowed for the
+ * same reason, because the recipe in hand is already correct and the only cost
+ * of not persisting it is measuring again next time.
+ *
+ * It breathes between photographs, on `intakePhotos`' argument: a decode cannot
+ * be interrupted, and 272 of them in one tick is a window that does not paint
+ * while a project opens.
+ */
+async function gutteredRecipe(projectDir: string, recipe: CaptureRecipe): Promise<CaptureRecipe> {
+  /*
+   * UNMEASURED, OR MEASURED UNDER AN OLDER RULE. A found gutter carries the
+   * rule it was read by, and a rule that changes the answer for the same
+   * pixels (rule 2: held off the type) has to reach books read under the
+   * last one, or the fix lands only on books nobody has opened yet. A null --
+   * looked, and no shadow found -- carries no rule, because the dip test the
+   * null comes from has not changed; bump `DIP_FLOOR` and this must re-read
+   * the nulls too.
+   */
+  const stale = (photo: CapturePhoto): boolean => photo.gutter === undefined
+    || (photo.gutter !== null && (photo.gutter.rule ?? 1) !== GUTTER_RULE);
+  if (!recipe.photos.some(stale)) return recipe;
+  const derived = derivedDir(projectDir);
+  let measured = 0;
+  const photos: CapturePhoto[] = [];
+  for (const photo of recipe.photos) {
+    if (!stale(photo)) {
+      photos.push(photo);
+      continue;
+    }
+    await breathe();
+    // `createFromPath` answers an empty image for a file it cannot read as well
+    // as for one that is not there, and both mean the same thing here: leave
+    // the field absent and let a later open have another go.
+    const image = nativeImage.createFromPath(path.join(derived, photo.thumb));
+    if (image.isEmpty()) {
+      photos.push(photo);
+      continue;
+    }
+    measured += 1;
+    photos.push({ ...photo, gutter: gutterFromImage(image) });
+  }
+  if (measured === 0) return recipe;
+  const next: CaptureRecipe = { ...recipe, photos };
+  try {
+    await writeRecipe(projectDir, next);
+  } catch {
+    /* The recipe in hand is right; persisting it is an optimisation. */
+  }
+  return next;
+}
+
+/**
  * Everything the light table needs to draw itself, in one round trip.
  *
  * The token is minted HERE rather than by a door of its own because the two
  * arrive together every time: a recipe whose pictures cannot be addressed is a
  * grid of broken images, and a token for a recipe nobody has read has nothing to
  * point at.
+ *
+ * IT MEASURES THE GUTTERS OF A BOOK THAT HAS NONE, on the way past. See
+ * `gutteredRecipe`, which is where that costs an open its one-off decode.
  */
 export async function openCapture(projectDir: string): Promise<CaptureOpened> {
   const dir = derivedDir(projectDir);
   await fsp.mkdir(dir, { recursive: true });
   return {
-    recipe: await readRecipe(projectDir),
+    recipe: await gutteredRecipe(projectDir, await readRecipe(projectDir)),
     token: tokenForServing(dir),
     // Resolved in projects.ts against the catalogue's chain, so this and the
     // step list's `current` marker are one answer to one question.
@@ -1128,14 +1255,44 @@ const THUMB_EDGE = 640;
  * FED THE ENCODED PNG rather than the raw bitmap, which is the same decision the
  * encoder above explains: a decoded file format has no channel order to get
  * wrong, and this is the one place Electron's imaging is in the path at all.
+ *
+ * ── IT HANDS BACK THE IMAGE, NOT THE JPEG, since 2026-09-21 ────────────────
+ *
+ * It returned the encoded bytes while the thumbnail had one reader. It has two
+ * now: the file the grid draws, and the gutter measured off the same bitmap
+ * (`gutterFromImage`). Resizing twice would be two decodes and two resamples of
+ * a 36 MiB raster per photograph — the expensive half of an intake — to produce
+ * two copies of one picture that must agree, since the gutter is a fraction of
+ * the frame the person is looking at. One resize, two readings.
  */
-function encodeThumbnail(png: Buffer, image: { width: number; height: number }): Buffer {
+function thumbnailOf(png: Buffer, image: { width: number; height: number }): Electron.NativeImage {
   const wide = image.width >= image.height;
-  const thumb = nativeImage.createFromBuffer(png).resize({
+  return nativeImage.createFromBuffer(png).resize({
     ...(wide ? { width: THUMB_EDGE } : { height: THUMB_EDGE }),
     quality: 'best',
   });
-  return thumb.toJPEG(85);
+}
+
+/**
+ * WHERE THE FOLD LOOKED TO BE on this thumbnail — the one place main turns a
+ * picture into a `CaptureGutter`.
+ *
+ * `shared/gutter.ts` carries the algorithm and the argument for it; this is the
+ * decode. Null for a fold it cannot see AND for an image it cannot read, which
+ * is a conflation this can afford and the recipe cannot: the recipe's absent
+ * means NEVER MEASURED and is what the backfill looks for, so the callers
+ * decide which of the two they are in — intake has a bitmap in hand and writes
+ * whatever this says, while `gutteredRecipe` checks the file first and leaves
+ * the field absent when there is no thumbnail to read.
+ *
+ * `toBitmap()` is BGRA at scale factor 1, which is what an image built from a
+ * buffer has; `lumaFromBgra` is where that order is written down.
+ */
+function gutterFromImage(image: Electron.NativeImage): CaptureGutter | null {
+  if (image.isEmpty()) return null;
+  const { width, height } = image.getSize();
+  if (width < 2 || height < 2) return null;
+  return gutterOf(lumaFromBgra(image.toBitmap(), width, height), width, height);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1306,12 +1463,16 @@ function takenAtFrom(times: ExifTimes, modifiedAt: Date): TakenAt {
  * keep in agreement.
  */
 
-function pagesFor(photoId: string, from: CapturePhoto | null, decoded: { width: number; height: number }): {
+function pagesFor(photoId: string, from: CapturePhoto | null): {
   pages: CapturePage[];
   split: CaptureSplit | null;
   inherited: boolean;
 } {
-  if (from !== null && sameShape(from, decoded) && from.pages.length > 0) {
+  // WHATEVER ITS SHAPE, since 2026-09-21: a late arrival takes the neighbour's
+  // lines as every global now reaches every page (the ruling is under
+  // `applyPopulations` in the renderer's service). The shape test that stood
+  // here was a camera's rule, and a scan's pages are each their own size.
+  if (from !== null && from.pages.length > 0) {
     return {
       pages: from.pages.map((page, index) => ({
         id: `${photoId}:${index}`,
@@ -1502,10 +1663,13 @@ export async function intakePhotos(projectDir: string, paths: readonly string[])
       const thumb = `${id}.${THUMB_EDGE}.jpg`;
       await writeAtomically(path.join(originals, original), bytes);
       await writeAtomically(path.join(derived, workingCopy), png);
-      await writeAtomically(path.join(derived, thumb), encodeThumbnail(png, frame));
+      // ONE RESIZE, TWO READINGS -- the JPEG the grid draws and the gutter read
+      // off the same pixels. See `thumbnailOf`.
+      const thumbnail = thumbnailOf(png, frame);
+      await writeAtomically(path.join(derived, thumb), thumbnail.toJPEG(85));
 
       const stat = await fsp.stat(resolved);
-      const { pages, split } = pagesFor(id, photos[photos.length - 1] ?? null, frame);
+      const { pages, split } = pagesFor(id, photos[photos.length - 1] ?? null);
       photos.push({
         id,
         file: `${ORIGINALS}/${original}`,
@@ -1522,6 +1686,16 @@ export async function intakePhotos(projectDir: string, paths: readonly string[])
         height: frame.height,
         ...takenAtFrom(readExifTimes(bytes), stat.mtime),
         split,
+        /*
+         * MEASURED AT INTAKE, ONCE, AND WRITTEN EVEN WHEN IT IS NULL.
+         *
+         * The bitmap is in hand here and will never be this cheap again: the
+         * alternative is `openCapture`'s backfill re-decoding a JPEG off disk
+         * for a photograph that has just been resampled in memory. Null is
+         * written rather than omitted for the same reason -- absent means
+         * NEVER MEASURED, and a page with no visible fold has been measured.
+         */
+        gutter: gutterFromImage(thumbnail),
         pages,
       });
       order.push(...pages.map((page) => page.id));

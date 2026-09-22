@@ -5123,6 +5123,52 @@ export interface CaptureSplit {
   b: CapturePoint;
 }
 
+/**
+ * WHERE THE FOLD APPEARS TO BE ON ONE PHOTOGRAPH — measured, not placed.
+ *
+ * Owen asked for it on 2026-09-21: *"is there any way we could detect a book
+ * gutter and try to place page splits roughly where the gutter is, which might
+ * be different on each page? just a rudimentary gutter detector? not perfect,
+ * just estimate based on page coloring or something?"* — and the answer is this
+ * field, `shared/gutter.ts` which computes it, and `seated` in the renderer's
+ * capture service which spends it.
+ *
+ * ── NOT A SPLIT, AND THE DIFFERENCE IS THE POINT ──────────────────────────
+ *
+ * A `CaptureSplit` is a decision: two endpoints somebody let go of, or the
+ * book's own line landed on this page. This is an OBSERVATION about pixels, and
+ * it has no lean, no endpoints and no authority. It cannot cut anything; all it
+ * can do is offer a better place to put a line that was going to be placed
+ * anyway. Nothing downstream of the recipe reads it — not the mint, not the
+ * validator beyond checking its shape — and the quads stay authoritative.
+ *
+ * ── FRAME COORDINATES, UNTURNED, EXACTLY LIKE A PAGE QUAD ─────────────────
+ *
+ * Axis 'x' is a vertical line at `at` of the frame's WIDTH; axis 'y' is a
+ * horizontal line at `at` of its HEIGHT. Both are fractions of the working copy
+ * as the decoder handed it over, which is the same space every other coordinate
+ * here lives in and the reason a reader can compare this with a split without
+ * converting anything.
+ *
+ * WHICH AXIS IS THE FRAME'S SHAPE. A landscape frame is a spread lying the way
+ * a book lies, so its fold runs down it ('x'); a portrait frame in a book of
+ * spreads is the same spread photographed sideways, so its fold runs across it
+ * ('y') and its halves are stacked. See `gutterOf` for how it is measured and
+ * `cutOf` for the reading a split gives of the same fact.
+ */
+export interface CaptureGutter {
+  axis: 'x' | 'y';
+  /** 0..1 along the axis named above. */
+  at: number;
+  /**
+   * The detector's rule this was measured under (`GUTTER_RULE` in
+   * shared/gutter.ts). Absent on a measurement from before rules were
+   * numbered, which reads as the first rule; a book whose gutters were read
+   * under an older rule is read again on its next open.
+   */
+  rule?: number;
+}
+
 /** One page of the book: a quad on some photo, struck or not. */
 export interface CapturePage {
   /** `<photoId>:<n>`. */
@@ -5250,6 +5296,31 @@ export interface CapturePhoto {
    * the top and bottom edges of the page it was cutting.
    */
   split: CaptureSplit | null;
+  /**
+   * WHERE THE FOLD LOOKED TO BE when this photograph was measured — an
+   * estimate from the thumbnail's own pixels, and never a decision.
+   *
+   * See `CaptureGutter` for what it means and `gutterOf` for how it is read off
+   * the picture. It is stored rather than measured on demand because measuring
+   * it needs a decoded bitmap, and the renderer that spends it has fractions
+   * and nothing else: a light table drawing 272 cards cannot decode 272
+   * thumbnails to find out where a line should go.
+   *
+   * ── THREE STATES, AND THE THIRD ONE IS WHY THIS IS NOT A PLAIN OPTIONAL ───
+   *
+   * A gutter is MEASURED AND FOUND. Null is MEASURED AND THERE IS NO FOLD TO
+   * SEE, which is a real answer about a cover, a loose leaf, or a spread shot
+   * in flat light — and one the surface must be able to tell from the third
+   * state, because "the middle is a guess" is worth saying out loud.
+   *
+   * Absent is NEVER MEASURED: every recipe written before 2026-09-21. It is not
+   * a false and it is not a null, and intake distinguishes it for exactly that
+   * reason — an absent field is measured from `derived/<thumb>` the next time
+   * the project opens and written back once, so a book intaken last week gets
+   * its gutters without being re-intaken, while a null survives the open
+   * untouched rather than being re-measured to the same null forever.
+   */
+  gutter?: CaptureGutter | null;
   /**
    * One before a split, two after, in the original's slot.
    *

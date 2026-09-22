@@ -10,10 +10,68 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\<user>\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **753dca8** — *app/queue: exit 75 from the engine is a park, not a failure* (was 7ab80b5) |
+| Source sha | **3e26e53** — *capture: Global reaches every page, the cut finds the fold, and a PDF can be edited* (was 753dca8) |
 | Engine | **NOT VENDORED AND NOT KNOWABLE FROM THIS FILE** — it is a spawned CLI resolved at RUNTIME (`FOUNDRY_BIN`, else `resolveFoundryPath`, `electron/main.ts`), so which build executes is a property of the machine and not of this copy. On a developer's Mac that resolves to Foundry's own checkout at `/Volumes/Callisto/Projects/foundry/dist/foundry-darwin-arm64`, which is whatever was last built there — `foundry 2.0.2 (04758be)` — REBUILT at this re-vendor (2026-09-21) so the engine carries fdba761's clean-text log change. **Ask the binary: `$FOUNDRY_BIN --version`.** See *The engine this file named was not the engine that ran* below. |
-| Copied on | 2026-09-19 (five times: 3738c01, 3436fc5, 806d44b, f349771, ca4754c), 2026-09-20 (98a4344, 9e0b27d, dccc144, 7b98004, cc5fc5b, 93010d8, 77e1d6d) and 2026-09-21 (753dca8) |
-| Copied by | Mechanical source sync, verified against Foundry `753dca8:app/` (`diff -rq`, clean but for this file, `IPC-CHANNELS.md` and `.gitignore` — see below); details below |
+| Copied on | 2026-09-19 (five times: 3738c01, 3436fc5, 806d44b, f349771, ca4754c), 2026-09-20 (98a4344, 9e0b27d, dccc144, 7b98004, cc5fc5b, 93010d8, 77e1d6d) and 2026-09-21 (753dca8, 3e26e53) |
+| Copied by | Mechanical source sync, verified against Foundry `3e26e53:app/` (`diff -rq`, clean but for this file, `IPC-CHANNELS.md` and `.gitignore` — see below); details below |
+
+## The `753dca8 → 3e26e53` re-vendor — the light-table series (2026-09-21)
+
+One Foundry commit, all of it in `app/` — the renderer and main halves of the capture
+light table, so this copy takes the whole of it. Four of Owen's asks from the same
+evening, landed together because the second depends on the first and the fourth on the
+third, plus one save fix. 11 files, +1624/−166, nothing deleted; `app/shared/gutter.ts`,
+`app/src/app/core/book-edit.service.ts` and `app/test/gutter-detector.test.ts` are new.
+
+1. **GLOBAL REACHES EVERY PAGE.** *"the 'two pages' button isnt splitting all pages like
+   i expected it to … even though the 'global' checkbox is checked."* Every global asked
+   whether a page was the same SHAPE as the leader, within two percent of aspect — a
+   camera's rule. A scanner's auto-crop gives every page its own size (the fragebogen
+   scan's 271 spreads run 1.15 to 1.33), so a tick on one spread reached forty-seven.
+   Ruling: *"any action i take with the global button checked should apply that action to
+   every page uniformly."* The shape gate is gone from the live propagation, both
+   Finalizes, the turn, the tick taking the book's cut and a late arrival inheriting its
+   neighbour; completeness is the one thing that spares a page. `sameShape` keeps one
+   reader, intake's `handsRead`.
+2. **THE CUT FINDS THE FOLD.** `shared/gutter.ts` reads the 640-px thumbnail — the 75th-
+   percentile luminance per column over the middle of the height, the narrow dark dip
+   against its ring within the central 30–70%, and (rule 2, after a minted preface carried
+   a sliver of the facing page) that dip held inside the strip with no type in it, type
+   being a column whose quartiles spread. Measured at intake in MAIN and stored on the
+   photo with the `GUTTER_RULE` it was read under, so a book read under an older rule is
+   read again on its next open. The book's cut is seated on each follower's own fold when
+   the fold is within 8%; a line a hand dragged stays where the hand let go. 271 of 271
+   spreads agree with the prototype.
+3. **THE DROP CARD SPEAKS PLAINLY.** *"Open it"* / *"Make a book from its pages"* are
+   **Open book** / **Edit book**, with a sentence each for somebody who did not write the
+   program.
+4. **EDIT BOOK FROM INSIDE THE BOOK.** An open book whose founding document is a PDF gets
+   an *Edit book* square in the action menu's strip: the PDF is taken apart into a new
+   light-table project named `<title> (edited)` through the same two doors the drop card
+   uses, and the minted book is an ordinary project with its own steps.
+
+Also: **Mint no longer mints over a disk that is behind the screen.** A debounced save
+that had been refused left flush with nothing to write; the pending edit is held until a
+write succeeds, and Mint says so instead of minting the recipe two gestures old.
+
+**Nothing here crosses the host seam**, which is why this entry names no BookForge
+change: the light table is the Foundry window's own, and `mount.ts`, `job-queue.ts` and
+`RunOutcome` are untouched by it — the `parked` arm from the entry below is intact in
+this build (`grep -c parked dist/electron/mount.js` → 2).
+
+Verified with `diff -rq` against `3e26e53:app/` (excluding node_modules, dist, .angular,
+out-tsc, release, VENDORED.md, IPC-CHANNELS.md, .gitignore): clean, and no stale file —
+`git diff --diff-filter=D 753dca8..3e26e53 -- app/` is empty, so the archive's inability
+to delete cost nothing this time. Built in a staging copy INSIDE this repo
+(`.foundry-stage-3e26e53/`, `node_modules` symlinked to `foundry-app/node_modules`,
+never two stage builds at once), electron and renderer both, and the built `dist` checked
+three ways — `gutterOf` in `dist/electron/capture.js` (2, and `GUTTER_RULE` 3x in
+`dist/shared/gutter.js`), `dist/electron/mount.js` present, `dist/renderer/browser/index.html`
+present. **NOT SWAPPED at this commit**: BookForge was running, and the electron half
+cannot be swapped under a live app. The swap is
+`tools/swap-foundry-dist.sh .foundry-stage-3e26e53 --expect gutterOf`, which refuses on
+any of the three checks or on a running app. Gate: root
+`tsc -p tsconfig.electron.json --noEmit` exit 0.
 
 ## The `7ab80b5 → 753dca8` re-vendor — a weather-parked page read is a park, not a failure (2026-09-21)
 

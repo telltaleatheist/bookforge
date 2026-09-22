@@ -429,6 +429,18 @@ export const ASPECT_TOLERANCE = 0.02;
 /**
  * May a crop drawn for `source` be copied onto `candidate`?
  *
+ * ── NO LONGER ASKED BY ANY GLOBAL, since 2026-09-21 ─────────────────────────
+ *
+ * Every act the *Global* tick governs -- the live propagation, both Finalizes,
+ * the turn, the tick taking the book's cut, a late arrival inheriting its
+ * neighbour's lines -- used to ask this first, and on a scanned book it refused
+ * most of the book: a scanner's auto-crop gives every page its own size, and
+ * two percent is narrower than the spread of one scan. Owen ruled that a global
+ * reaches every page uniformly; the ruling and the measurement are under
+ * `applyPopulations` in the renderer's capture service. The one reader left is
+ * intake's `handsRead`, which reconstructs which pages an OLD recipe's stamp
+ * had reached, and must keep asking the question the stamp asked then.
+ *
  * ── WHY NORMALIZED COORDINATES DID NOT MAKE COPYING SAFE ────────────────────
  *
  * Every coordinate in the recipe is a fraction, which guarantees a copied quad

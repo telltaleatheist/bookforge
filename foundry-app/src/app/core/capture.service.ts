@@ -6,6 +6,7 @@ import type {
   CaptureLines,
   CapturePage,
   CapturePhoto,
+  CapturePoint,
   CapturePrepared,
   CaptureQuad,
   CaptureRecipe,
@@ -14,7 +15,7 @@ import type {
 } from '@shared/types';
 
 import {
-  arrangementOf, halvesOf, isPdfName, isWholeFrameTurned, joinedQuad, sameShape,
+  arrangementOf, cutOf, halvesOf, isPdfName, isWholeFrameTurned, joinedQuad,
   splitFromFraction, turnedLike, turnQuad, turnsOf, WHOLE_FRAME,
 } from '@shared/capture';
 import type { CaptureCard } from '../components/capture-grid/capture-grid.component';
@@ -320,16 +321,22 @@ export class CaptureService {
    * null whenever the last write has already gone.
    */
   async flush(): Promise<void> {
-    if (this.saveTimer === null) return;
-    clearTimeout(this.saveTimer);
-    this.saveTimer = null;
+    if (this.saveTimer !== null) {
+      clearTimeout(this.saveTimer);
+      this.saveTimer = null;
+    }
+    // WHATEVER THE DISK DOES NOT HAVE, pending or previously refused -- see
+    // `unsaved`. A mint that follows this reads the disk, and a mint made from
+    // a recipe two gestures old is a product that disagrees with the stage.
+    const recipe = this.unsaved;
     const dir = this.directory();
-    const recipe = this.current();
     if (api === null || dir === null || recipe === null) return;
-    try {
-      await api.capture.recipeSave(dir, recipe);
-    } catch (err) {
-      this.complain(err);
+    await this.write(api, dir, recipe);
+    if (this.unsaved !== null) {
+      throw new Error(
+        'The recipe could not be written, so the book on screen is not the book on disk. '
+        + 'Nothing was minted from it; the notice above says what refused the write.',
+      );
     }
   }
 
@@ -890,25 +897,40 @@ export class CaptureService {
    * cannot disagree, because they are readings of one thing.
    */
   readonly applyCost = computed<StampCost>(() => {
-    const { takes, complete, shape } = this.applyPopulations();
-    return { takes: takes.length, complete: complete.length, shape: shape.length };
+    const { takes, complete } = this.applyPopulations();
+    return { takes: takes.length, complete: complete.length };
   });
 
   /**
-   * WHO IS IN EACH OF AN APPLY'S THREE POPULATIONS -- photograph ids, disjoint
-   * and exhaustive over the book, or three empty lists while the book has no
-   * standing crop to measure against.
+   * WHO IS IN EACH OF AN APPLY'S TWO POPULATIONS -- photograph ids, disjoint,
+   * or two empty lists while the book has no standing crop to measure against.
    *
-   * Shape is asked before completeness, exactly as the Apply itself asks, so a
-   * complete photograph of another shape lands once, under the reason the act
-   * would actually give for leaving it alone. `applyCost` above is this
-   * answer's lengths; the rail's pressable counts are its members.
+   * ── THERE WERE THREE UNTIL 2026-09-21, and the third was "a different shape" ─
+   *
+   * A photograph whose frame was not within two percent of the standing's was
+   * left out of every global, because the same fractions are not the same
+   * region on it (`sameShape`). That gate was written for a camera, where every
+   * frame is one of two shapes and the one landscape frame among the portraits
+   * is a different photograph. A scanner is not a camera: its auto-crop gives
+   * every page its own size, and on the fragebogen scan -- 271 landscape
+   * spreads whose aspects run from 1.15 to 1.33 -- the *Two pages* tick on one
+   * spread reached forty-seven of them and the rest had to be ticked one at a
+   * time. Owen: *"the 'two pages' button isnt splitting all pages like i
+   * expected it to ... even though the 'global' checkbox is checked"*, and the
+   * ruling: *"any action i take with the global button checked should apply
+   * that action to every page uniformly."*
+   *
+   * So the shape is no longer asked of anything a global does, here or in the
+   * walk (`dressed`). Completeness is the one thing that spares a page, and a
+   * page the book's fractions fit badly -- the lone portrait cover in a book of
+   * spreads -- is exactly the page a person unticks *Global* to set by hand,
+   * which is what makes it complete. `applyCost` above is this answer's
+   * lengths; the rail's pressable counts are its members.
    */
   readonly applyPopulations = computed<Record<keyof StampCost, readonly string[]>>(() => {
     const recipe = this.current();
     const takes: string[] = [];
     const complete: string[] = [];
-    const shape: string[] = [];
     if (recipe !== null) {
       const parities = paritiesOf(recipe);
       const cutting = this.pass() === 'split';
@@ -941,12 +963,11 @@ export class CaptureService {
         const crop = lines?.crop;
         if (crop === undefined) continue;
         if (cutting && lines?.cut === undefined) continue;
-        if (!sameShape(crop, photo)) shape.push(photo.id);
-        else if (isComplete(photo)) complete.push(photo.id);
+        if (isComplete(photo)) complete.push(photo.id);
         else takes.push(photo.id);
       }
     }
-    return { takes, complete, shape };
+    return { takes, complete };
   });
 
   /**
@@ -997,18 +1018,21 @@ export class CaptureService {
   /**
    * THE BOOK'S CUT, if this photograph is one it could apply to.
    *
-   * ── The cut is fractions, so the shape is part of the question ────────────
+   * ── The cut is fractions, and the shape is NO LONGER part of the question ─
    *
-   * A cut is two points in a frame's own fraction space, exactly like a crop, so
-   * it only falls on the same gutter in a frame of the same proportions. Offered
-   * on a differently shaped photograph it would land somewhere plausible and
-   * wrong, which is `sameShape`'s whole subject. The standing carries the frame
-   * it was set on for this reason, and this is where that is spent.
+   * A cut is two points in a frame's own fraction space, exactly like a crop.
+   * Until 2026-09-21 it was offered only to a frame within two percent of the
+   * standing's, on the argument that the same fractions land somewhere
+   * plausible and wrong on another proportion. On a scanned book that withheld
+   * the offer from most of the book (see `applyPopulations` for the ruling),
+   * and a cut offered to a page of another proportion lands NEAR the gutter
+   * rather than on it -- which is what the line is there to be dragged for.
+   * Since 2026-09-21 it often lands ON it without being dragged: the landing
+   * seats the line on the fold the page can be seen to have (`seated`).
    *
-   * Null whenever there is nothing to offer -- no standing yet, a book of single
-   * pages, or a photograph the standing was not drawn for -- and the caller
-   * falls back to the middle and SAYS SO. The two are different offers and the
-   * surface must not present them as one.
+   * Null whenever there is nothing to offer -- no standing yet, or a book of
+   * single pages -- and the caller falls back to the middle and SAYS SO. The
+   * two are different offers and the surface must not present them as one.
    */
   bookCutFor(photoId: string): CaptureSplit | null {
     const recipe = this.current();
@@ -1018,12 +1042,10 @@ export class CaptureService {
     // and offering the wrong side's line would put the gutter down the middle of
     // a page rather than down the fold.
     const lines = linesFor(recipe.book, parityOf(recipe, photoId));
-    const crop = lines?.crop;
-    const cut = lines?.cut;
-    if (cut === undefined || crop === undefined) return null;
-    const photo = recipe.photos.find((one) => one.id === photoId);
-    if (photo === undefined || !sameShape(crop, photo)) return null;
-    return cut;
+    // A cut with no crop beside it is a state the passes cannot write -- the
+    // crop pass lifts both off one photograph and the split pass adds a cut to
+    // a crop already committed -- so this is the one condition, not a second.
+    return lines?.cut ?? null;
   }
 
   /*
@@ -1173,10 +1195,10 @@ export class CaptureService {
         const lines = linesFor(recipe.book, parity);
         const crop = lines?.crop;
         if (lines === undefined || crop === undefined) return null;
-        if (!cutting) return { frame: crop, wear: (one) => wearing(one, lines) };
+        if (!cutting) return { wear: (one) => wearing(one, lines) };
         const cut = lines.cut;
         if (cut === undefined) return null;
-        return { frame: crop, wear: (one) => cutWith(one, cut, false) };
+        return { wear: (one) => cutWith(one, cut, false) };
       });
       this.notices.notice.set(handedBack(mine.size, applied));
       // A standing carries a cut, so a hand-back can change how many pages a
@@ -1245,39 +1267,18 @@ export class CaptureService {
       const inReach = (one: CapturePhoto): boolean =>
         one.id === photoId || side === null || parities.get(one.id) === side;
       /*
-       * A PHOTOGRAPH OF ANOTHER SHAPE LEADS NOBODY, AND MUST NOT TRY.
+       * A PHOTOGRAPH OF ANOTHER SHAPE LED NOBODY, until 2026-09-21.
        *
-       * A crop is fractions of a frame, so a standing lifted off the one
-       * landscape frame in a shoot of twenty-six portrait ones fits none of
-       * them -- `sameShape` would skip every follower and the book would be
-       * left holding a crop nothing can wear. That was survivable while the
-       * standing was written by a deliberate press labelled *make this the
-       * book's crop*; live, it would happen to somebody who nudged a corner on
-       * the odd frame, silently, with the rail's counts collapsing to "26 a
-       * different shape" as the only sign.
-       *
-       * So the gesture stays local and the standing is left exactly as it is.
-       * Nothing is lost: `setQuads` has already written this photograph's own
-       * lines, and every global skips it for the same reason this one does.
-       *
-       * IT STILL GIVES UP THE MARK, which is what keeps the tick honest: a
-       * person re-ticking *Global* on the odd frame has asked for the book to
-       * move it again, and a door that answered by leaving `complete` set would
-       * be a checkbox that ticks itself back off. The book cannot reach it and
-       * says so through the rail's "N a different shape"; that is a different
-       * sentence from "this one is mine".
-       *
-       * WITH NO STANDING YET there is nothing to be a different shape FROM, and
-       * the first gesture defines the book -- whatever frame it happens on,
-       * which is the only answer available and the one a person expects.
+       * The refusal stood here: a standing lifted off the one landscape frame
+       * in a shoot of portrait ones fit none of them, so the gesture stayed
+       * local, the standing was left as it was and the photograph gave up its
+       * mark. That was a camera's case, and it is gone for a scanner's: every
+       * page of a scan is its own size, and the refusal left a tick on one
+       * spread reaching a sixth of the book. The ruling that took the shape out
+       * of every global's questions is under `applyPopulations`; the first
+       * gesture defines the book, whatever frame it happens on, and every later
+       * one moves the whole book with it.
        */
-      const already = side === null ? linesOf(recipe.book)?.crop : linesFor(recipe.book, side)?.crop;
-      if (already !== undefined && !sameShape(already, photo)) {
-        return {
-          ...recipe,
-          photos: recipe.photos.map((one) => (one.id === photoId ? following(one) : one)),
-        };
-      }
 
       if (what === 'crop') {
         const standing = standingOf(photo);
@@ -1287,7 +1288,7 @@ export class CaptureService {
         if (crop === undefined) return recipe;
         const { photos } = dressed(
           recipe,
-          (one) => (inReach(one) ? { frame: crop, wear: (worn) => wearing(worn, standing) } : null),
+          (one) => (inReach(one) ? { wear: (worn, leading) => wearing(worn, standing, !leading) } : null),
           photoId,
         );
         /*
@@ -1344,14 +1345,10 @@ export class CaptureService {
         else if (side === 'odd') book.odd = worn;
         else book.even = worn;
       }
-      // The standing's own frame decides who is the same shape, and falls back
-      // to this photograph's when the book has no crop -- a state the passes
-      // cannot reach, and not one worth refusing a gesture over.
-      const frame = (side === null ? linesOf(book) : linesFor(book, side))?.crop ?? photo;
       const { photos } = dressed(
         recipe,
         (one) => (inReach(one)
-          ? { frame, wear: (worn) => (cut === undefined ? rejoined(worn) : cutWith(worn, cut, false)) }
+          ? { wear: (worn, leading) => (cut === undefined ? rejoined(worn) : cutWith(worn, cut, false, !leading)) }
           : null),
         photoId,
       );
@@ -1406,7 +1403,7 @@ export class CaptureService {
         const now = photo.pages[0]?.quad;
         if (facing === undefined || now === undefined) return photo;
         if (scope !== 'all' && parities.get(photo.id) !== scope) return photo;
-        if (!sameShape(source, photo) || isComplete(photo)) return photo;
+        if (isComplete(photo)) return photo;
         return following(turned(photo, turnsOf(facing) - turnsOf(now)));
       });
       // A turn cannot change which pages exist -- `turned` re-derives a spread's
@@ -1788,7 +1785,24 @@ export class CaptureService {
     if (recipe === null || photo === undefined) return;
     const sheet = joinedQuad(photo.pages.map((page) => page.quad), photo.split);
     const book = this.bookCutFor(photoId);
-    this.setSplit(photoId, book ?? splitFromFraction(sheet, 0.5), book === null);
+    /*
+     * THE MIDDLE, MOVED ONTO THE FOLD IF THERE IS ONE TO SEE.
+     *
+     * With no standing to follow, this press is what invents the line, and
+     * "the middle" was only ever the least-wrong place to invent it. A page
+     * whose fold has been measured has a better answer, and `seated` is the
+     * same body that moves the book's line onto it -- including its refusals,
+     * so a page with no measurement, no visible fold, or a fold further than
+     * `GUTTER_REACH` from the middle still gets the middle exactly as before.
+     *
+     * IT IS STILL A PLACEMENT AND STILL MARKS THE PHOTOGRAPH ITS OWN (`mine`
+     * is `book === null`, unchanged). The fold is an estimate from pixels, not
+     * a decision by the book, so a line placed on it is this press's line: the
+     * alternative would leave the page a follower of a standing that does not
+     * exist, and the next Apply would move it.
+     */
+    const middle = splitFromFraction(sheet, 0.5);
+    this.setSplit(photoId, book ?? seated(photo, sheet, middle), book === null);
   }
 
   /**
@@ -1799,6 +1813,10 @@ export class CaptureService {
    * book's own cut, and a drag made with *Global* ticked, which is the book's
    * hand rather than this page's (see `setQuads`, where the same exception is
    * argued at length). Even then a mark the CROP earned survives.
+   *
+   * AND IT NOW DECIDES ONE MORE THING: whether this page's own fold may move
+   * the line a few pixels as it lands (`seated`, and the docblock inside
+   * `cutWith` on what that means for a drag made with *Global* on).
    */
   setSplit(photoId: string, split: CaptureSplit, mine = true): void {
     this.change((recipe) => {
@@ -1812,7 +1830,9 @@ export class CaptureService {
          * own cut decides nothing about this photograph and must leave a say-so
          * or a release exactly as it found it.
          */
-        const cut = cutWith(photo, split, mine);
+        // Where the hand let go, on this page, whichever way *Global* is: the
+        // followers seat the line on their own folds (`cutWith`, `seat`).
+        const cut = cutWith(photo, split, mine, false);
         return cut === null ? photo : (mine ? placed(cut) : cut);
       });
       // A split changes which pages exist, so the order grows with it.
@@ -2014,7 +2034,7 @@ export class CaptureService {
         const lines = linesFor(recipe.book, parity);
         const crop = lines?.crop;
         if (lines === undefined || crop === undefined) return null;
-        return { frame: crop, wear: (one) => wearing(one, lines) };
+        return { wear: (one) => wearing(one, lines) };
       });
       outcome = { applied, skipped: skipped.length };
       this.notices.notice.set(applied === 0 && skipped.length === 0
@@ -2094,7 +2114,7 @@ export class CaptureService {
         const crop = lines?.crop;
         const cut = lines?.cut;
         if (crop === undefined || cut === undefined) return null;
-        return { frame: crop, wear: (one) => cutWith(one, cut, false) };
+        return { wear: (one) => cutWith(one, cut, false) };
       });
       outcome = { applied, skipped: skipped.length };
       this.notices.notice.set(applied === 0 && skipped.length === 0
@@ -2159,6 +2179,25 @@ export class CaptureService {
   private saveTimer: ReturnType<typeof setTimeout> | null = null;
 
   /**
+   * THE RECIPE THE DISK DOES NOT HAVE YET, or null when the disk is current.
+   *
+   * ── Owen, 2026-09-21: *"it looked like it placed the page splits in the
+   * right spot, but when i assembled the final product, the page splits dont
+   * appear to be where the arm was"* ──────────────────────────────────────
+   *
+   * The mint reads the recipe FROM DISK (`mintBegin`), so the only way the
+   * product can disagree with the stage is a disk that is behind the screen.
+   * `flush` used to close that gap only while a save was still PENDING: a
+   * debounced write that had already run and FAILED -- a validation refusal,
+   * a volume that was busy -- left the timer null, so `flush` wrote nothing,
+   * and the mint that followed was made from the last recipe that did land,
+   * with a notice about the failure two gestures back as the only sign. This
+   * field is the edit itself, held until a write succeeds, so `flush` has
+   * something to write whether the failure was a timer or a refusal.
+   */
+  private unsaved: CaptureRecipe | null = null;
+
+  /**
    * Write the recipe, at most once every `SAVE_AFTER_MS` of quiet.
    *
    * The LAST state wins rather than the first: a drag emits a recipe per
@@ -2174,11 +2213,26 @@ export class CaptureService {
     // was there when the edit happened is the one that should write it.
     const bridge = api;
     if (bridge === null || dir === null) return;
+    this.unsaved = recipe;
     if (this.saveTimer !== null) clearTimeout(this.saveTimer);
     this.saveTimer = setTimeout(() => {
       this.saveTimer = null;
-      void bridge.capture.recipeSave(dir, recipe).catch((err: unknown) => this.complain(err));
+      void this.write(bridge, dir, recipe);
     }, SAVE_AFTER_MS);
+  }
+
+  /**
+   * ONE WRITE, and the disk is current only when it succeeds. A later edit
+   * that arrived while this one was in flight is a newer `unsaved` and stays
+   * held; a failure says so and leaves the edit for the next write to carry.
+   */
+  private async write(bridge: NonNullable<typeof api>, dir: string, recipe: CaptureRecipe): Promise<void> {
+    try {
+      await bridge.capture.recipeSave(dir, recipe);
+      if (this.unsaved === recipe) this.unsaved = null;
+    } catch (err) {
+      this.complain(err);
+    }
   }
 
   private complain(err: unknown): void {
@@ -2194,15 +2248,15 @@ export interface ApplyOutcome {
 }
 
 /**
- * WHAT AN APPLY WOULD COST, in the three populations the consequence line under
+ * WHAT AN APPLY WOULD COST, in the two populations the consequence line under
  * it has to name. See `CaptureService.applyCost`, which is its only reader.
  *
- * The three are DISJOINT by construction -- no photograph is counted twice --
+ * The two are DISJOINT by construction -- no photograph is counted twice --
  * which is what lets the sentence be read as an account of the book rather than
- * as three unrelated numbers.
+ * as two unrelated numbers.
  *
  * THEY STOPPED BEING EXHAUSTIVE AT WAVE 51b, and the gap is not a defect. A
- * photograph whose side of the book has no standing yet is in none of the three:
+ * photograph whose side of the book has no standing yet is in neither:
  * it is not going to take anything, and it is not being SPARED either, because
  * there is nothing to spare it from. Naming it under any of the three headings
  * would be a sentence blaming a shape or a hand for a crop nobody has placed.
@@ -2233,8 +2287,12 @@ export interface StampCost {
    * the act does not have.
    */
   complete: number;
-  /** Spared because the same fractions are not the same region on them. */
-  shape: number;
+  /*
+   * `shape` STOOD HERE -- spared because the same fractions are not the same
+   * region on them -- until 2026-09-21, when the shape stopped being asked of
+   * a global (`applyPopulations` has the ruling). The rail's third count and
+   * its pip went with it.
+   */
 }
 
 /** What the prepare rail counts. Facts about the recipe, said in numbers. */
@@ -2378,7 +2436,7 @@ function leftAlone(skipped: readonly Skipped[]): string {
     else group.names.push(one.name);
   }
   return groups
-    .map(({ why, names }) => {
+    .map(({ names }) => {
       const many = names.length !== 1;
       /*
        * "COMPLETE" AND NOT "SET BY HAND", since Wave 25 -- and the wording had
@@ -2387,9 +2445,7 @@ function leftAlone(skipped: readonly Skipped[]): string {
        * they had placed corners they never touched, about the one page they
        * had deliberately left alone.
        */
-      const because = why === 'complete'
-        ? `${many ? 'those are' : 'that one is'} complete`
-        : `${many ? 'different shapes' : 'a different shape'}`;
+      const because = `${many ? 'those are' : 'that one is'} complete`;
       return `${names.join(', ')} — ${because}`;
     })
     .join('; ');
@@ -2401,12 +2457,13 @@ function leftAlone(skipped: readonly Skipped[]): string {
  * The reason is kept rather than a finished sentence so `leftAlone` can GROUP
  * them: a list of strings forces the reason to be repeated once per name, and
  * three complete photographs produced the same eight words three times over.
- * The two reasons are the two the skip has; a third would need a sentence
- * before it needs a field.
+ * ONE reason since 2026-09-21, when "a different shape" stopped being asked
+ * (see `applyPopulations`). The field stays: a second reason needs a sentence
+ * before it needs a field, and the sentence is already grouped by this.
  */
 interface Skipped {
   name: string;
-  why: 'complete' | 'shape';
+  why: 'complete';
 }
 
 /** Quiet before a write. Long enough that a drag is one save, short enough to be invisible. */
@@ -2689,8 +2746,8 @@ function placed(photo: CapturePhoto): CapturePhoto {
  * ── Why it is one body ────────────────────────────────────────────────────
  *
  * `applyCrops`, `applyCuts` and `leadTheBook` all ask the same three questions
- * in the same order — is this the same shape, has somebody taken it for their
- * own, and does the wearing resolve — and they had three answers written out
+ * in the same order — has somebody taken it for their own, and does the wearing
+ * resolve — and they had three answers written out
  * separately the moment the third one existed. That is the drift shape this
  * file has already paid for by name (Wave 18: *"I had written the correct rule
  * once and the wrong rule twice, three functions apart"*), and it matters more
@@ -2715,7 +2772,7 @@ function placed(photo: CapturePhoto): CapturePhoto {
  * and must be left alone rather than dressed in the other side's.
  *
  * NULL IS NOT A SKIP. The skip list is what a global LEFT ALONE and has to
- * explain — a shape it cannot fit, a hand it will not overrule — and "you asked
+ * explain — a hand it will not overrule — and "you asked
  * for the odd pages" is not something a sentence has to apologise for. Counting
  * it would report "Finalized 13 photographs. Left alone: 12 — those are
  * complete", about twelve pages nobody claimed.
@@ -2752,15 +2809,11 @@ function dressed(
     // of one photograph is on.
     const asked = reach(photo, parities.get(photo.id) ?? 'odd');
     if (asked === null) return photo;
-    if (!sameShape(asked.frame, photo)) {
-      skipped.push({ name: name(photo), why: 'shape' });
-      return photo;
-    }
     if (!leading && isComplete(photo)) {
       skipped.push({ name: name(photo), why: 'complete' });
       return photo;
     }
-    const worn = asked.wear(leading ? following(photo) : photo);
+    const worn = asked.wear(leading ? following(photo) : photo, leading);
     if (worn === null) return photo;
     applied += 1;
     return worn;
@@ -2769,17 +2822,17 @@ function dressed(
 }
 
 /**
- * WHAT ONE PHOTOGRAPH IS IN FOR, in a walk that may be landing two standings.
+ * WHAT ONE PHOTOGRAPH IS IN FOR, in a walk that may be landing two standings:
+ * the wearing it would take, or null from the caller when the act does not
+ * reach it at all.
  *
- * The frame is `sameShape`'s other half — the frame the lines were drawn for,
- * never the photograph's own — and `wear` is the wearing that photograph would
- * take. They travel together because they are two halves of one answer: a frame
- * from one side of the book and a wearing from the other is exactly the mistake
- * the pair exists to make unstatable.
+ * It carried the standing's FRAME beside the wearing until 2026-09-21, as
+ * `sameShape`'s other half; the shape is no longer asked (see
+ * `applyPopulations`), so the frame went with the question.
  */
 interface Reach {
-  frame: { width: number; height: number };
-  wear: (photo: CapturePhoto) => CapturePhoto | null;
+  /** The wearing; `leading` is true for the photograph the gesture was made on. */
+  wear: (photo: CapturePhoto, leading: boolean) => CapturePhoto | null;
 }
 
 /** Which side of the book a photograph falls on. 1st, 3rd, 5th … are odd. */
@@ -2982,6 +3035,135 @@ function rejoined(photo: CapturePhoto): CapturePhoto {
 }
 
 /**
+ * HOW FAR THE BOOK'S LINE MAY BE MOVED to reach a page's own fold, as a
+ * fraction of the frame.
+ *
+ * ── It is a reach, not a search ─────────────────────────────────────────────
+ *
+ * Eight percent is about a centimetre of a spread, which is comfortably more
+ * than the fold wanders across a scanned book -- MEASURED on the fragebogen
+ * scan, the detected fold runs from 0.475 to 0.538 of the frame across 271
+ * spreads, so every one of them is inside eight percent of the middle. It is
+ * far enough to be useful on every page of that book and near enough that it
+ * cannot reach the edge of a text block, which is the thing a gutter detector
+ * mistakes a fold for and sits a good fifteen percent out.
+ *
+ * WHY THERE IS A LIMIT AT ALL, when the detector already refuses to guess: the
+ * two judgements are about different things. `gutterOf` decides whether it can
+ * see a fold; this decides whether the fold it saw is the one the book's line
+ * is about. A deliberate unequal cut -- a narrow column, an inset, a foldout
+ * leaf placed by hand and handed to the book -- must not be dragged onto a
+ * shadow ten percent away just because there is a shadow there.
+ */
+const GUTTER_REACH = 0.08;
+
+/**
+ * THE BOOK'S LINE, MOVED ONTO THIS PAGE'S OWN FOLD -- or handed straight back.
+ *
+ * ── Owen's ask, and why the answer lives HERE and not in the standing ───────
+ *
+ * *"is there any way we could detect a book gutter and try to place page splits
+ * roughly where the gutter is, which might be different on each page?"*
+ * (2026-09-21). The second half is the whole design problem: THE BOOK'S CUT IS
+ * ONE LINE AND THE FOLD IS PER PAGE. Those cannot both live in the standing --
+ * a standing holds one cut, and the moment it held 272 it would stop being the
+ * thing every other rule in this file reasons about ("is this page following
+ * the book" has no answer against a standing that is a list).
+ *
+ * So the standing keeps its one line and the line is adjusted AT THE LANDING,
+ * where the page it is landing on is in hand. A person still places one gutter
+ * and the book still follows it; each page just lands it a few pixels off the
+ * place the arithmetic would have put it, on the shadow it can see. Nothing in
+ * the recipe records that adjustment as a decision: the pages carry the quads
+ * they always carried, `photo.split` carries the line as landed, and the
+ * standing is untouched. Re-apply the same standing and every page seats the
+ * same way again, because the seating is a function of the page's own pixels.
+ *
+ * ── THREE QUESTIONS, ALL OF WHICH CAN SAY NO ───────────────────────────────
+ *
+ * Has this photograph been measured and did the measurement see anything: an
+ * absent gutter is an old recipe and a null one is a page with no visible fold,
+ * and both mean there is nothing to seat onto.
+ *
+ * Does the line even run the way the fold does. A `CaptureGutter` is an axis in
+ * FRAME coordinates, so the comparison is made in frame coordinates too -- the
+ * seated endpoints' own directions -- and NOT from `cutOf`'s `halves`, which is
+ * a reading in the PAGE's orientation. Those agree on an unturned sheet and
+ * disagree on a turned one: turn a sideways spread upright and its labels
+ * rotate, so the same horizontal cut across the picture reads 'side-by-side'
+ * (left page then right page, which is what it makes) while the fold it follows
+ * is still the frame's 'y'. Comparing the two readings would seat correctly on
+ * a landscape book and silently never on a turned one.
+ *
+ * And is the fold the same fold the line is about -- `GUTTER_REACH`, above.
+ *
+ * ── THE CONVERSION IS EXACT ON A RECTANGLE AND NEAR ENOUGH ON A SCAN ───────
+ *
+ * The fold is a fraction of the FRAME and `splitFromFraction` wants a fraction
+ * along the SHEET's edge, so the fraction is re-measured against the two edges
+ * the cut will run between and averaged. That is exact for a sheet whose edges
+ * are square to the frame and approximate for one that leans, because a leaning
+ * fold does not meet the top and bottom edges at the same fraction of each. A
+ * flatbed scan is square to a fraction of a degree, which is why this is
+ * allowed to be an approximation: the error is smaller than the width of the
+ * shadow being aimed at. A spread photographed by hand under a lamp leans, and
+ * on that book this puts the line NEAR the fold rather than on it -- which is
+ * the same thing the middle does today, and better.
+ *
+ * ── AND IT WALKS WHICHEVER PAIR OF EDGES THE FOLD RUNS BETWEEN ─────────────
+ *
+ * `splitFromFraction` always cuts between corner 0→1 and corner 3→2, which is a
+ * vertical line on an upright sheet and a horizontal one on a sheet whose
+ * labels have been turned a quarter. Turning the LABELS by a quarter here walks
+ * the other pair instead, so one body places a fold running either way without
+ * knowing which way the photograph is facing. `turnQuad` moves no corner (see
+ * its docblock): the sheet handed to `splitFromFraction` is the same four
+ * points, and the two endpoints that come back sit on real edges of it.
+ */
+function seated(photo: CapturePhoto, sheet: CaptureQuad, split: CaptureSplit): CaptureSplit {
+  const gutter = photo.gutter;
+  if (gutter === undefined || gutter === null) return split;
+  // Re-seated rather than trusted, for `cutOf`'s own reason: the stored
+  // endpoints are a memory of where two handles were let go, and a crop dragged
+  // since has left them floating off the edges they were riding. Null is a
+  // segment that cuts a corner off, which is not a line to move.
+  const cut = cutOf(sheet, split);
+  if (cut === null) return split;
+  const [fromX, fromY] = cut.a.point;
+  const [toX, toY] = cut.b.point;
+  // A line that runs down the frame cuts across the frame's x, which is the
+  // fold axis 'x' means. See the docblock on why this is not `cut.halves`.
+  const runs: 'x' | 'y' = Math.abs(toY - fromY) > Math.abs(toX - fromX) ? 'x' : 'y';
+  if (runs !== gutter.axis) return split;
+
+  const across = gutter.axis === 'x' ? 0 : 1;
+  const crosses = (cut.a.point[across] + cut.b.point[across]) / 2;
+  if (Math.abs(crosses - gutter.at) > GUTTER_REACH) return split;
+
+  // The pair of edges the cut will run between: corner 0→1 and 3→2 of whichever
+  // labelling of the sheet has them crossing the fold's axis.
+  const walked = Math.abs(sheet[1][across] - sheet[0][across])
+    >= Math.abs(sheet[3][across] - sheet[0][across])
+    ? sheet
+    : turnQuad(sheet, 1);
+  const alongEdge = (from: CapturePoint, to: CapturePoint): number | null => {
+    const run = to[across] - from[across];
+    // An edge that does not cross the fold's axis at all cannot say where along
+    // it the fold is. Both of them, and there is no conversion to make.
+    return Math.abs(run) < 1e-9 ? null : (gutter.at - from[across]) / run;
+  };
+  const first = alongEdge(walked[0], walked[1]);
+  const second = alongEdge(walked[3], walked[2]);
+  if (first === null && second === null) return split;
+  const at = first === null ? second! : (second === null ? first : (first + second) / 2);
+  // Outside the sheet entirely: the fold is on a part of the photograph this
+  // crop threw away, and a clamped line on the edge of the page is worse than
+  // the line that was already there.
+  if (at < 0 || at > 1) return split;
+  return splitFromFraction(walked, at);
+}
+
+/**
  * ONE PHOTOGRAPH, CUT AT A LINE -- the only body that turns a segment into two
  * pages of a book, and null when the segment cannot be one.
  *
@@ -3026,15 +3208,42 @@ function rejoined(photo: CapturePhoto): CapturePhoto {
  * STRIKES SURVIVE A RE-CUT, by seat. Which half is a page is a decision about
  * the book, and moving the gutter is not taking it back.
  */
-function cutWith(photo: CapturePhoto, split: CaptureSplit, mine: boolean): CapturePhoto | null {
+function cutWith(photo: CapturePhoto, split: CaptureSplit, mine: boolean, seat = !mine): CapturePhoto | null {
   const whole = joinedQuad(photo.pages.map((page) => page.quad), photo.split);
-  const halves = halvesOf(whole, split);
+  /*
+   * THE BOOK'S LINE IS SEATED ON THIS PAGE'S FOLD; A HAND'S LINE IS NOT.
+   *
+   * `mine` already draws exactly this distinction and draws it for the mark, so
+   * it draws it for the seating too rather than acquiring a second parameter
+   * that would have to agree with it. `mine` is a hand on this photograph -- a
+   * drag, or the tick inventing a line -- and where a hand let go is where the
+   * line goes, full stop. `!mine` is the book's one line arriving from
+   * somewhere else, and `seated` is what lets it arrive on the fold this page
+   * actually has. See `seated` for why the adjustment lives at the landing.
+   *
+   * EXCEPT THAT A DRAG IS NEVER SEATED ON THE PAGE IT WAS MADE ON, whichever
+   * way the tick is. With *Global* ticked `setSplit` passes `mine` false (the
+   * gesture is the book's, so it must not mark the page), and the first
+   * version of this seated the dragged line too -- it settled onto the shadow
+   * instead of staying under the pointer, within `GUTTER_REACH`, and on the
+   * release `leadTheBook` re-dressed the lead and seated it again. Coherent on
+   * paper; on the stage it is a line that will not go where the hand puts it,
+   * on the one page where the hand is the whole point, and it makes a
+   * detector that is wrong on THIS page impossible to correct without first
+   * unticking a box about every OTHER page. So `seat` is its own answer: a
+   * hand's line stays where the hand let go, on that page; the followers seat
+   * the same line on their own folds. The two questions -- whose line is it,
+   * and does this page get to move it -- agree everywhere except under a
+   * global drag, which is exactly where they needed to be two.
+   */
+  const line = seat ? seated(photo, whole, split) : split;
+  const halves = halvesOf(whole, line);
   if (halves === null) return null;
   const [first, second] = halves;
   const kept = mine || photo.pages.some((page) => page.byHand === true);
   return {
     ...photo,
-    split,
+    split: line,
     pages: [
       { id: `${photo.id}:0`, quad: first, struck: photo.pages[0]?.struck ?? false, byHand: kept },
       { id: `${photo.id}:1`, quad: second, struck: photo.pages[1]?.struck ?? false, byHand: kept },
@@ -3056,10 +3265,11 @@ function cutWith(photo: CapturePhoto, split: CaptureSplit, mine: boolean): Captu
  *
  * ── THE FRAME COMES WITH IT, because a crop is fractions of something ─────
  *
- * `sameShape` is what stops a portrait crop resolving to a plausible, stretched
- * region of a landscape frame, and it needs two shapes. Pointing at the source
- * photograph by id would work until somebody removed it, which is a thing they
- * may do at any time; the two numbers cost nothing and cannot go missing.
+ * It was `sameShape`'s other half, the two numbers that stopped a portrait
+ * crop resolving to a plausible, stretched region of a landscape frame. The
+ * shape stopped being asked of a global on 2026-09-21 (`applyPopulations` has
+ * the ruling); the frame is still recorded, because a file that says what its
+ * fractions were drawn for costs nothing and reads honestly.
  */
 function standingOf(photo: CapturePhoto): CaptureLines {
   return {
@@ -3112,7 +3322,7 @@ function standingOf(photo: CapturePhoto): CaptureLines {
  * the seat they were on. A page struck for being a blurred retake is still a
  * blurred retake after somebody changes its crop.
  */
-function wearing(photo: CapturePhoto, standing: CaptureLines): CapturePhoto | null {
+function wearing(photo: CapturePhoto, standing: CaptureLines, seat = true): CapturePhoto | null {
   const crop = standing.crop;
   if (crop === undefined) return null;
   /*
@@ -3123,7 +3333,26 @@ function wearing(photo: CapturePhoto, standing: CaptureLines): CapturePhoto | nu
    */
   const facing = photo.pages[0]?.quad;
   const sheet = facing === undefined ? crop.quad : turnedLike(crop.quad, facing);
-  const cut = standing.cut ?? null;
+  /*
+   * AND THE STANDING'S CUT IS SEATED ON THIS PAGE'S FOLD, for `cutWith`'s
+   * reason and by the same body.
+   *
+   * A wearing is always the book's lines arriving on a photograph -- there is
+   * no `mine` here to ask, because there is no such thing as wearing your own
+   * standing -- so the cut is always a candidate for seating. It matters more
+   * here than anywhere: this is the crop pass's Apply, the walk that lands one
+   * line on every spread in the book at once, and it is the press Owen was
+   * looking at when he asked for the fold to be found per page.
+   *
+   * THE SHEET IS THE ONE IT WILL BE CUT AGAINST, turn and all, so the seating
+   * and the cutting cannot disagree about which edges the line runs between.
+   *
+   * `seat` is false for one photograph only: the LEAD of a global gesture,
+   * being re-dressed on the release in the standing its own hand just wrote.
+   * Its line is where the hand let go -- `cutWith` argues why that page, of
+   * all pages, must not be moved by the detector.
+   */
+  const cut = standing.cut === undefined ? null : (seat ? seated(photo, sheet, standing.cut) : standing.cut);
   const halves = cut === null ? null : halvesOf(sheet, cut);
   if (cut !== null && halves === null) return null;
   const quads: readonly CaptureQuad[] = halves ?? [sheet];

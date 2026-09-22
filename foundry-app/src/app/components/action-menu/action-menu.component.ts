@@ -17,6 +17,7 @@ import { fold } from '@shared/original';
 import type { ActName } from '@shared/types';
 
 import { ActGatesService } from '../../core/act-gates.service';
+import { BookEditService } from '../../core/book-edit.service';
 import { BookStacksService } from '../../core/book-stacks.service';
 import { hosted } from '../../core/foundry';
 import { HostOpsService } from '../../core/host-ops.service';
@@ -268,6 +269,52 @@ import { UnappliedService } from '../../core/unapplied.service';
             aria-label="Edit the photographs"
             title="The photographs this book was made from, and the crops and turns still to set"
             (click)="editPhotographs(dir)"
+          >
+            <svg class="menu-icon" aria-hidden="true"><use href="#ft-capture" /></svg>
+          </button>
+        }
+
+        <!--
+          EDIT BOOK — the same door, for a book that never had a light table.
+
+          Owen, 2026-09-21: *"im thinking we should have an 'edit book' option in
+          the normal foundry window. after we open a pdf, and we have the step
+          workflow on the left side and the tiles and everything, maybe the user
+          can be given the option of editing the book directly (if it's a pdf),
+          which would take them to the crop/page split/etc screen."*
+
+          THE TWO SQUARES ARE MUTUALLY EXCLUSIVE BY CONSTRUCTION, and that is the
+          whole placement argument. The one above answers for a project that
+          ARRIVED as photographs -- it already has a table, with the very crops
+          and turns this would go and make a second copy of, so Owen's door is
+          the one thing missing from the other kind of project. So editable() is
+          asked of photographs() as well as of the catalogue, and at most one of
+          these two is ever drawn.
+
+          IT SITS HERE, WITH HOME AND THE LIGHT TABLE, for its neighbour's own
+          reason written just above: THE LIGHT TABLE IS A PLACE, and this control
+          names somewhere you can go. That it makes a project on the way is a fact
+          about the journey; what a person pressing it wants is the crop screen.
+
+          A SQUARE WITH NO WORDS, on the neighbour's length argument, and the same
+          icon -- because it lands in the same room. The sentence is on the hover,
+          where this strip keeps its sentences, and it says the one thing somebody
+          has to know before pressing: A SECOND BOOK IS MADE. Nothing happens to
+          the book on screen -- BookEditService's header carries that ruling, and
+          why re-founding the open project would orphan its readings in silence.
+
+          GREYED WHILE A PASS IS RUNNING rather than hidden, breaking this strip's
+          hidden-not-disabled habit on purpose: the reason the door is shut is
+          temporary and is visible three inches away on the progress card, so a
+          tile that vanished mid-rasterize would read as the offer being withdrawn.
+        -->
+        @if (editable()) {
+          <button
+            class="menu-item square"
+            aria-label="Edit book"
+            title="Take this book apart into its pages — crop, split and turn them, then rebuild it as a second book"
+            [disabled]="bookEdit.busy()"
+            (click)="editBook()"
           >
             <svg class="menu-icon" aria-hidden="true"><use href="#ft-capture" /></svg>
           </button>
@@ -943,6 +990,11 @@ export class ActionMenuComponent {
   protected readonly stage = inject(StageService);
   private readonly projects = inject(ProjectsService);
   private readonly ledger = inject(LedgerService);
+  /**
+   * THE DOOR THAT TAKES A BOOK APART — protected rather than private because the
+   * template reads its `busy` to grey the tile while a pass is running.
+   */
+  protected readonly bookEdit = inject(BookEditService);
   /**
    * THE REGISTRY OF OPEN BOOK VIEWERS, for the one tile that acts on a PANE
    * rather than on a step — see `canSweep`. It is the same door the inspector's
@@ -1730,6 +1782,63 @@ export class ActionMenuComponent {
   protected editPhotographs(dir: string): void {
     void this.router.navigateByUrl('/');
     this.documents.show(this.documents.captureTabIn(dir));
+  }
+
+  /**
+   * THE PROJECT IN FRONT OF THIS MENU, when its book is a PDF that could be
+   * taken apart — Owen's *"if it's a pdf"*, asked of the catalogue.
+   *
+   * ── The three tests, and why each one is here ──────────────────────────────
+   *
+   * THERE IS A PROJECT. A loose file dragged onto the window has no founding
+   * document, no shelf row and no title to derive a second one from, and Owen's
+   * ask is explicitly about the window *"after we open a pdf"* with the steps
+   * down the left — which is a project. A loose PDF still has the drop card's own
+   * *Edit book* one gesture away, on the file itself.
+   *
+   * IT DID NOT ARRIVE AS PHOTOGRAPHS. `photographs()` is the light table it
+   * already has; see the template for the argument, which is the placement
+   * argument too. The two are mutually exclusive on purpose.
+   *
+   * AND ITS BOOK IS A PDF. `BookEditService.pdfOf` is that question, asked once
+   * and in the same words the press will ask it in — so the tile cannot offer
+   * what the press would then refuse.
+   *
+   * `stage.activeDocument()` and not the library's position, for this menu's own
+   * standing habit: every other door here is about the document on screen.
+   */
+  protected readonly editable = computed<string | null>(() => {
+    if (this.photographs() !== null) return null;
+    const tab = this.stage.activeDocument();
+    if (tab === null) return null;
+    const project = this.projects.projectFor(tab.path);
+    if (project === null) return null;
+    return this.bookEdit.pdfOf(project) === null ? null : project.dir;
+  });
+
+  /**
+   * Take the open book apart into a light table of its own.
+   *
+   * THE NAVIGATE IS `editPhotographs`' HABIT, one flight up, for its reason: this
+   * menu is drawn beside routes that are not the workspace, and the light table
+   * this ends on is a tab rather than a route. It goes FIRST, before minutes of
+   * rasterizing, so the progress card the pass raises is on screen where somebody
+   * can watch it and press Stop — the drop card's ruling, which opens the panel
+   * before the first page is drawn rather than after the last.
+   *
+   * THE PROJECT IS RE-READ FROM THE CATALOGUE rather than captured by the
+   * computed above, which holds the DIRECTORY on purpose: a summary is a snapshot
+   * that main re-announces, and a press acting on a minutes-old copy of a
+   * project's document list is the class of bug this app keeps writing down. The
+   * directory is the one handle that cannot go stale.
+   */
+  protected editBook(): void {
+    const dir = this.editable();
+    if (dir === null) return;
+    const project = this.projects.projectFor(dir);
+    if (project === null) return;
+    void this.router.navigateByUrl('/');
+    void this.bookEdit.editBook(project);
   }
 
   /**
