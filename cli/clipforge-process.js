@@ -943,6 +943,30 @@ TRAINING_HELP.gate = [
   '  Proper nouns are free: the gate scores ordinary words only (4n.34.8).',
 ].join('\n');
 
+TRAINING_HELP.bed = [
+  'clipforge bed - put ownbed1 under every clip of a gated tier (bed_mix_tier.py)',
+  '',
+  '  --tier <dir>          a MERGED, GATED tier directory (wavs are rewritten IN PLACE; the',
+  '                        _raw_src_ pools keep the originals)',
+  '  --bed <wav>           default E:/training/beds/ownbed1/bed_raw_24k.wav - Owen own room tone,',
+  '                        2 h at 24 kHz. The corpus own tone or ownbed1, NEVER another source',
+  '                        (mm_roomtone was ear-rejected and crept back once; memory beds-own-source-only)',
+  '  --target-dbfs -70     level by the bed MEDIAN 250 ms-window RMS, never global RMS (a',
+  '                        non-uniform tone measured globally leaves floors near digital zero)',
+  '  --no-compress         skip the interior pause compression (knee 1.5 s / ceiling 2.5 s) that',
+  '                        the --nobed mix path applies; the default keeps the bed the ONLY change',
+  '',
+  '  WHEN. A bed is for audio that has been through RVC or a vocal separator (roformer / Adobe',
+  '  bg-removal), whose noise floor has been scrubbed to nothing: the 2026-09-13 bed test on RVC',
+  '  corpora removed loops and overruns and halved truncations (field notes 4n.79). It is NOT a',
+  '  v3 rule in general - clean masters train bed-less (tr_v3, 0/620 runaway, 4f) - and it is not',
+  '  the Orpheus SNAC-floor argument, which does not transfer.',
+  '',
+  '  ORDER. slice -> merge-tiers -> gate -> bed -> mix. Gate BEFORE bedding: the gate is ASR',
+  '  against text and the bed only lowers its coverage. Writes <tier>/bed_mix.json; a tier that',
+  '  already has one is skipped by the campaign chains, so delete it to re-bed.',
+].join('\n');
+
 TRAINING_HELP['merge-tiers'] = [
   'clipforge merge-tiers - merge per-book tiers into one corpus (merge_corpora.py)',
   '',
@@ -1501,6 +1525,32 @@ async function runGate(args) {
   console.log('[gate] 2% is an ALIGNMENT problem, not a gate problem (field notes 4n.40.4b).');
 }
 
+async function runBed(args) {
+  if (args.help) { console.log(TRAINING_HELP.bed); return; }
+  if (!args.tier) throw new Error('bed: --tier <merged tier dir> is required (see: clipforge bed --help)');
+  const tier = path.resolve(args.tier);
+  if (!fs.existsSync(path.join(tier, 'metadata_train.csv'))) {
+    throw new Error('bed: not a corpus tier (no metadata_train.csv): ' + tier);
+  }
+  if (!fs.existsSync(path.join(tier, 'row_gate.json'))) {
+    throw new Error('bed: ' + path.basename(tier) + ' has no row_gate.json - gate it first (the bed lowers ASR coverage)');
+  }
+  const root = resolveTrainingRoot(args);
+  const cwd = path.join(root, 'pipeline', 'untreated');
+  const python = resolveTrainingPython(args, 'bed');
+  const argv = ['--tier', tier];
+  if (args.bed) argv.push('--bed', String(args.bed));
+  if (args['target-dbfs'] !== undefined) argv.push('--target-dbfs', String(args['target-dbfs']));
+  if (args['no-compress']) argv.push('--no-compress');
+  await spawnTraining(python, path.join(cwd, 'bed_mix_tier.py'), argv, cwd, 'bed');
+  const manifest = path.join(tier, 'bed_mix.json');
+  if (!fs.existsSync(manifest)) {
+    throw new Error('bed: ' + path.basename(tier) + ' produced no bed_mix.json - the bed was NOT applied');
+  }
+  console.log('[bed] ' + path.basename(tier) + ' -> ' + manifest);
+  console.log('[bed] The wavs were rewritten in place; the _raw_src_ pools still hold the un-bedded clips.');
+}
+
 async function runMergeTiers(args) {
   if (args.help) { console.log(TRAINING_HELP['merge-tiers']); return; }
   for (const k of ['build', 'rows', 'out', 'books', 'tier']) {
@@ -1565,7 +1615,7 @@ function requireGuestSide(verb) {
     '  From Windows, path.resolve() rewrites /mnt/e/... into a Git-Bash path and the spawn fails.',
     '  Run it there instead:',
     '    wsl -e node /mnt/c/Users/<user>/Projects/bookforge/cli/clipforge-process.js ' + verb + ' ...',
-    '  (slice, gate and merge-tiers are Windows-side and work from here.)',
+    '  (slice, gate, merge-tiers and bed are Windows-side and work from here.)',
   ].join('\n'));
   throw new Error(verb + ': refusing to run a guest-side job from Windows');
 }
@@ -1775,6 +1825,7 @@ function printUsage() {
     '  pause-match  does the model pause like the reader? + inject  (pause_match.py)',
     '  normalize-pauses  shorten a master pauses + rewrite its vtt (normalize_pauses.py)',
     '  merge-tiers  merge per-book tiers into one corpus         (merge_corpora.py)',
+    '  bed          ownbed1 under every clip of a gated tier   (bed_mix_tier.py)',
     '  mix          encode a gated corpus into a training set   (build_higgs_mix.py)',
     '  train        LoRA fine-tune on an encoded corpus         (train_lora.py)',
     '  masters      rebuild per-book masters from Adobe returns (Adobe SPAN pipeline)',
@@ -1794,7 +1845,7 @@ function printUsage() {
     '  (default ' + CAMPAIGN_ROOT_DEFAULT + ').',
     '',
     '  Pipeline order is the runbook in HIGGS_FIELD_NOTES 4n.41:',
-    '    masters -> align -> slice -> merge-tiers -> gate -> mix -> train -> sweep -> promote',
+    '    masters -> align -> slice -> merge-tiers -> gate -> [bed] -> mix -> train -> sweep -> promote',
     '',
     '  rvc-dataset is NOT on that line. It is the other branch off the same masters + VTTs:',
     '    masters -> align -> rvc-dataset -> (urvc preprocess-dataset / extract / train, by hand)',
@@ -2140,6 +2191,7 @@ async function main() {
   if (verb === 'normalize-pauses') return runNormalizePauses(args);
   if (verb === 'gate') return runGate(args);
   if (verb === 'merge-tiers') return runMergeTiers(args);
+  if (verb === 'bed') return runBed(args);
   if (verb === 'mix') return runMix(args);
   if (verb === 'train') return runTrain(args);
   if (verb === 'masters') return runMasters(args);
