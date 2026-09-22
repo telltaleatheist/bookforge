@@ -10,35 +10,139 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\<user>\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **f9bebb6** — *Adopt Crucible 1.0.21 (dep-only): the proxy sends a request the wire loses once more on a fresh socket* (was 7ab80b5) |
+| Source sha | **f9bebb6** — *Adopt Crucible 1.0.21 (dep-only): the proxy sends a request the wire loses once more on a fresh socket* (was 3e26e53) |
 | Engine | **NOT VENDORED AND NOT KNOWABLE FROM THIS FILE** — it is a spawned CLI resolved at RUNTIME (`FOUNDRY_BIN`, else `resolveFoundryPath`, `electron/main.ts`), so which build executes is a property of the machine and not of this copy. On a developer's Mac that resolves to Foundry's own checkout at `/Volumes/Callisto/Projects/foundry/dist/foundry-darwin-arm64`, which is whatever was last built there — `foundry 2.0.2 (04758be)` — REBUILT at this re-vendor (2026-09-21) so the engine carries fdba761's clean-text log change. **Ask the binary: `$FOUNDRY_BIN --version`.** See *The engine this file named was not the engine that ran* below. |
-| Copied on | 2026-09-19 (five times: 3738c01, 3436fc5, 806d44b, f349771, ca4754c) and 2026-09-20 (98a4344, 9e0b27d, dccc144, 7b98004, cc5fc5b, 93010d8, 77e1d6d) and 2026-09-21 (77a529d, b1c68fd, fe44667, 7ab80b5, f9bebb6) |
+| Copied on | 2026-09-19 (five times: 3738c01, 3436fc5, 806d44b, f349771, ca4754c), 2026-09-20 (98a4344, 9e0b27d, dccc144, 7b98004, cc5fc5b, 93010d8, 77e1d6d) and 2026-09-21 (753dca8, 3e26e53, f9bebb6) |
 | Copied by | Mechanical source sync, verified against Foundry `f9bebb6:app/` (`diff -rq`, clean but for this file, `IPC-CHANNELS.md` and `.gitignore` — see below); details below |
 
-## The `7ab80b5 → f9bebb6` re-vendor — the 1.0.21 SDK adoption, plus three Foundry commits (2026-09-21)
+## The `3e26e53 → f9bebb6` re-vendor — the 1.0.21 SDK adoption (2026-09-21, late)
 
-NOT dependency-only this time. `git diff --stat 7ab80b5..f9bebb6 -- app/` is 17 files: the
-four SDK files (package.json, package-lock.json, the two vendor tarballs) and thirteen source
-files from the three Foundry commits that landed on main between the two pins, all taken
-mechanically because a copy that matched no Foundry sha would be exactly the fork this file
-forbids:
-
-- `d7f9712` *vlm/endpoint: weather is retried within a budget, then the run parks by name* —
-  the client half of the 22:03 incident: a 5xx/timeout/reset on one page no longer ends the
-  run, drops the lease and closes every other request. (Engine-side, in Foundry `src/`; the
-  app half here is the park surface.)
-- `753dca8` *app/queue: exit 75 from the engine is a park, not a failure* —
-  `electron/job-queue.ts`: the queue reads a parked run as parked.
-- `3e26e53` *capture: Global reaches every page, the cut finds the fold, and a PDF can be
-  edited* — capture rail/view, `shared/gutter.ts` (new), `core/book-edit.service.ts` (new).
-
-1.0.21 itself is server-side (crucible 5eb3bb1): the proxy's httpx pool expires an idle
-socket at 2 s, below vLLM's 5 s keep-alive, and a request the wire loses is sent once more on
-a fresh socket; timeouts are never retried. The SDK's wire is unchanged. Verified with
-`diff -rq --strip-trailing-cr` (clean but for the excluded files). Gates:
+Dependency-only, the same four files as the 1.0.17–1.0.20 entries (package.json,
+package-lock.json, the two vendor tarballs); `git diff --stat 3e26e53..f9bebb6 -- app/`
+is exactly those. 1.0.21 is server-side (crucible 5eb3bb1): the proxy's httpx pool expires
+an idle socket at 2 s, BELOW vLLM's 5 s keep-alive (`VLLM_HTTP_TIMEOUT_KEEP_ALIVE`, vllm
+0.29.0 `envs.py:109`), and a request the wire loses (`httpx.NetworkError`,
+`RemoteProtocolError`) is sent once more on a fresh socket at all four chat doors; timeouts
+are never retried; a 502 that was tried twice says so. It is the server half of the
+*Everyday Denazification* page-32 `502 ReadError` the two entries below carry the client
+half of. The SDK's wire is unchanged, so nothing here needs the staged dist rebuilt. Gates:
 `node tools/test-foundry-adopt.js` 40/40; root `tsc -p tsconfig.electron.json --noEmit`
-exit 0; `test-foundry-host-queue.js`, `test-foundry-host.js`,
-`test-foundry-hosted-crucible-seam.js`, `test-foundry-runner-seam.js` (results in the commit).
+exit 0. Landed as a merge over 62caa639 (origin had the two entries below by then; the
+only conflict was this file).
+
+## The `753dca8 → 3e26e53` re-vendor — the light-table series (2026-09-21)
+
+One Foundry commit, all of it in `app/` — the renderer and main halves of the capture
+light table, so this copy takes the whole of it. Four of Owen's asks from the same
+evening, landed together because the second depends on the first and the fourth on the
+third, plus one save fix. 11 files, +1624/−166, nothing deleted; `app/shared/gutter.ts`,
+`app/src/app/core/book-edit.service.ts` and `app/test/gutter-detector.test.ts` are new.
+
+1. **GLOBAL REACHES EVERY PAGE.** *"the 'two pages' button isnt splitting all pages like
+   i expected it to … even though the 'global' checkbox is checked."* Every global asked
+   whether a page was the same SHAPE as the leader, within two percent of aspect — a
+   camera's rule. A scanner's auto-crop gives every page its own size (the fragebogen
+   scan's 271 spreads run 1.15 to 1.33), so a tick on one spread reached forty-seven.
+   Ruling: *"any action i take with the global button checked should apply that action to
+   every page uniformly."* The shape gate is gone from the live propagation, both
+   Finalizes, the turn, the tick taking the book's cut and a late arrival inheriting its
+   neighbour; completeness is the one thing that spares a page. `sameShape` keeps one
+   reader, intake's `handsRead`.
+2. **THE CUT FINDS THE FOLD.** `shared/gutter.ts` reads the 640-px thumbnail — the 75th-
+   percentile luminance per column over the middle of the height, the narrow dark dip
+   against its ring within the central 30–70%, and (rule 2, after a minted preface carried
+   a sliver of the facing page) that dip held inside the strip with no type in it, type
+   being a column whose quartiles spread. Measured at intake in MAIN and stored on the
+   photo with the `GUTTER_RULE` it was read under, so a book read under an older rule is
+   read again on its next open. The book's cut is seated on each follower's own fold when
+   the fold is within 8%; a line a hand dragged stays where the hand let go. 271 of 271
+   spreads agree with the prototype.
+3. **THE DROP CARD SPEAKS PLAINLY.** *"Open it"* / *"Make a book from its pages"* are
+   **Open book** / **Edit book**, with a sentence each for somebody who did not write the
+   program.
+4. **EDIT BOOK FROM INSIDE THE BOOK.** An open book whose founding document is a PDF gets
+   an *Edit book* square in the action menu's strip: the PDF is taken apart into a new
+   light-table project named `<title> (edited)` through the same two doors the drop card
+   uses, and the minted book is an ordinary project with its own steps.
+
+Also: **Mint no longer mints over a disk that is behind the screen.** A debounced save
+that had been refused left flush with nothing to write; the pending edit is held until a
+write succeeds, and Mint says so instead of minting the recipe two gestures old.
+
+**Nothing here crosses the host seam**, which is why this entry names no BookForge
+change: the light table is the Foundry window's own, and `mount.ts`, `job-queue.ts` and
+`RunOutcome` are untouched by it — the `parked` arm from the entry below is intact in
+this build (`grep -c parked dist/electron/mount.js` → 2).
+
+Verified with `diff -rq` against `3e26e53:app/` (excluding node_modules, dist, .angular,
+out-tsc, release, VENDORED.md, IPC-CHANNELS.md, .gitignore): clean, and no stale file —
+`git diff --diff-filter=D 753dca8..3e26e53 -- app/` is empty, so the archive's inability
+to delete cost nothing this time. Built in a staging copy INSIDE this repo
+(`.foundry-stage-3e26e53/`, `node_modules` symlinked to `foundry-app/node_modules`,
+never two stage builds at once), electron and renderer both, and the built `dist` checked
+three ways — `gutterOf` in `dist/electron/capture.js` (2, and `GUTTER_RULE` 3x in
+`dist/shared/gutter.js`), `dist/electron/mount.js` present, `dist/renderer/browser/index.html`
+present. **NOT SWAPPED at this commit**: BookForge was running, and the electron half
+cannot be swapped under a live app. The swap is
+`tools/swap-foundry-dist.sh .foundry-stage-3e26e53 --expect gutterOf`, which refuses on
+any of the three checks or on a running app. Gate: root
+`tsc -p tsconfig.electron.json --noEmit` exit 0.
+
+## The `7ab80b5 → 753dca8` re-vendor — a weather-parked page read is a park, not a failure (2026-09-21)
+
+Two Foundry commits, and only the second touches `app/` — but the first is why the
+second exists, so both are named here.
+
+`d7f9712` is in Foundry's `src/`, the CLI engine this copy does NOT vendor: the VLM
+endpoint reader now treats a `502`/`503`/`504`/`429` and a socket fault as WEATHER.
+It retries through an eight-try budget with the Crucible lease kept alive, the pages
+in flight beside a failing worker still land in the readings bank, and only when the
+budget is spent does the run PARK BY NAME — the CLI exiting `75`, sysexits'
+`EX_TEMPFAIL`. A machine gets it when its binary is rebuilt; ask `$FOUNDRY_BIN
+--version`.
+
+`753dca8` is the app half, and it is what this copy takes:
+
+- `shared/types.ts` states `ENGINE_PARKED_EXIT = 75` — written in two places on
+  purpose, beside `PARKED_EXIT_CODE` in the engine's `src/vlm/endpoint.ts`, under the
+  same pairing rule `DEFAULT_VLM_CONCURRENCY` already lives under; and `RunOutcome`
+  gains a FIFTH arm, `{ outcome: 'parked'; reason; stderrTail }`, carrying no row
+  because nothing landed.
+- `electron/job-queue.ts` reads exit 75 as its own arm: a pump-driven row goes back
+  to `queued` wearing the engine's park sentence and sits out a minute on
+  `parkedUntil`; a detached run — `runJob`, which is BookForge's seam — is discarded
+  like a wait and answered `parked`, so the host re-queues by the engine's own words.
+  The readings are kept either way, which is the whole reason a park costs nothing.
+- `electron/mount.ts` lists five outcomes where it listed four.
+
+**The measured defect.** 2026-09-21, *Everyday Denazification*, page 32 of 329: a
+`502 ReadError` from a proxy over a stale socket. Every non-zero exit was a failure,
+so Foundry ended the run, the dispatcher's settle handed the Crucible lease back,
+Crucible unloaded dots-ocr under the eleven pages still in flight, and BookForge
+reddened the row — which, since `af25c6d7`, also IDLES the whole queue. One socket
+that answered again a minute later cost a lease, an engine load, eleven pages and a
+night of board time.
+
+BookForge's half of the seam lands in the commit beside this one: `FoundryRunOutcome`
+mirrors the fifth arm, and `queue-steps/foundry-job.ts` turns it into
+`stepFailure(reason, undefined, reason)` — the TRANSIENT park, not the `busyLine` one,
+because a stale socket is not a holder and recording one would hold every other book
+off that server.
+
+Verified with `diff -rq` against `753dca8:app/` (excluding node_modules, dist,
+.angular, out-tsc, release, VENDORED.md, IPC-CHANNELS.md, .gitignore): clean.
+Built in a staging copy INSIDE this repo (`.foundry-stage-753dca8/`, `node_modules`
+symlinked to `foundry-app/node_modules`), electron and renderer both, and the built
+`dist` checked three ways — `parked` in `dist/electron/mount.js` (2) and
+`dist/electron/job-queue.js` (47), `ENGINE_PARKED_EXIT` in `dist/shared/types.js` (2),
+`dist/renderer/browser/index.html` present. **NOT SWAPPED at this commit**: BookForge
+was running, and the electron half cannot be swapped under a live app. The swap is
+`tools/swap-foundry-dist.sh .foundry-stage-753dca8 --expect ENGINE_PARKED_EXIT`, which
+is new in this commit and REFUSES on any of the three checks or on a running app —
+the tool the 2026-09-20 no-renderer swap owed. Gates: root
+`tsc -p tsconfig.electron.json --noEmit` exit 0; in a scratch worktree
+`tools/test-foundry-host-queue.js` 32/36 (the four failures predate tonight) and
+`tools/test-queue-engine.js` 62/62.
 
 ## The `fe44667 → 7ab80b5` re-vendor — the 1.0.20 SDK adoption (2026-09-21)
 

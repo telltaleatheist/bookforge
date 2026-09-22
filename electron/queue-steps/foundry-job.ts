@@ -706,6 +706,39 @@ export const foundryJobStep: StepModule = {
     if (outcome.outcome === 'wait') {
       throw stepFailure(outcome.busyLine, outcome.busyLine);
     }
+
+    /*
+     * ── AND THE ENGINE'S OWN PARK IS A QUEUE PARK (Foundry 753dca8) ─────────
+     *
+     * The engine ran, met the model server's weather — a 502 from a proxy over
+     * a stale socket, a connect timeout, a card reloading — retried it through
+     * its stated budget and exited `ENGINE_PARKED_EXIT` (75, EX_TEMPFAIL) with
+     * every page it read banked. Nothing about this book is wrong, nobody holds
+     * the card, and there is nothing a person could repair; the same request run
+     * again resumes from the readings and costs only the pages it never got.
+     *
+     * THE TRANSIENT ARM, NOT THE `busyLine` ONE, and the choice is the rule in
+     * `runtime.ts`: `busyLine` means *somebody holds that machine*, and
+     * `settleStep` records it server-wide (`holdServerBusy`) so every other book
+     * waits on the same holder. A stale socket is not a holder — writing one
+     * would hold the whole library off a server that is merely slow to answer
+     * this one book. `transientLine` parks the same way with the cool-off kept
+     * per STEP (`transientParks`), which is exactly what this is.
+     *
+     * The sentence is the ENGINE'S, verbatim, on both halves: it names the
+     * endpoint and the page, and this side knows less about the weather on that
+     * card than the process that sat in it for eight minutes.
+     *
+     * WHAT IT COSTS IF THIS ARM IS WRONG, measured: page 32 of 329 of *Everyday
+     * Denazification*, 2026-09-21. Filed as `failed`, the row reddened, the
+     * dispatcher's settle handed the lease back, Crucible unloaded dots-ocr, and
+     * the eleven pages in flight beside the failing worker went with the
+     * process. A genuine failure also IDLES the queue (`settleStep`, Owen
+     * 2026-09-21), so one stale socket stopped the board for the night.
+     */
+    if (outcome.outcome === 'parked') {
+      throw stepFailure(outcome.reason, undefined, outcome.reason);
+    }
     const row = outcome.row;
 
     /*
