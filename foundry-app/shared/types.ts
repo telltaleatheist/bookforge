@@ -5158,8 +5158,16 @@ export interface CaptureSplit {
  */
 export interface CaptureGutter {
   axis: 'x' | 'y';
-  /** 0..1 along the axis named above. */
+  /** 0..1 along the axis named above: the fold, at the middle of the frame. */
   at: number;
+  /**
+   * THE FOLD AT EACH END OF THE FRAME, 0..1 along the axis: for an 'x' gutter
+   * the x at the frame's top edge and at its bottom, for a 'y' gutter the y at
+   * its left and at its right. The line between them leans with the scan
+   * (rule 3, `knobOf`); `at` is their mean. Absent on a measurement from an
+   * earlier rule, which read one straight line.
+   */
+  ends?: [number, number];
   /**
    * The detector's rule this was measured under (`GUTTER_RULE` in
    * shared/gutter.ts). Absent on a measurement from before rules were

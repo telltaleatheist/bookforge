@@ -10,10 +10,72 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\<user>\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **f9bebb6** — *Adopt Crucible 1.0.21 (dep-only): the proxy sends a request the wire loses once more on a fresh socket* (was 3e26e53) |
+| Source sha | **95593b0** — *capture/gutter: the cut splits the difference between the two blocks of type, at each end* (was f9bebb6) |
 | Engine | **NOT VENDORED AND NOT KNOWABLE FROM THIS FILE** — it is a spawned CLI resolved at RUNTIME (`FOUNDRY_BIN`, else `resolveFoundryPath`, `electron/main.ts`), so which build executes is a property of the machine and not of this copy. On a developer's Mac that resolves to Foundry's own checkout at `/Volumes/Callisto/Projects/foundry/dist/foundry-darwin-arm64`, which is whatever was last built there — `foundry 2.0.2 (04758be)` — REBUILT at this re-vendor (2026-09-21) so the engine carries fdba761's clean-text log change. **Ask the binary: `$FOUNDRY_BIN --version`.** See *The engine this file named was not the engine that ran* below. |
-| Copied on | 2026-09-19 (five times: 3738c01, 3436fc5, 806d44b, f349771, ca4754c), 2026-09-20 (98a4344, 9e0b27d, dccc144, 7b98004, cc5fc5b, 93010d8, 77e1d6d) and 2026-09-21 (753dca8, 3e26e53, f9bebb6) |
-| Copied by | Mechanical source sync, verified against Foundry `f9bebb6:app/` (`diff -rq`, clean but for this file, `IPC-CHANNELS.md` and `.gitignore` — see below); details below |
+| Copied on | 2026-09-19 (five times: 3738c01, 3436fc5, 806d44b, f349771, ca4754c), 2026-09-20 (98a4344, 9e0b27d, dccc144, 7b98004, cc5fc5b, 93010d8, 77e1d6d) and 2026-09-21 (753dca8, 3e26e53, f9bebb6, 95593b0) |
+| Copied by | Mechanical source sync, verified against Foundry `95593b0:app/` (`diff -rq`, clean but for this file, `IPC-CHANNELS.md` and `.gitignore` — see below); details below |
+
+## The `f9bebb6 → 95593b0` re-vendor — gutter rule 3, the cut leans with the scan (2026-09-21)
+
+One Foundry commit, five files, +186/−100, nothing deleted; a straight correction of
+the gutter detector this copy took two vendors ago, and all of it in `app/`.
+
+**THE SHADOW WAS THE WRONG FACT.** Rule 2 cut on the binding's shadow, and on a tightly
+bound book the shadow lies mostly on the page that curves in — deepest exactly where
+that page's type begins. So the cut landed on the type it was supposed to miss, and
+page ix lost its first letters. Owen, 2026-09-21: *"detect where the text is on the
+page, and then split the difference, so the top knob is directly in the center of where
+the text starts at the top and directly in the center of where the text starts/ends on
+the bottom of the page."*
+
+**THE GAP IS a fact about the PAGES, not about the binding.** A cut anywhere in the
+type-free run between the two blocks of type loses nothing, and its CENTRE is as far
+from either block as a cut can be. `knobOf` finds the type-free run nearest the
+shadow's darkest column (or the middle), at least 1% and at most 12% of the frame wide,
+and answers its centre — type being a column whose luminance quartiles spread by more
+than 40. **The shadow survives only as the fallback**: a band whose run reaches the
+frame's edge (a blank verso, a chapter opening) answers with the shadow held inside the
+run instead, or with the other band's knob when there is no shadow.
+
+**AND THAT IS WHY THE LINE CAN LEAN.** The two bands are read separately — 12–48% and
+52–88% of the height — so `CaptureGutter` gains `ends`, the fold at each end of the
+frame, with `at` their mean. `seated` builds the cut from both, each sheet edge taking
+the reading at its own end, so a scan that was not square on the glass gets a cut that
+is not square either: up to 3% of the width between top and bottom on the fragebogen
+scan. `GUTTER_RULE` is **3**, so every book measured under 1 or 2 is measured again on
+its next open — the re-read rule rule 2 already established, doing its job for the
+first time.
+
+Prototype and port agree on 271 of 271 spreads; the largest moves from rule 2 land in
+the centre of the gap on a contact sheet. Two tests added (`app/test/gutter-detector.test.ts`):
+a leaning gap gives two different ends, and a one-sided band takes the shadow while a
+spread with neither is no fold.
+
+Nothing here crosses the host seam — the light table is the Foundry window's own — so
+no BookForge file moves with it.
+
+Verified with `diff -rq` against `95593b0:app/` (excluding node_modules, dist, .angular,
+out-tsc, release, VENDORED.md, IPC-CHANNELS.md, .gitignore): clean, and no stray —
+`git diff --diff-filter=D f9bebb6..95593b0 -- app/` is empty. Built in a staging copy
+INSIDE this repo (`.foundry-stage-95593b0/`, `node_modules` symlinked to
+`foundry-app/node_modules`, one stage build at a time), electron and renderer both, and
+the built `dist` checked three ways — the rule-3-only string `gutter ends` in
+`dist/electron/capture.js` (1), `dist/electron/mount.js` present,
+`dist/renderer/browser/index.html` present — plus a belt check that the `parked` arm from
+the `753dca8` entry is still in `dist/electron/mount.js` (2) and that
+`dist/shared/gutter.js` compiles `exports.GUTTER_RULE = 3` with `ends` on the answer.
+
+**The SDK in `node_modules` is 1.0.16 against `f9bebb6`'s 1.0.21 pin, and the build did
+not need it.** Nothing was installed for this stage: the two SDK modules are resolved
+from `foundry-app/node_modules` up the tree exactly as in production, the electron and
+renderer halves both compiled against 1.0.16's types, and 1.0.21 is server-side anyway
+(see the entry below). The install belongs to the restart checklist, not to a re-vendor.
+
+**NOT SWAPPED at this commit**: BookForge was running, and the electron half cannot be
+swapped under a live app. The swap is
+`tools/swap-foundry-dist.sh .foundry-stage-95593b0 --expect "gutter ends"`, which refuses
+on any of the three checks or on a running app. Gate: root
+`tsc -p tsconfig.electron.json --noEmit` exit 0.
 
 ## The `3e26e53 → f9bebb6` re-vendor — the 1.0.21 SDK adoption (2026-09-21, late)
 

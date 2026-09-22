@@ -105,10 +105,45 @@ describe('gutterOf', () => {
     });
     const gutter = gutterOf(luma, width, height);
     expect(gutter?.axis).toBe('x');
-    expect(gutter?.rule).toBe(2);
+    expect(gutter?.rule).toBe(3);
     const at = gutter!.at * width;
     expect(at).toBeLessThan(fold + 8 - 0.005 * width);
     expect(at).toBeGreaterThan(fold - 20);
+  });
+
+  test('the knobs sit in the centre of the gap at each end, so the line leans with the scan', () => {
+    const { width, height } = WIDE;
+    const fold = Math.round(0.50 * width);
+    // The gap between the blocks is [fold-20, fold+8] over the top half and
+    // [fold-30, fold-2] over the bottom half: the scan leans. No shadow at all.
+    const luma = page(width, height, (x, y) => {
+      const upper = y < height / 2;
+      const leftEnd = upper ? fold - 20 : fold - 30;
+      const rightStart = upper ? fold + 8 : fold - 2;
+      const type = x < leftEnd || x >= rightStart;
+      return type && y % 3 !== 0 ? 40 : 235;
+    });
+    const gutter = gutterOf(luma, width, height);
+    expect(gutter?.axis).toBe('x');
+    expect(gutter?.ends?.[0]).toBeCloseTo((fold - 6) / width, 2);
+    expect(gutter?.ends?.[1]).toBeCloseTo((fold - 16) / width, 2);
+    expect(gutter?.at).toBeCloseTo((fold - 11) / width, 2);
+  });
+
+  test('a band with type on one side only takes the shadow, and a spread with neither is no fold', () => {
+    const { width, height } = WIDE;
+    const at = Math.round(0.47 * width);
+    // A blank verso beside a page of type, with the binding's shadow at 0.47:
+    // the gap runs to the frame's edge, so the shadow answers.
+    const luma = page(width, height, (x, y) => {
+      if (Math.abs(x - at) <= FOLD) return 90;
+      return x > at + 40 && y % 3 !== 0 ? 40 : 235;
+    });
+    const gutter = gutterOf(luma, width, height);
+    expect(gutter?.at).toBeCloseTo(0.47, 2);
+    // Type on one side and no shadow: nothing says where the fold is.
+    const blank = page(width, height, (x, y) => (x > at + 40 && y % 3 !== 0 ? 40 : 235));
+    expect(gutterOf(blank, width, height)).toBeNull();
   });
 
   test('a portrait frame is read across, and its fold is a y', () => {
