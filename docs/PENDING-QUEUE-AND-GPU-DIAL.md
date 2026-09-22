@@ -49,6 +49,29 @@ queue doing nothing"* until Resume. So:
 This matches the older ruling it follows from (2026-08-23): *"if I add something and
 it isn't already moving, don't start it until I hit start."*
 
+### What idles the queue on its own — Owen, 2026-09-21
+
+*"I can't think of a situation in which it should automatically go idle … if I
+remove something, it shouldn't pause. If I move something from one slot to
+another or back to pending, it shouldn't pause. One case in which the queue
+should pause on its own is if there's an error."*
+
+So the latch goes off for exactly these, and nothing else:
+
+- **A press that means pause**: the Running/Paused control, the tray's *Pause
+  after current*, *Halt processing*, *Clear all*, the phone's Pause.
+- **A step failing with an error** (`settleStep`'s failed arm) — the one
+  automatic idle. A busy or transient park is not an error and idles nothing.
+- **A launch**: the loader deliberately does not restore the latch (unchanged).
+
+A Stop, a Remove, a move between slots and a send back to Pending free their
+own card and lease and leave the queue running. Until this date the cancel door
+idled the whole queue ("you stop a GPU job to get the card back", 2026-08-23) —
+written for one machine with one card; on 2026-09-21 a removed clean on the
+Mac's card idled a book holding the PC's, whose align then sat for fifteen
+minutes under a hold sentence that never said why. The hold sentence now says
+"the queue is idle — press Start" when that is the reason.
+
 ## Admission — the row does not take a slot until the server is free
 
 Owen, **2026-09-19**: *"I don't think it should move out of the queue and into a slot

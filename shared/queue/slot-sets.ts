@@ -632,12 +632,23 @@ export function gpuHoldStep(job: QueueJob): QueueStep | null {
  * card that is rendering from a card that is being kept between steps, because
  * the second one frees itself in seconds.
  */
-export function gpuHoldWords(job: QueueJob): string | null {
+export function gpuHoldWords(
+  job: QueueJob,
+  /**
+   * Whether the queue is admitting work. `false` names the reason a hold can
+   * sit for a quarter of an hour saying "waiting to start Align" (Black Sun,
+   * 2026-09-21: the queue had gone idle and nothing on the card said so).
+   * Absent means "not known here" — the scheduler's own phrase never needs it.
+   */
+  opts: { readonly queueRunning?: boolean } = {},
+): string | null {
   const step = gpuHoldStep(job);
   if (step === null) return null;
   const what = step.resource === 'cpu'
     ? `${step.label} is finishing on the CPU`
-    : `waiting to start ${step.label}`;
+    : opts.queueRunning === false
+      ? `${step.label} is next, but the queue is idle — press Start`
+      : `waiting to start ${step.label}`;
   return `holding the card for ${job.title} between GPU steps — ${what}`;
 }
 

@@ -1870,14 +1870,25 @@ export async function cancel(
     // Not started: it is cancelled here and now, and so is everything under it.
     settleNotStarted(job, step, reason);
   }
-  // A user stop idles the queue: you stop a GPU job to get the card back, and
-  // auto-starting the next one would defeat the purpose.
-  running = false;
-  // And getting the card back means the LEASE too, on every row the idled
-  // queue will not be starting anything for — the same sentence `pause()`
-  // says, because this is the same dial. A row stopped here has already given
-  // its own back through `cascadeCancel`; this is for the others.
-  closeRowLeasesTheQueueWillNotStart();
+  /*
+   * A STOP OR A REMOVE DOES NOT IDLE THE QUEUE (Owen, 2026-09-21).
+   *
+   * Until tonight this door ended with `running = false` under the rule "you
+   * stop a GPU job to get the card back, and auto-starting the next one would
+   * defeat the purpose" (2026-08-23). The rule was written for one machine with
+   * one card. On 2026-09-21 Owen removed a running clean on the Mac's card and
+   * the whole queue went idle: Black Sun's align, holding the PC's card, sat
+   * in `waiting` for fifteen minutes under a hold sentence that never said
+   * why. His ruling: *"I can't think of a situation in which it should
+   * automatically go idle … if I remove something, it shouldn't pause. If I
+   * move something from one slot to another or back to pending, it shouldn't
+   * pause."* The one case that DOES idle the queue on its own is a step
+   * failing with an error — see `settleStep`'s failed arm.
+   *
+   * So a stop frees its own card and its own lease (`cascadeCancel` has done
+   * that above) and the queue keeps running. Pause and Halt processing are the
+   * dials that stop everything, and they are their own presses.
+   */
   changed();
 }
 
@@ -4958,6 +4969,19 @@ function settleStep(job: QueueJob, step: QueueStep, outcome: StepOutcome): void 
     // with the reason, not left pending — a workflow that silently sits forever
     // is the failure mode this replaces.
     cascadeCancel(job, step.id, `Skipped: ${step.label} failed. Fix it and run the job again.`);
+    /*
+     * AN ERROR IDLES THE QUEUE — the ONE automatic idle (Owen, 2026-09-21:
+     * *"one case in which the queue should pause on its own is if there's an
+     * error like that"* — a page read whose engine was taken off the card
+     * mid-run). A busy or transient park never reaches this arm (it returned
+     * above), a stop is the arm before it, and neither idles anything. A
+     * genuine failure is a person's problem to read before the next row takes
+     * the same card and meets the same fault, so nothing else is admitted
+     * until Start is pressed; the leases the idled queue would have been
+     * holding for rows it will not start go back with it, as `pause()` does.
+     */
+    running = false;
+    closeRowLeasesTheQueueWillNotStart();
   }
 
   const status = jobStatus(job);

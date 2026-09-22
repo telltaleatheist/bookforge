@@ -956,7 +956,8 @@ test('cancelling a running step cascades to everything waiting on it', async () 
   assert.strictEqual(assemble.status, 'cancelled');
   assert.match(assemble.error, /Skipped: Narrate was stopped/,
     'a skipped step says why it was skipped');
-  assert.strictEqual(engine.isRunning(), false, 'a stop idles the queue');
+  assert.strictEqual(engine.isRunning(), true,
+    'a stop frees its own card and leaves the queue running (Owen, 2026-09-21)');
 });
 
 test('stopping a RESUMABLE step leaves it held and interrupted, not cancelled', async () => {
@@ -1021,6 +1022,8 @@ test('a failed step fails its job and cancels what came after it, with a reason'
   assert.strictEqual(narrate.status, 'failed');
   assert.strictEqual(narrate.error, 'the model would not load');
   assert.strictEqual(assemble.status, 'cancelled');
+  assert.strictEqual(engine.isRunning(), false,
+    'an error is the ONE automatic idle: nothing else is admitted until Start (Owen, 2026-09-21)');
   assert.match(assemble.error, /Skipped: Narrate failed/);
   assert.strictEqual(asm.runs.length, 0, 'nothing runs on input that was never written');
   assert.strictEqual(types.jobStatus(engine.snapshot().jobs[0]), 'failed',
