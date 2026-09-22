@@ -573,7 +573,7 @@ interface ChainRung {
               class="group"
               cdkDropList
               [cdkDropListDisabled]="reordering()"
-              [cdkDropListEnterPredicate]="acceptUnpin"
+              [cdkDropListEnterPredicate]="acceptHold"
               (cdkDropListDropped)="onPendingDrop($event)"
               (cdkDropListEntered)="hoverList.set(pendingList)"
               (cdkDropListExited)="clearHover(pendingList)"
@@ -587,7 +587,7 @@ interface ChainRung {
               </div>
 
               @if (dragNote(pendingList); as note) {
-                <p class="drop-note">{{ note }}</p>
+                <p class="drop-note" [class.no]="holdRefusal(dragging()!) !== null">{{ note }}</p>
               }
 
               @for (entry of heldColumn(); track entry.plan.key) {
@@ -2040,6 +2040,8 @@ interface ChainRung {
        small, like a lane's "Pinned here", because they label a group rather
        than open a band. */
     .group {
+      /* The drop note's anchor — see '.drop-note'. */
+      position: relative;
       flex: none;
       min-height: 52px;
     }
@@ -2265,6 +2267,8 @@ interface ChainRung {
     }
 
     .pinned {
+      /* The drop note's anchor — see '.drop-note'. */
+      position: relative;
       margin-top: 12px;
       padding-top: 10px;
       border-top: 1px dashed var(--border-subtle);
@@ -2294,13 +2298,32 @@ interface ChainRung {
        'cdkDropListEnterPredicate' refuses the drop silently, and a target that
        just will not take a card with no sentence attached is the failure this
        whole page exists to remove. */
+    /* LAID OVER THE HEAD, NEVER IN THE FLOW (Owen, 2026-09-22: the card was
+       "offset from where the cursor is" and "isnt changing the order"). CDK
+       measures every card in a drop list when the drag starts and when the hand
+       enters a list, and sorts against those cached rectangles. A note inserted
+       above the cards at exactly those two moments pushed every card down by its
+       own height AFTER the measurement, so the placeholder moved at the wrong
+       places and the drop index was off by the difference. Absolute, it moves
+       nothing CDK measured. */
     .drop-note {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      z-index: 2;
+      margin: 0;
       padding: 6px 8px;
       border-radius: 6px;
       background: var(--accent-subtle);
       color: var(--accent);
       font-weight: 600;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
+
+    .pinned > .drop-note { top: 6px; }
     .drop-note.no { background: var(--warning-bg); color: var(--warning-text); }
 
     .fold {
@@ -3765,18 +3788,50 @@ export class QueueComponent {
     () => this.sidebarPlans().filter((plan) => !plan.allHeld));
 
   /**
-   * PENDING — everything being held back, released-but-held first and staged
-   * after. Two engine states, one thing to the reader: *not ready yet.* The
-   * card knows which it is (`staged`), because the toggle's Ready press is
-   * `sendPlanToQueue` for one and `startPlan` for the other.
+   * PENDING — everything being held back. Two engine states, one thing to the
+   * reader: *not ready yet.* The card knows which it is (`staged`), because the
+   * toggle's Ready press is `sendPlanToQueue` for one and `startPlan` for the
+   * other.
+   *
+   * IN THE ENGINE'S ONE ORDER, held and staged interleaved (Owen, 2026-09-22:
+   * *"if i drag it above another item, it should sit above that item"*). Both
+   * kinds are runs in the same `jobs[]`, so a drop here is a `reorder` like any
+   * other — but only if the column draws that order. It used to draw held
+   * books first and staged after, which is two orders, and a staged book
+   * dropped above a held one would have been moved in `jobs[]` and then drawn
+   * back underneath it.
+   *
+   * During a drop the column draws the order the hand made
+   * ({@link droppedHeld}), for `visiblePlans`' reason: the move is one
+   * `reorder` per run and each pushes a snapshot.
    */
   readonly heldColumn = computed<PendingEntry[]>(() => {
     const held: PendingEntry[] = this.sidebarPlans()
       .filter((plan) => plan.allHeld)
       .map((plan) => ({ plan, staged: false }));
     const staged: PendingEntry[] = this.tray.pending().map((plan) => ({ plan, staged: true }));
-    return [...held, ...staged];
+    const entries = [...held, ...staged];
+    const dropped = this.droppedHeld();
+    const rank = dropped !== null
+      ? new Map(dropped.map((key, index) => [key, index]))
+      : this.engineRank(entries.map((entry) => entry.plan));
+    // A book staged by someone else while a drop is in flight is not in the
+    // drawn order the hand made; it goes last until the drop settles and the
+    // engine's order takes over again.
+    const place = (key: string): number => rank.get(key) ?? Number.MAX_SAFE_INTEGER;
+    return entries.sort((a, b) => place(a.plan.key) - place(b.plan.key));
   });
+
+  /** Pending's drawn order while a drop onto it is being applied. Null otherwise. */
+  private readonly droppedHeld = signal<string[] | null>(null);
+
+  /** Each plan's place in `jobs[]` — the position of its earliest run. */
+  private engineRank(plans: readonly BookPlan[]): Map<string, number> {
+    const at = new Map(this.queueService.snapshot().jobs.map((job, index) => [job.id, index]));
+    return new Map(plans.map((plan) => [
+      plan.key, Math.min(...plan.jobIds.map((jobId) => at.get(jobId) ?? Number.MAX_SAFE_INTEGER)),
+    ]));
+  }
 
   /** The part of the sidebar that has a queue order at all. */
   private pendingOrdered(): BookPlanView[] {
@@ -3878,10 +3933,13 @@ export class QueueComponent {
       return `${plan.title} runs on this machine's CPU slots. It cannot be pinned to a card.`;
     }
     if (this.isLocked(plan)) return this.lockedReason(plan);
-    if (lane.disabled) {
-      return `${lane.setLabel} is switched off. Switch it on to send work there.`;
-    }
-    if (lane.down) return `${lane.setLabel} is not answering — ${lane.down}`;
+    // A PAUSED LANE TAKES WORK (Owen, 2026-09-22: *"i should be able to drag
+    // something to a gpu slot even if it's paused. it should stay there until i
+    // start the slot's queue rather than moving to another"*). Pausing is the
+    // operator's switch, not a fault: `decideWaitFor` already HOLDS a book that
+    // names a server that is off and never re-routes it to another, so the drop
+    // is the queue being filled for later, and `dragNote` says it waits.
+    if (!lane.disabled && lane.down) return `${lane.setLabel} is not answering — ${lane.down}`;
     /*
      * THIS ENGINE HAS PUBLISHED IT CANNOT SERVE THE BOOK'S CLASS — the drop
      * refused at the lane, mirroring what the scheduler does at admission (Owen's
@@ -3909,9 +3967,31 @@ export class QueueComponent {
   readonly acceptPin = (drag: CdkDrag<BookPlanView>, drop: CdkDropList<LaneView>): boolean =>
     this.pinRefusal(drop.data, drag.data ?? null) === null;
 
-  /** Pending takes anything that could be dragged at all. "Any machine" refuses nobody. */
+  /** Up next takes anything that could be dragged at all. "Any machine" refuses nobody. */
   readonly acceptUnpin = (drag: CdkDrag<BookPlanView>): boolean =>
     drag.data === undefined || !this.isLocked(drag.data);
+
+  /** Pending takes what can be held — see {@link holdRefusal}. */
+  readonly acceptHold = (drag: CdkDrag<BookPlanView>): boolean =>
+    drag.data === undefined || this.holdRefusal(drag.data) === null;
+
+  /**
+   * WHY PENDING WILL NOT TAKE THIS BOOK, or null when it will.
+   *
+   * A book that travels nowhere has no staging to return to —
+   * `returnToPending` refuses it by name. The ⋯ menu's Cancel removes such a
+   * book, and a drag used to do the same through `cancelBook`: a card dragged
+   * to Pending simply vanished. Deleting is never what a drag means, so the
+   * column refuses it and says so. One already held is only being moved.
+   */
+  holdRefusal(plan: BookPlanView): string | null {
+    if (this.isLocked(plan)) return this.lockedReason(plan);
+    const alreadyHeld = plan.allHeld && this.serverOf(plan) === null;
+    if (!plan.travels && !alreadyHeld) {
+      return `${plan.title} runs on this machine's CPU slots and can't go back to Pending.`;
+    }
+    return null;
+  }
 
   /**
    * WHAT A DROP HERE WOULD MEAN, said inside the target while the hand is over
@@ -3932,12 +4012,15 @@ export class QueueComponent {
       return `Ready — ${plan.title} takes the first free card.`;
     }
     if (key === PENDING_LIST) {
-      return `Pending — ${plan.title} is held until you press Ready.`;
+      return this.holdRefusal(plan) ?? `Pending — ${plan.title} is held until you press Ready.`;
     }
     const lane = this.gpuLanes().find((row) => row.setId === key);
     if (lane === undefined) return null;
     const refusal = this.pinRefusal(lane, plan);
     if (refusal !== null) return refusal;
+    if (lane.disabled) {
+      return `Paused — ${plan.title} waits on ${lane.setLabel} until you start it.`;
+    }
     return `Ready, on ${lane.setLabel} — ${plan.title} runs after the books above it.`;
   }
 
@@ -4027,21 +4110,91 @@ export class QueueComponent {
   }
 
   /**
-   * A DROP ON *PENDING* MEANS HELD — the toggle's Ready → Pending press,
-   * performed by hand.
+   * A DROP ON *PENDING* MEANS HELD, AT THE PLACE THE HAND LET GO.
    *
    * Owen: *"the user can grab a queue item and drag it from a gpu slot back to
-   * the pending list and it flips from ready to pending again."* So this is
-   * `cancelBook`, warning dialog and all: a book with banked work is asked
-   * about before it goes back, whether the gesture was a click or a drag. A
-   * book that is ALREADY held (or staged) has nothing to do here — Pending has
-   * no queue order of its own, so there is no position to write either.
+   * the pending list and it flips from ready to pending again."*
+   *
+   * NO DIALOG (Owen, 2026-09-22: *"it sohuldnt ask if i want to drag it back to
+   * pending. i just dragged it back to pending. obviously thats where i want
+   * it."*). The ⋯ menu's Back to Pending still asks through `cancelBook`,
+   * because a click can be a slip; a drag carried all the way to the Pending
+   * column cannot. Banked work is NOT lost by this — a return keeps what a run
+   * finished, and the resume picks it up — so what the dialog used to say is
+   * said in the toast instead, after the fact, where it informs rather than
+   * blocks.
+   *
+   * THEN PLACED, because Pending has an order: it is the same `jobs[]` as
+   * everything else (see `heldColumn`). A book already held is only moved.
    */
   onPendingDrop(event: CdkDragDrop<unknown>): void {
     const plan = event.item.data as BookPlanView | undefined;
     if (plan === undefined) return;
-    if (plan.allHeld && this.serverOf(plan) === null) return;
-    void this.cancelBook(plan);
+    const drawn = this.heldColumn().map((entry) => entry.plan);
+    const siblings = drawn.filter((row) => row.key !== plan.key);
+    const index = Math.min(event.currentIndex, siblings.length);
+    const returning = !(plan.allHeld && this.serverOf(plan) === null);
+    const order = [...siblings.slice(0, index), plan, ...siblings.slice(index)];
+    if (!returning && order.every((row, at) => row.key === drawn[at]?.key)) return;
+    this.report((async () => {
+      this.droppedHeld.set(order.map((row) => row.key));
+      try {
+        let warning: string | null = null;
+        if (returning) {
+          try {
+            warning = await this.tray.returnPlanWarning(plan);
+          } catch {
+            // `cancelBook`'s rule: the caveat is a courtesy, and a page that
+            // could not look it up must not refuse the move over it.
+            warning = null;
+          }
+          await this.tray.returnPlanToPending(plan);
+          await this.queueService.refreshFromBackend();
+        }
+        await this.placeAmong(plan, siblings, index);
+        await this.queueService.refreshFromBackend();
+        if (returning) {
+          this.toasts.show({
+            tone: 'success',
+            kicker: 'Back to Pending',
+            title: plan.title,
+            meta: warning ?? 'Held until you press Ready.',
+            cover: plan.cover,
+            action: null,
+          });
+        }
+      } finally {
+        this.droppedHeld.set(null);
+      }
+    })());
+  }
+
+  /**
+   * PUT A BOOK AT `index` AMONG `siblings` — a list that is a subsequence of
+   * `jobs[]` and does not hold the book — in the engine's one order.
+   *
+   * In front of the sibling now at `index`; dropped past the last one, in
+   * front of whatever run follows that sibling in `jobs[]` (or at the very end
+   * when nothing does). An empty list says nothing about position, so nothing
+   * moves — `targetFor`'s rule for an empty lane.
+   *
+   * Every run of the book goes before the same target, which keeps the book's
+   * own chain in order (`reorderPlans` says why).
+   */
+  private async placeAmong(plan: BookPlan, siblings: readonly BookPlan[], index: number): Promise<void> {
+    if (siblings.length === 0) return;
+    const jobs = this.queueService.snapshot().jobs.map((job) => job.id);
+    const moving = new Set(plan.jobIds);
+    let before: string | null;
+    const next = siblings[index];
+    if (next !== undefined) {
+      before = next.jobIds[0];
+    } else {
+      const last = siblings[siblings.length - 1];
+      const lastAt = Math.max(...last.jobIds.map((jobId) => jobs.indexOf(jobId)));
+      before = jobs.slice(lastAt + 1).find((jobId) => !moving.has(jobId)) ?? null;
+    }
+    for (const jobId of plan.jobIds) await this.queueService.reorderJobsById(jobId, before);
   }
 
   /**
