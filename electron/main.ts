@@ -2305,7 +2305,10 @@ async function narrateFromFoundry(
       && (st.config as { fileName?: string }).fileName === fileName);
     const landingStep = existing ?? queueEngine.appendStep(owner.id, {
       type: 'foundry-export-landing',
-      label: implied ? `Book for narration — ${fileName}` : `Exported book — ${fileName}`,
+      // THE ACT, NOT THE FILE (Owen, 2026-09-22: *"book for narration is
+      // unnecessary. change it to 'narrate'"*). The card above the ladder already
+      // names the book; `config.fileName` still carries the file.
+      label: implied ? 'Narrate' : 'Exported book',
       parentStepId: row.id,
       config: {
         bookDir, projectKey: key, fileName,

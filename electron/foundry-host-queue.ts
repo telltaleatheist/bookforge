@@ -1110,9 +1110,9 @@ export const foundryHostQueue = {
     }
 
     const job = engineEnqueue({
-      title: label,
+      title: bookOf(request),
       documentPath: request.inputPath,
-      documentLabel: label,
+      documentLabel: fileOf(request),
       steps: [{
         type: 'foundry-job',
         label,
@@ -1231,27 +1231,33 @@ function productOf(request: FoundryJobRequest): string {
 }
 
 /**
- * What the row is called, in BookForge's queue and on their shelf.
+ * What the row is called, in BookForge's queue and on their shelf — THE ACT,
+ * and only the act.
  *
  * THE ACT WINS OVER THE BOOK for the rows that have a choice to explain, which is
  * their own rule (`titleForTextPass`, foundry-app/electron/job-queue.ts): three
  * buttons now produce a text pass over one book, and three identically named rows
- * would leave somebody deciding which to Start by guessing. The file is kept
- * beside it because BookForge's queue lists work for MANY books at once, where
- * Foundry's shelf is inside one project — the same rule, said for a longer list.
+ * would leave somebody deciding which to Start by guessing.
+ *
+ * THE BOOK IS NOT IN IT (Owen, 2026-09-22: *"after clean text it says the book
+ * name. thats unnecesasry."*). The file used to ride beside the act because this
+ * one string was the step's label AND the run's title, and the run's title is
+ * what BookForge's queue heads a book's card with — so the card read "Clean text
+ * — Pursuit of Power…" over a ladder whose first step said the same thing again.
+ * The two are separate now, the way every native run has them: the run is titled
+ * with the book ({@link bookOf}) and the step with what it does.
  */
 function labelFor(request: FoundryJobRequest): string {
-  const file = String(request.inputPath ?? '').split(/[\\/]/).pop() ?? 'a document';
   switch (request.kind) {
-    case 'read': return `Read the pages — ${file}`;
+    case 'read': return 'Read the pages';
     /*
      * "Clean text" IS OWEN'S OWN WORD, said the same in all three places a person
      * meets it (2026-09-05): Foundry's tile, its queue row, and — as "Cleaned for
      * narration" — the step in the history. A fourth spelling here would be this
      * side renaming an act it does not own.
      */
-    case 'clean': return `Clean text — ${file}`;
-    case 'simplify': return `Simplify — ${file}`;
+    case 'clean': return 'Clean text';
+    case 'simplify': return 'Simplify';
     /*
      * A SIMPLIFY USED TO BE A TRANSLATE STEP WEARING A REWRITE, and until foundry
      * 9f4ee4e that is how one arrived here — so keying the label off `kind` alone
@@ -1262,10 +1268,35 @@ function labelFor(request: FoundryJobRequest): string {
      * not a fallback; guessing at one that says nothing would be.
      */
     case 'translate': return typeof request.rewrite === 'string'
-      ? `Simplify — ${file}`
-      : `Translate — ${file}`;
-    default: return `Make the ${request.kind.toUpperCase()} — ${file}`;
+      ? 'Simplify'
+      : 'Translate';
+    default: return `Make the ${request.kind.toUpperCase()}`;
   }
+}
+
+/**
+ * The book a Foundry run is about — the input file's name without its
+ * extension, which is the project's own `stem` (`project.json`): the name the
+ * book was imported under, and the one a person recognises on the card.
+ *
+ * What the RUN is titled with, beside `documentLabel` (the file itself), the way
+ * native runs are — never the act, which is the step's ({@link labelFor}).
+ */
+function bookOf(request: FoundryJobRequest): string {
+  const file = fileOf(request);
+  const dot = file.lastIndexOf('.');
+  return dot > 0 ? file.slice(0, dot) : file;
+}
+
+/** The input file's name — the run's `documentLabel`. Either separator: a request can come from either machine. */
+function fileOf(request: FoundryJobRequest): string {
+  const file = String(request.inputPath ?? '').split(/[\\/]/).pop() ?? '';
+  if (file === '') {
+    throw new Error(
+      `This ${request.kind} request names no input file, so its run has no book to be titled with.`,
+    );
+  }
+  return file;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

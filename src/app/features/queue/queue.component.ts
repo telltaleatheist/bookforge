@@ -1204,7 +1204,7 @@ interface ChainRung {
           @if (!compact && occupantOpen(busy.jobId)) {
             @if (chainFor(busy.jobId); as chain) {
               @if (chain.length > 1) {
-                <div class="ladder">
+                <div class="ladder live">
                   @for (rung of chain; track rung.stepId) {
                     <div class="rung" [class.now]="rung.status === 'running'" [class.done]="rung.done">
                       <span class="rdot" aria-hidden="true"></span>
@@ -1215,7 +1215,7 @@ interface ChainRung {
                           @if (rung.percent !== null) { {{ rung.percent | number:'1.0-0' }}% } @else { now }
                         </span>
                       } @else {
-                        <span class="rval">{{ rung.done ? 'done' : 'waiting' }}</span>
+                        <span class="rval span">{{ rung.done ? 'done' : 'waiting' }}</span>
                       }
                     </div>
                   }
@@ -2351,6 +2351,33 @@ interface ChainRung {
       font-size: 0.6875rem;
       color: var(--text-muted);
     }
+
+    /* THE RUNNING CARD'S LADDER IS ONE GRID, its rungs the rows (Owen,
+       2026-09-22: *"make the progress bars stretch from the word to the
+       percentage instead of being tiny. they should be uniform length"*). Each
+       rung was a grid of its own — name '1fr', bar a fixed 46px — so the name
+       took the spare width and the bar was a stub. Sharing the columns makes
+       the name column as wide as the LONGEST name (capped, so one long label
+       cannot eat the bar), and every bar then starts at the same x and ends at
+       the same percentage: one length, whatever the words.
+
+       'live' only: the Completed ladder ('.fin-ladder') wraps each rung in a
+       '.fin-step' with its measurements under it, so its rungs are not cells of
+       one grid and keep their own. */
+    .ladder.live {
+      grid-template-columns: 10px fit-content(55%) minmax(0, 1fr) minmax(40px, auto);
+      align-items: center;
+      column-gap: 7px;
+      row-gap: 4px;
+    }
+
+    /* 'contents', so a rung's children are cells of the ladder's grid. Colour
+       and size still inherit through it; nothing is drawn on the row itself. */
+    .ladder.live .rung { display: contents; }
+
+    /* A still rung's word takes the bar's cell and the percentage's, ending at
+       the same right edge the running rung's percentage does. */
+    .ladder.live .rval.span { grid-column: 3 / 5; }
     .rung.now { color: var(--text-primary); }
     .rung .rdot {
       width: 7px; height: 7px; border-radius: 50%;

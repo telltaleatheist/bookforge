@@ -579,9 +579,22 @@ test('the row says which ACT it is, because three of them are about one book', a
   // meets it (2026-09-05): Foundry's tile, its queue row, and — as "Cleaned for
   // narration" — the step in the history. A fourth spelling here would be this
   // side renaming an act it does not own.
-  assert.match(titleOf('clean', 'c'), /^Clean text — book\.epub$/);
-  assert.match(titleOf('simplify', 's'), /^Simplify — book\.epub$/);
-  assert.match(titleOf('translate', 't'), /^Translate — book\.epub$/);
+  assert.strictEqual(titleOf('clean', 'c'), 'Clean text');
+  assert.strictEqual(titleOf('simplify', 's'), 'Simplify');
+  assert.strictEqual(titleOf('translate', 't'), 'Translate');
+});
+
+test('the RUN is titled with the book and the STEP with the act (Owen, 2026-09-22)', async () => {
+  // "after clean text it says the book name. thats unnecesasry." The one string
+  // used to be both, so the card's heading and its first step said the same thing.
+  await fresh('textpass-run-title');
+  host.setFoundrySeam({ runJob: null, setQueueRows: null, drained: null });
+  const row = host.foundryHostQueue.enqueue(textPass('clean', 'rt'), null, PROJ);
+  const job = engine.snapshot().jobs.find((j) => j.steps.some((st) => st.id === row.id));
+  assert.ok(job, 'the row is in a run');
+  assert.strictEqual(job.title, 'book');
+  assert.strictEqual(job.documentLabel, 'book.epub');
+  assert.strictEqual(job.steps[0].label, 'Clean text');
 });
 
 test('a STORED translate row carrying a rewrite is still read as the simplify it is', async () => {
@@ -594,7 +607,7 @@ test('a STORED translate row carrying a rewrite is still read as the simplify it
   const legacy = { ...textPass('translate', 'legacy'), rewrite: 'natural' };
   assert.match(
     host.foundryHostQueue.enqueue(legacy, null, PROJ).title,
-    /^Simplify — book\.epub$/,
+    /^Simplify$/,
   );
 });
 
