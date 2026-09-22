@@ -1267,6 +1267,79 @@ test('with no runJob the row FAILS WITH A SENTENCE — it does not fall back to 
   );
 });
 
+test('a PARKED run puts the row back in the queue wearing the engine\'s own sentence, and does not idle the board', async () => {
+  /*
+   * ── THE FIFTH OUTCOME (Foundry 753dca8, 2026-09-21) ──────────────────────
+   *
+   * The engine exits `ENGINE_PARKED_EXIT` (75, EX_TEMPFAIL) when the model
+   * server\'s weather outlasted its own retry budget, with every page it read
+   * banked in the readings file, and `runJob` answers `{ outcome: \'parked\',
+   * reason, stderrTail }`. Nothing about the book is wrong, nobody holds the
+   * card, and there is nothing a person could repair.
+   *
+   * WHAT THIS PINS, and what it cost to learn: page 32 of 329 of *Everyday
+   * Denazification* came back `502 ReadError` from a proxy over a stale socket.
+   * Read as a FAILURE the row reddened in *Needs you*, the dispatcher\'s settle
+   * handed the Crucible lease back, Crucible unloaded dots-ocr under the eleven
+   * pages still in flight, and — because a genuine failure is the queue\'s ONE
+   * automatic idle (`settleStep`, Owen 2026-09-21) — the whole board stopped
+   * for the night over a socket that answered again a minute later.
+   *
+   * So three assertions, and the third is the one a future refactor will break:
+   * re-queued, wearing the engine\'s sentence, WITH THE LATCH STILL ON.
+   *
+   * A RENDER RATHER THAN A READ, on the progress case\'s precedent above and for
+   * its reason: the park is a rule about an OUTCOME and reads the same on either
+   * kind, and a render is the kind that reaches the seam here without a real
+   * binary or a placement to satisfy first.
+   */
+  await fresh('parked');
+  engine.clearStepModules();
+  engine.registerStepModule(require(path.join(DIST, 'queue-steps', 'foundry-job.js')).foundryJobStep);
+
+  const sentence = 'parked: crucible@hostq did not answer page 32 of 329 within the retry budget '
+    + '(8 tries, last: 502 ReadError). The 31 pages already read are banked; running this again resumes.';
+  let calls = 0;
+  host.setFoundrySeam({
+    runJob: () => {
+      calls += 1;
+      return Promise.resolve({ outcome: 'parked', reason: sentence, stderrTail: '' });
+    },
+    setQueueRows: null,
+    drained: null,
+  });
+
+  const row = host.foundryHostQueue.enqueue({
+    kind: 'render',
+    inputPath: `${PROJ}\\archive\\book.pdf`,
+    outputPath: `${PROJ}\\final\\book.epub`,
+  }, null, PROJ);
+  engine.start();
+  host.foundryHostQueue.start();
+  await settle(40);
+
+  assert.strictEqual(calls, 1, 'the seam was reached exactly once — the park has a cool-off, not a spin');
+
+  const after = engine.snapshot();
+  const step = after.jobs.flatMap((j) => j.steps).find((s) => s.id === row.id);
+  assert.strictEqual(step.status, 'queued',
+    'a park is not an ending: the row goes back on the board for the admission tick, never red in Needs you');
+  assert.strictEqual(step.error, undefined, 'and it wears no error, because nothing failed');
+  /*
+   * THE ENGINE\'S OWN SENTENCE, carried through. `settleStep` composes the
+   * admission hold as "Waiting for <server>: <line>", so the engine\'s words are
+   * a substring rather than the whole — what matters is that the endpoint and
+   * the page reach the person reading the row, instead of this side\'s guess.
+   */
+  const shown = step.progress.admissionHold || step.progress.message || '';
+  assert.ok(shown.includes(sentence),
+    `the row must wear the engine's own park sentence; it wears ${JSON.stringify(shown)}`);
+
+  assert.strictEqual(after.running, true,
+    'THE LATCH IS UNTOUCHED. Only a genuine failure idles the queue; a park that stopped the board '
+    + 'would be the 2026-09-21 defect again, one stale socket for a night of work');
+});
+
 // ── Run ─────────────────────────────────────────────────────────────────────
 
 (async () => {

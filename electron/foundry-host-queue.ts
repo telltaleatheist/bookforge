@@ -499,12 +499,39 @@ export type FoundryRunner =
  * CANCELLED IS NOT FAILED, which is the distinction the row carried and this
  * keeps: somebody spent GPU and took it back, and filing that as a failure is
  * how `retry()` restarts work a person just stopped.
+ *
+ * `parked` IS NOT FAILED EITHER, and it is the fifth arm (Foundry 753dca8,
+ * 2026-09-21). The engine RAN — unlike a `wait`, which never reached a card —
+ * met the model server's weather, retried it through its own stated budget and
+ * exited `ENGINE_PARKED_EXIT` (75, EX_TEMPFAIL) with every page it read banked
+ * in the readings file. It carries no row for the reason `wait` carries none:
+ * nothing LANDED. What it carries is the engine's own sentence, which names the
+ * endpoint and the page and says the resume is free.
+ *
+ * The defect that bought this arm, measured: on 2026-09-21 page 32 of 329 of
+ * *Everyday Denazification* came back `502 ReadError` from a proxy over a stale
+ * socket. Foundry ended the run, the queue read the non-zero exit as `failed`,
+ * the dispatcher's settle handed the Crucible lease back, Crucible unloaded
+ * dots-ocr under the eleven pages still in flight beside the failing worker, and
+ * the row turned red in *Needs you* for a socket that was answering again a
+ * minute later.
  */
 export type FoundryRunOutcome =
   | { outcome: 'done'; row: FoundryJobRow }
   | { outcome: 'failed'; row: FoundryJobRow; error: string; stderrTail: string }
   | { outcome: 'wait'; busyLine: string; standing: boolean }
-  | { outcome: 'cancelled'; row: FoundryJobRow };
+  | { outcome: 'cancelled'; row: FoundryJobRow }
+  | {
+    outcome: 'parked';
+    /**
+     * The engine's own park sentence — the endpoint, the page, and that the
+     * banked pages make the resume free. This is what the row wears while it
+     * waits, because the engine knows more about why it stopped than we do.
+     */
+    reason: string;
+    /** The last of the engine's stderr, for the log: every weather line before the park. */
+    stderrTail: string;
+  };
 
 // ─────────────────────────────────────────────────────────────────────────────
 // The seam, injected
@@ -594,6 +621,23 @@ export function foundryRunner(): FoundryRunner {
        * order to tell "the Mac was busy for an hour" from "the run broke".
        */
       said(`WAIT ${request.kind}: ${outcome.busyLine}${outcome.standing ? ' (standing)' : ''}`);
+    } else if (outcome.outcome === 'parked') {
+      /*
+       * A PARK IS NOT A FAILURE AND IS LOGGED AS ITSELF, beside WAIT and not
+       * beside FAILED — at INFO, because nothing is wrong: the engine met the
+       * server's weather, spent its retry budget on it and banked what it read.
+       *
+       * THE STDERR TAIL IS WRITTEN TOO, and this is where a park differs from a
+       * wait: the engine RAN, so its output holds every weather line before the
+       * park — the 502s, the reconnects, the page each one was on — and that is
+       * the whole of what somebody debugging a flaky endpoint reads. At ERROR
+       * for the same reason the failure's tail is: findable without a job id.
+       */
+      said(`PARKED ${request.kind}: ${outcome.reason}`);
+      if (outcome.stderrTail.trim().length > 0) {
+        log.error(`STDERR ${request.kind} (parked):\n${outcome.stderrTail.trim()}`,
+          { kind: request.kind, input: request.inputPath });
+      }
     } else {
       said(`${outcome.outcome.toUpperCase()} ${request.kind}`);
     }
