@@ -2125,6 +2125,14 @@ export async function startReassembly(
               ? `Encoding to AAC — ${formatClock(written)} of ${formatClock(totalAudioSeconds)}`
               : 'Encoding audio to AAC...');
         }
+      } else if (/\[assembly\] Copying into the library: (\d+)%/.test(line)) {
+        // THE FINISHED BOOK GOING INTO THE LIBRARY, ONCE (narrator `_hand_over`,
+        // 2026-09-22). It used to be built in place on the share, and the
+        // faststart pass crawled at 1.4 MB/s behind a row that said nothing;
+        // the copy that replaced it says where it is.
+        const pct = parseInt(line.match(/Copying into the library: (\d+)%/)![1]!, 10);
+        currentPhase = 'metadata';
+        emitStage('metadata', pct, `Copying the audiobook into the library — ${pct}%`);
       } else if (line.includes('Adding metadata') || line.includes('chapter markers') || line.includes('Chapter #')) {
         // Phase 4: Metadata
         currentPhase = 'metadata';

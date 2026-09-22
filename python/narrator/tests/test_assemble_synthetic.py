@@ -624,3 +624,38 @@ class TestFinalName(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestHandOver(unittest.TestCase):
+    """The finished audiobook reaches `output_dir` as ONE copy, whole (2026-09-22).
+
+    Pursuit of Power's join wrote straight to the NAS with +faststart and grew at
+    1.4 MB/s for half an hour. The book is built locally now and copied once.
+    """
+
+    def test_the_copy_lands_whole_under_its_own_name_and_says_where_it_is(self):
+        from narrator.assemble import run as R
+        tmp = tempfile.mkdtemp(prefix="narrator-handover-")
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        local = os.path.join(tmp, "local.m4b")
+        final = os.path.join(tmp, "out", "book.m4b")
+        os.makedirs(os.path.dirname(final))
+        payload = os.urandom(3 * R.HAND_OVER_BLOCK_BYTES + 12345)
+        with open(local, "wb") as f:
+            f.write(payload)
+        lines: list[str] = []
+        R._hand_over(local, final, lines.append)
+        with open(final, "rb") as f:
+            self.assertEqual(f.read(), payload, "byte for byte")
+        self.assertFalse(os.path.exists(final + ".partial"), "no partial left behind")
+        progress = [l for l in lines if "Copying into the library:" in l]
+        self.assertGreaterEqual(len(progress), 2, f"the copy reports as it goes: {lines}")
+
+    def test_the_assembly_builds_the_book_off_the_share(self):
+        """Both encodes are handed the WORK DIR's path, never output_dir's."""
+        import inspect
+        from narrator.assemble import run as R
+        src = inspect.getsource(R.assemble)
+        self.assertIn("out_path=local_m4b", src)
+        self.assertNotIn("out_path=m4b_path", src)
+        self.assertIn("_hand_over(local_m4b, m4b_path", src)

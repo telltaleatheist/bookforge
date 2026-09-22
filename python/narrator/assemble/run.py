@@ -50,11 +50,11 @@ from .vtt import vtt_duration, write_vtt
 #:
 #: WHAT GOES IN IT is scratch, all of it: the faded chunk copies and generated
 #: silences an unpadded engine needs, the per-chapter .m4a files, the concat
-#: lists, the ffmpeg metadata file. Only the finished m4b and its VTT belong in
-#: `output_dir`, and both are written there directly by ffmpeg - nothing is ever
-#: renamed out of the work dir, so there is no same-filesystem requirement to
-#: honour (verified: `encode.py` passes `out_path` straight to ffmpeg, and the
-#: concat lists carry absolute paths under `-safe 0`).
+#: lists, the ffmpeg metadata file - AND, since 2026-09-22, the m4b itself while
+#: it is being built. Only the finished m4b and its VTT belong in `output_dir`:
+#: the VTT is written there directly, and the m4b is COPIED there once it has
+#: passed `verify_export` (`_hand_over`, which has the measurement). A copy, not
+#: a rename, so there is still no same-filesystem requirement to honour.
 #:
 #: WHY IT MOVED (2026-09-07). `output_dir` is the bridge's staging directory
 #: under the project, and the library is on a network share. Every one of those
@@ -160,6 +160,56 @@ def _chapter_durations_ms(
             seconds = plan.duration(sample_rate)
         out.append(int(round(seconds * 1000)))
     return out
+
+
+#: How much of the finished audiobook one write carries on its way to the
+#: library. Large on purpose: the share is fast at big sequential writes and
+#: slow at everything else.
+HAND_OVER_BLOCK_BYTES = 8 * 1024 * 1024
+
+
+def _hand_over(local_path: str, final_path: str, log) -> None:
+    """Put the finished, verified audiobook into `output_dir` - ONE sequential
+    copy, under a temporary name renamed into place when it is whole.
+
+    MEASURED 2026-09-22, Pursuit of Power (2.7 GB m4b). The join used to write
+    straight into the staging directory on the NAS with `-movflags +faststart`,
+    and faststart is a SECOND pass: once the audio is written, ffmpeg shifts the
+    whole file forward to put the index at the front - reads and writes in
+    small blocks, over SMB. The file grew at 1.4 MB/s and the row sat at "Chapter
+    markers & metadata" for half an hour saying nothing. Built locally, both
+    passes run at disk speed; what crosses the wire is one copy in 8 MB blocks.
+
+    Progress is logged every 5% so the row can say it is copying. The size is
+    checked after the copy - a short file on a share is a copy that did not
+    finish, whatever the call returned.
+    """
+    total = os.path.getsize(local_path)
+    partial = final_path + ".partial"
+    log(f"[assembly] Copying the finished audiobook into the library "
+        f"({total / 1e9:.2f} GB)")
+    copied = 0
+    next_report = 0.05
+    with open(local_path, "rb") as src, open(partial, "wb") as dst:
+        while True:
+            block = src.read(HAND_OVER_BLOCK_BYTES)
+            if not block:
+                break
+            dst.write(block)
+            copied += len(block)
+            if total > 0 and copied / total >= next_report:
+                log(f"[assembly] Copying into the library: {copied / total * 100:.0f}% "
+                    f"({copied / 1e9:.2f} of {total / 1e9:.2f} GB)")
+                next_report += 0.05
+    landed = os.path.getsize(partial)
+    if landed != total:
+        raise FfmpegError(
+            f"the finished audiobook did not copy into the library whole: "
+            f"{landed} of {total} bytes at {partial}. The complete file is still "
+            f"at {local_path}."
+        )
+    os.replace(partial, final_path)
+    log("[assembly] The audiobook is in the library")
 
 
 def _remove_work_dir(work_dir: str, log) -> None:
@@ -422,6 +472,9 @@ def assemble(
     stem = os.path.splitext(name)[0]
     m4b_path = os.path.join(output_dir, name)
     vtt_path = os.path.join(output_dir, stem + ".vtt")
+    # THE AUDIOBOOK IS BUILT LOCALLY and handed to `output_dir` once, finished
+    # (`_hand_over`). See that function for the measurement.
+    local_m4b = os.path.join(work_dir, name)
 
     log("[ASSEMBLE] Creating VTT subtitle file...")
     write_vtt(manifest, vtt_path, chapter_gap)
@@ -467,7 +520,7 @@ def assemble(
             plans=plans,
             metadata_file=metadata_file,
             cover=manifest.book.cover,
-            out_path=m4b_path,
+            out_path=local_m4b,
             work_dir=work_dir,
             ffmpeg=ffmpeg_bin,
             channels=channels,
@@ -479,7 +532,7 @@ def assemble(
             plans=plans,
             metadata_file=metadata_file,
             cover=manifest.book.cover,
-            out_path=m4b_path,
+            out_path=local_m4b,
             work_dir=work_dir,
             ffmpeg=ffmpeg_bin,
             channels=channels,
@@ -489,7 +542,8 @@ def assemble(
             log=log,
         )
 
-    duration = encode_mod.verify_export(m4b_path, source_duration, ffprobe_bin)
+    duration = encode_mod.verify_export(local_m4b, source_duration, ffprobe_bin)
+    _hand_over(local_m4b, m4b_path, log)
 
     # Only drop the working files once the result has passed the duration guard -
     # if it failed, they are the evidence for why.
