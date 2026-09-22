@@ -150,7 +150,9 @@ import {
 import type { NarrateTarget } from '../shared/queue/narrate-target';
 import type { QueueJob, QueueStep } from '../shared/queue/engine-types';
 import { TERMINAL_STEP_STATUSES } from '../shared/queue/engine-types';
-import { setNarratorScratchRoot, narratorScratchRoot, mintImpliedExportPath } from './narrator-paths';
+import {
+  setNarratorScratchRoot, narratorScratchRoot, defaultNarratorScratchRoot, mintImpliedExportPath,
+} from './narrator-paths';
 import { getOrpheusBatchConfig, setOrpheusMaxBatch } from './orpheus-batch';
 import { getOrpheusMemoryTier, setOrpheusMemoryTier, orpheusMemoryProfile, resolveConcreteOrpheusTier, fitOrpheusTier, getOrpheusAutoCeiling, type OrpheusMemoryTier } from './orpheus-memory';
 import { getGpuMemMB } from './gpu-arbiter';
@@ -2998,29 +3000,71 @@ async function openFoundryWindowAndReconcileOnClose(
 }
 
 /**
- * Point narrator's session scratch at <library>/tmp — a plain tmp folder INSIDE
- * the library (not a separate sibling). It's on the library volume (so caching a
- * finished session into the library is a same-volume clone) and is swept
- * religiously (cleanNarratorScratchRoot at startup; sessions also removed once
- * cached), so it never accumulates. Called at startup and whenever the library
- * root changes.
+ * Point narrator's session scratch at the MACHINE-LOCAL default —
+ * `~/Documents/BookForge/scratch` (`defaultNarratorScratchRoot`), beside the
+ * render cache and the foundry run dirs. Called at startup and whenever the
+ * library root changes (the Settings override can still name anything, so the
+ * call is kept on both paths).
+ *
+ * IT WAS `<library>/tmp` UNTIL 2026-09-21, for the same-volume publish rename.
+ * The library is one shared NAS tree over SMB, so that put every downloaded
+ * chunk, every session-state rewrite and the whole prepare row on the share
+ * DURING the run — and a burst of ~2,700 metadata ops wedged the Mac's SMB
+ * client and the machine with it, twice in two days. The rule is now: the share
+ * holds FINISHED things, each placed once, atomically; work in progress lives on
+ * the machine doing the work. narrator-paths.ts's header carries the full note.
  *
  * THE ONE OWNER of the value `NARRATOR_SESSIONS_ROOT` carries. The CLI states the
- * same two rules (cli/narrator-sessions-root.js), because a headless run that
- * resolved it differently names a session directory the app never looks in.
- *
- * NOTE: if the library is Syncthing-synced, add `tmp/` to its .stignore so the
- * transient per-sentence churn isn't synced.
+ * same two rules (cli/narrator-sessions-root.js) through the same function,
+ * because a headless run that resolved it differently names a session directory
+ * the app never looks in.
  */
 function applyNarratorScratchRoot(): void {
-  // A user-configured scratch path wins; otherwise use <library>/tmp. loadConfig()
-  // is safe before app-ready (it only reads a JSON file under userData).
+  // A user-configured scratch path wins; otherwise the machine-local default.
+  // loadConfig() is safe before app-ready (it only reads a JSON file under userData).
   const override = loadToolPathsConfig().narratorScratchPath;
   if (typeof override === 'string' && override.trim()) {
     setNarratorScratchRoot(override.trim());
     return;
   }
-  setNarratorScratchRoot(path.join(getLibraryRoot(), 'tmp'));
+  setNarratorScratchRoot(defaultNarratorScratchRoot());
+}
+
+/**
+ * SAY WHAT THE OLD SCRATCH STILL HOLDS, AND DO NOTHING ELSE TO IT.
+ *
+ * Before 2026-09-21 every render session lived in `<library>/tmp`, and a library
+ * carried across the change can still hold `ebook-<uuid>` sessions there — an
+ * interrupted render's only copy of its sentences, in a directory this app no
+ * longer sweeps, rescues or looks in. Migrating them automatically is exactly
+ * the trade this codebase has refused before (the retired library-wide sweep
+ * that renamed and adopted stray EPUBs): touching a user's files to save them a
+ * step is a trade nobody asked for, and the old tmp is also SHARED — the other
+ * machine may be rendering into it right now.
+ *
+ * So: ONE line, naming the directory and the count, so an operator can go and
+ * rescue them by hand. Never a delete, never a move, and never an error — an
+ * unreadable or absent directory is the ordinary answer.
+ */
+async function noteLegacyLibraryScratch(): Promise<void> {
+  // EVERYTHING IN ONE GUARD, including `narratorScratchRoot()`, which refuses by
+  // name when its volume is not mounted. This runs on the startup path inside a
+  // `void`ed IIFE, where an unhandled rejection has no handler at all (P11,
+  // 2026-09-20) — and a line of log is never worth a windowless main process.
+  try {
+    const legacy = path.join(getLibraryRoot(), 'tmp');
+    if (path.resolve(legacy) === path.resolve(narratorScratchRoot())) return; // still stated
+    const names = await fs.readdir(legacy);
+    const sessions = names.filter((n) => n.startsWith('ebook-'));
+    if (sessions.length === 0) return;
+    console.log(
+      `[MAIN] The pre-2026-09-21 scratch dir ${legacy} still holds ${sessions.length} render `
+      + `session(s) (${sessions.slice(0, 5).join(', ')}${sessions.length > 5 ? ', …' : ''}). `
+      + 'The scratch root is machine-local now, so nothing in that folder is swept, rescued or '
+      + 'read by this app any more — publish or delete them by hand.');
+  } catch {
+    /* no old tmp, or the library volume is not mounted — nothing to say */
+  }
 }
 
 /**
@@ -13539,6 +13583,9 @@ app.whenReady().then(async () => {
       console.error('[Startup] The narrator scratch sweep failed and was abandoned:',
         (err as Error).message);
     }
+    // And say what the pre-2026-09-21 `<library>/tmp` still holds, if anything.
+    // A statement, never an act — see noteLegacyLibraryScratch.
+    await noteLegacyLibraryScratch();
   })();
 
   // ── Mount the hosted Foundry ─────────────────────────────────────────────

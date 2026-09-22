@@ -897,8 +897,8 @@ def cmd_prep(args):
         # node runs with cwd=REPO_ROOT, so resolve the user's path against THEIR cwd.
         cmd += ["--input", str(_user_path(args.input))]
         # A loose file has no project to derive a library from, and the cut and the
-        # normalized copy land under <library>/tmp/narration-cuts — where a later
-        # app render looks for them. Same door as --tts: the flag wins, else the
+        # normalized copy land under <scratch>/narration-cuts — where a later app
+        # render looks for them. Same door as --tts: the flag wins, else the
         # root main recorded, else the adapter refuses by name.
         if args.library:
             cmd += ["--library", str(_user_path(args.library))]
@@ -2976,11 +2976,13 @@ def _flag_registry():
                         "settings carry. Refused with --audiobook: a capped book is not an "
                         "audiobook", metavar="N")
     p.add_argument("--library", dest="library",
-                   help="--tts / --prep --input: the library root whose tmp/ holds the sessions "
-                        "and the narration cuts (the app's <library>/tmp, unless Settings states "
-                        "a narrator scratch folder). Default: the root this machine chose in "
-                        "BookForge (userData/library-root.json). Refused wherever a --project "
-                        "already decides the library (--audiobook, --assemble, --prep --project)",
+                   help="--tts / --prep --input: the library root this run belongs to. "
+                        "Default: the root this machine chose in BookForge "
+                        "(userData/library-root.json). Sessions and narration cuts do NOT go "
+                        "there — they live in the machine-local scratch root "
+                        "(~/Documents/BookForge/scratch, unless Settings states a narrator "
+                        "scratch folder). Refused wherever a --project already decides the "
+                        "library (--audiobook, --assemble, --prep --project)",
                    metavar="DIR")
     p.add_argument("--keep-sentences", dest="keep_sentences", action="store_true",
                    help="tts path: also copy the per-sentence FLACs to <out>.sentences/")

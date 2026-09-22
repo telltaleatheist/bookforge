@@ -704,9 +704,11 @@ export const ttsConversionStep: StepModule = {
         if (!cached.success) {
           throw new Error(
             'The narration rendered but publishing it into the project cache did not: '
-            + `${cached.error} The rendered chunks are still in the scratch session `
-            + `(${sessionDir}); the alignment and the assembly read the project cache, so `
-            + 'this step stops here rather than letting them fail on audio that is missing.');
+            + `${cached.error} The rendered chunks are intact in the scratch session on this `
+            + `machine (${sessionDir}) — nothing has to be rendered again, and a Retry `
+            + 'publishes the same session. This step stops here because '
+            + 'the alignment and the assembly read the project cache, '
+            + 'and letting them run would fail them on audio that is missing.');
         }
         if (cached.cachedSentencesDir) {
           sentencesDir = cached.cachedSentencesDir;

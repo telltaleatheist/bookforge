@@ -44,6 +44,7 @@
 import { constants as fsConstants, promises as fs } from 'node:fs';
 import * as path from 'node:path';
 
+import { COPY_CONCURRENCY, retryWeather, runBounded } from './bounded-copy';
 import { findCachedSessionLayout } from './session-cache-layout';
 
 /**
@@ -162,10 +163,13 @@ export function carryOverRefusal(
  * already partly rendered, and it never overwrites this run's own work.
  * Returns how many arrived.
  *
- * Clone-on-write where the filesystem supports it (APFS/ReFS), which is the
- * ordinary case: the scratch session and the project cache both live under the
- * library root, so seeding a whole book is near-instant. Falls back to a real
- * copy automatically anywhere else.
+ * Clone-on-write where the filesystem supports it (APFS/ReFS), falling back to
+ * a real copy automatically anywhere else — and since 2026-09-21 the fall-back
+ * is the ordinary road: the scratch is machine-local and the cache is on the
+ * shared library, so this seed is a real download of what has already been
+ * rendered. That is the trade taken deliberately (`narrator-paths.ts` header):
+ * the chunks travel ONCE, before the render, instead of every new chunk landing
+ * on the share as it is made.
  *
  * COPYING, NOT POINTING, is the choice worth stating: the render then runs in
  * its OWN session — its ids, its band, its `packedFor`, the ones it is checked
@@ -180,20 +184,23 @@ export async function seedRenderedChunks(
   let entries: string[];
   try { entries = await fs.readdir(fromDir); } catch { return 0; }
   await fs.mkdir(toDir, { recursive: true });
-  let n = 0;
-  for (const name of entries) {
+  const wanted = entries.filter((name) => {
     const m = /^(\d+)\.flac$/.exec(name);
-    if (!m || parseInt(m[1], 10) >= total) continue;   // not a chunk file, or out of range
+    return m !== null && parseInt(m[1]!, 10) < total;   // a chunk file, in range
+  });
+  // BOUNDED, because this is a download now: four at a time, each waiting out
+  // weather on the share. See `bounded-copy.ts` for both numbers.
+  const placed = await runBounded<string, number>(wanted, COPY_CONCURRENCY, async (name) => {
     const src = path.join(fromDir, name);
     const dst = path.join(toDir, name);
     try {
-      if ((await fs.stat(src)).size <= RESUME_MIN_BYTES) continue;  // truncated — re-render it
-      try { await fs.access(dst); continue; } catch { /* absent — copy it */ }
-      await fs.copyFile(src, dst, fsConstants.COPYFILE_FICLONE);
-      n++;
-    } catch { /* skip unreadable */ }
-  }
-  return n;
+      if ((await fs.stat(src)).size <= RESUME_MIN_BYTES) return 0;  // truncated — re-render it
+      try { await fs.access(dst); return 0; } catch { /* absent — copy it */ }
+      await retryWeather(() => fs.copyFile(src, dst, fsConstants.COPYFILE_FICLONE));
+      return 1;
+    } catch { return 0; /* skip unreadable */ }
+  });
+  return placed.reduce((a, b) => a + b, 0);
 }
 
 /**
