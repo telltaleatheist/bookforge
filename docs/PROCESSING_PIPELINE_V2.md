@@ -422,6 +422,17 @@ It returns the project to its fresh-import state. What that means, exactly:
   signal IS the queue. Main refuses while a foundry run for one of the project's
   documents is live, because a run is owned by main and outlives an ng-serve
   reload of the window.
+- **The stage directories leave by RENAME, not by `rm -rf`** (2026-09-21). The
+  library is one shared tree on a NAS over SMB, and a project delete that issued
+  2,694 unlinks in 28 s wedged the Mac's SMB client hard enough to need a reboot
+  — twice in two days. So every removal of a tree that lives in the library goes
+  through `discardLibraryTree` (`electron/library-trash.ts`): ONE rename into
+  `<libraryRoot>/.trash/<name>-<ISO>-<6 hex>`, which IS the delete the moment it
+  returns, and a background remover unlinks it afterwards at 40 files a second.
+  The reset's OTHER removals are untouched by this, and deliberately: the foundry
+  run directory is machine-local (`~/Documents/BookForge/foundry-runs/`) and the
+  book EPUB is a single `unlink`, neither of which is a metadata burst on a
+  share. Contract, pace, grace and how to empty it by hand: `docs/LIBRARY-TRASH.md`.
 
 ## The wizard (Studio → Process)
 

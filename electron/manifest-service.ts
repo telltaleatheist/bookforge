@@ -64,6 +64,7 @@ import {
 } from './epub-container';
 import { bookDigest } from './sidecar-binding';
 import { withManifestFileLock } from './library-lock';
+import { discardLibraryTree, DISCARD_MARKER_NAME } from './library-trash';
 import {
   bookDigestAlgorithm,
   bookDigestAlgorithmChange,
@@ -4011,7 +4012,10 @@ async function removeSupersededArtifacts(
           + `${relPath} before removing it.`);
       }
     }
-    await fs.promises.rm(abs, { recursive: true, force: true });
+    // Through the trash like every other library tree: a ledger entry's
+    // snapshot of an EXPLODED book is a directory of hundreds of files, and on
+    // Windows a rename succeeds against a handle a delete would EPERM on.
+    await discardLibraryTree(abs, `superseding ${relPath}`);
     removed.push(relPath);
   }
   return removed;
@@ -6082,7 +6086,15 @@ export async function listProjects(filter?: { type?: ProjectType }): Promise<Man
     }
 
     const entries = await fs.promises.readdir(projectsDir, { withFileTypes: true });
-    const dirs = entries.filter(entry => entry.isDirectory());
+    // A project the user deleted that could not be moved out of `projects/`
+    // because something held a file in it open is MARKED, not listed: it is
+    // gone as far as anybody can see, and the trash remover finishes it when
+    // the holder lets go (electron/library-trash.ts). Checked here rather than
+    // left to "no manifest.json" because the marker is written before anything
+    // inside the project is touched.
+    const dirs = entries
+      .filter(entry => entry.isDirectory())
+      .filter(entry => !fs.existsSync(path.join(projectsDir, entry.name, DISCARD_MARKER_NAME)));
 
     /**
      * Read every manifest, a bounded number at a time.
@@ -6174,7 +6186,9 @@ export async function listProjects(filter?: { type?: ProjectType }): Promise<Man
 /**
  * Delete a project
  */
-export async function deleteProject(projectId: string): Promise<{ success: boolean; error?: string }> {
+export async function deleteProject(
+  projectId: string
+): Promise<{ success: boolean; error?: string; note?: string }> {
   try {
     const projectDir = getProjectPath(projectId);
 
@@ -6182,9 +6196,19 @@ export async function deleteProject(projectId: string): Promise<{ success: boole
       return { success: false, error: `Project not found: ${projectId}` };
     }
 
-    await fs.promises.rm(projectDir, { recursive: true, force: true });
+    // ONE RENAME, NOT 2,694 UNLINKS. A project on the shared library is a tree
+    // of thousands of files, and removing it in place is the metadata burst
+    // that wedged the Mac's SMB client (library-trash.ts header). The rename
+    // into `.trash` IS the delete — the project is out of `projects/` and
+    // invisible to every scan the moment it returns — and the paced remover
+    // unlinks it behind us.
+    const discarded = await discardLibraryTree(projectDir, `deleting the project ${projectId}`);
 
-    return { success: true };
+    // `note` is set when the folder could not be MOVED because something has a
+    // file in it open — a Finder preview, the other machine. The delete still
+    // happened (the tree is marked and invisible, and the remover finishes it),
+    // so this is a sentence to show, never an error to report.
+    return discarded.note ? { success: true, note: discarded.note } : { success: true };
   } catch (error: any) {
     return { success: false, error: error.message };
   }

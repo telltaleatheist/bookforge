@@ -38,6 +38,8 @@ import { setQueueMainWindow } from './queue-steps';
 // and has to hear that the book changed just as much as the main one does.
 import { broadcastToAllWindows } from './document-stage-run';
 import * as manifestService from './manifest-service';
+import { discardLibraryTree, startLibraryTrashRemover, type TrashRemoverHandle }
+  from './library-trash';
 import { appendJobAnalytics } from './job-analytics';
 import {
   currentEpubEditorLayout,
@@ -5573,6 +5575,8 @@ function setupIpcHandlers(): void {
     applyNarratorScratchRoot();
     // Sync to manifest service
     manifestService.setLibraryBasePath(libraryPath);
+    // The drain walks a tree under the old root; point it at the new one.
+    void restartLibraryTrashRemover();
     // Re-point the audiobook job log at the new root's logs/ — it holds an
     // absolute file path from whenReady and would keep writing to the old
     // library (or spam ENOENT if that root is gone) after a move.
@@ -12436,7 +12440,7 @@ ipcMain.handle('narration:text-readiness', async (
           const itemPath = path.join(translateDir, item);
           const stats = await fs.stat(itemPath);
           if (stats.isDirectory()) {
-            await fs.rm(itemPath, { recursive: true, force: true });
+            await discardLibraryTree(itemPath, 'deleting the translation stage');
             deletedItems.push(`${item}/`);
           } else {
             await fs.unlink(itemPath);
@@ -12497,7 +12501,7 @@ ipcMain.handle('narration:text-readiness', async (
       if (monoCacheDir) {
         const cacheDir = path.join(translateDir, 'chapter-cache');
         if (fsSync.existsSync(cacheDir)) {
-          await fs.rm(cacheDir, { recursive: true, force: true });
+          await discardLibraryTree(cacheDir, `deleting ${base}'s chapter cache`);
           deletedItems.push('chapter-cache/');
         }
       }
@@ -12509,7 +12513,7 @@ ipcMain.handle('narration:text-readiness', async (
       const remaining = await fs.readdir(translateDir);
       const epubsLeft = remaining.some((f) => /\.epub$/i.test(f));
       if (!epubsLeft) {
-        await fs.rm(translateDir, { recursive: true, force: true });
+        await discardLibraryTree(translateDir, 'sweeping the emptied translation stage');
         deletedItems.push('(swept remaining stage files)');
       } else {
         const sentencesDir = path.join(translateDir, 'sentences');
@@ -12545,7 +12549,7 @@ ipcMain.handle('narration:text-readiness', async (
         // Delete specific language session
         const langDir = path.join(sessionsDir, language);
         if (fsSync.existsSync(langDir)) {
-          await fs.rm(langDir, { recursive: true, force: true });
+          await discardLibraryTree(langDir, `deleting the ${language} TTS cache`);
           deletedSessions.push(language);
         }
       } else {
@@ -12555,7 +12559,7 @@ ipcMain.handle('narration:text-readiness', async (
           const langPath = path.join(sessionsDir, lang);
           const stats = await fs.stat(langPath);
           if (stats.isDirectory()) {
-            await fs.rm(langPath, { recursive: true, force: true });
+            await discardLibraryTree(langPath, `deleting the ${lang} TTS cache`);
             deletedSessions.push(lang);
           }
         }
@@ -12651,7 +12655,7 @@ ipcMain.handle('narration:text-readiness', async (
             const itemPath = path.join(translateDir, item);
             const stats = await fs.stat(itemPath);
             if (stats.isDirectory()) {
-              await fs.rm(itemPath, { recursive: true, force: true });
+              await discardLibraryTree(itemPath, 'deleting the translation stage');
               deletedItems.push(`${item}/`);
             } else {
               await fs.unlink(itemPath);
@@ -12678,7 +12682,7 @@ ipcMain.handle('narration:text-readiness', async (
             const langPath = path.join(sessionsDir, lang);
             const stats = await fs.stat(langPath);
             if (stats.isDirectory()) {
-              await fs.rm(langPath, { recursive: true, force: true });
+              await discardLibraryTree(langPath, `deleting the ${lang} TTS cache`);
               deletedSessions.push(lang);
             }
           }
@@ -13536,6 +13540,11 @@ app.whenReady().then(async () => {
     manifestService.setLibraryBasePath(persistedRoot);
     console.log('[Startup] Restored persisted library root:', persistedRoot);
   }
+  // Begin draining `<library>/.trash` — the trees earlier sessions (and the
+  // other machine) discarded, plus anything a quit left half-removed. Paced, so
+  // it costs the share 40 metadata operations a second and nothing else.
+  void restartLibraryTrashRemover();
+
   startingUp('clearing the scratch root');
   applyNarratorScratchRoot();
   /*
@@ -14331,6 +14340,25 @@ function quitStepWithDeadline(label: string, ms: number, run: () => Promise<void
   return Promise.race([run(), deadline]).finally(() => clearTimeout(timer));
 }
 
+/**
+ * THE PACED DRAIN OF `<library>/.trash`, and there is exactly one of it.
+ *
+ * Every library tree this app discards leaves by a single rename into `.trash`
+ * (electron/library-trash.ts, and the 2,694-unlink burst that wedged the SMB
+ * client is in its header); this loop is what actually unlinks them, at 40 a
+ * second, in the background. Restarted after `library:set-root` because the
+ * loop reads the root through the manifest service on every pass but its
+ * in-flight walk is against the OLD one.
+ */
+let libraryTrashRemover: TrashRemoverHandle | null = null;
+
+async function restartLibraryTrashRemover(): Promise<void> {
+  const previous = libraryTrashRemover;
+  libraryTrashRemover = null;
+  if (previous) await previous.stop();
+  libraryTrashRemover = startLibraryTrashRemover();
+}
+
 app.on('before-quit', async (event) => {
   isQuitting = true;
   if (cleanupDone) return;
@@ -14358,6 +14386,15 @@ app.on('before-quit', async (event) => {
   // processes, and a queue that started the next narration while the sweep was
   // running would be spawning workers into a teardown.
   await queueEngine.shutdown();
+
+  // The trash drain stops between files, so this returns in well under the time
+  // one unlink takes. A half-removed tree left in `.trash` is a CORRECT state —
+  // it is already out of the library — and the next start finishes it.
+  {
+    const remover = libraryTrashRemover;
+    libraryTrashRemover = null;
+    if (remover) await remover.stop();
+  }
 
   // The absolute backstop behind the per-step deadlines: if the whole chain has
   // not reached app.quit() in this long, something outside a deadline is stuck

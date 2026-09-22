@@ -58,6 +58,7 @@ import * as path from 'path';
 
 import * as manifestService from './manifest-service';
 import { readDocumentBinding } from './document-binding';
+import { discardLibraryTree } from './library-trash';
 import { stageRunningFor } from './document-stage-registry';
 import {
   bindingAbsPath,
@@ -363,8 +364,16 @@ export async function resetBookProcessing(
         // that no consumer can see and the next export would not overwrite if
         // the book were ever retitled.
         await fs.promises.unlink(item.path);
-      } else {
+      } else if (item.kind === 'run-dir') {
+        // MACHINE-LOCAL (`~/Documents/BookForge/foundry-runs/...`), so it is
+        // removed where it lies: the trash is the shared library's answer to a
+        // metadata burst over SMB, and a local disk has no such problem.
         await fs.promises.rm(item.path, { recursive: true, force: true });
+      } else {
+        // A stage directory is on the shared library and holds a pass's whole
+        // working set. One rename out of the project, unlinked at a pace
+        // afterwards (library-trash.ts).
+        await discardLibraryTree(item.path, `starting ${path.basename(projectDir)} over`);
       }
       item.removed = true;
     } catch (err) {

@@ -41,6 +41,7 @@ import { pcm16Wav, pcm16WavSeconds } from './pcm16-wav';
 // Relative, never `@shared/*`: the alias does not exist at RUNTIME in the main process.
 import type { RenderStatus } from '../shared/audio/render-status';
 import type { AudioChunk } from './streaming-contract';
+import { discardLibraryTree } from './library-trash';
 
 // ─── Plan + state on disk ─────────────────────────────────────────────────────
 
@@ -427,7 +428,9 @@ export async function saveRenderPlan(
     // it costs the render; keeping it costs the book, silently.
     bookRenderService.forgetJob(projectId);
     await fs.rm(statePath(projectId), { force: true });
-    await fs.rm(sentencesDir(projectId), { recursive: true, force: true });
+    // In the project on the shared library — one rename out, unlinked at a pace
+    // behind us (library-trash.ts).
+    await discardLibraryTree(sentencesDir(projectId), `discarding ${projectId}'s part-rendered audio`);
     console.log(`[book-render] ${projectId}: ${previous.kind === 'unreadable'
       ? `the previous plan could not be read (${previous.reason}), so the text it was rendered from cannot be`
         + ' vouched for and'
@@ -1196,7 +1199,8 @@ class BookRenderService {
       await this.maybePersist(job, true);
 
       // Reclaim the raw sentence WAVs — the m4b is the durable artifact now.
-      await fs.rm(sentencesDir(job.projectId), { recursive: true, force: true }).catch(() => { /* ignore */ });
+      await discardLibraryTree(sentencesDir(job.projectId), `discarding ${job.projectId}'s rendered audio`)
+        .catch(() => { /* ignore */ });
       console.log(`[book-render] assembled ${m4bPath}`);
     } catch (err) {
       // The poller reads job.error and nothing else here reaches it: without

@@ -34,6 +34,7 @@ import {
 // ONE module owns "is the cache as complete as the render" — the publish, the
 // interrupt-cache and the startup rescue all ask it, by chunk INDEX.
 import { copyTreeBounded } from './bounded-copy';
+import { discardLibraryTree } from './library-trash';
 // A resume brings the cached session DOWN before it renders — see the module's
 // header for the SMB traffic that rendering into the cache made.
 import { materializeSessionLocally } from './resume-materialize';
@@ -743,7 +744,10 @@ export async function cacheSessionToBfp(
     await fs.mkdir(sessionParent, { recursive: true });
 
     // Clean up any leftover temp dir from a previous failed attempt
-    try { await fs.rm(tempDestDir, { recursive: true, force: true }); } catch { /* may not exist */ }
+    // Also a library tree — a publish that died half-way left a `.tmp-` holding
+    // most of a book's chunks — so it leaves the same way, by rename.
+    try { await discardLibraryTree(tempDestDir, 'clearing a leftover publish temp'); }
+    catch { /* may not exist */ }
 
     // Determine if the session is in WSL filesystem (handles \\wsl$\ and \\wsl.localhost\)
     const isWslSession = isWslUncPath(sessionDir);
@@ -771,7 +775,10 @@ export async function cacheSessionToBfp(
       for (const entry of existingEntries) {
         if (entry.isDirectory() && entry.name.startsWith('ebook-')) {
           const oldDir = path.join(sessionParent, entry.name);
-          await fs.rm(oldDir, { recursive: true, force: true });
+          // A session is thousands of chunk files on the shared library, so it
+          // leaves by ONE rename into `.trash` and is unlinked at a pace that
+          // does not wedge the SMB client (library-trash.ts).
+          await discardLibraryTree(oldDir, `replacing the cached session ${entry.name}`);
           console.log(`[PARALLEL-TTS] Removed old session: ${entry.name}`);
         }
       }
@@ -1096,7 +1103,10 @@ export async function cacheSessionToProject(
     await fs.mkdir(langSessionParent, { recursive: true });
 
     // Clean up any leftover temp dir from a previous failed attempt
-    try { await fs.rm(tempDestDir, { recursive: true, force: true }); } catch { /* may not exist */ }
+    // Also a library tree — a publish that died half-way left a `.tmp-` holding
+    // most of a book's chunks — so it leaves the same way, by rename.
+    try { await discardLibraryTree(tempDestDir, 'clearing a leftover publish temp'); }
+    catch { /* may not exist */ }
 
     // Determine if the session is in WSL filesystem (handles \\wsl$\ and \\wsl.localhost\)
     const isWslSession = isWslUncPath(sessionDir);
@@ -1198,7 +1208,8 @@ export async function cacheSessionToProject(
           if (path.resolve(oldDir).toLowerCase() === path.resolve(sessionDir).toLowerCase()) {
             continue;
           }
-          await fs.rm(oldDir, { recursive: true, force: true });
+          await discardLibraryTree(
+            oldDir, `replacing the cached ${language} session ${entry.name}`);
           console.log(`[PARALLEL-TTS] Removed old ${language} session: ${entry.name}`);
         }
       }

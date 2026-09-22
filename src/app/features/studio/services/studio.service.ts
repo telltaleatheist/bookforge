@@ -1021,7 +1021,7 @@ export class StudioService {
    * For books: deletes the project directory and clears the render cache
    * For articles: deletes project folder
    */
-  async deleteItem(id: string): Promise<{ success: boolean; error?: string }> {
+  async deleteItem(id: string): Promise<{ success: boolean; error?: string; note?: string }> {
     const book = this._books().find(b => b.id === id);
     const article = this._articles().find(a => a.id === id);
     const archivedItem = this._archived().find(a => a.id === id);

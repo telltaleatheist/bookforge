@@ -36,6 +36,7 @@ import {
   validateNumberedParagraphs,
 } from './epub-processor.js';
 import * as cheerio from 'cheerio';
+import { discardLibraryTree } from './library-trash';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Skip Marker Detection
@@ -321,7 +322,9 @@ async function loadChapterCache(translateDir: string, zipPath: string): Promise<
 
 async function deleteChapterCacheDir(translateDir: string): Promise<void> {
   try {
-    await fs.rm(getChapterCacheDir(translateDir), { recursive: true, force: true });
+    // `stages/02-translate/chapter-cache` on the shared library: a chapter per
+    // file, so it leaves by rename (library-trash.ts).
+    await discardLibraryTree(getChapterCacheDir(translateDir), 'clearing the chapter cache');
   } catch {
     // Directory doesn't exist, that's fine
   }

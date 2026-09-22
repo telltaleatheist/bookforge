@@ -12,6 +12,7 @@ import { BrowserWindow, app } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs/promises';
 import * as crypto from 'crypto';
+import { discardLibraryTree } from './library-trash';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -878,7 +879,10 @@ export async function deleteProject(
   try {
     // Delete project directory
     const projectDir = path.join(libraryRoot, 'language-learning', 'projects', projectId);
-    await fs.rm(projectDir, { recursive: true, force: true });
+    // On the shared library, so it leaves by ONE rename into `.trash` and the
+    // unlinks are paced behind us (library-trash.ts).
+    await discardLibraryTree(projectDir, `deleting the article project ${projectId}`,
+      { libraryRoot });
     console.log('[WEB-FETCH] Project deleted:', projectDir);
 
     // Delete associated audiobook files

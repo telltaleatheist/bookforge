@@ -67,6 +67,7 @@
     "test:reset-book": "npx tsc -p tsconfig.electron.json && node tools/test-reset-book.js",
     "test:scratch-sweep": "npx tsc -p tsconfig.electron.json && node tools/test-scratch-sweep.js",
     "test:bounded-copy": "npx tsc -p tsconfig.electron.json && node tools/test-bounded-copy.js",
+    "test:library-trash": "npx tsc -p tsconfig.electron.json && node tools/test-library-trash.js",
     "test:render-carryover": "npx tsc -p tsconfig.electron.json && node tools/test-render-carryover.js",
     "test:session-cache-merge": "npx tsc -p tsconfig.electron.json && /bin/cp -R electron/data dist/electron/ && node tools/test-session-cache-merge.js",
     "test:quit-and-logs": "npx tsc -p tsconfig.electron.json && node tools/test-quit-and-logs.js",
