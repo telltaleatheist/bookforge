@@ -193,7 +193,28 @@ export class JobEtaService implements OnDestroy {
    */
   private stageState(job: QueueJob, running: StageView): StageEtaState {
     const held = this.stageEta.get(job.id);
-    if (held && held.stageName === running.name) return held;
+    if (held && held.stageName === running.name) {
+      /*
+       * THE CLOCK STARTS AT THE FIRST MOVEMENT, not at the first sighting.
+       *
+       * A stage is reported at its opening percentage for as long as its setup
+       * takes — the Crucible alignment's `place` stage sits at 0 % through the
+       * chunk upload and the aligner's model load — and a clock stamped at the
+       * first sighting folds all of that into the per-percent cost. Owen,
+       * 2026-09-21, on a row reading 196 / 1,647 after 2 m 21 s with 23 m 56 s
+       * left, against a stage that finishes in about five: "it counts the time
+       * it spends at startup just prepping for the align phase — model loading
+       * and such." So while the percentage has not left the number it was
+       * first seen at, the start keeps moving with the clock; the moment it
+       * advances, the start is fixed and the measurement begins there — the
+       * same rule the chunk-rate window applies at its anchor (`rateAnchor`).
+       */
+      if (running.pct <= held.startPct) {
+        held.startedAt = Date.now();
+        held.startPct = running.pct;
+      }
+      return held;
+    }
     const fresh: StageEtaState = {
       stageName: running.name, startedAt: Date.now(), startPct: running.pct,
     };
