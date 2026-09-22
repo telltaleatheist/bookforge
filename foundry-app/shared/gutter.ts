@@ -127,9 +127,11 @@ const PERCENTILE = 0.75;
  * (`gutteredRecipe`). Bump it when the answer for the same pixels changes.
  *
  *   1  the darkest column of the shadow (2026-09-21, first landing)
- *   2  the same, held inside the strip with no type in it (see `foldIn`)
+ *   2  the same, held inside the strip with no type in it
+ *   3  the centre of that strip, read at each end of the frame, so the line
+ *      leans with the scan; the shadow only where a band has no strip (`knobOf`)
  */
-export const GUTTER_RULE = 2;
+export const GUTTER_RULE = 3;
 
 /**
  * HOW MUCH A COLUMN'S LUMINANCE HAS TO SPREAD (75th minus 25th percentile)
@@ -149,6 +151,29 @@ const TEXT_SMOOTH = 5;
  * a comfortable margin on the page.
  */
 const TEXT_MARGIN = 0.01;
+/**
+ * THE TWO BANDS THE KNOBS ARE READ IN, as fractions of the frame's other
+ * axis: the top knob from the upper band, the bottom knob from the lower. A
+ * hair short of the middle on both sides so the two readings are of different
+ * paper, and off the frame's edges where a scanner's shadow and a page number
+ * live.
+ */
+const KNOB_BANDS: readonly [number, number][] = [[0.12, 0.48], [0.52, 0.88]];
+/**
+ * HOW WIDE A TYPE-FREE STRIP MAY BE AND STILL BE THE GAP BETWEEN TWO BLOCKS,
+ * as a fraction of the frame. Wider than this and one side of the band has no
+ * type in it -- a blank verso, a chapter opening whose text starts low -- so
+ * its centre says nothing about the fold, and the shadow answers instead.
+ */
+const GAP_AT_MOST = 0.12;
+/**
+ * AND HOW NARROW A RUN MAY BE AND STILL BE A GAP AT ALL, as a fraction of the
+ * frame. One column whose spread lands exactly on `TEXT_SPREAD` is not the
+ * space between two blocks of type; it is a stroke of type that rounded the
+ * other way, and on page 235 of the fragebogen scan it was the run the shadow
+ * fell in, so the bottom knob sat on the first letters of the right page.
+ */
+const GAP_AT_LEAST = 0.01;
 
 /**
  * THE FOLD IN ONE FRAME, or null because there is no fold to be seen.
@@ -180,10 +205,21 @@ export function gutterOf(
   if (!Number.isInteger(width) || !Number.isInteger(height)) return null;
   if (width < 2 || height < 2 || luma.length < width * height) return null;
   const axis: 'x' | 'y' = width > height ? 'x' : 'y';
-  const read = axis === 'x'
-    ? downColumns(luma, width, height)
-    : alongRows(luma, width, height);
-  return foldIn(read.paper, read.spread, axis);
+  const read = (from: number, to: number): Profiles => (axis === 'x'
+    ? downColumns(luma, width, height, from, to)
+    : alongRows(luma, width, height, from, to));
+  const middle = read(BAND_FROM, BAND_TO);
+  const shadow = shadowIn(middle.paper);
+  const [upper, lower] = KNOB_BANDS.map(([from, to]) => knobOf(read(from, to).spread, shadow)) as [number | null, number | null];
+  /*
+   * NEITHER BAND HAS A GAP AND THERE IS NO SHADOW: a blank spread with no
+   * binding to see. Nothing here says where the fold is, so nothing is said.
+   */
+  if (upper === null && lower === null && shadow === null) return null;
+  const first = upper ?? lower ?? shadow!;
+  const second = lower ?? upper ?? shadow!;
+  const n = middle.paper.length;
+  return { axis, at: (first + second) / 2 / n, ends: [first / n, second / n], rule: GUTTER_RULE };
 }
 
 /** The two profiles one pass over the frame yields: see `foldIn`. */
@@ -206,9 +242,11 @@ function downColumns(
   luma: Uint8Array | Uint8ClampedArray,
   width: number,
   height: number,
+  bandFrom: number,
+  bandTo: number,
 ): Profiles {
-  const from = Math.floor(BAND_FROM * height);
-  const to = Math.floor(BAND_TO * height);
+  const from = Math.floor(bandFrom * height);
+  const to = Math.floor(bandTo * height);
   const rows = Math.max(1, to - from);
   const column = new Float64Array(rows);
   const paper = new Float64Array(width);
@@ -229,9 +267,11 @@ function alongRows(
   luma: Uint8Array | Uint8ClampedArray,
   width: number,
   height: number,
+  bandFrom: number,
+  bandTo: number,
 ): Profiles {
-  const from = Math.floor(BAND_FROM * width);
-  const to = Math.floor(BAND_TO * width);
+  const from = Math.floor(bandFrom * width);
+  const to = Math.floor(bandTo * width);
   const columns = Math.max(1, to - from);
   const row = new Float64Array(columns);
   const paper = new Float64Array(height);
@@ -273,18 +313,11 @@ function percentileAt(sorted: Float64Array, fraction: number): number {
  */
 
 /**
- * THE DEEPEST DIP IN THE CENTRAL BAND, as a fraction of the profile's length.
- *
- * "Dip" is the ring either side minus the profile here, so it is a question
- * about CONTRAST and not about darkness: a page printed on grey stock has a
- * dark profile end to end and the fold still stands out of it, and a page with
- * a photograph bled across the middle has a dark region that is dark uniformly
- * and produces no dip at all. An absolute threshold would get both backwards.
- *
- * The first maximum wins a tie, which matters only on a synthetic image and is
- * stated so the answer is a function of the bytes rather than of the loop.
+ * THE SHADOW'S DARKEST COLUMN in the middle band, or null when there is no
+ * shadow to speak of. Rule 1's whole answer; from rule 3 the ANCHOR the knobs
+ * are read against, and the answer only where a band has no gap (`knobOf`).
  */
-function foldIn(profile: Float64Array, spread: Float64Array, axis: 'x' | 'y'): CaptureGutter | null {
+function shadowIn(profile: Float64Array): number | null {
   const n = profile.length;
   const smoothed = smoothOf(profile, SMOOTH);
   // Prefix sums, so a ring mean is two subtractions rather than a walk: the
@@ -296,13 +329,11 @@ function foldIn(profile: Float64Array, spread: Float64Array, axis: 'x' | 'y'): C
     const end = Math.min(n, to);
     return end > start ? (sums[end]! - sums[start]!) / (end - start) : null;
   };
-
   const scale = n / RING_SCALE;
   const inner = Math.max(2, Math.floor(RING_INNER * scale));
   const outer = Math.max(inner + 2, Math.floor(RING_OUTER * scale));
   const from = Math.floor(CENTRE_FROM * n);
   const to = Math.floor(CENTRE_TO * n);
-
   let foundAt = -1;
   let deepest = Number.NEGATIVE_INFINITY;
   for (let at = from; at < to; at += 1) {
@@ -320,86 +351,69 @@ function foldIn(profile: Float64Array, spread: Float64Array, axis: 'x' | 'y'): C
       foundAt = at;
     }
   }
-  if (foundAt < 0 || deepest < DIP_FLOOR) return null;
-  return { axis, at: heldOffTheType(foundAt, spread) / n, rule: GUTTER_RULE };
+  return foundAt < 0 || deepest < DIP_FLOOR ? null : foundAt;
 }
 
 /**
- * THE FOLD, HELD INSIDE THE STRIP WITH NO TYPE IN IT.
+ * ONE KNOB: THE CENTRE OF THE GAP BETWEEN THE TWO BLOCKS OF TYPE, read in one
+ * band of the frame.
  *
- * ── Owen, 2026-09-21: the minted page viii carried a sliver of ix, and ix
- * lost its first letters ─────────────────────────────────────────────────
+ * ── Owen, 2026-09-21: *"detect where the text is on the page, and then split
+ * the difference, so the top knob is directly in the center of where the text
+ * starts at the top and directly in the center of where the text starts/ends
+ * on the bottom of the page"* ────────────────────────────────────────────
  *
- * On a tightly bound book the gutter's shadow is not a line, it is a band,
- * and it lies mostly on the page that curves down into the binding -- where
- * the type begins INSIDE the shadow. The darkest column of that band is the
- * deepest part of the curve, which on the fragebogen preface was the first
- * column of page ix's type, 2.5% of the frame right of the fold. A cut there
- * gives the flat page a sliver of its neighbour and clips every line of the
- * curved one. The fold a person would cut on is the shadow's edge on the
- * flat page's side; the cut that loses nothing is anywhere in the strip
- * between the two blocks of type.
+ * Which is the right principle, and better than the shadow it replaces. The
+ * shadow is a fact about the binding: on a tightly bound book it is a band
+ * lying mostly on the page that curves in, deepest where that page's type
+ * begins -- rule 1 cut there and clipped every line of page ix. The gap
+ * between the blocks is a fact about the PAGES: a cut anywhere in it loses
+ * nothing, and its centre is as far from either block as a cut can be. Read
+ * at each end of the frame (`KNOB_BANDS`) the two centres let the line lean
+ * with a scan that was not square on the glass, which on this scan is up to
+ * 3% of the width between top and bottom.
  *
- * So the darkest column is the FIRST answer, not the last: it is held inside
- * the type-free run it falls in, `TEXT_MARGIN` off either end; and when it
- * falls inside type (the shadow over the first letters), it is moved to the
- * nearest type-free run and held there the same way. Type is read off the
- * spread profile -- see `TEXT_SPREAD` -- which is what tells a column of type
- * from a column of shadow, since both are dark by the 75th percentile alone.
- * A blank spread has one run the width of the frame, and the darkest column
- * stands; a scan with no shadow at all never reaches here (`DIP_FLOOR`).
- *
- * Measured over the 271 spreads of that scan against the first rule: 39
- * moved by more than half a per cent, five of them off the type (the
- * preface pair by 2.4-2.6%), and every one of the largest moves landed on
- * the fold in a contact sheet.
+ * Type is read off the spread profile -- see `TEXT_SPREAD` -- which is what
+ * tells a column of type from a column of shadow, since both are dark by the
+ * 75th percentile alone. The gap is the type-free run nearest the shadow's
+ * darkest column (or the frame's middle when there is no shadow), and it is
+ * the answer only while it is narrow enough to be a gap BETWEEN two blocks
+ * (`GAP_AT_MOST`): a chapter opening whose right page starts low, or a blank
+ * verso, has a run reaching the frame's edge, and its centre is nowhere. That
+ * band then answers with the shadow held inside the run, `TEXT_MARGIN` off
+ * either end (rule 2), or with nothing when there is no shadow either -- in
+ * which case the other band's knob stands in for it (`gutterOf`).
  */
-function heldOffTheType(foundAt: number, spread: Float64Array): number {
+function knobOf(spread: Float64Array, shadow: number | null): number | null {
   const n = spread.length;
   const scale = n / RING_SCALE;
   const type = smoothOf(spread, Math.max(3, Math.floor(TEXT_SMOOTH * scale)));
   const free = (at: number): boolean => (type[at] ?? 0) <= TEXT_SPREAD;
-  const runAround = (at: number): [number, number] | null => {
-    if (!free(at)) return null;
-    let from = at;
-    while (from > 0 && free(from - 1)) from -= 1;
-    let to = at;
-    while (to < n - 1 && free(to + 1)) to += 1;
-    return [from, to];
-  };
-  let run = runAround(foundAt);
-  if (run === null) {
-    // The shadow lies over type: the nearest run with none in it.
-    let nearest: [number, number] | null = null;
-    let away = Number.POSITIVE_INFINITY;
-    for (let at = 0; at < n; at += 1) {
-      const here = runAround(at);
-      if (here === null) continue;
-      const gap = Math.min(Math.abs(here[0] - foundAt), Math.abs(here[1] - foundAt));
-      if (gap < away) {
-        away = gap;
-        nearest = here;
-      }
-      at = here[1];
+  const anchor = shadow ?? n / 2;
+  let nearest: [number, number] | null = null;
+  let away = Number.POSITIVE_INFINITY;
+  for (let at = 0; at < n; at += 1) {
+    if (!free(at)) continue;
+    const from = at;
+    while (at < n - 1 && free(at + 1)) at += 1;
+    if (at - from < GAP_AT_LEAST * n) continue;
+    const gap = from <= anchor && anchor <= at ? 0 : Math.min(Math.abs(from - anchor), Math.abs(at - anchor));
+    if (gap < away) {
+      away = gap;
+      nearest = [from, at];
     }
-    if (nearest === null) return foundAt;
-    run = nearest;
   }
+  if (nearest === null) return shadow;
+  const [from, to] = nearest;
+  if (to - from <= GAP_AT_MOST * n) return (from + to) / 2;
+  if (shadow === null) return null;
   const margin = TEXT_MARGIN * n;
-  let low = run[0] + margin;
-  let high = run[1] - margin;
-  if (high < low) low = high = (run[0] + run[1]) / 2;
-  return Math.min(Math.max(foundAt, low), high);
+  let low = from + margin;
+  let high = to - margin;
+  if (high < low) low = high = (from + to) / 2;
+  return Math.min(Math.max(shadow, low), high);
 }
 
-/**
- * A `SMOOTH`-wide box mean, with the ends held at their own value.
- *
- * Edge-padded rather than shortened, so the profile keeps its length and a
- * position in it is still a fraction of the frame. The ends are outside the
- * central band anyway; the padding is there so nothing here has to reason about
- * two coordinate systems.
- */
 function smoothOf(profile: Float64Array, window: number): Float64Array {
   const n = profile.length;
   const width = window % 2 === 0 ? window + 1 : window;

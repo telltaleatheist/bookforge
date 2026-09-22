@@ -680,7 +680,18 @@ function validRecipe(value: unknown, file: string): CaptureRecipe {
       if (rule !== undefined && (typeof rule !== 'number' || !Number.isInteger(rule) || rule < 1)) {
         fail(file, `photograph ${index} says its gutter was measured under rule ${String(rule)}`);
       }
-      gutter = { axis, at, ...(rule === undefined ? {} : { rule }) };
+      const ends = measured['ends'];
+      const fraction = (value: unknown): value is number =>
+        typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1;
+      if (ends !== undefined && (!Array.isArray(ends) || ends.length !== 2 || !ends.every(fraction))) {
+        fail(file, `photograph ${index} has gutter ends that are not two fractions of the frame`);
+      }
+      gutter = {
+        axis,
+        at,
+        ...(ends === undefined ? {} : { ends: [ends[0], ends[1]] as [number, number] }),
+        ...(rule === undefined ? {} : { rule }),
+      };
     }
 
     return {

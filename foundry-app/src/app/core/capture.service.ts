@@ -3146,21 +3146,39 @@ function seated(photo: CapturePhoto, sheet: CaptureQuad, split: CaptureSplit): C
     >= Math.abs(sheet[3][across] - sheet[0][across])
     ? sheet
     : turnQuad(sheet, 1);
-  const alongEdge = (from: CapturePoint, to: CapturePoint): number | null => {
+  const alongEdge = (from: CapturePoint, to: CapturePoint, fold: number): number | null => {
     const run = to[across] - from[across];
     // An edge that does not cross the fold's axis at all cannot say where along
     // it the fold is. Both of them, and there is no conversion to make.
-    return Math.abs(run) < 1e-9 ? null : (gutter.at - from[across]) / run;
+    return Math.abs(run) < 1e-9 ? null : (fold - from[across]) / run;
   };
-  const first = alongEdge(walked[0], walked[1]);
-  const second = alongEdge(walked[3], walked[2]);
+  /*
+   * EACH EDGE TAKES THE FOLD AT ITS OWN END OF THE FRAME (rule 3). `ends` is
+   * the fold at the frame's near edge and at its far edge along the other
+   * axis; whichever of the sheet's two crossing edges sits nearer that end
+   * takes that reading, so the seated line leans the way the scan does. A
+   * measurement from an earlier rule has no ends and both edges take `at`.
+   */
+  const along = 1 - across;
+  const ends = gutter.ends;
+  const foldFor = (from: CapturePoint, to: CapturePoint, other: [CapturePoint, CapturePoint]): number => {
+    if (ends === undefined) return gutter.at;
+    const here = (from[along] + to[along]) / 2;
+    const there = (other[0][along] + other[1][along]) / 2;
+    return here <= there ? ends[0] : ends[1];
+  };
+  const first = alongEdge(walked[0], walked[1], foldFor(walked[0], walked[1], [walked[3], walked[2]]));
+  const second = alongEdge(walked[3], walked[2], foldFor(walked[3], walked[2], [walked[0], walked[1]]));
   if (first === null && second === null) return split;
-  const at = first === null ? second! : (second === null ? first : (first + second) / 2);
+  const top = first ?? second!;
+  const bottom = second ?? first!;
   // Outside the sheet entirely: the fold is on a part of the photograph this
   // crop threw away, and a clamped line on the edge of the page is worse than
   // the line that was already there.
-  if (at < 0 || at > 1) return split;
-  return splitFromFraction(walked, at);
+  if (top < 0 || top > 1 || bottom < 0 || bottom > 1) return split;
+  const point = (from: CapturePoint, to: CapturePoint, at: number): CapturePoint =>
+    [from[0] + (to[0] - from[0]) * at, from[1] + (to[1] - from[1]) * at];
+  return { a: point(walked[0], walked[1], top), b: point(walked[3], walked[2], bottom) };
 }
 
 /**
