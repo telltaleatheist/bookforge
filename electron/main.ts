@@ -10711,6 +10711,13 @@ function setupIpcHandlers(): void {
           broadcastToAllWindows('foundry-host:project-changed', { projectDir: bookDir });
           broadcastToAllWindows('foundry-host:versions-changed', { projectDir: bookDir });
         },
+        // WHERE IT HAS GOT TO. The invoke above does not answer until the whole
+        // adoption is done — a gigabyte of page images across the library share,
+        // then a sha256 of the original and a second copy of it — so the act
+        // announces itself as it goes and the modal draws a bar. The module
+        // counts; all that is added here is whose row it is.
+        (update) => broadcastToAllWindows(
+          'foundry-host:adopt-progress', { dir: sourceDir, ...update }),
       );
       // The shelf is a list of PROJECTS, and adoption can add one. Sent once,
       // after the whole act, rather than per notification above — a new book is

@@ -172,3 +172,47 @@ export type FoundryRefreshResult =
       filesRemoved: number;
       exportsLanded: number;
     };
+
+/**
+ * WHERE ONE ADOPTION HAS GOT TO — the thing a spinner cannot say.
+ *
+ * Adopting a Foundry project is one `invoke` that does not answer until the
+ * whole of it is done, and the whole of it is: hash a PDF, copy a gigabyte of
+ * page images across an SMB share, mint a book, sweep a tray. On a big project
+ * that is minutes of a button with a spinner in it, which reads as a hang — it
+ * is what Owen hit on Fragebogen (2026-09-22). So the act announces itself as it
+ * goes, on `foundry-host:adopt-progress`, and the modal draws a bar.
+ *
+ * `percent` IS THE WHOLE ADOPTION, not the phase — the bar must not restart at
+ * each act — and it is MONOTONIC by construction on main's side: a bar that goes
+ * backwards reads as a fault, and the only honest answer to "the census was
+ * short" is to stay where we are rather than to retreat.
+ */
+export interface AdoptProgress {
+  /** The project folder being adopted — which row this belongs to. */
+  dir: string;
+  /** Which act is running. For styling and for tests; the label is what is read. */
+  phase: AdoptPhase;
+  /** One line for the user: "Copying 412 of 1,208 files". Always a full sentence's worth. */
+  label: string;
+  /** 0–100 across the whole adoption. */
+  percent: number;
+}
+
+/**
+ * The acts of an adoption, in the order `adoptFoundryProject` performs them.
+ * Named for what the user is waiting on, not for the function that does it.
+ */
+export type AdoptPhase =
+  /** Reading the project's catalogue — is this a Foundry project at all. */
+  | 'reading'
+  /** Asking the library whether a book already claims it. */
+  | 'checking'
+  /** Copying (or bringing forward) the project under the library. The long one. */
+  | 'copying'
+  /** Making the book from the project's own archived original. */
+  | 'minting'
+  /** Recording the mapping between the book and the project. */
+  | 'joining'
+  /** Landing whatever is already in the project's export tray. */
+  | 'exports';

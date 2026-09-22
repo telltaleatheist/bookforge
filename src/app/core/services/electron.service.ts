@@ -67,6 +67,7 @@ import type {
 } from '@shared/vlm/chapter-titles';
 import type { DocumentStageProgressEvent } from '@shared/document/pipeline-types';
 import type {
+  AdoptProgress as FoundryAdoptProgress,
   AdoptResult as FoundryAdoptOutcome,
   AdoptableFoundryProject as FoundryAdoptable,
   BlockedFoundryProject as FoundryBlocked,
@@ -1552,6 +1553,16 @@ export class ElectronService {
   }> {
     if (this.isElectron) return (window as any).electron.foundryHost.adopt(sourceDir);
     return { success: false, error: 'Not running in Electron' };
+  }
+  /**
+   * Where an adoption in flight has got to — the phase, a line to read, and a
+   * percent across the WHOLE act. `foundryHostAdopt` above does not resolve until
+   * everything is done, so this is the only thing that can move a bar while a
+   * gigabyte of page images crosses the library share.
+   */
+  onFoundryAdoptProgress(callback: (progress: FoundryAdoptProgress) => void): () => void {
+    if (!this.isElectron) return () => { /* nothing subscribed */ };
+    return (window as any).electron.foundryHost.onAdoptProgress(callback);
   }
   /**
    * Bring an already-adopted book’s Foundry copy forward from the standalone

@@ -20,6 +20,7 @@ import type { JobStageProgress } from './job-stages';
 // second spelling of them here could only ever be a spelling that drifts.
 import type {
   AdoptableFoundryProject as FoundryAdoptableProject,
+  AdoptProgress as FoundryAdoptProgress,
   BlockedFoundryProject as FoundryBlockedProject,
   AdoptResult as FoundryAdoptResult,
   FoundryRefreshResult,
@@ -1583,6 +1584,12 @@ export interface ElectronAPI {
     adopt: (sourceDir: string) =>
       Promise<{ success: boolean; result?: FoundryAdoptResult; error?: string }>;
     /**
+     * Where an adoption in flight has got to. The `adopt` promise above does not
+     * settle until the whole act is done — minutes, on a project whose page
+     * images cross the library share — so this is how a bar gets drawn.
+     */
+    onAdoptProgress: (callback: (progress: FoundryAdoptProgress) => void) => () => void;
+    /**
      * Bring an already-adopted book’s hosted copy forward from the standalone
      * project it came from — only the files that differ — and land any export
      * that has appeared in its tray since. Never overwrites a hosted copy that is
@@ -3100,6 +3107,12 @@ const electronAPI: ElectronAPI = {
     // Foundry's own library, and orphans in our hosted root that no book maps.
     adoptables: () => ipcRenderer.invoke('foundry-host:adoptables'),
     adopt: (sourceDir: string) => ipcRenderer.invoke('foundry-host:adopt', sourceDir),
+    onAdoptProgress: (callback: (progress: FoundryAdoptProgress) => void) => {
+      const listener = (_e: Electron.IpcRendererEvent, progress: FoundryAdoptProgress) =>
+        callback(progress);
+      ipcRenderer.on('foundry-host:adopt-progress', listener);
+      return () => { ipcRenderer.removeListener('foundry-host:adopt-progress', listener); };
+    },
     reload: (bookDir: string) => ipcRenderer.invoke('foundry-host:reload', bookDir),
     browseForProject: () => ipcRenderer.invoke('foundry-host:browse-for-project'),
     // A Foundry landing changed this book's VERSIONS. Named for what it means

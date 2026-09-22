@@ -1,4 +1,6 @@
-import { Component, inject, signal, computed, input, output, effect, HostListener } from '@angular/core';
+import {
+  Component, inject, signal, computed, input, output, effect, HostListener, DestroyRef,
+} from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { StudioService } from '../../services/studio.service';
@@ -7,6 +9,7 @@ import { NoticeService } from '../../../../core/services/notice.service';
 import { StudioItem } from '../../models/studio.types';
 import { ImportMetadataModalComponent, ImportMetadata } from '../import-metadata-modal/import-metadata-modal.component';
 import type {
+  AdoptProgress,
   AdoptableFoundryProject as FoundryAdoptable,
   BlockedFoundryProject as FoundryBlocked,
 } from '@shared/foundry/adopt-types';
@@ -220,6 +223,33 @@ interface ImportProgress {
             >
               Choose a project folder…
             </button>
+
+            <!--
+              WHERE THE ADOPTION HAS GOT TO.
+
+              Drawn ONCE, here, and not inside the row: the row's button already
+              carries the spinner that says which project is being taken, and a
+              bar that lives in the list would have nowhere to appear for a
+              project chosen through the folder picker above — which is not in
+              the list at all. One place, both doors.
+
+              The label is the news; the bar is the reassurance. It stands even
+              before the first event arrives (adoptProgress() null), so the
+              press has a visible consequence in the same frame as the click.
+            -->
+            @if (adoptingDir() !== null) {
+              <div class="adopt-working">
+                <p class="adopt-working-label">
+                  {{ adoptProgress()?.label || 'Starting…' }}
+                </p>
+                <div class="adopt-bar" role="progressbar"
+                     [attr.aria-valuenow]="adoptProgress()?.percent || 0"
+                     aria-valuemin="0" aria-valuemax="100">
+                  <div class="adopt-bar-fill"
+                       [style.width.%]="adoptProgress()?.percent || 0"></div>
+                </div>
+              </div>
+            }
 
             @if (adoptError()) {
               <p class="import-error adopt-message">{{ adoptError() }}</p>
@@ -656,6 +686,42 @@ interface ImportProgress {
     .adopt-message {
       text-align: left;
     }
+
+    /* ── Where the adoption has got to ──────────────────────────────────── */
+
+    .adopt-working {
+      margin-top: 10px;
+      text-align: left;
+    }
+
+    .adopt-working-label {
+      margin: 0 0 6px;
+      font-size: 12px;
+      color: var(--text-secondary);
+      /* ONE LINE, ALWAYS. The labels run from four words to a file count in the
+         thousands, and a block that grows a line mid-copy would shunt the two
+         buttons under it down while the user is aiming at them. */
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .adopt-bar {
+      height: 4px;
+      border-radius: 999px;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-default);
+      overflow: hidden;
+    }
+
+    .adopt-bar-fill {
+      height: 100%;
+      background: var(--color-primary);
+      /* Matched to the reporter's 150 ms floor: the fill glides between ticks
+         instead of stepping, and a phase that jumps several percent at once
+         still reads as movement rather than as a redraw. */
+      transition: width 0.2s linear;
+    }
   `]
 })
 export class AddModalComponent {
@@ -727,11 +793,31 @@ export class AddModalComponent {
   /** The project currently being adopted — one at a time, so the list can't race. */
   readonly adoptingDir = signal<string | null>(null);
   readonly adoptError = signal<string | null>(null);
+  /**
+   * How far the adoption in flight has got.
+   *
+   * Null between the press and the first event, and null again the moment the
+   * press finishes — the block that draws it is gated on `adoptingDir`, so a
+   * stale bar cannot outlive the act that filled it. Events for any OTHER
+   * directory are dropped rather than drawn: only one adoption runs at a time by
+   * construction, and a late event from a press that already finished would
+   * otherwise re-animate a bar for a project nobody is waiting on.
+   */
+  readonly adoptProgress = signal<AdoptProgress | null>(null);
 
   urlValue = '';
 
   constructor() {
     void this.loadAdoptables();
+    // Subscribed for the life of the modal rather than per-press: the first
+    // event of an adoption can arrive before the `invoke` promise has even been
+    // handed back, and a listener attached inside `adoptProject` would miss the
+    // early ones — the very ones that prove the press did something.
+    const stop = this.electronService.onFoundryAdoptProgress((progress) => {
+      if (progress.dir !== this.adoptingDir()) return;
+      this.adoptProgress.set(progress);
+    });
+    inject(DestroyRef).onDestroy(stop);
   }
 
   private async loadAdoptables(): Promise<void> {
@@ -774,6 +860,7 @@ export class AddModalComponent {
   async adoptProject(dir: string): Promise<void> {
     if (this.adoptingDir() !== null) return;
     this.adoptError.set(null);
+    this.adoptProgress.set(null);
     this.adoptingDir.set(dir);
     try {
       const response = await this.electronService.foundryHostAdopt(dir);
@@ -809,6 +896,7 @@ export class AddModalComponent {
       this.adoptError.set((err as Error).message);
     } finally {
       this.adoptingDir.set(null);
+      this.adoptProgress.set(null);
     }
   }
 

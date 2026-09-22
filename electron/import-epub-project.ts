@@ -34,6 +34,16 @@ export interface ImportEpubOptions {
   coverRelPath?: string;
   /** Provenance for URL-sourced articles (recorded on manifest.source). */
   provenance?: { url?: string; fetchedAt?: string };
+  /**
+   * Told, in the user's words, as each slow part of the import starts.
+   *
+   * There are exactly FOUR and they are the four that read or write a whole
+   * file: hashing the source, hashing the library's near-misses to answer the
+   * duplicate question, copying the pristine original into `archive/`, and
+   * writing the manifest. A caller drawing a bar (the Adopt door) counts them;
+   * every other caller passes nothing and the import is unchanged.
+   */
+  onStep?: (what: string) => void;
 }
 
 export interface ImportEpubResult {
@@ -74,8 +84,11 @@ export async function importEpubProject(
     // every existing project's stored source.fileHash; for older projects that
     // predate hashing, fall back to hashing their source file only when its size
     // matches (cheap — avoids re-hashing the whole library each import).
+    const step = opts.onStep ?? (() => { /* nobody drawing */ });
+    step('Reading the original…');
     const importHash = await sha256File(epubSourcePath);
     const importSize = (await fs.stat(epubSourcePath)).size;
+    step('Checking whether this book is already in your library…');
     {
       const existingFolder = getProjectsPath();
       let names: string[] = [];
@@ -176,6 +189,7 @@ export async function importEpubProject(
     };
     const descriptiveFilename = manifestService.computeDescriptiveFilename(archiveMetadata, ext);
     const archivePath = path.join(projectDir, 'archive', descriptiveFilename);
+    step('Copying the original into the new book…');
     await manifestService.atomicCopyFile(epubSourcePath, archivePath); // only copy — fatal on failure
     console.log(`[import-epub-project] Archived pristine copy: ${descriptiveFilename}`);
 
@@ -222,6 +236,7 @@ export async function importEpubProject(
       }],
     };
 
+    step('Writing the book’s manifest…');
     await fs.writeFile(path.join(projectDir, 'manifest.json'), JSON.stringify(manifest, null, 2));
     console.log(`[import-epub-project] Created ${projectType} project: ${projectDir}`);
 

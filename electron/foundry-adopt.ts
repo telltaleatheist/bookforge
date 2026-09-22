@@ -59,6 +59,8 @@ import { samePath } from '../shared/document/same-path';
 // The wire shapes, declared in shared/ because the renderer draws them and
 // cannot import out of electron/. See the header of that file.
 import type {
+  AdoptPhase,
+  AdoptProgress,
   AdoptResult,
   AdoptableFoundryProject,
   AdoptableListing,
@@ -68,6 +70,8 @@ import type {
 } from '../shared/foundry/adopt-types';
 
 export type {
+  AdoptPhase,
+  AdoptProgress,
   AdoptResult,
   AdoptableFoundryProject,
   AdoptableListing,
@@ -75,6 +79,179 @@ export type {
   FoundryRefreshResult,
   FoundryStandaloneSource,
 };
+
+// ────────────────────────────────────────────────────────────────────────────────
+// Saying where an adoption has got to
+// ────────────────────────────────────────────────────────────────────────────────
+
+/** Told where an adoption has got to. The `dir` is filled in by the caller. */
+export type AdoptProgressSink = (update: Omit<AdoptProgress, 'dir'>) => void;
+
+/**
+ * HOW MUCH OF THE BAR EACH ACT OWNS.
+ *
+ * Measured by what actually takes the time on a real project over the library's
+ * SMB share, not by how many lines of code each act is: the copy is a gigabyte
+ * of page images and owns most of the bar, the mint is a sha256 of the original
+ * plus one more copy of it, and the rest is manifest writes that finish before
+ * the bar can draw them.
+ *
+ * They are spans and not weights so that every act can report WITHIN itself: the
+ * copy fills 6→78 by bytes, so the bar keeps moving through the one act long
+ * enough for a person to doubt it.
+ */
+const PHASE_SPAN: Readonly<Record<AdoptPhase, readonly [number, number]>> = {
+  reading: [0, 3],
+  checking: [3, 6],
+  copying: [6, 78],
+  minting: [78, 92],
+  joining: [92, 94],
+  exports: [94, 100],
+};
+
+/**
+ * A reporter that cannot go backwards and cannot flood the channel.
+ *
+ * MONOTONIC, because the copy's total is a census taken before the copy and a
+ * census can be wrong — a file that appears mid-copy would otherwise drag the
+ * bar back, and a bar that retreats reads as a fault rather than as an estimate
+ * being corrected. Staying put is the honest answer to an estimate that was short.
+ *
+ * THROTTLED at {@link PROGRESS_MIN_GAP_MS}, because the copy ticks once per file
+ * and a project is thousands of files: every tick would be an IPC message and a
+ * change detection pass, and the renderer cannot draw faster than the eye reads.
+ * A change of phase or of whole percent is always sent — those are the ones a
+ * person is waiting for — and the LAST tick of the whole act is forced by the
+ * caller emitting each phase's start.
+ */
+function progressReporter(sink: AdoptProgressSink | undefined) {
+  let highest = 0;
+  let lastSentAt = 0;
+  let lastPercent = -1;
+  let lastPhase: AdoptPhase | null = null;
+  return (phase: AdoptPhase, label: string, within = 0): void => {
+    if (!sink) return;
+    const [lo, hi] = PHASE_SPAN[phase];
+    const fraction = Math.min(1, Math.max(0, Number.isFinite(within) ? within : 0));
+    highest = Math.max(highest, Math.round(lo + (hi - lo) * fraction));
+    const now = Date.now();
+    const newsworthy = phase !== lastPhase
+      || highest !== lastPercent
+      || now - lastSentAt >= PROGRESS_MIN_GAP_MS;
+    if (!newsworthy) return;
+    lastSentAt = now;
+    lastPercent = highest;
+    lastPhase = phase;
+    sink({ phase, label, percent: highest });
+  };
+}
+
+/** No faster than this, except when the phase or the whole percent changes. */
+const PROGRESS_MIN_GAP_MS = 150;
+
+/** "1,208" — a file count a person reads mid-sentence. */
+function counted(n: number): string {
+  return n.toLocaleString();
+}
+
+/** What a tree holds, as a copy needs to know it before it starts. */
+interface TreeCensus {
+  files: number;
+  bytes: number;
+}
+
+/**
+ * COUNT THE TREE BEFORE COPYING IT, so the bar has a denominator.
+ *
+ * One extra walk of the SOURCE, which is a local disk in every case that matters
+ * (standalone Foundry's own library), against a copy that crosses the network.
+ * Cheap enough to be worth the only thing that makes a bar a bar.
+ *
+ * A directory that cannot be read is counted as nothing rather than thrown from:
+ * the census is an ESTIMATE for a progress bar, and the copy that follows is the
+ * thing whose failures are the user's business. An estimate that is short is
+ * handled by the reporter's monotonicity.
+ */
+async function censusOf(dir: string): Promise<TreeCensus> {
+  const census: TreeCensus = { files: 0, bytes: 0 };
+  const walk = async (at: string): Promise<void> => {
+    let entries;
+    try {
+      entries = await fs.readdir(at, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const child = path.join(at, entry.name);
+      if (entry.isDirectory()) {
+        await walk(child);
+        continue;
+      }
+      census.files++;
+      if (!entry.isFile()) continue;
+      try {
+        census.bytes += (await fs.stat(child)).size;
+      } catch { /* counted as a file of unknown size — see above */ }
+    }
+  };
+  await walk(dir);
+  return census;
+}
+
+/** Told after each file travels: how many, and how many bytes, have landed. */
+type CopyTick = (files: number, bytes: number) => void;
+
+/**
+ * How a copy says where it is, without knowing which act of the adoption it is.
+ * `within` is 0–1 of THIS copy; the caller maps it onto the bar.
+ */
+type CopyReport = (label: string, within: number) => void;
+
+/**
+ * COPY A WHOLE TREE, FILE BY FILE, SAYING SO.
+ *
+ * This replaced `fs.cp(source, dest, { recursive: true })` for one reason: `cp`
+ * copies a gigabyte behind a promise that resolves once, and a bar cannot be
+ * drawn from one promise. Everything else about it is kept deliberately the same
+ * shape as the mirror below — directories recursed, ordinary files copied,
+ * anything else (a symlink, a device node) handed to `fs.cp` verbatim rather than
+ * guessed at.
+ *
+ * IT STAMPS EACH FILE WITH ITS SOURCE'S TIME, which `fs.cp` does on win32 and
+ * does not on macOS (measured 2026-08-22 — see `refreshHostedCopy`). That
+ * platform difference is closed here rather than inherited: the mirror's quick
+ * check is size-and-mtime, so a copy whose mtimes mean the same thing on both
+ * machines is a refresh that means the same thing on both machines.
+ */
+async function copyTreeSaying(
+  sourceDir: string,
+  destDir: string,
+  tick: CopyTick,
+  soFar: { files: number; bytes: number },
+): Promise<void> {
+  await fs.mkdir(destDir, { recursive: true });
+  const entries = await fs.readdir(sourceDir, { withFileTypes: true });
+  for (const entry of entries) {
+    const from = path.join(sourceDir, entry.name);
+    const to = path.join(destDir, entry.name);
+    if (entry.isDirectory()) {
+      await copyTreeSaying(from, to, tick, soFar);
+      continue;
+    }
+    if (!entry.isFile()) {
+      await fs.cp(from, to, { recursive: true, verbatimSymlinks: true });
+      soFar.files++;
+      tick(soFar.files, soFar.bytes);
+      continue;
+    }
+    const stat = await fs.stat(from);
+    await fs.copyFile(from, to);
+    await fs.utimes(to, stat.atime, stat.mtime).catch(() => { /* best effort, as ever */ });
+    soFar.files++;
+    soFar.bytes += stat.size;
+    tick(soFar.files, soFar.bytes);
+  }
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // The shared vocabulary: paths, claims, and the mapping act
@@ -760,8 +937,15 @@ export async function adoptFoundryProject(
   sourceDir: string,
   hostedProjectsRoot: string,
   onProjectChanged: (bookDir: string) => void,
+  onProgress?: AdoptProgressSink,
 ): Promise<AdoptResult> {
+  // WHERE WE ARE, said out loud. Optional because the keeper adopts without a
+  // window to draw in; every emit below is a no-op when nobody passed a sink.
+  const say = progressReporter(onProgress);
+  const copying: CopyReport = (label, within) => say('copying', label, within);
+
   // ── 1. Is it a Foundry project at all? ──────────────────────────────────
+  say('reading', 'Reading the Foundry project…');
   let signature: FoundryProjectSignature;
   try {
     signature = await readFoundryProjectSignature(sourceDir);
@@ -777,6 +961,7 @@ export async function adoptFoundryProject(
   const key = signature.folder;
 
   // ── 2. Does a book already claim it? ────────────────────────────────────
+  say('checking', `Looking for “${signature.title}” in your library…`);
   let claims: Awaited<ReturnType<typeof foundryProjectClaims>>;
   try {
     claims = await foundryProjectClaims();
@@ -807,8 +992,10 @@ export async function adoptFoundryProject(
     // Reinhold Krause (2026-08-22): adopted 04:53 with three steps, translated,
     // simplified and struck standalone until 07:24, re-imported, and the
     // three-step copy stood with nothing said about it.
-    const freshness = await refreshHostedCopy(sourceDir, hostedProjectsRoot, key);
+    const freshness = await refreshHostedCopy(sourceDir, hostedProjectsRoot, key, copying);
+    say('exports', 'Looking for exports in its tray…', 0);
     const landed = await reconcile(hostedProjectsRoot, key, onProjectChanged);
+    say('exports', 'Done.', 1);
     return {
       outcome: 'already-mapped',
       projectId: path.basename(bookDir),
@@ -857,8 +1044,14 @@ export async function adoptFoundryProject(
     }
 
     if (occupantKey === null) {
+      say('copying', 'Counting the project…', 0);
+      const census = await censusOf(sourceDir);
       try {
-        await copyProjectInto(sourceDir, hostedProjectsRoot, hostedDir);
+        await copyProjectInto(sourceDir, hostedProjectsRoot, hostedDir, (files, bytes) => {
+          copying(
+            `Copying ${counted(files)} of ${counted(census.files)} files into your library`,
+            census.bytes > 0 ? bytes / census.bytes : files / Math.max(1, census.files));
+        });
         copied = true;
       } catch (err) {
         return {
@@ -877,7 +1070,7 @@ export async function adoptFoundryProject(
     // earlier adoption is routinely OLDER than the project that made it, and
     // leaving it meant minting a book from a stale original.
     if (occupantKey !== null) {
-      const freshness = await refreshHostedCopy(sourceDir, hostedProjectsRoot, key);
+      const freshness = await refreshHostedCopy(sourceDir, hostedProjectsRoot, key, copying);
       if (freshness.kind === 'failed') {
         return {
           outcome: 'refused',
@@ -897,7 +1090,19 @@ export async function adoptFoundryProject(
     : await readFoundryProjectSignature(hostedDir);
 
   // ── 4. Mint the book from the project's own original ────────────────────
-  const imported = await importEpubProject(hostedSignature.originalPath, { projectType: 'book' });
+  //
+  // FOUR STEPS AND NOT ONE, because minting is where the second half of the wait
+  // is: the original is read twice (a sha256 to answer "is this book already
+  // here", then a copy into the book's archive), and on a scanned PDF that is
+  // hundreds of megabytes across the same share the copy just used. A bar that
+  // jumped to 78% and stopped there for a minute would be the spinner again.
+  say('minting', 'Making the book…', 0);
+  const MINT_STEPS = 4;
+  let mintStep = 0;
+  const imported = await importEpubProject(hostedSignature.originalPath, {
+    projectType: 'book',
+    onStep: (what) => { say('minting', what, ++mintStep / MINT_STEPS); },
+  });
 
   let bookDir: string;
   let projectId: string;
@@ -958,6 +1163,7 @@ export async function adoptFoundryProject(
       }
     }
   }
+  say('joining', 'Joining the book to its Foundry project…', 0);
   let mapping: FoundryMappingResult;
   try {
     mapping = await recordFoundryProjectMapping(bookDir, key, originalInBook);
@@ -977,7 +1183,9 @@ export async function adoptFoundryProject(
     + `opened from ${mapping.sourceVariantId === null ? 'no version of it' : `version ${mapping.sourceVariantId}`}.`);
 
   // ── 6. Land whatever is already in its tray ─────────────────────────────
+  say('exports', 'Looking for exports in its tray…', 0);
   const exportsLanded = await reconcile(hostedProjectsRoot, key, onProjectChanged);
+  say('exports', 'Done.', 1);
 
   return {
     outcome: 'adopted',
@@ -1049,12 +1257,13 @@ async function copyProjectInto(
   sourceDir: string,
   hostedProjectsRoot: string,
   hostedDir: string,
+  tick: CopyTick = () => { /* nobody watching */ },
 ): Promise<void> {
   await fs.mkdir(hostedProjectsRoot, { recursive: true });
   const staging = path.join(
     hostedProjectsRoot, `.adopting-${path.basename(hostedDir)}-${process.pid}-${Date.now()}`);
   try {
-    await fs.cp(sourceDir, staging, { recursive: true });
+    await copyTreeSaying(sourceDir, staging, tick, { files: 0, bytes: 0 });
     await renameOntoDestination(staging, hostedDir);
   } catch (err) {
     await fs.rm(staging, { recursive: true, force: true }).catch(() => { /* named below */ });
@@ -1200,6 +1409,14 @@ const CATALOGUE = 'project.json';
 interface MirrorTally {
   copied: number;
   removed: number;
+  /**
+   * Every file the walk CONSIDERED, changed or not — the bar's numerator.
+   * `copied` is the sentence the user reads afterwards; this is the one that
+   * matches the census taken before the walk started.
+   */
+  seen: number;
+  /** Bytes of every file considered, for the same reason. */
+  bytes: number;
 }
 
 /**
@@ -1254,6 +1471,7 @@ async function mirrorInto(
   destDir: string,
   tally: MirrorTally,
   skip: ReadonlySet<string>,
+  tick: CopyTick = () => { /* nobody watching */ },
 ): Promise<void> {
   const sourceEntries = await fs.readdir(sourceDir, { withFileTypes: true });
   const destEntries = await fs.readdir(destDir, { withFileTypes: true });
@@ -1278,7 +1496,7 @@ async function mirrorInto(
       try { clash = !(await fs.stat(to)).isDirectory(); } catch { /* absent */ }
       if (clash) await fs.rm(to, { recursive: true, force: true });
       await fs.mkdir(to, { recursive: true });
-      await mirrorInto(from, to, tally, NOTHING_HELD_BACK);
+      await mirrorInto(from, to, tally, NOTHING_HELD_BACK, tick);
       continue;
     }
 
@@ -1289,6 +1507,8 @@ async function mirrorInto(
       await fs.rm(to, { recursive: true, force: true });
       await fs.cp(from, to, { recursive: true, verbatimSymlinks: true });
       tally.copied++;
+      tally.seen++;
+      tick(tally.seen, tally.bytes);
       continue;
     }
 
@@ -1302,11 +1522,21 @@ async function mirrorInto(
         && dest.size === source.size
         && sameInstant(dest.mtime, source.mtime);
     } catch { /* absent — it is copied below */ }
-    if (unchanged) continue;
+    tally.seen++;
+    tally.bytes += source.size;
+    if (unchanged) {
+      // Counted and reported even though nothing travelled: on a refresh MOST
+      // files are unchanged, and a bar that only moved for the handful that
+      // changed would sit still through the whole of the walk that is taking the
+      // time.
+      tick(tally.seen, tally.bytes);
+      continue;
+    }
     if (occupied) await fs.rm(to, { recursive: true, force: true });
     await fs.copyFile(from, to);
     await fs.utimes(to, source.atime, source.mtime);
     tally.copied++;
+    tick(tally.seen, tally.bytes);
   }
 }
 
@@ -1363,6 +1593,7 @@ async function refreshHostedCopy(
   sourceDir: string,
   hostedProjectsRoot: string,
   key: string,
+  report: CopyReport = () => { /* nobody watching */ },
 ): Promise<CopyFreshness> {
   // The source IS the copy — an orphan already under the hosted root. There is
   // no second place for it to be brought forward from.
@@ -1384,8 +1615,13 @@ async function refreshHostedCopy(
     // window would open, and there is nothing there. The original is right here,
     // so it is copied across again in full — there is no partial copy to mirror
     // against.
+    const census = await censusOf(sourceDir);
     try {
-      await copyProjectInto(sourceDir, hostedProjectsRoot, hostedDir);
+      await copyProjectInto(sourceDir, hostedProjectsRoot, hostedDir, (files, bytes) => {
+        report(
+          `Its copy here was missing — copying ${counted(files)} of ${counted(census.files)} files`,
+          census.bytes > 0 ? bytes / census.bytes : files / Math.max(1, census.files));
+      });
     } catch (err) {
       return { kind: 'failed', why: (err as Error).message, partial: false };
     }
@@ -1400,9 +1636,15 @@ async function refreshHostedCopy(
   // atomic, and a gigabyte of writes to carry across a catalogue and two step
   // documents. See `mirrorInto` for the trade that replaced it, and for why the
   // catalogue is held back to the end.
-  const tally: MirrorTally = { copied: 0, removed: 0 };
+  const tally: MirrorTally = { copied: 0, removed: 0, seen: 0, bytes: 0 };
+  const census = await censusOf(sourceDir);
   try {
-    await mirrorInto(sourceDir, hostedDir, tally, HOLD_BACK_CATALOGUE);
+    await mirrorInto(sourceDir, hostedDir, tally, HOLD_BACK_CATALOGUE, (files, bytes) => {
+      report(
+        `Bringing the copy up to date — ${counted(files)} of ${counted(census.files)} files `
+        + `checked, ${counted(tally.copied)} copied`,
+        census.bytes > 0 ? bytes / census.bytes : files / Math.max(1, census.files));
+    });
     await fs.copyFile(path.join(sourceDir, CATALOGUE), path.join(hostedDir, CATALOGUE));
   } catch (err) {
     return {
