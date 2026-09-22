@@ -691,9 +691,9 @@ export const ttsConversionStep: StepModule = {
              * whose cache is behind) is exactly the case where a row sitting
              * silently is the thing that gets reported as a hang.
              */
-            onProgress: ({ copied, total }) => ctx.report({
+            onProgress: ({ copied, total, waiting }) => ctx.report({
               message: 'Publishing to the library',
-              detail: `${copied.toLocaleString('en-US')} of ${total.toLocaleString('en-US')} `
+              detail: waiting ?? `${copied.toLocaleString('en-US')} of ${total.toLocaleString('en-US')} `
                 + 'rendered chunk(s) copied into the library',
             }),
           },

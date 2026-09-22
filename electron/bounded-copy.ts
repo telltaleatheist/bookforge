@@ -99,6 +99,60 @@ export async function retryWeather<T>(
 }
 
 /**
+ * HOW LONG A DIRECTORY RENAME WAITS FOR WHATEVER IS HOLDING THE TREE — about
+ * five minutes in all, then the caller says so.
+ *
+ * Measured 2026-09-22 on *Pursuit of Power*: the publish copied 8,364 files
+ * (13 GB) into `.tmp-<session>` on the NAS and the rename into place answered
+ * `EPERM` — twice, fourteen minutes apart, each time straight after a copy — and
+ * the same rename by hand a few minutes later took 212 ms. On an SMB share a
+ * directory rename is refused while any handle is open anywhere inside it, and
+ * a NAS indexing thousands of files it has just been handed holds them for a
+ * while. That is weather for THIS operation, so it waits; five minutes because
+ * the holder outlasted a 17-second budget and did not outlast six minutes.
+ */
+export const RENAME_HOLDER_BACKOFF_MS: readonly number[] = [
+  2_000, 5_000, 10_000, 20_000, 30_000, 60_000, 60_000, 60_000, 60_000,
+];
+
+/**
+ * THE ANSWERS A RENAME GIVES WHILE SOMETHING HOLDS THE TREE — on top of the
+ * ordinary {@link WEATHER_CODES}. Only for a rename: from `copyFile`, `EPERM` is
+ * a real answer about permissions and waiting on it would only delay it.
+ */
+const RENAME_HOLDER_CODES: readonly string[] = ['EPERM', 'EACCES', 'EBUSY'];
+
+/**
+ * Rename a directory into place, waiting out a holder within
+ * {@link RENAME_HOLDER_BACKOFF_MS}. The last error is thrown when the budget is
+ * spent; `onWait` is told each wait so a row can SAY it is waiting.
+ */
+export async function renameWaitingForHolders(
+  from: string,
+  to: string,
+  onWait?: (attempt: number, waitMs: number, err: unknown) => void,
+): Promise<void> {
+  const backoff = RENAME_HOLDER_BACKOFF_MS;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await fs.rename(from, to);
+      return;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException | null)?.code;
+      // Windows answers EPERM for TWO things: a handle open inside the tree
+      // (weather — it lets go) and a destination that already exists (an
+      // answer — nothing lets go of that). Only the first is waited on.
+      const occupied = await fs.stat(to).then(() => true, () => false);
+      const held = !occupied && typeof code === 'string' && RENAME_HOLDER_CODES.includes(code);
+      if (attempt >= backoff.length || !(held || isWeather(err))) throw err;
+      const waitMs = backoff[attempt]!;
+      onWait?.(attempt + 1, waitMs, err);
+      await sleep(waitMs);
+    }
+  }
+}
+
+/**
  * Run `worker` over `items` with at most `limit` in flight, IN ORDER.
  *
  * Results land at their item's index, so a caller can report what was copied in
@@ -190,6 +244,23 @@ export interface CopyTreeOptions {
   readonly copyFile?: (from: string, to: string) => Promise<void>;
   /** Told when a file is waiting out weather, so a long publish can say so. */
   readonly onRetry?: (rel: string, attempt: number, waitMs: number, err: unknown) => void;
+  /**
+   * Files the destination MAY already hold from an earlier attempt of this
+   * same copy. One of these is skipped when the destination has it at the
+   * source's exact size; a short one (the copy that was interrupted mid-file)
+   * or a missing one is copied. Only for files that never change once written —
+   * a rendered chunk — never for a file the caller rewrites afterwards.
+   */
+  readonly reusable?: (rel: string) => boolean;
+}
+
+/** Does `to` already hold `from`'s bytes, as far as size can say? False when either is unreadable. */
+async function alreadyLanded(from: string, to: string): Promise<boolean> {
+  const [src, dst] = await Promise.all([
+    fs.stat(from).catch(() => null),
+    fs.stat(to).catch(() => null),
+  ]);
+  return src !== null && dst !== null && dst.isFile() && dst.size === src.size;
 }
 
 /**
@@ -234,6 +305,9 @@ export async function copyTreeBounded(
     options.concurrency ?? COPY_CONCURRENCY,
     async (entry) => {
       try {
+        if (options.reusable?.(entry.rel) && await alreadyLanded(entry.from, entry.to)) {
+          return null;
+        }
         await retryWeather(() => copyFile(entry.from, entry.to), {
           onRetry: (attempt, waitMs, err) => options.onRetry?.(entry.rel, attempt, waitMs, err),
         });

@@ -362,6 +362,89 @@ const errno = (code) => Object.assign(new Error(`${code}: injected`), { code });
       + 'migration, never a delete');
   });
 
+  // ── 2026-09-22: a finished copy is never thrown away, and a held folder waits ─
+  //
+  // *Pursuit of Power*: 8,364 files (13 GB) copied into `.tmp-<session>` on the
+  // NAS, the rename into place answered EPERM, and the retry DISCARDED the copy
+  // and made it again — twenty silent minutes ending on the same EPERM. By hand
+  // a few minutes later the same rename took 212 ms.
+
+  await check('a leftover chunk at the source\'s size is REUSED; a short one is recopied', async () => {
+    const src = path.join(WORK, 'reuse-src');
+    const dst = path.join(WORK, 'reuse-dst');
+    fs.mkdirSync(path.join(src, 'chunks'), { recursive: true });
+    fs.mkdirSync(path.join(dst, 'chunks'), { recursive: true });
+    fs.writeFileSync(path.join(src, 'chunks', '1.flac'), 'AAAA');
+    fs.writeFileSync(path.join(src, 'chunks', '2.flac'), 'BBBBBBBB');
+    fs.writeFileSync(path.join(src, 'session-state.json'), '{"a":1}');
+    // Same size, different bytes — so a skip is visible as the bytes surviving.
+    fs.writeFileSync(path.join(dst, 'chunks', '1.flac'), 'zzzz');
+    // Interrupted mid-file: shorter than the source.
+    fs.writeFileSync(path.join(dst, 'chunks', '2.flac'), 'BB');
+    // Same size, but not a reusable path: always copied fresh.
+    fs.writeFileSync(path.join(dst, 'session-state.json'), '{"b":2}');
+    const report = await bounded.copyTreeBounded(src, dst, {
+      reusable: (rel) => rel.startsWith('chunks' + path.sep),
+    });
+    assert.deepStrictEqual(report.failures, []);
+    assert.strictEqual(fs.readFileSync(path.join(dst, 'chunks', '1.flac'), 'utf8'), 'zzzz',
+      'a landed chunk is not copied again');
+    assert.strictEqual(fs.readFileSync(path.join(dst, 'chunks', '2.flac'), 'utf8'), 'BBBBBBBB',
+      'a short chunk is');
+    assert.strictEqual(fs.readFileSync(path.join(dst, 'session-state.json'), 'utf8'), '{"a":1}',
+      'metadata is never reused — the publish rewrites it');
+  });
+
+  await check('a rename waits out whatever holds the tree, then lands', async () => {
+    const from = path.join(WORK, 'held-from');
+    const to = path.join(WORK, 'held-to');
+    fs.mkdirSync(path.join(from, 'deep'), { recursive: true });
+    fs.writeFileSync(path.join(from, 'deep', 'x.flac'), 'x');
+    // An open handle inside the tree: on Windows (NTFS, as on SMB) this is what
+    // refuses a directory rename. Released after the first refusal.
+    const fd = fs.openSync(path.join(from, 'deep', 'x.flac'), 'r');
+    const waits = [];
+    const renamed = bounded.renameWaitingForHolders(from, to, (attempt, waitMs, err) => {
+      waits.push(err.code);
+      fs.closeSync(fd);
+    });
+    if (process.platform !== 'win32') fs.closeSync(fd);
+    await renamed;
+    assert.ok(fs.existsSync(path.join(to, 'deep', 'x.flac')), 'the tree is in place');
+    if (process.platform === 'win32') {
+      assert.ok(waits.length >= 1 && ['EPERM', 'EACCES', 'EBUSY'].includes(waits[0]),
+        `the first attempt was refused by the holder and waited (saw ${JSON.stringify(waits)})`);
+    }
+  });
+
+  await check('a rename refused for a reason that is not a holder fails at once', async () => {
+    const t0 = Date.now();
+    await assert.rejects(
+      bounded.renameWaitingForHolders(path.join(WORK, 'no-such-dir'), path.join(WORK, 'nowhere')),
+      (err) => err.code === 'ENOENT');
+    assert.ok(Date.now() - t0 < 1500, 'ENOENT is an answer, not weather — no budget spent');
+  });
+
+  await check('a destination that already exists fails at once — it is not a holder', async () => {
+    const from = path.join(WORK, 'occupied-from');
+    const to = path.join(WORK, 'occupied-to');
+    fs.mkdirSync(from, { recursive: true });
+    fs.writeFileSync(path.join(from, 'a.flac'), 'a');
+    // A non-empty FOLDER in the way: every platform refuses to rename onto it
+    // (a plain file would not do — Windows' rename replaces a file).
+    fs.mkdirSync(to, { recursive: true });
+    fs.writeFileSync(path.join(to, 'other.flac'), 'b');
+    const t0 = Date.now();
+    let waited = false;
+    await assert.rejects(bounded.renameWaitingForHolders(from, to, () => { waited = true; }));
+    assert.ok(!waited && Date.now() - t0 < 1500, 'no budget spent on a destination that is taken');
+  });
+
+  await check('the budget is stated and outlasts the measured holder', () => {
+    const total = bounded.RENAME_HOLDER_BACKOFF_MS.reduce((a, b) => a + b, 0);
+    assert.ok(total >= 4 * 60_000, `~5 minutes of waiting, not a 17-second one (${total} ms)`);
+  });
+
   // ───────────────────────────────────────────────────────────────────────────
   const total = passed + failures.length;
   console.log(`\n${passed}/${total} checks passed`);

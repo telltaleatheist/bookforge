@@ -33,7 +33,7 @@ import {
 } from './render-carryover';
 // ONE module owns "is the cache as complete as the render" — the publish, the
 // interrupt-cache and the startup rescue all ask it, by chunk INDEX.
-import { copyTreeBounded } from './bounded-copy';
+import { copyTreeBounded, renameWaitingForHolders } from './bounded-copy';
 import { discardLibraryTree } from './library-trash';
 // A resume brings the cached session DOWN before it renders — see the module's
 // header for the SMB traffic that rendering into the cache made.
@@ -834,6 +834,8 @@ const PUBLISH_PROGRESS_MS = 2_000;
 export interface PublishProgress {
   readonly copied: number;
   readonly total: number;
+  /** Set while the publish is waiting on the share rather than copying: the sentence to show. */
+  readonly waiting?: string;
 }
 
 /**
@@ -1102,14 +1104,34 @@ export async function cacheSessionToProject(
 
     await fs.mkdir(langSessionParent, { recursive: true });
 
-    // Clean up any leftover temp dir from a previous failed attempt
-    // Also a library tree — a publish that died half-way left a `.tmp-` holding
-    // most of a book's chunks — so it leaves the same way, by rename.
-    try { await discardLibraryTree(tempDestDir, 'clearing a leftover publish temp'); }
-    catch { /* may not exist */ }
-
     // Determine if the session is in WSL filesystem (handles \\wsl$\ and \\wsl.localhost\)
     const isWslSession = isWslUncPath(sessionDir);
+
+    /*
+     * A LEFTOVER `.tmp-` IS KEPT AND FINISHED WHEN IT HAS TO CROSS THE WIRE, and
+     * discarded only when it would be free to redo.
+     *
+     * Owen, 2026-09-22, on *Pursuit of Power*: a two-hour render copied all
+     * 8,364 files (13 GB) into `.tmp-<session>` on the NAS, the rename into place
+     * was refused, and the step's own publish then THREW THAT COPY AWAY and made
+     * it again — twenty more minutes on a row reading 100%, ending on the same
+     * refusal. *"it should never do that."* The leftover is this same session's
+     * copy (the name is the session's), and a rendered chunk never changes once
+     * written, so every chunk it already holds at the source's size is one the
+     * copy below skips (`reusable`). Metadata is copied fresh every time — the
+     * path rewrite below edits it.
+     *
+     * ON ONE FILESYSTEM the publish MOVES the scratch tree in a single rename,
+     * which a leftover in the way would refuse — and redoing it costs nothing,
+     * so there the leftover goes, as before.
+     */
+    const sameVolume = await Promise.all([fs.stat(sessionDir), fs.stat(langSessionParent)])
+      .then(([src, dst]) => src.dev === dst.dev)
+      .catch(() => false);
+    if (sameVolume) {
+      try { await discardLibraryTree(tempDestDir, 'clearing a leftover publish temp'); }
+      catch { /* may not exist */ }
+    }
 
     // The first file the copy below gave up on, if any — named in the refusal
     // when the set comparison finds the cache short, so the operator has a file
@@ -1163,7 +1185,11 @@ export async function cacheSessionToProject(
          * rather than the first. The first failure's name is carried into the
          * refusal so an operator has a file to look at.
          */
+        const chunksRel = path.join(processRel, 'chapters', 'sentences') + path.sep;
         const report = await copyTreeBounded(sessionDir, tempDestDir, {
+          // A chunk a failed earlier attempt already landed — see the leftover
+          // rule above. Only the audio: everything else is rewritten after.
+          reusable: (rel) => rel.startsWith(chunksRel),
           onRetry: (rel, attempt, waitMs, err) => {
             console.warn(
               `[PARALLEL-TTS] Publishing ${rel} to the library failed with `
@@ -1217,8 +1243,18 @@ export async function cacheSessionToProject(
       console.error('[PARALLEL-TTS] Failed to clean old sessions (non-fatal):', err);
     }
 
-    // Rename temp dir to final name
-    await fs.rename(tempDestDir, destDir);
+    // Rename temp dir to final name — WAITING for whatever holds the fresh tree
+    // (`renameWaitingForHolders` has the measurement), and SAYING so on the row:
+    // a publish that sits at 100% with nothing moving is the other half of what
+    // Owen hit on 2026-09-22.
+    await renameWaitingForHolders(tempDestDir, destDir, (attempt, waitMs, err) => {
+      const code = (err as NodeJS.ErrnoException)?.code ?? 'an error';
+      const sentence = `Every chunk is in the library; something on the share is still holding the `
+        + `new folder (${code}), so it is not in place yet — trying again in `
+        + `${Math.round(waitMs / 1000)}s (attempt ${attempt})`;
+      console.warn(`[PARALLEL-TTS] ${sentence}: ${tempDestDir}`);
+      opts?.onProgress?.({ copied: owed, total: owed, waiting: sentence });
+    });
 
     // Where the render landed inside the published session — the same probe the
     // idempotency check above uses, so the two branches cannot answer
@@ -3364,7 +3400,7 @@ interface ConversionSession {
    * and every bar on the row said done. A stage that can run for eight minutes
    * needs a bar, and this is what fills it.
    */
-  publish?: { copied: number; total: number; startedAt: number };
+  publish?: { copied: number; total: number; startedAt: number; waiting?: string };
   /**
    * WHEN THE RENDER STOPPED BEING A RENDER — the instant the last worker went
    * terminal, before the publish, the assembly or anything else this step still
@@ -6508,7 +6544,7 @@ function buildTtsStages(
     const p = session.publish;
     const pct = p && p.total > 0 ? Math.min(100, Math.round((p.copied / p.total) * 100)) : 0;
     stages.push(stage('publishing', 'Publishing to the library', pct,
-      p === undefined ? 'pending' : (pct >= 100 ? 'complete' : 'running')));
+      p === undefined ? 'pending' : (pct >= 100 && p.waiting === undefined ? 'complete' : 'running')));
   }
 
   // When a separate assembly STEP follows in the chain, this job never assembles —
@@ -6573,9 +6609,15 @@ function repointSessionAtCache(
  */
 function notePublishProgress(session: ConversionSession, p: PublishProgress): void {
   const startedAt = session.publish?.startedAt ?? Date.now();
-  session.publish = { copied: p.copied, total: p.total, startedAt };
-  session.stageDetail = `${p.copied.toLocaleString('en-US')} of ${p.total.toLocaleString('en-US')} `
-    + 'rendered chunk(s) copied into the library';
+  session.publish = {
+    copied: p.copied, total: p.total, startedAt,
+    ...(p.waiting === undefined ? {} : { waiting: p.waiting }),
+  };
+  // WAITING IS SAID, not drawn as a full bar: every chunk has landed and the
+  // folder is not in place yet, which is neither done nor copying.
+  session.stageDetail = p.waiting
+    ?? `${p.copied.toLocaleString('en-US')} of ${p.total.toLocaleString('en-US')} `
+      + 'rendered chunk(s) copied into the library';
   emitProgress(session);
 }
 
@@ -7163,7 +7205,8 @@ function emitProgress(session: ConversionSession): void {
    * publish. Leaving the render's "0s left" up while a file copy ran for eight
    * minutes is how a working step reads as a hung one.
    */
-  if (session.publish !== undefined && session.publish.copied < session.publish.total) {
+  if (session.publish !== undefined
+    && (session.publish.copied < session.publish.total || session.publish.waiting !== undefined)) {
     progress.message = 'Publishing to the library';
     const left = publishEtaSeconds(session);
     progress.estimatedRemaining = left ?? 0;
