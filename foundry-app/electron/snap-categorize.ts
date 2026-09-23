@@ -66,10 +66,30 @@ export class SnapCategorizeError extends Error {}
 /** The one run in flight, so a second press is refused and Cancel has something to abort. */
 let running: { projectDir: string; abort: AbortController } | null = null;
 
+/**
+ * WHAT THIS PROCESS BROUGHT UP AND HAS NOT YET BROUGHT DOWN — held here, not in
+ * the run, because the run's `finally` is not the only way out.
+ *
+ * Measured 2026-09-22 on the first real run: the app closed mid-run (a rebuild
+ * under the running window), the `finally` never ran, and the model stayed on the
+ * card holding 15+ GB until it was stopped by hand. `stopSnapOnQuit` is the quit
+ * path's copy of the bring-down, reached from `stopFoundry` — which BookForge
+ * awaits on its own shutdown and standalone Foundry calls from `before-quit`.
+ */
+let broughtUp: { stack: Stack; home: string } | null = null;
+
 export function cancelSnapCategorize(): boolean {
   if (running === null) return false;
   running.abort.abort();
   return true;
+}
+
+/** The app is quitting: abort any run and bring down whatever this process started. */
+export async function stopSnapOnQuit(): Promise<void> {
+  running?.abort.abort();
+  const held = broughtUp;
+  if (held === null) return;
+  await bringDown(held.stack, held.home);
 }
 
 function say(progress: SnapProgress): void {
@@ -130,6 +150,9 @@ async function bringUp(settings: SnapCategorizeSettings, signal: AbortSignal, pr
     }
   }
   const stack: Stack = { startedEngine: false, snapChild: null, contextTokens: 0 };
+  // Registered BEFORE anything starts, so a quit during the model's load still
+  // finds it — `startedEngine` is set the moment serve.ps1 has launched it.
+  broughtUp = { stack, home };
   try {
     if (!await answers200(`${ENGINE_URL}/health`)) {
       say({ projectDir, phase: 'starting', message: `Starting the model (Qwen3.5 9B, ${settings.contextTokens.toLocaleString()}-token window)…` });
@@ -168,6 +191,7 @@ async function engineContext(): Promise<number> {
 }
 
 async function bringDown(stack: Stack, home: string): Promise<void> {
+  if (broughtUp?.stack === stack) broughtUp = null;
   if (stack.snapChild !== null && stack.snapChild.exitCode === null) stack.snapChild.kill();
   if (stack.startedEngine) {
     try {

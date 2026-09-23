@@ -110,6 +110,7 @@ import { stepOf } from '../shared/ledger';
 import { deferralFor } from '../shared/pending';
 import { carriedFromPlan } from '../shared/pipeline';
 import { fold, originalOf } from '../shared/original';
+import { stopSnapOnQuit } from './snap-categorize';
 import type { ExportLanding, Job, JobRequest } from '../shared/types';
 
 export type { FoundryHost, HostOperation };
@@ -1134,7 +1135,12 @@ export function stopFoundry(): Promise<void> {
    * is no local page reader (2026-09-17).
    */
   queue.shutdown();
-  stopping = queue.drained();
+  /*
+   * AND THE CATEGORIZE TILE'S MODEL, if this process started one — a run cut off
+   * by the quit never reaches its own `finally` (electron/snap-categorize.ts,
+   * `broughtUp`, measured on its first run).
+   */
+  stopping = Promise.all([queue.drained(), stopSnapOnQuit()]).then(() => undefined);
   return stopping;
 }
 
