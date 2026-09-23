@@ -39,16 +39,37 @@
 
 import type { CategoryOp, ChapterSetOp } from './ops';
 
-/** The categories snap chooses between: the engine's spelling, and what each one means to the model. */
+/**
+ * The categories snap chooses between, as each QUESTION shows them: the engine's
+ * spelling and a few words.
+ *
+ * SHORT ON PURPOSE, MEASURED (2026-09-22, the first real run): snap renders every
+ * option as "A. name: text" inside EACH question, and the question is the part
+ * that is read afresh for every block — the book before it is cached. With a
+ * sentence per option each question was 197 tokens and ~0.33 s, so a
+ * 2,520-block book took about fourteen minutes. The full definitions moved into
+ * the book header (`SNAP_CATEGORY_GUIDE`), which is read once per window.
+ */
 export const SNAP_CATEGORY_OPTIONS: Readonly<Record<string, string>> = {
-  Title: 'a chapter or part heading: the title that opens a chapter, a part or another major division of the book, including a chapter number printed on its own line',
-  'Section-header': 'a heading inside a chapter that names a section or a subsection',
-  Text: 'ordinary body text: a paragraph of the book\'s own prose',
-  'List-item': 'one item of a bulleted or numbered list',
-  Quote: 'a block quotation or an epigraph, set apart from the body text',
-  Caption: 'a caption for a picture, a map, a figure or a table',
-  Footnote: 'the text of a footnote or an endnote, usually beginning with its number',
+  Title: 'chapter or part heading',
+  'Section-header': 'section heading',
+  Text: 'body paragraph',
+  'List-item': 'list item',
+  Quote: 'block quotation or epigraph',
+  Caption: 'caption',
+  Footnote: 'footnote or endnote',
 };
+
+/** What each category means, stated once in the header — see `SNAP_CATEGORY_OPTIONS`. */
+export const SNAP_CATEGORY_GUIDE: readonly string[] = [
+  'Title — a chapter or part heading: the title that opens a chapter, a part or another major division of the book, including a chapter number printed on its own line.',
+  'Section-header — a heading inside a chapter that names a section or a subsection.',
+  'Text — ordinary body text: a paragraph of the book\'s own prose.',
+  'List-item — one item of a bulleted or numbered list.',
+  'Quote — a block quotation or an epigraph, set apart from the body text.',
+  'Caption — a caption for a picture, a map, a figure or a table.',
+  'Footnote — the text of a footnote or an endnote, usually beginning with its number.',
+];
 
 /**
  * Categories snap is NOT asked about, and why: a picture, a formula and a table
@@ -97,7 +118,9 @@ export function blockLine(row: SnapRow): string {
 
 /** The part of every window that is the same: the book, and its contents as a hint. */
 export function bookHeader(title: string, chapters: readonly SnapChapter[]): string {
-  const lines = [`BOOK: ${title}`];
+  const lines = [`BOOK: ${title}`, '', 'BLOCK KINDS (every block below is exactly one of these):'];
+  for (const line of SNAP_CATEGORY_GUIDE) lines.push(`- ${line}`);
+  lines.push('');
   if (chapters.length > 0) {
     lines.push(
       'TABLE OF CONTENTS (the book\'s own navigation — a hint: a chapter heading usually '
@@ -177,8 +200,7 @@ export function blockQuestion(row: SnapRow): {
 } {
   return {
     type: 'choice',
-    instructions: `What kind of block is [${row.id}]? Judge it by its own text, the blocks around it `
-      + 'and the table of contents.',
+    instructions: `What kind of block is [${row.id}]?`,
     options: SNAP_CATEGORY_OPTIONS,
   };
 }
