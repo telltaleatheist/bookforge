@@ -1247,18 +1247,3 @@ find it. Owen opened an OCR on an engine that cannot read pages and was told
 
 **139 → 140, counted by script, 140 distinct, zero `ipcMain.on`.**
 
-## The Categorize tile — snap, outside Crucible (2026-09-22)
-
-| Channel | Request/result |
-| --- | --- |
-| `snap:categorize` | `(projectDir, {snapHome, contextTokens, minConfidence?, minLabelMass?})` → `SnapCategorizeResult`. Brings snap up (its own `scripts/serve.ps1` and `snap serve`; an engine already answering is used and left running), asks what every block of the book at the position is, brings snap down, and lands the confident changes and the chapter markers as ONE edit step through `applyBookOps`. Rejects by name (a second run, a missing snap folder, snap's own refusal). |
-| `snap:cancel` | Abort the run in flight; the model is still brought down. `true` when there was one. |
-| `snap:progress` | PUSH, `broadcast`: `{projectDir, phase: 'starting'\|'asking'\|'applying'\|'stopping'\|'done'\|'failed'\|'cancelled', message, done?, total?}`. `projectDir` is `''` on the one message about the model itself (a stop that failed). |
-
-An EXPERIMENT, and outside Crucible on purpose (`app/electron/snap-categorize.ts`
-says why at length): Crucible's chat door cannot return the letter probabilities
-snap reads. Owen, 2026-09-22: *"not through crucible yet — good call."* It brings
-a local model server back for one tile after the 2026-09-17 removal of the local
-page reader, and stops what it starts.
-
-**Two invoke doors and one push added. Neither `snap:` name is used by BookForge.**

@@ -10,10 +10,25 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\<user>\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **df63f9f** — *Categorize: a quit brings the tile's model down too* (was 19fa7a9) |
+| Source sha | **acf63c2** — *Remove the Categorize tile for now; the work is kept in history to revisit* (was df63f9f) |
 | Engine | **NOT VENDORED AND NOT KNOWABLE FROM THIS FILE** — it is a spawned CLI resolved at RUNTIME (`FOUNDRY_BIN`, else `resolveFoundryPath`, `electron/main.ts`), so which build executes is a property of the machine and not of this copy. On a developer's Mac that resolves to Foundry's own checkout at `/Volumes/Callisto/Projects/foundry/dist/foundry-darwin-arm64`, which is whatever was last built there — `foundry 2.0.2 (04758be)` — REBUILT at this re-vendor (2026-09-21) so the engine carries fdba761's clean-text log change. **Ask the binary: `$FOUNDRY_BIN --version`.** See *The engine this file named was not the engine that ran* below. |
-| Copied on | 2026-09-19 (five times: 3738c01, 3436fc5, 806d44b, f349771, ca4754c), 2026-09-20 (98a4344, 9e0b27d, dccc144, 7b98004, cc5fc5b, 93010d8, 77e1d6d) 2026-09-21 (753dca8, 3e26e53, f9bebb6, 95593b0, 8ee48b7) and 2026-09-22 (7185764, 7912022, 19fa7a9, df63f9f) |
-| Copied by | Mechanical source sync, verified against Foundry `df63f9f:app/` (`diff -rq`, clean but for this file, `IPC-CHANNELS.md` and `.gitignore` — see below); details below |
+| Copied on | 2026-09-19 (five times: 3738c01, 3436fc5, 806d44b, f349771, ca4754c), 2026-09-20 (98a4344, 9e0b27d, dccc144, 7b98004, cc5fc5b, 93010d8, 77e1d6d) 2026-09-21 (753dca8, 3e26e53, f9bebb6, 95593b0, 8ee48b7) and 2026-09-22 (7185764, 7912022, 19fa7a9, df63f9f) and 2026-09-23 (acf63c2) |
+| Copied by | Mechanical source sync, verified against Foundry `acf63c2:app/` (`diff -rq`, clean but for this file, `IPC-CHANNELS.md` and `.gitignore` — see below); details below |
+
+## The `df63f9f → acf63c2` re-vendor — the Categorize tile removed (2026-09-23)
+
+Owen, 2026-09-23: *"lets remove the categorizing tile for the moment. we'll
+revisit later."* Foundry b820b16, 40f8a79 and 92488d4 (the tile's second and
+third designs and its Crucible/vLLM engine) were never vendored; acf63c2 removes
+the whole feature, so this copy goes straight from df63f9f to acf63c2: the tile,
+the dialog, `electron/snap-categorize.ts`, `shared/snap-categorize.ts`, its test,
+and the three `snap:` IPC names are gone, and `stopFoundry` drains the queue
+alone again. `shared/book.ts` gains b820b16's optional `BookRow.markup` (part of
+the book file, not of the tile). `IPC-CHANNELS.md` copied from
+`acf63c2:docs/IPC-CHANNELS.md` (identical to this copy before). Blob shas
+compared against `acf63c2:app/`: clean but for `.gitignore` (kept as ours).
+**Source only — BookForge was running, so `dist/` was NOT rebuilt;** run
+`npm run build` here after quitting it, or the old renderer still draws the tile.
 
 ## The `7185764 → 7912022` re-vendor — the Categorize tile (2026-09-22)
 

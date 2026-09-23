@@ -276,6 +276,8 @@ export interface BookRow {
   shelf?: BookShelf;
   /** One sentence of evidence — set on a shelved row and on no other kind. */
   why?: string;
+  /** The publisher's element for an EPUB row — evidence, never authority (engine `BookRow.markup`). */
+  markup?: string;
 }
 
 /**
@@ -966,6 +968,8 @@ function rowOf(line: string, at: number, seen: Set<string>): BookRow {
     }
     made.why = why;
   }
+  const markup = row['markup'];
+  if (typeof markup === 'string' && markup.length > 0) made.markup = markup;
   return made;
 }
 
