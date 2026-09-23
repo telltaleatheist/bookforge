@@ -4,6 +4,7 @@
 
 import { publishBridgeEvent } from './bridge-events';
 import * as fs from 'fs';
+import { pipeline } from 'stream/promises';
 import * as path from 'path';
 import { spawn, spawnSync, ChildProcess } from 'child_process';
 import { BrowserWindow } from 'electron';
@@ -440,6 +441,13 @@ const STAGE_ALWAYS: StageSpec[] = [
   { name: 'subtitles', label: 'Building subtitles', weight: 13 },
   { name: 'encode', label: 'Encoding M4B', weight: 70 },
   { name: 'metadata', label: 'Chapter markers & metadata', weight: 5 },
+  /*
+   * THE ONE TRIP ACROSS THE WIRE, with a bar of its own (Owen, 2026-09-22: "if
+   * this step is going to take a long time it should have its own progress
+   * bar"). Everything above runs in local staging; this is the finished book
+   * and its sidecars being copied into the library — see `copyIntoLibrary`.
+   */
+  { name: 'library', label: 'Copying into the library', weight: 8 },
 ];
 
 /**
@@ -455,6 +463,7 @@ const STAGE_PHASE: Record<string, ReassemblyProgress['phase']> = {
   subtitles: 'combining',
   encode: 'encoding',
   metadata: 'metadata',
+  library: 'metadata',
 };
 
 // Active reassembly processes
@@ -468,6 +477,50 @@ const activeHeartbeats = new Map<string, NodeJS.Timeout>();
 
 // Active staging directories (so stopReassembly and error handlers can clean up)
 const activeStagingDirs = new Map<string, string>();
+
+/**
+ * MOVE ONE FINISHED FILE FROM LOCAL STAGING INTO THE LIBRARY — a rename when
+ * the two are one volume, otherwise ONE streamed copy in 8 MB blocks, told to
+ * `onBytes` as it goes, size-checked, and only then is the local file removed.
+ *
+ * A copy that fails removes its own partial and leaves the local file where it
+ * was: promotion's rule is that the built files survive every failure
+ * (`promotionFailed` keeps staging for salvage).
+ */
+export async function copyIntoLibrary(
+  src: string,
+  dest: string,
+  onBytes: (copiedSoFar: number) => void,
+): Promise<void> {
+  try {
+    await fs.promises.rename(src, dest);
+    onBytes(fs.statSync(dest).size);
+    return;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'EXDEV') throw err;
+  }
+  const total = fs.statSync(src).size;
+  let copied = 0;
+  try {
+    // `pipeline`, not `pipe`: on any error it closes BOTH ends. A bare pipe left
+    // the reader open when the write failed — a handle on the staged audiobook
+    // that outlived the failure (the keeper found it: its folder would not delete).
+    const reader = fs.createReadStream(src, { highWaterMark: 8 * 1024 * 1024 });
+    reader.on('data', (chunk) => {
+      copied += chunk.length;
+      onBytes(copied);
+    });
+    await pipeline(reader, fs.createWriteStream(dest));
+    const landed = fs.statSync(dest).size;
+    if (landed !== total) {
+      throw new Error(`${path.basename(dest)} reached the library short: ${landed} of ${total} bytes.`);
+    }
+  } catch (err) {
+    try { await unlinkWithRetry(dest); } catch { /* reported by the caller's error, which names the source */ }
+    throw err;
+  }
+  await unlinkWithRetry(src);
+}
 
 /**
  * ANONYMOUS SCRATCH SENTENCE SETS this assembly owns, cleaned alongside the
@@ -1600,9 +1653,19 @@ export async function startReassembly(
     }
   }
 
-  // Create staging directory inside output/ so e2a writes there (same filesystem = atomic rename).
-  // Dot-prefix makes Syncthing unlikely to index partial files.
-  const stagingDir = path.join(config.outputDir, `.staging-${jobId}`);
+  /*
+   * STAGING IS LOCAL; THE LIBRARY RECEIVES THE FINISHED BOOK ONCE (2026-09-22).
+   *
+   * It used to be `<output>/.staging-<job>` — on the NAS — "so e2a writes there
+   * (same filesystem = atomic rename)". Every finishing step then worked on a
+   * multi-gigabyte file over SMB: narrator's join wrote the m4b there with a
+   * faststart pass (1.4 MB/s, measured on Pursuit of Power), and the transcript
+   * embed read the whole book back and wrote a full copy beside it (4.5 MB/s),
+   * for most of an hour behind a row at 95%. Here, beside the render scratch,
+   * each of those runs at disk speed, and promotion COPIES the finished files
+   * across in one sequential pass with its own bar (`copyIntoLibrary`).
+   */
+  const stagingDir = path.join(narratorScratchRoot(), 'assembly-staging', `.staging-${jobId}`);
   fs.mkdirSync(stagingDir, { recursive: true });
   activeStagingDirs.set(jobId, stagingDir);
   console.log(`[REASSEMBLY] Created staging dir: ${stagingDir}`);
@@ -2125,14 +2188,13 @@ export async function startReassembly(
               ? `Encoding to AAC — ${formatClock(written)} of ${formatClock(totalAudioSeconds)}`
               : 'Encoding audio to AAC...');
         }
-      } else if (/\[assembly\] Copying into the library: (\d+)%/.test(line)) {
-        // THE FINISHED BOOK GOING INTO THE LIBRARY, ONCE (narrator `_hand_over`,
-        // 2026-09-22). It used to be built in place on the share, and the
-        // faststart pass crawled at 1.4 MB/s behind a row that said nothing;
-        // the copy that replaced it says where it is.
-        const pct = parseInt(line.match(/Copying into the library: (\d+)%/)![1]!, 10);
+      } else if (/\[assembly\] Copying to the output folder: (\d+)%/.test(line)) {
+        // narrator's hand-over when its work dir and staging are on DIFFERENT
+        // volumes (`_hand_over`) — on one volume it is a rename and says nothing.
+        // Local to local either way: the library's copy is `copyIntoLibrary`.
+        const pct = parseInt(line.match(/Copying to the output folder: (\d+)%/)![1]!, 10);
         currentPhase = 'metadata';
-        emitStage('metadata', pct, `Copying the audiobook into the library — ${pct}%`);
+        emitStage('metadata', null, `Moving the finished audiobook into staging — ${pct}%`);
       } else if (line.includes('Adding metadata') || line.includes('chapter markers') || line.includes('Chapter #')) {
         // Phase 4: Metadata
         currentPhase = 'metadata';
@@ -2639,11 +2701,19 @@ export async function startReassembly(
         if (outputPath && fs.existsSync(outputPath)) {
           try {
             // 1. Move the freshly built files into the output dir under UNIQUE TEMP
-            //    names first. staging lives under outputDir, so these are
-            //    same-filesystem renames (no EXDEV). Their final names are decided
-            //    in step 2, once everything this run built is safely in the folder.
+            //    names first. Staging is LOCAL now, so this is the one copy across
+            //    the wire (`copyIntoLibrary`), with its own bar. Their final names
+            //    are decided in step 2, once everything this run built is safely
+            //    in the folder.
             const staged: { tmp: string; wanted: string; dest: string; isOutput: boolean; isSealVtt: boolean }[] = [];
             const stagingFiles = fs.readdirSync(stagingDir);
+            const libraryBytes = stagingFiles
+              .map((file) => path.join(stagingDir, file))
+              .filter((p) => fs.statSync(p).isFile() && !isEmbedTempFileName(path.basename(p)))
+              .reduce((sum, p) => sum + fs.statSync(p).size, 0);
+            let libraryDone = 0;
+            const gb = (n: number): string => (n / 1e9).toFixed(2);
+            emitStage('library', 0, `Copying the audiobook into the library — 0 of ${gb(libraryBytes)} GB`);
             for (const file of stagingFiles) {
               const src = path.join(stagingDir, file);
               if (!fs.statSync(src).isFile()) continue;
@@ -2683,7 +2753,16 @@ export async function startReassembly(
                 )}${path.extname(file)}`
                 : file;
               const tmp = `${path.join(config.outputDir, promotedName)}.promote-${jobId}.tmp`;
-              await renameWithRetry(src, tmp);
+              let lastPct = -1;
+              await copyIntoLibrary(src, tmp, (soFar) => {
+                if (libraryBytes <= 0) return;
+                const pct = Math.min(100, ((libraryDone + soFar) / libraryBytes) * 100);
+                if (pct - lastPct < 1 && pct < 100) return;
+                lastPct = pct;
+                emitStage('library', pct, `Copying the audiobook into the library — `
+                  + `${gb(libraryDone + soFar)} of ${gb(libraryBytes)} GB`);
+              });
+              libraryDone += fs.statSync(tmp).size;
               staged.push({
                 tmp, wanted: promotedName, dest: '', isOutput: src === outputPath, isSealVtt: src === sealVttSource,
               });

@@ -27,6 +27,7 @@ place, one of them measured and one of them estimated and saying so.
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import re
@@ -53,8 +54,10 @@ from .vtt import vtt_duration, write_vtt
 #: lists, the ffmpeg metadata file - AND, since 2026-09-22, the m4b itself while
 #: it is being built. Only the finished m4b and its VTT belong in `output_dir`:
 #: the VTT is written there directly, and the m4b is COPIED there once it has
-#: passed `verify_export` (`_hand_over`, which has the measurement). A copy, not
-#: a rename, so there is still no same-filesystem requirement to honour.
+#: passed `verify_export` (`_hand_over`, which has the measurement) - a rename
+#: when the two share a volume (BookForge's staging is local too, so that is the
+#: ordinary case), a copy when they do not; there is no same-filesystem
+#: requirement to honour.
 #:
 #: WHY IT MOVED (2026-09-07). `output_dir` is the bridge's staging directory
 #: under the project, and the library is on a network share. Every one of those
@@ -169,8 +172,9 @@ HAND_OVER_BLOCK_BYTES = 8 * 1024 * 1024
 
 
 def _hand_over(local_path: str, final_path: str, log) -> None:
-    """Put the finished, verified audiobook into `output_dir` - ONE sequential
-    copy, under a temporary name renamed into place when it is whole.
+    """Put the finished, verified audiobook into `output_dir` - a rename on one
+    volume, otherwise ONE sequential copy under a temporary name renamed into
+    place when it is whole.
 
     MEASURED 2026-09-22, Pursuit of Power (2.7 GB m4b). The join used to write
     straight into the staging directory on the NAS with `-movflags +faststart`,
@@ -184,9 +188,18 @@ def _hand_over(local_path: str, final_path: str, log) -> None:
     checked after the copy - a short file on a share is a copy that did not
     finish, whatever the call returned.
     """
+    # ONE VOLUME (the ordinary case since BookForge's staging moved local): a
+    # rename, instant. Only a work dir on another volume pays for the copy.
+    try:
+        os.replace(local_path, final_path)
+        log("[assembly] The audiobook is in the output folder")
+        return
+    except OSError as err:
+        if err.errno != errno.EXDEV:
+            raise
     total = os.path.getsize(local_path)
     partial = final_path + ".partial"
-    log(f"[assembly] Copying the finished audiobook into the library "
+    log(f"[assembly] Copying the finished audiobook to the output folder "
         f"({total / 1e9:.2f} GB)")
     copied = 0
     next_report = 0.05
@@ -198,18 +211,18 @@ def _hand_over(local_path: str, final_path: str, log) -> None:
             dst.write(block)
             copied += len(block)
             if total > 0 and copied / total >= next_report:
-                log(f"[assembly] Copying into the library: {copied / total * 100:.0f}% "
+                log(f"[assembly] Copying to the output folder: {copied / total * 100:.0f}% "
                     f"({copied / 1e9:.2f} of {total / 1e9:.2f} GB)")
                 next_report += 0.05
     landed = os.path.getsize(partial)
     if landed != total:
         raise FfmpegError(
-            f"the finished audiobook did not copy into the library whole: "
+            f"the finished audiobook did not copy to the output folder whole: "
             f"{landed} of {total} bytes at {partial}. The complete file is still "
             f"at {local_path}."
         )
     os.replace(partial, final_path)
-    log("[assembly] The audiobook is in the library")
+    log("[assembly] The audiobook is in the output folder")
 
 
 def _remove_work_dir(work_dir: str, log) -> None:

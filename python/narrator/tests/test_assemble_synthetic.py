@@ -6,6 +6,7 @@ a missing input, and there is nothing this test could assert without it.
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import shutil
@@ -644,12 +645,35 @@ class TestHandOver(unittest.TestCase):
         with open(local, "wb") as f:
             f.write(payload)
         lines: list[str] = []
+        # A work dir on ANOTHER volume: the rename refuses EXDEV, as it would.
+        real_replace = os.replace
+
+        def cross_device(src, dst):
+            if src == local:
+                raise OSError(errno.EXDEV, "Invalid cross-device link", src)
+            return real_replace(src, dst)
+
+        R.os.replace = cross_device
+        self.addCleanup(setattr, R.os, "replace", real_replace)
         R._hand_over(local, final, lines.append)
         with open(final, "rb") as f:
             self.assertEqual(f.read(), payload, "byte for byte")
         self.assertFalse(os.path.exists(final + ".partial"), "no partial left behind")
-        progress = [l for l in lines if "Copying into the library:" in l]
+        progress = [l for l in lines if "Copying to the output folder:" in l]
         self.assertGreaterEqual(len(progress), 2, f"the copy reports as it goes: {lines}")
+
+    def test_one_volume_is_a_rename(self):
+        from narrator.assemble import run as R
+        tmp = tempfile.mkdtemp(prefix="narrator-handover-")
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        local = os.path.join(tmp, "local.m4b")
+        final = os.path.join(tmp, "book.m4b")
+        with open(local, "wb") as f:
+            f.write(b"abc")
+        lines: list[str] = []
+        R._hand_over(local, final, lines.append)
+        self.assertFalse(os.path.exists(local), "moved, not copied")
+        self.assertFalse(any("Copying" in l for l in lines))
 
     def test_the_assembly_builds_the_book_off_the_share(self):
         """Both encodes are handed the WORK DIR's path, never output_dir's."""
