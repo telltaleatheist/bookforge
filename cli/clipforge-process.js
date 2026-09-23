@@ -943,6 +943,25 @@ TRAINING_HELP.gate = [
   '  Proper nouns are free: the gate scores ordinary words only (4n.34.8).',
 ].join('\n');
 
+TRAINING_HELP['cut-audit'] = [
+  'clipforge cut-audit - check every clip cut against an INDEPENDENT pause map (cut_audit.py)',
+  '',
+  '  --master <flac>       the master the rows were sliced from (the same file slice --raw was given)',
+  '  --rows <json>[,<json>] the slicer rows files (<pfx>_l_rows.json, <pfx>_s_rows.json)',
+  '  --out <dir>           audit.json, flagged.csv, closer_look.wav (every flagged cut, 0.75 s either side,',
+  '                        a soft tick AT the cut) - listen to closer_look.wav, that is the point',
+  '  --build <dir>         the slicer build dir. REQUIRED for rows cut before 2026-09-23, which record only cue',
+  '                        times: each cut is then recovered sample-exact from its un-bedded pool clip',
+  '  --edit <expr>         auto-editor --edit, default audio:threshold=0.04 (its own default). Run a strict pass',
+  '                        too (audio:threshold=0.003): the default calls quiet word tails silence',
+  '  --near-ms 40          flag a cut closer than this to the word side of its pause',
+  '  --short-ms 150        flag a cut whose pause is shorter than this (a stop closure, not a pause)',
+  '',
+  '  WHY. Every model of the week of 2026-09-15 had words clipped at the start or end of rows (Owen). The slicer',
+  '  now finds both edges in the audio (4n.75, 4n.87); this is the second opinion from a different detector',
+  '  (auto-editor), so a blind spot in ours shows up as disagreement. It needs no GPU and takes minutes.',
+].join('\n');
+
 TRAINING_HELP.bed = [
   'clipforge bed - put ownbed1 under every clip of a gated tier (bed_mix_tier.py)',
   '',
@@ -1529,6 +1548,33 @@ async function runGate(args) {
   console.log('[gate] 2% is an ALIGNMENT problem, not a gate problem (field notes 4n.40.4b).');
 }
 
+async function runCutAudit(args) {
+  if (args.help) { console.log(TRAINING_HELP['cut-audit']); return; }
+  for (const k of ['master', 'rows', 'out']) {
+    if (!args[k]) throw new Error('cut-audit: --' + k + ' is required (see: clipforge cut-audit --help)');
+  }
+  if (!fs.existsSync(path.resolve(String(args.master)))) throw new Error('cut-audit: no master: ' + args.master);
+  for (const r of String(args.rows).split(',')) {
+    if (!fs.existsSync(path.resolve(r))) throw new Error('cut-audit: no rows file: ' + r);
+  }
+  const root = resolveTrainingRoot(args);
+  const cwd = path.join(root, 'pipeline', 'untreated');
+  const python = resolveTrainingPython(args, 'cut-audit');
+  const out = path.resolve(String(args.out));
+  const argv = ['--master', String(args.master), '--rows', String(args.rows), '--out', out];
+  for (const k of ['build', 'edit', 'near-ms', 'short-ms', 'auto-editor']) {
+    if (args[k] !== undefined && args[k] !== true) argv.push('--' + k, String(args[k]));
+  }
+  await spawnTraining(python, path.join(cwd, 'cut_audit.py'), argv, cwd, 'cut-audit');
+  const audit = path.join(out, 'audit.json');
+  if (!fs.existsSync(audit)) throw new Error('cut-audit: produced no audit.json - the audit did NOT run');
+  const a = JSON.parse(fs.readFileSync(audit, 'utf8'));
+  console.log('[cut-audit] ' + a.stats.cuts + ' cuts: ' + a.stats.NOT_IN_SILENCE + ' not in a pause, ' +
+    a.stats.NEAR_WORD + ' near a word, ' + a.stats.SHORT_PAUSE + ' in a short pause' +
+    (a.unmatched && a.unmatched.length ? ', ' + a.unmatched.length + ' clips UNMATCHED (not audited)' : ''));
+  if (a.flags.length) console.log('[cut-audit] listen: ' + path.join(out, 'closer_look.wav') + '  (list: flagged.csv)');
+}
+
 async function runBed(args) {
   if (args.help) { console.log(TRAINING_HELP.bed); return; }
   if (!args.tier) throw new Error('bed: --tier <merged tier dir> is required (see: clipforge bed --help)');
@@ -1830,6 +1876,7 @@ function printUsage() {
     '  normalize-pauses  shorten a master pauses + rewrite its vtt (normalize_pauses.py)',
     '  merge-tiers  merge per-book tiers into one corpus         (merge_corpora.py)',
     '  bed          ownbed1 under every clip of a gated tier   (bed_mix_tier.py)',
+    '  cut-audit    every clip cut vs auto-editor pause map    (cut_audit.py)',
     '  mix          encode a gated corpus into a training set   (build_higgs_mix.py)',
     '  train        LoRA fine-tune on an encoded corpus         (train_lora.py)',
     '  masters      rebuild per-book masters from Adobe returns (Adobe SPAN pipeline)',
@@ -2196,6 +2243,7 @@ async function main() {
   if (verb === 'gate') return runGate(args);
   if (verb === 'merge-tiers') return runMergeTiers(args);
   if (verb === 'bed') return runBed(args);
+  if (verb === 'cut-audit') return runCutAudit(args);
   if (verb === 'mix') return runMix(args);
   if (verb === 'train') return runTrain(args);
   if (verb === 'masters') return runMasters(args);
