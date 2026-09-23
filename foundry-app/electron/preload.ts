@@ -13,6 +13,7 @@ import type { CrucibleCoordinationState } from '../shared/coordinate-wire';
 import type { CrucibleInstallEvent } from '../shared/crucible-install-wire';
 import type { HostOffers, HostStatus } from '../shared/host-ops';
 import type { CruciblePullProgress } from '../shared/model-wire';
+import type { SnapProgress } from '../shared/snap-categorize';
 import type {
   AppQuestion,
   Asked,
@@ -320,6 +321,13 @@ const api: FoundryApi = {
     settings: () => ipcRenderer.invoke('cloud:settings'),
     save: (providers) => ipcRenderer.invoke('cloud:save', providers),
     test: (provider) => ipcRenderer.invoke('cloud:test', provider),
+  },
+
+  /* The categorize tile — electron/snap-categorize.ts. */
+  snap: {
+    categorize: (projectDir, settings) => ipcRenderer.invoke('snap:categorize', projectDir, settings),
+    cancel: () => ipcRenderer.invoke('snap:cancel'),
+    onProgress: (listener) => subscribe<SnapProgress>('snap:progress', listener),
   },
 
   /*

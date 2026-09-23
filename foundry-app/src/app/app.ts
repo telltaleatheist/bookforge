@@ -16,6 +16,7 @@ import { MetadataDialogComponent } from './components/metadata-dialog/metadata-d
 import { MintMetaDialogComponent } from './components/mint-meta-dialog/mint-meta-dialog.component';
 import { SimplifyDialogComponent } from './components/simplify-dialog/simplify-dialog.component';
 import { CleanDialogComponent } from './components/clean-dialog/clean-dialog.component';
+import { SnapDialogComponent } from './components/snap-dialog/snap-dialog.component';
 import { SweepDialogComponent } from './components/sweep-dialog/sweep-dialog.component';
 import { AnalysisDialogComponent } from './components/analysis-dialog/analysis-dialog.component';
 import { TranslateDialogComponent } from './components/translate-dialog/translate-dialog.component';
@@ -119,7 +120,7 @@ const IS_MAC = navigator.platform.toUpperCase().includes('MAC');
     RouterOutlet, OpenDocumentsComponent, InspectorComponent,
     QueueBarComponent, ToastTrayComponent,
     OcrDialogComponent, ExportDialogComponent, TranslateDialogComponent,
-    SimplifyDialogComponent, CleanDialogComponent,
+    SimplifyDialogComponent, CleanDialogComponent, SnapDialogComponent,
     MetadataDialogComponent, MintMetaDialogComponent, SweepDialogComponent,
     AnalysisDialogComponent,
     ConfirmDialogComponent, HostOpDialogComponent, HostStatusComponent,
@@ -237,6 +238,10 @@ const IS_MAC = navigator.platform.toUpperCase().includes('MAC');
       -->
       @if (ui.cleanOpen()) {
         <app-clean-dialog />
+      }
+
+      @if (ui.snapOpen()) {
+        <app-snap-dialog />
       }
 
       @if (ui.metadataOpen()) {

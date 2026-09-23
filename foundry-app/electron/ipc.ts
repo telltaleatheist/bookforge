@@ -139,6 +139,8 @@ import {
   invokeHostOperation, openHostStatus,
 } from './host-ops';
 import type { HostNodeAction } from '../shared/host-ops';
+import type { SnapCategorizeSettings } from '../shared/snap-categorize';
+import { cancelSnapCategorize, snapCategorize } from './snap-categorize';
 import * as queue from './job-queue';
 import { finishSetup, finishPreparedSetup, setupState } from './setup';
 import { probeSystem } from './system-probe';
@@ -1115,6 +1117,15 @@ export function registerIpc(): void {
    * broadcast spelling one fact twice are two answers waiting to disagree — so
    * both are `hostOffers()` and there is no second literal to keep in step.
    */
+  /*
+   * THE CATEGORIZE TILE (electron/snap-categorize.ts). `snap:categorize` runs the
+   * whole thing — model up, every block asked, model down, one edit step — and
+   * resolves with the tallies; `snap:cancel` aborts it (the model still comes
+   * down); `snap:progress` is its push.
+   */
+  ipcMain.handle('snap:categorize', (_event, projectDir: string, settings: SnapCategorizeSettings) =>
+    snapCategorize(projectDir, settings));
+  ipcMain.handle('snap:cancel', () => cancelSnapCategorize());
   ipcMain.handle('host-ops:offers', () => hostOffers());
   /*
    * ONE PROJECT'S HOST NODES — and, on the way past, the host's QUEUE rows for it.

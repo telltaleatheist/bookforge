@@ -421,6 +421,31 @@ const GLIDE_MAX_MS = 1500;
 const ALIGNED_MIN_REM = 68;
 
 /**
+ * The paper's measure in each view, in rem — where it opens and how narrow a
+ * drag on its edge may take it.
+ *
+ * THE FLOORS ARE THE OLD CAPS (Owen, 2026-09-22: resize so *"i can make them
+ * wider if i want"*). The drag exists to give a wide window's gray back to the
+ * words, not to make the ransom notes `ALIGNED_MIN_REM` refuses. The aligned
+ * pair OPENS wider than its floor because the floor is what drew the complaint.
+ * No ceiling here: the ceiling is the pane, and `measure` asks the pane.
+ */
+const MEASURE_REM = {
+  alone: { opens: 46, floor: 46 },
+  aligned: { opens: 44, floor: 38 },
+} as const;
+
+/** How near the paper's edge, in px either side of it, the pointer takes hold. */
+const MEASURE_GRIP_PX = 6;
+
+/**
+ * Where the two measures are kept between sessions. A view preference of this
+ * one reader on this one machine — not the book's, not the project's — so it is
+ * the browser's own storage and nothing main has to know about.
+ */
+const MEASURE_KEY = 'foundry.book-view.measure';
+
+/**
  * How long a column keeps the wheel when no `scrollend` ever arrives.
  *
  * ── This is a documented rule and not a fallback ────────────────────────────
@@ -1816,7 +1841,7 @@ const OP_GESTURE: Gesture = { kind: 'op' };
        * whatever the bench's width, the sheet leaves 5rem of gray a side, and
        * the chip has its room in every mode there is or will be.
        */
-      width: min(46rem, calc(100% - 10rem));
+      width: min(var(--measure-alone, 46rem), calc(100% - 10rem));
       margin: 0 auto;
       padding: 4.5rem var(--gutter) 6rem;
       border-radius: 2px;
@@ -1868,7 +1893,23 @@ const OP_GESTURE: Gesture = { kind: 'op' };
      * \`.sheet\`: the fraction spelling promised gray that a narrow column does
      * not have, and the category chip was the thing that paid for it.
      */
-    .pair.aligned .sheet, .pair.aligned .tray { width: min(38rem, calc(100% - 10rem)); }
+    .pair.aligned .sheet, .pair.aligned .tray {
+      width: min(var(--measure-aligned, 44rem), calc(100% - 10rem));
+    }
+    /*
+     * ── AND THE MEASURE IS THE READER'S (Owen, 2026-09-22) ───────────────────
+     *
+     * *"when i click aligned, it narrows the two viewports to be really tiny. i
+     * can barely read it … i should have the ability to resize the viewports,
+     * whether aligned or alone."* The two numbers above were caps the window
+     * could never argue with: on a two-thousand-pixel pane the aligned pair
+     * took half of it and left the rest gray. They are now DEFAULTS, written as
+     * \`--measure-alone\` and \`--measure-aligned\` on the host by the drag on the
+     * paper's edge (\`measure\` in the constructor), one per view so widening
+     * the pair never widens the lone sheet. The \`100% - 10rem\` arm still holds
+     * in every case: the chip gutter is not the reader's to give away.
+     */
+    :host(.grip), :host(.grip) * { cursor: ew-resize !important; }
     /*
      * ── AND THE TWO COLUMNS STAND TOGETHER, CENTRED AS ONE GROUP ─────────────
      *
@@ -1887,7 +1928,9 @@ const OP_GESTURE: Gesture = { kind: 'op' };
      * every column keeps its own scroller, which is what the lock is locking.
      */
     .pair.aligned { justify-content: center; }
-    .pair.aligned .context, .pair.aligned .bench { flex: 0 1 40rem; }
+    .pair.aligned .context, .pair.aligned .bench {
+      flex: 0 1 calc(var(--measure-aligned, 44rem) + 10rem);
+    }
     /*
      * ── THE ORIGINAL OPEN: paper and scan stand together, centred ────────────
      *
@@ -1914,7 +1957,7 @@ const OP_GESTURE: Gesture = { kind: 'op' };
      * needs ~4rem beyond the sheet's edge; 54rem gives both sides that room
      * and the gap to the panel stays small enough to read as one group.
      */
-    .pair.original:not(.aligned) .bench { flex: 0 1 54rem; }
+    .pair.original:not(.aligned) .bench { flex: 0 1 calc(var(--measure-alone, 46rem) + 8rem); }
     /*
      * THE AMBER PILL OPENS INWARD while the panel is up. It normally unrolls
      * rightward into the bench's gray, up to ~9.5rem past the sheet — room the
@@ -2739,7 +2782,7 @@ const OP_GESTURE: Gesture = { kind: 'op' };
       display: flex;
       gap: 6px;
       justify-content: flex-end;
-      width: min(46rem, 92%);
+      width: min(var(--measure-alone, 46rem), calc(100% - 10rem));
       margin: 0 auto;
       padding: 0.75rem 0;
       pointer-events: none;
@@ -3866,13 +3909,130 @@ export class BookViewComponent {
       zoom = Math.min(2.2, Math.max(0.6, zoom * (event.deltaY < 0 ? 1.08 : 1 / 1.08)));
       surface.style.setProperty('--zoom', String(zoom));
     };
+    /*
+     * THE PAPER'S EDGE IS A HANDLE (Owen, 2026-09-22 — see the stylesheet's
+     * §5 for the ruling). Native for the loupe's reason: a drag writes a width
+     * every frame and a width is presentation. On the HOST IN CAPTURE so a
+     * press on the edge is taken before the sheet's own `press` can start a
+     * marquee from it, and so one set of listeners serves every sheet in either
+     * column without the template growing a handle per sheet.
+     *
+     * CENTRED PAPER MOVES BOTH EDGES, so alone a pointer's travel is half the
+     * change in width. Aligned, the pair stands centred on the gap between the
+     * two sheets, which holds still while each sheet grows outward by the whole
+     * change — so there the travel IS the change. Either way the edge follows
+     * the hand for as long as the pane has room to give.
+     */
+    const measures: Record<'alone' | 'aligned', number> = {
+      alone: MEASURE_REM.alone.opens,
+      aligned: MEASURE_REM.aligned.opens,
+    };
+    try {
+      const kept = JSON.parse(localStorage.getItem(MEASURE_KEY) ?? '{}') as Record<string, unknown>;
+      for (const view of ['alone', 'aligned'] as const) {
+        const rem = kept[view];
+        if (typeof rem === 'number' && Number.isFinite(rem)) {
+          measures[view] = Math.max(MEASURE_REM[view].floor, rem);
+        }
+      }
+    } catch { /* no storage, or nothing sensible in it: the defaults stand */ }
+    const paint = (view: 'alone' | 'aligned'): void => {
+      surface.style.setProperty(`--measure-${view}`, `${measures[view]}rem`);
+    };
+    paint('alone');
+    paint('aligned');
+
+    const edgeUnder = (event: PointerEvent): { sheet: HTMLElement; side: 1 | -1 } | null => {
+      const column = (event.target as Element | null)?.closest?.('.bench, .context');
+      if (column === null || column === undefined) return null;
+      for (const sheet of column.querySelectorAll<HTMLElement>(':scope > .sheet')) {
+        const box = sheet.getBoundingClientRect();
+        if (event.clientY < box.top || event.clientY > box.bottom) continue;
+        if (Math.abs(event.clientX - box.right) <= MEASURE_GRIP_PX) return { sheet, side: 1 };
+        if (Math.abs(event.clientX - box.left) <= MEASURE_GRIP_PX) return { sheet, side: -1 };
+      }
+      return null;
+    };
+    let measuring: {
+      view: 'alone' | 'aligned';
+      side: 1 | -1;
+      x: number;
+      from: number;
+      ceiling: number;
+      rem: number;
+    } | null = null;
+    const gripped = (event: PointerEvent): void => {
+      if (event.button !== 0) return;
+      const edge = edgeUnder(event);
+      if (edge === null) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const rem = Number.parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
+      const view = this.aligned() ? 'aligned' : 'alone';
+      const pair = surface.querySelector<HTMLElement>('.pair');
+      const room = pair?.clientWidth ?? surface.clientWidth;
+      measuring = {
+        view,
+        side: edge.side,
+        x: event.clientX,
+        from: edge.sheet.getBoundingClientRect().width / rem,
+        ceiling: Math.max(MEASURE_REM[view].floor, (view === 'aligned' ? room / 2 : room) / rem - 10),
+        rem,
+      };
+      surface.setPointerCapture(event.pointerId);
+    };
+    const hovered = (event: PointerEvent): void => {
+      const held = measuring;
+      if (held === null) {
+        // Only a free pointer is offered the handle: a marquee in progress
+        // crossing the paper's edge is still a marquee.
+        surface.classList.toggle('grip', event.buttons === 0 && edgeUnder(event) !== null);
+        return;
+      }
+      const travel = (event.clientX - held.x) * held.side / held.rem;
+      const width = held.from + travel * (held.view === 'aligned' ? 1 : 2);
+      measures[held.view] = Math.round(Math.min(held.ceiling, Math.max(MEASURE_REM[held.view].floor, width)) * 10) / 10;
+      paint(held.view);
+    };
+    const released = (event: PointerEvent): void => {
+      if (measuring === null) return;
+      measuring = null;
+      surface.releasePointerCapture(event.pointerId);
+      surface.classList.remove('grip');
+      try {
+        localStorage.setItem(MEASURE_KEY, JSON.stringify(measures));
+      } catch { /* not kept: the width holds for this session regardless */ }
+    };
+    // A double-click on the edge puts that view's measure back where it opens.
+    const reset = (event: MouseEvent): void => {
+      if (edgeUnder(event as PointerEvent) === null) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const view = this.aligned() ? 'aligned' : 'alone';
+      measures[view] = MEASURE_REM[view].opens;
+      paint(view);
+      try {
+        localStorage.setItem(MEASURE_KEY, JSON.stringify(measures));
+      } catch { /* as above */ }
+    };
+
     surface.addEventListener('scroll', scrolled, { capture: true, passive: true });
     surface.addEventListener('scrollend', settled, { capture: true, passive: true });
     surface.addEventListener('wheel', wheeled, { passive: false });
+    surface.addEventListener('pointerdown', gripped, { capture: true });
+    surface.addEventListener('pointermove', hovered, { passive: true });
+    surface.addEventListener('pointerup', released);
+    surface.addEventListener('pointercancel', released);
+    surface.addEventListener('dblclick', reset, { capture: true });
     destroy.onDestroy(() => {
       surface.removeEventListener('scroll', scrolled, { capture: true });
       surface.removeEventListener('scrollend', settled, { capture: true });
       surface.removeEventListener('wheel', wheeled);
+      surface.removeEventListener('pointerdown', gripped, { capture: true });
+      surface.removeEventListener('pointermove', hovered);
+      surface.removeEventListener('pointerup', released);
+      surface.removeEventListener('pointercancel', released);
+      surface.removeEventListener('dblclick', reset, { capture: true });
     });
   }
 

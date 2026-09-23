@@ -10,10 +10,22 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\<user>\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **7185764** — *Adopt Crucible 1.0.23 (dep-only): the Mac's load guard sizes the pool instead of sampling it* (was 8ee48b7) |
+| Source sha | **7912022** — *Categorize tile: snap asks what every block is, outside Crucible (experiment)* (was 7185764) |
 | Engine | **NOT VENDORED AND NOT KNOWABLE FROM THIS FILE** — it is a spawned CLI resolved at RUNTIME (`FOUNDRY_BIN`, else `resolveFoundryPath`, `electron/main.ts`), so which build executes is a property of the machine and not of this copy. On a developer's Mac that resolves to Foundry's own checkout at `/Volumes/Callisto/Projects/foundry/dist/foundry-darwin-arm64`, which is whatever was last built there — `foundry 2.0.2 (04758be)` — REBUILT at this re-vendor (2026-09-21) so the engine carries fdba761's clean-text log change. **Ask the binary: `$FOUNDRY_BIN --version`.** See *The engine this file named was not the engine that ran* below. |
-| Copied on | 2026-09-19 (five times: 3738c01, 3436fc5, 806d44b, f349771, ca4754c), 2026-09-20 (98a4344, 9e0b27d, dccc144, 7b98004, cc5fc5b, 93010d8, 77e1d6d) 2026-09-21 (753dca8, 3e26e53, f9bebb6, 95593b0, 8ee48b7) and 2026-09-22 (7185764) |
-| Copied by | Mechanical source sync, verified against Foundry `7185764:app/` (`diff -rq`, clean but for this file, `IPC-CHANNELS.md` and `.gitignore` — see below); details below |
+| Copied on | 2026-09-19 (five times: 3738c01, 3436fc5, 806d44b, f349771, ca4754c), 2026-09-20 (98a4344, 9e0b27d, dccc144, 7b98004, cc5fc5b, 93010d8, 77e1d6d) 2026-09-21 (753dca8, 3e26e53, f9bebb6, 95593b0, 8ee48b7) and 2026-09-22 (7185764, 7912022) |
+| Copied by | Mechanical source sync, verified against Foundry `7912022:app/` (`diff -rq`, clean but for this file, `IPC-CHANNELS.md` and `.gitignore` — see below); details below |
+
+## The `7185764 → 7912022` re-vendor — the Categorize tile (2026-09-22)
+
+Three Foundry commits: 2a8a288 (book-view: the paper's edge is a drag handle),
+cf38ea2's parent b3337c3 and cf38ea2 (clean-text n7/n8 — ENGINE code under `src/`,
+so NOT in this copy; they reach BookForge only with a Foundry engine release), and
+7912022, the Categorize tile: `electron/snap-categorize.ts`, `shared/snap-categorize.ts`,
+`src/app/components/snap-dialog/`, the tile in the action menu, and three IPC names
+(`snap:categorize`, `snap:cancel`, `snap:progress`) — none used by BookForge. It runs
+IN THIS APP (not the engine), so it works hosted as soon as this copy is built. Blob
+shas 201/201 against `7912022:app/`; `.gitignore` kept as ours. `npm run build` run
+here; test-ipc-collision 7/7, test-foundry-adopt 40/40.
 
 ## The `8ee48b7 → 7185764` re-vendor — the 1.0.23 SDK adoption (2026-09-22)
 

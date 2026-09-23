@@ -107,6 +107,8 @@ export class UiService {
    * a future door — silently doing nothing.
    */
   readonly cleanOpen = signal(false);
+  /** The Categorize dialog — snap asked what every block is (electron/snap-categorize.ts). */
+  readonly snapOpen = signal(false);
   /** The Metadata dialog — the book's own record, not the app's idea of it. */
   readonly metadataOpen = signal(false);
   /**
@@ -393,6 +395,7 @@ export class UiService {
     this.translateOpen,
     this.simplifyOpen,
     this.cleanOpen,
+    this.snapOpen,
     this.metadataOpen,
     this.captureNewOpen,
     this.sweepOpen,
@@ -469,6 +472,14 @@ export class UiService {
 
   closeClean(): void {
     this.cleanOpen.set(false);
+  }
+
+  openSnap(): void {
+    this.only(this.snapOpen);
+  }
+
+  closeSnap(): void {
+    this.snapOpen.set(false);
   }
 
   /**

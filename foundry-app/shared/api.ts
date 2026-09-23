@@ -25,6 +25,7 @@ import type {
 import type { BookOp, PendingOutcome, PendingStack } from './ops';
 import type { CrucibleCatalogRow, CruciblePullProgress } from './model-wire';
 import type { ReReadPrompt } from './reread';
+import type { SnapCategorizeResult, SnapCategorizeSettings, SnapProgress } from './snap-categorize';
 import type {
   CloudProbe,
   CloudProviderEdit,
@@ -1166,6 +1167,21 @@ export interface FoundryApi {
    * why the tree needs no branch for "is this app hosted": there is nothing to
    * offer and nothing to draw, so it draws what it always drew.
    */
+  /**
+   * THE CATEGORIZE TILE — snap brought up, every block of the book at the
+   * position asked what it is, snap brought down, and the confident answers
+   * landed as one edit step (electron/snap-categorize.ts). An EXPERIMENT outside
+   * Crucible, on Owen's word; see that file's header.
+   */
+  snap: {
+    /** Run it on this project's book. Resolves with the tallies once the step has landed. */
+    categorize(projectDir: string, settings: SnapCategorizeSettings): Promise<SnapCategorizeResult>;
+    /** Stop the run in flight; the model is still brought down. False when nothing was running. */
+    cancel(): Promise<boolean>;
+    /** Every stage of the run, as it happens. */
+    onProgress(listener: (progress: SnapProgress) => void): () => void;
+  };
+
   hostOps: {
     /**
      * Everything the host has on offer as of now — its operations, and whether a

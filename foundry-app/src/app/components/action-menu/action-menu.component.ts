@@ -505,6 +505,22 @@ import { UnappliedService } from '../../core/unapplied.service';
         }
 
         <!--
+          CATEGORIZE — snap asks what every block is (electron/snap-categorize.ts).
+          An EXPERIMENT outside Crucible, drawn in both windows: its run is this
+          app's own, so a hosted window has it too. The same book test as Clean.
+        -->
+        <button
+          class="menu-item"
+          [class.active]="ui.snapOpen()"
+          [disabled]="!canClean()"
+          title="Ask a local model what every block is — chapter heading, section heading, body, list, quotation, caption, note — and relabel them. Experimental."
+          (click)="categorize()"
+        >
+          <svg class="menu-icon" aria-hidden="true"><use href="#ft-tag" /></svg>
+          <span class="menu-label">Categorize blocks</span>
+        </button>
+
+        <!--
           ANALYSIS, BESIDE TRANSLATE AND SIMPLIFY because it is the same shape of
           act aimed at the same book: the model reads every sentence and lands a
           step of its own. What differs is that this one makes no new state of the
@@ -1704,6 +1720,18 @@ export class ActionMenuComponent {
     // changes nobody has applied would silently not be in the book that is cleaned.
     if (!await this.unapplied.clearedHere('clean')) return;
     this.ui.openClean();
+  }
+
+  /**
+   * CATEGORIZE — the same unapplied-changes gate the make-acts pass: the run
+   * reads the RECORDED book and lands a step on it, so changes nobody applied
+   * would be under it rather than in it. `host` is the act whose card wording is
+   * the generic one ("The work would be made from…"), which is this act's too.
+   */
+  protected async categorize(): Promise<void> {
+    void this.router.navigateByUrl('/');
+    if (!await this.unapplied.clearedHere('host')) return;
+    this.ui.openSnap();
   }
 
   /**
