@@ -1488,7 +1488,11 @@ async function runSlice(args) {
   const pass = ['raw', 'vtt', 'build', 'rows', 'prefix', 'speaker', 'min-start', 'max-end',
     'run-median-s', 'run-sigma', 'long-min-s', 'long-max-s', 'gap-s', 'tail-s', 'tiers',
     'micro-min-s', 'micro-max-s', 'micro-min-words', 'micro-max-words', 'micro-max-rows',
-    'micro-weights', 'max-hours', 'exclude-cue-ids'];
+    'micro-weights', 'max-hours', 'exclude-cue-ids',
+    // Missing until 2026-09-23: every clipforge slice since 09-12 logged "0 excluded by --exclude-text-regex" while
+    // its caller passed the heading regex - the flag was dropped here, so chapter headings and front/back matter
+    // went into every corpus cut through this verb.
+    'exclude-text-regex'];
   const argv = [];
   for (const k of pass) if (args[k] !== undefined && args[k] !== true) argv.push('--' + k, String(args[k]));
   if (args['interp-interior']) argv.push('--interp-interior');
