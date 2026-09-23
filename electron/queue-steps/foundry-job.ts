@@ -38,7 +38,8 @@ import { noteStepStopped } from '../queue-engine';
 import type { StepModule, StepRunContext } from '../queue-engine';
 import type { ArtifactRef, JobStageProgress, StepResource } from '../../shared/queue/engine-types';
 import {
-  FOUNDRY_VERSION_FOR_CLEAN_TEXT, foundryRowFailure, foundryRunner, foundryTooOldForCleanText,
+  FOUNDRY_VERSION_FOR_CLEAN_TEXT, FOUNDRY_VERSION_FOR_CLEAN_TRIAGE, foundryRowFailure, foundryRunner,
+  foundryTooOldForCleanText, foundryTooOldForCleanTriage,
   parseFoundryProgressLine,
 } from '../foundry-host-queue';
 import type { FoundryJobStepConfig, FoundryRunOutcome } from '../foundry-host-queue';
@@ -113,6 +114,7 @@ function resourceFor(config: Record<string, unknown>): StepResource {
   const request = (config as unknown as FoundryJobStepConfig).request;
   const kind = request?.kind;
   return kind === 'read' || kind === 'translate' || kind === 'simplify' || kind === 'clean'
+    || kind === 'clean-triage'
     ? 'gpu'
     : 'cpu';
 }
@@ -227,6 +229,9 @@ export const foundryJobStep: StepModule = {
     switch (kind) {
       case 'read': return 'pages';
       case 'clean': return 'clean';
+      // The cleanup's triage asks a DECIDE model (Crucible 1.0.24's class), never
+      // a text one, and it is not routable upstream (foundry BOOKFORGE-HANDOFF §8c).
+      case 'clean-triage': return 'decide';
       case 'translate': return 'translate';
       case 'simplify': return 'simplify';
       default: return null;
@@ -290,6 +295,19 @@ export const foundryJobStep: StepModule = {
         throw new Error(foundryTooOldForCleanText(installed.version));
       }
     }
+    /*
+     * AND A TRIAGED CLEANUP NEEDS A LATER ONE — both halves of the pair: the
+     * `clean-triage` row, and the `clean` behind it that carries `triagePath`
+     * and so runs `clean-text --triage`. Refused here for the same reason as the
+     * floor above: by name, before a model is loaded.
+     */
+    if (config.request.kind === 'clean-triage'
+      || (config.request.kind === 'clean' && typeof config.request['triagePath'] === 'string')) {
+      const installed = await foundryVersion();
+      if (!foundryVersionAtLeast(installed.version, FOUNDRY_VERSION_FOR_CLEAN_TRIAGE)) {
+        throw new Error(foundryTooOldForCleanTriage(installed.version));
+      }
+    }
     const kind = config.request.kind;
     /*
      * THE THREE THAT ASK A LANGUAGE MODEL, as a narrowed value rather than a
@@ -307,8 +325,9 @@ export const foundryJobStep: StepModule = {
      * starts sending `kind: 'analysis'` here, this line, `FoundryJobKind`,
      * `isTextPass`, `resourceFor` and `labelFor` move together.
      */
-    const act: 'clean' | 'translate' | 'simplify' | null =
-      kind === 'clean' || kind === 'translate' || kind === 'simplify' ? kind : null;
+    const act: 'clean' | 'clean-triage' | 'translate' | 'simplify' | null =
+      kind === 'clean' || kind === 'clean-triage' || kind === 'translate' || kind === 'simplify'
+        ? kind : null;
     /*
      * ── WHERE THIS TEXT ACT RUNS, AND WHO COMPOSES IT ─────────────────────────
      *
@@ -412,7 +431,7 @@ export const foundryJobStep: StepModule = {
      * book. One record, one decision, two doors into it.
      */
     let venueServer: string | null = null;
-    const placed: 'clean' | 'translate' | 'simplify' | 'read' | null =
+    const placed: 'clean' | 'clean-triage' | 'translate' | 'simplify' | 'read' | null =
       act ?? (kind === 'read' ? 'read' : null);
     if (placed !== null) {
       const { decideWhereTextActRuns, processTextVenueHost } =

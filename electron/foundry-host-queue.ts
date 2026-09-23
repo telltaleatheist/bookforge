@@ -86,7 +86,7 @@ import type { QueueJob, QueueStep } from '../shared/queue/engine-types';
  * loud failure this house rule exists for.
  */
 export type FoundryJobKind =
-  'epub' | 'txt' | 'pdf' | 'read' | 'translate' | 'simplify' | 'clean';
+  'epub' | 'txt' | 'pdf' | 'read' | 'translate' | 'simplify' | 'clean' | 'clean-triage';
 
 /**
  * THE THREE TEXT PASSES, as one question — their `isTextPassRequest`.
@@ -152,6 +152,37 @@ export function foundryTooOldForCleanText(installed: string): string {
  * one in `shared/vlm/readings-bank.ts` for both; there is no second one.
  */
 export const FOUNDRY_VERSION_FOR_CLEAN_TEXT_EPUB = '1.2.0';
+
+/**
+ * The foundry ENGINE that can TRIAGE a cleanup — a third floor, and the same
+ * shape of fact as the two above it.
+ *
+ * Owen, 2026-09-23: *"a cleanup-triage stage that runs before cleanup."* The
+ * Clean text dialog now sends a PAIR (foundry docs/BOOKFORGE-HANDOFF.md §8c): a
+ * `clean-triage` row, which runs `foundry clean-triage`, and the cleanup behind
+ * it carrying `triagePath`, which runs `foundry clean-text --triage`. Both arrived
+ * in the engine at c7bcb1a, AFTER 2.0.2 — so an engine on this machine older than
+ * the release carrying them answers the first with an unknown-command dump and
+ * the second with `unknown option --triage`.
+ *
+ * 2.1.0 IS THE RELEASE THAT WILL CARRY THEM (a new command, so a minor), not one
+ * that exists yet: foundry's package.json still says 2.0.2. Until it is cut this
+ * gate refuses every triaged cleanup by name — which is the truth about this
+ * machine, said before a model is loaded. Bump it with foundry's package.json if
+ * the release is numbered otherwise.
+ */
+export const FOUNDRY_VERSION_FOR_CLEAN_TRIAGE = '2.1.0';
+
+/** The refusal for a foundry with no `clean-triage` (or no `clean-text --triage`) in it. */
+export function foundryTooOldForCleanTriage(installed: string): string {
+  return (
+    'This cleanup starts with a check of which blocks need cleaning at all, which the foundry '
+    + `engine runs as \`foundry clean-triage\` — but the installed foundry is ${installed} and that `
+    + `arrived in ${FOUNDRY_VERSION_FOR_CLEAN_TRIAGE}. Update foundry in Settings → General add-ons, or `
+    + 'untick "skip blocks that need no cleaning" in the Clean text dialog to clean every block. '
+    + 'Nothing was checked or cleaned and no model was loaded.'
+  );
+}
 
 /** The refusal for a foundry whose `clean-text` has no `--epub` failsafe door. */
 export function foundryTooOldForCleanTextEpub(installed: string): string {
@@ -313,7 +344,7 @@ export interface FoundryJobProgress {
    */
   page: number;
   total: number;
-  phase: 'render' | 'read' | 'translate' | 'clean' | 'rank' | 'verify';
+  phase: 'render' | 'read' | 'translate' | 'clean' | 'triage' | 'rank' | 'verify';
 }
 
 /** Their `Job` (`FoundryJobRow = Job`), as their shelf draws it. */
@@ -822,6 +853,14 @@ export function parseFoundryProgressLine(line: string): FoundryJobProgress | nul
     return { phase: 'clean', page: Number(cleaned[1]), total: Number(cleaned[2]) };
   }
 
+  // The cleanup's triage (foundry c7bcb1a): `clean-triage: <n>/<m>`, anchored at
+  // both ends — its summary lines (`… position(s) in 90 group(s)`, `312 of 2081
+  // position(s) need cleaning`) are notes, not counts.
+  const triaged = /^clean-triage:\s+(\d+)\/(\d+)$/.exec(trimmed);
+  if (triaged) {
+    return { phase: 'triage', page: Number(triaged[1]), total: Number(triaged[2]) };
+  }
+
   const analyzing = /^analyze:\s+(rank|verify)\s+(\d+)\/(\d+)\b/.exec(trimmed);
   if (analyzing) {
     return {
@@ -1257,6 +1296,11 @@ function labelFor(request: FoundryJobRequest): string {
      * side renaming an act it does not own.
      */
     case 'clean': return 'Clean text';
+    /*
+     * Foundry's own row title for it (CLEAN_TRIAGE_TITLE, their job-queue), so the
+     * step reads the same in the hosted window and in this queue.
+     */
+    case 'clean-triage': return 'Clean text — triage';
     case 'simplify': return 'Simplify';
     /*
      * A SIMPLIFY USED TO BE A TRANSLATE STEP WEARING A REWRITE, and until foundry

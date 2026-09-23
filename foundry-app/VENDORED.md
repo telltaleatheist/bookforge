@@ -10,10 +10,30 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\<user>\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **acf63c2** — *Remove the Categorize tile for now; the work is kept in history to revisit* (was df63f9f) |
+| Source sha | **4835411** — *cleanup triage, app side* (was acf63c2) |
 | Engine | **NOT VENDORED AND NOT KNOWABLE FROM THIS FILE** — it is a spawned CLI resolved at RUNTIME (`FOUNDRY_BIN`, else `resolveFoundryPath`, `electron/main.ts`), so which build executes is a property of the machine and not of this copy. On a developer's Mac that resolves to Foundry's own checkout at `/Volumes/Callisto/Projects/foundry/dist/foundry-darwin-arm64`, which is whatever was last built there — `foundry 2.0.2 (04758be)` — REBUILT at this re-vendor (2026-09-21) so the engine carries fdba761's clean-text log change. **Ask the binary: `$FOUNDRY_BIN --version`.** See *The engine this file named was not the engine that ran* below. |
-| Copied on | 2026-09-19 (five times: 3738c01, 3436fc5, 806d44b, f349771, ca4754c), 2026-09-20 (98a4344, 9e0b27d, dccc144, 7b98004, cc5fc5b, 93010d8, 77e1d6d) 2026-09-21 (753dca8, 3e26e53, f9bebb6, 95593b0, 8ee48b7) and 2026-09-22 (7185764, 7912022, 19fa7a9, df63f9f) and 2026-09-23 (acf63c2) |
-| Copied by | Mechanical source sync, verified against Foundry `acf63c2:app/` (`diff -rq`, clean but for this file, `IPC-CHANNELS.md` and `.gitignore` — see below); details below |
+| Copied on | 2026-09-19 (five times: 3738c01, 3436fc5, 806d44b, f349771, ca4754c), 2026-09-20 (98a4344, 9e0b27d, dccc144, 7b98004, cc5fc5b, 93010d8, 77e1d6d) 2026-09-21 (753dca8, 3e26e53, f9bebb6, 95593b0, 8ee48b7) and 2026-09-22 (7185764, 7912022, 19fa7a9, df63f9f) and 2026-09-23 (acf63c2, 4835411) |
+| Copied by | Mechanical source sync, verified against Foundry `4835411:app/` (`diff -rq`, clean but for this file, `IPC-CHANNELS.md` and `.gitignore` — see below); details below |
+
+## The `acf63c2 → 4835411` re-vendor — the cleanup triage (2026-09-23)
+
+Owen, 2026-09-23: *"a cleanup-triage stage that runs before cleanup. go ahead and
+build it all out."* Two Foundry commits: c7bcb1a (ENGINE, `src/` — `clean-triage`
+and `clean-text --triage`; reaches this machine only with a Foundry engine
+release, gated here at 2.1.0) and 4835411 (this copy): the `decide` model class,
+the `clean-triage` job kind placed on it with `Placement.origin`, the pair door
+`queue:enqueue-clean-triaged`, the chained cleanup carrying `triagePath`, and the
+Clean text dialog's "skip blocks that need no cleaning" box, offered only when a
+server serves `decide` (Crucible 1.0.24). The host's half is BookForge's own:
+`FoundryJobKind`, the `triage` phase, the progress pattern (after `clean-text`'s,
+as the engine orders them), the label, `resourceFor`/`crucibleClass`, and the
+2.1.0 version gate (`FOUNDRY_VERSION_FOR_CLEAN_TRIAGE`). Blob shas equal
+`4835411:app/` but for `.gitignore` (ours); `IPC-CHANNELS.md` equals
+`4835411:docs/`. Keepers: test-foundry-progress 20/20, test-ipc-collision 7/7,
+test-foundry-runner-seam 13/13, test-crucible-text-acts 34, test-crucible-lease
+24/24, test-narration-clean-text-door 13/13; test-foundry-host-queue 33/37 and
+test-foundry-hosted-crucible-seam 29/32 fail IDENTICALLY without this re-vendor
+(checked against a stash of it) — pre-existing, not this change.
 
 ## The `df63f9f → acf63c2` re-vendor — the Categorize tile removed (2026-09-23)
 

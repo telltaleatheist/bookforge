@@ -114,7 +114,16 @@ const JOB_GROUPS: ReadonlyArray<{
   readonly title: string;
   readonly classes: readonly ModelClass[];
 }> = [
-  { title: 'Text', classes: ['clean', 'translate', 'simplify', 'analysis'] },
+  /*
+   * `decide` IS IN THE TEXT GROUP, first, because it is text work a person sets
+   * per server like the four beside it — which model answers "does this block
+   * need cleaning?" — and it runs before the cleanup. It is not ROUTABLE, and the
+   * row says so the way `pages` does: `LLM_CLASSES` does not hold it, so no
+   * account chip is drawn (an upstream returns words, and the triage reads the
+   * model's own belief in two letters). On a Crucible older than the class the
+   * engine answers with no row and no choices, which is drawn as what it is.
+   */
+  { title: 'Text', classes: ['decide', 'clean', 'translate', 'simplify', 'analysis'] },
   { title: 'Documents', classes: ['pages'] },
 ];
 

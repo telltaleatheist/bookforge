@@ -19,7 +19,7 @@
  * writes it and that sits at the top of everything.
  */
 import type {
-  ExportLanding, FoundryJobRow, ImportLanding, JobRequest, TextPassRequest,
+  CleanTriageRequest, ExportLanding, FoundryJobRow, ImportLanding, JobRequest, TextPassRequest,
 } from '../shared/types';
 // A TYPE, and it has to stay one: `host-ops.ts` pushes at windows and therefore
 // imports `window.ts`, which is exactly the weight this leaf exists to keep out
@@ -132,7 +132,29 @@ export interface FoundryHostQueue {
    * it always has. It is written down because a host reading `bookPath` on an
    * older snapshot and helpfully filling it in would be re-creating the defect.
    */
-  enqueue(request: JobRequest | TextPassRequest, parentStep: string | null): FoundryJobRow;
+  /*
+   * ── AND A FOURTH SHAPE ARRIVES WITH THE CLEANUP'S TRIAGE (2026-09-23) ──────
+   *
+   * `CleanTriageRequest`, kind `clean-triage`: the question asked before a
+   * cleanup, on a small `decide` model, writing a verdicts file the cleanup reads.
+   * It is sent ONLY as the first half of a pair (`enqueueTriagedCleanup`,
+   * electron/job-queue.ts): this is called for the triage, and then again for the
+   * cleanup with the host's own id for the triage row as the cleanup's `after`. A
+   * host that honours `after` — which the promised chains already require
+   * (docs/BOOKFORGE-HANDOFF.md §8b) — has implemented the pair; what it has to
+   * LEARN is the kind: its lane (a GPU run), its label, its progress line
+   * (`clean-triage: n/m`) and the fact that it lands nothing in the tree. The
+   * handoff note names every place.
+   *
+   * It is the same cost the widening above names, arriving the same way: the
+   * Clean text dialog is drawn only hosted, so no window sends this to a host
+   * that did not ship the feature — and a host on an older snapshot that does
+   * receive one files a row whose kind its tables do not name.
+   */
+  enqueue(
+    request: JobRequest | TextPassRequest | CleanTriageRequest,
+    parentStep: string | null,
+  ): FoundryJobRow;
   /**
    * The gestures the shelf makes, forwarded by id — the host's id, off the host's
    * own row.

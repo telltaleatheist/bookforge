@@ -177,6 +177,7 @@ import { destFor, installEnv } from './env-install';
 import { foundryHost, type FoundryHostQueue, hostMintMeta } from './host';
 import {
   bookAtPosition,
+  cleanTriageFileFor,
   generatedRoleFor,
   completionMarkerFor,
   imagesDirFor,
@@ -210,6 +211,7 @@ import {
 import {
   identifyExport,
   materializeAnalysis,
+  materializeCleanTriage,
   materializeCleanup,
   materializeExport,
   materializeSimplification,
@@ -225,9 +227,9 @@ import {
   CPU_LANE_SLOTS, JOB_RESOURCE, computeLanes, localLane, type ComputeLane, type JobResource,
 } from '../shared/queue-board';
 import type {
-  AnalyzeRequest, ConversionKind, DeferredPlan, EnvInstallRequest, ExportLanding, ExportMintMetadata,
-  FoundryJobRow, Job, JobKind, JobRequest, RunOutcome, RunPlacement, RunVenue, SimplifyRequest,
-  TextPassRequest, TranslateRequest,
+  AnalyzeRequest, CleanRequest, CleanTriageRequest, ConversionKind, DeferredPlan, EnvInstallRequest,
+  ExportLanding, ExportMintMetadata, FoundryJobRow, Job, JobKind, JobRequest, RunOutcome,
+  RunPlacement, RunVenue, SimplifyRequest, TextPassRequest, TranslateRequest,
 } from '../shared/types';
 import { ENGINE_PARKED_EXIT, isResumableStop } from '../shared/types';
 /*
@@ -249,8 +251,14 @@ import { ANY_SLOT } from '../shared/slots';
  * They share `requests`, `pump()` and the whole run-and-report path because
  * from here they are the same job: spawn foundry, read its stderr, report what
  * it wrote. Only `argsFor` and the reading-server wait can tell them apart.
+ *
+ * FOUR NOW, and the fourth is the cleanup's triage (`CleanTriageRequest`): a
+ * model pass over the materialised book, like the analysis, that lands no step
+ * at all. It is not a text pass — it writes no records and names no step — so it
+ * is its own member rather than a fourth arm of `TextPassRequest`, whose every
+ * reader wants a records file and a step id this shape does not have.
  */
-type EngineRequest = JobRequest | TextPassRequest | AnalyzeRequest;
+type EngineRequest = JobRequest | TextPassRequest | AnalyzeRequest | CleanTriageRequest;
 
 /**
  * IS THIS ONE OF THE THREE TEXT PASSES — the queue's own half of
@@ -287,6 +295,9 @@ function isTextPassRequest(request: EngineRequest): request is TextPassRequest {
  *   therefore needs no line of its own below. It is named here anyway, because
  *   this list is what somebody reads to find out whether their job's product is
  *   the ordinary case, and "it happens to fall through" is not an answer.
+ * - **A CLEANUP'S TRIAGE PRODUCES ITS VERDICTS**, which are `outputPath` too and
+ *   fall through on the analysis's terms: one file, no document, and the file is
+ *   what two presses of one triaged cleanup collide on.
  * - **EVERYTHING ELSE PRODUCES ITS OUTPUT**, which is the ordinary case and
  *   needs no argument.
  *
@@ -379,7 +390,11 @@ const FINAL_LAYER = 'final';
  */
 function mintsOf(request: EngineRequest): string | undefined {
   if (isTextPassRequest(request)) return request.stepId;
-  if (request.kind === 'read' || request.kind === 'analysis') return undefined;
+  // A TRIAGE MINTS NOTHING: the cleanup behind it is the step, and a grayed card
+  // for the question in front of the answer would be two cards for one act.
+  if (request.kind === 'read' || request.kind === 'analysis' || request.kind === 'clean-triage') {
+    return undefined;
+  }
   if (request.export !== true) return undefined;
   return exportNodeId(`${FINAL_LAYER}/${path.basename(request.outputPath)}`);
 }
@@ -418,8 +433,30 @@ function deferralOf(request: EngineRequest): DeferredPlan | undefined {
  * the parent may have landed and been cleared between the plan and the enqueue.
  * `reconcileChains` is what tells that apart from a row that was lost, because it
  * is the only place that can — by asking the ledger.
+ *
+ * ── A LINK THE DOOR ALREADY NAMED WINS, AND THAT IS THE WHOLE RULE ─────────
+ *
+ * `request.after` set before this is asked means main composed the link itself,
+ * at the press, from a row it had just minted — the cleanup behind its own triage
+ * (`enqueueTriagedCleanup`), the one pair this app orders as a pair. That link is
+ * a stronger fact than the deferral's: a deferred cleanup is still made from the
+ * promised step, but it waits behind the TRIAGE, which itself waits behind the
+ * promise, because a row has one parent. Reading the deferral first would chain
+ * the cleanup past its own triage and run the two side by side.
+ *
+ * SO `Job.after` HAS ONE SOURCE, which is this answer: every door mints its row's
+ * link from here (`promisedBy`), and every door that forwards to a host puts the
+ * same answer on the request it hands over. There is no second path by which an
+ * explicit link reaches a standalone row, and the pump's gate (`chainVerdict`) is
+ * the same gate for both — it reads a row id and never asks how the id got there.
+ *
+ * A REQUEST IN THE STORE CARRIES THE LINK IT WAS FILED WITH, so a Retry that
+ * re-sends it re-asks this and gets the same row back. If that row has left the
+ * list by then, the link reads `unknown` and `reconcileChains` settles it against
+ * the ledger, which is the path a parent that landed and was cleared already takes.
  */
 function chainedBehind(request: EngineRequest): string | undefined {
+  if ('after' in request && request.after !== undefined) return request.after;
   const deferred = deferralOf(request);
   if (deferred === undefined) return undefined;
   return rowMinting(shelfJobs(), deferred.from)?.id;
@@ -783,6 +820,27 @@ async function materializeAtSpawn(
     // So the copy is a plain one and the row's name never moves.
     const next = { ...request };
     next.bookPath = (await materializeAnalysis(dir, step)).bookPath;
+    return next;
+  }
+  if (request.kind === 'clean-triage') {
+    /*
+     * ── A TRIAGE MAKES THE CLEANUP'S BOOK, AND NOTHING ELSE ───────────────────
+     *
+     * Its own branch, and it has to be: falling through would reach the rendering
+     * arm below, which narrows a narration stamp and composes a rendering's inputs
+     * for a run that writes neither. What it needs is the book at the row the press
+     * pinned — the same row its cleanup carries — so the two read one content
+     * (`materializeCleanTriage`, electron/workspace.ts).
+     *
+     * IT CAN BE DEFERRED, where an analysis cannot: a cleanup pressed on a greyed
+     * card orders its triage deferred on the same promise, and `named` above has
+     * already resolved that promise to the step it landed. The deferral is dropped
+     * from the copy because it is spent; the NAME never moves — the verdicts file
+     * was fixed at the press, and the cleanup behind this row is already carrying
+     * it (`CleanRequest.triagePath`).
+     */
+    const next = withoutDeferral(request);
+    next.bookPath = (await materializeCleanTriage(dir, step)).bookPath;
     return next;
   }
   /*
@@ -1578,6 +1636,9 @@ const NEVER_ROUTED: Readonly<Record<JobKind, boolean>> = {
   // Engine work on the GPU lane, ordered by a person. It routes for translate's
   // reason: the host chose when it ran.
   analysis: false,
+  // The cleanup's triage, on the cleanup's own clause: ordered in a hosted window
+  // with its cleanup behind it, and filed by whoever is scheduling the pair.
+  'clean-triage': false,
   // A precondition of the engine running rather than GPU work (16e).
   'env-install': true,
   // Renderer-driven and interactive. It never entered the host’s queue and
@@ -2054,6 +2115,20 @@ function titleForTextPass(request: TextPassRequest): { title: string } | Record<
 }
 
 /**
+ * WHAT THE SHELF CALLS A CLEANUP'S TRIAGE ROW — the act first, on
+ * `titleForTextPass`'s rule, and the act is Clean text's.
+ *
+ * The two rows sit together in the list, one behind the other, and a person
+ * reading them is checking two things: that this is the cleanup they asked for,
+ * and which half of it is running. "Clean text — triage" says both, in the shape
+ * the rewrite's row already reads in ("Simplify — plain terms"): the act somebody
+ * pressed, then what this row of it is. A constant because two doors mint a
+ * triage row (`enqueueCleanTriage`, `runDetached`) and a title spelled twice is
+ * `productOf`'s defect with a delay on it.
+ */
+const CLEAN_TRIAGE_TITLE = 'Clean text — triage';
+
+/**
  * Put a TEXT PASS in the queue — a translation, a rewrite or a narration cleanup.
  *
  * Behind whatever is already running, always. The engine holds an Ollama model
@@ -2152,6 +2227,146 @@ export function enqueueTextPass(
   changed();
   // Held, like every other engine job. See this file's header.
   return job;
+}
+
+/**
+ * THE ROW ALREADY WAITING TO WRITE THIS FILE, IN WHICHEVER QUEUE OWNS THE SHELF.
+ *
+ * `pendingFor`'s question asked of `shelfJobs()` rather than `jobs`, because the
+ * one caller has to ask it BEFORE it knows which queue it is talking to: hosted,
+ * `jobs` holds none of the host's rows, and a triaged cleanup already sitting in
+ * BookForge's queue would be invisible to the other function. Standalone the two
+ * lists are the same array and the two answers are the same row.
+ */
+function liveOnTheShelf(product: string): Job | undefined {
+  return shelfJobs().find(
+    (job) => (job.state === 'held' || job.state === 'queued' || job.state === 'running')
+      && samePath(job.outputPath, product),
+  );
+}
+
+/**
+ * Put a cleanup's TRIAGE in the queue — the inner door, one row, routed.
+ *
+ * `enqueueTextPass`'s arrangement exactly: the link composed first and carried on
+ * the request, the host handed the request if there is one, and otherwise a HELD
+ * row of our own, deduped on its product. Held because it is expensive in the way
+ * everything held is — a model on a card for the length of a book — and because
+ * the cleanup behind it is held too, so Start commits to the pair together.
+ *
+ * NOT EXPORTED. Nothing orders a triage on its own: its whole purpose is the
+ * cleanup behind it, and a triage row with no cleanup chained to it would spend a
+ * model writing a file nothing reads. {@link enqueueTriagedCleanup} is the door.
+ */
+function enqueueCleanTriage(request: CleanTriageRequest, parentStep: string | null): Job {
+  const host = hostQueue();
+  // The promise the triage waits on, when its cleanup was pressed on a greyed
+  // card — the same composition `enqueueTextPass` makes, for its reason.
+  const after = chainedBehind(request);
+  const chained: CleanTriageRequest = after === undefined ? request : { ...request, after };
+  if (host !== null) return host.enqueue(chained, parentStep);
+  const outputPath = productOf(chained);
+  const already = pendingFor(outputPath);
+  if (already) return already;
+  const job: Job = {
+    id: randomUUID(),
+    inputPath: chained.inputPath,
+    outputPath,
+    kind: 'clean-triage',
+    state: 'held',
+    progress: null,
+    title: CLEAN_TRIAGE_TITLE,
+    parentStep,
+    ...placedBy('clean-triage'),
+    ...promisedBy(chained),
+    createdAt: Date.now(),
+  };
+  jobs.push(job);
+  requests.set(job.id, chained);
+  changed();
+  return job;
+}
+
+/**
+ * PUT A TRIAGED CLEANUP IN THE QUEUE — the triage, then the cleanup chained
+ * behind it, as one gesture.
+ *
+ * ── The ruling (Owen, 2026-09-23) ───────────────────────────────────────────
+ *
+ * *"we create a list of blocks that need to be cleaned with snap and then we bring
+ * snap down and load the full normal cleaning logic."* Two rows, in that order,
+ * each on its own model: the triage holds a small `decide` model and writes the
+ * verdicts; the cleanup waits behind it and hands the verdicts to `clean-text
+ * --triage`, which asks its big model only about what was flagged.
+ *
+ * ── Why ONE door for the pair, and not the text-pass door twice ────────────
+ *
+ * Because the pair is only correct if three facts agree, and all three are main's:
+ * the verdicts path (named from the cleanup's records file, `cleanTriageFileFor`),
+ * the row the book is made from (the same `at`, or the same promise, on both), and
+ * the link (the cleanup's `after` is the triage's ROW id, which exists only once
+ * the triage is enqueued). A window composing two requests and a link between two
+ * IPC calls would be the renderer naming a file and minting a chain — two things
+ * this app has only ever let main do — with a moment between the calls in which a
+ * Start could release a cleanup chained to nothing. So the window sends the
+ * cleanup it already composes, and main makes the pair in one turn.
+ *
+ * IT IS NOT `queue:enqueue-translate` WITH A FLAG ON IT, either. That door answers
+ * with ONE row, and the dialog has to hold both: a server picked in the dialog is
+ * pinned on BOTH rows and Start releases BOTH, and a door that returned only the
+ * cleanup would leave the triage parked with nobody holding its id.
+ *
+ * ── A DEFERRED CLEANUP DEFERS ITS TRIAGE ON THE SAME PROMISE ───────────────
+ *
+ * A cleanup pressed on a greyed card is made from a step that has not landed. Its
+ * triage must read that step's book too, so it carries the same `deferred` and
+ * waits behind the promising row; the cleanup waits behind the TRIAGE, not the
+ * promise, because a row has one parent and the triage's parent already is that
+ * promise. The chain is promise → triage → cleanup, and a loss anywhere in it
+ * takes everything after it (`cascadeFrom`, or the host's own cascade).
+ *
+ * ── A CLEANUP ALREADY WAITING TO WRITE THESE ANSWERS IS THE ANSWER ─────────
+ *
+ * Asked FIRST, before a triage is minted, because a triage minted in front of a
+ * cleanup that is not chained to it would spend a model on a file nothing reads.
+ * The row already making these records is the work the person asked for — pressed
+ * earlier, with or without a triage — and it comes back with whatever triage it
+ * waits behind, so the dialog can say "already queued" and watch the real rows.
+ *
+ * HOSTED, THE HOST'S QUEUE IS THE ONE ASKED, by the same doors: `host.enqueue`
+ * twice, the cleanup carrying the host's own id for the triage row as its `after`.
+ * A host that honours `after` has implemented the whole of this; one that ignores
+ * it runs the two side by side and the cleanup finds no verdicts file, which the
+ * engine refuses by name — docs/BOOKFORGE-HANDOFF.md carries the note.
+ */
+export function enqueueTriagedCleanup(
+  request: CleanRequest,
+  /** The position at the press. See `enqueue` above and `Job.parentStep`. */
+  parentStep: string | null = null,
+): { triage: Job | null; clean: Job } {
+  const standing = liveOnTheShelf(request.recordsPath);
+  if (standing !== undefined) {
+    const behind = standing.after === undefined
+      ? undefined
+      : shelfJobs().find((row) => row.id === standing.after && row.kind === 'clean-triage');
+    return { triage: behind ?? null, clean: standing };
+  }
+  const verdicts = cleanTriageFileFor(request.recordsPath);
+  const triage = enqueueCleanTriage(
+    {
+      kind: 'clean-triage',
+      inputPath: request.inputPath,
+      outputPath: verdicts,
+      // THE SAME ROW THE CLEANUP'S BOOK IS MADE FROM, so the two books are one
+      // content. Copied as the request states it: an absent `at` stays absent,
+      // because absence and null are different claims (`CleanRequest.at`).
+      ...(request.at !== undefined ? { at: request.at } : {}),
+      ...(request.deferred !== undefined ? { deferred: request.deferred } : {}),
+    },
+    parentStep,
+  );
+  const clean = enqueueTextPass({ ...request, triagePath: verdicts, after: triage.id }, parentStep);
+  return { triage, clean };
 }
 
 /**
@@ -3407,6 +3622,49 @@ export function argsFor(
     if (request.categories.length > 0) args.push('--categories', categoriesFileFor(request));
     return args;
   }
+  if (request.kind === 'clean-triage') {
+    /*
+     * ── WHICH BLOCKS NEED CLEANING AT ALL ─────────────────────────────────────
+     *
+     *   foundry clean-triage --book X --out V --endpoint <crucible> --model M
+     *
+     * NOT `doorArgs`, and the difference is the whole of this branch. `doorArgs`
+     * spells a CHAT door — `<engine>/openai`, a `--server` dialect, the request's
+     * own model and endpoint when nothing was placed. The triage asks none of
+     * those: it POSTs Crucible's `/v1/decide`, which reads the resident model's
+     * belief in two letters, so it needs the ENGINE'S BASE ADDRESS
+     * (`Placement.origin`) and the id of the model the placement made resident
+     * and leased. There is no dialect to name and no default to fall back on.
+     *
+     * AN UNPLACED TRIAGE IS REFUSED BY NAME, which is the one thing this branch
+     * decides. `UNPLACED` is what a dry run hands this function, and for every
+     * other act it prints the request's own pair; a triage has no pair of its own
+     * (`CleanTriageRequest` carries no model and no endpoint, deliberately), so a
+     * line composed without a Crucible would be a command pointed at nothing.
+     *
+     * `--concurrency` ONLY FROM THE REQUEST. The placement's number is a CHAT
+     * door's admission (`Placement.concurrency`) and says nothing about the
+     * decide door, which bounds its own questions.
+     *
+     * THE CREDENTIAL IS IN `placement.env` AND NEVER HERE, on the rule every
+     * placed line in this file keeps: the engine reads `FOUNDRY_ENDPOINT_HEADERS`.
+     */
+    if (placement.origin === null || placement.model === null) {
+      throw new Error(
+        'This check of which blocks need cleaning was not placed on a Crucible server, so there is '
+        + 'no model to ask. It runs only on a Crucible that can judge text; add or switch on one '
+        + 'under Settings › Crucible Servers.',
+      );
+    }
+    return [
+      'clean-triage',
+      '--book', bookOf(request),
+      '--out', request.outputPath,
+      '--endpoint', placement.origin,
+      '--model', placement.model,
+      ...concurrencyArgs(request, UNPLACED),
+    ];
+  }
   if (request.kind === 'clean') {
     /*
      * ── SAYING THE BOOK AGAIN SO A NARRATOR CAN READ IT ───────────────────────
@@ -3456,6 +3714,12 @@ export function argsFor(
       '--stamp', request.stampPath,
       ...doorArgs(request, placement),
     ];
+    /*
+     * `--triage` WHEN A TRIAGE RAN IN FRONT OF THIS ROW (`CleanRequest.triagePath`).
+     * Only the flagged blocks are asked; the rest are recorded as examined and
+     * clean. Absent is today's run exactly — every block put to the cleaner.
+     */
+    if (request.triagePath !== undefined) args.push('--triage', request.triagePath);
     /*
      * `--concurrency` IS `doorArgs`' NOW, with the endpoint and the model it
      * belongs beside — see `concurrencyArgs`. It was pushed here and on no other
@@ -5068,6 +5332,9 @@ async function carry(
     // is filed in the tray, no metadata is stamped onto it and no document is
     // rotated aside for it.
     && request.kind !== 'analysis'
+    // NOR A CLEANUP'S TRIAGE, on the analysis's argument exactly: its verdicts
+    // file is not a document, and nothing about it belongs in the tray.
+    && request.kind !== 'clean-triage'
     && request.export === true
     ? request.kind
     : null;
@@ -5431,7 +5698,15 @@ async function carry(
    */
   let landed = false;
   try {
-    if (request.kind !== 'read' && !isTextPassRequest(request)) {
+    /*
+     * A TRIAGE ROTATES NOTHING, and it is named here rather than left to the
+     * basename's absence from `generated/`. Its verdicts live in `readings/` beside
+     * the cleanup's records, on the reading's and the text passes' terms above, and
+     * a rotation keyed on a basename would be `rotateGenerated` — or, for anything
+     * that reached `exporting`, `rotateFinal` — asked to move a file that means
+     * something else in a folder this run never writes.
+     */
+    if (request.kind !== 'read' && !isTextPassRequest(request) && request.kind !== 'clean-triage') {
       const projectDir = projectDirOf(request.outputPath);
       if (projectDir !== null) {
         rotatedIn = projectDir;
@@ -5964,6 +6239,25 @@ async function carry(
        * to open. The pointer stays where it was (`RETAINED_BESIDE_YOU`), which is
        * the whole of what an analysis does to a project's position.
        */
+      /*
+       * ── A TRIAGE LANDED, AND WHAT IT LEFT IS A LIST ─────────────────────────
+       *
+       * The shortest landing in the file, because a triage owes the project
+       * nothing: no step, no document, no book to make afterwards. The verdicts are
+       * on disk where the press named them, and the cleanup chained behind this row
+       * reads them when the pump lets it start — which is this settle, since
+       * `chainVerdict` answers `go` for a parent that is `done`.
+       *
+       * NO LEDGER WRITE, and that is the difference from the analysis below: a
+       * report is something a person opens, so it is a step; a verdicts file is
+       * something the next run reads, so it is not.
+       */
+      if (request.kind === 'clean-triage') {
+        next.message = `Checked which blocks of ${path.basename(next.inputPath)} need cleaning.`;
+        changed();
+        settle();
+        return null;
+      }
       if (request.kind === 'analysis') {
         await recordAnalysis(next.outputPath, {
           parentStep: next.parentStep ?? null,
@@ -6668,7 +6962,9 @@ async function runDetached(
     // THE ROW'S NAME, out of the one function both doors ask — see
     // `titleForTextPass`, where the rule and its exception live.
     ...(isTextPassRequest(request) ? titleForTextPass(request) : {}),
+    ...(request.kind === 'clean-triage' ? { title: CLEAN_TRIAGE_TITLE } : {}),
     ...(request.kind !== 'read' && !isTextPassRequest(request) && request.kind !== 'analysis'
+      && request.kind !== 'clean-triage'
       && request.forStep !== undefined
       ? { forStep: request.forStep }
       : {}),

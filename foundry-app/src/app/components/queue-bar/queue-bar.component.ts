@@ -351,6 +351,7 @@ import { hosted } from '../../core/foundry';
                     @else if (job.kind === 'translate') { Translated · the book follows }
                     @else if (job.kind === 'simplify') { Simplified · the book follows }
                     @else if (job.kind === 'clean') { Cleaned · the book follows }
+                    @else if (job.kind === 'clean-triage') { Checked · the cleanup follows }
                     @else { Done · {{ view.made(job) }} }
                   </span>
                 }

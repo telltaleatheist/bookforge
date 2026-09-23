@@ -596,6 +596,15 @@ export class QueueViewService {
       return `Cleaning ${p.page.toLocaleString()} / ${p.total.toLocaleString()} blocks`;
     }
     /*
+     * THE QUESTION BEFORE A CLEANUP, in the same noun and a different verb, for
+     * the reason the cleanup has a sentence of its own one line up: the row after
+     * this one is the cleaning, and two rows both saying "Cleaning" would read as
+     * one run that started over.
+     */
+    if (p.phase === 'triage') {
+      return `Checking ${p.page.toLocaleString()} / ${p.total.toLocaleString()} blocks`;
+    }
+    /*
      * AN ANALYSIS COUNTS TWO DIFFERENT THINGS AND THIS LINE NAMES THE ONE IT IS
      * COUNTING NOW. It said "Analysing 3 / 20" for both halves while the phase
      * was one member, on the argument that no other wording was true of both —
