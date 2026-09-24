@@ -71,7 +71,7 @@ import * as path from 'path';
 import { hasLetter } from './ai-cleanup-prepass.js';
 import {
   applyNumberRules, bareWord, CANONICAL_BOOK_NAMES, cardinalWords, scriptureSpans,
-  isQuantityContext, sitsInCitation, stillHasDigits, yearQuantityReadings, yearReading,
+  isQuantityContext, printsPreDecimalSum, sitsInCitation, stillHasDigits, yearQuantityReadings, yearReading,
 } from './tts-number-rules.js';
 import { ordinalToWords } from './number-expansion.js';
 import {
@@ -132,11 +132,18 @@ export { sitsInCitation, bareWord };
  * model's reading of a year it was still asked about is re-spelled by
  * `yearReading` unless it is a quantity reading.
  *
+ * n8 → n9 (2026-09-24, two rule defects Pursuit of Power's n8 run measured): a
+ * DAY RANGE ("28–29 November 1830", "November 28–29") is one date read
+ * "November twenty-eighth to twenty-ninth, eighteen thirty" — every single-day
+ * pattern used to start at the second day behind an en dash and leave "28–"
+ * standing; and a PRE-DECIMAL sum ("£803.11.0") is pounds, shillings and pence —
+ * the money rule used to read "eight hundred three pounds and eleven pence.0.".
+ *
  * A BUMP HERE IS A CROSS-REPO EVENT. These rules are vendored byte-for-byte into
  * orpheus-finetune's `pipeline/normalization/vendor/` and drift-checked on every
  * training build — see docs/NARRATION_TEXT_PASS.md.
  */
-export const NORMALIZER_VERSION = 'n8';
+export const NORMALIZER_VERSION = 'n9';
 
 /**
  * The model this pass uses when the setting is absent.
@@ -1027,8 +1034,14 @@ function digitRunCount(text: string): number {
  * runs, and only the per-run floor sees that it needed four.
  */
 function fewestNumberWords(text: string): number {
+  // A zero part of a pre-decimal sum is not said: "£2.0.6" is "two pounds and
+  // six pence", and demanding a word for the "0" refused the correct reading.
+  const preDecimal = printsPreDecimalSum(text);
   let needed = 0;
-  for (const run of digitRuns(text)) needed += run.length >= 3 ? 2 : 1;
+  for (const run of digitRuns(text)) {
+    if (preDecimal && /^0+$/.test(run)) continue;
+    needed += run.length >= 3 ? 2 : 1;
+  }
   return needed;
 }
 
@@ -1728,13 +1741,16 @@ export function validateNumberEdits(
       // digit — and inverts the sentence. Measured by the adversarial review,
       // 2026-09-04. The reading may hold the find's own words, the number words
       // the conversion produced, and NUMBER_WORD_SLACK joins. Nothing more.
+      // A pre-decimal sum names three units, not one: "three pounds, ten shillings
+      // and six pence" needs one join more than "five dollars and fifty cents".
+      const slack = NUMBER_WORD_SLACK + (printsPreDecimalSum(find) ? 1 : 0);
       const allowedWords =
-        wordTokens(find).length + numberWordCount(replace) + NUMBER_WORD_SLACK;
+        wordTokens(find).length + numberWordCount(replace) + slack;
       if (wordTokens(replace).length > allowedWords) {
         reject(find, replace, 'WORDS_ADDED',
           `the reading has ${wordTokens(replace).length} words for a span of `
           + `${wordTokens(find).length}; a conversion may add its number words and `
-          + `${NUMBER_WORD_SLACK} joining word(s), not a clause`);
+          + `${slack} joining word(s), not a clause`);
         continue;
       }
       // LAST, so every invariant above keeps its own name: what the relaxation

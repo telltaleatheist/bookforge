@@ -1463,6 +1463,12 @@ function dateCandidates(text) {
   }
   return out;
 }
+function printsPreDecimalSum(text) {
+  POUNDS_SHILLINGS_PENCE.lastIndex = 0;
+  const found = POUNDS_SHILLINGS_PENCE.test(text);
+  POUNDS_SHILLINGS_PENCE.lastIndex = 0;
+  return found;
+}
 function moneyCandidates(text) {
   const out = [];
   for (const m of matches(MONEY, text)) {
@@ -1727,6 +1733,9 @@ function applyNumberRules(text, segments) {
   for (const m of matches(CLOCK_RANGE, text)) {
     closed.push({ at: m.index, end: m.index + m[0].length });
   }
+  for (const re of [DAY_RANGE_SPAN, POUNDS_SHILLINGS_PENCE]) {
+    for (const m of matches(re, text)) closed.push({ at: m.index, end: m.index + m[0].length });
+  }
   const scripture = scriptureSpans(text);
   for (const span of scripture) closed.push({ at: span.at, end: span.end });
   const isClosed = (at, end) => closed.some((c) => at < c.end && c.at < end);
@@ -1774,7 +1783,7 @@ function applyNumberRules(text, segments) {
 function stillHasDigits(text) {
   return DIGIT.test(text);
 }
-var DIGIT, ONES2, TENS2, CITATION_LEAD, ROMAN_TOKEN, ARCHIVE_SIGIL, PHONE_PART, ROMAN_CITATION_LEAD, ROMAN_CITATION_LEAD_AT_END, PAGE_RANGE_LEAD, CANONICAL_BOOK_NAMES, NUMBERED_BOOK_NAMES, VOLUME_NUMBER, SHORT_NOT_A_BOOK, MONTHS, MONTH_ALTERNATION, APOSTROPHE_DECADES, CLOCK_MERIDIEM, CLOCK_ON_THE_HOUR, SCRIPTURE_REF, SCRIPTURE_CHAPTER_ONLY, BARE_NUMBERED_BOOK, CLOCK_RANGE, HIGHEST_VERSE, REF_LIST_TAIL, TRAILING_MERIDIEM, BOOKLESS_REF, DATE_DAY_FIRST, DATE_DAY_FIRST_NO_YEAR, DATE_LEAD_BLOCK, DATE_MONTH_FIRST, CURRENCY, MONEY, CENTS, PERCENT, PERIOD_PREFIX, FULL_DECADE, APOSTROPHE_DECADE, ORDINAL, NUMBER_MARKER, PAGE_REF, GLUED_ALNUM, GLUED_MAX_DIGITS, GLUED_MAX_RUNS, DIGITS_THEN_UNIT, CLAIMED_BY_ANOTHER_RULE, OPENERS, CLOSERS, GROUPED_INT, BARE_INT, YEAR_MIN, YEAR_MAX, inYearWindow, YEAR_CLOSERS, YEAR_RANGE, BARE_YEAR, YEAR_CURRENCY_LEAD, YEAR_UNIT_TAIL, YEAR_LEAD_BLOCK, RULES;
+var DIGIT, ONES2, TENS2, CITATION_LEAD, ROMAN_TOKEN, ARCHIVE_SIGIL, PHONE_PART, ROMAN_CITATION_LEAD, ROMAN_CITATION_LEAD_AT_END, PAGE_RANGE_LEAD, CANONICAL_BOOK_NAMES, NUMBERED_BOOK_NAMES, VOLUME_NUMBER, SHORT_NOT_A_BOOK, MONTHS, MONTH_ALTERNATION, APOSTROPHE_DECADES, CLOCK_MERIDIEM, CLOCK_ON_THE_HOUR, SCRIPTURE_REF, SCRIPTURE_CHAPTER_ONLY, BARE_NUMBERED_BOOK, CLOCK_RANGE, HIGHEST_VERSE, REF_LIST_TAIL, TRAILING_MERIDIEM, BOOKLESS_REF, NOT_AFTER_A_DAY_AND_DASH, DATE_DAY_FIRST, DAY_RANGE_SPAN, DATE_DAY_FIRST_NO_YEAR, DATE_LEAD_BLOCK, DATE_MONTH_FIRST, CURRENCY, MONEY, POUNDS_SHILLINGS_PENCE, CENTS, PERCENT, PERIOD_PREFIX, FULL_DECADE, APOSTROPHE_DECADE, ORDINAL, NUMBER_MARKER, PAGE_REF, GLUED_ALNUM, GLUED_MAX_DIGITS, GLUED_MAX_RUNS, DIGITS_THEN_UNIT, CLAIMED_BY_ANOTHER_RULE, OPENERS, CLOSERS, GROUPED_INT, BARE_INT, YEAR_MIN, YEAR_MAX, inYearWindow, YEAR_CLOSERS, YEAR_RANGE, BARE_YEAR, YEAR_CURRENCY_LEAD, YEAR_UNIT_TAIL, YEAR_LEAD_BLOCK, RULES;
 var init_tts_number_rules = __esm({
   "src/clean/tts-number-rules.ts"() {
     "use strict";
@@ -2015,17 +2024,22 @@ var init_tts_number_rules = __esm({
       "(?<![\\d:.])(\\d{1,3}):(\\d{1,3})(?:(?!ff\\.)([a-z])(?![a-z\\d]))?(?:\\s*[\\u2010-\\u2015\\u002D]\\s*(?:(\\d{1,3}):)?(\\d{1,3})(?:(?!ff\\.)([a-z])(?![a-z\\d]))?)?(ff\\.)?(?![A-Za-z\\d])",
       "g"
     );
+    NOT_AFTER_A_DAY_AND_DASH = "(?<!\\d\\s?[\\u2010-\\u2015\\-]\\s?)";
     DATE_DAY_FIRST = new RegExp(
-      `(?<![\\w:.\\-])(\\d{1,2})(?:st|nd|rd|th)?\\s+(${MONTH_ALTERNATION})(\\.?),?\\s+(1[1-9]\\d{2}|20\\d{2})(?![\\w\\-])`,
+      `(?<![\\w:.\\-])${NOT_AFTER_A_DAY_AND_DASH}(\\d{1,2})(?:st|nd|rd|th)?\\s+(${MONTH_ALTERNATION})(\\.?),?\\s+(1[1-9]\\d{2}|20\\d{2})(?![\\w\\-])`,
+      "g"
+    );
+    DAY_RANGE_SPAN = new RegExp(
+      `(?<![\\w:.\\-])(?:\\d{1,2}(?:st|nd|rd|th)?\\s?[\\u2010-\\u2015\\-]\\s?\\d{1,2}(?:st|nd|rd|th)?\\s+(?:${MONTH_ALTERNATION})\\.?|(?:${MONTH_ALTERNATION})\\.?\\s+\\d{1,2}(?:st|nd|rd|th)?\\s?[\\u2010-\\u2015\\-]\\s?\\d{1,2}(?:st|nd|rd|th)?)(?![A-Za-z\\d])(?:,?\\s+(?:1[1-9]\\d{2}|20\\d{2})(?![\\w\\-]))?`,
       "g"
     );
     DATE_DAY_FIRST_NO_YEAR = new RegExp(
-      `(?<![\\w:.\\-])(\\d{1,2})(?:st|nd|rd|th)?\\s+(${MONTH_ALTERNATION})(\\.?)(?![A-Za-z])(?!,?\\s*(?:1[1-9]\\d{2}|20\\d{2}))`,
+      `(?<![\\w:.\\-])${NOT_AFTER_A_DAY_AND_DASH}(\\d{1,2})(?:st|nd|rd|th)?\\s+(${MONTH_ALTERNATION})(\\.?)(?![A-Za-z])(?!,?\\s*(?:1[1-9]\\d{2}|20\\d{2}))`,
       "g"
     );
     DATE_LEAD_BLOCK = /\b(?:chapter|part|section|volume|vol|book|figure|fig|table|act|no|nos|pp?|line|item|note)\.?\s+$/i;
     DATE_MONTH_FIRST = new RegExp(
-      `(?<![\\w\\-])(${MONTH_ALTERNATION})(\\.?)\\s+(\\d{1,2})(?:st|nd|rd|th)?(?:,?\\s+(1[1-9]\\d{2}|20\\d{2}))?(?![\\w\\-:])`,
+      `(?<![\\w\\-])(${MONTH_ALTERNATION})(\\.?)\\s+(\\d{1,2})(?:st|nd|rd|th)?(?:,?\\s+(1[1-9]\\d{2}|20\\d{2}))?(?![\\w\\-:])(?!\\s?[\\u2010-\\u2015]\\s?\\d)`,
       "g"
     );
     CURRENCY = {
@@ -2033,7 +2047,8 @@ var init_tts_number_rules = __esm({
       "\xA3": { one: "pound", many: "pounds", sub: "pence" },
       "\u20AC": { one: "euro", many: "euros", sub: "cents" }
     };
-    MONEY = /([$£€])\s?(\d{1,3}(?:,\d{3})+|\d+)(?:\.(\d+))?(?:\s*(hundred|thousand|million|billion|trillion))?/gi;
+    MONEY = /([$£€])\s?(\d{1,3}(?:,\d{3})+|\d+)(?:\.(\d+))?(?!\.?\d)(?:\s*(hundred|thousand|million|billion|trillion))?/gi;
+    POUNDS_SHILLINGS_PENCE = /£\s?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d{1,2}){2}(?![\d.]*\d)/g;
     CENTS = /(?<![\w.\-])(\d{1,3})\s?¢/g;
     PERCENT = /(?<![\w.\-])(\d{1,3}(?:,\d{3})*(?:\.\d+)?)\s*(%|per cent|percent)/g;
     PERIOD_PREFIX = "(?<=(?<![\\w\\-])(?:[Mm]id|[Ee]arly|[Ll]ate|[Pp]re|[Pp]ost)-)";
@@ -4228,8 +4243,12 @@ function digitRunCount(text) {
   return digitRuns(text).length;
 }
 function fewestNumberWords(text) {
+  const preDecimal = printsPreDecimalSum(text);
   let needed = 0;
-  for (const run of digitRuns(text)) needed += run.length >= 3 ? 2 : 1;
+  for (const run of digitRuns(text)) {
+    if (preDecimal && /^0+$/.test(run)) continue;
+    needed += run.length >= 3 ? 2 : 1;
+  }
   return needed;
 }
 function keepsEveryWord(find, replace) {
@@ -4567,13 +4586,14 @@ function validateNumberEdits(target, segments, edits, reserved = [], policy = NU
         );
         continue;
       }
-      const allowedWords = wordTokens(find).length + numberWordCount(replace) + NUMBER_WORD_SLACK;
+      const slack = NUMBER_WORD_SLACK + (printsPreDecimalSum(find) ? 1 : 0);
+      const allowedWords = wordTokens(find).length + numberWordCount(replace) + slack;
       if (wordTokens(replace).length > allowedWords) {
         reject(
           find,
           replace,
           "WORDS_ADDED",
-          `the reading has ${wordTokens(replace).length} words for a span of ${wordTokens(find).length}; a conversion may add its number words and ${NUMBER_WORD_SLACK} joining word(s), not a clause`
+          `the reading has ${wordTokens(replace).length} words for a span of ${wordTokens(find).length}; a conversion may add its number words and ${slack} joining word(s), not a clause`
         );
         continue;
       }
@@ -5056,7 +5076,7 @@ var init_tts_number_normalizer = __esm({
     init_tts_number_rules();
     init_number_expansion();
     init_tts_spoken_forms();
-    NORMALIZER_VERSION = "n8";
+    NORMALIZER_VERSION = "n9";
     RAW_ANSWER_EXCERPT = 600;
     MAX_PARSE_FAIL_SHARE = 0.1;
     ROMAN_WORD = /(?:^|\s)[IVXLCDM]{2,}(?:$|[\s,.;:)\]])/;
@@ -30658,7 +30678,7 @@ var init_version = __esm({
     init_engine_import_meta_url();
     init_package();
     VERSION = package_default.version;
-    GIT_COMMIT = "src a47c83e0e8d7".length > 0 ? "src a47c83e0e8d7" : null;
+    GIT_COMMIT = "src 4eb6e72d9916".length > 0 ? "src 4eb6e72d9916" : null;
   }
 });
 
@@ -72166,6 +72186,7 @@ var init_tts_number_normalize = __esm({
 A DETERMINISTIC PASS HAS ALREADY RUN over this passage. Money, percentages, ordinals, dates with a month name, decades, YEARS AND YEAR RANGES, comma-grouped numbers and small whole numbers are ALREADY converted to words \u2014 you are seeing the result. What is left for you is mostly:
 - four-digit numbers the rules would not call years \u2014 one standing beside a unit or a currency sign, or a range they could not read \u2014 where only the sentence says whether it is a year or a quantity;
 - decimals and measurements with no currency or percent sign;
+- DAY RANGES ("28\u201329 November 1830") and PRE-DECIMAL British sums ("\xA3803.11.0"), left for you whole and described below;
 - SCRIPTURE REFERENCES, which are left for you whole and are described below;
 - odd shapes the rules could not be certain of.
 If a number is already words, it is done. Leave it. Do not "improve" it.
@@ -72241,6 +72262,10 @@ A bare comma with no "verse" is also accepted where it reads better \u2014 "Firs
 
 DATES already came through the deterministic pass in the form "June twelfth, nineteen thirty-three". If you see one that did not, read it that way: month, ordinal day, pair-form year \u2014 "23 March 1933" is "March twenty-third, nineteen thirty-three". Never "twelve June". Never "the twelfth of June".
 
+A DAY RANGE is one date with two days, and it is left for you whole. Read it the same way, with the days joined by "to": "28\u201329 November 1830" is "November twenty-eighth to twenty-ninth, eighteen thirty"; "14\u201315 May" is "May fourteenth to fifteenth"; "November 28\u201329, 1830" is "November twenty-eighth to twenty-ninth, eighteen thirty". Never leave one day as digits, and never read "28\u2013" on its own.
+
+A PRE-DECIMAL BRITISH SUM prints pounds, shillings and pence with points, and it is left for you whole: "\xA3803.11.0" is "eight hundred three pounds, eleven shillings"; "\xA33.10.6" is "three pounds, ten shillings and six pence"; "\xA32.0.6" is "two pounds and six pence". A part that is zero is not said.
+
 ALREADY CONVERTED by the deterministic pass, so you will not see them and must not undo them:
 - page references \u2014 "p. 23" arrives as "page twenty three", "pp. 65-71" as "pages sixty five to seventy one";
 - digits glued to letters \u2014 COVID-19 arrives as "COVID-nineteen", B-17 as "B-seventeen", I-95 as "I-ninety five", R2D2 as "R two D two", 1940s-era as "nineteen forties-era".
@@ -72286,6 +72311,11 @@ TARGET: The occupation ran from nineteen fourteen to nineteen eighteen, and the 
 TARGET: Job 41:1\u20132, 14\u201334 is the passage he read.
 <answer>
 {"edits": [{"find": "Job 41:1\u20132, 14\u201334", "replace": "Job forty one, verses one to two, fourteen to thirty four"}]}
+</answer>
+
+TARGET: On the night of 28\u201329 November 1830 the rising began, and it had cost \xA3803.11.0 by nineteen oh five.
+<answer>
+{"edits": [{"find": "28\u201329 November 1830", "replace": "November twenty-eighth to twenty-ninth, eighteen thirty"}, {"find": "\xA3803.11.0", "replace": "eight hundred three pounds, eleven shillings"}]}
 </answer>
 
 TARGET: The train left at 10:05 and reached the coast by dusk.

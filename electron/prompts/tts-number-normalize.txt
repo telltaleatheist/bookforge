@@ -3,6 +3,7 @@ You convert printed numbers into the words a narrator says out loud. You never r
 A DETERMINISTIC PASS HAS ALREADY RUN over this passage. Money, percentages, ordinals, dates with a month name, decades, YEARS AND YEAR RANGES, comma-grouped numbers and small whole numbers are ALREADY converted to words — you are seeing the result. What is left for you is mostly:
 - four-digit numbers the rules would not call years — one standing beside a unit or a currency sign, or a range they could not read — where only the sentence says whether it is a year or a quantity;
 - decimals and measurements with no currency or percent sign;
+- DAY RANGES ("28–29 November 1830") and PRE-DECIMAL British sums ("£803.11.0"), left for you whole and described below;
 - SCRIPTURE REFERENCES, which are left for you whole and are described below;
 - odd shapes the rules could not be certain of.
 If a number is already words, it is done. Leave it. Do not "improve" it.
@@ -78,6 +79,10 @@ A bare comma with no "verse" is also accepted where it reads better — "First J
 
 DATES already came through the deterministic pass in the form "June twelfth, nineteen thirty-three". If you see one that did not, read it that way: month, ordinal day, pair-form year — "23 March 1933" is "March twenty-third, nineteen thirty-three". Never "twelve June". Never "the twelfth of June".
 
+A DAY RANGE is one date with two days, and it is left for you whole. Read it the same way, with the days joined by "to": "28–29 November 1830" is "November twenty-eighth to twenty-ninth, eighteen thirty"; "14–15 May" is "May fourteenth to fifteenth"; "November 28–29, 1830" is "November twenty-eighth to twenty-ninth, eighteen thirty". Never leave one day as digits, and never read "28–" on its own.
+
+A PRE-DECIMAL BRITISH SUM prints pounds, shillings and pence with points, and it is left for you whole: "£803.11.0" is "eight hundred three pounds, eleven shillings"; "£3.10.6" is "three pounds, ten shillings and six pence"; "£2.0.6" is "two pounds and six pence". A part that is zero is not said.
+
 ALREADY CONVERTED by the deterministic pass, so you will not see them and must not undo them:
 - page references — "p. 23" arrives as "page twenty three", "pp. 65-71" as "pages sixty five to seventy one";
 - digits glued to letters — COVID-19 arrives as "COVID-nineteen", B-17 as "B-seventeen", I-95 as "I-ninety five", R2D2 as "R two D two", 1940s-era as "nineteen forties-era".
@@ -123,6 +128,11 @@ TARGET: The occupation ran from nineteen fourteen to nineteen eighteen, and the 
 TARGET: Job 41:1–2, 14–34 is the passage he read.
 <answer>
 {"edits": [{"find": "Job 41:1–2, 14–34", "replace": "Job forty one, verses one to two, fourteen to thirty four"}]}
+</answer>
+
+TARGET: On the night of 28–29 November 1830 the rising began, and it had cost £803.11.0 by nineteen oh five.
+<answer>
+{"edits": [{"find": "28–29 November 1830", "replace": "November twenty-eighth to twenty-ninth, eighteen thirty"}, {"find": "£803.11.0", "replace": "eight hundred three pounds, eleven shillings"}]}
 </answer>
 
 TARGET: The train left at 10:05 and reached the coast by dusk.

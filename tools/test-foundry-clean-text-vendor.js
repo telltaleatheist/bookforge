@@ -419,7 +419,17 @@ const VENDOR_LEAVES = '770480d';
  * so the freeze is asserted from there. Nothing is loosened — every commit in
  * `76444fb..cf38ea2` touching them was read and is named in that decision.
  */
-const ONE_DOOR_BASELINE = 'cf38ea2';
+/*
+ * MOVED 2026-09-24 (evening), cf38ea2 → 4d67274, as a DECISION: `4d67274` is n9,
+ * a RULE MOVE, read in full. Two n8 rule defects Pursuit of Power's run measured
+ * (a day range read as a stray day and a date; "£803.11.0" read as pounds and
+ * pence), fixed per Owen's ruling that the rules are examples for the model and
+ * not deterministic logic: both shapes are detected and closed to every rule, the
+ * prompt carries their readings, and the validator grants a pre-decimal sum one
+ * more join and no word for its zero part. NORMALIZER_VERSION moved n8 → n9 with
+ * it, and this side took the same diff.
+ */
+const ONE_DOOR_BASELINE = '4d67274';
 const FROZEN_SINCE_BASELINE = [
   'src/clean/tts-number-normalizer.ts',
   'src/clean/tts-spoken-forms.ts',
@@ -465,13 +475,15 @@ const FILES = [
     theirs: 'src/clean/tts-number-rules.ts',
     vendoredAt: VENDOR_PASS,
     shipped: {
-      sha256: '5d3e05599c73a40de218025716fab37c0c788bc30b926735732cbc2478b646c8',
+      sha256: '1369200c27da3eab0e8d760fc543927913154100ea032730465920ca40f958b1',
       why: 'the type-only `epub-processor.js` import retargeted to `./targets.js`, and the '
         + 'unreferenced `VOLUME_TOKEN` deleted (noUnusedLocals is on there). No rule moved. '
         + 'REPINNED 2026-09-24 for cf38ea2 (n8): the YEAR rules (pair form, whole ranges, period '
         + 'prefixes, comma-grouped stays cardinal) and the guard fixes the replay exposed — a '
         + 'RULE MOVE, NORMALIZER_VERSION n8, and this repository\'s copy was 3-way merged to '
-        + 'match (see "THE DECISION OF 2026-09-24").',
+        + 'match (see "THE DECISION OF 2026-09-24"). '
+        + 'REPINNED 2026-09-24 (evening) for 4d67274 (n9): day ranges and pre-decimal sums are '
+        + 'detected and closed for the model. A RULE MOVE, and this side took the same diff.',
     },
   },
   {
@@ -479,7 +491,7 @@ const FILES = [
     theirs: 'src/clean/tts-number-normalizer.ts',
     vendoredAt: VENDOR_PASS,
     shipped: {
-      sha256: '73b464b6112f87eede7351bab27636d78f371b038aacf94ec2bd889a312e795b',
+      sha256: '15adb7a5d5b46eee4eec17cb85b054ec5d7f4ba6e90483522cbae10e567cc559',
       why: 'the type-only `epub-processor.js` import retargeted to `./targets.js`; '
         + '`askAboutEach` exported so the engine\'s door is a third caller rather than a second '
         + 'copy of the retry rules; `normalizeNarrationNumbers` deleted (291 lines, all about a '
@@ -507,7 +519,9 @@ const FILES = [
         + '76444fb..cf38ea2: four DRIVER-only commits (ea2ebb2, a5f6c46, dccc144, fdba761) and '
         + 'two RULE MOVES, b3337c3 (n7) and cf38ea2 (n8), which moved NORMALIZER_VERSION to n8. '
         + 'This repository\'s copy was 3-way merged to n8 and keeps its serial driver without '
-        + 'n7\'s CARRIED — see "THE DECISION OF 2026-09-24".',
+        + 'n7\'s CARRIED — see "THE DECISION OF 2026-09-24". '
+        + 'REPINNED 2026-09-24 (evening) for 4d67274 (n9): NORMALIZER_VERSION n9, and a pre-decimal '
+        + 'sum gets one more joining word and no word for its zero part. Same diff here.',
     },
   },
   {
@@ -542,10 +556,11 @@ const FILES = [
     theirs: 'src/clean/prompts/tts-number-normalize.txt',
     vendoredAt: VENDOR_PASS,
     shipped: {
-      resynced: 'cf38ea2',
-      sha256: '3a2cfedc1e932c10dee3e47fac32bdb2d56c30f2930b11aeda99d44f91eed6e7',
+      resynced: '4d67274',
+      sha256: '2ca1d9cf244e3c70a4f1922347ea7cecf57dc39937bcae98283b57bfb139e961',
       why: 'n8 (cf38ea2) moved the prompt with the year rules, and this side took it '
-        + 'byte-for-byte on 2026-09-24 — see "THE DECISION OF 2026-09-24".',
+        + 'byte-for-byte on 2026-09-24 — see "THE DECISION OF 2026-09-24". n9 (4d67274) added '
+        + 'the day-range and pre-decimal-sum examples, taken byte-for-byte the same evening.',
     },
   },
   {
@@ -632,7 +647,8 @@ const VERSIONS = [
     pattern: /NORMALIZER_VERSION[^=]*=\s*'([^']+)'/,
     // n6 → n8 on 2026-09-24: Foundry's b3337c3 (n7) and cf38ea2 (n8), followed
     // here by the 3-way merge in "THE DECISION OF 2026-09-24".
-    expected: 'n8',
+    // n8 → n9 the same evening: Foundry 4d67274, taken here as the same diff.
+    expected: 'n9',
   },
   {
     name: 'PUNCTUATION_SPEC_VERSION',

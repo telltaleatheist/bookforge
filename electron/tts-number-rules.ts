@@ -953,10 +953,35 @@ const BOOKLESS_REF = new RegExp(
 // Rule: date
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * NOT THE SECOND HALF OF A DAY RANGE. "28–29 November 1830" is one date with two
+ * days, and every single-day pattern here once started at the "29" — the lead
+ * guard refused a hyphen but not an en dash — and read "28–November
+ * twenty-ninth, eighteen thirty". Pursuit of Power printed eleven of them and
+ * every one came out that way (2026-09-24). A digit and a dash before the day
+ * mean the day is a range's; a month word before the dash ("31 October–2
+ * November") is two dates and stays two.
+ */
+const NOT_AFTER_A_DAY_AND_DASH = '(?<!\\d\\s?[\\u2010-\\u2015\\-]\\s?)';
+
 /** "12 June 1933" / "12th June 1933" — the printed order the reading inverts. */
 const DATE_DAY_FIRST = new RegExp(
-  `(?<![\\w:.\\-])(\\d{1,2})(?:st|nd|rd|th)?\\s+(${MONTH_ALTERNATION})(\\.?)`
+  `(?<![\\w:.\\-])${NOT_AFTER_A_DAY_AND_DASH}(\\d{1,2})(?:st|nd|rd|th)?\\s+(${MONTH_ALTERNATION})(\\.?)`
   + ',?\\s+(1[1-9]\\d{2}|20\\d{2})(?![\\w\\-])', 'g');
+
+/**
+ * A DAY RANGE — "28–29 November 1830", "14-15 May", "November 28–29, 1830" — is
+ * DETECTED AND PROTECTED, never read here (Owen, 2026-09-24: *"the rules should
+ * be presented as examples, not explicitly written into deterministic logic"*).
+ * Closing it is what keeps every other rule from reading a piece of it — the
+ * year rule taking "1830" and the integer rule "28" and "29" would leave the
+ * model a span in two dialects. The whole range reaches the model in digits, and
+ * the prompt shows it the reading by example.
+ */
+const DAY_RANGE_SPAN = new RegExp(
+  `(?<![\\w:.\\-])(?:\\d{1,2}(?:st|nd|rd|th)?\\s?[\\u2010-\\u2015\\-]\\s?\\d{1,2}(?:st|nd|rd|th)?\\s+(?:${MONTH_ALTERNATION})\\.?`
+  + `|(?:${MONTH_ALTERNATION})\\.?\\s+\\d{1,2}(?:st|nd|rd|th)?\\s?[\\u2010-\\u2015\\-]\\s?\\d{1,2}(?:st|nd|rd|th)?)`
+  + '(?![A-Za-z\\d])(?:,?\\s+(?:1[1-9]\\d{2}|20\\d{2})(?![\\w\\-]))?', 'g');
 
 /**
  * "4 September" — a day-first date with NO YEAR.
@@ -981,7 +1006,7 @@ const DATE_DAY_FIRST = new RegExp(
  * September" and "p. 4 September", where the digit is not a day.
  */
 const DATE_DAY_FIRST_NO_YEAR = new RegExp(
-  `(?<![\\w:.\\-])(\\d{1,2})(?:st|nd|rd|th)?\\s+(${MONTH_ALTERNATION})(\\.?)(?![A-Za-z])`
+  `(?<![\\w:.\\-])${NOT_AFTER_A_DAY_AND_DASH}(\\d{1,2})(?:st|nd|rd|th)?\\s+(${MONTH_ALTERNATION})(\\.?)(?![A-Za-z])`
   + '(?!,?\\s*(?:1[1-9]\\d{2}|20\\d{2}))', 'g');
 
 /**
@@ -1006,7 +1031,9 @@ const DATE_LEAD_BLOCK =
 /** "June 12, 1933", "June 12th", "Dec. 19, 1991" — and "December 19" alone. */
 const DATE_MONTH_FIRST = new RegExp(
   `(?<![\\w\\-])(${MONTH_ALTERNATION})(\\.?)\\s+(\\d{1,2})(?:st|nd|rd|th)?`
-  + '(?:,?\\s+(1[1-9]\\d{2}|20\\d{2}))?(?![\\w\\-:])', 'g');
+  + '(?:,?\\s+(1[1-9]\\d{2}|20\\d{2}))?(?![\\w\\-:])'
+  // Not the first half of a day range, which `DATE_MONTH_RANGE` reads whole.
+  + '(?!\\s?[\\u2010-\\u2015]\\s?\\d)', 'g');
 
 function dateWords(month: string, day: number, year: string | undefined): string | null {
   if (day < 1 || day > 31) return null;
@@ -1063,7 +1090,31 @@ const CURRENCY: Record<string, { one: string; many: string; sub: string }> = {
   '€': { one: 'euro', many: 'euros', sub: 'cents' },
 };
 
-const MONEY = /([$£€])\s?(\d{1,3}(?:,\d{3})+|\d+)(?:\.(\d+))?(?:\s*(hundred|thousand|million|billion|trillion))?/gi;
+/*
+ * The trailing `(?!\.?\d)` is what keeps this off a pre-decimal sum: "£803.11.0"
+ * is pounds, shillings and pence, and without it this read "eight hundred three
+ * pounds and eleven pence.0." (Pursuit of Power, 2026-09-24). It forbids a digit
+ * too, so the match cannot back off to "£803.1" or "£80" and read a piece.
+ * `POUNDS_SHILLINGS_PENCE` protects that shape whole for the model.
+ */
+const MONEY = /([$£€])\s?(\d{1,3}(?:,\d{3})+|\d+)(?:\.(\d+))?(?!\.?\d)(?:\s*(hundred|thousand|million|billion|trillion))?/gi;
+
+/**
+ * "£803.11.0" — pounds, shillings and pence, the way a pre-1971 British sum is
+ * printed with points. DETECTED AND PROTECTED, never read here (Owen,
+ * 2026-09-24: the rules are examples for the model, not deterministic logic):
+ * closed to every rule so no piece of it is read as a year or a count, and the
+ * prompt shows the model the reading by example.
+ */
+const POUNDS_SHILLINGS_PENCE = /£\s?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d{1,2}){2}(?![\d.]*\d)/g;
+
+/** Does this span print a pre-decimal sum? The validator's word budget asks. */
+export function printsPreDecimalSum(text: string): boolean {
+  POUNDS_SHILLINGS_PENCE.lastIndex = 0;
+  const found = POUNDS_SHILLINGS_PENCE.test(text);
+  POUNDS_SHILLINGS_PENCE.lastIndex = 0;
+  return found;
+}
 
 /** "50¢" — a bare sub-unit, which only ever reads as cents. */
 const CENTS = /(?<![\w.\-])(\d{1,3})\s?¢/g;
@@ -1682,6 +1733,11 @@ export function applyNumberRules(
   const closed: Array<{ at: number; end: number }> = [];
   for (const m of matches(CLOCK_RANGE, text)) {
     closed.push({ at: m.index, end: m.index + m[0].length });
+  }
+  // A day range and a pre-decimal sum: the model's, whole (`DAY_RANGE_SPAN`,
+  // `POUNDS_SHILLINGS_PENCE`), so no rule reads a piece of either.
+  for (const re of [DAY_RANGE_SPAN, POUNDS_SHILLINGS_PENCE]) {
+    for (const m of matches(re, text)) closed.push({ at: m.index, end: m.index + m[0].length });
   }
   // AND EVERY SCRIPTURE REFERENCE, closed before any rule runs. Owen's ruling of
   // 2026-09-05: the reading of a reference is the model's, and a rule that read
