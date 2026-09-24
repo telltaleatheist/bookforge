@@ -1877,6 +1877,15 @@ function printUsage() {
     '  merge-tiers  merge per-book tiers into one corpus         (merge_corpora.py)',
     '  bed          ownbed1 under every clip of a gated tier   (bed_mix_tier.py)',
     '  cut-audit    every clip cut vs auto-editor pause map    (cut_audit.py)',
+    '  -- enhancement round-trip (clipforge-enhance.js) --',
+    '  enhance-upload   books -> non-dialogue regions -> <=59-min upload parts + map',
+    '  split-parts      a master -> parts at quiet points; join-parts puts returns back',
+    '  denoise-dir      RoFormer denoise a folder of wavs (WSL, GPU)',
+    '  eq-match         match a master to a reference tone (after Premiere/Adobe)',
+    '  enhance-reinsert returned upload parts -> each book\'s own timeline',
+    '  invented         sounds the enhancer ADDED to pauses -> sentences to exclude',
+    '  openers          epigraphs + chapter starts + part seams -> cue ids to exclude',
+    '  cue-ids          number an un-numbered VTT for --exclude-cue-ids',
     '  mix          encode a gated corpus into a training set   (build_higgs_mix.py)',
     '  train        LoRA fine-tune on an encoded corpus         (train_lora.py)',
     '  masters      rebuild per-book masters from Adobe returns (Adobe SPAN pipeline)',
@@ -2244,6 +2253,10 @@ async function main() {
   if (verb === 'merge-tiers') return runMergeTiers(args);
   if (verb === 'bed') return runBed(args);
   if (verb === 'cut-audit') return runCutAudit(args);
+  // The enhancement round-trip and its audits (2026-09-23): enhance-upload, enhance-reinsert, split-parts,
+  // join-parts, eq-match, invented, openers, cue-ids, denoise-dir - specs in clipforge-enhance.js.
+  const ENH = require('./clipforge-enhance').install({ resolveTrainingRoot, resolveTrainingPython, spawnTraining });
+  if (ENH[verb]) return ENH[verb](args);
   if (verb === 'mix') return runMix(args);
   if (verb === 'train') return runTrain(args);
   if (verb === 'masters') return runMasters(args);
