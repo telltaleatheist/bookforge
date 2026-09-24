@@ -89,7 +89,10 @@ function fixture(options:{loadEnds:'done'|'cancelled';hangRelease?:boolean;lease
     // 1.0.13 puts `lease_id` on the RECORD as well as on the `done` frame, and
     // that is not a duplicate: a lease id a client cannot recover after a broken
     // stream is a hold nobody can release.
-    if(p==='/v1/jobs/load')return Response.json({job_id:'load',type:'load-model',model:'dots-ocr',status:options.loadEnds,progress:1,position:null,error:null,artifacts:[],lease_id:loadLease,created:'2026-09-20T18:29:00Z',started:'2026-09-20T18:28:47Z',finished:'2026-09-20T18:29:37Z'});
+    // `chunks_done` is load-bearing in the SDK (what a resume differences
+    // against), so the job record carries it, as every current server's does —
+    // a load job's is empty.
+    if(p==='/v1/jobs/load')return Response.json({job_id:'load',type:'load-model',model:'dots-ocr',status:options.loadEnds,progress:1,position:null,error:null,artifacts:[],chunks_done:[],lease_id:loadLease,created:'2026-09-20T18:29:00Z',started:'2026-09-20T18:28:47Z',finished:'2026-09-20T18:29:37Z'});
     if(p.endsWith('/lease')&&req.method==='POST')return Response.json({lease_id:'lease',kind:'llm',subject:p.split('/')[3],client:'fixture',act:'pages',since:'2026-09-20T18:29:37Z',expires_at:'2026-09-20T18:31:37Z'},{status:201});
     if(p.startsWith('/v1/leases/')&&req.method==='DELETE'){
       if(options.hangRelease)return await new Promise<Response>(()=>{});

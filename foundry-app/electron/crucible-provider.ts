@@ -220,7 +220,7 @@ function serves(record: CapabilityRecord, cls: ModelClass): boolean {
  */
 export function anyServerServing(
   cls: ModelClass,
-): { server: string; route: 'local' | 'upstream'; selected: string; reason: string } | null {
+): { server: string; route: 'local' | 'upstream'; selected: string; reason: string | null } | null {
   const ranked = [
     ...(snapshot?.servers ?? []).filter((server) => server.loopback),
     ...(snapshot?.servers ?? []).filter((server) => !server.loopback),

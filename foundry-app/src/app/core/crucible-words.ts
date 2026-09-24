@@ -181,7 +181,8 @@ export function subjectWords(
  */
 export function unmetWords(unmet: readonly CrucibleUnmetClass[]): string | null {
   if (unmet.length === 0) return null;
-  const parts = unmet.map((entry) => `${classWords(entry.class)} — ${entry.reason}`);
+  const parts = unmet.map((entry) =>
+    `${classWords(entry.class)} — ${entry.reason ?? 'the engine did not say why'}`);
   return `Not on this engine: ${joinWords(parts)}`;
 }
 
@@ -288,10 +289,11 @@ function phaseWords(state: CrucibleCoordinationState): string {
       // §5.4: the holder is shown VERBATIM and never as a generic failure. A
       // person told only "busy" concludes the app is broken; a person told who
       // has it concludes the system is working, which it is.
+      // A server that named no holder is said as much — nothing is invented.
       return state.stopped
-        ? `Still busy after half an hour (${state.holder.fact}) — ${state.holder.who}. `
+        ? `Still busy after half an hour (${state.holder.fact})${holderWords(state.holder.who)}. `
           + 'Foundry stopped asking; it will try again the next time it reaches this engine.'
-        : `Waiting: another app is using this engine (${state.holder.fact}) — ${state.holder.who}. `
+        : `Waiting: another app is using this engine (${state.holder.fact})${holderWords(state.holder.who)}. `
           + 'Foundry carries on as soon as it lands.';
 
     case 'refused':
@@ -336,9 +338,15 @@ function preparingWords(
   const total = progress.bytes.total === null
     ? null
     : (progress.bytes.total / 1024 ** 3).toFixed(1);
+  const file = progress.bytes.file === null ? '' : ` ${progress.bytes.file}`;
   return total === null
-    ? `${head} — downloading ${progress.bytes.file} ${done} GB`
-    : `${head} — downloading ${progress.bytes.file} ${done} of ${total} GB`;
+    ? `${head} — downloading${file} ${done} GB`
+    : `${head} — downloading${file} ${done} of ${total} GB`;
+}
+
+/** ` — <the server's words>`, or nothing where the server named no holder. */
+function holderWords(who: string | null): string {
+  return who === null ? '' : ` — ${who}`;
 }
 
 /*
@@ -414,8 +422,8 @@ export function actWords(capability: string): string {
  * it; this is the part a person can act on, because it is the one that names a
  * different machine.
  */
-export function shortfallWords(bytes: number): string | null {
-  if (bytes <= 0) return null;
+export function shortfallWords(bytes: number | null): string | null {
+  if (bytes === null || bytes <= 0) return null;
   return `${sizeWords(bytes)} more video memory than this card has`;
 }
 
@@ -433,5 +441,6 @@ export function shortfallWords(bytes: number): string | null {
  * than a figure nobody reported.
  */
 export function cardWords(probe: Extract<CrucibleProbe, { outcome: 'ok' }>): string {
-  return probe.vramBytes > 0 ? `${probe.gpu} · ${sizeWords(probe.vramBytes)}` : probe.gpu;
+  const card = probe.gpu ?? 'card not reported';
+  return probe.vramBytes !== null && probe.vramBytes > 0 ? `${card} · ${sizeWords(probe.vramBytes)}` : card;
 }

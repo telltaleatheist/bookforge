@@ -70,7 +70,7 @@ export async function engineCatalog(server: string): Promise<CrucibleCatalogRow[
     installed: row.installed,
     installedBytes: row.installedBytes,
     expectedBytes: row.expectedBytes,
-    floors: [...row.floors],
+    floors: row.floors === null ? null : [...row.floors],
     source: row.source,
   }));
 }

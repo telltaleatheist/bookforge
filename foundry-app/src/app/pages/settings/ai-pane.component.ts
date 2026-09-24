@@ -469,7 +469,7 @@ export class AiPaneComponent {
       .map((row) => row.model as string)
       .filter((id) => {
         const split = splitUpstreamModel(id);
-        return split !== null && settings.upstreams[split.upstream].configured;
+        return split !== null && settings.upstreams[split.upstream]?.configured === true;
       });
     return [...new Set(ids)];
   });
@@ -597,13 +597,16 @@ export class AiPaneComponent {
     for (const choice of settings.localModels.choices[cls] ?? []) {
       chips.push({
         key: `${cls}:${choice.id}`,
-        label: choice.installed ? choice.id : `${choice.id} ↓`,
+        // `installed` or `fits` may be unstated (null). Only a stated `true`
+        // assigns; anything else fetches, which is safe because a pull of
+        // weights the server already has is skipped and says so.
+        label: choice.installed === true ? choice.id : `${choice.id} ↓`,
         detail: this.choiceWords(choice),
         chosen: local && assigned === choice.id,
-        action: choice.installed ? 'assign' : 'fetch',
+        action: choice.installed === true ? 'assign' : 'fetch',
         value: choice.id,
         prefill: '',
-        dim: !choice.fits || !choice.installed,
+        dim: choice.fits === false || choice.installed !== true,
       });
     }
 
@@ -634,7 +637,7 @@ export class AiPaneComponent {
        * line already says where to go and set one up.
        */
       for (const name of UPSTREAM_NAMES) {
-        if (!settings.upstreams[name].configured) continue;
+        if (settings.upstreams[name]?.configured !== true) continue;
         const open = upstream !== null && splitUpstreamModel(upstream)?.upstream === name;
         chips.push({
           key: `${cls}:route:${name}`,
@@ -754,9 +757,9 @@ export class AiPaneComponent {
     }
     const settings = this.doc();
     if (settings === null) return this.problem() === null ? 'reading…' : 'not answering';
-    const total = this.capability()?.totalBytes ?? 0;
-    const card = total > 0 ? ` · ${sizeWords(total)} card` : '';
-    return `${settings.backendKind}${card}`;
+    const total = this.capability()?.totalBytes ?? null;
+    const card = total !== null && total > 0 ? ` · ${sizeWords(total)} card` : '';
+    return `${settings.backendKind ?? 'backend not stated'}${card}`;
   }
 
   /**
@@ -764,9 +767,14 @@ export class AiPaneComponent {
    * the figure is never "fits".
    */
   private choiceWords(choice: LocalModelChoice): string {
-    const size = `${sizeWords(choice.memoryBytesEstimate)} est.`;
-    const room = choice.fits ? size : `${size} · larger than this card`;
-    return choice.installed ? room : `${room} · not installed`;
+    // Every figure here may be unstated (null); what was not said is said to
+    // be unknown, never filled in.
+    const size = choice.memoryBytesEstimate === null
+      ? 'size not stated'
+      : `${sizeWords(choice.memoryBytesEstimate)} est.`;
+    const room = choice.fits === false ? `${size} · larger than this card` : size;
+    if (choice.installed === true) return room;
+    return choice.installed === false ? `${room} · not installed` : `${room} · installed? not stated`;
   }
 
   protected pullWords(run: CruciblePullProgress): string {
@@ -783,7 +791,12 @@ export class AiPaneComponent {
         : `fetching — ${done} of ${sizeWords(run.bytes.total)}`;
     }
     if (run.step !== null) {
-      return `${run.step.name} (${run.step.index} of ${run.step.total})`;
+      // Each part of a step frame may be missing on a server that did not send
+      // it; what is missing is left out rather than filled in.
+      const name = run.step.name ?? 'working';
+      return run.step.index !== null && run.step.total !== null
+        ? `${name} (${run.step.index} of ${run.step.total})`
+        : name;
     }
     return 'starting…';
   }
@@ -910,10 +923,12 @@ export class AiPaneComponent {
    * can do, and they can only be done upstream.
    */
   protected backendLine(settings: SettingsDocument): string {
-    const allowance = Math.round(settings.desktopAllowanceBytes / 1e8) / 10;
     if (settings.backendKind === 'none') {
       return 'This engine has no accelerator (host mode), so the work above runs on an account or not at all.';
     }
-    return `Engine backend: ${settings.backendKind}. It leaves ${allowance} GB of its card to the desktop.`;
+    const backend = `Engine backend: ${settings.backendKind ?? 'not stated'}.`;
+    if (settings.desktopAllowanceBytes === null) return backend;
+    const allowance = Math.round(settings.desktopAllowanceBytes / 1e8) / 10;
+    return `${backend} It leaves ${allowance} GB of its card to the desktop.`;
   }
 }

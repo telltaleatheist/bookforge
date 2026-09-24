@@ -432,11 +432,17 @@ export type CrucibleProbe =
     outcome: 'ok';
     /** `info().server.name` — what the server calls itself. */
     serverName: string;
-    version: string;
-    /** `cuda-linux`, `mlx-darwin`. Windows is never a backend. */
-    backend: string;
-    /** The card, in the server's own words. */
-    gpu: string;
+    /**
+     * The server's version, or null where it did not state one. Null in each of
+     * these descriptive fields means THE SERVER DID NOT SAY, and the probe is
+     * still `ok` (Owen, 2026-09-24: *"if it can make the call to the crucible
+     * server then it should work"*); the screen draws only what was said.
+     */
+    version: string | null;
+    /** `cuda-linux`, `mlx-darwin`. Windows is never a backend. Null where not stated. */
+    backend: string | null;
+    /** The card, in the server's own words, or null where it gave none. */
+    gpu: string | null;
     /**
      * HOW BIG THAT CARD IS, as a number — the third of the three things Owen
      * asked a person be told about an engine (2026-09-15: *"the GPU it's
@@ -450,9 +456,10 @@ export type CrucibleProbe =
      *
      * 0 for a host that declared none, which is a real answer — an engine can
      * be running on a machine whose accelerator the probe could not size — and
-     * the screen draws the name alone rather than "0.0 GB".
+     * the screen draws the name alone rather than "0.0 GB". Null where the server
+     * sent no figure at all, drawn the same way.
      */
-    vramBytes: number;
+    vramBytes: number | null;
     /**
      * THE ORCHESTRATOR THIS ANSWER CAME THROUGH, or null for an address that is
      * the engine itself.

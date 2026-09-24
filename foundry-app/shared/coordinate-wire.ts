@@ -85,9 +85,10 @@ export interface CrucibleUnmetClass {
    * WHY, IN THE ENGINE'S OWN WORDS — the capability row's `reason`, verbatim.
    * Never one composed here: the row said why the class is off, with the
    * shortfall in it, and a sentence of ours in its place is how a fixable
-   * problem becomes an unfixable one.
+   * problem becomes an unfixable one. Null where the row stated no reason — then
+   * nothing is said in its place but that there was none.
    */
-  readonly reason: string;
+  readonly reason: string | null;
 }
 
 /**
@@ -204,8 +205,12 @@ export type CrucibleMissingEntry =
 export interface CrucibleCoordinationHolder {
   /** `a job`, `a lease`, `the claim` or `a chat`. */
   readonly fact: string;
-  /** The server's own words. Shown verbatim — §5.4 forbids a generic failure. */
-  readonly who: string;
+  /**
+   * The server's own words. Shown verbatim — §5.4 forbids a generic failure.
+   * Null where the refusal named no holder: shown as "another app", never
+   * filled in (a server this build reads, not one it requires — 2026-09-24).
+   */
+  readonly who: string | null;
 }
 
 /**
@@ -232,15 +237,23 @@ export interface CrucibleModuleProgress {
   readonly server: string;
   readonly taskId: string | null;
   readonly state: 'running' | 'done' | 'failed' | 'cancelled';
-  /** `{name, index, total}` — for a module, one per entry plus the reload. */
-  readonly step: { readonly name: string; readonly index: number; readonly total: number } | null;
+  /**
+   * `{name, index, total}` — for a module, one per entry plus the reload. Each
+   * field is null where the server's step frame did not carry it.
+   */
+  readonly step: {
+    readonly name: string | null;
+    readonly index: number | null;
+    readonly total: number | null;
+  } | null;
   /** One line of pip's output. Draw it, never branch on it. */
   readonly line: string | null;
   /** A pull's byte counts. `total` is null where no manifest sizes it. */
   readonly bytes: {
     readonly done: number;
     readonly total: number | null;
-    readonly file: string;
+    /** The file being fetched, or null where the frame did not name one. */
+    readonly file: string | null;
   } | null;
   /** A module entry that was already true. Idempotence, reported. */
   readonly skipped: string | null;

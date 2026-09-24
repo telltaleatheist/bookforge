@@ -342,7 +342,7 @@ export class RunTargetComponent {
   protected readonly reason = computed(() => {
     if (this.problem() !== null) return this.problem();
     const row = this.row();
-    if (row === null || row.enabled) return null;
+    if (row === null || row.enabled || row.reason === null) return null;
     const said = row.reason.trim();
     const cut = said.toLowerCase().startsWith('disabled:') ? said.slice('disabled:'.length) : said;
     const trimmed = cut.trim();

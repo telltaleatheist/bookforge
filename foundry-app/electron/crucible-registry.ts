@@ -728,7 +728,8 @@ export interface EngineHop {
   readonly engineName: string | null;
   readonly engineUrl: string;
   readonly engineBackend: string | null;
-  readonly engineOwner: EngineOwner;
+  /** Who runs that engine, or null where the orchestrator did not say. */
+  readonly engineOwner: EngineOwner | null;
 }
 
 /**
@@ -1152,11 +1153,12 @@ export async function probeCrucibleAt(url: string, token: string): Promise<Cruci
  * disagreement is exactly what made the duplicate invisible to whoever wrote
  * the join.
  */
-function gpuWords(vendor: string, name: string): string {
-  const card = name.trim();
-  const who = vendor.trim();
-  if (who.length === 0) return card;
-  if (card.length === 0) return who;
+/** The card in the server's words, or null when it gave neither a vendor nor a name. */
+function gpuWords(vendor: string | null, name: string | null): string | null {
+  const card = name === null || name.trim().length === 0 ? null : name.trim();
+  const who = vendor === null || vendor.trim().length === 0 ? null : vendor.trim();
+  if (who === null) return card;
+  if (card === null) return who;
   return card.toLowerCase().startsWith(who.toLowerCase()) ? card : `${who} ${card}`;
 }
 
@@ -1169,12 +1171,18 @@ async function probeEntry(entry: CrucibleServerEntry): Promise<CrucibleProbe> {
       serverName: info.server.name,
       version: info.server.version,
       backend: info.host.backend,
-      gpu: gpuWords(info.host.gpu.vendor, info.host.gpu.name),
-      vramBytes: info.host.gpu.vramBytes,
+      /*
+       * THE CARD IS DESCRIPTIVE, SO A SERVER THAT DOES NOT DESCRIBE IT STILL
+       * PROBES OK (Owen, 2026-09-24: *"if it can make the call to the crucible
+       * server then it should work"*). Each part is null where it was not sent,
+       * and the screen draws only what was.
+       */
+      gpu: info.host.gpu === null ? null : gpuWords(info.host.gpu.vendor, info.host.gpu.name),
+      vramBytes: info.host.gpu === null ? null : info.host.gpu.vramBytes,
       via: target.hop === null
         ? null
         : `through the orchestrator ${target.hop.orchestratorName} at ${target.hop.orchestratorUrl} `
-          + `(${target.hop.engineOwner})`,
+          + (target.hop.engineOwner === null ? '' : `(${target.hop.engineOwner})`),
     };
   } catch (err) {
     if (

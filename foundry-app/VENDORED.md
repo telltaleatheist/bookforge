@@ -10,10 +10,20 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\<user>\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **1927563** — *The engine is code that moves with the app: bundled into app/engine/, run by the app's own Electron* (was b4c7346) |
+| Source sha | **e2481dc** — *Repin to Crucible 1.0.25: any server that answers works, and what it did not say reads as not said* (was 1927563) |
 | Engine | **VENDORED, in `engine/`** since 1927563 (2026-09-24): `engine/foundry-engine.cjs` plus its four fonts, built from Foundry's `src/` by Foundry's `tools/build-engine.mjs` and checked against those sources by Foundry's test suite. Run by BookForge's own Electron as Node (`ELECTRON_RUN_AS_NODE=1`) from BOTH doors — this copy's `electron/engine.ts` and BookForge's `electron/foundry-bridge.ts`. **Ask it: `node foundry-app/engine/foundry-engine.cjs --version`** → `foundry X.Y.Z (src <digest>)`. There is no downloaded engine any more; `FOUNDRY_BIN` still overrides in both doors. |
-| Copied on | 2026-09-19 (five times: 3738c01, 3436fc5, 806d44b, f349771, ca4754c), 2026-09-20 (98a4344, 9e0b27d, dccc144, 7b98004, cc5fc5b, 93010d8, 77e1d6d) 2026-09-21 (753dca8, 3e26e53, f9bebb6, 95593b0, 8ee48b7) and 2026-09-22 (7185764, 7912022, 19fa7a9, df63f9f) and 2026-09-23 (acf63c2, 4835411), 2026-09-24 (b4c7346, 1927563) |
-| Copied by | Mechanical source sync, verified against Foundry `1927563:app/` (`git hash-object` per file: clean but for this file, `IPC-CHANNELS.md` and `.gitignore` — see below); details below |
+| Copied on | 2026-09-19 (five times: 3738c01, 3436fc5, 806d44b, f349771, ca4754c), 2026-09-20 (98a4344, 9e0b27d, dccc144, 7b98004, cc5fc5b, 93010d8, 77e1d6d) 2026-09-21 (753dca8, 3e26e53, f9bebb6, 95593b0, 8ee48b7) and 2026-09-22 (7185764, 7912022, 19fa7a9, df63f9f) and 2026-09-23 (acf63c2, 4835411), 2026-09-24 (b4c7346, 1927563, e2481dc) |
+| Copied by | Mechanical source sync, verified against Foundry `e2481dc:app/` (`git hash-object` per file: clean but for this file, `IPC-CHANNELS.md` and `.gitignore` — see below); details below |
+
+## The `1927563 → e2481dc` re-vendor — Crucible 1.0.25, any server that answers (2026-09-24)
+
+Foundry's side of the 1.0.25 repin: the SDK's informational fields became
+nullable, and Foundry's own types and screens now say "not stated" rather than
+inventing a value; decisions (chat depth, backend, catalog job types, model
+choices) each got an explicit rule. Vendor tarballs 1.0.24 → 1.0.25 (package.json
+and the lock blob-identical to e2481dc after `npm install`). `npm run build` run
+here. Keepers: hosted-crucible-seam 29/32 and host-queue 33/37 (the same
+pre-existing failures), foundry-progress 20/20, ipc-collision 7/7.
 
 ## The `b4c7346 → 1927563` re-vendor — the engine moves into the app (2026-09-24)
 

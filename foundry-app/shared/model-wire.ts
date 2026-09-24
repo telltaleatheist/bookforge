@@ -63,8 +63,13 @@ export interface CrucibleCatalogRow {
   id: string;
   /** The manifest's display name, or null where a manifest carries none. */
   name: string | null;
-  /** `llm`, `asr`, `align`, `tts` … — which job type this belongs to. */
-  jobType: string;
+  /**
+   * `llm`, `asr`, `align`, `tts` … — which job type this belongs to, or null
+   * where the server's catalog did not say. Null is read, not refused (Owen,
+   * 2026-09-24: *"if it can make the call to the crucible server then it should
+   * work"*): such a row simply cannot be matched to a job type.
+   */
+  jobType: string | null;
   installed: boolean;
   /** Bytes on disk, or null when it is not installed. */
   installedBytes: number | null;
@@ -84,10 +89,14 @@ export interface CrucibleCatalogRow {
    * download size for somebody about to spend it.
    */
   expectedBytes: number | null;
-  /** The classes this model is the FLOOR for. Only ever non-empty on a model. */
-  floors: string[];
-  /** `hf:<repo>` — where the bytes come from. */
-  source: string;
+  /**
+   * The classes this model is the FLOOR for. Only ever non-empty on a model.
+   * Null where the server did not say — not an empty list, which would be a
+   * claim that it is the floor for nothing.
+   */
+  floors: string[] | null;
+  /** `hf:<repo>` — where the bytes come from, or null where the server did not say. */
+  source: string | null;
 }
 
 /**
@@ -107,15 +116,15 @@ export interface CruciblePullProgress {
   kind: CrucibleSubjectKind;
   id: string;
   state: 'running' | 'done' | 'failed' | 'cancelled';
-  /** Which step of how many, when the server names one. */
-  step: { name: string; index: number; total: number } | null;
+  /** Which step of how many, when the server names one; each part null where it did not. */
+  step: { name: string | null; index: number | null; total: number | null } | null;
   /**
    * Bytes of the file being fetched. `total` is null where the server did not
    * state one — see {@link CrucibleCatalogRow.expectedBytes}: for a model it
    * usually will not, so a bar drawn from this has to survive having no
    * denominator rather than inventing a percentage.
    */
-  bytes: { done: number; total: number | null; file: string } | null;
+  bytes: { done: number; total: number | null; file: string | null } | null;
   /** Why the server did nothing — already installed, most often. */
   skipped: string | null;
   /** The server's own refusal. Steps that completed STAY (ARCHITECTURE.md R6). */

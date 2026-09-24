@@ -169,12 +169,15 @@ export interface AddressedUpstream {
  */
 export interface LocalModelChoice {
   id: string;
-  /** Weights only. See the note above before putting this in front of anybody. */
-  memoryBytesEstimate: number;
-  /** The engine's own verdict on the estimate — an estimate, not a guarantee. */
-  fits: boolean;
-  /** Whether the weights are already on that machine. */
-  installed: boolean;
+  /**
+   * Weights only. See the note above before putting this in front of anybody.
+   * Null where the server did not state one (Owen, 2026-09-24: *"if it can make the call to the crucible server then it should work"*).
+   */
+  memoryBytesEstimate: number | null;
+  /** The engine's own verdict on the estimate — an estimate, not a guarantee. Null: not stated. */
+  fits: boolean | null;
+  /** Whether the weights are already on that machine. Null: not stated. */
+  installed: boolean | null;
 }
 
 /**
@@ -221,15 +224,20 @@ export interface SettingsDocument {
   routes: Record<LlmClass, RouteRow>;
   /** Which local model runs each class, and what it could have run. */
   localModels: LocalModels;
+  /**
+   * One card per upstream, or `null` for an upstream this server does not list
+   * — one it does not offer — which a settings page leaves out (the SDK's own
+   * contract for the field) (Owen, 2026-09-24: *"if it can make the call to the crucible server then it should work"*).
+   */
   upstreams: {
-    anthropic: KeyedUpstream;
-    openai: KeyedUpstream;
-    ollama: AddressedUpstream;
+    anthropic: KeyedUpstream | null;
+    openai: KeyedUpstream | null;
+    ollama: AddressedUpstream | null;
   };
-  /** `desktop_allowance_bytes` — what the engine leaves the desktop on its card. */
-  desktopAllowanceBytes: number;
-  /** `cuda-linux`, `mlx-darwin`, or `none` for host mode (§3.5). */
-  backendKind: string;
+  /** `desktop_allowance_bytes` — what the engine leaves the desktop on its card. Null: not stated. */
+  desktopAllowanceBytes: number | null;
+  /** `cuda-linux`, `mlx-darwin`, or `none` for host mode (§3.5). Null: not stated. */
+  backendKind: string | null;
 }
 
 /**
@@ -328,8 +336,10 @@ export interface CapabilityRow {
    * THE OPERATOR'S WORDS for why, present whether enabled or not — the full
    * sentence with the door name and the backend block in it, which is what a
    * log and `crucible doctor` want and what a user line must NOT carry raw.
+   * Null where the server stated none (Owen, 2026-09-24: *"if it can make the call to the crucible server then it should work"* — SDK 1.0.25 reads an absent informational field as null); a
+   * reader says the server gave no reason rather than composing one.
    */
-  reason: string;
+  reason: string | null;
   /**
    * THE USER'S WORDS for why — a person-first summary Crucible sends beside
    * `reason` in the capability decision, kept short and free of engine
@@ -339,8 +349,11 @@ export interface CapabilityRow {
    * (`personReasonOf`) until it arrives.
    */
   summary?: string;
-  /** How much bigger the card would have to be. 0 on an enabled class. */
-  shortfallBytes: number;
+  /**
+   * How much bigger the card would have to be. 0 on an enabled class; null
+   * where the server did not state it, which draws as no shortfall figure.
+   */
+  shortfallBytes: number | null;
   /**
    * WHERE THIS CLASS'S WORK RUNS ON THAT SERVER (crucible PHASE15 §3.3).
    *
@@ -384,8 +397,14 @@ export interface CapabilityRow {
 }
 
 export interface CapabilityRecord {
-  backendKind: string;
-  totalBytes: number;
+  /**
+   * The backend the decision was made for, or null where the server did not
+   * state it (Owen, 2026-09-24: *"if it can make the call to the crucible server then it should work"* — SDK 1.0.25 reads an absent informational field as null). A null backend is treated as one
+   * no module list names (`foundryModuleForBackend`).
+   */
+  backendKind: string | null;
+  /** The card the decision was made on, or null where the server did not state it. */
+  totalBytes: number | null;
   classes: CapabilityRow[];
 }
 

@@ -78,7 +78,7 @@ export interface UpstreamApply {
   imports: [FormsModule],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
-    @for (name of upstreams; track name) {
+    @for (name of upstreams(); track name) {
       <div class="upstream">
         <div class="row">
           <span class="who">{{ label(name) }}</span>
@@ -211,7 +211,17 @@ export class EngineUpstreamsComponent {
 
   readonly apply = output<UpstreamApply>();
 
-  protected readonly upstreams = UPSTREAM_NAMES;
+  /**
+   * The upstreams to draw: every one while no document has landed, then only
+   * those the server lists — one it does not list is `null` on the document and
+   * is left out, never drawn as "not set".
+   */
+  protected readonly upstreams = computed(() => {
+    const document = this.doc();
+    return document === null
+      ? UPSTREAM_NAMES
+      : UPSTREAM_NAMES.filter((name) => document.upstreams[name] !== null);
+  });
 
   /** What somebody has typed, per upstream. Cleared whenever a document lands. */
   protected readonly typed = signal<Record<string, string>>({});
@@ -220,7 +230,7 @@ export class EngineUpstreamsComponent {
   protected readonly testing = signal<UpstreamName | null>(null);
 
   /** The current document's ollama address, for the box's placeholder. */
-  private readonly ollamaUrl = computed(() => this.doc()?.upstreams.ollama.url ?? null);
+  private readonly ollamaUrl = computed(() => this.doc()?.upstreams.ollama?.url ?? null);
 
   constructor() {
     /*
@@ -246,15 +256,15 @@ export class EngineUpstreamsComponent {
   }
 
   protected configured(name: UpstreamName): boolean {
-    return this.doc()?.upstreams[name].configured ?? false;
+    return this.doc()?.upstreams[name]?.configured === true;
   }
 
   /** The four characters the engine will admit to, or the address for ollama. */
   protected hint(name: UpstreamName): string {
     const document = this.doc();
     if (document === null) return '';
-    if (name === 'ollama') return document.upstreams.ollama.url ?? '';
-    return document.upstreams[name].keyHint ?? '';
+    if (name === 'ollama') return document.upstreams.ollama?.url ?? '';
+    return document.upstreams[name]?.keyHint ?? '';
   }
 
   protected keyHintFor(name: UpstreamName): string {

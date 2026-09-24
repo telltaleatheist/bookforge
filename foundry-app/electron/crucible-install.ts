@@ -158,6 +158,15 @@ export async function runningCrucibleVersion(): Promise<string | null> {
       + `${probe.message}. Nothing is installed over an engine that cannot be read.`,
     );
   }
+  if (probe.version === null) {
+    // It answered and did not state its version. This gate's whole question is
+    // WHICH version is running, so that stays a named refusal, not a guess.
+    throw new CrucibleInstallRefusal(
+      'install_precheck_failed',
+      `this computer publishes a Crucible at ${read.pairing.url}; it answered but did not say `
+      + 'what version it is. Nothing is installed over an engine that cannot be read.',
+    );
+  }
   return probe.version;
 }
 
@@ -512,6 +521,10 @@ async function verifyInstalled(
    * produces on a fresh machine.
    */
   const KNOWN = ['cuda-linux', 'mlx-darwin', 'llama-windows', 'none'];
+  if (probe.backend === null) {
+    onLine('Note: this engine is registered and answering, but did not report its backend.');
+    return null;
+  }
   if (!KNOWN.includes(probe.backend)) {
     onLine(
       `Note: this engine reports a backend this version of Foundry does not know `

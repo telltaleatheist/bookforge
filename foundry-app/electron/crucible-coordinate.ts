@@ -139,9 +139,18 @@ type ScopedModule = Omit<CrucibleModule, 'job_types' | 'subjects'> & {
 };
 export const FOUNDRY_MODULE: ScopedModule = foundryModule as ScopedModule;
 
-/** Generated backend annotations are app metadata, not fields in the task API. */
-export function foundryModuleForBackend(backend: string, source: ScopedModule = FOUNDRY_MODULE): CrucibleModule {
-  const supported = (entry: { backends?: readonly string[] }) => entry.backends === undefined || entry.backends.includes(backend);
+/**
+ * Generated backend annotations are app metadata, not fields in the task API.
+ *
+ * A server that does not STATE its backend (`backendKind` null) is treated
+ * exactly as a backend this module's lists do not name: the entries scoped to
+ * named backends are left out, and the unscoped ones are asked for. Nothing is
+ * guessed about which backend it might be (Owen, 2026-09-24: *"if it can make
+ * the call to the crucible server then it should work"*).
+ */
+export function foundryModuleForBackend(backend: string | null, source: ScopedModule = FOUNDRY_MODULE): CrucibleModule {
+  const supported = (entry: { backends?: readonly string[] }) =>
+    entry.backends === undefined || (backend !== null && entry.backends.includes(backend));
   return {
     name: source.name, version: source.version, needs: source.needs,
     job_types: source.job_types.filter(supported).map(entry => ({
@@ -330,7 +339,9 @@ export function missingForFoundry(
     const subject = catalog.find(
       (item) => item.id === row.selected && (item.kind === 'model' || item.kind === 'engine'),
     );
-    if (subject !== undefined) localJobTypes.add(subject.jobType);
+    // A catalog row that states no job type (null since SDK 1.0.25) adds none:
+    // it cannot be matched to the engine that serves it.
+    if (subject !== undefined && subject.jobType !== null) localJobTypes.add(subject.jobType);
     if (subject !== undefined && subject.installed) continue;
     missing.push({
       what: 'class',
@@ -348,7 +359,10 @@ export function missingForFoundry(
   // subjects. Restoring weights after reinstalling Crucible must still restore
   // the native engine, even when /info already advertises the llm job type.
   for (const engine of catalog) {
-    if (engine.kind !== 'engine' || engine.installed || !localJobTypes.has(engine.jobType)) continue;
+    if (engine.kind !== 'engine' || engine.installed) continue;
+    // An engine row that states no job type cannot be tied to a class this
+    // module needs, so it is not asked for — nothing is guessed (2026-09-24).
+    if (engine.jobType === null || !localJobTypes.has(engine.jobType)) continue;
     missing.push({
       what: 'subject', kind: engine.kind, id: engine.id, name: engine.name,
       jobType: engine.jobType, expectedBytes: engine.expectedBytes, inCatalog: true,

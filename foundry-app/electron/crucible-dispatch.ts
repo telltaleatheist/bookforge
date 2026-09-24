@@ -487,6 +487,9 @@ const CHAT_DEPTH_TIMEOUT_MS = 10_000;
 async function statedChatDepth(engine: CrucibleServerEntry): Promise<number | null> {
   try {
     const activity = await clientFor(engine, { timeoutMs: CHAT_DEPTH_TIMEOUT_MS }).activity();
+    // A document with no `chat` block states no depth — the same null as a
+    // missing number (SDK 1.0.25 reads an absent block as null).
+    if (activity.chat === null) return null;
     const stated = activity.chat.maxInFlight;
     if (stated === null || !Number.isFinite(stated) || stated < 1) return null;
     return Math.floor(stated);
@@ -952,6 +955,7 @@ function whatToDoAbout(capability: CapabilityClass): string {
 function personReasonOf(row: CapabilityRow): string {
   const summary = row.summary?.trim();
   if (summary) return summary;
+  if (row.reason === null) return 'the server did not say why';
   return row.reason.replace(/^\s*disabled:\s*/i, '') || 'no model fits its card';
 }
 
@@ -1241,7 +1245,7 @@ async function placeOnCrucible(
      * measurement; a person does, from that engine's own settings. See
      * {@link PlacementWait}.
      */
-    const shortfall = row.shortfallBytes > 0
+    const shortfall = row.shortfallBytes !== null && row.shortfallBytes > 0
       ? ` (${(row.shortfallBytes / 1024 ** 3).toFixed(1)} GiB short)`
       : '';
     return standingWait(
@@ -1437,8 +1441,9 @@ async function placeOnCrucible(
       if (signal?.aborted) cancelLoad();
       try {
         for await (const event of client.events(jobId)) {
-          if (event.event === 'warming') say(`Loading ${row.selected} on ${slot.name}: ${warmingHeadline(event.data.message)}`);
-          else if (event.event === 'progress') say(`Loading ${row.selected} on ${slot.name}: ${event.data.message}`);
+          if (event.event === 'warming') say(`Loading ${row.selected} on ${slot.name}${event.data.message === null ? ' (warming)…' : `: ${warmingHeadline(event.data.message)}`}`);
+          // A progress frame with no message still says the load is moving.
+          else if (event.event === 'progress') say(`Loading ${row.selected} on ${slot.name}${event.data.message === null ? '…' : `: ${event.data.message}`}`);
           else if (event.event === 'done') {
             /*
              * WHICHEVER ACT MADE THE RESIDENCY OURS HANDS US THE LEASE ID. The

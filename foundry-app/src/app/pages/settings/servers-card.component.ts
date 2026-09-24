@@ -199,7 +199,7 @@ interface EditableServer extends CrucibleServerView {
             @if (probes()[row.name]; as probe) {
               @if (probe.outcome === 'ok') {
                 <p class="small ok">
-                  {{ probe.serverName }} {{ probe.version }} — {{ probe.backend }}, {{ cardWords(probe) }}
+                  {{ probe.serverName }} {{ probe.version ?? '(version not stated)' }} — {{ probe.backend ?? 'backend not stated' }}, {{ cardWords(probe) }}
                 </p>
                 <!--
                   Reached through an orchestrator (crucible

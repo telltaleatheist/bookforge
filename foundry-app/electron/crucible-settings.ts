@@ -265,9 +265,17 @@ function localModelsFrom(doc: EngineSettingsDocument): LocalModels {
   const choicesRaw = doc.localModelChoices;
   const assigned = {} as Record<ModelClass, string | null>;
   const choices = {} as Record<ModelClass, LocalModelChoice[]>;
+  /*
+   * A SERVER THAT STATES NEITHER MAP (null since SDK 1.0.25) is read exactly as
+   * one that states every class absent — which this function already read as
+   * automatic selection and no choices: a server with no per-class assignment
+   * selects automatically, and one that lists no choices offers none to pick.
+   * Owen, 2026-09-24: *"if it can make the call to the crucible server then it
+   * should work."*
+   */
   for (const cls of MODEL_CLASSES) {
-    assigned[cls] = assignedRaw[cls] ?? null;
-    choices[cls] = (choicesRaw[cls] ?? []).map((row) => ({
+    assigned[cls] = assignedRaw === null ? null : (assignedRaw[cls] ?? null);
+    choices[cls] = (choicesRaw === null ? [] : (choicesRaw[cls] ?? [])).map((row) => ({
       id: row.id,
       memoryBytesEstimate: row.memoryBytesEstimate,
       fits: row.fits,
@@ -320,16 +328,18 @@ function documentFrom(doc: EngineSettingsDocument): SettingsDocument {
         }];
       }),
     ) as Record<LlmClass, SettingsDocument['routes'][LlmClass]>,
+    // An upstream the server does not list is null, and stays null: the
+    // settings page leaves its card out rather than drawing one "not set".
     upstreams: {
-      anthropic: {
+      anthropic: doc.upstreams.anthropic === null ? null : {
         configured: doc.upstreams.anthropic.configured,
         keyHint: doc.upstreams.anthropic.keyHint ?? null,
       },
-      openai: {
+      openai: doc.upstreams.openai === null ? null : {
         configured: doc.upstreams.openai.configured,
         keyHint: doc.upstreams.openai.keyHint ?? null,
       },
-      ollama: {
+      ollama: doc.upstreams.ollama === null ? null : {
         configured: doc.upstreams.ollama.configured,
         url: doc.upstreams.ollama.url ?? null,
       },
