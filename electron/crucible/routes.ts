@@ -24,6 +24,12 @@
  *      returns — the whole document after the write (§3.2). No second round
  *      trip: the write-through path is handed the new routes and records them.
  *
+ *   3. **The queue itself** (2026-09-24), when a row meets an `unknown` route:
+ *      `crucible/route-read.ts`, one read per server, with a budget and a
+ *      cooldown. The first two moments depend on a connect happening. A switch-on
+ *      whose coordination stopped early left a row waiting forever for a connect
+ *      nothing was going to make.
+ *
  * There is deliberately no timer and no TTL. A route changed on the engine's
  * own page, or by Foundry, reaches this app at its next coordination, which is
  * its next connect — and a book already placed keeps the lane it was placed
@@ -372,8 +378,52 @@ function saveUpstreams(): void {
  */
 export function noteCrucibleRoutes(server: string, routes: Readonly<Record<string, CrucibleRouteKind>>): void {
   const before = byServer.get(server);
+  const hadFailure = readFailures.delete(server);
   byServer.set(server, { ...routes });
-  if (before === undefined || !sameRoutes(before, routes)) recordChanged();
+  if (hadFailure || before === undefined || !sameRoutes(before, routes)) recordChanged();
+}
+
+/**
+ * Record the routes of SOME classes, leaving the others as they were.
+ *
+ * FOR A SETTINGS WRITE, and it is not {@link noteCrucibleRoutes}. A capability
+ * read is the engine's WHOLE answer, so it replaces the table. A settings PUT
+ * answers with the settings document, whose `routes` block covers only the four
+ * llm classes. Replacing the table with that wiped `decide`, `pages` and every
+ * other class the capability read had filled in. The next row on one of them
+ * then waited at "has not yet read where …" for a read nothing was going to
+ * make (bookforge-pc-1 found it, 2026-09-24). A document that speaks for four
+ * classes speaks for those four.
+ */
+export function noteCrucibleRouteSubset(
+  server: string,
+  routes: Readonly<Record<string, CrucibleRouteKind>>,
+): void {
+  const before = byServer.get(server) ?? {};
+  const after = { ...before, ...routes };
+  byServer.set(server, after);
+  if (!sameRoutes(before, after)) recordChanged();
+}
+
+/**
+ * WHY THE LAST READ OF AN ENGINE'S ROUTES FAILED, while it has not succeeded since.
+ *
+ * The queue holds a row whose route is `unknown` and ASKS for the read itself
+ * (`electron/crucible/route-read.ts`). When that read fails within its budget,
+ * the hold has to be able to say so rather than repeating "has not yet read",
+ * which would read as if nobody had asked. Cleared by the next successful read
+ * ({@link noteCrucibleRoutes}) and by {@link forgetCrucibleRoutes}.
+ */
+const readFailures = new Map<string, string>();
+
+export function noteCrucibleRouteReadFailed(server: string, reason: string): void {
+  const before = readFailures.get(server);
+  readFailures.set(server, reason);
+  if (before !== reason) recordChanged();
+}
+
+export function crucibleRouteReadFailure(server: string): string | null {
+  return readFailures.get(server) ?? null;
 }
 
 /** Do two route tables say the same thing about the same classes? */
@@ -466,8 +516,9 @@ function sameServed(a: ServerServed, b: Readonly<Record<string, boolean>>): bool
 export function forgetCrucibleRoutes(server?: string): void {
   if (server === undefined) {
     const had = byServer.size > 0 || servedByServer.size > 0 || upstreamsByServer.size > 0
-      || rolesByServer.size > 0 || resolvedEngineUrls.size > 0;
+      || rolesByServer.size > 0 || resolvedEngineUrls.size > 0 || readFailures.size > 0;
     byServer.clear();
+    readFailures.clear();
     servedByServer.clear();
     upstreamsByServer.clear();
     rolesByServer.clear();
@@ -483,8 +534,9 @@ export function forgetCrucibleRoutes(server?: string): void {
   const hadUpstream = upstreamsByServer.delete(server);
   const hadRole = rolesByServer.delete(server);
   const hadEngine = resolvedEngineUrls.delete(server);
+  const hadFailure = readFailures.delete(server);
   saveUpstreams();
-  if (had || hadServed || hadUpstream || hadRole || hadEngine) recordChanged();
+  if (had || hadServed || hadUpstream || hadRole || hadEngine || hadFailure) recordChanged();
 }
 
 /**

@@ -84,6 +84,7 @@ import { CRUCIBLE_TEXT_ACTS } from './text-acts';
 import { crucibleClientFor, CRUCIBLE_CLIENT_NAME } from './servers';
 import {
   noteCrucibleRoutes,
+  noteCrucibleRouteSubset,
   noteCrucibleServedClasses,
   noteCrucibleUpstreams,
   routesFromCapability,
@@ -501,7 +502,10 @@ export async function putCrucibleEngineSettings(
    * placing rows on the lane the operator just changed — and this is the one
    * function through which a route can change from inside this app.
    */
-  noteCrucibleRoutes(server, routesFromSettings(after.routes));
+  // A SUBSET, not the table: this document names only the four llm classes,
+  // and replacing the table with it wiped every other class's route
+  // (`noteCrucibleRouteSubset`, 2026-09-24).
+  noteCrucibleRouteSubset(server, routesFromSettings(after.routes));
   return after;
 }
 

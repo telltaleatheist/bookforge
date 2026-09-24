@@ -7822,7 +7822,32 @@ function setupIpcHandlers(): void {
    * machine, and that is the coordination STATE's to say, in the row.
    */
   const coordinateWithServer = async (name: string, because: string): Promise<void> => {
-    if (firstRunModels.pending) return;
+    /*
+     * EVERY WAY OUT OF HERE SAYS WHY (Owen, 2026-09-24). Its callers fire it
+     * with `void`, so a return with no line, or a throw outside the `try`, left
+     * nothing behind. A PC switched on at 22:54 was never coordinated and the
+     * log could not say whether it had stopped at the first-run check or at the
+     * install-state read. Both now log, and the read is inside the `try` with a
+     * bound.
+     */
+    if (firstRunModels.pending) {
+      getMainLogger().info(`Crucible "${name}" is not coordinated ${because} yet: this machine's `
+        + 'first-run model setup is still pending. Servers are coordinated when it finishes.');
+      return;
+    }
+    try {
+      await coordinateWithServerNow(name, because);
+    } catch (err) {
+      getMainLogger().warn(`Could not coordinate with Crucible "${name}" ${because}`, {
+        error: (err as Error).message,
+      });
+    }
+  };
+
+  /** How long the local install-state read may take before coordination gives up on it. */
+  const INSTALL_STATUS_BOUND_MS = 15_000;
+
+  const coordinateWithServerNow = async (name: string, because: string): Promise<void> => {
     /*
      * NOT WHILE THIS MACHINE IS STILL MOVING TO THE LINUX ENGINE (PHASE19 §2.8).
      *
@@ -7838,7 +7863,15 @@ function setupIpcHandlers(): void {
      * while the move runs is not affected by the move and has no reason to
      * wait for it.
      */
-    const install = await crucibleInstallDoor.status();
+    let bound: NodeJS.Timeout | undefined;
+    const install = await Promise.race([
+      crucibleInstallDoor.status(),
+      new Promise<never>((_, reject) => {
+        bound = setTimeout(() => reject(new Error(
+          `this machine's Crucible host did not report its install state within `
+          + `${INSTALL_STATUS_BOUND_MS / 1000} s`)), INSTALL_STATUS_BOUND_MS);
+      }),
+    ]).finally(() => clearTimeout(bound));
     if (install.running && !installOutcomeIsTerminal(install.outcome)
       && await isTheEngineOnThisComputer(name)) {
       getMainLogger().info(
@@ -7847,15 +7880,9 @@ function setupIpcHandlers(): void {
         + 'about to be replaced. It is coordinated when the setup reaches its outcome.');
       return;
     }
-    try {
-      const { coordinateServer } = await import('./crucible/coordinate.js');
-      const state = await coordinateServer(name);
-      getMainLogger().info(`Crucible "${name}" coordinated ${because}: ${state.phase}`);
-    } catch (err) {
-      getMainLogger().warn(`Could not coordinate with Crucible "${name}" ${because}`, {
-        error: (err as Error).message,
-      });
-    }
+    const { coordinateServer } = await import('./crucible/coordinate.js');
+    const state = await coordinateServer(name);
+    getMainLogger().info(`Crucible "${name}" coordinated ${because}: ${state.phase}`);
   };
 
   const crucibleConnections = new CrucibleConnections();

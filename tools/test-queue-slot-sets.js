@@ -1562,6 +1562,21 @@ function translatePass(title, waitFor) {
   };
 }
 
+test('a settings write speaks for its four classes and leaves the rest of the table alone', () => {
+  /*
+   * bookforge-pc-1, 2026-09-24: a settings PUT answers with the four llm
+   * classes' routes, and recording it REPLACED the table, so `decide`, `pages`
+   * and every other class a capability read had filled went back to `unknown`.
+   */
+  routes.forgetCrucibleRoutes();
+  routes.noteCrucibleRoutes('pc', { clean: 'local', translate: 'local', decide: 'local', pages: 'local' });
+  routes.noteCrucibleRouteSubset('pc', { clean: 'upstream', translate: 'local' });
+  assert.strictEqual(routes.crucibleRouteOf('pc', 'clean'), 'upstream');
+  assert.strictEqual(routes.crucibleRouteOf('pc', 'decide'), 'local');
+  assert.strictEqual(routes.crucibleRouteOf('pc', 'pages'), 'local');
+  routes.forgetCrucibleRoutes();
+});
+
 test('a class the engine ROUTES UPSTREAM takes its cloud lane, not its card', async () => {
   /*
    * The end of the story that starts in `electron/crucible/routes.ts`: the
@@ -1673,6 +1688,10 @@ test('an engine whose routes nobody has read yet is a WAIT, never a guess', asyn
   const host = fakeHost({ ranked: TWO, defaultWaitFor: 'mac', reach: REACHABLE });
   await fresh('unknown-route', [ai], host);
   routes.forgetCrucibleRoutes();
+  // THE ROW ASKS (Owen, 2026-09-24): a switch-on whose coordination stopped
+  // early left this hold waiting for a connect that never came.
+  const asked = [];
+  engine.setCrucibleRouteReader((server) => { asked.push(server); });
 
   const a = enqueueSent(translatePass('Mistborn', 'mac'));
   engine.start();
@@ -1681,6 +1700,15 @@ test('an engine whose routes nobody has read yet is a WAIT, never a guess', asyn
   assert.strictEqual(ai.runs.length, 0, 'nothing ran on a lane nobody has chosen');
   const step = jobById(a.id).steps[0];
   assert.match(step.progress.admissionHold, /has not yet read where "mac" runs translate work/);
+  assert.ok(asked.includes('mac'), 'the held row asked for the read itself');
+
+  // A read that fails says so in the hold, instead of "has not yet read".
+  routes.noteCrucibleRouteReadFailed('mac', 'connection refused');
+  engine.pump();
+  await settle(40);
+  assert.match(jobById(a.id).steps[0].progress.admissionHold,
+    /could not read where "mac" runs translate work \(connection refused\)/);
+  engine.setCrucibleRouteReader(null);
 
   // The read lands, and the next pass places it — no restart, no poll.
   routes.noteCrucibleRoutes('mac', { translate: 'upstream' });

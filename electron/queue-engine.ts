@@ -124,7 +124,8 @@ import {
   type SlotSet,
 } from '../shared/queue/slot-sets';
 import {
-  crucibleRouteOf, crucibleServedClassesOf, crucibleServesClass, crucibleUpstreamsOf,
+  crucibleRouteOf, crucibleRouteReadFailure, crucibleServedClassesOf, crucibleServesClass,
+  crucibleUpstreamsOf,
   onCrucibleRecordChanged,
 } from './crucible/routes';
 import { engineLanes } from './crucible/engine-lanes';
@@ -2976,6 +2977,19 @@ export function setResumableStopReason(reason: unknown): void {
   resumableStopReason = reason;
 }
 
+/**
+ * WHO TO ASK WHEN A ROW'S ROUTE IS UNKNOWN — main wires `crucible/route-read.ts`.
+ *
+ * Handed in rather than imported, for `setResumableStopReason`'s reason: this
+ * module imports no Electron and no SDK, and the keepers run it bare. Unset in
+ * a keeper, where a route is filled by the test itself (`noteCrucibleRoutes`).
+ */
+let routeReader: ((server: string) => void) | null = null;
+
+export function setCrucibleRouteReader(reader: ((server: string) => void) | null): void {
+  routeReader = reader;
+}
+
 export function setCrucibleRoutingHost(host: CrucibleRoutingHost | null): void {
   crucibleHost = host;
   reachCache.clear();
@@ -4164,9 +4178,22 @@ export function pump(): void {
         if (routableClass !== null && routed.venue !== LONGFORM_ALIGN_SET) {
           const route = crucibleRouteOf(routed.venue, routableClass);
           if (route === 'unknown') {
-            const reason = `Waiting: BookForge has not yet read where "${routed.venue}" runs `
-              + `${routableClass} work. It asks that engine on every connect; this clears as soon `
-              + 'as it answers.';
+            /*
+             * ASK, DON'T WAIT FOR SOMEBODY ELSE TO (Owen, 2026-09-24). The read
+             * used to come only from a connect, and a switch-on whose
+             * coordination stopped early left this row waiting for a connect
+             * that never came. The reader dedupes per server and keeps its own
+             * budget and cooldown (`crucible/route-read.ts`), so asking on every
+             * pass costs nothing.
+             */
+            if (routeReader !== null) routeReader(routed.venue);
+            const failed = crucibleRouteReadFailure(routed.venue);
+            const reason = failed === null
+              ? `Waiting: BookForge has not yet read where "${routed.venue}" runs `
+                + `${routableClass} work. It is asking that engine now; this clears as soon `
+                + 'as it answers.'
+              : `Waiting: BookForge could not read where "${routed.venue}" runs `
+                + `${routableClass} work (${failed}). It keeps asking; this clears as soon as it answers.`;
             admissionBlocked = true;
             if (step.progress.admissionHold !== reason) {
               step.progress = { ...step.progress, message: reason, admissionHold: reason };
