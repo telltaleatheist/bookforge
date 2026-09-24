@@ -3347,49 +3347,6 @@ export function narrationStampFileFor(records: string): string {
 }
 
 /**
- * WHERE A CLEANUP'S TRIAGE VERDICTS LIVE — `<key>.clean[.<id8>].triage.json`,
- * beside the answers they decide the asking of.
- *
- * ── The same owner as the stamp, for the stamp's reason ─────────────────────
- *
- * Two rows have to agree about this path — the `clean-triage` row that writes it
- * (`--out`) and the `clean` row chained behind it that reads it (`--triage`) —
- * and the one thing both certainly hold is the cleanup's records file. So it is
- * named FROM that file, here, beside `narrationStampFileFor`, and composed nowhere
- * else (`enqueueTriagedCleanup`, electron/job-queue.ts). A name composed from the
- * project key and a branch id instead would be a guess about which branch a
- * records file happened to take.
- *
- * DETERMINISTIC AT THE PRESS, which is what lets the verdicts be a row's identity:
- * two presses of one triaged cleanup name one records file and therefore one
- * verdicts file, and the queue answers the second press with the rows the first
- * one made (`productOf`). A deferred cleanup's records path is already named at
- * the press (`identifyCleanup`), so this holds for a cleanup ordered from a
- * greyed card too.
- *
- * IT REFUSES ANY OTHER SPELLING, on the stamp's rule: a suffix appended to
- * whatever it was handed would be a verdicts file beside something that is not a
- * records file, named after nothing.
- *
- * IT IS A RECEIPT OF WHAT WAS ASKED, NOT A CACHE THAT DECIDES ANYTHING ON ITS OWN.
- * Every verdict carries the digest of the words it judged, and the cleanup cleans
- * any block whose words have changed since (src/clean/run.ts) — so a file left
- * over from an older run can make a later one cheaper and can never make it skip
- * a block it did not judge.
- */
-export function cleanTriageFileFor(records: string): string {
-  const suffix = '.records.jsonl';
-  if (!records.toLowerCase().endsWith(suffix)) {
-    throw new ProjectError(
-      `${records} is not a text pass's records file — those are the .records.jsonl files the engine `
-      + 'writes, and a cleanup\'s triage verdicts are named after one. Refusing to guess at where '
-      + 'the verdicts would live.',
-    );
-  }
-  return `${records.slice(0, -suffix.length)}.triage.json`;
-}
-
-/**
  * WHERE THE BOOK'S CUT FIGURES ARE — the bank's own path with `.images` in place
  * of its extension, and the whole of the app's knowledge of that spelling.
  *

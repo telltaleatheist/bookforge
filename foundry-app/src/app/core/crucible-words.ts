@@ -100,9 +100,6 @@ const SUBJECT_KIND_WORDS: Readonly<Record<string, string>> = {
  * `clean` is its own sentence because it really is a different, smaller model.
  */
 const CLASS_WORDS: Readonly<Record<string, string>> = {
-  // The small model that answers yes or no before a cleanup — "the triage model"
-  // is the name its row and its setting use, and "decide" is the engine's word.
-  decide: 'the cleanup triage model',
   clean: 'the narration cleanup model',
   translate: 'the text model',
   simplify: 'the text model',
@@ -379,14 +376,8 @@ function holderWords(who: string | null): string {
  *
  * `pages` first because it is the one every book needs before anything else can
  * read it, then the four llm classes in the order the routes step draws them.
- *
- * `decide` SITS BEFORE `clean`, where a book meets it: the cleanup's triage runs
- * first and the cleanup asks only about what it flagged. A server older than the
- * class has no row for it, and the wizard drops an absent row rather than drawing
- * a refusal (`engineActs`) — so an engine that simply predates the triage is not
- * reported as one too small to run it.
  */
-export const FOUNDRY_ACTS = ['pages', 'decide', 'clean', 'translate', 'simplify', 'analysis'] as const;
+export const FOUNDRY_ACTS = ['pages', 'clean', 'translate', 'simplify', 'analysis'] as const;
 
 /**
  * What Foundry's menu calls the act a class serves.
@@ -399,7 +390,6 @@ export const FOUNDRY_ACTS = ['pages', 'decide', 'clean', 'translate', 'simplify'
  */
 const ACT_WORDS: Readonly<Record<string, string>> = {
   pages: 'Read the pages of a scan',
-  decide: 'Find the text that needs cleaning',
   clean: 'Clean up narration text',
   translate: 'Translate',
   simplify: 'Simplify',

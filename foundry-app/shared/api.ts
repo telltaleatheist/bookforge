@@ -51,7 +51,6 @@ import type {
   AnalysisPlan,
   AnalysisReading,
   AnalyzeRequest,
-  CleanRequest,
   AppQuestion,
   MachineModels,
   RemovalOutcome,
@@ -1059,29 +1058,6 @@ export interface FoundryApi {
      * door whose behaviour is unchanged.
      */
     enqueueTranslate(request: TextPassRequest): Promise<Job>;
-    /**
-     * A CLEANUP WITH ITS TRIAGE IN FRONT OF IT — two rows from one press: the
-     * `clean-triage` row that asks a small model which blocks need cleaning at
-     * all, and the `clean` row chained behind it that asks the cleaner only about
-     * those (Owen, 2026-09-23).
-     *
-     * THE WINDOW SENDS THE CLEANUP IT ALREADY COMPOSES, and main makes the pair:
-     * the verdicts path is named from the records file (`cleanTriageFileFor`), the
-     * triage is pinned to the same row the cleanup's book is made from, and the
-     * cleanup's `after` is the triage's row id — three facts only main holds, made
-     * in one turn so no Start can land between the two rows.
-     *
-     * BOTH ROWS COME BACK because the dialog acts on both: a server picked there is
-     * pinned on each, and its Start releases each. `triage` is null only when a
-     * cleanup writing these same answers was already in the queue without one —
-     * that row is the work asked for, and it comes back as `clean` unchanged.
-     *
-     * A SEPARATE DOOR FROM `enqueueTranslate` because that one answers with one row
-     * and this act has two; see `enqueueTriagedCleanup` (electron/job-queue.ts).
-     * Open hosted, where the pair goes to the host's queue by the same routing
-     * every text pass takes.
-     */
-    enqueueCleanTriaged(request: CleanRequest): Promise<{ triage: Job | null; clean: Job }>;
     /**
      * The same queue and the same GPU lane again, a third command. See
      * `AnalyzeRequest`.

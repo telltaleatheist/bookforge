@@ -84,21 +84,9 @@ export type { MintContributor, MintMeta };
  * *"it isnt a translate job. naming it translate is deceptive."* A simplify wore
  * `translate` with a title spread over it, which is a row telling the truth only
  * as far as its own label, and a clean would have had to do the same.
- *
- * `clean-triage` IS THE FIRST KIND THAT LANDS NO STEP AT ALL, where `read` lands
- * a bank and `analysis` a report. It is the question asked before a cleanup
- * (Owen, 2026-09-23: *"we create a list of blocks that need to be cleaned with
- * snap and then we bring snap down and load the full normal cleaning logic"*):
- * one yes/no per block from a small `decide` model, written to a verdicts file
- * the `clean` row chained behind it reads with `--triage`. It is on the board
- * because it holds a model on a card for the length of a book, and it is a kind
- * of its own rather than a flag on `clean` because it is a different run, on a
- * different model, with a different product — and the row a person watches has
- * to say which of the two is happening.
  */
 export type JobKind =
-  ConversionKind | 'read' | 'env-install' | 'translate' | 'simplify' | 'clean' | 'mint' | 'analysis'
-  | 'clean-triage';
+  ConversionKind | 'read' | 'env-install' | 'translate' | 'simplify' | 'clean' | 'mint' | 'analysis';
 
 /**
  * What the OCR panel can ask for. An env install is never enqueued this way.
@@ -273,14 +261,7 @@ export interface JobProgress {
    * one — blocks — which is the fact that made reusing the member tempting and is
    * not the fact this field is about.
    */
-  /*
-   * `triage` IS THE QUESTION BEFORE A CLEANUP, and it counts POSITIONS — a block,
-   * or a table judged whole — which a person reads as blocks. A member of its own
-   * for `clean`'s reason one comment up: "Cleaning 412 / 2,081" over a run that is
-   * only deciding which blocks need cleaning would be the surface naming the wrong
-   * act, and the bar that follows it IS the cleaning.
-   */
-  phase: 'render' | 'read' | 'translate' | 'clean' | 'triage' | 'rank' | 'verify';
+  phase: 'render' | 'read' | 'translate' | 'clean' | 'rank' | 'verify';
 }
 
 /**
@@ -1232,109 +1213,6 @@ export interface CleanRequest {
   /** Made from a step that has not landed. `TranslateRequest.deferred`. */
   deferred?: DeferredPlan;
   /** The row this one waits behind. `TranslateRequest.after`, and `Job.after`. */
-  after?: string;
-  /**
-   * `--triage`: THE VERDICTS A `clean-triage` ROW WROTE, when this cleanup was
-   * ordered with one in front of it — or absent, which is every cleanup this app
-   * made before the triage existed and every one ordered with the box unticked.
-   *
-   * ── What it changes, and what it cannot ────────────────────────────────────
-   *
-   * Only the blocks the triage flagged are put to the cleaner; the rest are
-   * recorded at their punctuated text under a key of their own, so every block
-   * still has a row and a later run without `--triage` asks the cleaner about
-   * every one of them (src/clean/run.ts). A verdict about words that have changed
-   * since, or a block the file never judged, is cleaned — so the file can only
-   * ever make a run do LESS work, never skip a block nobody was sure of.
-   *
-   * ── Named by main, at the press, and never renamed ─────────────────────────
-   *
-   * `cleanTriageFileFor(recordsPath)` (electron/projects.ts), beside the stamp and
-   * named from the same records file, so the triage row that writes it and this
-   * row that reads it cannot come to two answers. It is the TRIAGE row's product
-   * and identity, fixed when that row was minted — so it is deliberately NOT moved
-   * when a deferred cleanup's records file is renamed at spawn (`renameProduct`):
-   * the file this names is the one the row in front of it is writing.
-   *
-   * IT IS A PATH AND NOT A PROMISE THAT THE FILE IS THERE. The cleanup waits
-   * behind its triage row (`after`), and a triage that failed or was removed takes
-   * this row with it (`cascadeFrom`, electron/job-queue.ts), so the ordinary run
-   * reaches its spawn with the file written. A run that reaches it without one is
-   * refused by the engine by name, which is the honest ending.
-   */
-  triagePath?: string;
-}
-
-/**
- * THE QUESTION BEFORE A CLEANUP — which blocks need cleaning at all.
- *
- *   foundry clean-triage --book <book.jsonl> --out <verdicts.json>
- *                        --endpoint <crucible base url> --model <decide model>
- *
- * ── The ruling (Owen, 2026-09-23) ───────────────────────────────────────────
- *
- * *"we create a list of blocks that need to be cleaned with snap and then we bring
- * snap down and load the full normal cleaning logic"* — and *"a cleanup-triage
- * stage that runs before cleanup."* A small model on Crucible's decide door reads
- * the book once, the verdicts go into a file, and the cleanup chained behind this
- * row (`CleanRequest.triagePath`) asks its big model only about what was flagged.
- *
- * ── `AnalyzeRequest`'s SHAPE MORE THAN `CleanRequest`'s ────────────────────
- *
- * Because what the two have in common is what decides a shape: a model pass over
- * the materialised book that writes ONE file which is neither a document nor a
- * records file. So `outputPath` is the product and the identity, `at` pins the
- * row the book is made from, and `bookPath` is filled at the spawn. What it does
- * NOT have is a step, which is where it parts from the analysis too: nothing in
- * the tree is ever about a triage — the cleanup that follows is the step, and a
- * card for the question in front of the answer would be two cards for one act.
- * No `stepId`, no `mints`, no landing.
- *
- * NO `model` AND NO `ollama`, which every text pass carries as declared defaults.
- * The decide door is Crucible's alone — it reads the resident model's own belief
- * in two letters, which neither Ollama nor an upstream can report — so there is no
- * request-side answer that could honestly stand in for a placement. A triage that
- * reaches its command line unplaced is refused by name (`argsFor`,
- * electron/job-queue.ts) rather than spelling an endpoint nobody chose.
- */
-export interface CleanTriageRequest {
-  kind: 'clean-triage';
-  /** The document the person had open — identity, not input. `CleanRequest.inputPath`. */
-  inputPath: string;
-  /**
-   * `--book`: made at the spawn from `at` (or `deferred.from`), exactly as the
-   * cleanup behind it makes its own — `materializeBook` of the same row, so the
-   * triage judges the words the cleaner will be shown. Absent until then.
-   */
-  bookPath?: string;
-  /**
-   * THE LEDGER ROW THE BOOK IS MADE FROM, pinned at the press — the SAME id the
-   * cleanup behind it carries, which is what makes the two books one content.
-   * `CleanRequest.at`, and its whole argument; absent when `deferred` is set.
-   */
-  at?: string | null;
-  /**
-   * `--out`: THE VERDICTS FILE, and the whole product of this row. It is also the
-   * row's identity, `AnalyzeRequest.outputPath`'s arrangement — two presses of one
-   * triaged cleanup name one file and are one row (`productOf`,
-   * electron/job-queue.ts). Composed by main (`cleanTriageFileFor`).
-   */
-  outputPath: string;
-  /**
-   * `--concurrency`: groups of questions in flight. Absent means the engine's own,
-   * on `CleanRequest.concurrency`'s rule — a default written here would be a second
-   * place the engine's default lives. The placement does NOT fill it: a Crucible's
-   * stated depth is its CHAT door's admission, and the decide door keeps its own.
-   */
-  concurrency?: number;
-  /**
-   * MADE FROM A STEP THAT HAS NOT LANDED — the cleanup behind it was pressed on a
-   * greyed card, so this is deferred on the SAME promising row and materialises
-   * the book that row lands (`TranslateRequest.deferred`). The cleanup then waits
-   * behind THIS row rather than the promise: a row has one parent.
-   */
-  deferred?: DeferredPlan;
-  /** The row this one waits behind — `Job.after`. Composed by main at the enqueue. */
   after?: string;
 }
 
@@ -2479,23 +2357,11 @@ export interface OllamaFacts {
  * wants a DIFFERENT model — a bigger one is slower at punctuation rather than
  * better (`DEFAULT_CLEAN_TEXT_MODEL`, shared/pipeline.ts). `pages` is the vision
  * model that reads a scan, which shares nothing with any of them.
- *
- * `decide` IS THE ONE CLASS THAT DOES NOT WRITE A WORD. It answers yes or no —
- * read off the resident model's own belief in the two letters at Crucible's
- * `POST /v1/decide` (PHASE22 §2.2) — and its one act in this app is the cleanup
- * triage: which blocks need cleaning at all, asked before the cleaner is loaded
- * (Owen, 2026-09-23: *"we create a list of blocks that need to be cleaned with
- * snap and then we bring snap down and load the full normal cleaning logic"*).
- * It is a class of its own rather than a use of `clean`'s model because it wants
- * a DIFFERENT one: a decision is the act a 0.8B can do, and Crucible's lineup
- * gives the class no size floor for exactly that reason. It is NOT one of the
- * upstream-routable classes (`LLM_CLASSES`, shared/engine-settings.ts): an
- * upstream returns text, not the logits the answer is read from.
  */
-export type ModelClass = 'translate' | 'simplify' | 'analysis' | 'clean' | 'pages' | 'decide';
+export type ModelClass = 'translate' | 'simplify' | 'analysis' | 'clean' | 'pages';
 
 /**
- * THE SIX, AS A LIST, in the order a book meets them.
+ * THE FIVE, AS A LIST, in the order a book meets them.
  *
  * Beside the type because a union and the array over it drift apart the moment
  * they live in different files — one gains a member and the other does not, and
@@ -2505,16 +2371,10 @@ export type ModelClass = 'translate' | 'simplify' | 'analysis' | 'clean' | 'page
  * can read it; then the four text classes in the order the settings card draws
  * them. A current Crucible reports TEN classes — `tts`, `asr`, `align`, `rvc`
  * and `denoise` besides these — and those are BookForge's work. This app has no
- * act behind any of them, so it assigns models for exactly these.
- *
- * `decide` SITS BEFORE `clean` because that is where a book meets it: the triage
- * runs first and the cleanup asks only about what it flagged. A Crucible older
- * than 1.0.24 has no `decide` row at all, and every reader of this list already
- * reads an absent row as "this server has no record for that work" — which is
- * the true answer, said by name, and not something to paper over here.
+ * act behind any of them, so it assigns models for exactly these five.
  */
 export const MODEL_CLASSES: readonly ModelClass[] =
-  ['pages', 'decide', 'clean', 'translate', 'simplify', 'analysis'];
+  ['pages', 'clean', 'translate', 'simplify', 'analysis'];
 
 /**
  * The acts the dock draws a tile for and this machine can refuse.

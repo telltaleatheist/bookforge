@@ -1280,12 +1280,6 @@ export class QueuePageComponent {
        * each of them is FOR, and what this one is for is a narrator.
        */
       case 'clean': return 'Cleaning the text for narration';
-      /*
-       * WHAT THE TRIAGE IS FOR, on the cleanup's own argument one line up: the
-       * word alone ("Triage") says nothing about somebody's book, and what this
-       * row does is find the paragraphs the cleanup behind it will work on.
-       */
-      case 'clean-triage': return 'Finding the text that needs cleaning';
       case 'epub': return 'Casting the book';
       case 'pdf': return 'Reprinting';
       case 'txt': return 'Plain text';
@@ -1319,7 +1313,6 @@ export class QueuePageComponent {
     if (job.kind === 'translate') return 'Translated · the book follows';
     if (job.kind === 'simplify') return 'Simplified · the book follows';
     if (job.kind === 'clean') return 'Cleaned · the book follows';
-    if (job.kind === 'clean-triage') return 'Checked · the cleanup follows';
     return this.view.made(job);
   }
 

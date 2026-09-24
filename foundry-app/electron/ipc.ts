@@ -223,7 +223,6 @@ import type {
   StepDeletion,
   TextPassRequest,
   AnalyzeRequest,
-  CleanRequest,
   ModelClass,
   UnappliedAnswer,
   UnappliedWarning,
@@ -3434,33 +3433,6 @@ export function registerIpc(): void {
     // resolved from the project that file belongs to, exactly as it used to be
     // resolved from the project the output EPUB belonged to.
     return queue.enqueueTextPass(request, await madeFrom(request, request.recordsPath));
-  });
-  /*
-   * ── A CLEANUP WITH ITS TRIAGE IN FRONT OF IT: ONE PRESS, TWO ROWS ──────────
-   *
-   * Owen, 2026-09-23: *"we create a list of blocks that need to be cleaned with
-   * snap and then we bring snap down and load the full normal cleaning logic."*
-   * The window sends the cleanup it would have sent to the door above, and
-   * `enqueueTriagedCleanup` makes the triage and chains the cleanup behind it.
-   *
-   * A DOOR OF ITS OWN rather than a flag on `queue:enqueue-translate`, because
-   * that door's answer is one row and this act is two — the dialog pins a picked
-   * server on both and its Start releases both, so it has to be handed both ids.
-   * The whole argument for making the pair in main rather than in the window is
-   * at `enqueueTriagedCleanup` (electron/job-queue.ts).
-   *
-   * THE SAME ADMISSION AND THE SAME POSITION as the door above, because the
-   * cleanup is the same request it would have been: its input re-checked against
-   * the allow-list, and the position resolved from the project its records file
-   * belongs to — which is the triage's position too, since the verdicts are
-   * named beside those records. NOT REFUSED HOSTED, on the cleanup's own terms:
-   * this act exists only on BookForge's behalf, and the pair routes to its queue.
-   */
-  ipcMain.handle('queue:enqueue-clean-triaged', async (_event, request: CleanRequest) => {
-    if (admitted(request.inputPath) === null) {
-      throw new Error(`${request.inputPath} was never opened in this app.`);
-    }
-    return queue.enqueueTriagedCleanup(request, await madeFrom(request, request.recordsPath));
   });
   /*
    * AN ANALYSIS IS QUEUED THE SAME WAY AND REFUSED HOSTED, which is the one place

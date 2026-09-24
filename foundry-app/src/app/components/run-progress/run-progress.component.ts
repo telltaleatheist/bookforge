@@ -147,8 +147,6 @@ export class RunProgressComponent {
       case 'read': return `Reading page ${page} of ${total}.`;
       case 'translate': return `Translating paragraph ${page} of ${total}.`;
       case 'clean': return `Cleaning paragraph ${page} of ${total}.`;
-      // The question before a cleanup: which paragraphs need it at all.
-      case 'triage': return `Checking paragraph ${page} of ${total}.`;
       case 'rank': return `Scoring sentence ${page} of ${total}.`;
       case 'verify': return `Checking passage ${page} of ${total}.`;
       /*

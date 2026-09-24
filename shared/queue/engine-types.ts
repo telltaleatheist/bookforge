@@ -497,7 +497,7 @@ export interface StepProgress {
    * of their `JobProgress.phase` and every member of it is theirs, so this list
    * moves when that one does and never on its own account.
    */
-  foundryPhase?: 'render' | 'read' | 'translate' | 'clean' | 'triage' | 'rank' | 'verify';
+  foundryPhase?: 'render' | 'read' | 'translate' | 'clean' | 'rank' | 'verify';
 }
 
 /**

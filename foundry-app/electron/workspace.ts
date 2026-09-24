@@ -2061,33 +2061,6 @@ export async function materializeCleanup(
 }
 
 /**
- * THE BOOK A CLEANUP'S TRIAGE READS, MADE AT THE SPAWN — and it is the book the
- * cleanup behind it will read, which is the whole of what this function promises.
- *
- * `materializeBook` of the row the press pinned, the same call
- * `materializeCleanup` makes one function up: both requests carry the same `at`
- * (or the same `deferred.from`), so the two books are the same content, and the
- * triage judges exactly the words the cleaner is shown. Nothing else a cleanup
- * composes is composed here — no records path, no stamp, no seed — because a
- * triage writes none of them; its one file was named at the press.
- *
- * NOT THE EXPORT PATH, which is the mistake this function exists to make
- * impossible: `materializeExport` narrows a narration stamp and composes a
- * rendering's inputs, and a triage is neither.
- *
- * A REFUSAL HERE IS THE PERSON'S OWN SENTENCE, `materializeAnalysis`'s rule: a
- * book that cannot be assembled is not worth a model's time.
- */
-export async function materializeCleanTriage(
-  projectDir: string,
-  at: LedgerStep | null,
-): Promise<{ bookPath: string }> {
-  const derived = await materializeBook(projectDir, at);
-  if (!derived.ok) throw new ProjectError(derived.reason);
-  return { bookPath: derived.path };
-}
-
-/**
  * WHERE THIS BOOK'S ANALYSIS GOES — the report the run writes and the step it
  * will be filed as.
  *

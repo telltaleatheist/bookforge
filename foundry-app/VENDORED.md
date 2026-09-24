@@ -10,10 +10,24 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\<user>\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **0eb12de** — *clean-triage: groups of up to 20,000 chars / 32 positions, from measurement* (was b7ba2a8; only `engine/foundry-engine.cjs` changed) |
+| Source sha | **c3df021** — *Retire the model triage: the cleaner asks only blocks an answer could change* (was 0eb12de) |
 | Engine | **VENDORED, in `engine/`** since 1927563 (2026-09-24): `engine/foundry-engine.cjs` plus its four fonts, built from Foundry's `src/` by Foundry's `tools/build-engine.mjs` and checked against those sources by Foundry's test suite. Run by BookForge's own Electron as Node (`ELECTRON_RUN_AS_NODE=1`) from BOTH doors — this copy's `electron/engine.ts` and BookForge's `electron/foundry-bridge.ts`. **Ask it: `node foundry-app/engine/foundry-engine.cjs --version`** → `foundry X.Y.Z (src <digest>)`. There is no downloaded engine any more; `FOUNDRY_BIN` still overrides in both doors. |
-| Copied on | 2026-09-19 (five times: 3738c01, 3436fc5, 806d44b, f349771, ca4754c), 2026-09-20 (98a4344, 9e0b27d, dccc144, 7b98004, cc5fc5b, 93010d8, 77e1d6d) 2026-09-21 (753dca8, 3e26e53, f9bebb6, 95593b0, 8ee48b7) and 2026-09-22 (7185764, 7912022, 19fa7a9, df63f9f) and 2026-09-23 (acf63c2, 4835411), 2026-09-24 (b4c7346, 1927563, e2481dc, a1138f6, 72c6b08, b7ba2a8, 0eb12de) |
-| Copied by | Mechanical source sync, verified against Foundry `0eb12de:app/` (`git hash-object` per file: clean but for this file, `IPC-CHANNELS.md` and `.gitignore` — see below); details below |
+| Copied on | 2026-09-19 (five times: 3738c01, 3436fc5, 806d44b, f349771, ca4754c), 2026-09-20 (98a4344, 9e0b27d, dccc144, 7b98004, cc5fc5b, 93010d8, 77e1d6d) 2026-09-21 (753dca8, 3e26e53, f9bebb6, 95593b0, 8ee48b7) and 2026-09-22 (7185764, 7912022, 19fa7a9, df63f9f) and 2026-09-23 (acf63c2, 4835411), 2026-09-24 (b4c7346, 1927563, e2481dc, a1138f6, 72c6b08, b7ba2a8, 0eb12de, c3df021) |
+| Copied by | Mechanical source sync, verified against Foundry `c3df021:app/` (`git hash-object` per file: clean but for this file, `IPC-CHANNELS.md` and `.gitignore` — see below); details below |
+
+## The `0eb12de → c3df021` re-vendor — the model triage retired (2026-09-24)
+
+Owen: *"skip the bake off. just fix the system."* The cleanup triage (a decide
+model asked of every block before a cleanup, 4835411 here) is reverted: no
+`clean-triage` job kind, no paired enqueue door, no "skip blocks that need no
+cleaning" checkbox, no `decide` class in the app. Its job is now done inside
+the engine's cleaner for free — `blockMayTakeAnEdit` sends the model only
+blocks some answer could change (73 % of requests unneeded across 30 books,
+nothing lost). BookForge's own half removed in the same commit: the
+`clean-triage` FoundryJobKind, the `triage` phase and progress pattern, its
+label, its `decide` crucibleClass. **Source only — BookForge was running, so
+`dist/` was NOT rebuilt;** run `npm run build` here and `npm run build:electron`
+at the root after quitting it.
 
 ## The `1927563 → e2481dc` re-vendor — Crucible 1.0.25, any server that answers (2026-09-24)
 

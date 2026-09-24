@@ -174,7 +174,7 @@ export interface QueueJob {
   // The phase a hosted Foundry step (`foundry-job`) is in, mirrored from the
   // step's progress. It decides the unit the readouts name: a page-read counts
   // PAGES, a translate/clean counts blocks/chunks. Absent for non-Foundry jobs.
-  foundryPhase?: 'render' | 'read' | 'translate' | 'clean' | 'triage' | 'rank' | 'verify';
+  foundryPhase?: 'render' | 'read' | 'translate' | 'clean' | 'rank' | 'verify';
   epubPath?: string;      // Optional for bilingual-assembly jobs
   epubFilename?: string;  // Optional for bilingual-assembly jobs
   status: JobStatus;

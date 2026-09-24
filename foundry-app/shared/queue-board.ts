@@ -158,13 +158,6 @@ export const JOB_RESOURCE: Readonly<Record<JobKind, JobResource>> = {
    * anything run beside it.
    */
   analysis: 'gpu',
-  /**
-   * THE CLEANUP'S TRIAGE HOLDS A CARD TOO — a small `decide` model, leased on a
-   * Crucible for the length of the book, answering one yes/no per block. Smaller
-   * than the cleaner is not the same as free: it is a model resident on somebody's
-   * GPU, and the cleanup chained behind it wants that card next.
-   */
-  'clean-triage': 'gpu',
 };
 
 /** The two resources that are actually counted in slots. */
