@@ -30678,7 +30678,7 @@ var init_version = __esm({
     init_engine_import_meta_url();
     init_package();
     VERSION = package_default.version;
-    GIT_COMMIT = "src fd865b62b4e2".length > 0 ? "src fd865b62b4e2" : null;
+    GIT_COMMIT = "src 0b63365b2b2f".length > 0 ? "src 0b63365b2b2f" : null;
   }
 });
 
@@ -72243,7 +72243,7 @@ function unitLine(unit, asked) {
   return `[${unit.parts}] (context) ${cut}`;
 }
 function groupState(units, group, unit = "block") {
-  if (unit === "sentence") return SENTENCE_TRIAGE_GUIDE;
+  if (unit === "sentence") return SENTENCE_TRIAGE_STATE;
   const lines = [];
   for (let i = group.from; i < group.to; i += 1) {
     lines.push(unitLine(units[i], i >= group.askFrom && i < group.askTo));
@@ -72256,12 +72256,26 @@ ${lines.join("\n")}`;
 function triageQuestion(parts, unit = "block", text) {
   if (unit === "sentence") {
     if (text === void 0) throw new Error(`triageQuestion: a sentence question needs its sentence (${parts}).`);
-    return { type: "yesno", instructions: `This sentence needs cleaning: \xAB${text.replace(/\s+/g, " ").trim()}\xBB` };
+    return {
+      type: "choice",
+      instructions: `Does this sentence need to be cleaned?
+
+${text.replace(/\s+/g, " ").trim()}
+
+Here are the criteria a sentence meets if it needs to be cleaned:
+` + TRIAGE_CRITERIA,
+      options: SENTENCE_OPTIONS
+    };
   }
   return { type: "yesno", instructions: `Block [${parts}] needs cleaning.` };
 }
 function needsCleaning(p, labelMass) {
   return p >= TRIAGE_FLAG_P || labelMass < TRIAGE_MIN_LABEL_MASS;
+}
+function yesProbability(answer) {
+  if (typeof answer.p === "number") return answer.p;
+  const yes = answer.probabilities?.["yes"];
+  return typeof yes === "number" ? yes : void 0;
 }
 async function askGroup(transport, url, body, sleep, log2) {
   let transportFailures = 0;
@@ -72355,12 +72369,13 @@ async function runCleanTriage(opts) {
     const reply = await askGroup(transport, url, body, sleep, opts.log);
     for (const unit2 of asked) {
       const answer = reply.answers?.[unit2.parts];
-      if (answer === void 0 || typeof answer.p !== "number" || typeof answer.label_mass !== "number") {
+      const p = answer === void 0 ? void 0 : yesProbability(answer);
+      if (answer === void 0 || p === void 0 || typeof answer.label_mass !== "number") {
         throw new CleanTextError(`clean-triage: the door answered a group without a yes/no for ${unit2.parts}.`);
       }
       verdicts[unit2.parts] = {
-        needsCleaning: needsCleaning(answer.p, answer.label_mass),
-        p: answer.p,
+        needsCleaning: needsCleaning(p, answer.label_mass),
+        p,
         labelMass: answer.label_mass,
         digest: blockDigest(unit2.text)
       };
@@ -72428,7 +72443,7 @@ function readTriageFile(triagePath) {
   }
   return file;
 }
-var fs27, path22, TRIAGE_FORMAT, TRIAGE_FLAG_P, TRIAGE_MIN_LABEL_MASS, GROUP_MAX_UNITS, GROUP_MAX_SENTENCES, GROUP_MAX_CHARS, CONTEXT_UNITS, CONTEXT_CHARS, DEFAULT_TRIAGE_CONCURRENCY, TRANSPORT_RETRIES, TRIAGE_GUIDE, SENTENCE_TRIAGE_GUIDE;
+var fs27, path22, TRIAGE_FORMAT, TRIAGE_FLAG_P, TRIAGE_MIN_LABEL_MASS, GROUP_MAX_UNITS, GROUP_MAX_SENTENCES, GROUP_MAX_CHARS, CONTEXT_UNITS, CONTEXT_CHARS, DEFAULT_TRIAGE_CONCURRENCY, TRANSPORT_RETRIES, TRIAGE_GUIDE, SENTENCE_TRIAGE_STATE, TRIAGE_CRITERIA, SENTENCE_OPTIONS;
 var init_triage = __esm({
   "src/clean/triage.ts"() {
     "use strict";
@@ -72468,10 +72483,9 @@ var init_triage = __esm({
       "Ordinary prose with none of these does not need cleaning. If you are unsure, it needs cleaning.",
       "Lines marked (context) are shown only so the others read correctly; you are asked only about the other lines."
     ].join("\n");
-    SENTENCE_TRIAGE_GUIDE = TRIAGE_GUIDE.replace("You are checking the blocks of a book", "You are checking the sentences of a book, one at a time,").replace("A block NEEDS CLEANING", "A sentence NEEDS CLEANING").replace(
-      "Lines marked (context) are shown only so the others read correctly; you are asked only about the other lines.",
-      "Each question quotes ONE sentence of the book, in full. Judge that sentence and nothing else."
-    );
+    SENTENCE_TRIAGE_STATE = "You are checking the sentences of a book, one at a time, before a text-to-speech voice reads them aloud.";
+    TRIAGE_CRITERIA = TRIAGE_GUIDE.split("\n").filter((line) => line.startsWith("- ") || line.startsWith("Superscript") || line.startsWith("Ordinary prose")).join("\n");
+    SENTENCE_OPTIONS = { yes: "Yes", no: "No" };
   }
 });
 
