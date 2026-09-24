@@ -168,8 +168,6 @@ import { mergeEpubParagraphs } from './epub-paragraph-merger';
 import { removeEpubContainer, writeEpubFromArchiveBytes } from './epub-container';
 import { componentManager, runInstaller as runExternalInstaller, listInstallableIds, installerNote } from './components/component-manager';
 import { systemProbe } from './components/system-probe';
-import { FOUNDRY_CLI_COMPONENT_ID } from './components/foundry-cli-components';
-import { ensureFoundryReleaseDiscovered } from './components/foundry-release-check';
 import { listManagedComponents, checkComponentUpdates, installComponent } from './update/component-updater';
 import { getStarterStatus, installStarterLibrary } from './update/starter-library';
 
@@ -9497,7 +9495,7 @@ function setupIpcHandlers(): void {
         }
         return { success: true };
       }
-      if (id === 'calibre' || id === 'foundry-cli') {
+      if (id === 'calibre') {
         const result = await componentManager.install(id, (p) => {
           send(p.message ?? `${p.phase}${typeof p.pct === 'number' ? ` ${p.pct}%` : ''}`);
         });
@@ -9556,16 +9554,6 @@ function setupIpcHandlers(): void {
   });
 
   ipcMain.handle('components:install', async (event, id: string) => {
-    /*
-     * The Add-ons panel is the OTHER first-install door (the first is
-     * `downloadFoundry`, for a pass that needs the engine). Without this, a
-     * machine with no managed record — fresh, or one whose external pin was just
-     * removed — has an empty foundry catalog and the install refuses "not
-     * available for download": the chicken-and-egg bookforge-mac-2 reproduced on
-     * 2026-08-24. The throw carries the release check's own sentence to the
-     * panel, which is the answer a person pressing Install is owed.
-     */
-    if (id === FOUNDRY_CLI_COMPONENT_ID) await ensureFoundryReleaseDiscovered();
     const result = await componentManager.install(id, (p) => {
       event.sender.send('components:progress', p);
     });
@@ -13227,20 +13215,6 @@ app.whenReady().then(async () => {
     logger.warn('audiobook logger init failed', { error: (err as Error).message });
   }
 
-  // In development, point FOUNDRY_CLI_PATH at the locally-built binary unless
-  // the developer set one. Dev only: a packaged build resolves the foundry CLI
-  // from the component (or the user's own environment variable) and nothing
-  // else, because "whatever binary is lying around" is precisely what both
-  // programs refuse to run. Logs which binary it chose, or that it found none.
-  if (isDev) {
-    try {
-      const { primeFoundryDevCliPath } = await import('./foundry-dev-cli.js');
-      primeFoundryDevCliPath();
-    } catch (err) {
-      logger.warn('foundry dev binary resolution failed', { error: (err as Error).message });
-    }
-  }
-
   // Clean up stale temp folders from previous sessions (Syncthing compatibility)
   try {
     const { cleanupStaleTempFolders } = await import('./parallel-tts-bridge.js');
@@ -13621,30 +13595,20 @@ app.whenReady().then(async () => {
   // mount is a bug in this startup, and a flag that quietly skipped it would
   // hide two Foundries fighting over one queue.
 
-  // The engine is a spawned CLI, and Foundry resolves it from `FOUNDRY_BIN`
-  // before falling back to a binary beside the app or its dev checkout. We
-  // already know where this machine's foundry is (the component registry, or the
-  // user's own FOUNDRY_CLI_PATH), so we say so — but only if the environment has
-  // not already spoken, because an explicitly-set FOUNDRY_BIN is a developer
-  // pointing at a specific build and must win.
-  if (!process.env['FOUNDRY_BIN']) {
-    try {
-      const { resolveFoundryPath } = await import('./foundry-bridge.js');
-      const bin = resolveFoundryPath();
-      if (bin) {
-        process.env['FOUNDRY_BIN'] = bin;
-        logger.info('Hosted Foundry engine', { bin });
-      } else {
-        // Left unset on purpose: Foundry then resolves its own dev checkout,
-        // which is the right answer on a developer's machine and an honest
-        // failure on anyone else's.
-        logger.info('Hosted Foundry engine: none installed — FOUNDRY_BIN left unset.');
-      }
-    } catch (err) {
-      logger.warn('Could not resolve the foundry engine for the hosted window', {
-        error: (err as Error).message,
-      });
-    }
+  // The engine is a spawned CLI that the hosted Foundry finds for itself: the
+  // bundle in its own app folder, `foundry-app/engine/` (foundry-app's
+  // engine.ts), which is the same file BookForge's own door runs
+  // (electron/foundry-bridge.ts). Nothing is set here any more — this used to
+  // point `FOUNDRY_BIN` at the downloaded `foundry-cli` add-on, which is gone
+  // (2026-09-24). An explicitly-set `FOUNDRY_BIN` still wins in both doors.
+  try {
+    const { foundryEngineCommand } = await import('./foundry-bridge.js');
+    const engine = foundryEngineCommand();
+    logger.info('Foundry engine', { source: engine.source, run: [engine.command, ...engine.args].join(' ') });
+  } catch (err) {
+    // Reported, not fatal to startup: every Foundry job names the same missing
+    // bundle when it runs, and the rest of BookForge does not need it.
+    logger.error('Foundry engine is missing', { error: (err as Error).message });
   }
 
   /*

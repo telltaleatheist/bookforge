@@ -35,10 +35,9 @@ function fixture(options:{missing?:boolean;competing?:boolean;competitorStocks?:
       if(options.noActivity)return Response.json({error:{code:'not_found',message:'no such route'}},{status:404});
       /*
        * A CRUCIBLE OLDER THAN THIS BUILD: the route is there and answers 200,
-       * and the document is missing the fields a 1.0.13 SDK reads (`stopping`,
-       * `chat.max_in_flight`, `resident.unclaimed_since`). That is a different
-       * thing from a 404 and must not be read as "it did not say" — see
-       * `CrucibleTooOld`.
+       * and the document is missing fields a 1.0.13 SDK reads (`stopping`,
+       * `chat.max_in_flight`, `resident.unclaimed_since`). Since Owen's
+       * 2026-09-24 ruling that is "it did not say", exactly like a 404.
        */
       if(options.oldActivity)return Response.json({server:{name:'fixture',version:'1.0.9',api_version:1,backend:'llama-windows',uptime_s:1},resident:null,warming:null,claim:null,streaming:null,chat:{in_flight:0,rows:[]},lease:null,slots:{accelerated:{busy:0,of:1,queue_depth:0,accepts_work:true}},running:[],queued:[]});
       return Response.json({server:{name:'fixture',version:'1.0.13',api_version:1,backend:'llama-windows',uptime_s:1},resident:null,stopping:null,warming:null,claim:null,streaming:null,chat:{in_flight:0,rows:[],max_in_flight:options.chatMaxInFlight===undefined?2:options.chatMaxInFlight,max_in_flight_basis:'engine concurrency 1, +1'},lease:null,slots:{accelerated:{busy:0,of:1,queue_depth:0,accepts_work:true}},running:[],queued:[]});
@@ -259,31 +258,20 @@ test('real HTTP a Crucible older than the route is "it did not say", not a refus
 });
 
 /**
- * ── VERSION SKEW IS NAMED, NOT GUESSED AROUND — PK14a ───────────────────────
+ * ── A SERVER THIS BUILD CANNOT FULLY READ STILL PLACES (Owen, 2026-09-24) ──
  *
- * The depth read used to be a hand-rolled `fetch` that read two keys and shrugged
- * at the rest; it is `client.activity()` now, and the SDK is STRICT — it reads
- * the whole document and refuses a malformed one. So a server OLDER than this
- * build (a 200 with no `stopping` and no `chat.max_in_flight`) throws where it
- * used to answer null, and the two wrong endings are a crash and a silent four:
- * a placement built on a number this app guessed about a machine whose answers
- * it can no longer read. It is a REFUSAL naming the server and the cure.
- *
- * THE 404 CASE ABOVE IS THE CONTROL. "This Crucible has no such route" and "this
- * Crucible's document is missing fields" are different news and only one of them
- * is skew; if both refused, an old-but-working server would stop placing.
+ * *"dont require any particular crucible server. if it can make the call to the
+ * crucible server then it should work."* This used to REFUSE the placement as
+ * `CrucibleTooOld`. The activity read is a courtesy — the admission bound — so a
+ * document the SDK cannot parse leaves the run on its default depth, exactly as
+ * the 404 control above does, and the load and the lease go ahead.
  */
-test('real HTTP a server whose activity document this build cannot read is refused by name',async()=>{
+test('real HTTP a server whose activity document this build cannot read still places, at the default depth',async()=>{
   const f=fixture({oldActivity:true});try{
     const result=await dispatch.placeJob('translate',f.entry.name,()=>{},()=>true);
-    expect(result.verdict).toBe('refuse');if(result.verdict!=='refuse')throw Error(JSON.stringify(result));
-    expect(result.reason).toContain(`"${f.entry.name}" speaks an older Crucible than this app; update it.`);
-    // THE MISSING FIELD IS NAMED, in the SDK's own words, so the next question
-    // ("older how?") is answered on the row rather than in a debugger.
-    expect(result.reason).toContain('activity');
-    // AND NOTHING WAS LOADED OR LEASED: the read happens before the load, so a
-    // server this build cannot talk to costs a round trip, not 90 seconds.
-    expect(f.calls.some(c=>c.path==='/v1/jobs'&&c.method==='POST')).toBe(false);
+    expect(result.verdict).toBe('go');if(result.verdict!=='go')throw Error(JSON.stringify(result));
+    try{expect(result.placement.concurrency).toBe(dispatch.CRUCIBLE_CHAT_CONCURRENCY);}
+    finally{await result.placement.lease?.release();}
   }finally{f.close();}
 });
 

@@ -334,33 +334,49 @@ check('and reaches for that owner BEFORE it skips, not somewhere below', () => {
     + 'gets a ReferenceError instead of a skip');
 });
 
-// ── Defect A: the version line, in the three shapes it comes in ─────────────
+// ── Defect A: the anchor is derived from the vendored engine's bytes ────────
+//
+// This checked how a `foundry --version` line was read (`+dirty` once read as
+// "names no commit"). Since 2026-09-24 the engine is vendored with foundry-app
+// and its stamp is a source digest, not a commit, so the clean-text vendor
+// keeper derives its anchor from the bundle's BYTES instead: the newest Foundry
+// commit whose app/engine/foundry-engine.cjs is that blob. Driven here against a
+// scratch repository, so it runs on any machine.
 
-console.log('a foundry --version line names its commit, dirty or not');
+console.log('the vendored engine names the Foundry commit that carries it');
 
-check('a release build names the sha', () => {
-  assert.deepStrictEqual(
-    vendor.parseFoundryVersion('foundry 2.0.2 (e03943a)'),
-    { sha: 'e03943a', dirty: false },
-  );
-});
+check('the newest commit carrying the bundle is the anchor; bytes nobody committed are null', () => {
+  const repo = path.join(SCRATCH, 'foundry-anchor');
+  const git = (...args) => execFileSync('git', ['-C', repo, ...args],
+    { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  fs.mkdirSync(path.join(repo, 'app', 'engine'), { recursive: true });
+  execFileSync('git', ['init', '-q', repo]);
+  git('config', 'user.email', 'keeper@example.invalid');
+  git('config', 'user.name', 'keeper');
+  git('config', 'core.autocrlf', 'false');
+  const engineFile = path.join(repo, 'app', 'engine', 'foundry-engine.cjs');
+  const commitWith = (text) => {
+    fs.writeFileSync(engineFile, text);
+    git('add', '-A');
+    git('commit', '-q', '-m', text.slice(0, 20));
+    return git('rev-parse', '--short=7', 'HEAD');
+  };
+  const first = commitWith('// engine one\n');
+  fs.writeFileSync(path.join(repo, 'unrelated.txt'), 'x');
+  git('add', '-A');
+  git('commit', '-q', '-m', 'unrelated');
+  const carriedStill = git('rev-parse', '--short=7', 'HEAD');
+  const second = commitWith('// engine two\n');
 
-check('a DIRTY release build names the same sha, and says it is dirty', () => {
-  // The defect: `+dirty` is appended by foundry's release script when the tree
-  // it built from had uncommitted changes. The sha is still the sha — the
-  // caution belongs in the pass line, not in a refusal to verify anything.
-  assert.deepStrictEqual(
-    vendor.parseFoundryVersion('foundry 2.0.2 (e03943a+dirty)'),
-    { sha: 'e03943a', dirty: true },
-  );
-});
-
-check('a build that names no commit is still "cannot verify"', () => {
-  // `bun run src/cli.ts` prints no parenthesis at all, and a parenthesis that
-  // is not a sha is not a sha. Both must stay null: falling back to the
-  // checkout's HEAD is the hazard the whole anchor exists to remove.
-  assert.strictEqual(vendor.parseFoundryVersion('foundry 2.0.2'), null);
-  assert.strictEqual(vendor.parseFoundryVersion('foundry 2.0.2 (none)'), null);
+  const probe = path.join(SCRATCH, 'probe.cjs');
+  fs.writeFileSync(probe, '// engine two\n');
+  assert.strictEqual(vendor.vendoredEngineCommit(repo, probe), second);
+  fs.writeFileSync(probe, '// engine one\n');
+  // The commit that ADDED those bytes is what --find-object reports; a later
+  // commit that merely kept them is not listed, and both are the same sources.
+  assert.ok([first, carriedStill].includes(vendor.vendoredEngineCommit(repo, probe)));
+  fs.writeFileSync(probe, '// built from a tree nobody committed\n');
+  assert.strictEqual(vendor.vendoredEngineCommit(repo, probe), null);
 });
 
 // ── Defect B: the fixture is derived, not declared ──────────────────────────

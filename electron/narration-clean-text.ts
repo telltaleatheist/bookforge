@@ -60,8 +60,6 @@
 import { promises as fs } from 'fs';
 import * as path from 'path';
 
-import { foundryVersionAtLeast } from '../shared/vlm/readings-bank.js';
-
 // ─────────────────────────────────────────────────────────────────────────────
 // The settings — the SAME ones the hosted Clean text press uses
 // ─────────────────────────────────────────────────────────────────────────────
@@ -374,8 +372,8 @@ export async function cleanTextEngineSettingsIn(
  *     `dist/foundry-windows-x64.exe` at `83d7b66`. It is REMOVED rather than
  *     made conditional on a version, because a flag written only for engines
  *     old enough to want it is a second code path kept alive for a build nobody
- *     should be running; the clean-text door already refuses an engine below
- *     `FOUNDRY_VERSION_FOR_CLEAN_TEXT` by name, and that is the one gate.
+ *     should be running — and since 2026-09-24 the engine is vendored with
+ *     foundry-app, so no older build can be the one that runs.
  *   · `--model` IS OMITTED WHEN THE MODEL IS EMPTY, never sent as `--model ""`.
  *     Empty is the meaningful default ("whatever it is serving"), and the
  *     engine resolves and records the served id itself — which since `646e8a1`
@@ -590,38 +588,13 @@ export async function cleanTextEpub(opts: CleanTextEpubOptions): Promise<CleanTe
       + 'Nothing was written.');
   }
 
-  const {
-    ensureFoundryPath, foundryVersion, runFoundry,
-  } = await import('./foundry-bridge.js');
+  const { foundryEngineCommand, runFoundry } = await import('./foundry-bridge.js');
   const { readNarrationTextStamp } = await import('./epub-processor.js');
 
-  // Downloaded here rather than at the spawn, so the wait belongs to the job the
-  // user is watching. `runFoundry`'s own resolution stays synchronous.
-  await ensureFoundryPath();
-
-  // ── THE VERSION GATE ──────────────────────────────────────────────────────
-  //
-  // The `--epub` failsafe arrived in foundry 1.2.0 (`d6509e7`, "the stamp proves
-  // itself, and the pass gets its failsafe door"). An older engine has
-  // `clean-text` but not this door, so it would die on `unknown option --epub`
-  // wearing a message about argv rather than about what is missing. Refused by
-  // name, naming the release, and nothing is spawned.
-  //
-  // The comparator is `foundryVersionAtLeast` — the one in this app — and the
-  // constant sits beside `FOUNDRY_VERSION_FOR_CLEAN_TEXT` in
-  // `electron/foundry-host-queue.ts`, which is where every foundry version floor
-  // this app enforces is written down.
-  //
-  // The floor is required LAZILY — `foundry-host-queue` reaches the queue engine
-  // at module scope, and this module is loadable from the CLI harness and from a
-  // keeper, where that engine is neither wanted nor mounted.
-  const {
-    FOUNDRY_VERSION_FOR_CLEAN_TEXT_EPUB, foundryTooOldForCleanTextEpub,
-  } = await import('./foundry-host-queue.js');
-  const installed = await foundryVersion();
-  if (!foundryVersionAtLeast(installed.version, FOUNDRY_VERSION_FOR_CLEAN_TEXT_EPUB)) {
-    throw new Error(foundryTooOldForCleanTextEpub(installed.version));
-  }
+  // No engine-version gate: the `--epub` failsafe door is in the engine vendored
+  // with foundry-app, which is the only engine this app runs (2026-09-24,
+  // electron/foundry-bridge.ts). `FOUNDRY_VERSION_FOR_CLEAN_TEXT_EPUB` went with
+  // the downloaded one.
 
   const settings = await cleanTextEngineSettings();
 
@@ -673,7 +646,7 @@ export async function cleanTextEpub(opts: CleanTextEpubOptions): Promise<CleanTe
     epubPath, outPath, settings, { endpoint: crucible.endpoint, model: crucible.model },
   );
   console.log(
-    `[NARRATION-TEXT] ${installed.path} ${args.join(' ')} — `
+    `[NARRATION-TEXT] ${[foundryEngineCommand().command, ...foundryEngineCommand().args].join(' ')} ${args.join(' ')} — `
     // The header map is rendered by the ONE function that can: the credential
     // is `Bearer ****<last 4>`. Nothing else in this file may print it.
     + `crucible "${crucible.server}" (${venue.because}), act ${crucible.act}, `

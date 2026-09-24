@@ -113,9 +113,9 @@ Settings page's.
 | `qwen-align-env` | conda env (Qwen3 aligner) | managed download | `electron/qwen-aligner.ts:198` |
 | `rvc-voice-*` (7) | RVC voice weights | managed download, `electron/data/rvc-voice-assets.json` | `electron/rvc-models.ts` |
 | `whisper-model-*` (6: tiny…distil-large-v3) | ASR weights, `electron/whisper-models.ts:49-84` | managed download | `electron/transcribe-bridge.ts` |
-| `foundry-cli` | the Foundry engine binary | GitHub release | `electron/foundry-bridge.ts:118,342` |
+| ~~`foundry-cli`~~ | the Foundry engine binary — **REMOVED 2026-09-24**: the engine ships inside `foundry-app/engine/` (Foundry's `tools/build-engine.mjs`), run by BookForge's own Electron as Node; no download, release check or version gate | — | — |
 
-**Every row above except `calibre`, `tesseract` and `foundry-cli` is an env or a weight
+**Every row above except `calibre`, `tesseract` and `foundry-cli` (since removed) is an env or a weight
 that Crucible installs and holds** — job types `tts`, `asr`, `align`, `rvc`, `denoise`, and
 the model/voice/rvc subjects of `GET /v1/catalog`. That is the whole of the
 MOVE→CRUCIBLE / DELETE-AFTER-PASS column below.
@@ -360,7 +360,7 @@ whose kind is 'blocks-model']` (`settings.component.ts:2537-2548`).
 
 | option | what it does today | value lives | who reads it | DISP | why |
 |---|---|---|---|---|---|
-| `foundry-cli` Install / Update | the Foundry engine binary from its GitHub release | `installed.json` | `electron/foundry-bridge.ts:118,342` | **KEEP** | Foundry's engine rasterises and drives text acts against a Crucible endpoint; it is not itself a model |
+| `foundry-cli` Install / Update | the Foundry engine binary from its GitHub release | `installed.json` | — | **REMOVED 2026-09-24** (engine ships in `foundry-app/engine/`) | Foundry's engine rasterises and drives text acts against a Crucible endpoint; it is not itself a model |
 | `calibre` Locate… / How to install | ebook-convert | `installed.json` | `electron/ebook-convert-bridge.ts:85` | **KEEP** | CPU tool, nothing to do with a card |
 | `tesseract` Locate… / How to install | OCR | `installed.json` | detection | **KEEP** | same |
 | `llama-cuda` Download & Install | the CUDA pack for the bundled llama.cpp | `installed.json` | `electron/llama-bridge.ts:175` | **DELETE-AFTER-PASS** | its only purpose is the local text engine the switch covers |
@@ -557,7 +557,7 @@ deleted, skipping means *no rendering yet*, and the step should say that.
 ### Step 4 — Review
 What was chosen: the library path, the AI provider and per-act models, the server (or that
 there is none) and what it can do. Plus the three small local tools if any were ticked
-(Calibre, Tesseract, foundry-cli — the only downloads BookForge still owns). No progress
+(Calibre, Tesseract — the only downloads BookForge still owns; foundry-cli was removed 2026-09-24). No progress
 bars for gigabytes, because there are none left to download here.
 
 **Deleted steps: Orpheus, Higgs, Voice enhancement, and the engine half of Optional tools.**
@@ -575,7 +575,7 @@ holds once per machine.
 | 5 | **Audiobook** | export folder, narrator scratch folder | loses the duplicate `condaPath` |
 | 6 | **Bookshelf Server** | port, start/stop, URLs | loses the unread `enabled` key |
 | 7 | **TTS Server** | token, port, LAN, engine, voice | loses Generation Device, the worker toggle, the CUDA pack and the Orpheus batch size |
-| 8 | **General Add-ons** | Calibre, Tesseract, foundry-cli | loses `llama-cuda` and the empty `blocks-model` filter |
+| 8 | **General Add-ons** | Calibre, Tesseract (foundry-cli removed 2026-09-24) | loses `llama-cuda` and the empty `blocks-model` filter |
 | 9 | **Storage** | caches, "Move to archive", and (proposed) what models this machine holds | gains the one-copy-per-machine inventory, or a link to Crucible's page — RULING |
 | 10 | **Advanced** | ffmpeg, tools Python env | loses conda |
 | 11 | **General** | diff whitespace, Guided setup | loses `maxRecentFiles` |
@@ -758,7 +758,7 @@ panel components they mounted (`orpheus-voices-panel`, `higgs-voices-panel`,
 | §3.9 the whole Higgs section | DELETE-AFTER-PASS / MOVE→CRUCIBLE | the SECTION is deleted; the keys stay for the layer. The `_samplingNote` row is honoured: no sampling control was added anywhere. |
 | §3.10 RVC Enhancement | DELETE-AFTER-PASS / MOVE→CRUCIBLE | the SECTION is deleted. The user's-own-archive row is a RULING and is untouched — see §11.8. |
 | §3.11 Speech to Text | DELETE-AFTER-PASS / MOVE→CRUCIBLE | the SECTION is deleted. |
-| §3.12 `foundry-cli` / `calibre` / `tesseract` | KEEP | kept; they are the whole of General Add-ons now. |
+| §3.12 `foundry-cli` / `calibre` / `tesseract` | KEEP | kept; they are the whole of General Add-ons now. (`foundry-cli` later REMOVED, 2026-09-24: the engine ships inside `foundry-app/engine/`.) |
 | §3.12 `llama-cuda` | DELETE-AFTER-PASS | removed from `generalAddOnIds`, so the door is gone; the component stays for the layer. |
 | §3.12 the `blocks-model` filter | DELETE | deleted. It was a filter over an empty set — no component declares that kind — so the list is a literal again. |
 | §3.14 Pipeline Defaults | see §11.5 | |

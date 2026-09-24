@@ -101,100 +101,14 @@ function isTextPass(kind: FoundryJobKind): boolean {
   return kind === 'translate' || kind === 'simplify' || kind === 'clean';
 }
 
-/**
- * The foundry ENGINE that has a `clean-text` command at all.
- *
- * Owen's narration cleanup was released as foundry 1.1.0 (`ca7a666`, "the engine
- * that owns the narration text pass"). A `clean` row scheduled here is executed
- * by Foundry's runner spawning `foundry clean-text …`, so an older binary on the
- * machine answers with an unknown-command usage dump — an hour into a queue, in
- * somebody else's process, wearing a message about argv rather than about what is
- * installed.
- *
- * SO IT IS REFUSED AT THE ONE DOOR THIS SIDE OWNS, by name, before the row runs.
- * `foundryTooOldForReadingsFlags`' precedent exactly, and its sentence's shape:
- * name the version installed, name the version the act arrived in, say where to
- * update, and say that nothing ran.
- *
- * ONLY `clean` IS GATED. A `simplify` is `translate --rewrite`, which every
- * foundry this app has ever adopted has had — the KIND is new on the wire and the
- * COMMAND is not, and gating it would refuse work an old engine can do perfectly
- * well. Bumped in lockstep with foundry's package.json, like
- * `FOUNDRY_VERSION_FOR_READINGS_FLAGS`.
+/*
+ * NO ENGINE VERSION FLOORS (2026-09-24). Three stood here —
+ * `FOUNDRY_VERSION_FOR_CLEAN_TEXT` (1.1.0), `…_CLEAN_TEXT_EPUB` (1.2.0) and
+ * `…_CLEAN_TRIAGE` (2.1.0) — each refusing a row whose command the DOWNLOADED
+ * engine might not have. The engine is vendored with foundry-app now
+ * (electron/foundry-bridge.ts), so it has every command the vendored Foundry
+ * schedules, by construction; a floor could only refuse work it can do.
  */
-export const FOUNDRY_VERSION_FOR_CLEAN_TEXT = '1.1.0';
-
-/** The refusal for a foundry with no `clean-text` in it. */
-export function foundryTooOldForCleanText(installed: string): string {
-  return (
-    'This is a Clean text run, which BookForge schedules and the foundry engine executes as '
-    + `\`foundry clean-text\` — but the installed foundry is ${installed} and that command arrived `
-    + `in ${FOUNDRY_VERSION_FOR_CLEAN_TEXT}. Update foundry in Settings → General add-ons and press Clean `
-    + 'text again. Nothing was cleaned and no model was loaded.'
-  );
-}
-
-/**
- * The foundry ENGINE that can clean a FINISHED EPUB — the failsafe door.
- *
- * A SECOND FLOOR ON THE SAME COMMAND, and the two are different facts. 1.1.0
- * gave `clean-text` its book-file route, which is what a hosted **Clean text**
- * press runs (`--book` / `--records` / `--stamp`). The bare-EPUB failsafe
- * (`--epub` / `--out`, electron/narration-clean-text.ts) arrived later, in
- * foundry 1.2.0 (`d6509e7`, "the stamp proves itself, and the pass gets its
- * failsafe door"). A 1.1.x engine therefore answers the failsafe with
- * `unknown option --epub` — a usage dump about argv, where the useful sentence
- * is that the door is not in this build.
- *
- * Written HERE, beside its sibling, because this file is where every foundry
- * version floor this app enforces is written down, and because both refusals
- * must move together when foundry's package.json moves. The comparator is the
- * one in `shared/vlm/readings-bank.ts` for both; there is no second one.
- */
-export const FOUNDRY_VERSION_FOR_CLEAN_TEXT_EPUB = '1.2.0';
-
-/**
- * The foundry ENGINE that can TRIAGE a cleanup — a third floor, and the same
- * shape of fact as the two above it.
- *
- * Owen, 2026-09-23: *"a cleanup-triage stage that runs before cleanup."* The
- * Clean text dialog now sends a PAIR (foundry docs/BOOKFORGE-HANDOFF.md §8c): a
- * `clean-triage` row, which runs `foundry clean-triage`, and the cleanup behind
- * it carrying `triagePath`, which runs `foundry clean-text --triage`. Both arrived
- * in the engine at c7bcb1a, AFTER 2.0.2 — so an engine on this machine older than
- * the release carrying them answers the first with an unknown-command dump and
- * the second with `unknown option --triage`.
- *
- * 2.1.0 IS THE RELEASE THAT WILL CARRY THEM (a new command, so a minor), not one
- * that exists yet: foundry's package.json still says 2.0.2. Until it is cut this
- * gate refuses every triaged cleanup by name — which is the truth about this
- * machine, said before a model is loaded. Bump it with foundry's package.json if
- * the release is numbered otherwise.
- */
-export const FOUNDRY_VERSION_FOR_CLEAN_TRIAGE = '2.1.0';
-
-/** The refusal for a foundry with no `clean-triage` (or no `clean-text --triage`) in it. */
-export function foundryTooOldForCleanTriage(installed: string): string {
-  return (
-    'This cleanup starts with a check of which blocks need cleaning at all, which the foundry '
-    + `engine runs as \`foundry clean-triage\` — but the installed foundry is ${installed} and that `
-    + `arrived in ${FOUNDRY_VERSION_FOR_CLEAN_TRIAGE}. Update foundry in Settings → General add-ons, or `
-    + 'untick "skip blocks that need no cleaning" in the Clean text dialog to clean every block. '
-    + 'Nothing was checked or cleaned and no model was loaded.'
-  );
-}
-
-/** The refusal for a foundry whose `clean-text` has no `--epub` failsafe door. */
-export function foundryTooOldForCleanTextEpub(installed: string): string {
-  return (
-    'This is the Clean text FAILSAFE, which cleans a finished EPUB by running '
-    + `\`foundry clean-text --epub\` — but the installed foundry is ${installed} and that door `
-    + `arrived in ${FOUNDRY_VERSION_FOR_CLEAN_TEXT_EPUB}. Update foundry in Settings → General add-ons `
-    + 'and press Clean text again, or run the Clean text step in the Foundry window, which is the '
-    + 'standard method and works on any foundry from '
-    + `${FOUNDRY_VERSION_FOR_CLEAN_TEXT}. Nothing was cleaned and no model was loaded.`
-  );
-}
 
 /**
  * ── THE HOSTED CRUCIBLE TEXT ACT: WHO PLACES IT, AND THE ONE THING WE CHECK ─

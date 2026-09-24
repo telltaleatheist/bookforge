@@ -81,9 +81,11 @@
  * off the server's own row, and a server whose `dots-ocr` says text-only is
  * refused with the image-capable ids it DOES offer.
  *
- * **The installed foundry must honour the header map.** See
- * {@link FOUNDRY_VERSION_FOR_CRUCIBLE_PAGES} — the pinned release does not, and
- * a run that dropped the credential would reach the server unauthenticated.
+ * **The engine honours the header map by construction**: it is vendored with
+ * foundry-app (electron/foundry-bridge.ts), so it is always the build whose page
+ * reader sends `$FOUNDRY_ENDPOINT_HEADERS`. The release floor that stood here
+ * (`FOUNDRY_VERSION_FOR_CRUCIBLE_PAGES`) went with the downloaded engine,
+ * 2026-09-24.
  *
  * There is no fallback anywhere in here. A refused page read is a refused page
  * read; quietly starting the WSL vLLM instead would take a card somebody else
@@ -204,76 +206,12 @@ export function pagesEndpointHeadersEnv(token: string): Record<string, string> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// The foundry the pages go through
-// ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * THE RELEASE WHOSE PAGE READER HONOURS `$FOUNDRY_ENDPOINT_HEADERS`.
- *
- * The credential reaches the server only if the binary that sends the pages
- * reads the map. `src/vlm/read.ts` calls `resolveEndpointHeaders()` and passes
- * the result into both `confirmModel` and every page request — and that line
- * arrived at foundry `2d5d411`, which is AFTER the v1.2.0 release tag
- * (`eb69b7a`) that `foundry-cli-components.ts` currently installs. Measured,
- * not assumed: `git show eb69b7a:src/vlm/read.ts | grep -c resolveEndpointHeaders`
- * answers 0.
- *
- * **THE VERSION STRING CANNOT TELL THE TWO APART, and this floor is therefore
- * deliberately conservative.** Both `eb69b7a` (no headers) and `2d5d411` (with
- * them) report `"version": "1.2.0"`, because the release number is bumped at
- * release time and the feature landed mid-cycle. There is nothing on the
- * binary's surface that answers "do you read that variable" — no flag, no
- * `backend --json` field, only help prose that is not machine-consumed. So the
- * floor is set at the NEXT release rather than at 1.2.0, and a dev binary built
- * from a commit that DOES have the feature but still says 1.2.0 is refused.
- *
- * Refusing a binary that would work costs a named refusal somebody can act on.
- * Admitting one that would not costs a whole book's worth of page requests
- * arriving unauthenticated — or, on a server that happens not to require a
- * token, SUCCEEDING while silently not doing the thing it was configured to do,
- * which is the failure foundry's own `endpoint-headers.ts` header calls out as
- * "far worse". Wrong in the safe direction, on purpose.
- *
- * THIS IS NOW THE ONLY CONSTANT OF ITS KIND, and the other one's fate says why
- * it is still here. `FOUNDRY_VERSION_FOR_CRUCIBLE_TEXT` sat beside it waiting
- * on a per-run env argument in the vendored app's `runEngine`; that argument
- * landed (foundry `f300fc6`) and the guard went on refusing for ten hours,
- * because a version number cannot see a line of code. It was DELETED on
- * 2026-09-14 and replaced by a keeper that reads the vendored subtree
- * (`tools/test-foundry-hosted-crucible-seam.js`). This constant is not that
- * shape: it waits on a CLI BINARY that already has what it needs and has not
- * been RELEASED, which is exactly the thing a version number does answer — a
- * binary is asked `--version` and cannot be read. The
- * number itself is a guess at the next release: 1.3.0 was prepared and then
- * VOIDED by Owen's 2026-09-13 22:40 reframe, so `1.4.0` is the first spelling
- * that is certainly not the void one. If the next release is numbered
- * differently, this constant moves with it.
- */
-export const FOUNDRY_VERSION_FOR_CRUCIBLE_PAGES = '1.4.0';
-
-/** The refusal for a foundry that would drop the credential on the floor. */
-export function foundryTooOldForCruciblePages(installed: string, server: string): string {
-  return (
-    `Reading pages on the Crucible server "${server}" needs a foundry whose page reader sends `
-    + `$${FOUNDRY_ENDPOINT_HEADERS_VAR}, and the installed one is ${installed}. `
-    + 'The page route reads that map at foundry `src/vlm/read.ts` (`resolveEndpointHeaders`), which '
-    + `landed after the v1.2.0 release this app installs — and both builds report "1.2.0", so the `
-    + `floor is the next release (FOUNDRY_VERSION_FOR_CRUCIBLE_PAGES, currently `
-    + `${FOUNDRY_VERSION_FOR_CRUCIBLE_PAGES}). Nothing ran, and no page was sent without its `
-    + 'credential. Until that release is cut, type an endpoint under Settings → AI → Reading '
-    + 'pages: a typed endpoint is a deliberate choice of GPU and is asked before this decision.'
-  );
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // Refusals
 // ─────────────────────────────────────────────────────────────────────────────
 
 export type CruciblePagesErrorCode =
   /** The header map would carry an empty bearer token. */
   | 'crucible_empty_token'
-  /** The installed foundry would not send the map. */
-  | 'foundry_too_old_for_crucible_pages'
   /** The chosen server's catalog has no manifest with this id at all. */
   | 'crucible_pages_model_not_offered'
   /**

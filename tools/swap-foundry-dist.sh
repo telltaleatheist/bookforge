@@ -25,6 +25,8 @@
 #      --expect (default: none; pass what only the NEW sources contain)
 #   4. BookForge is running — the electron half CANNOT be swapped under a live
 #      app, and a running main already holds the old mount.js
+#   5. the vendored engine (foundry-app/engine/foundry-engine.cjs) is missing —
+#      the dist would swap in fine and every Foundry job would then fail
 #
 # Usage:
 #   tools/swap-foundry-dist.sh .foundry-stage-<sha> [--expect <symbol>]
@@ -79,6 +81,15 @@ if pgrep -f "$repo/node_modules/electron/dist/Electron.app" >/dev/null 2>&1 \
   fail "BookForge is RUNNING — the electron half cannot be swapped under a live app. Quit it and run this again."
 fi
 
+# ── 5: the engine the dist will run is here ─────────────────────────────────
+# The ENGINE is not in the stage — it is vendored source, foundry-app/engine/,
+# committed with the rest of the copy (Foundry's tools/build-engine.mjs writes
+# it). A dist whose engine.js looks for it and finds nothing would fail every
+# Foundry job, so its absence is named here too.
+engine_bundle="$repo/foundry-app/engine/foundry-engine.cjs"
+[ -f "$engine_bundle" ] || fail "$engine_bundle is missing — re-vendor foundry-app (VENDORED.md)"
+echo "swap-foundry-dist: engine present ($engine_bundle)"
+
 # ── the swap ────────────────────────────────────────────────────────────────
 target="$repo/foundry-app/dist"
 rm -rf "$target"
@@ -88,3 +99,4 @@ cp -R "$stage/dist" "$target"
 [ -f "$target/electron/mount.js" ] || fail "post-swap: $target/electron/mount.js is missing"
 [ -f "$target/renderer/browser/index.html" ] || fail "post-swap: $target/renderer/browser/index.html is missing"
 echo "swap-foundry-dist: swapped $stage/dist -> $target (electron + renderer both present)"
+

@@ -251,8 +251,8 @@ interface SetupStep {
 
                 <!--
                   THE ONLY DOWNLOADS BOOKFORGE STILL OWNS. Calibre and Tesseract
-                  are CPU tools the user installs; foundry-cli is an engine
-                  binary. Every other row this panel used to offer — the conda
+                  are CPU tools the user installs. (The foundry engine ships
+                  inside the app since 2026-09-24.) Every other row this panel used to offer — the conda
                   envs, the CUDA packs, the voice and whisper weights — is a job
                   environment or a subject a Crucible holds once per machine
                   (rollout §2 ruling 1), reached from the previous step.
@@ -819,16 +819,17 @@ export class FirstRunSetupComponent {
   /**
    * THE ONLY DOWNLOADS BOOKFORGE STILL OWNS.
    *
-   * Calibre and Tesseract are CPU tools with nothing to do with a card;
-   * `foundry-cli` is an engine binary that rasterises and drives text acts
-   * against a Crucible endpoint, and is not itself a model. Everything else the
+   * Calibre and Tesseract are CPU tools with nothing to do with a card. The
+   * foundry engine used to be a downloaded binary here (`foundry-cli`); since
+   * 2026-09-24 it ships inside the app (`foundry-app/engine/`), so there is
+   * nothing of it to install. Everything else the
    * wizard used to offer — `orpheus`, `rvc-env`, `whisperx-env`,
    * `qwen-align-env`, the whisper models, the RVC voices and the three CUDA
    * packs — is a job environment or a subject Crucible installs and holds once
    * per machine (rollout §2 ruling 1). (`resemble-env` was on that list until
    * the Enhance tab was deleted; Resemble Enhance is gone from this app.)
    */
-  protected readonly localToolIds = ['calibre', 'foundry-cli'];
+  protected readonly localToolIds = ['calibre'];
 
   protected readonly currentStep = signal(0);
   protected readonly active = computed(() => this.steps[this.currentStep()]);

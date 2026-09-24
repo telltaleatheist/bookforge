@@ -78,9 +78,10 @@
  * It is NOT deleted yet, and this is a LABELLED STOPGAP rather than a fallback:
  * the ONE legacy switch ("Run renders and text passes with the local engines
  * instead", Settings → Crucible Servers) still routes here, and that switch is
- * what keeps this machine converting books while the Crucible path waits on a
- * foundry release (`FOUNDRY_VERSION_FOR_CRUCIBLE_PAGES`) and on Owen's in-app
- * pass. Nothing chooses this path by accident — `planVlmConversion` reaches it
+ * what keeps this machine converting books while the Crucible path waits on
+ * Owen's in-app pass. (It also used to wait on a foundry release,
+ * `FOUNDRY_VERSION_FOR_CRUCIBLE_PAGES`; the engine is vendored with foundry-app
+ * since 2026-09-24 and that floor is gone.) Nothing chooses this path by accident — `planVlmConversion` reaches it
  * only when the switch is on or an endpoint was typed by hand, and it says so
  * in the job log by name. The deletion commit is Owen's to approve.
  */

@@ -149,9 +149,14 @@ async function main() {
       + 'acts put the Crucible credential and the act name there (electron/crucible/text-acts.ts, '
       + 'reach `spawn`); without it they would reach the server unauthenticated. Do not re-vendor '
       + 'over this — ask Foundry.');
-    assert.ok(/\{ \.\.\.process\.env, \.\.\.extraEnv \}/.test(engine),
-      'the vendored runEngine no longer merges the overlay over the inherited environment, so a '
+    // Since foundry 1927563 the merge is `childEnv` (the bundled engine adds
+    // ELECTRON_RUN_AS_NODE between the two), and the run's overlay is still LAST
+    // and still a new object — never written onto process.env.
+    assert.ok(/\{ \.\.\.process\.env, \.\.\.cmd\.env, \.\.\.\(extraEnv \?\? \{\}\) \}/.test(engine),
+      'the vendored childEnv no longer merges the overlay over the inherited environment, so a '
       + 'per-run credential either does not arrive or is written onto this process.');
+    assert.ok(/env: childEnv\(cmd, extraEnv\)/.test(engine),
+      'the vendored runEngine spawn no longer passes its run\'s `extraEnv` through childEnv.');
   });
 
   // ── 2. The seam BookForge calls, and the one field it now depends on ─────
@@ -328,11 +333,17 @@ async function main() {
       'FOUNDRY_VERSION_FOR_CRUCIBLE_TEXT is back. It was deleted on 2026-09-14 because it was a '
       + 'version number standing in for a property of the vendored subtree — which is exactly how '
       + 'the stale refusal survived. The subtree is read by this suite instead.');
-    // The two floors that ARE about a released binary stay, and are not swept
-    // away with it: an old `foundry` on the machine answers `clean-text` with a
-    // usage dump, and that is a version question.
-    assert.strictEqual(typeof hostQueue.FOUNDRY_VERSION_FOR_CLEAN_TEXT, 'string');
-    assert.strictEqual(typeof hostQueue.FOUNDRY_VERSION_FOR_CLEAN_TEXT_EPUB, 'string');
+    // And since 2026-09-24 neither is any other act. The three floors that were
+    // about a DOWNLOADED binary (clean-text, its --epub failsafe, clean-triage)
+    // went with it: the engine is vendored with foundry-app, so it has every
+    // command the vendored Foundry schedules, and a floor could only refuse work
+    // it can do.
+    for (const name of [
+      'FOUNDRY_VERSION_FOR_CLEAN_TEXT', 'FOUNDRY_VERSION_FOR_CLEAN_TEXT_EPUB', 'FOUNDRY_VERSION_FOR_CLEAN_TRIAGE',
+      'foundryTooOldForCleanText', 'foundryTooOldForCleanTextEpub', 'foundryTooOldForCleanTriage',
+    ]) {
+      assert.strictEqual(hostQueue[name], undefined, `${name} is back`);
+    }
   });
 
   await checkAsync('the hosted step reads no CREDENTIAL, no models, no capability — the window does', async () => {

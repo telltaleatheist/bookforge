@@ -58,18 +58,6 @@
  */
 
 /**
- * The foundry that understands `--fresh-readings` / `--reuse-readings` and
- * writes the completion marker they key off.
- *
- * BookForge adopts the newest foundry release at launch, so an older binary is a
- * real state — and a run that quietly dropped these flags against one would be
- * the exact bug this module exists to close, with the user's order ignored and a
- * cache replayed. So it is a REFUSAL naming the version, never a silent
- * omission. Bumped in lockstep with foundry's package.json.
- */
-export const FOUNDRY_VERSION_FOR_READINGS_FLAGS = '0.9.0';
-
-/**
  * What is banked for one PDF, as main found it on disk, plus what BookForge's
  * own records say about it.
  *
@@ -274,42 +262,4 @@ export function describeReadingsDecision(
     `Using the ${bank.pages} banked page answer(s) at ${bank.path}, as chosen when this job was `
     + `added to the queue${bankIsFromCompletedRun(bank) ? ' — the book is rebuilt from them and no page is read' : ''}.`
   );
-}
-
-/**
- * The refusal for a foundry too old to be told any of this.
- *
- * Named rather than worked around: dropping the flag would let the binary fall
- * back on its own resume behaviour, which for a completed conversion is the
- * silent cache replay this whole change exists to end.
- */
-export function foundryTooOldForReadingsFlags(installed: string, flag: string): string {
-  return (
-    `This book has banked page readings and BookForge needs to tell foundry what to do with them `
-    + `(${flag}), but the installed foundry is ${installed} and that flag arrived in `
-    + `${FOUNDRY_VERSION_FOR_READINGS_FLAGS}. Update foundry in Settings → Add-ons and run this `
-    + 'again. Nothing was converted — running without the flag would let foundry decide on its own, '
-    + 'which is how a conversion you ordered turns into a replay of one you already had.'
-  );
-}
-
-/**
- * Is `installed` at least `required`? Numeric dot-separated compare, and a
- * version that is not that shape is NOT quietly treated as new enough.
- */
-export function foundryVersionAtLeast(installed: string, required: string): boolean {
-  const parts = (raw: string): number[] | null => {
-    const bits = raw.trim().split('.');
-    const numbers = bits.map((bit) => Number(/^\d+/.exec(bit)?.[0]));
-    return numbers.some((n) => !Number.isFinite(n)) ? null : numbers;
-  };
-  const a = parts(installed);
-  const b = parts(required);
-  if (a === null || b === null) return false;
-  for (let i = 0; i < Math.max(a.length, b.length); i++) {
-    const left = a[i] ?? 0;
-    const right = b[i] ?? 0;
-    if (left !== right) return left > right;
-  }
-  return true;
 }

@@ -29,7 +29,9 @@
  *   described, and it already existed — `doRuntimeSetup()` in `main.ts` calls
  *   exactly this on first run.
  * - `components/component-manager.ts` owns catalogued components with install,
- *   verify and locate (`foundry-cli`, `calibre`).
+ *   verify and locate (`calibre`). The foundry engine is not a component any
+ *   more: it ships inside `foundry-app/engine/` (2026-09-24), so there is
+ *   nothing of it to check, fix or download here.
  *
  * What this module adds is a SINGLE READING over both, in the vocabulary a
  * person has: is it here, is it broken, and what happens when I press Fix.
@@ -213,15 +215,6 @@ export function composeReport(inputs: DoctorInputs): DoctorReport {
   const checks: DoctorCheck[] = [
     env,
     ffmpegCheck(tool('ffmpeg'), env.state === 'ok', inputs.hasManagedEnv),
-    componentCheck(
-      'foundry-cli',
-      'Foundry engine',
-      'Reads documents, converts them, and runs the text passes.',
-      true,
-      component('foundry-cli'),
-      inputs.installableIds.includes('foundry-cli'),
-      inputs.externalInstallerIds.includes('foundry-cli'),
-    ),
     componentCheck(
       'calibre',
       'Calibre',

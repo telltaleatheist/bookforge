@@ -67,3 +67,9 @@ shared/crucible/bookforge.module.json -text
 # LF-normalised, so the corruption exists only on the working-tree side.
 foundry-app/shared/foundry.module.json -text
 foundry-app/shared/model-lineup.json -text
+
+# The Foundry engine bundle, vendored with foundry-app/ (Foundry's
+# tools/build-engine.mjs writes it; Foundry's test suite checks it byte for byte
+# against its sources). Generated, 4 MB, and hashed by nobody but git: never
+# convert its line endings, and no text diff.
+foundry-app/engine/** binary

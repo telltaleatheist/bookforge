@@ -236,50 +236,37 @@ const { skipLine } = require('./keeper-skip.js');
 const BOOKFORGE_ANCHOR = '0f962d5f';
 
 /**
- * WHAT TIER 2 IS ASKED ABOUT — the commit THE BINARY REPORTS.
+ * WHAT TIER 2 IS ASKED ABOUT — the Foundry commit that CARRIES THE ENGINE THIS
+ * APP RUNS.
  *
  * THIS WAS A FIXED COMMIT UNTIL 2026-09-13 AND THAT WAS THE BUG. It read
  * `const FOUNDRY_SHIPPED = '9f4ee4e'` — a snapshot from 2026-09-05 — and by the
- * time anyone looked, Foundry was **46 commits past it, 7 of them touching
- * `src/clean/`**. So a keeper whose stated question is "does the code we ship
- * still hold the rules we handed over" was answering it about an engine nobody
- * runs, and passing.
+ * time anyone looked, Foundry was 46 commits past it, 7 of them touching
+ * `src/clean/`, so this keeper answered its question about an engine nobody ran
+ * — and passed through a real divergence (`SPOKEN_AS_WORD` lost `covid` on one
+ * side only). A keeper anchored to a hand-kept commit is the same shape as the
+ * bug it guards.
  *
- * It passed through a real divergence. Foundry's `SPOKEN_AS_WORD` lost `covid`
- * (its copy was hard-coded; ours reads `caps_acronyms.json`), so `foundry
- * clean-text` ACCEPTED an edit spelling COVID letter by letter while this
- * repo's identical pass REFUSED it — two implementations of ONE pass, both
- * stamping `n6`, disagreeing about what the validator forbids. This keeper
- * existed precisely to catch that and could not see it.
+ * From 2026-09-13 to 2026-09-24 the anchor was the commit a downloaded BINARY
+ * printed in `foundry --version` — `resolveFoundryPath`, the `foundry-cli`
+ * add-on, `FOUNDRY_CLI_PATH`. All of that is gone: the engine is VENDORED with
+ * foundry-app as `foundry-app/engine/foundry-engine.cjs` (Foundry's
+ * tools/build-engine.mjs), and electron/foundry-bridge.ts and the hosted window
+ * both run exactly that file. Its `--version` stamp is `src <digest>`, a digest
+ * of the sources rather than a commit, so it cannot be looked up by name.
  *
- * THE DIAGNOSIS, from the Foundry session that found the second half: a keeper
- * anchored to a commit **is the same shape as the bug it guards** — a copy of a
- * fact kept current by hand, so it drifts silently, and it is most silent
- * exactly when it matters. Pinning was never the mechanism; the DECISION is
- * (see "A REGENERATED PIN IS A DECISION" above). A fixed anchor removed the
- * moment at which anyone decides.
+ * SO THE ANCHOR IS DERIVED FROM THE BYTES. The bundle's git blob id is asked of
+ * Foundry's history (`git log --find-object`), and the anchor is the newest
+ * commit whose `app/engine/foundry-engine.cjs` IS that blob. That is exact, not
+ * approximate: the bundle is committed, and Foundry's own suite
+ * (test/engine-bundle.test.ts) fails any commit where it is not what that
+ * commit's `src/` builds to — and the build stamp is a digest of every input,
+ * comments included, so identical bundle bytes mean identical sources. Nothing
+ * here is kept current by hand, and nothing reads a prose table.
  *
- * ── WHY THE BINARY AND NOT THE CHECKOUT ────────────────────────────────────
- *
- * The first fix asked `git -C <foundry> rev-parse HEAD`. That is better than a
- * constant and still wrong, because the checkout is not what runs: BookForge
- * spawns an INSTALLED BINARY (`resolveFoundryPath`), which may be older than the
- * checkout, newer than it, or the only foundry on a machine that has no checkout
- * at all. Asking the checkout answers a question about a directory nobody
- * executes.
- *
- * `foundry --version` prints `foundry <ver> (<short sha>)`. The sha is injected
- * at release time (`tools/release-build.sh`, `--define FOUNDRY_GIT_COMMIT`) and
- * inlined into the executable, so it is the identity of the bytes that will
- * actually run. That is the anchor.
- *
- * A BUILD WITH NO SHA IS "CANNOT VERIFY", NEVER "USE THE CHECKOUT". A dev build
- * (`bun run src/cli.ts`) prints `foundry <ver>` with no parenthesis, and
- * foundry's `version.ts` is explicit that this is the truth about that build
- * rather than a missing value. Falling back to the checkout's HEAD there would
- * re-create the exact hazard this fix removes, and would do it precisely on a
- * developer machine — where the checkout is most likely to be ahead of the
- * binary. So it fails, saying which binary could not identify itself.
+ * NOT FOUND IS A REFUSAL. A vendored bundle no Foundry commit carries was built
+ * from an uncommitted tree (or the checkout is behind), and answering about any
+ * other commit would be the hazard this anchor exists to remove.
  *
  * `FOUNDRY_HEAD_OVERRIDE` pins the anchor for one run, to bisect a failure or to
  * check a specific commit. Deliberately an env var and not a constant: a
@@ -287,123 +274,48 @@ const BOOKFORGE_ANCHOR = '0f962d5f';
  */
 function foundryShipped(repo) {
   const override = process.env['FOUNDRY_HEAD_OVERRIDE']?.trim();
-  // A named commit is a commit, so nothing here is dirty: the operator has
-  // said which one to check against and this run is about exactly that.
-  if (override) return { rev: override, dirty: false, source: 'FOUNDRY_HEAD_OVERRIDE' };
+  if (override) return { rev: override, source: 'FOUNDRY_HEAD_OVERRIDE' };
 
-  const binary = foundryBinary(repo);
-  if (binary === null) {
+  const bundle = path.join(__dirname, '..', 'foundry-app', 'engine', 'foundry-engine.cjs');
+  if (!fs.existsSync(bundle)) {
     throw new Error(
-      'no foundry binary to ask. This keeper checks the commit the BINARY '
-      + 'reports, because that is what BookForge spawns — a checkout may be '
-      + 'ahead of it, behind it, or absent.\n'
-      + 'Set FOUNDRY_CLI (the same variable electron/foundry-bridge.ts reads), '
-      + 'or FOUNDRY_HEAD_OVERRIDE to check a specific commit.',
+      `the vendored Foundry engine is missing (${bundle}). It is part of the foundry-app/ copy `
+      + '(foundry-app/VENDORED.md), so this checkout is incomplete.',
     );
   }
-
-  let printed;
-  try {
-    printed = execFileSync(binary, ['--version'], { encoding: 'utf8' }).trim();
-  } catch (err) {
-    throw new Error(`${binary} --version failed: ${err.message}`);
-  }
-
-  const named = parseFoundryVersion(printed);
-  if (named === null) {
+  const rev = vendoredEngineCommit(repo, bundle);
+  if (rev === null) {
     throw new Error(
-      `${binary} reports "${printed}" and names no commit, so THIS KEEPER CANNOT `
-      + 'VERIFY IT.\n'
-      + 'That is the honest answer for a build made without '
-      + '--define FOUNDRY_GIT_COMMIT (a `bun run src/cli.ts` dev build), and it is '
-      + 'NOT a reason to fall back to the checkout: the checkout is most likely to '
-      + 'be ahead of the binary on exactly the machine where this happens, which '
-      + 'is the hazard this anchor exists to remove.\n'
-      + 'Build a release binary, or set FOUNDRY_HEAD_OVERRIDE if you know which '
-      + 'commit it is.',
+      `no commit in the Foundry checkout at ${repo} carries ${bundle} byte for byte, so THIS `
+      + 'KEEPER CANNOT SAY WHICH SOURCES THE APP RUNS. Either the vendored bundle was built from '
+      + 'an uncommitted tree, or that checkout has not fetched the commit it came from. Fetch '
+      + 'Foundry, or set FOUNDRY_HEAD_OVERRIDE if you know which commit it is.',
     );
   }
-  return { rev: named.sha, dirty: named.dirty, source: `${binary} --version` };
+  return { rev, source: 'the vendored foundry-app/engine bundle' };
 }
 
 /**
- * `foundry <ver> (<sha>)` -> the sha. `null` when the line names no commit.
- *
- * ── `+dirty` IS NOT "NAMES NO COMMIT" (fixed 2026-09-18) ────────────────────
- *
- * Foundry's release script appends `+dirty` to the injected sha when the tree
- * it built from had uncommitted changes, so the binary on this machine prints
- * `foundry 2.0.2 (e03943a+dirty)`. The pattern was `\(([0-9a-f]{7,40})\)` —
- * the closing parenthesis had to follow the sha — so nine characters turned
- * every check in this file off, and it said so in the words reserved for a dev
- * build that carries no sha at all: "names no commit, so THIS KEEPER CANNOT
- * VERIFY IT". It names `e03943a`, and with `FOUNDRY_HEAD_OVERRIDE=e03943a` the
- * suite passed 13/13 unchanged.
- *
- * THE CAUTION IN THAT MESSAGE IS STILL LEGITIMATE and is kept — a dirty build
- * was made from a tree that is not any commit, so the bytes running may be
- * ahead of the sha they report. It becomes a WARNING printed on the pass line
- * rather than a refusal to check anything, because refusing to check is
- * strictly worse: it leaves the thirteen files unwatched AND says nothing
- * about the dirt.
- *
- * A build that names no commit at all still returns `null`, and the refusal
- * above still stands for it: `bun run src/cli.ts` prints no parenthesis, and
- * falling back to the checkout's HEAD is the hazard this anchor exists to
- * remove.
- *
- * Its own function so that the shapes it has to read can be driven without a
- * foundry on the machine — see `tools/test-keeper-runner.js`.
+ * The newest Foundry commit whose `app/engine/foundry-engine.cjs` is exactly the
+ * vendored bundle's bytes, or null. `--find-object` lists every commit that ADDED
+ * or REMOVED that blob; the ones where the path still holds it are the carriers.
  */
-function parseFoundryVersion(printed) {
-  const match = /\(([0-9a-f]{7,40})(\+dirty)?\)/.exec(printed);
-  return match === null ? null : { sha: match[1], dirty: match[2] !== undefined };
-}
-
-/**
- * The foundry BookForge would spawn, by the same rule
- * `electron/foundry-bridge.ts::resolveFoundryPath` uses — the env var first,
- * then the component registry. The registry needs electron, which this script
- * does not have, so the env var and the conventional build output are what is
- * reachable here; a machine using a managed install must name it explicitly.
- *
- * THE VARIABLE IS `FOUNDRY_CLI_PATH`. This function read `FOUNDRY_CLI` until
- * 2026-09-13 and nothing in the app has ever read that name — the bridge's
- * docblock, `primeFoundryDevCliPath` and the packaged path all spell
- * `FOUNDRY_CLI_PATH`. So a developer who pointed the app at a specific binary
- * pointed this keeper at nothing, and it silently answered about the checkout's
- * `dist/` instead: the same class of defect as the fixed anchor above, one
- * layer down. Both names are accepted so that a machine already exporting the
- * wrong one is not left unable to run it, and the two disagreeing is a REFUSAL
- * rather than a precedence rule — two people have named the binary and this
- * cannot tell which of them meant it.
- */
-function foundryBinary(repo) {
-  const canonical = process.env['FOUNDRY_CLI_PATH']?.trim();
-  const legacy = process.env['FOUNDRY_CLI']?.trim();
-  if (canonical && legacy && path.resolve(canonical) !== path.resolve(legacy)) {
-    throw new Error(
-      `FOUNDRY_CLI_PATH (${canonical}) and FOUNDRY_CLI (${legacy}) name different binaries. `
-      + 'FOUNDRY_CLI_PATH is the one the app reads (electron/foundry-bridge.ts); FOUNDRY_CLI is '
-      + 'accepted here only for machines that exported it before 2026-09-13. Unset one.',
-    );
-  }
-  const fromEnv = canonical ?? legacy;
-  if (fromEnv) {
-    if (!fs.existsSync(fromEnv)) {
-      throw new Error(
-        `the environment names ${fromEnv} as the foundry binary and there is nothing there. `
-        + 'Falling through to the checkout would answer about a build nobody asked for.',
-      );
+function vendoredEngineCommit(repo, bundle) {
+  const id = execFileSync('git', ['hash-object', '--no-filters', bundle], { encoding: 'utf8' }).trim();
+  const touched = execFileSync('git', [
+    '-C', repo, 'log', '--all', '--format=%H', `--find-object=${id}`, '--', 'app/engine/foundry-engine.cjs',
+  ], { encoding: 'utf8' }).split('\n').filter(Boolean);
+  for (const commit of touched) {
+    let at;
+    try {
+      at = execFileSync('git', ['-C', repo, 'rev-parse', `${commit}:app/engine/foundry-engine.cjs`],
+        { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    } catch {
+      continue;
     }
-    return fromEnv;
+    if (at === id) return commit.slice(0, 7);
   }
-  const built = path.join(
-    repo ?? foundryRepo(),
-    'dist',
-    process.platform === 'win32' ? 'foundry-windows-x64.exe' : 'foundry',
-  );
-  return fs.existsSync(built) ? built : null;
+  return null;
 }
 
 /** Foundry's two verbatim-copy commits. Tier 1 is asserted at these. */
@@ -750,12 +662,11 @@ function checkSpokenAsWordAgreement(atShip) {
 }
 
 /**
- * TIER 3, run against whatever commit the binary names. Returns a list of
+ * TIER 3, run against the commit the vendored engine came from. Returns a list of
  * problems, which is empty when the freeze holds.
  *
  * IT IS SKIPPED BY NAME WHEN THE BASELINE IS NOT AN ANCESTOR of the shipped
- * commit, and never silently. A binary older than `969dd96` — a machine that
- * has not upgraded, a deliberate `FOUNDRY_HEAD_OVERRIDE` bisect — is being
+ * commit, and never silently. An engine older than `969dd96` — a deliberate `FOUNDRY_HEAD_OVERRIDE` bisect — is being
  * asked a question about a future it cannot have reached, and answering
  * "changed" there would name the wrong defect. Tiers 1 and 2 still run on it.
  */
@@ -848,17 +759,6 @@ function main() {
   }
   const anchor = foundryShipped(foundry);
   const FOUNDRY_SHIPPED = anchor.rev;
-  /*
-   * A DIRTY BINARY IS CHECKED AND FLAGGED, NEVER REFUSED. It was built from a
-   * tree that is not any commit, so the thirteen files it actually carries may
-   * be ahead of the sha it reports and this run's verdict is about the sha.
-   * That is a caution a person must READ, which is why it is on the pass line;
-   * it is not a reason to check nothing, which is what it used to be.
-   */
-  const dirtyWarning = anchor.dirty
-    ? ` WARNING: that binary reports +dirty — it was built from an uncommitted tree, so what it `
-      + `carries may be ahead of ${FOUNDRY_SHIPPED} and this verdict is about the COMMIT.`
-    : '';
   for (const rev of [VENDOR_PASS, VENDOR_LEAVES, ONE_DOOR_BASELINE, FOUNDRY_SHIPPED]) {
     requireCommit(foundry, rev, 'Foundry');
   }
@@ -1055,17 +955,14 @@ function main() {
     + `n6/s1 agree on both sides. `
     + (freeze.note ?? `${freeze.frozen}/${FROZEN_SINCE_BASELINE.length} frozen since `
       + `${ONE_DOOR_BASELINE}. `)
-    + `(${foundry})`
-    + dirtyWarning,
+    + `(${foundry}; anchor from ${anchor.source})`,
   );
 }
 
 if (require.main === module) main();
 
 /**
- * `parseFoundryVersion` is exported so the shapes a `--version` line can take
- * are checked without a foundry binary — the reading is what went wrong here
- * (a `+dirty` suffix read as "names no commit"), and a reading is exactly the
- * kind of thing a keeper can own on any machine.
+ * `vendoredEngineCommit` is exported so tools/test-keeper-runner.js can drive the
+ * anchor's derivation against a scratch repository, without a Foundry checkout.
  */
-module.exports = { parseFoundryVersion };
+module.exports = { vendoredEngineCommit };

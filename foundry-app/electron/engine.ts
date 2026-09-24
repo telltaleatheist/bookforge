@@ -4,8 +4,7 @@
  * foundry is a STANDALONE UNIT. This app never imports a line of it; it spawns
  * it, reads its stderr, and believes its exit code (0 ok, 1 the run failed,
  * 2 the command line was wrong). Everything about *which* program that is lives
- * in `engineCommand()` below and nowhere else, so replacing the dev checkout
- * with a packaged binary is one function.
+ * in `engineCommand()` below and nowhere else.
  *
  * Cribbed from BookForge's electron/foundry-bridge.ts: the argument-array spawn
  * (never a shell string — a binary under `C:\Program Files\…` interpolated into
@@ -17,9 +16,6 @@ import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
-import { app } from 'electron';
-
-import { hosted } from './host';
 import { fold } from '../shared/original';
 import { contributorFileAs } from '../shared/mint-meta';
 import type {
@@ -38,66 +34,88 @@ import type {
 
 export interface EngineCommand {
   command: string;
-  /** Fixed leading arguments — `run <cli.ts>` for the dev checkout, none for a binary. */
+  /** Fixed leading arguments — the bundle's path when this is Electron-as-Node, none for FOUNDRY_BIN. */
   args: string[];
+  /**
+   * What the child's environment gets on top of this process's, for EVERY run —
+   * `ELECTRON_RUN_AS_NODE` for the bundle, nothing for FOUNDRY_BIN. A run's own
+   * `extraEnv` goes on top of this.
+   */
+  env: Readonly<Record<string, string>>;
   source: string;
 }
 
-/** dist/electron -> dist -> app -> the foundry checkout this app lives in. */
-function repoRoot(): string {
-  return path.resolve(__dirname, '..', '..', '..');
+/**
+ * The bundled engine: dist/electron -> dist -> the app folder -> engine/.
+ *
+ * One path in every place this app runs, because `engine/` sits in the app
+ * folder itself: this checkout (`app/engine`), BookForge's vendored copy of the
+ * folder (`foundry-app/engine`), and a packaged app, where electron-builder puts
+ * it in the archive beside `dist/` (the `files` list in package.json).
+ */
+export function engineBundlePath(): string {
+  return path.resolve(__dirname, '..', '..', 'engine', 'foundry-engine.cjs');
 }
 
 let cached: EngineCommand | null = null;
 
 /**
- * THE constant. Three answers, in precedence order:
+ * THE constant. Two answers, in precedence order:
  *
- *   1. `FOUNDRY_BIN` — an operator pointing at a build of their own.
- *   2. A binary shipped beside a packaged app (resources/foundry[.exe]).
- *   3. The dev checkout: `bun run <repo>/src/cli.ts`.
+ *   1. `FOUNDRY_BIN` — an operator pointing at a build of their own. A command,
+ *      run with the job's arguments and nothing in front of them.
+ *   2. The bundled engine, `engine/foundry-engine.cjs`, run by THIS app's own
+ *      Electron as Node (`ELECTRON_RUN_AS_NODE=1`).
  *
- * (3) is derived from __dirname rather than hardcoded, so a clone anywhere
- * works. When foundry ships a binary with the installer, only (2) changes.
+ * ── THE ENGINE IS CODE THAT MOVES WITH THE APP (2026-09-24) ─────────────────
  *
- * HOSTED, (3) IS REFUSED. This file is vendored into the host's tree, so
- * "three levels up" is the host's checkout — the cli.ts there is somebody
- * else's code or nobody's, and spawning it would be the silent wrong-engine
- * failure that is worse than no engine at all. A host owes us FOUNDRY_BIN or
- * a packaged binary (docs/BOOKFORGE-HANDOFF.md); missing both is its bug,
- * and this throw is the sentence that names it.
+ * It used to be a `bun build --compile` executable — foundry.exe — shipped as
+ * its own release, downloaded by BookForge as an add-on, and found here in
+ * `resources/` or, in a dev checkout, run as `bun run src/cli.ts`. Owen: *"i
+ * dont think it needs to be an exe anymore. it can be an engine but maybe we
+ * should explode it out into normal code that moves along with the app."* So
+ * the engine is bundled into this folder (tools/build-engine.mjs, committed and
+ * checked against `src/` by the test suite), and there is no second program to
+ * version, download or find. A dev checkout runs the same bundle as a packaged
+ * app and as BookForge: an edit to `src/` takes effect after
+ * `node tools/build-engine.mjs`, which `electron:dev` runs first.
+ *
+ * It is STILL A CHILD PROCESS — see tools/build-engine.mjs for why — and its
+ * Node is the one in this Electron, so the engine can never find itself on a
+ * runtime the app did not ship.
+ *
+ * A MISSING BUNDLE IS REFUSED BY NAME. It is part of the app folder, so its
+ * absence is a broken copy or a broken package, never a state to route around.
  */
 export function engineCommand(): EngineCommand {
   if (cached) return cached;
 
   const declared = process.env['FOUNDRY_BIN']?.trim();
   if (declared) {
-    cached = { command: declared, args: [], source: 'FOUNDRY_BIN' };
+    cached = { command: declared, args: [], env: {}, source: 'FOUNDRY_BIN' };
     return cached;
   }
 
-  const binaryName = process.platform === 'win32' ? 'foundry.exe' : 'foundry';
-  const packaged = path.join(process.resourcesPath ?? '', binaryName);
-  if (app.isPackaged && fs.existsSync(packaged)) {
-    cached = { command: packaged, args: [], source: 'packaged binary' };
-    return cached;
-  }
-
-  const cliPath = path.join(repoRoot(), 'src', 'cli.ts');
-  if (hosted()) {
+  const bundle = engineBundlePath();
+  if (!fs.existsSync(bundle)) {
     throw new Error(
-      `no engine: FOUNDRY_BIN is unset and no packaged binary was found, and ` +
-      `the dev-checkout fallback (${cliPath}) resolves inside the host's ` +
-      `repository, not foundry's. The host must set FOUNDRY_BIN before ` +
-      `mountFoundry().`,
+      `no engine: ${bundle} does not exist. It is part of the Foundry app folder `
+      + '(engine/, written by tools/build-engine.mjs in the foundry repo), so this '
+      + 'copy of the app is incomplete — re-copy or rebuild it.',
     );
   }
   cached = {
-    command: 'bun',
-    args: ['run', cliPath],
-    source: 'dev checkout',
+    command: process.execPath,
+    args: [bundle],
+    env: { ELECTRON_RUN_AS_NODE: '1' },
+    source: 'bundled engine',
   };
   return cached;
+}
+
+/** The environment one run is spawned with: this process's, the command's, then the run's own. */
+function childEnv(cmd: EngineCommand, extraEnv?: Readonly<Record<string, string>>): NodeJS.ProcessEnv {
+  return { ...process.env, ...cmd.env, ...(extraEnv ?? {}) };
 }
 
 /** `foundry --version`, or null. Asked once, at startup, for the settings screen. */
@@ -106,6 +124,7 @@ export function engineInfo(): EngineInfo {
   let version: string | null = null;
   try {
     const probe = spawnSync(cmd.command, [...cmd.args, '--version'], {
+      env: childEnv(cmd),
       timeout: 30_000,
       windowsHide: true,
       encoding: 'utf8',
@@ -114,7 +133,7 @@ export function engineInfo(): EngineInfo {
   } catch {
     version = null;
   }
-  return { ...cmd, version };
+  return { command: cmd.command, args: cmd.args, source: cmd.source, version };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -160,12 +179,11 @@ export function runEngine(
   const done = new Promise<{ code: number; stdout: string; stderr: string }>((resolve) => {
     child = spawn(cmd.command, [...cmd.args, ...args], {
       /*
-       * A COPY, and the copy is load-bearing: `{...process.env, ...extraEnv}`
-       * builds a new object, so nothing this run adds is visible to the next
-       * one. Spreading into `process.env` itself would set the variable on this
+       * A COPY, and the copy is load-bearing: `childEnv` builds a new object,
+       * so nothing this run adds is visible to the next one. Spreading into `process.env` itself would set the variable on this
        * process, which is the failure the argument exists to prevent.
        */
-      env: extraEnv === undefined ? process.env : { ...process.env, ...extraEnv },
+      env: childEnv(cmd, extraEnv),
       windowsHide: true,
     });
 
@@ -210,8 +228,8 @@ export function runEngine(
 /**
  * Kill the child AND everything it started.
  *
- * `bun run src/cli.ts` is a shell of a process in front of the real work, and
- * the real work spawns Python that holds a GPU. `child.kill()` reaches the
+ * The engine spawns Python (the rasteriser, and on a local route a reader that
+ * holds a GPU). `child.kill()` reaches the
  * first of those and none of the rest, so a cancelled job would go on rendering
  * pages with nothing left listening — on Windows the only reliable answer is
  * taskkill's tree flag.

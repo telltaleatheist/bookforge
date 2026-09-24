@@ -191,6 +191,7 @@
     "files": [
       "dist/**/*",
       "foundry-app/dist/**/*",
+      "foundry-app/engine/**/*",
       "python/**/*",
       "!python/**/__pycache__/**",
       "!python/**/*.pyc",

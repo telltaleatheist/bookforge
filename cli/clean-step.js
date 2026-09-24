@@ -45,16 +45,13 @@
  * What this door DOES still start and stop is BookForge's own text SERVER,
  * which is a different act from loading a model into it — `--keep-server`.
  *
- * ── WHICH ENGINE ANSWERS, AND WHY IT IS NOT THE INSTALLED ONE ───────────────
+ * ── WHICH ENGINE ANSWERS ────────────────────────────────────────────────────
  *
- * A CLI run is a DEV run by construction — it runs out of the checkout, against
- * `dist/electron` — so this primes `FOUNDRY_CLI_PATH` at the locally-built binary
- * first, exactly as `main.ts` does under `isDev`, before `resolveFoundryPath()` is
- * asked. Skipping it resolves the INSTALLED component instead, which on this
- * machine is a foundry 1.0.2 with no `--concurrency` and no `--generation`: a
- * command line composed for an engine that cannot run it, discovered an hour into
- * a benchmark. The dry run prints the binary AND `foundry --version`, because a
- * path cannot say which release is sitting at it.
+ * The one the hosted Foundry finds for itself: the bundle vendored in its app
+ * folder, `foundry-app/engine/foundry-engine.cjs`, run by this process's own
+ * node (foundry-app's engine.ts; `ELECTRON_RUN_AS_NODE` is inert under node).
+ * There is no installed component to fall through to any more (2026-09-24), so
+ * the dry run's engine line and `--version` name the same bundle the app runs.
  *
  * ── WHICH BUILD OF FOUNDRY THIS DRIVES ──────────────────────────────────────
  *
@@ -175,33 +172,6 @@ async function main() {
   const foundryProjectDir = foundryArg !== null
     ? path.resolve(foundryArg)
     : await foundryProjectFor(path.resolve(projectArg), libraryRoot);
-
-  /*
-   * THE ENGINE, named the way main.ts names it before it mounts — and in main.ts's
-   * own ORDER, which is the whole of this paragraph.
-   *
-   * `primeFoundryDevCliPath()` FIRST (main.ts ~12083, `if (isDev)`), because a CLI
-   * run IS a dev run by construction: it runs out of the checkout, against
-   * `dist/electron`, with no packaged component tree around it. Without the prime,
-   * `resolveFoundryPath()` falls through to the INSTALLED component — on this
-   * machine a foundry 1.0.2 from August with no `--concurrency` and no
-   * `--generation` — and the door would compose a command line the binary it named
-   * cannot run. It honours an already-set `FOUNDRY_CLI_PATH` and says which way it
-   * went, which is the point: the one question that matters when a run behaves
-   * oddly is WHICH BINARY ANSWERED.
-   *
-   * Then `resolveFoundryPath()`, whose rule is unchanged and stays two sources
-   * (the env var, then the component). Hosted, Foundry refuses its own dev-checkout
-   * fallback by design — the checkout three levels up from a vendored file is the
-   * HOST's — so `FOUNDRY_BIN` is the host's to set, and an environment that already
-   * said something wins exactly as it does there.
-   */
-  require(path.join(BF_DIST, 'foundry-dev-cli.js')).primeFoundryDevCliPath();
-  if (!process.env.FOUNDRY_BIN) {
-    const { resolveFoundryPath } = require(path.join(BF_DIST, 'foundry-bridge.js'));
-    const bin = resolveFoundryPath();
-    if (bin) process.env.FOUNDRY_BIN = bin;
-  }
 
   // Foundry is HOSTED here, and its library is BookForge's — `mountFoundry`'s own
   // first fact. `onExport` is required by the shape; a cleanup lands no export.
@@ -377,11 +347,9 @@ async function main() {
   const argv = jobQueue.argsFor(request);
 
   /*
-   * WHICH BUILD ANSWERED, asked of the binary rather than assumed from its path —
-   * `foundryVersion()`, the app's own `foundry --version`. It is printed on a dry
-   * run because that is exactly the run somebody makes to find out whether the
-   * flags on the line are flags this engine has: `--concurrency` arrived in 1.2.0,
-   * and a path alone cannot say which release is sitting at it.
+   * WHICH BUILD ANSWERED, asked of the engine rather than assumed from its path —
+   * `foundryVersion()`, the app's own `foundry --version`, whose `src <digest>`
+   * names the exact sources the vendored bundle was built from.
    */
   const { foundryVersion } = require(path.join(BF_DIST, 'foundry-bridge.js'));
   let version;
@@ -433,18 +401,7 @@ async function main() {
     return;
   }
 
-  /*
-   * THE VERSION GATE, where `queue-steps/foundry-job.ts` puts it: the last moment
-   * anything on this side can say the installed engine has no `clean-text`, asked
-   * before Foundry is told to spawn and before a model is loaded.
-   */
-  const { foundryVersionAtLeast } = require(path.join(REPO, 'dist', 'shared', 'vlm', 'readings-bank.js'));
-  const { FOUNDRY_VERSION_FOR_CLEAN_TEXT, foundryTooOldForCleanText, parseFoundryProgressLine } =
-    require(path.join(BF_DIST, 'foundry-host-queue.js'));
-  const installed = await foundryVersion();
-  if (!foundryVersionAtLeast(installed.version, FOUNDRY_VERSION_FOR_CLEAN_TEXT)) {
-    throw new Error(foundryTooOldForCleanText(installed.version));
-  }
+  const { parseFoundryProgressLine } = require(path.join(BF_DIST, 'foundry-host-queue.js'));
 
   // Ctrl+C aborts through an AbortController, which is what the queue step hands
   // `runJob` — the same gesture the ✕ makes on a running row.

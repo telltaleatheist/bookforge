@@ -65,6 +65,10 @@ AGENTS.md
 resources/bin/*
 summary-*.json
 *.ttf
+# EXCEPT the Foundry engine's own four DejaVu faces, vendored with it: the
+# engine sets text PDFs in them and reads them from beside its bundle. Missing,
+# every text-PDF build fails (foundry-app/VENDORED.md).
+!foundry-app/engine/assets/*.ttf
 
 # conda-pack tarballs (multi-GB build artifacts; ymls in packaging/env are committed)
 packaging/artifacts/

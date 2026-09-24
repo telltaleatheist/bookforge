@@ -24,7 +24,7 @@ and the code that decides whether the bytes that arrived are the right bytes.
 
 | Artifact | Host | Version pinned by | Verified by |
 |---|---|---|---|
-| **Foundry CLI** (`foundry`/`foundry.exe`) | GitHub Releases · `telltaleatheist/foundry` · tag `v<version>` | `FOUNDRY_CLI_VERSION` — `electron/components/foundry-cli-components.ts` | sha256 in that file's `ASSETS`, checked by `downloadAndExtract` (`electron/components/downloader.ts`); then `foundry --version` via the component's `verify` spec |
+| **Foundry engine** | *nothing is downloaded* — it ships inside `foundry-app/engine/` (see §2) | — | — |
 | **Foundry stage models** (`foundry-4b-f16.gguf`, `foundry-blocks-v1-4b.gguf`, `foundry-ocr-v1-4b.gguf`, `foundry-footnotes-v1-4b.gguf`) | Hugging Face · `owenmorgan/foundry-models` | per-entry `sha256`/`bytes` in `FOUNDRY_MODELS` — foundry `src/models/catalog.ts` | `downloadVerified` — foundry `src/models/download.ts` |
 | **Foundry's vendored Tesseract** | GitHub Releases · `telltaleatheist/foundry` · tag `assets` | `artifact{}` per platform in `vendor/tesseract/manifest.json` (foundry) | `ensureVendorTesseract` — foundry `src/models/vendor-tesseract.ts`; every binary, DLL and tessdata file hash-checked before the first page |
 | **Page-layout ("blocks") GGUF, as used by BookForge Detect** | Hugging Face · `owenmorgan/foundry-models` | `BLOCKS_MODELS` — `electron/blocks-models.ts` | **byte count only** — `downloadBlocksModel` in the same file. See Known gaps §9.1 |
@@ -62,251 +62,35 @@ Three hosts, and the split between them is not arbitrary:
 
 ---
 
-## 2. Foundry CLI releases — the worked example
+## 2. The Foundry engine — NOT DOWNLOADED (since 2026-09-24)
 
-Foundry (`telltaleatheist/foundry`, public) is the standalone binary that does
-scan segmentation, block labelling, OCR repair and footnote-marker removal.
-BookForge drives it as a subprocess. v0.5.0 was cut on 2026-08-05 and is the
-freshest example to copy.
+Sections 2.1–2.7 used to describe the Foundry CLI as a downloaded component:
+`bun build --compile` executables per platform (`release-build.sh`), tarred with
+a `checksums.txt` (`release-package.sh`), published as GitHub releases on
+`telltaleatheist/foundry`, discovered at BookForge startup
+(`foundry-release-check.ts`), installed as the `foundry-cli` component
+(`foundry-cli-components.ts`, `ensureFoundryPath`), and version-gated per feature
+(`FOUNDRY_VERSION_FOR_*`). **All of that is gone.** Owen, 2026-09-24: *"i dont
+think it needs to be an exe anymore. it can be an engine but maybe we should
+explode it out into normal code that moves along with the app."*
 
-### 2.1 Building: `tools/release-build.sh`
+Now the engine ships **inside the vendored app folder**, `foundry-app/engine/`:
+Foundry's `tools/build-engine.mjs` bundles its `src/` into one CommonJS file,
+`foundry-engine.cjs` (plus the DejaVu faces in `engine/assets/`), committed in
+Foundry's `app/` and carried here by the ordinary re-vendor
+(`foundry-app/VENDORED.md`). BookForge runs it with its **own Electron as Node**
+(`process.execPath`, `ELECTRON_RUN_AS_NODE=1`) — a child process, as before.
 
-```bash
-tools/release-build.sh            # every target a release ships
-tools/release-build.sh host       # just this machine's
-tools/release-build.sh darwin-arm64
-```
-
-The four targets are `darwin-arm64`, `darwin-x64`, `linux-x64`, `windows-x64`,
-and `bun build --compile --target=<platform>` produces a single self-contained
-executable per target. Cross-compiling downloads that platform's Bun runtime on
-first use, so the first cross-build of a new target needs network.
-
-Two details are load-bearing:
-
-**The git commit is baked in.** The script passes
-`--define FOUNDRY_GIT_COMMIT='"<short-sha>"'`, which `src/version.ts` reads
-through a `declare const` and exposes as `GIT_COMMIT`. A dirty tree is allowed
-(that is how you test a build) but is **marked** with a `+dirty` suffix, so a
-binary reporting `a1b2c3d+dirty` can never be mistaken for the commit it was
-nearly built from. This is the reason the build is a shell script and not four
-lines of `package.json`: the define's value needs shell substitution wrapped in
-the quoting that makes it a JS string literal, and spelling that four times in
-JSON is how one of the four ends up subtly wrong and ships a binary that reports
-the wrong commit.
-
-**`host` is spelled out, never defaulted.** `release-build.sh` with *no*
-arguments means "everything a release ships". If `host` were the default, running
-the script in the wrong place would quietly produce one binary and you would
-discover the missing three when a user on another platform could not install. The
-`host` branch also maps MSYS/MinGW to the `windows` target — Git Bash reports
-`MINGW64_NT-…`, and without that case `npm run build` simply refused to run on
-Windows.
-
-A target that fails is reported and the script exits non-zero. It is never
-skipped quietly, because a missing binary in a release is a platform of users who
-cannot install.
-
-### 2.2 Packaging: `tools/release-package.sh`
-
-```bash
-tools/release-package.sh [dist-dir] [out-dir]    # defaults: dist, dist/release
-```
-
-For every binary present in `dist/`, it produces:
-
-```
-dist/release/foundry-<platform>-<arch>.tar.gz     one executable, named `foundry` (or `foundry.exe`)
-dist/release/checksums.txt                        plain sha256sum format
-```
-
-The archive is built with `tar -C` from a staging dir, so it holds `foundry`, not
-`dist/foundry-darwin-arm64` — an archive that unpacks a path is an archive that
-unpacks somewhere surprising. `checksums.txt` is written in plain `sha256sum`
-format (falling back to `shasum -a 256` on macOS) with the `./` prefix stripped,
-so both `sha256sum -c checksums.txt` and a trivial parse work.
-
-Only binaries that **actually exist** are packaged. A target that failed to build
-is absent from the release and absent from `checksums.txt`, rather than present
-as a stale copy of a previous build. A release asset that is quietly older than
-its tag is worse than a missing one, because it installs.
-
-### 2.3 The naming is a contract
-
-`foundry-<platform>-<arch>.tar.gz` is read by a program, not just by a person.
-`electron/components/foundry-cli-components.ts` builds every download URL as:
-
-```ts
-const RELEASE_BASE =
-  `https://github.com/telltaleatheist/foundry/releases/download/v${FOUNDRY_CLI_VERSION}`;
-// …
-url: `${RELEASE_BASE}/${a.file}`,   // a.file === 'foundry-darwin-arm64.tar.gz', etc.
-```
-
-So the platform/arch pair in the filename and the version in the release tag
-together *are* the address. Two consequences follow, and both are deliberate:
-
-- **The version is not in the filename**, because it is in the tag the assets
-  hang from. A name carrying both could disagree with itself.
-- **Renaming an asset breaks installs on that platform only**, silently, until
-  someone on that platform tries to install. The names in `release-package.sh`'s
-  `pack` calls and the `file:` fields in `ASSETS` must be kept identical.
-
-The executable inside is named `foundry` on POSIX and `foundry.exe` on Windows,
-and the component's `entryPath` is computed to match by `entryName()` in
-`foundry-cli-components.ts`.
-
-### 2.4 Publishing
-
-Push the code and the tag first — the release hangs off a tag that must exist,
-and a release pointing at a tag nobody can fetch is not reproducible:
-
-```bash
-git push origin main
-git push origin v0.5.0
-gh release create v0.5.0 dist/release/*.tar.gz dist/release/checksums.txt \
-  --repo telltaleatheist/foundry
-```
-
-Verify the upload landed before touching BookForge:
-
-```bash
-gh release view v0.5.0 --repo telltaleatheist/foundry \
-  --json assets -q '.assets[] | "\(.name)\t\(.size)"'
-```
-
-For v0.5.0 that returns five assets: `checksums.txt` plus the four tarballs.
-
-### 2.5 The consumption side
-
-`electron/components/foundry-cli-components.ts` declares foundry as an ordinary
-optional component so it rides the *same* ComponentService download/install/
-verify/remove machinery as the conda envs, the voices and the model GGUFs, rather
-than needing a bespoke downloader and a bespoke settings row.
-
-```ts
-export const FOUNDRY_CLI_VERSION = '0.5.0';
-```
-
-Below it, `ASSETS` lists one entry per platform with `file`, `sha256` and `bytes`.
-
-**Hashes and byte counts are PASTED from the published `checksums.txt`, never
-predicted.** The file header states the reason and it is worth restating: an
-invented hash turns a clear failure — "this asset is not there" — into a checksum
-mismatch, which reads as a corrupt transfer and sends the reader off to
-investigate their network instead of the release they forgot to upload. The URLs
-derive from the version constant, so they follow on their own; the hashes never
-can.
-
-What happens at install time:
-
-1. `install()` (`electron/components/component-manager.ts`) resolves the artifact
-   for this platform/arch, refuses stub artifacts (empty url, or `bytes: 0` with
-   no `parts`), pre-checks compatibility and free disk (2.5× the artifact size),
-   and creates a temp dir.
-2. `downloadAndExtract` (`electron/components/downloader.ts`) fetches with
-   redirect-following and progress, compares `sha256File(archive)` against the
-   declared hash, and extracts with the OS tar (`osTarBin()` pins
-   `%SystemRoot%\System32\tar.exe` on Windows, because a GNU tar earlier on PATH
-   treats `C:\…` as a remote host and cannot read zips at all).
-3. The tree is **moved into `<userData>/components/foundry-cli/` before**
-   post-install and verification, not after. For conda envs this is essential
-   (`conda-unpack` bakes the current path into every console-script launcher);
-   for foundry it just means the binary is verified where it will live.
-4. `chmodEntry` makes it executable on POSIX — `component.kind === 'foundry-cli'`
-   takes the same post-extract branch as any other managed binary.
-5. `runVerify` executes the `verify` spec: `foundry --version`, expecting the
-   output to contain `foundry`. That proves both that the binary runs and that it
-   *is* foundry rather than something else that happens to accept `--version`.
-6. `putRecord` writes an `InstalledRecord` — including `version` — into
-   `<userData>/components/installed.json`.
-
-### 2.6 Resolution precedence, and the auto-upgrade
-
-`electron/foundry-bridge.ts` owns this. Exactly two places are ever *searched* —
-the env var and the component record — and deliberately no third: **PATH is never
-searched**, because a `foundry` on PATH is an unknown build with an unknown prompt
-format and an unknown Tesseract pin, and running it would make a book quietly
-worse instead of failing. When neither place has one, `ensureFoundryPath`
-downloads it rather than telling a user to go and find a binary.
-
-**Precedence, as implemented in `ensureFoundryPath`:**
-
-1. **`FOUNDRY_CLI_PATH`** (the env var named by `FOUNDRY_CLI_ENV_VAR`). If it is
-   set and names a runnable file, it wins outright. If it is set and does *not*
-   name a runnable file, that is an **error**, not an invitation to download one:
-   the user said where their foundry is, and the useful answer is that it isn't
-   there — not a silent second copy that makes their setting a lie.
-2. **A path set on the `foundry-cli` component in Settings → Add-ons**, recorded
-   as an `external` install. Honored at whatever version it is; a configured
-   foundry is never downloaded over.
-3. **The managed download.** If nothing is configured, `ensureFoundryPath`
-   fetches through `componentManager.install()` rather than refusing to start.
-
-`resolveFoundryPath()` and `requireFoundryPath()` are the synchronous
-counterparts: they answer "is there one here" without awaiting a ~38 MB transfer,
-which is a question a spawn site has to be able to ask. A pass that is about to
-need foundry awaits `ensureFoundryPath` *first*, so by the time `runFoundry` asks
-the sync question the answer is yes.
-
-**The upgrade path** lives in the same function. When an entry resolves,
-`ensureFoundryPath` reads the installed record and:
-
-```ts
-if (record?.source !== 'managed' || record.version === FOUNDRY_CLI_VERSION) {
-  return entry;
-}
-```
-
-— i.e. an *external* install is returned unchanged at any version, and a
-*managed* install whose recorded version differs from `FOUNDRY_CLI_VERSION` is
-replaced on the next pass that needs foundry. BookForge put the managed copy
-there, so BookForge keeps it at the version the catalog names. Without this
-check, a version bump would reach only fresh machines while every machine that
-already installed kept answering with the old binary forever — which is the
-documented uninstall-and-reinstall limitation the conda-env components live with
-(see the comment block at the top of `electron/components/rvc-env.ts`). That is
-livable for a 2 GiB env and wrong for a 38 MB CLI the app versions in lockstep
-with its own document-stage contract.
-
-Concurrency is handled in `foundry-bridge.ts`, not in the component manager:
-`componentManager.install()` does not serialize, so two queued foundry passes
-starting at once would race two extractions into the same directory. The module
-keeps one shared install promise and every other caller joins it.
-
-### 2.7 Version-bump checklist
-
-Follow in order. The one ordering that is not negotiable is that the release
-exists and is verified (steps 7–8) **before** any hash is pasted (steps 9–11) —
-the hashes are read out of the published artifact, so there is nothing to read
-until it is published.
-
-1. **Bump `package.json`** in the foundry repo. That file is the one authority —
-   `src/version.ts` does `import pkg from '../package.json'` and the bundler
-   inlines the literal. (It used to be a second hand-bumped constant, and v0.2.0
-   and v0.2.1 both shipped binaries introducing themselves as `foundry 0.1.0`.)
-2. **Commit** the bump.
-3. **Tag** it: `git tag v<x.y.z>`.
-4. **Build all targets**: `npm run build:all` (`tools/release-build.sh` with no
-   arguments). Confirm four binaries in `dist/`.
-5. **Package**: `npm run release:package` (`tools/release-package.sh`). Confirm
-   four tarballs plus `checksums.txt` in `dist/release/`.
-6. **Push** `main` and the tag: `git push origin main && git push origin v<x.y.z>`.
-7. **Create the release**:
-   `gh release create v<x.y.z> dist/release/*.tar.gz dist/release/checksums.txt --repo telltaleatheist/foundry`
-8. **Verify the assets uploaded** —
-   `gh release view v<x.y.z> --repo telltaleatheist/foundry --json assets`. Five
-   assets, sizes non-zero.
-9. **Download the published `checksums.txt`** (not the local one) and read the
-   hashes out of it, e.g.
-   `gh release download v<x.y.z> --repo telltaleatheist/foundry --pattern checksums.txt -O -`.
-   Byte counts come from the release's asset `size` fields in step 8.
-10. **Paste hashes AND byte counts** into `ASSETS` in
-    `electron/components/foundry-cli-components.ts` (BookForge repo).
-11. **Bump `FOUNDRY_CLI_VERSION`** in the same file.
-12. **Typecheck**: `npx tsc -p tsconfig.electron.json` — the same compile the
-    repo's own `test:*` scripts run before their harness.
-13. **Commit** the BookForge-side change.
+- **No download, no release check, no checksum, no version gate.** The engine
+  and the app that drives it are one copy and cannot disagree.
+- A new engine reaches BookForge by **re-vendoring** Foundry's `app/`, nothing
+  else. `foundry --version` says `foundry X.Y.Z (src <digest>)`, a digest of the
+  sources the bundle was built from.
+- A machine that installed the old component still has a `foundry-cli` record
+  in `<userData>/components/installed.json` (and the files under
+  `components/foundry-cli/`). It is inert: every reader of that manifest walks
+  the catalog, which no longer names the id, so nothing lists, upgrades or
+  resolves it. It is left in place rather than deleted — it is user data.
 
 ### 2.8 Foundry's own downloads — RETIRED
 
@@ -532,7 +316,7 @@ Both declared byte counts match the sum of the published part sizes.
 `blocks-model` each get their own `fetch*` function, because they land somewhere
 other than `components/<id>/`), then on `component.id` for the four overlays
 (`cuda-tts`, `cuda-rvc`, `deepspeed-xtts`, `whisper`, which install *into* another
-env). Everything that falls through — `binary`, `conda-env`, `foundry-cli` — takes
+env). Everything that falls through — `binary`, `conda-env` — takes
 the generic `downloadAndExtract` path. All of them honor the same
 `InstallProgress` contract, so the UI never has to know which is which.
 `resolveEntry(id)` is the single seam every consumer uses to get an absolute path
@@ -961,9 +745,9 @@ for an artifact on the `assets` tag matches the size reported by
 three runtime assets, `f5-env` (both platforms, including the sum of its two
 parts), `rvc-env` (both, including the sum of its three parts), `resemble-env`
 (both), `whisperx-env` (both), `voxtral-env` darwin, `deepspeed-xtts`,
-`rvc-base-models`, and both llama-cuda mirror zips. All four foundry v0.5.0
-hashes and sizes in `foundry-cli-components.ts` match
-`gh release view v0.5.0 --repo telltaleatheist/foundry`.
+`rvc-base-models`, and both llama-cuda mirror zips. (The four foundry v0.5.0
+hashes checked here then belonged to the `foundry-cli` component, removed
+2026-09-24 — see §2.)
 
 Not checked, because they are not on a GitHub release: the four RVC voice
 tarballs and the foundry/blocks GGUFs on Hugging Face, and the PyTorch wheel

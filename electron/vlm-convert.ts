@@ -84,13 +84,11 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-import { ensureFoundryPath, foundryVersion, runFoundry } from './foundry-bridge';
+import { runFoundry } from './foundry-bridge';
 import { ensureVlmPageServer, recentServerLog, wslVlmRefusal } from './vlm-page-server';
 import {
   CruciblePagesError,
-  FOUNDRY_VERSION_FOR_CRUCIBLE_PAGES,
   decideWherePagesRun,
-  foundryTooOldForCruciblePages,
   processPagesVenueHost,
   resolveCruciblePageReader,
   withCruciblePagesLease,
@@ -110,10 +108,7 @@ import { sha256File } from './sidecar-binding';
 import * as manifestService from './manifest-service';
 import { familyStem, nextReadingName, resolveFamily } from '../shared/document/book-families';
 import {
-  FOUNDRY_VERSION_FOR_READINGS_FLAGS,
   describeReadingsDecision,
-  foundryTooOldForReadingsFlags,
-  foundryVersionAtLeast,
   readingsChoiceOfJob,
   vlmReadingsArgs,
   type VlmReadingsBank,
@@ -522,11 +517,7 @@ async function unusedReadingName(projectDir: string, stem: string): Promise<stri
  * would use. A separate derivation would be a report that can be right about a
  * run that no longer happens that way.
  *
- * Everything here is READ-ONLY of the project — a plan writes nothing — with the
- * two exceptions the ordering comments in `runVlmConversion` already argued for:
- * `ensureFoundryPath` may download the binary, and the `--fresh-readings` version
- * gate runs `foundry --version`. Both are checks that must happen before a stage
- * is claimed, and both are exactly as cheap in a plan as in a run.
+ * Everything here is READ-ONLY of the project — a plan writes nothing.
  */
 export interface VlmConversionPlan {
   project: DocumentProject;
@@ -681,38 +672,14 @@ export async function planVlmConversion(
     );
   }
 
-  // Awaited BEFORE the stage is claimed: `ensureFoundryPath` may download 38 MB,
-  // and holding a project's stage lock through a transfer would refuse every
-  // other stage for the duration of something that has not started yet.
-  await ensureFoundryPath();
-
   /*
-   * CAN THE INSTALLED FOUNDRY CARRY THE CREDENTIAL AT ALL?
-   *
-   * Asked the moment the binary exists, which is as early as it CAN be asked —
-   * the answer comes from `foundry --version`, so `ensureFoundryPath` has to
-   * have run. Still before the stage is claimed and before a page is drawn. The
-   * page route reads `$FOUNDRY_ENDPOINT_HEADERS` at foundry `src/vlm/read.ts`
-   * (`resolveEndpointHeaders`), and the release this app installs predates that
-   * line — so on an old binary every page would cross with no Authorization
-   * header. Refused by name, never stripped-and-retried: a run that reached a
-   * server which did NOT require the token would SUCCEED, having silently
-   * stopped doing the thing it was configured to do.
-   *
-   * Conservative on purpose — both builds report "1.2.0" and nothing on the
-   * binary's surface distinguishes them, so the floor sits at the next release.
-   * `FOUNDRY_VERSION_FOR_CRUCIBLE_PAGES` carries that whole argument and the
-   * ruling owed about the number.
+   * No engine-version check here any more. The engine is vendored with
+   * foundry-app (electron/foundry-bridge.ts), so it is always the one this app
+   * was built against — it carries `$FOUNDRY_ENDPOINT_HEADERS` on the page route
+   * and the readings flags by construction. The two floors that stood here
+   * (`FOUNDRY_VERSION_FOR_CRUCIBLE_PAGES`, `FOUNDRY_VERSION_FOR_READINGS_FLAGS`)
+   * existed because a downloaded engine could be older than this app.
    */
-  if (crucible !== null) {
-    const installed = await foundryVersion();
-    if (!foundryVersionAtLeast(installed.version, FOUNDRY_VERSION_FOR_CRUCIBLE_PAGES)) {
-      throw new CruciblePagesError(
-        'foundry_too_old_for_crucible_pages',
-        foundryTooOldForCruciblePages(installed.version, crucible.server),
-      );
-    }
-  }
 
   const generatedTarget = await manifestService.generatedEpubTarget(project.projectDir);
   const manifest = await manifestService.getManifest(project.projectId);
@@ -759,16 +726,6 @@ export async function planVlmConversion(
   const bank = await readBank(readingsPath, manifest.manifest, sha256);
   const readingsChoice = readingsChoiceOfJob(request.readings);
   const readingsFlags = vlmReadingsArgs(readingsChoice, bank.pages);
-
-  // A foundry that predates the flag cannot be told any of this, and running it
-  // anyway would let it decide on its own — which for a completed conversion is
-  // the silent replay this whole path exists to end. Named, and nothing runs.
-  if (readingsFlags.length > 0) {
-    const installed = await foundryVersion();
-    if (!foundryVersionAtLeast(installed.version, FOUNDRY_VERSION_FOR_READINGS_FLAGS)) {
-      throw new Error(foundryTooOldForReadingsFlags(installed.version, readingsFlags[0]));
-    }
-  }
 
   return {
     project,
@@ -842,7 +799,7 @@ export async function runVlmConversion(request: VlmConvertRequest): Promise<VlmC
   //
   // Said before anything is planned, resolved or loaded, and released only when
   // the whole run has unwound. Between this line and `withProjectStage` below
-  // sits the plan, `ensureFoundryPath`, the GPU arbiter and ~44 s of model load
+  // sits the plan, the GPU arbiter and ~44 s of model load
   // — a minute in which the stage registry used to report this project as idle
   // while the user watched memory fill up.
   //
@@ -876,8 +833,7 @@ export async function runVlmConversion(request: VlmConvertRequest): Promise<VlmC
   await fs.promises.mkdir(STAGING_DIR, { recursive: true });
   const stagedEpub = path.join(STAGING_DIR, `vlm-convert-${sha256.slice(0, 16)}.epub`);
 
-  // Started BEFORE the stage is claimed, for the same reason `ensureFoundryPath`
-  // is: this waits on the GPU arbiter — potentially behind a TTS job — and then
+  // Started BEFORE the stage is claimed: this waits on the GPU arbiter — potentially behind a TTS job — and then
   // on ~44 s of model load, and holding a project's stage lock through that
   // would refuse every other stage for a run that has not begun.
   //

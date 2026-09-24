@@ -198,12 +198,9 @@ async function runCleanLines(opts, deps) {
     throw new Error(`${inputPath} holds no non-blank lines, so there is nothing to clean.`);
   }
 
+  // Asked for the book file's `engine` field and the log line, not as a gate:
+  // the engine is vendored with foundry-app, so it always has `clean-text --book`.
   const installed = await d.foundryVersion();
-  if (!d.foundryVersionAtLeast(installed.version, d.FOUNDRY_VERSION_FOR_CLEAN_TEXT)) {
-    throw new Error(
-      `foundry ${installed.version} at ${installed.path} predates clean-text --book `
-      + `(${d.FOUNDRY_VERSION_FOR_CLEAN_TEXT}). Update Foundry; nothing was spawned.`);
-  }
   const settings = await d.cleanTextEngineSettings();
 
   const workDir = workDirFor(outputPath);
@@ -400,8 +397,6 @@ async function runCleanLines(opts, deps) {
 function defaultDeps() {
   const door = require('../dist/electron/narration-clean-text.js');
   const bridge = require('../dist/electron/foundry-bridge.js');
-  const hostQueue = require('../dist/electron/foundry-host-queue.js');
-  const bank = require('../dist/shared/vlm/readings-bank.js');
   // The arbiter. Its five doors are named individually rather than the module
   // being handed over, so a keeper replacing one of them replaces a function and
   // not a namespace.
@@ -412,8 +407,6 @@ function defaultDeps() {
     runFoundry: bridge.runFoundry,
     cleanTextEngineSettings: door.cleanTextEngineSettings,
     parseCleanTextProgress: door.parseCleanTextProgress,
-    foundryVersionAtLeast: bank.foundryVersionAtLeast,
-    FOUNDRY_VERSION_FOR_CLEAN_TEXT: hostQueue.FOUNDRY_VERSION_FOR_CLEAN_TEXT,
     textServerRoute: textServer.textServerRoute,
     // The venue, from the ONE module that decides it for every text act.
     processTextVenueHost: textVenue.processTextVenueHost,

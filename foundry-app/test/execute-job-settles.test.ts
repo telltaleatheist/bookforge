@@ -14,7 +14,7 @@
  *   A THROW. `executeJob`'s docstring says *"Nothing is thrown from here"* and
  *   nothing enforced it, while five unguarded awaits sit after the lease is
  *   recorded — the landings, and `runEngine` itself, whose `engineCommand()`
- *   throws by design when Foundry is hosted with no `FOUNDRY_BIN`. Both callers
+ *   throws by design when the app folder has no engine bundle. Both callers
  *   wrap it in `try/finally` with NO catch, so the row stayed `running` for ever
  *   and the pump's `void runInSlot(…)` turned it into an unhandled rejection too.
  *
@@ -164,10 +164,10 @@ function listening(): { endings: Job[]; stop: () => void } {
 test('a run that throws after its placement fails the row, settles it once, and gives the lease back', async () => {
   const release = mock(async () => {});
   placedWithALease(release);
-  // `engineCommand()`'s own refusal, which is what a hosted Foundry with no
-  // FOUNDRY_BIN actually raises out of `runEngine` — a throw, not a failed exit.
+  // `engineCommand()`'s own refusal, which is what an app folder with no engine
+  // bundle actually raises out of `runEngine` — a throw, not a failed exit.
   spyOn(engine, 'runEngine').mockImplementation(() => {
-    throw new Error('the foundry engine binary was not found and no FOUNDRY_BIN says where it is');
+    throw new Error('no engine: engine/foundry-engine.cjs does not exist');
   });
   const { endings, stop } = listening();
   try {
@@ -175,7 +175,7 @@ test('a run that throws after its placement fails the row, settles it once, and 
       kind: 'read', inputPath: SCAN, readingsPath: BANK, stepId: 'throws-after-placement',
     });
     expect(row.state).toBe('failed');
-    expect(row.error).toBe('the foundry engine binary was not found and no FOUNDRY_BIN says where it is');
+    expect(row.error).toBe('no engine: engine/foundry-engine.cjs does not exist');
     expect(endings.map((one) => [one.id, one.state])).toEqual([[row.id, 'failed']]);
     expect(release).toHaveBeenCalledTimes(1);
   } finally {
@@ -257,10 +257,10 @@ test('a run that throws after rotating the previous output puts the rotation bac
   const { output, generated } = await projectHoldingAPreviousBook();
   placedWithALease(async () => {});
   materialising();
-  // The same refusal as the first test: a hosted Foundry with no FOUNDRY_BIN,
+  // The same refusal as the first test: an app folder with no engine bundle,
   // which throws out of `runEngine` — one statement after the rotation.
   spyOn(engine, 'runEngine').mockImplementation(() => {
-    throw new Error('the foundry engine binary was not found and no FOUNDRY_BIN says where it is');
+    throw new Error('no engine: engine/foundry-engine.cjs does not exist');
   });
   const { endings, stop } = listening();
   try {

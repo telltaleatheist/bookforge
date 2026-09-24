@@ -22,7 +22,7 @@
  * a stamp it cannot understand rather than throwing, which is right at a render
  * door and is exactly what would hide this.
  *
- * So this drives the REAL engine binary end to end and reads what it wrote:
+ * So this drives the REAL (vendored) engine end to end and reads what it wrote:
  *
  *   foundry vlm-book    --epub <fixture.epub> --out <book.jsonl>
  *   foundry vlm-compile --book <book.jsonl> --out <out.epub>
@@ -88,20 +88,15 @@ const ENGINE_WROTE = {
   punctuationRefused: 0,
 };
 
-/** A real foundry binary on this machine, or null. `test-foundry-host-queue`'s rule. */
-function realFoundry() {
-  const name = process.platform === 'win32'
-    ? `foundry-windows-${process.arch}.exe`
-    : `foundry-${process.platform}-${process.arch}`;
-  const candidates = [
-    process.env.FOUNDRY_CLI_PATH,
-    path.join('/Volumes/Callisto/Projects/foundry', 'dist', name),
-    path.join(os.homedir(), 'Projects', 'foundry', 'dist', name),
-  ];
-  for (const candidate of candidates) {
-    if (candidate && fs.existsSync(candidate)) return candidate;
-  }
-  return null;
+/**
+ * The engine vendored with foundry-app (2026-09-24) — the bundle the app runs
+ * (electron/foundry-bridge.ts), run by this node. Nothing to look for and nothing
+ * to skip on: without it the checkout is broken, and this keeper says so.
+ */
+const ENGINE_BUNDLE = path.join(REPO, 'foundry-app', 'engine', 'foundry-engine.cjs');
+function runEngine(args, options) {
+  return execFileSync(process.execPath, [ENGINE_BUNDLE, ...args],
+    { ...options, env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' } });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -251,12 +246,8 @@ function check(name, fn) {
 }
 
 async function main() {
-  const binary = realFoundry();
-  if (binary === null) {
-    console.log(skipLine(
-      'no foundry engine on this machine. Set FOUNDRY_CLI_PATH, '
-      + 'or build one with tools/release-build.sh host in the foundry checkout.'));
-    return;
+  if (!fs.existsSync(ENGINE_BUNDLE)) {
+    throw new Error(`The vendored Foundry engine is missing: ${ENGINE_BUNDLE}. See foundry-app/VENDORED.md.`);
   }
 
   const epub = require(path.join(DIST, 'epub-processor.js'));
@@ -265,7 +256,7 @@ async function main() {
   const punctuation = require(path.join(DIST, 'tts-punctuation.js'));
 
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'bf-stamp-'));
-  const run = (args) => execFileSync(binary, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  const run = (args) => runEngine(args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
 
   try {
     const fixture = path.join(scratch, 'fixture.epub');
@@ -351,7 +342,7 @@ async function main() {
      * hand must too.
      */
     check('vlm-compile stamps the book it is HANDED — the records are not applied by it', () => {
-      const help = execFileSync(binary, ['vlm-compile', '--help'], { encoding: 'utf8' });
+      const help = runEngine(['vlm-compile', '--help'], { encoding: 'utf8' });
       assert.ok(/--narration-stamp/.test(help), 'the stamp flag is gone from vlm-compile');
       assert.ok(
         !/--records/.test(help),
@@ -371,10 +362,10 @@ async function main() {
      *
      * What the DOOR does with it — the version floor, the argv, the receipt, the
      * stamp read back through this app's parser after a real cleanup — is
-     * `tools/test-narration-clean-text-door.js`, which drives the same binary.
+     * `tools/test-narration-clean-text-door.js`, which drives the same engine.
      */
     check('clean-text carries the --epub failsafe door the app\'s Clean text action spawns', () => {
-      const help = execFileSync(binary, ['clean-text', '--help'], { encoding: 'utf8' });
+      const help = runEngine(['clean-text', '--help'], { encoding: 'utf8' });
       assert.ok(/--epub/.test(help),
         'the --epub failsafe is gone from clean-text. BookForge\'s Clean text action spawns it; '
         + 'without it there is no way to clean a finished EPUB and the ruling of 2026-09-05 has '

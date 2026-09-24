@@ -2670,7 +2670,7 @@ export interface EngineInfo {
   /** The program spawned, and its fixed leading arguments. */
   command: string;
   args: string[];
-  /** Why this one — "FOUNDRY_BIN", "packaged binary", "dev checkout". */
+  /** Why this one — "FOUNDRY_BIN" or "bundled engine". */
   source: string;
   /** `foundry --version`, or null when it could not be asked. */
   version: string | null;

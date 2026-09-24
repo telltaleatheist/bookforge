@@ -71,6 +71,11 @@ remembers.
 > stamp it cannot understand rather than throwing — which is right at a render
 > door and is exactly what would hide it.
 >
+> *(2026-09-24: the version floors described in this paragraph are DELETED. The
+> engine is vendored with foundry-app — `foundry-app/engine/`, run by BookForge's
+> own Electron as Node — so it always has every command the vendored Foundry
+> schedules. Kept as history.)*
+>
 > **A `clean` row needs an engine that HAS the command** — foundry **1.1.0**
 > (`ca7a666`). `FOUNDRY_VERSION_FOR_CLEAN_TEXT` + `foundryTooOldForCleanText`
 > refuse an older one by name, in the step module rather than at `enqueue` (that
@@ -363,10 +368,9 @@ by entry — and removed once the run is over. The landing is unchanged:
 lands it with **one rename**, and the pass then asserts that what it landed on is
 the book it read.
 
-The floor is **foundry 1.2.0** (`FOUNDRY_VERSION_FOR_CLEAN_TEXT_EPUB`, beside
-`FOUNDRY_VERSION_FOR_CLEAN_TEXT` in `electron/foundry-host-queue.ts`, sharing the
-one comparator `foundryVersionAtLeast`). An older engine is refused by name,
-naming the release, before anything is spawned.
+There is no version floor any more (2026-09-24): the engine is vendored with
+foundry-app, so the `--epub` door is always there. (It was foundry 1.2.0,
+`FOUNDRY_VERSION_FOR_CLEAN_TEXT_EPUB`, while the engine was a separate download.)
 
 **The notice.** Both places the failsafe is offered — the "Clean text…" button's
 confirmation and the "Yes" arm of the Narrate gate's offer — show

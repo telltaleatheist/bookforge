@@ -38,8 +38,7 @@ import { noteStepStopped } from '../queue-engine';
 import type { StepModule, StepRunContext } from '../queue-engine';
 import type { ArtifactRef, JobStageProgress, StepResource } from '../../shared/queue/engine-types';
 import {
-  FOUNDRY_VERSION_FOR_CLEAN_TEXT, FOUNDRY_VERSION_FOR_CLEAN_TRIAGE, foundryRowFailure, foundryRunner,
-  foundryTooOldForCleanText, foundryTooOldForCleanTriage,
+  foundryRowFailure, foundryRunner,
   parseFoundryProgressLine,
 } from '../foundry-host-queue';
 import type { FoundryJobStepConfig, FoundryRunOutcome } from '../foundry-host-queue';
@@ -55,16 +54,6 @@ import type { FoundryJobStepConfig, FoundryRunOutcome } from '../foundry-host-qu
 import { recordInFlight, settleInFlight } from '../crucible/in-flight-ledger';
 import { FOUNDRY_LEASE_JOB_TYPE } from '../crucible/in-flight-sweep';
 import { stepFailure } from './runtime';
-import { foundryVersion } from '../foundry-bridge';
-/*
- * `foundryVersionAtLeast` lives beside the readings-bank flags because that is
- * where the first version gate was written. It is the ONE comparator — numeric
- * dot-separated, and a version that is not that shape is never quietly treated as
- * new enough — and a second copy here would be a second answer to "is this
- * engine new enough", which is exactly the question a gate exists to have one
- * answer to.
- */
-import { foundryVersionAtLeast } from '../../shared/vlm/readings-bank';
 /*
  * NOTHING IS IMPORTED FROM `text-server.ts` OR `narration-clean-text.ts` HERE
  * ANY MORE, and the absence is the statement.
@@ -279,35 +268,11 @@ export const foundryJobStep: StepModule = {
       );
     }
     /*
-     * A CLEAN TEXT ROW NEEDS AN ENGINE THAT HAS THE COMMAND, and this is the last
-     * moment anything on this side can say so.
-     *
-     * The check is HERE and not at `enqueue`, which is where a refusal would
-     * ideally live: that door is SYNCHRONOUS by contract — "pressing Add cannot
-     * leave a moment where nothing has appeared" — and asking the binary its
-     * version is a spawn. So the row is minted, and it refuses the instant its
-     * turn comes, before Foundry is asked to spawn anything and before a model is
-     * loaded. Nothing is substituted and no other command is tried.
+     * No engine-version check: the engine is vendored with foundry-app, so it
+     * has every command the vendored Foundry schedules (the `clean-text` and
+     * `clean-triage` floors that stood here went with the downloaded engine,
+     * 2026-09-24 — see electron/foundry-bridge.ts).
      */
-    if (config.request.kind === 'clean') {
-      const installed = await foundryVersion();
-      if (!foundryVersionAtLeast(installed.version, FOUNDRY_VERSION_FOR_CLEAN_TEXT)) {
-        throw new Error(foundryTooOldForCleanText(installed.version));
-      }
-    }
-    /*
-     * AND A TRIAGED CLEANUP NEEDS A LATER ONE — both halves of the pair: the
-     * `clean-triage` row, and the `clean` behind it that carries `triagePath`
-     * and so runs `clean-text --triage`. Refused here for the same reason as the
-     * floor above: by name, before a model is loaded.
-     */
-    if (config.request.kind === 'clean-triage'
-      || (config.request.kind === 'clean' && typeof config.request['triagePath'] === 'string')) {
-      const installed = await foundryVersion();
-      if (!foundryVersionAtLeast(installed.version, FOUNDRY_VERSION_FOR_CLEAN_TRIAGE)) {
-        throw new Error(foundryTooOldForCleanTriage(installed.version));
-      }
-    }
     const kind = config.request.kind;
     /*
      * THE THREE THAT ASK A LANGUAGE MODEL, as a narrowed value rather than a

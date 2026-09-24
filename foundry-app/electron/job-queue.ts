@@ -5172,8 +5172,7 @@ async function placeRun(
  * landing in `carry` below is an unguarded await AFTER `placeRun` has recorded a
  * lease — `recordReading`, `landReadProducts`, `recordAnalysis`, `recordFinal`
  * and the rest — and so is `runEngine` itself, whose `engineCommand()` throws by
- * design when Foundry is hosted with no `FOUNDRY_BIN`, which is Foundry's
- * deployment inside BookForge. Neither caller catches: `runInSlot`'s `finally`
+ * design when the app folder has no engine bundle (engine.ts). Neither caller catches: `runInSlot`'s `finally`
  * frees the slot and pumps, `runDetached`'s drops the abort listener, and both
  * let the rejection past. So a throw left the row `running` for ever, and
  * because the only `clearInterval` on the lease heartbeat lives inside
@@ -5641,7 +5640,7 @@ async function carry(
    * non-zero exit — and every other way out of this function left the book in
    * `generated/archived-<stamp>/` with nothing live at all: the refusals that
    * settle and return, and above all a THROW, which `engineCommand()` raises by
-   * design when Foundry is hosted with no `FOUNDRY_BIN` one statement below this
+   * design when the app folder has no engine bundle, one statement below this
    * one. That throw reaches `executeJob`'s boundary, which fails the row
    * correctly and cannot see these three locals at all. So the restore is one
    * `finally` at the bottom of this function rather than a call an arm can be
@@ -6695,8 +6694,8 @@ async function carry(
      * construct that cannot be reached past: a return, a refusal that settles,
      * a cancel, an engine's non-zero exit and a THROW all arrive here. Two
      * hand-placed calls used to stand for this and covered the last two of
-     * those five; `engineCommand()`'s refusal — Foundry hosted inside BookForge
-     * with no `FOUNDRY_BIN` — went straight past them to `executeJob`'s
+     * those five; `engineCommand()`'s refusal — an app folder with no engine
+     * bundle — went straight past them to `executeJob`'s
      * boundary, which settles the row correctly and cannot reach these locals.
      *
      * BEFORE THE `settle()` BELOW, which is why the tail of this function sits

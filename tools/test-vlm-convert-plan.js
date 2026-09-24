@@ -20,9 +20,10 @@
  * only checked "it throws" would pass while the run spent a minute resolving a
  * project it was never going to convert.
  *
- * Everything here stops before `ensureFoundryPath`, deliberately: a test suite
- * must not download a 38 MB binary, and these are exactly the refusals that
- * happen before it would.
+ * Everything here stops before the engine is spawned, deliberately: these are
+ * exactly the refusals that happen before it would be. (This used to say
+ * "before `ensureFoundryPath`", which could download a 38 MB binary; the engine
+ * is vendored with foundry-app since 2026-09-24 and nothing is downloaded.)
  */
 'use strict';
 const assert = require('assert');

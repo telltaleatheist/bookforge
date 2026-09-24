@@ -98,8 +98,6 @@ const fresh = () => fs.mkdtempSync(path.join(os.tmpdir(), 'bf-clean-lines-'));
     const spawns = [];
     const deps = {
       foundryVersion: async () => ({ version: '1.4.0', path: 'C:\\fake\\foundry.exe' }),
-      foundryVersionAtLeast: (v, min) => v >= min,
-      FOUNDRY_VERSION_FOR_CLEAN_TEXT: '1.1.0',
       cleanTextEngineSettings: async () => ({ model: 'm', endpoint: 'http://x:1', source: 'the test' }),
       /*
        * THE ARBITER IS ASKED ON EVERY RUN NOW, not only under a vLLM setting:
@@ -162,7 +160,13 @@ const fresh = () => fs.mkdtempSync(path.join(os.tmpdir(), 'bf-clean-lines-'));
       { inputPath: input, outputPath: output, language: 'en', log: () => {} }, deps);
     assert.strictEqual(again.resumed, true);
   });
-  await check('a foundry older than clean-text --book is refused before anything is spawned', async () => {
+  /*
+   * NO ENGINE-VERSION GATE (2026-09-24). This used to refuse an engine older than
+   * `clean-text --book`. The engine is vendored with foundry-app now, so it
+   * always has the command — whatever number it reports is asked only for the
+   * book file's `engine` field and the log line, never compared.
+   */
+  await check("the engine's version is recorded, never gated: a low number still runs", async () => {
     const dir = fresh();
     const input = path.join(dir, 'lines.txt');
     fs.writeFileSync(input, 'x\n', 'utf8');
@@ -171,16 +175,16 @@ const fresh = () => fs.mkdtempSync(path.join(os.tmpdir(), 'bf-clean-lines-'));
       { inputPath: input, outputPath: path.join(dir, 'o.txt'), language: 'en', log: () => {} },
       {
         foundryVersion: async () => ({ version: '1.0.0', path: 'f' }),
-        foundryVersionAtLeast: (v, min) => v >= min,
-        FOUNDRY_VERSION_FOR_CLEAN_TEXT: '1.1.0',
         cleanTextEngineSettings: async () => ({ model: 'm', endpoint: 'e', source: 's' }),
         processTextVenueHost: () => ({}),
         decideWhereTextActRuns: async () => ({ where: 'legacy-local-engines' }),
-        textServerRoute: () => ({ manage: false, note: 'e is somebody else\'s server' }),
+        textServerRoute: () => ({ manage: false, note: "e is somebody else's server" }),
         parseCleanTextProgress: () => null,
-        runFoundry: async () => { spawned = true; return { code: 0, stdout: '', stderr: '' }; },
-      }), /predates clean-text --book/);
-    assert.strictEqual(spawned, false);
+        runFoundry: async () => { spawned = true; return { code: 3, stdout: '', stderr: 'stop here' }; },
+      }), /exited 3/);
+    assert.strictEqual(spawned, true, 'a version number must not stop the spawn');
+    const book = fs.readFileSync(path.join(step.workDirFor(path.join(dir, 'o.txt')), 'lines.book.jsonl'), 'utf8');
+    assert.ok(book.includes('1.0.0'), 'the version the engine reported is what the book file records');
   });
   await check('an engine exit that is not 0 is the run\'s failure, with what it said', async () => {
     const dir = fresh();
@@ -190,8 +194,6 @@ const fresh = () => fs.mkdtempSync(path.join(os.tmpdir(), 'bf-clean-lines-'));
       { inputPath: input, outputPath: path.join(dir, 'o.txt'), language: 'en', log: () => {} },
       {
         foundryVersion: async () => ({ version: '1.4.0', path: 'f' }),
-        foundryVersionAtLeast: () => true,
-        FOUNDRY_VERSION_FOR_CLEAN_TEXT: '1.1.0',
         cleanTextEngineSettings: async () => ({ model: 'm', endpoint: 'e', source: 's' }),
         processTextVenueHost: () => ({}),
         decideWhereTextActRuns: async () => ({ where: 'legacy-local-engines' }),
@@ -205,8 +207,7 @@ const fresh = () => fs.mkdtempSync(path.join(os.tmpdir(), 'bf-clean-lines-'));
     const input = path.join(dir, 'lines.txt');
     fs.writeFileSync(input, '\n\n', 'utf8');
     const deps = {
-      foundryVersion: async () => ({ version: '1.4.0', path: 'f' }), foundryVersionAtLeast: () => true,
-      FOUNDRY_VERSION_FOR_CLEAN_TEXT: '1.1.0', cleanTextEngineSettings: async () => ({}),
+      foundryVersion: async () => ({ version: '1.4.0', path: 'f' }), cleanTextEngineSettings: async () => ({}),
       processTextVenueHost: () => ({}), decideWhereTextActRuns: async () => ({ where: 'legacy-local-engines' }),
       parseCleanTextProgress: () => null, runFoundry: async () => ({ code: 0, stdout: '', stderr: '' }),
     };

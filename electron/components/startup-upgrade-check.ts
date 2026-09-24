@@ -1,7 +1,8 @@
 /**
  * The startup sweep: which installed components are behind what the catalog
- * names, and (for the foundry CLI) whether a release newer than the pin has been
- * published.
+ * names. (It used to also ask GitHub for a newer foundry CLI release; the
+ * foundry engine now ships inside `foundry-app/engine/`, so there is nothing
+ * of foundry's to download or upgrade — 2026-09-24.)
  *
  * Runs once per launch, after the window has loaded, and its result is a LIST —
  * it downloads nothing itself. The renderer feeds that list to
@@ -35,8 +36,6 @@
 import { isInstalling, listInstalledRecords, recordedEntryExists } from './component-manager';
 import { getCatalog } from './component-catalog';
 import { planUpgrades, upgradesFrom, type UpgradeCandidate } from './component-upgrades';
-import { FOUNDRY_CLI_COMPONENT_ID, setDiscoveredFoundryRelease } from './foundry-cli-components';
-import { checkFoundryRelease } from './foundry-release-check';
 import type { InstalledRecord, OptionalComponent } from './component-types';
 
 /** One component to move, as the renderer receives it. */
@@ -68,49 +67,7 @@ function envPinned(component: OptionalComponent): boolean {
   return (process.env[name] ?? '').trim() !== '';
 }
 
-/**
- * Ask GitHub whether foundry has a release newer than the pin, and adopt it.
- *
- * Gated on foundry ALREADY being installed as a managed component: a machine
- * with no foundry has nothing to upgrade, and asking anyway would put a network
- * call — and, offline, a shelf complaint — in front of a user who never opted
- * into this component at all. Returns a problem line instead of throwing; the
- * refusals `checkFoundryRelease` raises (a release with no `checksums.txt`, a
- * tarball with no hash, no artifact for this platform) are exactly what belongs
- * in front of a user, and none of them should take the rest of the sweep down.
- */
-async function adoptNewerFoundryRelease(
-  records: Map<string, InstalledRecord>,
-  component: OptionalComponent | undefined
-): Promise<string | null> {
-  if (!component) return null;
-  const record = records.get(FOUNDRY_CLI_COMPONENT_ID);
-  if (record?.source !== 'managed') return null;
-  if (envPinned(component)) return null;
-  if (!recordedEntryExists(FOUNDRY_CLI_COMPONENT_ID)) return null;
-
-  try {
-    const release = await checkFoundryRelease();
-    if (!release) return null;
-    setDiscoveredFoundryRelease(release);
-    console.log(`[updates] foundry ${release.version} is published and newer than the pin — adopting it`);
-    return null;
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    console.warn(`[updates] foundry release check failed: ${message}`);
-    return `Could not check for a newer Foundry CLI: ${message}`;
-  }
-}
-
-/**
- * Everything installed that the catalog now names a different version for.
- *
- * The foundry release check runs FIRST and the catalog is read AFTERWARDS,
- * because adopting a release changes what the catalog says foundry's version is
- * — and the whole point of the sweep is to compare the record against the
- * catalog. That ordering is how the discovery reaches the comparison without
- * this function knowing anything special about foundry.
- */
+/** Everything installed that the catalog now names a different version for. */
 export async function checkForComponentUpgrades(): Promise<StartupUpgradeReport> {
   const problems: string[] = [];
 
@@ -122,12 +79,6 @@ export async function checkForComponentUpgrades(): Promise<StartupUpgradeReport>
     console.warn(`[updates] could not read installed.json: ${message}`);
     return { upgrades: [], problems: [`Could not check installed add-ons for updates: ${message}`] };
   }
-
-  const foundryProblem = await adoptNewerFoundryRelease(
-    records,
-    getCatalog().find((c) => c.id === FOUNDRY_CLI_COMPONENT_ID)
-  );
-  if (foundryProblem) problems.push(foundryProblem);
 
   const candidates: UpgradeCandidate[] = getCatalog().map((component) => {
     const record = records.get(component.id);

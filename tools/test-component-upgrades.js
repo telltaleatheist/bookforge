@@ -2,27 +2,19 @@
 /**
  * Tests for the startup update check's decision layer:
  *   electron/components/component-upgrades.ts   — which components are stale
- *   electron/components/foundry-release-check.ts — the pure half of "is there a
- *                                                   release newer than the pin"
+ *
+ * (The foundry CLI's release check, and its tests, went with the `foundry-cli`
+ * component on 2026-09-24: the foundry engine ships inside foundry-app/engine/.)
  *
  *   npx tsc -p tsconfig.electron.json && node tools/test-component-upgrades.js
  *
- * Everything asserted here is a rule someone can get wrong quietly. The two that
- * cost the most if they regress:
+ * Everything asserted here is a rule someone can get wrong quietly. The one that
+ * costs the most if it regresses:
  *
  *  - "upgrade what is installed, never install what is not". Several managed
  *    components are 2–4 GB (docs/DISTRIBUTION.md §4), and a sweep that queued one
  *    the user deliberately skipped would look like the app installing things by
  *    itself.
- *  - "never install an artifact you cannot verify". A release published without a
- *    checksums.txt line for a tarball is a REFUSAL BY NAME, never a quiet install
- *    and never a silent shrug back to the pin. See the trade-off argued at the
- *    top of foundry-release-check.ts — the whole reason discovery is allowed at
- *    all is that the checksum lookup is unconditional.
- *
- * NO NETWORK. `artifactsForRelease` and `parseChecksums` take the GitHub API's
- * JSON and the checksums file as plain values, which is exactly why they were
- * split out of the fetching.
  */
 const assert = require('assert');
 const fs = require('fs');
@@ -30,9 +22,7 @@ const path = require('path');
 
 const REPO = path.resolve(__dirname, '..');
 const UPGRADES = path.join(REPO, 'dist', 'electron', 'components', 'component-upgrades.js');
-const RELEASE = path.join(REPO, 'dist', 'electron', 'components', 'foundry-release-check.js');
-const CATALOG = path.join(REPO, 'dist', 'electron', 'components', 'foundry-cli-components.js');
-for (const m of [UPGRADES, RELEASE, CATALOG]) {
+for (const m of [UPGRADES]) {
   if (!fs.existsSync(m)) {
     console.error('Compile first: npx tsc -p tsconfig.electron.json');
     process.exit(1);
@@ -40,8 +30,6 @@ for (const m of [UPGRADES, RELEASE, CATALOG]) {
 }
 
 const { isSemver, planUpgrade, planUpgrades, upgradesFrom } = require(UPGRADES);
-const { versionFromTag, parseChecksums, artifactsForRelease, CHECKSUMS_FILE } = require(RELEASE);
-const { FOUNDRY_ASSETS } = require(CATALOG);
 
 let passed = 0;
 const failures = [];
@@ -139,7 +127,7 @@ test('every content kind is present-or-absent, not upgraded', () => {
 });
 
 test('the tools ARE still upgraded — rule 0 must not silence everything', () => {
-  for (const kind of ['binary', 'conda-env', 'foundry-cli']) {
+  for (const kind of ['binary', 'conda-env']) {
     const v = planUpgrade(candidate({ kind }));
     assert.strictEqual(v.verdict, 'upgrade', `${kind} was not queued`);
   }
@@ -184,32 +172,6 @@ test('matching versions are up to date', () => {
 
 // ── Rule 8: inequality, in BOTH directions ─────────────────────────────────
 
-test('foundry follows the newest release DOWN when one is yanked', () => {
-  // There is no pin to be "ahead" of any more: the newest published release is
-  // foundry's only authority. A bad build pulled, so an older tag is latest
-  // again, must reach machines — which under a pin needed a code change, the
-  // slowest possible response to the one case that is actually urgent.
-  const v = planUpgrade(candidate({
-    id: 'foundry-cli', name: 'Foundry CLI',
-    targetVersion: '0.7.0',
-    installed: { source: 'managed', version: '0.7.1' },
-  }));
-  assert.strictEqual(v.verdict, 'upgrade');
-});
-
-test('foundry with no release read this launch is left alone', () => {
-  // Offline, `effectiveFoundryVersion()` is '' — unknown, not zero. Rule 6
-  // keeps the install rather than guessing it is stale, which is what stops an
-  // unreachable GitHub from touching a working binary.
-  const v = planUpgrade(candidate({
-    id: 'foundry-cli', name: 'Foundry CLI',
-    targetVersion: '',
-    installed: { source: 'managed', version: '0.7.1' },
-  }));
-  assert.strictEqual(v.verdict, 'keep');
-  assert.match(v.reason, /does not version/);
-});
-
 test('a catalog-only component IS rolled back when its pin moves backwards', () => {
   // The guard must NOT leak to components the catalog fully controls. Rolling
   // RVC_ENV_VERSION back to a known-good tarball has to reach installed machines
@@ -245,246 +207,16 @@ test('isSemver recognises X.Y.Z (with or without a leading v) and nothing else',
 
 test('a realistic mixed machine yields exactly the managed+installed+stale ones', () => {
   const plan = planUpgrades([
-    candidate({ id: 'foundry-cli', name: 'Foundry CLI', targetVersion: '0.6.0', installed: { source: 'managed', version: '0.5.0' } }),
+    candidate({ id: 'llama-cuda', kind: 'binary', targetVersion: 'b7482', installed: { source: 'managed', version: 'b7000' } }),
     candidate({ id: 'rvc-env', targetVersion: '2026.07.01', installed: { source: 'managed', version: '2026.07.01' } }),
     candidate({ id: 'f5-env', targetVersion: '2026.08.01', installed: null }),
     candidate({ id: 'orpheus', targetVersion: '', installed: { source: 'external', version: '' } }),
     candidate({ id: 'whisperx-env', targetVersion: '2026.08.01', installed: { source: 'managed', version: '2026.05.01' } }),
   ]);
   assert.strictEqual(plan.length, 5);
-  assert.deepStrictEqual(upgradesFrom(plan).map((p) => p.id), ['foundry-cli', 'whisperx-env']);
+  assert.deepStrictEqual(upgradesFrom(plan).map((p) => p.id), ['llama-cuda', 'whisperx-env']);
   // Every verdict explains itself — the reason is the log line a user will read.
   for (const item of plan) assert.ok(item.reason && item.reason.length > 0, `${item.id} has no reason`);
-});
-
-// ── versionFromTag ──────────────────────────────────────────────────────────
-
-test('a release tag yields its version, and a non-version tag yields null', () => {
-  assert.strictEqual(versionFromTag('v0.5.0'), '0.5.0');
-  assert.strictEqual(versionFromTag('0.5.0'), '0.5.0');
-  assert.strictEqual(versionFromTag('assets'), null);
-  assert.strictEqual(versionFromTag(''), null);
-});
-
-// ── parseChecksums ──────────────────────────────────────────────────────────
-
-test('both sha256sum spellings parse — binary mode is what foundry actually ships', () => {
-  // Verbatim shape of the published v0.5.0 checksums.txt: one space, then `*`.
-  const binary = parseChecksums(
-    'b47c85e5f5c98d583f7a5efcb2f53320a9c4af77e9a1adfb49d4125b4aaa7a84 *foundry-darwin-arm64.tar.gz\n'
-    + '97ce639d64c1220046b6318307c5a326baf50661c1bd95117f74e991c6553249 *foundry-windows-x64.tar.gz\n'
-  );
-  assert.strictEqual(
-    binary['foundry-windows-x64.tar.gz'],
-    '97ce639d64c1220046b6318307c5a326baf50661c1bd95117f74e991c6553249',
-  );
-  const text = parseChecksums('a'.repeat(64) + '  ./foundry-linux-x64.tar.gz\n');
-  assert.strictEqual(text['foundry-linux-x64.tar.gz'], 'a'.repeat(64));
-});
-
-test('parsing is case-insensitive on the hash and ignores blank and comment lines', () => {
-  const map = parseChecksums(['# generated', '', 'B'.repeat(64) + ' *x.tar.gz', ''].join('\n'));
-  assert.deepStrictEqual(map, { 'x.tar.gz': 'b'.repeat(64) });
-});
-
-test('a line that is not a checksum is skipped rather than half-parsed', () => {
-  assert.deepStrictEqual(parseChecksums('not a checksum at all\nshort *x.tar.gz\n'), {});
-});
-
-// ── artifactsForRelease ─────────────────────────────────────────────────────
-
-/** A release payload shaped like the GitHub API's, built from the naming contract. */
-const releaseWith = (files) => ({
-  tag_name: 'v0.6.0',
-  assets: files.map((f, i) => ({
-    name: f,
-    size: 1000 + i,
-    browser_download_url: `https://github.com/telltaleatheist/foundry/releases/download/v0.6.0/${f}`,
-  })),
-});
-const allFiles = FOUNDRY_ASSETS.map((a) => a.file);
-const fullChecksums = Object.fromEntries(allFiles.map((f, i) => [f, String(i).repeat(64).slice(0, 64)]));
-
-test('a complete release yields one artifact per published platform, hashed from checksums.txt', () => {
-  const arts = artifactsForRelease(releaseWith(allFiles), fullChecksums, '0.6.0', 'win32', 'x64');
-  assert.strictEqual(arts.length, allFiles.length);
-  const win = arts.find((a) => a.platform === 'win32' && a.arch === 'x64');
-  assert.strictEqual(win.file, 'foundry-windows-x64.tar.gz');
-  assert.strictEqual(win.sha256, fullChecksums['foundry-windows-x64.tar.gz']);
-  // The URL is the release's own, not one derived from the pin.
-  assert.ok(win.url.includes('/v0.6.0/'));
-  // The byte count is the asset's real size, which the disk pre-check uses.
-  assert.strictEqual(typeof win.bytes, 'number');
-});
-
-test('a published tarball with NO checksum line is a refusal that names the file', () => {
-  const missing = { ...fullChecksums };
-  delete missing['foundry-windows-x64.tar.gz'];
-  assert.throws(
-    () => artifactsForRelease(releaseWith(allFiles), missing, '0.6.0', 'win32', 'x64'),
-    (err) => {
-      assert.match(err.message, /foundry-windows-x64\.tar\.gz/);
-      assert.match(err.message, new RegExp(CHECKSUMS_FILE));
-      assert.match(err.message, /will not install an artifact it cannot verify/);
-      return true;
-    },
-  );
-});
-
-test('a missing hash anywhere in the release refuses, not just this platform', () => {
-  // A partial set would ship a component whose OTHER platforms are unverifiable
-  // as soon as the same release is read on another machine.
-  const missing = { ...fullChecksums };
-  delete missing['foundry-darwin-arm64.tar.gz'];
-  assert.throws(
-    () => artifactsForRelease(releaseWith(allFiles), missing, '0.6.0', 'win32', 'x64'),
-    /foundry-darwin-arm64\.tar\.gz/,
-  );
-});
-
-test('a platform absent from the release is skipped, not invented', () => {
-  const partial = allFiles.filter((f) => f !== 'foundry-linux-x64.tar.gz');
-  const arts = artifactsForRelease(releaseWith(partial), fullChecksums, '0.6.0', 'win32', 'x64');
-  assert.strictEqual(arts.length, partial.length);
-  assert.ok(!arts.some((a) => a.platform === 'linux'));
-});
-
-test('a release with nothing for THIS machine refuses by name', () => {
-  const noWindows = allFiles.filter((f) => f !== 'foundry-windows-x64.tar.gz');
-  assert.throws(
-    () => artifactsForRelease(releaseWith(noWindows), fullChecksums, '0.6.0', 'win32', 'x64'),
-    (err) => {
-      assert.match(err.message, /win32\/x64/);
-      // It says what to do about it, and that the working install is untouched.
-      assert.match(err.message, /republish/i);
-      return true;
-    },
-  );
-});
-
-test('the asset names come from the catalog, so the contract has one spelling', () => {
-  // docs/DISTRIBUTION.md §2.3: foundry-<platform>-<arch>.tar.gz. If this list and
-  // release-package.sh ever disagree, installs break on one platform silently.
-  assert.deepStrictEqual([...allFiles].sort(), [
-    'foundry-darwin-arm64.tar.gz',
-    'foundry-darwin-x64.tar.gz',
-    'foundry-linux-x64.tar.gz',
-    'foundry-windows-x64.tar.gz',
-  ]);
-});
-
-// ── The catalog entry follows a discovered release ──────────────────────────
-
-test('adopting a release changes the component version, URLs, hashes and help link', () => {
-  // Loaded fresh so the module-level override cannot leak into other tests.
-  delete require.cache[require.resolve(CATALOG)];
-  const cat = require(CATALOG);
-  const before = cat.foundryCliComponent();
-  // Before anything is read off GitHub there is no version and nothing to fetch.
-  assert.strictEqual(before.version, '');
-  assert.strictEqual(cat.effectiveFoundryVersion(), '');
-
-  cat.setDiscoveredFoundryRelease({
-    version: '9.9.9',
-    artifacts: cat.FOUNDRY_ASSETS.map((a) => ({
-      platform: a.platform,
-      arch: a.arch,
-      file: a.file,
-      url: `https://github.com/telltaleatheist/foundry/releases/download/v9.9.9/${a.file}`,
-      sha256: 'f'.repeat(64),
-      bytes: 123,
-    })),
-  });
-
-  const after = cat.foundryCliComponent();
-  assert.strictEqual(after.version, '9.9.9');
-  assert.strictEqual(cat.effectiveFoundryVersion(), '9.9.9');
-  assert.ok(after.externalHelpUrl.endsWith('/v9.9.9'));
-  for (const art of after.artifacts) {
-    assert.ok(art.url.includes('/v9.9.9/'), `${art.url} still points at the pin`);
-    assert.strictEqual(art.sha256, 'f'.repeat(64));
-  }
-  // The install path pre-checks disk against sizeBytes; it must follow too.
-  const mine = after.artifacts.find((a) => a.platform === process.platform && a.arch === process.arch);
-  if (mine) assert.strictEqual(after.sizeBytes, mine.bytes);
-
-  delete require.cache[require.resolve(CATALOG)];
-});
-
-test('with no release read, the entry offers nothing to download and says so', () => {
-  // The honest offline state. Inventing URLs from a remembered version would
-  // point the installer at a release this process has never seen.
-  delete require.cache[require.resolve(CATALOG)];
-  const cat = require(CATALOG);
-  const comp = cat.foundryCliComponent();
-  assert.deepStrictEqual(comp.artifacts, []);
-  assert.strictEqual(comp.sizeBytes, 0);
-  assert.strictEqual(comp.version, '');
-  // The help link degrades to the releases page rather than a tag that may not exist.
-  assert.ok(comp.externalHelpUrl.endsWith('/releases'), comp.externalHelpUrl);
-  delete require.cache[require.resolve(CATALOG)];
-});
-
-test('no version or hash is committed beside the component any more', () => {
-  // The point of the change: publishing is the whole of deploying. If a pinned
-  // version or a pasted sha256 ever reappears here, this fails.
-  const src = fs.readFileSync(
-    path.join(REPO, 'electron', 'components', 'foundry-cli-components.ts'), 'utf8');
-  assert.ok(!/FOUNDRY_CLI_VERSION/.test(src), 'a pinned version came back');
-  assert.ok(!/[0-9a-f]{64}/.test(src), 'a pasted sha256 came back');
-});
-
-// ── Acquisition discovers on demand (the first-install path) ────────────────
-//
-// bookforge-mac-2's reproduction, 2026-08-24: setDiscoveredFoundryRelease had
-// exactly one caller — the startup sweep — and the sweep adopts only onto a
-// machine that ALREADY has a managed install, so a fresh machine (or one whose
-// external pin was just removed) had an empty catalog forever and every install
-// refused "not available for download". Acquisition now asks GitHub itself:
-// ensureFoundryReleaseDiscovered, called by downloadFoundry and the Add-ons
-// install door.
-
-const releaseOf = (cat, version) => ({
-  version,
-  artifacts: cat.FOUNDRY_ASSETS.map((a) => ({
-    platform: a.platform, arch: a.arch, file: a.file,
-    url: `https://github.com/telltaleatheist/foundry/releases/download/v${version}/${a.file}`,
-    sha256: 'a'.repeat(64), bytes: 7,
-  })),
-});
-
-test('an empty catalog is filled on demand, so a fresh machine can acquire', async () => {
-  delete require.cache[require.resolve(CATALOG)];
-  const cat = require(CATALOG);
-  assert.strictEqual(cat.effectiveFoundryVersion(), '', 'fresh machine: nothing discovered');
-  const { ensureFoundryReleaseDiscovered } = require(RELEASE);
-  await ensureFoundryReleaseDiscovered(async () => releaseOf(cat, '9.9.8'));
-  assert.strictEqual(cat.effectiveFoundryVersion(), '9.9.8',
-    'the catalog the very next install() reads now names the release');
-  assert.ok(cat.foundryCliComponent().artifacts.length > 0, 'and it has artifacts to download');
-  delete require.cache[require.resolve(CATALOG)];
-});
-
-test('a release the sweep already adopted is not asked for again', async () => {
-  delete require.cache[require.resolve(CATALOG)];
-  const cat = require(CATALOG);
-  cat.setDiscoveredFoundryRelease(releaseOf(cat, '9.9.9'));
-  const { ensureFoundryReleaseDiscovered } = require(RELEASE);
-  await ensureFoundryReleaseDiscovered(async () => {
-    throw new Error('asked GitHub although the answer was already in hand');
-  });
-  assert.strictEqual(cat.effectiveFoundryVersion(), '9.9.9');
-  delete require.cache[require.resolve(CATALOG)];
-});
-
-test('a draft-or-prerelease-only answer refuses by name, never an empty catalog', async () => {
-  delete require.cache[require.resolve(CATALOG)];
-  const { ensureFoundryReleaseDiscovered } = require(RELEASE);
-  await assert.rejects(
-    () => ensureFoundryReleaseDiscovered(async () => null),
-    /draft or prerelease/,
-    'silence here would surface as the generic "not available for download"');
-  delete require.cache[require.resolve(CATALOG)];
 });
 
 // ── Run ─────────────────────────────────────────────────────────────────────

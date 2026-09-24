@@ -472,19 +472,17 @@ const CHAT_DEPTH_TIMEOUT_MS = 10_000;
  * of this wire, and it is the SDK's — a second parse of a document the SDK
  * already parses is exactly the shape that goes stale in silence.
  *
- * ── AND THE SWITCH GAVE THE READ A FAILURE MODE IT DID NOT HAVE ────────────
+ * ── A DOCUMENT THIS BUILD CANNOT FULLY READ IS ALSO "IT DID NOT SAY" ────────
  *
- * A raw fetch is tolerant by construction: it reads two keys and shrugs at
- * everything else. The SDK is STRICT — it reads the whole document and refuses
- * a malformed one as a {@link CrucibleProtocolError} — so a server OLDER than
- * this build (no `stopping`, no `resident.unclaimed_since`, no
- * `chat.max_in_flight`) now throws here where it used to answer `null`. That
- * must not be flattened into "it did not say": a silent four against a server
- * this app can no longer read is a placement built on a guess about a machine
- * it cannot talk to. It becomes {@link CrucibleTooOld}, which
- * `interpretFailure` refuses by name. Everything ELSE — a 404 from a Crucible
- * older than the route, an unreachable machine, a cut-off — is still exactly
- * "it did not say".
+ * The SDK is strict, so a server older or newer than this build can answer 200
+ * with a document the SDK refuses as a {@link CrucibleProtocolError}. That was
+ * `CrucibleTooOld` — the placement REFUSED, "update it" — until Owen, 2026-09-24:
+ * *"dont require any particular crucible server. if it can make the call to the
+ * crucible server then it should work."* A courtesy read of the admission bound
+ * is not a call the placement needs to succeed: without the number, the run takes
+ * {@link CRUCIBLE_CHAT_CONCURRENCY}, and a server that admits fewer answers the
+ * overflow `503 chat_queue_full`, which the engine already waits out. So it is
+ * the same null as a 404, and `chatDepthFor` says which number it settled on.
  */
 async function statedChatDepth(engine: CrucibleServerEntry): Promise<number | null> {
   try {
@@ -493,7 +491,6 @@ async function statedChatDepth(engine: CrucibleServerEntry): Promise<number | nu
     if (stated === null || !Number.isFinite(stated) || stated < 1) return null;
     return Math.floor(stated);
   } catch (err) {
-    if (err instanceof CrucibleProtocolError) throw new CrucibleTooOld(engine.name, err);
     /*
      * NOTHING IS LOGGED FROM THE CATCH, and that is not silence about a failure:
      * the caller says which number it settled on and why, in one line, on every
@@ -502,38 +499,6 @@ async function statedChatDepth(engine: CrucibleServerEntry): Promise<number | nu
      * is about to succeed.
      */
     return null;
-  }
-}
-
-/**
- * THAT SERVER IS OLDER THAN THIS BUILD, AND THE DOCUMENT SAYS SO.
- *
- * Raised only from {@link statedChatDepth}, and only for a
- * {@link CrucibleProtocolError} out of `client.activity()`. It is its own class
- * rather than a re-thrown protocol error because `interpretFailure` already has
- * a `CrucibleProtocolError` branch, and that branch's sentence is about the
- * CAPABILITY document — *"answered about translate work with a document this
- * build cannot read"* — which would be a true sentence about the wrong route and
- * send whoever reads it to the wrong file on the wrong machine.
- *
- * THE SENTENCE NAMES THE CURE, because there is exactly one: the API version is
- * not what is wrong here (a 1.0.12 server still answers `X-Crucible-Api: 1`);
- * what is wrong is that this build's SDK reads fields that release does not
- * send, and no amount of waiting changes it. `detail` is the SDK's own, so the
- * missing field is named rather than guessed at.
- */
-export class CrucibleTooOld extends Error {
-  readonly serverName: string;
-  readonly detail: string;
-
-  constructor(serverName: string, cause: CrucibleProtocolError) {
-    super(
-      `"${serverName}" speaks an older Crucible than this app; update it. `
-      + `Its /v1/activity is missing something this build reads: ${cause.detail}`,
-    );
-    this.name = 'CrucibleTooOld';
-    this.serverName = serverName;
-    this.detail = cause.detail;
   }
 }
 
@@ -1389,12 +1354,11 @@ async function placeOnCrucible(
    *
    * It used to be read inline in the returned placement, which put it AFTER the
    * load and AFTER the lease. That was harmless while the read could not fail;
-   * since `statedChatDepth` became the SDK's it can ({@link CrucibleTooOld}),
-   * and a throw between `takeLease` and the `return` would abandon a lease this
-   * function had just taken — a card held for its whole TTL by a run that never
-   * started. Asked here, the only thing a refusal costs is a round trip, and a
-   * server this build cannot read is named before ninety seconds of loading
-   * rather than after.
+   * and it is kept here because a throw between `takeLease` and the `return`
+   * would abandon a lease this function had just taken — a card held for its
+   * whole TTL by a run that never started. (The read no longer refuses a server
+   * it cannot fully parse — see `statedChatDepth` — but anything asked before
+   * the load stays before it.)
    */
   const concurrency = await chatDepthFor(engine, capability, say);
 
@@ -2334,19 +2298,6 @@ function interpretFailure(err: unknown, slotName: string, capability: Capability
     return isServerSpecificRefusal(err.code)
       ? transientWait(`"${slotName}" refused ${capability} work: ${err.serverMessage}`)
       : { verdict: 'refuse', reason: `"${slotName}" refused ${capability} work: ${err.serverMessage}` };
-  }
-  if (err instanceof CrucibleTooOld) {
-    /*
-     * THIS BUILD'S SDK READS A DOCUMENT THAT SERVER DOES NOT SEND — see
-     * {@link CrucibleTooOld}, which composes the sentence and names the cure.
-     *
-     * REFUSED, on the same argument as the `CrucibleProtocolError` branch below:
-     * it will say the same thing on the next pass, nothing on a timer changes
-     * it, and the alternative is a placement built on a number this app guessed
-     * about a machine it cannot read. It is said ONCE, on the row, rather than
-     * parked where it would look like a busy card.
-     */
-    return { verdict: 'refuse', reason: err.message };
   }
   if (err instanceof CrucibleCapabilityUndecided) {
     /*

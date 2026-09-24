@@ -41,19 +41,17 @@ if (!fs.existsSync(MODULE)) {
   process.exit(1);
 }
 
+const bank = require(MODULE);
 const {
-  FOUNDRY_VERSION_FOR_READINGS_FLAGS,
   bankIsFromCompletedRun,
   defaultReadingsChoice,
   describeReadingsBank,
   describeReadingsChoices,
   describeReadingsDecision,
-  foundryTooOldForReadingsFlags,
-  foundryVersionAtLeast,
   readingsChoiceButtons,
   readingsChoiceOfJob,
   vlmReadingsArgs,
-} = require(MODULE);
+} = bank;
 
 const results = [];
 let failures = 0;
@@ -208,35 +206,16 @@ check('reusing a FINISHED run says no page is read', () => {
     /no page is read/);
 });
 
-// ── the version gate ────────────────────────────────────────────────────────
-
-check('versions compare numerically, not as strings', () => {
-  assert.strictEqual(foundryVersionAtLeast('0.9.0', '0.9.0'), true);
-  assert.strictEqual(foundryVersionAtLeast('0.10.0', '0.9.0'), true);
-  assert.strictEqual(foundryVersionAtLeast('1.0.0', '0.9.0'), true);
-  assert.strictEqual(foundryVersionAtLeast('0.8.0', '0.9.0'), false);
-  assert.strictEqual(foundryVersionAtLeast('0.8.99', '0.9.0'), false);
-});
-
-check('a version this build cannot read is NOT treated as new enough', () => {
-  // The safe direction: refusing names a fix, while a wrong "new enough" ships
-  // the run without the flag and replays the cache.
-  assert.strictEqual(foundryVersionAtLeast('', '0.9.0'), false);
-  assert.strictEqual(foundryVersionAtLeast('unknown', '0.9.0'), false);
-});
-
-check('a prerelease is compared on its numbers', () => {
-  assert.strictEqual(foundryVersionAtLeast('0.9.0-rc1', '0.9.0'), true);
-  assert.strictEqual(foundryVersionAtLeast('0.8.0-rc1', '0.9.0'), false);
-});
-
-check('the refusal names the flag, the installed version and the one needed', () => {
-  const said = foundryTooOldForReadingsFlags('0.8.0', '--fresh-readings');
-  assert.match(said, /--fresh-readings/);
-  assert.match(said, /installed foundry is 0\.8\.0/);
-  assert.ok(said.includes(FOUNDRY_VERSION_FOR_READINGS_FLAGS),
-    'the refusal must name the version that has the flag');
-  assert.match(said, /Nothing was converted/);
+// ── no version gate (2026-09-24) ────────────────────────────────────────────
+//
+// The engine is vendored with foundry-app (electron/foundry-bridge.ts), so it
+// always understands --fresh-readings / --reuse-readings. The floor, its
+// refusal and the comparator went with the downloaded engine; a return of any
+// of them would be a gate that can only refuse work the engine can do.
+check('the readings-flags version gate is gone, and stays gone', () => {
+  for (const name of ['FOUNDRY_VERSION_FOR_READINGS_FLAGS', 'foundryTooOldForReadingsFlags', 'foundryVersionAtLeast']) {
+    assert.strictEqual(bank[name], undefined, `${name} is back`);
+  }
 });
 
 // ── report ─────────────────────────────────────────────────────────────────

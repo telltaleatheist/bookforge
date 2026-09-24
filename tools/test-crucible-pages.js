@@ -538,24 +538,22 @@ async function main() {
       { where: where.where, server: where.server }, { where: 'crucible', server: 'mac' });
   });
 
-  // ── 9. The foundry that must carry the credential ─────────────────────────
-  await check('a foundry that would drop the header map is refused, by name', () => {
-    assert.strictEqual(
-      bank.foundryVersionAtLeast('1.2.0', pages.FOUNDRY_VERSION_FOR_CRUCIBLE_PAGES), false,
-      'the pinned v1.2.0 release now clears the floor — its page reader does NOT read '
-      + '$FOUNDRY_ENDPOINT_HEADERS (foundry 2d5d411 landed after the eb69b7a tag)');
-    assert.strictEqual(
-      bank.foundryVersionAtLeast(pages.FOUNDRY_VERSION_FOR_CRUCIBLE_PAGES,
-        pages.FOUNDRY_VERSION_FOR_CRUCIBLE_PAGES), true);
-    const said = pages.foundryTooOldForCruciblePages('1.2.0', 'local');
-    assert.ok(said.includes('FOUNDRY_ENDPOINT_HEADERS'), said);
-    assert.ok(said.includes(pages.FOUNDRY_VERSION_FOR_CRUCIBLE_PAGES), said);
-    // A refusal with no way forward is what the no-band-aids rule is about —
-    // and the way forward is now the TYPED endpoint, not the deleted switch.
-    assert.ok(said.includes('Reading pages'), said);
-    assert.ok(!/legacy|local engines/i.test(said),
-      `it still offers a switch that no longer exists: ${said}`);
-    assert.ok(/no page was sent without its credential/.test(said), said);
+  // ── 9. The engine that must carry the credential ──────────────────────────
+  //
+  // Since 2026-09-24 the engine is VENDORED with foundry-app, so whether it reads
+  // the header map is a fact about a file in this checkout, not a release floor
+  // (FOUNDRY_VERSION_FOR_CRUCIBLE_PAGES, deleted with the downloaded engine).
+  await check('the vendored engine reads $FOUNDRY_ENDPOINT_HEADERS, and the release floor is gone', () => {
+    const bundle = fs.readFileSync(
+      path.join(REPO, 'foundry-app', 'engine', 'foundry-engine.cjs'), 'utf8');
+    assert.ok(bundle.includes('FOUNDRY_ENDPOINT_HEADERS'),
+      'the vendored engine never names $FOUNDRY_ENDPOINT_HEADERS — its page reader would drop the credential');
+    assert.ok(/function resolveEndpointHeaders\(/.test(bundle),
+      'the vendored engine has no resolveEndpointHeaders — the page route would cross unauthenticated');
+    for (const name of ['FOUNDRY_VERSION_FOR_CRUCIBLE_PAGES', 'foundryTooOldForCruciblePages']) {
+      assert.strictEqual(pages[name], undefined, `${name} is back`);
+    }
+    assert.strictEqual(bank.foundryVersionAtLeast, undefined, 'foundryVersionAtLeast is back');
   });
 
   // ── 10. WHO IS ASKED, AND IN WHAT ORDER, before anything is spawned ───────

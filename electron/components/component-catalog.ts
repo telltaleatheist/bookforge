@@ -14,7 +14,6 @@ import { getConfiguredToolsEnvPath } from '../tool-paths';
 import { getActiveToolsEnvPath, getToolsEnvDir } from '../tools-env-bootstrap';
 import { rvcVoiceComponents } from './rvc-voice-components';
 import { whisperModelComponents } from './whisper-model-components';
-import { foundryCliComponent } from './foundry-cli-components';
 import { llamaCudaComponent } from './llama-cuda';
 import { cudaTtsComponent } from './cuda-tts';
 import { cudaRvcComponent } from './cuda-rvc';
@@ -214,7 +213,6 @@ export function getCatalog(): OptionalComponent[] {
     qwenAlignEnvComponent(),
     ...rvcVoiceComponents(),
     ...whisperModelComponents(),
-    foundryCliComponent(),
   ];
 }
 

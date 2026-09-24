@@ -114,30 +114,6 @@ const skipped = [];
 const tests = [];
 function test(name, fn) { tests.push({ name, fn }); }
 
-/**
- * A real foundry binary on this machine, or null.
- *
- * `FOUNDRY_CLI_PATH` first — a developer's own build wins, which is the bridge's
- * own rule — then the two places a dev checkout compiles one
- * (`electron/foundry-dev-cli.ts`'s candidates, spelled the BUILD's way: the
- * bun target is `windows` and Windows binaries carry `.exe`, while
- * `process.platform` says `win32`).
- */
-function realFoundry() {
-  const name = process.platform === 'win32'
-    ? `foundry-windows-${process.arch}.exe`
-    : `foundry-${process.platform}-${process.arch}`;
-  const candidates = [
-    process.env.FOUNDRY_CLI_PATH,
-    path.join('/Volumes/Callisto/Projects/foundry', 'dist', name),
-    path.join(os.homedir(), 'Projects', 'foundry', 'dist', name),
-  ];
-  for (const candidate of candidates) {
-    if (candidate && fs.existsSync(candidate)) return candidate;
-  }
-  return null;
-}
-
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 const settle = async (n = 12) => { for (let i = 0; i < n; i++) await wait(0); };
 
@@ -611,22 +587,23 @@ test('a STORED translate row carrying a rewrite is still read as the simplify it
   );
 });
 
-test('the engine that has no clean-text is refused BY NAME, and nothing runs', () => {
-  // The gate is checked in the step module, not at `enqueue`: that door is
-  // synchronous by contract ("pressing Add cannot leave a moment where nothing
-  // has appeared") and asking a binary its version is a spawn. So the row is
-  // minted and refuses the instant its turn comes — before Foundry is asked to
-  // spawn anything and before a model is loaded.
-  const { foundryVersionAtLeast } = require(path.join(DIST, '..', 'shared', 'vlm', 'readings-bank.js'));
-  assert.strictEqual(foundryVersionAtLeast('1.0.2', host.FOUNDRY_VERSION_FOR_CLEAN_TEXT), false);
-  assert.strictEqual(foundryVersionAtLeast('1.1.0', host.FOUNDRY_VERSION_FOR_CLEAN_TEXT), true);
-  assert.strictEqual(foundryVersionAtLeast('1.2.0', host.FOUNDRY_VERSION_FOR_CLEAN_TEXT), true);
-
-  const said = host.foundryTooOldForCleanText('1.0.2');
-  assert.ok(said.includes('1.0.2'), 'the refusal must name what IS installed');
-  assert.ok(said.includes(host.FOUNDRY_VERSION_FOR_CLEAN_TEXT), 'and the version the command arrived in');
-  assert.match(said, /Settings → General add-ons/, 'and where to fix it');
-  assert.match(said, /Nothing was cleaned/, 'and that nothing ran — the readings-flag refusal\'s shape');
+test('no engine version gates a row: the floors went with the downloaded engine', () => {
+  /*
+   * This used to prove an engine with no `clean-text` was refused BY NAME. Since
+   * 2026-09-24 the engine is vendored with foundry-app (electron/foundry-bridge.ts),
+   * so it has every command the vendored Foundry schedules, and the step module
+   * asks it nothing before a row runs. A floor coming back could only refuse work
+   * the engine can do.
+   */
+  for (const name of [
+    'FOUNDRY_VERSION_FOR_CLEAN_TEXT', 'FOUNDRY_VERSION_FOR_CLEAN_TEXT_EPUB', 'FOUNDRY_VERSION_FOR_CLEAN_TRIAGE',
+    'foundryTooOldForCleanText', 'foundryTooOldForCleanTextEpub', 'foundryTooOldForCleanTriage',
+  ]) {
+    assert.strictEqual(host[name], undefined, `${name} is back`);
+  }
+  const step = fs.readFileSync(path.join(DIST, 'queue-steps', 'foundry-job.js'), 'utf8');
+  assert.ok(!/require\([^)]*foundry-bridge/.test(step),
+    'the foundry-job step loads the bridge again — a row asking the engine its version before it runs is a gate');
 });
 
 test('a clean-text count reaches the row in THEIR shape', async () => {
@@ -715,16 +692,10 @@ test('a HOSTED text act REACHES the seam, carrying the machine and nothing else'
    * all. A book waiting for somebody to choose its card must not already be
    * running on one.
    *
-   * A `clean` row asks the installed binary its version before any of this, so
-   * the case needs a real foundry; SKIPPED BY NAME without one rather than
-   * passed quietly.
+   * It used to need a real foundry binary, because a `clean` row asked the
+   * installed one its version first. That gate went with the downloaded engine
+   * (2026-09-24), so the row reaches the seam with no engine asked anything.
    */
-  const binary = realFoundry();
-  if (binary === null) {
-    skipped.push('a HOSTED text act reaches the seam — no foundry binary on this machine');
-    return;
-  }
-  process.env.FOUNDRY_CLI_PATH = binary;
   await fresh('textpass-placed');
   engine.clearStepModules();
   engine.registerStepModule(require(path.join(DIST, 'queue-steps', 'foundry-job.js')).foundryJobStep);
@@ -802,12 +773,6 @@ test('a hosted text act for a server this machine does not offer is REFUSED, nev
    * admitted to — which is what a person disabling or removing a server between
    * admission and turn looks like.
    */
-  const binary = realFoundry();
-  if (binary === null) {
-    skipped.push('a hosted text act for an unoffered server is refused — no foundry binary');
-    return;
-  }
-  process.env.FOUNDRY_CLI_PATH = binary;
   await fresh('textpass-unoffered');
   engine.clearStepModules();
   engine.registerStepModule(require(path.join(DIST, 'queue-steps', 'foundry-job.js')).foundryJobStep);

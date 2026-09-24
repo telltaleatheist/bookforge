@@ -13,13 +13,11 @@
     "build": "npm run build:electron && npm run build:renderer",
     "typecheck": "tsc -p tsconfig.electron.json --noEmit",
     "start": "npm run electron:dev",
-    "electron:dev": "npm run build:electron && node tools/free-port.cjs 4260 && concurrently -k -n ng,electron \"ng serve --port 4260\" \"wait-on http-get://localhost:4260 && electron . --dev\"",
+    "electron:dev": "node ../tools/build-engine.mjs && npm run build:electron && node tools/free-port.cjs 4260 && concurrently -k -n ng,electron \"ng serve --port 4260\" \"wait-on http-get://localhost:4260 && electron . --dev\"",
     "electron:prod": "npm run build && electron .",
-    "build:engine:win-x64": "bash ../tools/release-build.sh windows-x64",
-    "build:engine:mac": "bash ../tools/release-build.sh darwin-arm64",
-    "package:win-x64": "npm run build:engine:win-x64 && npm run build && electron-builder --win --x64",
-    "package:mac": "npm run build:engine:mac && npm run build && electron-builder --mac --arm64",
-    "package:mac:signed": "npm run build:engine:mac && npm run build && node tools/package-mac.cjs",
+    "package:win-x64": "npm run build && electron-builder --win --x64",
+    "package:mac": "npm run build && electron-builder --mac --arm64",
+    "package:mac:signed": "npm run build && node tools/package-mac.cjs",
     "test:templates": "node tools/test-no-backticks-in-templates.js",
     "test:surface": "node tools/test-crucible-setup-surface.js"
   },
@@ -34,6 +32,7 @@
       "dist/electron/**",
       "dist/shared/**",
       "dist/renderer/**",
+      "engine/**",
       "package.json"
     ],
     "fileAssociations": [
@@ -52,23 +51,11 @@
     ],
     "win": {
       "target": "nsis",
-      "extraResources": [
-        {
-          "from": "../dist/foundry-windows-x64.exe",
-          "to": "foundry.exe"
-        }
-      ],
       "icon": "build/icon.ico",
       "artifactName": "Foundry-${version}-windows-${arch}.${ext}"
     },
     "mac": {
       "target": "dmg",
-      "extraResources": [
-        {
-          "from": "../dist/foundry-darwin-arm64",
-          "to": "foundry"
-        }
-      ],
       "icon": "build/icon.png",
       "artifactName": "Foundry-${version}-macos-${arch}.${ext}"
     }

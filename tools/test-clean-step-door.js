@@ -220,9 +220,14 @@ function fixtureProject() {
     if (!fs.existsSync(manifest)) continue;
     const ledger = JSON.parse(fs.readFileSync(manifest, 'utf8')).ledger;
     // A project standing on its import offers no cleanup, and neither does the
-    // dialog — so it is no fixture for this.
+    // dialog — so it is no fixture for this. Asked of the STANDING step, not of
+    // the step count: a project with a history can have been walked back to its
+    // import (position is the ledger's pointer), and "more than one step" picked
+    // exactly such a project on 2026-09-24 and failed every dry run below with
+    // the door's own, correct refusal.
     const steps = ledger?.steps ?? [];
-    if (steps.length > 1) return { libraryRoot, key, dir };
+    const standing = steps.find((step) => step.id === ledger?.position);
+    if (standing !== undefined && standing.action !== 'import') return { libraryRoot, key, dir };
   }
   return null;
 }
@@ -384,10 +389,11 @@ async function projectHalf() {
 
   const doorEnv = () => {
     /*
-     * NOTHING IS NAMED FOR IT. `FOUNDRY_BIN` and `FOUNDRY_CLI_PATH` are both
-     * cleared so the door does its own resolution — the prime, then
-     * `resolveFoundryPath` — which is the thing the engine assertion below is
-     * about. It spawns `--version` and nothing else.
+     * NOTHING IS NAMED FOR IT. `FOUNDRY_BIN` is cleared so the door does its
+     * own resolution — the bundle vendored with foundry-app — which is the thing
+     * the engine assertion below is about. It spawns `--version` and nothing
+     * else. (`FOUNDRY_CLI_PATH` is cleared too: nothing reads it any more, and a
+     * stale export must not look as if it mattered.)
      */
     const env = {
       ...process.env,
@@ -606,33 +612,22 @@ ${refused}`);
     }
   });
 
-  await atest('the engine is the dev binary the app primes, not the installed component', async () => {
+  await atest('the engine is the bundle vendored with foundry-app, and it says which sources it is', async () => {
     /*
-     * THE TRAP THIS EXISTS FOR: the installed component on a developer's machine
-     * is whatever release was last downloaded — here a foundry 1.0.2 from August
-     * with no `--concurrency` — and a door that resolved to it would compose a
-     * line the binary cannot run and only say so an hour into a benchmark. A CLI
-     * run is a dev run, so it primes `FOUNDRY_CLI_PATH` exactly as `main.ts` does
-     * under `isDev` before `resolveFoundryPath()` is asked.
+     * The trap this used to guard — the door resolving to an installed component
+     * older than the flags it composed — cannot happen any more: there is no
+     * component (2026-09-24). The engine is `foundry-app/engine/foundry-engine.cjs`,
+     * the same file the app runs, run by this node. What is still worth proving
+     * is that the door NAMES it, and that `--version` reports the source digest
+     * the bundle was built from, because a path cannot say that.
      */
-    const name = process.platform === 'win32'
-      ? `foundry-windows-${process.arch}.exe`
-      : `foundry-${process.platform}-${process.arch}`;
-    const dev = [
-      path.join('/Volumes/Callisto/Projects/foundry', 'dist', name),
-      path.join(os.homedir(), 'Projects', 'foundry', 'dist', name),
-    ].find((candidate) => fs.existsSync(candidate));
-    if (dev === undefined) {
-      console.log('       (no locally-built foundry on this machine — the prime has nothing to find)');
-      return;
-    }
+    const bundle = path.join(REPO, 'foundry-app', 'engine', 'foundry-engine.cjs');
     const out = await dryRun([]);
     const engine = out.split('\n').find((line) => line.startsWith('[clean] engine  '));
     assert.ok(engine, `no engine line in:\n${out}`);
-    assert.ok(engine.includes(dev), `expected the dev binary ${dev}; got: ${engine}`);
-    // And it says which release answered, because a path cannot say that.
-    assert.ok(/\[clean\] engine version\s+foundry \d+\.\d+\.\d+/.test(out),
-      `the engine version was not named:\n${out}`);
+    assert.ok(engine.includes(bundle), `expected the vendored bundle ${bundle}; got: ${engine}`);
+    assert.ok(/\[clean\] engine version\s+foundry \d+\.\d+\.\d+ \(src [0-9a-f]{12}\)/.test(out),
+      `the engine version (with its source digest) was not named:\n${out}`);
   });
 
   await atest('a concurrency that is not a whole number is refused by name', async () => {

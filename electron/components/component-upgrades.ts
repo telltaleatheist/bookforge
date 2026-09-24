@@ -1,13 +1,11 @@
 /**
  * Which installed components are stale, and what should happen to each.
  *
- * This is the generalisation of the one upgrade rule the app already had:
- * `ensureFoundryPath` (electron/foundry-bridge.ts) compared a MANAGED install's
- * recorded version against the catalog's and reinstalled on a mismatch — but only
- * lazily, on the next pass that happened to need foundry. The rule was right; its
- * timing was not, and it existed for exactly one component. Here it is a pure
- * function over facts, so the startup sweep and foundry-bridge decide the same way
- * about the same component instead of drifting apart.
+ * This began as the generalisation of the foundry CLI's lazy upgrade check (a
+ * MANAGED install's recorded version against the catalog's, reinstalled on a
+ * mismatch). That component is gone — the foundry engine ships inside
+ * `foundry-app/engine/` since 2026-09-24 — and the rule stays, as a pure
+ * function over facts the startup sweep applies to every component.
  *
  * NOTHING in this file does IO. It takes the facts (what the catalog names, what
  * installed.json records, whether an env var pins the path, whether an install is
@@ -36,9 +34,9 @@
  *     is maintenance of a choice already made; installing is a new choice, and it
  *     is the user's.
  *  2. Already installing → keep. Another code path (a first-run batch, an
- *     Add-ons click, a pass that needed foundry) is mid-transfer into the very
+ *     Add-ons click) is mid-transfer into the very
  *     directory this would replace.
- *  3. Env-var pinned → keep. `FOUNDRY_CLI_PATH` and friends are a developer
+ *  3. Env-var pinned → keep. A component's detect env var is a developer
  *     running a build of their own; replacing it would be the app overruling a
  *     deliberate choice, and it could not even succeed — resolution reads the env
  *     var, not the managed directory.
@@ -63,19 +61,15 @@
  *  8. Otherwise → upgrade. Note this is version INEQUALITY, not "is newer": the
  *     wanted version is whatever the catalog now names, and the catalog is the
  *     authority for a copy BookForge itself put there. A deliberate ROLLBACK —
- *     Owen moving `RVC_ENV_VERSION` back to a known-good tarball, or a bad
- *     foundry release being yanked so an older tag becomes latest again — has to
- *     reach machines, and it does so by exactly this rule.
+ *     Owen moving `RVC_ENV_VERSION` back to a known-good tarball — has to reach
+ *     machines, and it does so by exactly this rule.
  *
  * There used to be a rule between 7 and 8: "a component that may legitimately be
  * ahead of the catalog is left alone when the installed version is newer". It
- * existed for one component, foundry, and for one situation — a launch that
- * started offline could only see the PINNED foundry version, so without it a
- * machine that had taken a newer release would be dragged back to the pin. The
- * pin is gone (foundry-cli-components.ts): the newest published release is now
- * foundry's only authority, and offline that component reports version '' and is
- * kept by rule 6 instead. With no pin there is nothing to be "ahead" of, so the
- * rule protected nothing and blocked rollbacks.
+ * existed for one component, the foundry CLI (since removed), and for one
+ * situation — a launch that started offline could only see a PINNED version.
+ * Once that pin went there was nothing to be "ahead" of, so the rule protected
+ * nothing and blocked rollbacks.
  */
 
 import type { ComponentKind } from './component-types';
@@ -90,7 +84,7 @@ import type { ComponentKind } from './component-types';
  * is here-or-not by definition and has nothing to download.
  */
 const TOOL_KINDS: ReadonlySet<ComponentKind> = new Set<ComponentKind>([
-  'binary', 'conda-env', 'foundry-cli',
+  'binary', 'conda-env',
 ]);
 
 /** The facts about one component, gathered by the caller. */

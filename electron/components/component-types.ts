@@ -33,7 +33,6 @@ export type ComponentKind =
   | 'conda-env'  // a conda env (conda-pack tarball, or a user's own `conda create`)
   | 'rvc-model'  // an RVC enhancement voice tarball extracted into the rvc-models dir
   | 'stt-model'  // a faster-whisper (CTranslate2) model dir fetched into runtime/whisper-models
-  | 'foundry-cli' // the standalone foundry binary, downloaded as a per-platform tarball
   | 'system';    // provided by the OS (e.g. Apple Vision); nothing to download
 
 /**

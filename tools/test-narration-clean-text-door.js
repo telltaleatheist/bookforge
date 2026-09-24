@@ -43,7 +43,6 @@ const http = require('http');
 const os = require('os');
 const path = require('path');
 const zlib = require('zlib');
-const { skipLine } = require('./keeper-skip.js');
 
 const REPO = path.resolve(__dirname, '..');
 const DIST = path.join(REPO, 'dist', 'electron');
@@ -52,32 +51,20 @@ if (!fs.existsSync(path.join(DIST, 'narration-clean-text.js'))) {
   process.exit(1);
 }
 
-/** The foundry release the `--epub` failsafe door arrived in. */
-const FAILSAFE_RELEASE = '1.2.0';
-
-/** A real foundry binary on this machine, or null. `test-foundry-host-queue`'s rule. */
-function realFoundry() {
-  const name = process.platform === 'win32'
-    ? `foundry-windows-${process.arch}.exe`
-    : `foundry-${process.platform}-${process.arch}`;
-  const candidates = [
-    process.env.FOUNDRY_CLI_PATH,
-    path.join('/Volumes/Callisto/Projects/foundry', 'dist', name),
-    path.join(os.homedir(), 'Projects', 'foundry', 'dist', name),
-    path.join('C:', 'Users', 'tellt', 'Projects', 'foundry', 'dist', name),
-  ];
-  for (const candidate of candidates) {
-    if (candidate && fs.existsSync(candidate)) return candidate;
-  }
-  return null;
+/**
+ * THE ENGINE is the one vendored with foundry-app (2026-09-24): the bundle the
+ * app's own door resolves (electron/foundry-bridge.ts `foundryEngineCommand`),
+ * run by this node. There is no binary to look for and nothing to skip on —
+ * a checkout without the bundle is a broken checkout, and this keeper says so.
+ */
+const ENGINE_BUNDLE = path.join(REPO, 'foundry-app', 'engine', 'foundry-engine.cjs');
+if (!fs.existsSync(ENGINE_BUNDLE)) {
+  throw new Error(`The vendored Foundry engine is missing: ${ENGINE_BUNDLE}. See foundry-app/VENDORED.md.`);
 }
-
-const BINARY = realFoundry();
-if (BINARY === null) {
-  console.log(skipLine(
-    'no foundry engine on this machine. Set '
-    + 'FOUNDRY_CLI_PATH, or build one with tools/release-build.sh host in the foundry checkout.'));
-  process.exit(0);
+/** Run the vendored engine directly, the way the app spawns it. */
+function runEngine(args, options) {
+  return execFileSync(process.execPath, [ENGINE_BUNDLE, ...args],
+    { ...options, env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' } });
 }
 
 // EVERY root this keeper writes to is under one temp dir, set BEFORE the stub is
@@ -128,16 +115,12 @@ fs.writeFileSync(
   path.join(FAKE_APPDATA, 'BookForge', 'crucible-routing.json'),
   JSON.stringify({ order: [VENUE], disabled: [], newJobsWaitFor: 'top-ranked' }, null, 2),
   'utf8');
-// The binary this run uses, stated: `ensureFoundryPath` returns it without
-// touching the component registry, which is not mounted here.
-process.env.FOUNDRY_CLI_PATH = BINARY;
 
 require(path.join(REPO, 'cli', 'electron-stub.js'));
 
 const door = require(path.join(DIST, 'narration-clean-text.js'));
 const epub = require(path.join(DIST, 'epub-processor.js'));
 const hostQueue = require(path.join(DIST, 'foundry-host-queue.js'));
-const { foundryVersionAtLeast } = require(path.join(REPO, 'dist', 'shared', 'vlm', 'readings-bank.js'));
 const { NARRATION_TEXT_FAILSAFE_NOTICE } =
   require(path.join(REPO, 'dist', 'shared', 'processing', 'narration-text-notice.js'));
 
@@ -551,18 +534,19 @@ test('--out equal to --epub is refused HERE, before any spawn', async () => {
     (err) => /write its result over the book it is reading/.test(err.message));
 });
 
-test('the version floor names the release the failsafe door arrived in', () => {
-  assert.strictEqual(hostQueue.FOUNDRY_VERSION_FOR_CLEAN_TEXT_EPUB, FAILSAFE_RELEASE);
-  // ONE comparator, the app's own — not a second copy beside the first floor.
-  assert.strictEqual(foundryVersionAtLeast('1.1.0', FAILSAFE_RELEASE), false);
-  assert.strictEqual(foundryVersionAtLeast('1.2.0', FAILSAFE_RELEASE), true);
-  assert.strictEqual(foundryVersionAtLeast('1.3.1', FAILSAFE_RELEASE), true);
-  const refusal = hostQueue.foundryTooOldForCleanTextEpub('1.1.0');
-  assert.ok(refusal.includes('1.1.0'), 'names what is installed');
-  assert.ok(refusal.includes(FAILSAFE_RELEASE), 'and the release the door arrived in');
-  assert.ok(/Nothing was cleaned/.test(refusal), 'and says nothing ran');
-  // The two floors are different facts and must not collapse into one.
-  assert.strictEqual(hostQueue.FOUNDRY_VERSION_FOR_CLEAN_TEXT, '1.1.0');
+test('no version floor stands in front of the failsafe door any more', () => {
+  // `FOUNDRY_VERSION_FOR_CLEAN_TEXT_EPUB` (1.2.0) refused an engine without the
+  // `--epub` door. The engine is vendored with foundry-app now, so it has the
+  // door by construction — asked below by running it — and the floors went with
+  // the downloaded engine.
+  for (const name of [
+    'FOUNDRY_VERSION_FOR_CLEAN_TEXT', 'FOUNDRY_VERSION_FOR_CLEAN_TEXT_EPUB',
+    'foundryTooOldForCleanText', 'foundryTooOldForCleanTextEpub',
+  ]) {
+    assert.strictEqual(hostQueue[name], undefined, `${name} is back`);
+  }
+  const help = runEngine(['clean-text', '--help'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  assert.ok(help.includes('--epub'), 'the vendored engine has no `clean-text --epub` door');
 });
 
 test('the failsafe notice is ONE constant, and it says the three things it must', () => {
@@ -609,7 +593,7 @@ test('`foundry epub-stamp` makes a book this door can clean', () => {
   const printed = path.join(ROOT, 'printed.epub');
   writeFixtureEpub(printed, 'On 23/3/1933 the committee approved $5,000.');
   const stamped = path.join(ROOT, 'stamped.epub');
-  execFileSync(BINARY, ['epub-stamp', '--epub', printed, '--out', stamped],
+  runEngine(['epub-stamp', '--epub', printed, '--out', stamped],
     { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
   assert.ok(fs.existsSync(stamped), 'epub-stamp wrote nothing');
   const bytes = fs.readFileSync(stamped).toString('binary');
@@ -646,7 +630,7 @@ test('a STAMPED book is ADMITTED, and the run dials the VENUE\'s endpoint', asyn
   const printed = path.join(ROOT, 'admitted.epub');
   writeFixtureEpub(printed, 'On 23/3/1933 the committee approved $5,000.');
   const stamped = path.join(ROOT, 'admitted.stamped.epub');
-  execFileSync(BINARY, ['epub-stamp', '--epub', printed, '--out', stamped],
+  runEngine(['epub-stamp', '--epub', printed, '--out', stamped],
     { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
 
   await assert.rejects(
@@ -744,7 +728,7 @@ test('a REAL cleanup stamps the book, and this app\'s own gate reads it', async 
   const printed = path.join(ROOT, 'live.epub');
   writeFixtureEpub(printed, 'On 23/3/1933 the committee approved $5,000.');
   const stamped = path.join(ROOT, 'live.stamped.epub');
-  execFileSync(BINARY, ['epub-stamp', '--epub', printed, '--out', stamped],
+  runEngine(['epub-stamp', '--epub', printed, '--out', stamped],
     { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
 
   const cleaned = path.join(ROOT, 'live.cleaned.epub');

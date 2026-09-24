@@ -10,10 +10,29 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\<user>\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **b4c7346** — *Repin @crucible/client and @crucible/bootstrap to Crucible 1.0.24* (was 4835411) |
-| Engine | **NOT VENDORED AND NOT KNOWABLE FROM THIS FILE** — it is a spawned CLI resolved at RUNTIME (`FOUNDRY_BIN`, else `resolveFoundryPath`, `electron/main.ts`), so which build executes is a property of the machine and not of this copy. On a developer's Mac that resolves to Foundry's own checkout at `/Volumes/Callisto/Projects/foundry/dist/foundry-darwin-arm64`, which is whatever was last built there — `foundry 2.0.2 (04758be)` — REBUILT at this re-vendor (2026-09-21) so the engine carries fdba761's clean-text log change. **Ask the binary: `$FOUNDRY_BIN --version`.** See *The engine this file named was not the engine that ran* below. |
-| Copied on | 2026-09-19 (five times: 3738c01, 3436fc5, 806d44b, f349771, ca4754c), 2026-09-20 (98a4344, 9e0b27d, dccc144, 7b98004, cc5fc5b, 93010d8, 77e1d6d) 2026-09-21 (753dca8, 3e26e53, f9bebb6, 95593b0, 8ee48b7) and 2026-09-22 (7185764, 7912022, 19fa7a9, df63f9f) and 2026-09-23 (acf63c2, 4835411), 2026-09-24 (b4c7346) |
-| Copied by | Mechanical source sync, verified against Foundry `b4c7346:app/` (`diff -rq`, clean but for this file, `IPC-CHANNELS.md` and `.gitignore` — see below); details below |
+| Source sha | **1927563** — *The engine is code that moves with the app: bundled into app/engine/, run by the app's own Electron* (was b4c7346) |
+| Engine | **VENDORED, in `engine/`** since 1927563 (2026-09-24): `engine/foundry-engine.cjs` plus its four fonts, built from Foundry's `src/` by Foundry's `tools/build-engine.mjs` and checked against those sources by Foundry's test suite. Run by BookForge's own Electron as Node (`ELECTRON_RUN_AS_NODE=1`) from BOTH doors — this copy's `electron/engine.ts` and BookForge's `electron/foundry-bridge.ts`. **Ask it: `node foundry-app/engine/foundry-engine.cjs --version`** → `foundry X.Y.Z (src <digest>)`. There is no downloaded engine any more; `FOUNDRY_BIN` still overrides in both doors. |
+| Copied on | 2026-09-19 (five times: 3738c01, 3436fc5, 806d44b, f349771, ca4754c), 2026-09-20 (98a4344, 9e0b27d, dccc144, 7b98004, cc5fc5b, 93010d8, 77e1d6d) 2026-09-21 (753dca8, 3e26e53, f9bebb6, 95593b0, 8ee48b7) and 2026-09-22 (7185764, 7912022, 19fa7a9, df63f9f) and 2026-09-23 (acf63c2, 4835411), 2026-09-24 (b4c7346, 1927563) |
+| Copied by | Mechanical source sync, verified against Foundry `1927563:app/` (`git hash-object` per file: clean but for this file, `IPC-CHANNELS.md` and `.gitignore` — see below); details below |
+
+## The `b4c7346 → 1927563` re-vendor — the engine moves into the app (2026-09-24)
+
+Owen: *"foundry.exe - this was intended to be a model runner originally. i dont
+think it needs to be an exe anymore. it can be an engine but maybe we should
+explode it out into normal code that moves along with the app."* Two Foundry
+commits: c3334fe (a server whose activity document this build cannot fully read
+places at the default depth instead of `CrucibleTooOld` — Owen's 2026-09-24
+any-Crucible ruling) and 1927563 (the engine bundled into `app/engine/`,
+`engineCommand()` runs it with `process.execPath` + `ELECTRON_RUN_AS_NODE`,
+`extraResources`/`build:engine:*` gone). **`engine/` is new in this copy and is
+committed here** — `foundry-app/engine/** binary` in the root `.gitattributes`,
+so git never converts it. The root `package.json` ships it (`files`).
+
+BookForge's side, same commit: `electron/foundry-bridge.ts` runs the same bundle
+(`foundryEngineCommand()`); the `foundry-cli` add-on, its release check, the
+download and every `FOUNDRY_VERSION_FOR_*` gate are deleted; main no longer sets
+`FOUNDRY_BIN` for the hosted window. `npm run build` run here; both doors report
+`foundry 2.0.2 (src d0086436f3cc)`.
 
 ## The `4835411 → b4c7346` re-vendor — the Crucible 1.0.24 repin (2026-09-24)
 

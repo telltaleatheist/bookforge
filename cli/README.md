@@ -951,13 +951,11 @@ node --require ./cli/electron-stub.js cli/clean-step.js --project "<dir>" --dry-
   Ctrl+C aborts through an `AbortController` — the same gesture the ✕ makes on a running
   row — and the records written so far are kept, so a re-run asks only about the blocks
   with no answer.
-- **The engine is the locally-built one**, not the installed component. A CLI run is a
-  dev run by construction, so the door primes `FOUNDRY_CLI_PATH` at
-  `<foundry checkout>/dist/foundry-<platform>-<arch>` exactly as the app does under
-  `isDev`, before `resolveFoundryPath()` is asked — an already-set `FOUNDRY_CLI_PATH`
-  wins untouched. It matters: `--concurrency` arrived in foundry **1.2.0**, and the
-  installed component can be months older. The dry run prints the binary *and* what
-  `foundry --version` said, because a path cannot say which release is sitting at it.
+- **The engine is the vendored one** — `foundry-app/engine/foundry-engine.cjs`, the
+  same file the app runs, run by this process's node (since 2026-09-24 there is no
+  downloaded engine; `FOUNDRY_BIN` still overrides). The dry run prints the engine
+  *and* what `foundry --version` said — `foundry X.Y.Z (src <digest>)`, the digest
+  naming the exact Foundry sources the bundle was built from.
 - `--foundry-dist <dir>` names which built Foundry to drive. The default is
   `foundry-app/dist`, the vendored build the running app executes; a build that does not
   export `argsFor` is refused by name rather than fallen back from, because composing
