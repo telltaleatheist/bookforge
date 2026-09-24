@@ -284,13 +284,6 @@ export type CruciblePagesErrorCode =
   | 'crucible_pages_no_backend'
   /** The manifest is served here and does not take pictures. */
   | 'crucible_pages_model_not_image_capable'
-  /**
-   * The server named a backend this build has no page-reading width for. NOT
-   * defaulted: {@link PAGE_CONCURRENCY_BY_BACKEND} is a pairing between what a
-   * backend ADMITS and what the engine SENDS, and a backend nobody has paired
-   * would be twelve requests against an unknown number of slots.
-   */
-  | 'crucible_pages_unknown_backend'
   /** Nothing is serving it. The operator's job, never a page read's. */
   | 'crucible_pages_model_not_resident'
   /**
@@ -375,10 +368,14 @@ export const CRUCIBLE_PAGES_NO_BACKEND = 'page reading is the PC\'s';
  * which is how a backend added on 2026-09-15 came to be sent twelve. This table
  * is the pairing, in the one place that knows which backend answered.
  *
- * NO DEFAULT. A backend absent from this table is refused by name
- * (`crucible_pages_unknown_backend`), because guessing here is guessing how
- * many slots somebody else's server has.
+ * A BACKEND ABSENT FROM THIS TABLE IS READ ONE PAGE AT A TIME
+ * ({@link UNPAIRED_PAGE_CONCURRENCY}) — never twelve against slots nobody has
+ * counted, and never refused. It used to be refused by name; Owen, 2026-09-24:
+ * *"if it can make the call to the crucible server then it should work."*
  */
+/** The width for a backend with no pairing in the table below: one page at a time, which every engine admits. */
+export const UNPAIRED_PAGE_CONCURRENCY = 1;
+
 export const PAGE_CONCURRENCY_BY_BACKEND: Readonly<Record<string, number>> = {
   /** vLLM, `--max-num-seqs 16` on the manifest so that twelve can be in flight. */
   'cuda-linux': 0,
@@ -596,19 +593,18 @@ export async function resolveCruciblePageReader(
    * not its wait in llama-server's queue.
    */
   const backend = await host.backend(server);
-  const concurrency = PAGE_CONCURRENCY_BY_BACKEND[backend];
-  if (concurrency === undefined) {
-    throw new CruciblePagesError(
-      'crucible_pages_unknown_backend',
-      `crucible "${server}" serves "${model}" on backend "${backend}", and this build has no page `
-      + `width paired with it (it knows: ${Object.keys(PAGE_CONCURRENCY_BY_BACKEND).join(', ')}). `
-      + 'How many pages may be in flight is a pairing with how many the engine ADMITS — twelve '
-      + 'against vLLM\'s 16 slots, one against llama.cpp\'s single slot — so guessing it here would '
-      + 'be guessing how many slots that server has, and every page\'s recorded time would be its '
-      + 'queue wait rather than its work. Add the backend to PAGE_CONCURRENCY_BY_BACKEND with the '
-      + 'admission width its manifest serves. Nothing ran and no page was read.',
-    );
-  }
+  /*
+   * A BACKEND THIS BUILD HAS NO WIDTH FOR IS READ ONE PAGE AT A TIME — it is not
+   * refused. Owen, 2026-09-24: *"dont require any particular crucible server. if
+   * it can make the call to the crucible server then it should work."* This used
+   * to throw `crucible_pages_unknown_backend`, which is what a Mac serving pages
+   * (mlx-darwin, since 2026-09-21) would have met. One in flight is the width
+   * every engine admits, so the read works everywhere; what it costs is speed on
+   * an engine that could take more, which is a pairing to add to the table, not
+   * a reason to stop the book.
+   */
+  const paired = PAGE_CONCURRENCY_BY_BACKEND[backend];
+  const concurrency = paired ?? UNPAIRED_PAGE_CONCURRENCY;
 
   const entry = host.server(server);
   return {

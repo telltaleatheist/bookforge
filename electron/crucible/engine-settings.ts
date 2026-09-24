@@ -269,25 +269,24 @@ function settingsFailure(server: string, door: string, err: unknown): unknown {
  * `readSettings` insists on `upstreams` (all three, by name), on
  * `desktop_allowance_bytes` and on `backend_kind`, so none of those is checked
  * again here — a second reader of the same fact is the thing this file exists
- * not to be. It reads `routes` as whatever keys the document carried, though,
- * because the SDK serves clients that do not know what a text act is. THIS app
- * does: all four llm classes are always present on the wire, absent-means-local
- * being a CONFIG FILE rule and not a wire rule (§3.1), so a missing one is a
- * server this app cannot read rather than a local route.
+ * not to be. It reads `routes` as whatever keys the document carried, because
+ * the SDK serves clients that do not know what a text act is; an act the
+ * document does not route is local (Owen's 2026-09-24 ruling — see below).
  */
 function projectSettings(doc: SettingsDocument, server: string): CrucibleEngineSettings {
   const routes = {} as Record<CrucibleTextActName, CrucibleRouteRow>;
   for (const act of CRUCIBLE_TEXT_ACTS) {
     const row = doc.routes[act];
-    if (row === undefined) {
-      throw new CrucibleEngineSettingsError(
-        'settings_document_unreadable',
-        `"${server}" sent a settings document with no routes."${act}". The contract says all four `
-          + 'llm classes are always present, absent-means-local being a CONFIG FILE rule and not a '
-          + 'wire rule — so a missing one is a server this app cannot read, not a local route.',
-      );
-    }
-    routes[act] = { route: row.route, model: row.model };
+    /*
+     * A SERVER THAT STATES NO ROUTE FOR AN ACT RUNS IT LOCALLY. Owen, 2026-09-24:
+     * *"dont require any particular crucible server. if it can make the call to
+     * the crucible server then it should work."* This used to refuse the whole
+     * settings document (`settings_document_unreadable`). A server that does not
+     * state a route for an act predates routing that act, so local is simply true
+     * of it — the same default the SDK now reads for a capability row's `route`
+     * (crucible feat/sdk-any-server). The model is `null`, "nothing stated".
+     */
+    routes[act] = row === undefined ? { route: 'local', model: null } : { route: row.route, model: row.model };
   }
 
   const upstreams = {} as Record<CrucibleUpstreamName, CrucibleUpstreamRow>;
