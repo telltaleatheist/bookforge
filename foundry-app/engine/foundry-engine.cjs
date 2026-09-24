@@ -30658,7 +30658,7 @@ var init_version = __esm({
     init_engine_import_meta_url();
     init_package();
     VERSION = package_default.version;
-    GIT_COMMIT = "src 29fc961d0720".length > 0 ? "src 29fc961d0720" : null;
+    GIT_COMMIT = "src a47c83e0e8d7".length > 0 ? "src a47c83e0e8d7" : null;
   }
 });
 
@@ -72126,8 +72126,8 @@ var init_triage = __esm({
     TRIAGE_FORMAT = "foundry-clean-triage/v1";
     TRIAGE_FLAG_P = 0.2;
     TRIAGE_MIN_LABEL_MASS = 0.9;
-    GROUP_MAX_UNITS = 16;
-    GROUP_MAX_CHARS = 6e3;
+    GROUP_MAX_UNITS = 32;
+    GROUP_MAX_CHARS = 2e4;
     CONTEXT_UNITS = 2;
     CONTEXT_CHARS = 200;
     DEFAULT_TRIAGE_CONCURRENCY = 2;
