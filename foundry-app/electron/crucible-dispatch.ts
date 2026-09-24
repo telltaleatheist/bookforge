@@ -1354,19 +1354,6 @@ async function placeOnCrucible(
   }
 
   /*
-   * ── THE DEPTH IS ASKED FOR BEFORE ANYTHING IS TAKEN OR LOADED ─────────────
-   *
-   * It used to be read inline in the returned placement, which put it AFTER the
-   * load and AFTER the lease. That was harmless while the read could not fail;
-   * and it is kept here because a throw between `takeLease` and the `return`
-   * would abandon a lease this function had just taken — a card held for its
-   * whole TTL by a run that never started. (The read no longer refuses a server
-   * it cannot fully parse — see `statedChatDepth` — but anything asked before
-   * the load stays before it.)
-   */
-  const concurrency = await chatDepthFor(engine, capability, say);
-
-  /*
    * ── RESIDENCY: WE LOAD, AND WE NEVER UNLOAD — WITH ONE EXCEPTION ──────────
    *
    * One model is resident at a time and a load EVICTS whatever was there. That
@@ -1508,6 +1495,25 @@ async function placeOnCrucible(
     signal?.throwIfAborted();
     const lease = await takeLease(engine, row.selected, capability, ourLoad?.leaseId ?? null);
 
+    /*
+     * ── THE DEPTH IS ASKED FOR AFTER THE MODEL IS RESIDENT ─────────────────
+     *
+     * A Crucible's chat admission belongs to the RESIDENT engine — its
+     * concurrency plus one — so with nothing loaded `chat.maxInFlight` is null
+     * by design, and may differ per model (sized by memory). Read before the
+     * load, as it used to be, it was always null on a card we then loaded, so
+     * every such run fell back to four; the engine's own read then clamped four
+     * down to the server's two, and never up to a server admitting eight
+     * (Owen's cleanup, 2026-09-24, ran at two). Read here, it is the number the
+     * server admits for the model this run will use.
+     *
+     * SAFE AFTER THE LEASE because `statedChatDepth` cannot throw: every failure
+     * is "it did not say" (null), and the placement goes on at four. The reason
+     * it once stood before the load — a throw here would abandon a lease just
+     * taken — went with CrucibleTooOld (c3334fe).
+     */
+    const concurrency = await chatDepthFor(engine, capability, say);
+
     return {
       verdict: 'go',
       placement: {
@@ -1516,8 +1522,8 @@ async function placeOnCrucible(
         /*
          * HOW DEEP TO GO ON THIS CARD — the server's number when it states one, and
          * four when it does not. See `Placement.concurrency`, which carries the whole
-         * argument and the night it is about, and `chatDepthFor`, which asks (above,
-         * before the load: a read that can refuse must not run after a lease).
+         * argument and the night it is about, and `chatDepthFor`, which asks — just
+         * above, after the load, because admission belongs to the resident engine.
          *
          * A READING STATES NONE HERE: `--vlm-concurrency` is the page reader's own
          * flag and the engine takes it from the server that serves the pages, so a

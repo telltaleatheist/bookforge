@@ -12,7 +12,7 @@ afterEach(()=>mock.restore());
 const classes=['pages','clean','translate','simplify','analysis'];
 const chosen=(cls:string)=>cls==='pages'?'dots-ocr':cls==='clean'?'qwen3.5-9b':'qwen3.8-27b-4bit';
 
-function fixture(options:{missing?:boolean;competing?:boolean;competitorStocks?:boolean;failCompetitor?:boolean;leased?:boolean;chatMaxInFlight?:number|null;noActivity?:boolean;oldActivity?:boolean;leaseOnLoad?:boolean}={}) {
+function fixture(options:{missing?:boolean;competing?:boolean;competitorStocks?:boolean;failCompetitor?:boolean;leased?:boolean;chatMaxInFlight?:number|null;admitsOnlyWhenResident?:number;noActivity?:boolean;oldActivity?:boolean;leaseOnLoad?:boolean}={}) {
   let stocked=!options.missing, competed=false, loaded:string|null=null, loadLease:string|null=null;
   const calls:{method:string;path:string;body:any}[]=[];
   const revision='a'.repeat(40);
@@ -40,7 +40,7 @@ function fixture(options:{missing?:boolean;competing?:boolean;competitorStocks?:
        * 2026-09-24 ruling that is "it did not say", exactly like a 404.
        */
       if(options.oldActivity)return Response.json({server:{name:'fixture',version:'1.0.9',api_version:1,backend:'llama-windows',uptime_s:1},resident:null,warming:null,claim:null,streaming:null,chat:{in_flight:0,rows:[]},lease:null,slots:{accelerated:{busy:0,of:1,queue_depth:0,accepts_work:true}},running:[],queued:[]});
-      return Response.json({server:{name:'fixture',version:'1.0.13',api_version:1,backend:'llama-windows',uptime_s:1},resident:null,stopping:null,warming:null,claim:null,streaming:null,chat:{in_flight:0,rows:[],max_in_flight:options.chatMaxInFlight===undefined?2:options.chatMaxInFlight,max_in_flight_basis:'engine concurrency 1, +1'},lease:null,slots:{accelerated:{busy:0,of:1,queue_depth:0,accepts_work:true}},running:[],queued:[]});
+      return Response.json({server:{name:'fixture',version:'1.0.13',api_version:1,backend:'llama-windows',uptime_s:1},resident:null,stopping:null,warming:null,claim:null,streaming:null,chat:{in_flight:0,rows:[],max_in_flight:options.admitsOnlyWhenResident!==undefined?(loaded!==null?options.admitsOnlyWhenResident:null):options.chatMaxInFlight===undefined?2:options.chatMaxInFlight,max_in_flight_basis:'engine concurrency 1, +1'},lease:null,slots:{accelerated:{busy:0,of:1,queue_depth:0,accepts_work:true}},running:[],queued:[]});
     }
     if(p==='/v1/models')return Response.json(models());
     if(p==='/v1/catalog')return Response.json({backend_kind:'llama-windows',rows:models().map(m=>({kind:'model',id:m.id,name:m.id,job_type:'llm',installed:m.installed,installed_bytes:m.installed?1:null,expected_bytes:1,floors:[],license:null,source:'fixture',resident:false})).concat([{kind:'engine',id:'llama-cpp',name:'engine',job_type:'llm',installed:true,installed_bytes:1,expected_bytes:1,floors:[],license:null,source:'fixture',resident:false}])});
@@ -236,6 +236,22 @@ test('real HTTP a chat placement takes the depth the server says it admits',asyn
     try{expect(result.placement.concurrency).toBe(2);
       expect(f.calls.some(c=>c.path==='/v1/activity')).toBe(true);
     }finally{await result.placement.lease?.release();}
+  }finally{f.close();}
+});
+
+/**
+ * ADMISSION BELONGS TO THE RESIDENT ENGINE (Crucible, 2026-09-24): with nothing
+ * loaded `chat.maxInFlight` is null, and once a model is resident it is that
+ * engine's number. The placement read it BEFORE its own load and so always saw
+ * null and fell back to four — Owen's cleanup ran at the engine's clamp of two
+ * against a server that would have said so. It is read after the load now.
+ */
+test('real HTTP a card we load states its admission only once resident, and the placement takes that number',async()=>{
+  const f=fixture({admitsOnlyWhenResident:6});try{
+    const result=await dispatch.placeJob('clean',f.entry.name,()=>{},()=>true);
+    expect(result.verdict).toBe('go');if(result.verdict!=='go')throw Error(JSON.stringify(result));
+    try{expect(result.placement.concurrency).toBe(6);}
+    finally{await result.placement.lease?.release();}
   }finally{f.close();}
 });
 
