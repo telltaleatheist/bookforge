@@ -139,11 +139,19 @@ export { sitsInCitation, bareWord };
  * standing; and a PRE-DECIMAL sum ("£803.11.0") is pounds, shillings and pence —
  * the money rule used to read "eight hundred three pounds and eleven pence.0.".
  *
+ * n9 → n10 (2026-09-24, the sentence unit, Owen: *"its being given too many
+ * things to fix at once"*): the prompts are worded for a TARGET that is usually
+ * one sentence (`clean-text --unit sentence`, now the default), and the number
+ * prompt's blanket "leave roman numerals as printed" — which contradicted the
+ * narration prompt's class 6 and was measured beside ~330 unread regnal
+ * numerals in Pursuit of Power — now defers to that class. No rule and no
+ * validator moved.
+ *
  * A BUMP HERE IS A CROSS-REPO EVENT. These rules are vendored byte-for-byte into
  * orpheus-finetune's `pipeline/normalization/vendor/` and drift-checked on every
  * training build — see docs/NARRATION_TEXT_PASS.md.
  */
-export const NORMALIZER_VERSION = 'n9';
+export const NORMALIZER_VERSION = 'n10';
 
 /**
  * The model this pass uses when the setting is absent.

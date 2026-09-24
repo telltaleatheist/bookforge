@@ -429,7 +429,16 @@ const VENDOR_LEAVES = '770480d';
  * more join and no word for its zero part. NORMALIZER_VERSION moved n8 → n9 with
  * it, and this side took the same diff.
  */
-const ONE_DOOR_BASELINE = '4d67274';
+/*
+ * MOVED 2026-09-24 (night), 4d67274 → 3025407, as a DECISION: `3025407` is n10,
+ * read in full. The unit a cleanup asks about became a SENTENCE (a driver change
+ * in run.ts/triage.ts, not in these files), and in these files ONLY the prompts'
+ * wording moved: TARGET is "usually one sentence", and the number prompt's
+ * blanket "leave roman numerals as printed" now defers to the narration
+ * prompt's class 6. No rule and no validator moved; NORMALIZER_VERSION went
+ * n9 → n10 because a prompt is part of the transform. This side took the same diff.
+ */
+const ONE_DOOR_BASELINE = '3025407';
 const FROZEN_SINCE_BASELINE = [
   'src/clean/tts-number-normalizer.ts',
   'src/clean/tts-spoken-forms.ts',
@@ -491,7 +500,7 @@ const FILES = [
     theirs: 'src/clean/tts-number-normalizer.ts',
     vendoredAt: VENDOR_PASS,
     shipped: {
-      sha256: '15adb7a5d5b46eee4eec17cb85b054ec5d7f4ba6e90483522cbae10e567cc559',
+      sha256: '63455639a94ec74430cd021a39913603023cea458fb0ec403be4076f2137c1c8',
       why: 'the type-only `epub-processor.js` import retargeted to `./targets.js`; '
         + '`askAboutEach` exported so the engine\'s door is a third caller rather than a second '
         + 'copy of the retry rules; `normalizeNarrationNumbers` deleted (291 lines, all about a '
@@ -521,7 +530,9 @@ const FILES = [
         + 'This repository\'s copy was 3-way merged to n8 and keeps its serial driver without '
         + 'n7\'s CARRIED — see "THE DECISION OF 2026-09-24". '
         + 'REPINNED 2026-09-24 (evening) for 4d67274 (n9): NORMALIZER_VERSION n9, and a pre-decimal '
-        + 'sum gets one more joining word and no word for its zero part. Same diff here.',
+        + 'sum gets one more joining word and no word for its zero part. Same diff here. '
+        + 'REPINNED 2026-09-24 (night) for 3025407 (n10): the version constant and its '
+        + 'comment only. Same diff here.',
     },
   },
   {
@@ -556,11 +567,13 @@ const FILES = [
     theirs: 'src/clean/prompts/tts-number-normalize.txt',
     vendoredAt: VENDOR_PASS,
     shipped: {
-      resynced: '4d67274',
-      sha256: '2ca1d9cf244e3c70a4f1922347ea7cecf57dc39937bcae98283b57bfb139e961',
+      resynced: '3025407',
+      sha256: '2c81bf6c66403f58b25ee09069abe06273af52869f95b5a4b93c3b35cbf8999a',
       why: 'n8 (cf38ea2) moved the prompt with the year rules, and this side took it '
         + 'byte-for-byte on 2026-09-24 — see "THE DECISION OF 2026-09-24". n9 (4d67274) added '
-        + 'the day-range and pre-decimal-sum examples, taken byte-for-byte the same evening.',
+        + 'the day-range and pre-decimal-sum examples, taken byte-for-byte the same evening. n10 '
+        + '(3025407) worded TARGET for a sentence and made roman numerals defer to class 6, '
+        + 'taken byte-for-byte the same night.',
     },
   },
   {
@@ -568,9 +581,13 @@ const FILES = [
     theirs: 'src/clean/prompts/tts-narration-text.txt',
     vendoredAt: VENDOR_PASS,
     shipped: {
-      revendoredFrom: '9df3d93a',
-      sha256: '86861e9b5a443e25abe68b471eb78d0ca8c8b207e542491970e03dd459e1ac4c',
-      why: 'THE FIRST RE-VENDOR THAT RAN THE OTHER WAY — see "THE DECISION OF 2026-09-14 '
+      resynced: '3025407',
+      sha256: 'ce8376957a6bd094c36d2f3cab753f9504ff0f3ec8e3a055f8078eeaddf7ada9',
+      why: 'RESYNCED 2026-09-24 (night) for 3025407 (n10): Foundry worded it for a TARGET that '
+        + 'is usually one sentence (four phrases: "one passage … usually a single sentence", '
+        + '"in the TARGET", "PREVIOUS or NEXT passage", "most passages"), and this side took it '
+        + 'byte-for-byte. What it was before: '
+        + 'THE FIRST RE-VENDOR THAT RAN THE OTHER WAY — see "THE DECISION OF 2026-09-14 '
         + '(evening)" in the header. BookForge `9df3d93a` added CLASS 2b, "scripture book names '
         + 'are said in FULL, always, and are never shortened", because the deterministic pass '
         + 'expands every citation it is certain of and the model was never told not to abbreviate '
@@ -648,7 +665,8 @@ const VERSIONS = [
     // n6 → n8 on 2026-09-24: Foundry's b3337c3 (n7) and cf38ea2 (n8), followed
     // here by the 3-way merge in "THE DECISION OF 2026-09-24".
     // n8 → n9 the same evening: Foundry 4d67274, taken here as the same diff.
-    expected: 'n9',
+    // n9 → n10 the same night: Foundry 3025407 (the sentence unit's prompt wording).
+    expected: 'n10',
   },
   {
     name: 'PUNCTUATION_SPEC_VERSION',

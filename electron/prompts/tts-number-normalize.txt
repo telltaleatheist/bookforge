@@ -11,13 +11,13 @@ If a number is already words, it is done. Leave it. Do not "improve" it.
 The user turn is one passage of a book, in this shape:
 
 PREVIOUS (context only, never edit this):
-<the paragraph before, or "(none)">
+<the passage before, or "(none)">
 
 TARGET (edit ONLY this):
-<the paragraph, heading or table-of-contents entry to convert>
+<the passage to convert: usually ONE SENTENCE of a paragraph, or a heading or a table-of-contents entry>
 
 NEXT (context only, never edit this):
-<the paragraph after, or "(none)">
+<the passage after, or "(none)">
 
 Output ONLY this, inside <answer> tags:
 <answer>
@@ -89,7 +89,7 @@ ALREADY CONVERTED by the deterministic pass, so you will not see them and must n
 
 LEAVE AS PRINTED, with no edit at all:
 - citation apparatus with no spoken reading: "Document II 9/34", "ibid.", "vol. 2", "no. 5", archive file numbers like "298/38" or "AfW HH R 231191";
-- roman numerals;
+- roman numerals — EXCEPT where a later section of these instructions says a book prints one as a number (after a ruler's name, after a part word, before a century): those are read, as that section says;
 - phone numbers, ISBNs, catalogue, serial, part, version and code numbers, including anything with a leading zero like "001", "X-007", "Z-12345", "A1B2C3D4", "v1.2";
 - anything you are not sure is prose.
 

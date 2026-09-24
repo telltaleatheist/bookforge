@@ -5076,7 +5076,7 @@ var init_tts_number_normalizer = __esm({
     init_tts_number_rules();
     init_number_expansion();
     init_tts_spoken_forms();
-    NORMALIZER_VERSION = "n9";
+    NORMALIZER_VERSION = "n10";
     RAW_ANSWER_EXCERPT = 600;
     MAX_PARSE_FAIL_SHARE = 0.1;
     ROMAN_WORD = /(?:^|\s)[IVXLCDM]{2,}(?:$|[\s,.;:)\]])/;
@@ -30678,7 +30678,7 @@ var init_version = __esm({
     init_engine_import_meta_url();
     init_package();
     VERSION = package_default.version;
-    GIT_COMMIT = "src 4eb6e72d9916".length > 0 ? "src 4eb6e72d9916" : null;
+    GIT_COMMIT = "src 97d9af02da8f".length > 0 ? "src 97d9af02da8f" : null;
   }
 });
 
@@ -71821,7 +71821,276 @@ var init_punctuate = __esm({
   }
 });
 
+// src/clean/sentences.ts
+function endsInAbbreviation(before) {
+  const token = /(\S+)$/.exec(before)?.[1] ?? "";
+  if (!token.endsWith(".")) return false;
+  const bare = token.replace(/^["'‘“([]+/, "").replace(/\.+$/, "");
+  if (bare === "") return false;
+  if (new RegExp("^\\p{L}$", "u").test(bare)) return true;
+  if (new RegExp("^(?:\\p{L}{1,2}\\.)+\\p{L}{1,2}$", "u").test(bare)) return true;
+  return ABBREVIATIONS.has(bare.toLowerCase());
+}
+function cleanSentences(text) {
+  const cuts = [];
+  for (const m of text.matchAll(BOUNDARY2)) {
+    const end = m.index + m[0].length - m[1].length;
+    const next = m.index + m[0].length;
+    if (next >= text.length) continue;
+    if (!CAN_START.test(text.slice(next))) continue;
+    if (endsInAbbreviation(text.slice(0, end).replace(/["'’”)\]]+$/, ""))) continue;
+    cuts.push({ end, next });
+  }
+  const raw = [];
+  let from = 0;
+  const push = (start, end) => {
+    while (start < end && /\s/.test(text[start])) start += 1;
+    while (end > start && /\s/.test(text[end - 1])) end -= 1;
+    if (end > start) raw.push({ start, end, text: text.slice(start, end) });
+  };
+  for (const cut of cuts) {
+    push(from, cut.end);
+    from = cut.next;
+  }
+  push(from, text.length);
+  const merged = [];
+  let open = null;
+  for (const piece of raw) {
+    const start = open === null ? piece.start : open.start;
+    const span = { start, end: piece.end };
+    if (span.end - span.start < MIN_SENTENCE_CHARS) {
+      open = span;
+      continue;
+    }
+    merged.push({ ...span, text: text.slice(span.start, span.end) });
+    open = null;
+  }
+  if (open !== null) {
+    const last = merged.pop();
+    const start = last === void 0 ? open.start : last.start;
+    merged.push({ start, end: open.end, text: text.slice(start, open.end) });
+  }
+  return merged;
+}
+function reassemble(text, spans, cleaned) {
+  if (cleaned.length !== spans.length) {
+    throw new Error(`reassemble: ${spans.length} sentence(s) and ${cleaned.length} answer(s).`);
+  }
+  let out = "";
+  let at = 0;
+  spans.forEach((span, i) => {
+    out += text.slice(at, span.start) + cleaned[i];
+    at = span.end;
+  });
+  return out + text.slice(at);
+}
+var MIN_SENTENCE_CHARS, ABBREVIATIONS, BOUNDARY2, CAN_START;
+var init_sentences = __esm({
+  "src/clean/sentences.ts"() {
+    "use strict";
+    init_engine_import_meta_url();
+    MIN_SENTENCE_CHARS = 30;
+    ABBREVIATIONS = /* @__PURE__ */ new Set([
+      // titles and ranks
+      "mr",
+      "mrs",
+      "ms",
+      "dr",
+      "st",
+      "mt",
+      "prof",
+      "rev",
+      "hon",
+      "gen",
+      "col",
+      "capt",
+      "cpt",
+      "lt",
+      "maj",
+      "sgt",
+      "cpl",
+      "adm",
+      "cmdr",
+      "gov",
+      "sen",
+      "rep",
+      "pres",
+      "supt",
+      "insp",
+      "fr",
+      "sr",
+      "jr",
+      "esq",
+      "messrs",
+      "mme",
+      "mlle",
+      "mgr",
+      "bros",
+      // scholarly apparatus
+      "ed",
+      "eds",
+      "trans",
+      "transl",
+      "tr",
+      "comp",
+      "vol",
+      "vols",
+      "no",
+      "nos",
+      "p",
+      "pp",
+      "ch",
+      "chap",
+      "fig",
+      "figs",
+      "pl",
+      "sec",
+      "art",
+      "col",
+      "cf",
+      "viz",
+      "ibid",
+      "op",
+      "cit",
+      "loc",
+      "repr",
+      "rev",
+      "ser",
+      "suppl",
+      "n",
+      "nn",
+      "l",
+      "ll",
+      "f",
+      "ff",
+      "c",
+      "ca",
+      "fl",
+      "b",
+      "d",
+      "r",
+      "approx",
+      "esp",
+      "incl",
+      "orig",
+      "misc",
+      "dept",
+      "univ",
+      "assn",
+      "inst",
+      // latin and common
+      "etc",
+      "vs",
+      "v",
+      "al",
+      "e",
+      "i",
+      "eg",
+      "ie",
+      // places and addresses
+      "ave",
+      "rd",
+      "blvd",
+      "sq",
+      "ft",
+      "co",
+      "corp",
+      "inc",
+      "ltd",
+      // months and days
+      "jan",
+      "feb",
+      "mar",
+      "apr",
+      "jun",
+      "jul",
+      "aug",
+      "sep",
+      "sept",
+      "oct",
+      "nov",
+      "dec",
+      "mon",
+      "tue",
+      "tues",
+      "wed",
+      "thu",
+      "thur",
+      "thurs",
+      "fri",
+      "sat",
+      "sun",
+      // scripture books a period can follow ("Rom. 5:17" is one sentence)
+      "gen",
+      "ex",
+      "exod",
+      "lev",
+      "num",
+      "deut",
+      "josh",
+      "judg",
+      "sam",
+      "kgs",
+      "chron",
+      "neh",
+      "esth",
+      "ps",
+      "psa",
+      "pss",
+      "prov",
+      "eccl",
+      "eccles",
+      "isa",
+      "jer",
+      "lam",
+      "ezek",
+      "dan",
+      "hos",
+      "obad",
+      "mic",
+      "nah",
+      "hab",
+      "zeph",
+      "hag",
+      "zech",
+      "mal",
+      "matt",
+      "mk",
+      "lk",
+      "jn",
+      "rom",
+      "cor",
+      "gal",
+      "eph",
+      "phil",
+      "col",
+      "thess",
+      "tim",
+      "tit",
+      "philem",
+      "phlm",
+      "heb",
+      "jas",
+      "pet",
+      "jud",
+      "rev"
+    ]);
+    BOUNDARY2 = /[.!?…]+["'’”)\]]*(\s+)/g;
+    CAN_START = /^["'‘“([\p{Lu}\d]/u;
+  }
+});
+
 // src/clean/blocks.ts
+var blocks_exports = {};
+__export(blocks_exports, {
+  CLEAN_UNITS: () => CLEAN_UNITS,
+  DEFAULT_CLEAN_UNIT: () => DEFAULT_CLEAN_UNIT,
+  cleanBlocks: () => cleanBlocks,
+  punctuateAll: () => punctuateAll,
+  sentenceKey: () => sentenceKey,
+  stageOneUnits: () => stageOneUnits,
+  triageUnits: () => triageUnits
+});
 function cleanBlocks(book, where) {
   const plan = bookRowPlan(book, where);
   const blocks = [];
@@ -71889,7 +72158,26 @@ function stageOneUnits(blocks, punctuated) {
 function punctuateAll(blocks) {
   return punctuateBlocks(blocks.map((b) => b.target));
 }
-var path21, CELL_JOIN;
+function sentenceKey(blockKey, index) {
+  return `${blockKey}#s${index}`;
+}
+function triageUnits(blocks, punctuated, unit) {
+  const whole = stageOneUnits(blocks, punctuated);
+  if (unit === "block") return whole;
+  const tables = new Set(blocks.filter((b) => b.cell !== void 0).map((b) => b.parts));
+  const out = [];
+  for (const one of whole) {
+    if (tables.has(one.parts)) {
+      out.push(one);
+      continue;
+    }
+    cleanSentences(one.text).forEach((sentence, i) => {
+      out.push({ parts: sentenceKey(one.parts, i), text: sentence.text, category: one.category });
+    });
+  }
+  return out;
+}
+var path21, CELL_JOIN, DEFAULT_CLEAN_UNIT, CLEAN_UNITS;
 var init_blocks2 = __esm({
   "src/clean/blocks.ts"() {
     "use strict";
@@ -71898,7 +72186,10 @@ var init_blocks2 = __esm({
     init_bookrows();
     init_punctuate();
     init_segments();
+    init_sentences();
     CELL_JOIN = " | ";
+    DEFAULT_CLEAN_UNIT = "sentence";
+    CLEAN_UNITS = ["sentence", "block"];
   }
 });
 
@@ -71922,13 +72213,14 @@ function decideUrl(endpoint) {
   const base = endpoint.trim().replace(/\/+$/, "").replace(/\/v1$/, "");
   return `${base}/v1/decide`;
 }
-function triageGroups(units) {
+function triageGroups(units, unit = "block") {
+  const maxUnits = unit === "sentence" ? GROUP_MAX_SENTENCES : GROUP_MAX_UNITS;
   const groups = [];
   let start = 0;
   while (start < units.length) {
     let end = start;
     let chars = 0;
-    while (end < units.length && end - start < GROUP_MAX_UNITS) {
+    while (end < units.length && end - start < maxUnits) {
       const next = units[end].text.length;
       if (end > start && chars + next > GROUP_MAX_CHARS) break;
       chars += next;
@@ -71950,18 +72242,23 @@ function unitLine(unit, asked) {
   const cut = oneLine2.length > CONTEXT_CHARS ? `${oneLine2.slice(0, CONTEXT_CHARS)}\u2026` : oneLine2;
   return `[${unit.parts}] (context) ${cut}`;
 }
-function groupState(units, group) {
+function groupState(units, group, unit = "block") {
   const lines = [];
   for (let i = group.from; i < group.to; i += 1) {
     lines.push(unitLine(units[i], i >= group.askFrom && i < group.askTo));
   }
+  if (unit === "sentence") return `${SENTENCE_TRIAGE_GUIDE}
+
+LINES
+${lines.join("\n")}`;
   return `${TRIAGE_GUIDE}
 
 BLOCKS
 ${lines.join("\n")}`;
 }
-function triageQuestion(parts) {
-  return { type: "yesno", instructions: `Block [${parts}] needs cleaning.` };
+function triageQuestion(parts, unit = "block") {
+  const noun = unit === "sentence" ? "Line" : "Block";
+  return { type: "yesno", instructions: `${noun} [${parts}] needs cleaning.` };
 }
 function needsCleaning(p, labelMass) {
   return p >= TRIAGE_FLAG_P || labelMass < TRIAGE_MIN_LABEL_MASS;
@@ -72037,9 +72334,12 @@ async function runCleanTriage(opts) {
     throw new CleanTextError(`--book ${where} has no block with words in it, so there is nothing to triage.`);
   }
   const punctuated = punctuateAll(blocks);
-  const units = stageOneUnits(blocks, punctuated.text);
-  const groups = triageGroups(units);
-  opts.log(`clean-triage: ${units.length} position(s) in ${groups.length} group(s), asked of ${opts.model} at ${url}`);
+  const unit = opts.unit ?? DEFAULT_CLEAN_UNIT;
+  const units = triageUnits(blocks, punctuated.text, unit);
+  const groups = triageGroups(units, unit);
+  opts.log(
+    `clean-triage: ${units.length} ${unit === "sentence" ? "sentence" : "block"} position(s) of ${blocks.length} block(s), in ${groups.length} group(s), asked of ${opts.model} at ${url}`
+  );
   const verdicts = {};
   let served = null;
   let engine = "";
@@ -72049,20 +72349,20 @@ async function runCleanTriage(opts) {
     const asked = units.slice(group.askFrom, group.askTo);
     const body = JSON.stringify({
       model: opts.model,
-      state: groupState(units, group),
-      questions: Object.fromEntries(asked.map((unit) => [unit.parts, triageQuestion(unit.parts)]))
+      state: groupState(units, group, unit),
+      questions: Object.fromEntries(asked.map((one) => [one.parts, triageQuestion(one.parts, unit)]))
     });
     const reply = await askGroup(transport, url, body, sleep, opts.log);
-    for (const unit of asked) {
-      const answer = reply.answers?.[unit.parts];
+    for (const unit2 of asked) {
+      const answer = reply.answers?.[unit2.parts];
       if (answer === void 0 || typeof answer.p !== "number" || typeof answer.label_mass !== "number") {
-        throw new CleanTextError(`clean-triage: the door answered a group without a yes/no for ${unit.parts}.`);
+        throw new CleanTextError(`clean-triage: the door answered a group without a yes/no for ${unit2.parts}.`);
       }
-      verdicts[unit.parts] = {
+      verdicts[unit2.parts] = {
         needsCleaning: needsCleaning(answer.p, answer.label_mass),
         p: answer.p,
         labelMass: answer.label_mass,
-        digest: blockDigest(unit.text)
+        digest: blockDigest(unit2.text)
       };
     }
     if (served === null && typeof reply.model?.id === "string") {
@@ -72089,8 +72389,9 @@ async function runCleanTriage(opts) {
     normalizerVersion: NORMALIZER_VERSION,
     flagP: TRIAGE_FLAG_P,
     minLabelMass: TRIAGE_MIN_LABEL_MASS,
+    unit,
     // In the book's order, so the file reads alongside it.
-    blocks: Object.fromEntries(units.map((unit) => [unit.parts, verdicts[unit.parts]]))
+    blocks: Object.fromEntries(units.map((unit2) => [unit2.parts, verdicts[unit2.parts]]))
   };
   const out = path22.resolve(opts.outPath);
   ensureDir(path22.dirname(out));
@@ -72127,7 +72428,7 @@ function readTriageFile(triagePath) {
   }
   return file;
 }
-var fs27, path22, TRIAGE_FORMAT, TRIAGE_FLAG_P, TRIAGE_MIN_LABEL_MASS, GROUP_MAX_UNITS, GROUP_MAX_CHARS, CONTEXT_UNITS, CONTEXT_CHARS, DEFAULT_TRIAGE_CONCURRENCY, TRANSPORT_RETRIES, TRIAGE_GUIDE;
+var fs27, path22, TRIAGE_FORMAT, TRIAGE_FLAG_P, TRIAGE_MIN_LABEL_MASS, GROUP_MAX_UNITS, GROUP_MAX_SENTENCES, GROUP_MAX_CHARS, CONTEXT_UNITS, CONTEXT_CHARS, DEFAULT_TRIAGE_CONCURRENCY, TRANSPORT_RETRIES, TRIAGE_GUIDE, SENTENCE_TRIAGE_GUIDE;
 var init_triage = __esm({
   "src/clean/triage.ts"() {
     "use strict";
@@ -72147,6 +72448,7 @@ var init_triage = __esm({
     TRIAGE_FLAG_P = 0.2;
     TRIAGE_MIN_LABEL_MASS = 0.9;
     GROUP_MAX_UNITS = 32;
+    GROUP_MAX_SENTENCES = 64;
     GROUP_MAX_CHARS = 2e4;
     CONTEXT_UNITS = 2;
     CONTEXT_CHARS = 200;
@@ -72166,6 +72468,7 @@ var init_triage = __esm({
       "Ordinary prose with none of these does not need cleaning. If you are unsure, it needs cleaning.",
       "Lines marked (context) are shown only so the others read correctly; you are asked only about the other lines."
     ].join("\n");
+    SENTENCE_TRIAGE_GUIDE = TRIAGE_GUIDE.replace("You are checking the blocks of a book", "You are checking the sentences of a book, one per line,").replace("A block NEEDS CLEANING", "A line NEEDS CLEANING");
   }
 });
 
@@ -72173,7 +72476,7 @@ var init_triage = __esm({
 var tts_narration_text_default;
 var init_tts_narration_text = __esm({
   "src/clean/prompts/tts-narration-text.txt"() {
-    tts_narration_text_default = 'EVERYTHING ABOVE STILL HOLDS. What follows widens the question you are being asked.\n\nYou are reading one block of a book that is about to be narrated by a text-to-speech voice. The deterministic pass has already run: the punctuation is canonical (one kind of quote, "..." for every ellipsis, no invisible characters, no doubled spaces), and every number shape that has exactly one reading has already been converted. What is left is what only a reader of the sentence can settle.\n\nReturn the SAME anchored edit list, in the same JSON shape, or an empty list. Every `find` must be an exact, verbatim substring of the TARGET, occurring exactly once. You are not rewriting the block; you are naming the spans whose PRINTED form and SPOKEN form differ.\n\nTHE CLASSES YOU ARE BEING ASKED ABOUT\n\n1. NUMBER RESIDUE \u2014 anything the rules above declined: a bare four-digit number that is a year or a quantity depending on the sentence, an abbreviated range, a bare decimal, a heading number. Read them exactly as the rules above say.\n\n2. ABBREVIATIONS a narrator says in full: "Dr." is "Doctor", "St." is "Saint" or "Street" depending on the sentence, "Mt." is "Mount", "e.g." is "for example", "i.e." is "that is", "etc." is "et cetera", "vs." is "versus". A SPACED ampersand is the word: "&" is "and". An ampersand pressed between letters is ONE token and both sides are read: "AT&T" is "A T and T", "R&D" is "R and D", "Smith&Jones" is "Smith and Jones" \u2014 never "ATandT". "no." is "number" only when it is NUMBERING something ("file no. 12", "Doc. no. 5") \u2014 after a verb it is the word "no" ending a sentence and must be left. Leave "Mr.", "Mrs.", "Ms." exactly as printed \u2014 every voice already says those correctly, and expanding them adds nothing.\n\n2b. SCRIPTURE BOOK NAMES are said in FULL, always, and are never shortened. A deterministic pass runs before you and has already printed in full every book abbreviation it was certain of, so you will often be shown "Romans 5:17" and "First Corinthians 13:4" where the book printed "Rom. 5:17" and "1 Cor. 13:4". What reaches you still abbreviated is what that pass was NOT certain of, and it is yours: expand it, and read the reference by the scripture rules above. "Rev. 21:4" is "Revelation twenty one, verse four". "Jas. 1:17" is "James one, verse seventeen". "1 Cor. 13:4" is "First Corinthians thirteen, verse four". A book name already printed in full is read as printed and must never be abbreviated back \u2014 "Revelation 21:4" is "Revelation twenty one, verse four", never "Rev. twenty one". A leading volume number is an ordinal word, First / Second / Third, whether the book prints it as 1, as I, or as 1st. And a capitalized short word in front of a number that is NOT a book is still not a book: leave "Ch. 3:7", "Sec. 3:7", "Jan. 3:7", "Act 3:2" and "Fig. 3" to the rules above, which say how each of those is read.\n\n3. ALL-CAPS RUNS. An acronym said as letters is spelled out with spaces \u2014 "FBI" is "F B I", "NSDAP" is "N S D A P" \u2014 because a voice handed "FBI" may try to say it as a word. An acronym said AS a word is left alone: NASA, NATO, UNESCO, laser, radar. A word in capitals for EMPHASIS is written in ordinary case \u2014 "he SAID so" is "he said so" \u2014 because the capitals are typography, not sound. Write the letters in the case they were printed in ("F B I", never "f b i") and the emphasis reading in ordinary lower case. A run of TWO OR THREE capitals is an initialism and gets the letters reading only \u2014 "US" is "U S", never "us"; "WHO" is "W H O", never "who".\n\n4. BRACKETED INSERTIONS. Two different edits, and which one depends on what is inside.\n   APPARATUS is not spoken and is REMOVED whole, brackets and all, replaced by nothing but the surrounding spacing: "[sic]", "[12]", "[ed.]", "[...]", "(sic)", "(emphasis added)", "(see page twelve)", "(Kershaw 1993)", "(12)".\n   AN INTERPOLATION OF WORDS in SQUARE brackets is READ, not removed: the edit drops the brackets and keeps every word \u2014 "[he said]" becomes "he said". Never delete words.\n   A PARENTHESIS is the author\u2019s own punctuation and stays exactly as printed unless its contents are one of the apparatus shapes above. "(he was lying)" and "(note she wept)" are the book. If you are not certain, leave it.\n\n5. A SPACED HYPHEN used as a dash \u2014 "the man - who had waited - left" \u2014 is an em dash in disguise. Replace the spaced hyphen with an em dash. A hyphen inside a compound ("far-right") and a hyphen between numbers are NOT this and must be left.\n\n6. ROMAN NUMERALS are read as words ONLY where a book prints a numeral: after a part word ("Part IV" is "Part Four", "Chapter IX", "Book II"), after a monarch, pope or emperor\u2019s name ("Henry VIII" is "Henry the Eighth", "Pius XII"), or before a century ("the XIX century"). Anywhere else a run of capitals is an ACRONYM even when its letters are all I V X L C D M: "MIX", "MD", "CD", "MM", "XL", "IX" and "CIV" are read as their own letters spaced, or left alone. A roman numeral that is a citation or a volume \u2014 "Document II 9/34", "vol. iii" \u2014 is apparatus and stays exactly as printed.\n\n7. DIGIT RESIDUE. If a digit is still printed anywhere in the block after your edits, you have missed one. Go back and read it, or leave it deliberately because it is a code.\n\nFOOTNOTE AND REFERENCE MARKERS ARE NOT YOURS. A superscript reference number, a dagger, an asterisk used as a reference: the render door removes those from the narration copy itself, deterministically, and an edit that tried to would be refused because it deletes text without saying anything in its place. Leave them exactly where they are.\n\nTHE RULES THAT BOUND EVERY EDIT\n\n- KEEP THE PUNCTUATION. Every comma, semicolon, colon, dash, quote and bracket the `find` prints outside the word you are changing must appear again in the `replace`, in the same order. "Dr. Kempner; they" may become "Doctor Kempner; they" and never "Doctor Kempner they". If the abbreviation ends the span and a capital follows it in the block, its period may be ending a sentence \u2014 keep it: "Oxford St. The rain" becomes "Oxford Street. The rain".\n- ONE TOKEN PER EDIT. The replacement must repeat every word of the `find`, in order, EXCEPT the single token the class is about \u2014 the abbreviation, the run of capitals, the roman numeral. "Dr. Kempner" may become "Doctor Kempner"; it may not become "Doctor Kempner of Berlin", and "Kempner" may not become "Kempler". An edit that changes any other word is refused.\n- NEVER PARAPHRASE. You may change the SPOKEN FORM of a span. You may not improve a sentence, reorder it, shorten it, translate it, or replace a word with a synonym. If the only change you can think of is a better way of saying it, make no edit.\n- Every `find` is verbatim and occurs exactly once in the TARGET. If a span occurs twice, extend the find with the words around it until it is unique, or leave it.\n- Keep every edit SHORT. An edit is a span whose reading differs, not a clause.\n- Never edit the PREVIOUS or NEXT block. They are there so you can tell a year from a quantity and a Saint from a Street.\n- An empty edit list is the right answer for most blocks. Ordinary prose needs nothing.\n\nTARGET: The Reichstag met on March twenty-third, and Dr. Kempner of the FBI (see page twelve) said so.\n<answer>\n{"edits": [{"find": "Dr. Kempner", "replace": "Doctor Kempner"}, {"find": "FBI", "replace": "F B I"}, {"find": " (see page twelve)", "replace": ""}]}\n</answer>\n\nTARGET: Henry VIII had waited - and waited - for an answer he never SAID he wanted.\n<answer>\n{"edits": [{"find": "Henry VIII", "replace": "Henry the Eighth"}, {"find": "waited - and", "replace": "waited\u2014and"}, {"find": "waited - for", "replace": "waited\u2014for"}, {"find": "never SAID he", "replace": "never said he"}]}\n</answer>\n\nTARGET: He turned into Oxford St. The clerk [he said] worked for the MIX, no. 4 on the list.\n<answer>\n{"edits": [{"find": "Oxford St.", "replace": "Oxford Street."}, {"find": "[he said]", "replace": "he said"}, {"find": "MIX", "replace": "M I X"}]}\n</answer>\n\nTARGET: A paragraph of ordinary prose with nothing in it that is printed one way and read another.\n<answer>\n{"edits": []}\n</answer>\n';
+    tts_narration_text_default = 'EVERYTHING ABOVE STILL HOLDS. What follows widens the question you are being asked.\n\nYou are reading one passage of a book \u2014 usually a single sentence \u2014 that is about to be narrated by a text-to-speech voice. The deterministic pass has already run: the punctuation is canonical (one kind of quote, "..." for every ellipsis, no invisible characters, no doubled spaces), and every number shape that has exactly one reading has already been converted. What is left is what only a reader of the sentence can settle.\n\nReturn the SAME anchored edit list, in the same JSON shape, or an empty list. Every `find` must be an exact, verbatim substring of the TARGET, occurring exactly once. You are not rewriting the block; you are naming the spans whose PRINTED form and SPOKEN form differ.\n\nTHE CLASSES YOU ARE BEING ASKED ABOUT\n\n1. NUMBER RESIDUE \u2014 anything the rules above declined: a bare four-digit number that is a year or a quantity depending on the sentence, an abbreviated range, a bare decimal, a heading number. Read them exactly as the rules above say.\n\n2. ABBREVIATIONS a narrator says in full: "Dr." is "Doctor", "St." is "Saint" or "Street" depending on the sentence, "Mt." is "Mount", "e.g." is "for example", "i.e." is "that is", "etc." is "et cetera", "vs." is "versus". A SPACED ampersand is the word: "&" is "and". An ampersand pressed between letters is ONE token and both sides are read: "AT&T" is "A T and T", "R&D" is "R and D", "Smith&Jones" is "Smith and Jones" \u2014 never "ATandT". "no." is "number" only when it is NUMBERING something ("file no. 12", "Doc. no. 5") \u2014 after a verb it is the word "no" ending a sentence and must be left. Leave "Mr.", "Mrs.", "Ms." exactly as printed \u2014 every voice already says those correctly, and expanding them adds nothing.\n\n2b. SCRIPTURE BOOK NAMES are said in FULL, always, and are never shortened. A deterministic pass runs before you and has already printed in full every book abbreviation it was certain of, so you will often be shown "Romans 5:17" and "First Corinthians 13:4" where the book printed "Rom. 5:17" and "1 Cor. 13:4". What reaches you still abbreviated is what that pass was NOT certain of, and it is yours: expand it, and read the reference by the scripture rules above. "Rev. 21:4" is "Revelation twenty one, verse four". "Jas. 1:17" is "James one, verse seventeen". "1 Cor. 13:4" is "First Corinthians thirteen, verse four". A book name already printed in full is read as printed and must never be abbreviated back \u2014 "Revelation 21:4" is "Revelation twenty one, verse four", never "Rev. twenty one". A leading volume number is an ordinal word, First / Second / Third, whether the book prints it as 1, as I, or as 1st. And a capitalized short word in front of a number that is NOT a book is still not a book: leave "Ch. 3:7", "Sec. 3:7", "Jan. 3:7", "Act 3:2" and "Fig. 3" to the rules above, which say how each of those is read.\n\n3. ALL-CAPS RUNS. An acronym said as letters is spelled out with spaces \u2014 "FBI" is "F B I", "NSDAP" is "N S D A P" \u2014 because a voice handed "FBI" may try to say it as a word. An acronym said AS a word is left alone: NASA, NATO, UNESCO, laser, radar. A word in capitals for EMPHASIS is written in ordinary case \u2014 "he SAID so" is "he said so" \u2014 because the capitals are typography, not sound. Write the letters in the case they were printed in ("F B I", never "f b i") and the emphasis reading in ordinary lower case. A run of TWO OR THREE capitals is an initialism and gets the letters reading only \u2014 "US" is "U S", never "us"; "WHO" is "W H O", never "who".\n\n4. BRACKETED INSERTIONS. Two different edits, and which one depends on what is inside.\n   APPARATUS is not spoken and is REMOVED whole, brackets and all, replaced by nothing but the surrounding spacing: "[sic]", "[12]", "[ed.]", "[...]", "(sic)", "(emphasis added)", "(see page twelve)", "(Kershaw 1993)", "(12)".\n   AN INTERPOLATION OF WORDS in SQUARE brackets is READ, not removed: the edit drops the brackets and keeps every word \u2014 "[he said]" becomes "he said". Never delete words.\n   A PARENTHESIS is the author\u2019s own punctuation and stays exactly as printed unless its contents are one of the apparatus shapes above. "(he was lying)" and "(note she wept)" are the book. If you are not certain, leave it.\n\n5. A SPACED HYPHEN used as a dash \u2014 "the man - who had waited - left" \u2014 is an em dash in disguise. Replace the spaced hyphen with an em dash. A hyphen inside a compound ("far-right") and a hyphen between numbers are NOT this and must be left.\n\n6. ROMAN NUMERALS are read as words ONLY where a book prints a numeral: after a part word ("Part IV" is "Part Four", "Chapter IX", "Book II"), after a monarch, pope or emperor\u2019s name ("Henry VIII" is "Henry the Eighth", "Pius XII"), or before a century ("the XIX century"). Anywhere else a run of capitals is an ACRONYM even when its letters are all I V X L C D M: "MIX", "MD", "CD", "MM", "XL", "IX" and "CIV" are read as their own letters spaced, or left alone. A roman numeral that is a citation or a volume \u2014 "Document II 9/34", "vol. iii" \u2014 is apparatus and stays exactly as printed.\n\n7. DIGIT RESIDUE. If a digit is still printed anywhere in the TARGET after your edits, you have missed one. Go back and read it, or leave it deliberately because it is a code.\n\nFOOTNOTE AND REFERENCE MARKERS ARE NOT YOURS. A superscript reference number, a dagger, an asterisk used as a reference: the render door removes those from the narration copy itself, deterministically, and an edit that tried to would be refused because it deletes text without saying anything in its place. Leave them exactly where they are.\n\nTHE RULES THAT BOUND EVERY EDIT\n\n- KEEP THE PUNCTUATION. Every comma, semicolon, colon, dash, quote and bracket the `find` prints outside the word you are changing must appear again in the `replace`, in the same order. "Dr. Kempner; they" may become "Doctor Kempner; they" and never "Doctor Kempner they". If the abbreviation ends the span and a capital follows it in the block, its period may be ending a sentence \u2014 keep it: "Oxford St. The rain" becomes "Oxford Street. The rain".\n- ONE TOKEN PER EDIT. The replacement must repeat every word of the `find`, in order, EXCEPT the single token the class is about \u2014 the abbreviation, the run of capitals, the roman numeral. "Dr. Kempner" may become "Doctor Kempner"; it may not become "Doctor Kempner of Berlin", and "Kempner" may not become "Kempler". An edit that changes any other word is refused.\n- NEVER PARAPHRASE. You may change the SPOKEN FORM of a span. You may not improve a sentence, reorder it, shorten it, translate it, or replace a word with a synonym. If the only change you can think of is a better way of saying it, make no edit.\n- Every `find` is verbatim and occurs exactly once in the TARGET. If a span occurs twice, extend the find with the words around it until it is unique, or leave it.\n- Keep every edit SHORT. An edit is a span whose reading differs, not a clause.\n- Never edit the PREVIOUS or NEXT passage. They are there so you can tell a year from a quantity and a Saint from a Street.\n- An empty edit list is the right answer for most passages. Ordinary prose needs nothing.\n\nTARGET: The Reichstag met on March twenty-third, and Dr. Kempner of the FBI (see page twelve) said so.\n<answer>\n{"edits": [{"find": "Dr. Kempner", "replace": "Doctor Kempner"}, {"find": "FBI", "replace": "F B I"}, {"find": " (see page twelve)", "replace": ""}]}\n</answer>\n\nTARGET: Henry VIII had waited - and waited - for an answer he never SAID he wanted.\n<answer>\n{"edits": [{"find": "Henry VIII", "replace": "Henry the Eighth"}, {"find": "waited - and", "replace": "waited\u2014and"}, {"find": "waited - for", "replace": "waited\u2014for"}, {"find": "never SAID he", "replace": "never said he"}]}\n</answer>\n\nTARGET: He turned into Oxford St. The clerk [he said] worked for the MIX, no. 4 on the list.\n<answer>\n{"edits": [{"find": "Oxford St.", "replace": "Oxford Street."}, {"find": "[he said]", "replace": "he said"}, {"find": "MIX", "replace": "M I X"}]}\n</answer>\n\nTARGET: A paragraph of ordinary prose with nothing in it that is printed one way and read another.\n<answer>\n{"edits": []}\n</answer>\n';
   }
 });
 
@@ -72194,13 +72497,13 @@ If a number is already words, it is done. Leave it. Do not "improve" it.
 The user turn is one passage of a book, in this shape:
 
 PREVIOUS (context only, never edit this):
-<the paragraph before, or "(none)">
+<the passage before, or "(none)">
 
 TARGET (edit ONLY this):
-<the paragraph, heading or table-of-contents entry to convert>
+<the passage to convert: usually ONE SENTENCE of a paragraph, or a heading or a table-of-contents entry>
 
 NEXT (context only, never edit this):
-<the paragraph after, or "(none)">
+<the passage after, or "(none)">
 
 Output ONLY this, inside <answer> tags:
 <answer>
@@ -72272,7 +72575,7 @@ ALREADY CONVERTED by the deterministic pass, so you will not see them and must n
 
 LEAVE AS PRINTED, with no edit at all:
 - citation apparatus with no spoken reading: "Document II 9/34", "ibid.", "vol. 2", "no. 5", archive file numbers like "298/38" or "AfW HH R 231191";
-- roman numerals;
+- roman numerals \u2014 EXCEPT where a later section of these instructions says a book prints one as a number (after a ruler's name, after a part word, before a century): those are read, as that section says;
 - phone numbers, ISBNs, catalogue, serial, part, version and code numbers, including anything with a leading zero like "001", "X-007", "Z-12345", "A1B2C3D4", "v1.2";
 - anything you are not sure is prose.
 
@@ -72915,7 +73218,7 @@ __export(run_exports, {
 });
 function cleanKey(request) {
   const fields = [
-    KEY_FORMAT,
+    request.unit === "sentence" ? SENTENCE_KEY_FORMAT : KEY_FORMAT,
     request.model.trim(),
     NORMALIZER_VERSION,
     PUNCTUATION_SPEC_VERSION,
@@ -72975,7 +73278,13 @@ async function runCleanText(opts) {
   });
   const transport = opts.transport ?? fetchTransport(deadlineForConcurrency(concurrency));
   const model = opts.model ?? opts.runner?.model ?? (await openModelServer({ kind, transport, endpoint, log: opts.log })).model;
+  const unit = opts.unit ?? DEFAULT_CLEAN_UNIT;
   const triage = opts.triagePath === void 0 ? null : readTriageFile(opts.triagePath);
+  if (triage !== null && (triage.unit ?? "block") !== unit) {
+    throw new CleanTextError(
+      `--triage ${path24.resolve(opts.triagePath)} judged ${triage.unit ?? "block"}s, and this run asks about ${unit}s. Its verdicts name positions this run does not have. Run clean-triage with --unit ${unit}, or clean-text with --unit ${triage.unit ?? "block"}.`
+    );
+  }
   const { text: bookText, where } = openBook(opts.bookPath);
   const book = readBookFile(bookText, where);
   const { blocks, tables, plan } = cleanBlocks(book, where);
@@ -72997,9 +73306,9 @@ async function runCleanText(opts) {
   refuseForeignRecords(records, new Set(blocks.map((b) => b.parts)), recordsPath, where);
   opts.log(records.size === 0 ? `clean-text: nothing is recorded in ${recordsPath}, so every block is asked of the model and recorded there as it lands.` : `clean-text: ${records.size} record(s) covering ${records.positions} position(s) are in ${recordsPath} \u2014 a block whose exact question is in there is not asked again, and every new answer is added to it.`);
   const keyOf = /* @__PURE__ */ new Map();
-  for (const block of blocks) keyOf.set(block.target.key, cleanKey({ text: block.target.text, model }));
+  for (const block of blocks) keyOf.set(block.target.key, cleanKey({ text: block.target.text, model, unit }));
   const tableKey = /* @__PURE__ */ new Map();
-  for (const table of tables) tableKey.set(table.parts, cleanKey({ text: table.source, model }));
+  for (const table of tables) tableKey.set(table.parts, cleanKey({ text: table.source, model, unit }));
   const answered = (source, key) => records.get(key) !== void 0 || triage !== null && records.get(triageKey({ text: source, triageModel: triage.model.id })) !== void 0;
   const bankedTable = /* @__PURE__ */ new Set();
   for (const table of tables) {
@@ -73028,6 +73337,23 @@ async function runCleanText(opts) {
   for (const block of outstanding) {
     cleanText.set(block.target.key, punctuated.text.get(block.target.key));
   }
+  const pieces = [];
+  const sentencesOf = /* @__PURE__ */ new Map();
+  for (const block of outstanding) {
+    const text = cleanText.get(block.target.key);
+    if (unit === "block" || block.cell !== void 0) {
+      pieces.push({ key: block.target.key, text, block });
+      continue;
+    }
+    const spans = cleanSentences(text);
+    sentencesOf.set(block.target.key, spans);
+    spans.forEach((span, i) => pieces.push({
+      key: sentenceKey(block.target.key, i),
+      text: span.text,
+      block,
+      sentence: i
+    }));
+  }
   let triageSummary;
   const keptClean = /* @__PURE__ */ new Set();
   if (triage !== null) {
@@ -73039,49 +73365,51 @@ async function runCleanText(opts) {
       stale: [],
       unjudged: []
     };
-    for (const unit of stageOneUnits(outstanding, cleanText)) {
-      const verdict = triage.blocks[unit.parts];
+    for (const one of unit === "block" ? stageOneUnits(outstanding, cleanText) : triageUnits(outstanding, cleanText, unit)) {
+      const verdict = triage.blocks[one.parts];
       if (verdict === void 0) {
-        summary.unjudged.push(unit.parts);
+        summary.unjudged.push(one.parts);
         continue;
       }
-      if (verdict.digest !== blockDigest(unit.text)) {
-        summary.stale.push(unit.parts);
+      if (verdict.digest !== blockDigest(one.text)) {
+        summary.stale.push(one.parts);
         continue;
       }
       if (verdict.needsCleaning) {
         summary.flagged += 1;
         continue;
       }
-      keptClean.add(unit.parts);
-      summary.clean.push(unit.parts);
+      keptClean.add(one.parts);
+      summary.clean.push(one.parts);
     }
     opts.log(
       `clean-text: triage by ${triage.model.id} \u2014 ${summary.clean.length} position(s) examined and clean, recorded with no model request; ${summary.flagged} flagged for cleaning${summary.stale.length > 0 ? `; ${summary.stale.length} judged on different text, asked` : ""}${summary.unjudged.length > 0 ? `; ${summary.unjudged.length} not judged, asked` : ""}.`
     );
     triageSummary = summary;
   }
-  const asked = outstanding.filter((block) => !keptClean.has(block.parts));
-  const keptBlocks = outstanding.filter((block) => keptClean.has(block.parts));
-  const orderOf = new Map(outstanding.map((block, index) => [block.target.key, index]));
-  const asks = asked.map((block) => {
-    const index = orderOf.get(block.target.key);
-    const text = cleanText.get(block.target.key);
+  const pieceKept = (piece) => keptClean.has(piece.key) || piece.block.cell !== void 0 && keptClean.has(piece.block.parts);
+  const askedPieces = pieces.filter((piece) => !pieceKept(piece));
+  const blocksAsked = new Set(askedPieces.map((piece) => piece.block.target.key));
+  const asked = outstanding.filter((block) => blocksAsked.has(block.target.key));
+  const keptBlocks = outstanding.filter((block) => !blocksAsked.has(block.target.key));
+  const orderOf = new Map(pieces.map((piece, index) => [piece.key, index]));
+  const asks = askedPieces.map((piece) => {
+    const index = orderOf.get(piece.key);
     return {
-      key: block.target.key,
-      text,
-      segments: segmentsAfter(text),
+      key: piece.key,
+      text: piece.text,
+      segments: segmentsAfter(piece.text),
       /*
-       * The neighbours are the blocks either side IN THE PLAN'S OWN ORDER, and
-       * they are taken from the outstanding list rather than from the whole
-       * book. Context is shown so the model can tell a year from a quantity —
-       * "the paragraph before a date is usually digit-free, and that is exactly
-       * the paragraph that says whether 1200 is a year" — and a neighbour that
-       * was answered on an earlier run is one this run has no cleaned text for,
-       * so showing the book's own words for it would show two dialects at once.
+       * The neighbours are the pieces either side IN THE PLAN'S OWN ORDER — the
+       * sentences either side at `--unit sentence`, crossing into the next block
+       * at a block's edge — taken from the outstanding list rather than from the
+       * whole book. Context is shown so the model can tell a year from a
+       * quantity, and a neighbour answered on an earlier run is one this run has
+       * no cleaned text for, so showing the book's own words for it would show
+       * two dialects at once.
        */
-      previous: index > 0 ? cleanText.get(outstanding[index - 1].target.key) : null,
-      next: index + 1 < outstanding.length ? cleanText.get(outstanding[index + 1].target.key) : null
+      previous: index > 0 ? pieces[index - 1].text : null,
+      next: index + 1 < pieces.length ? pieces[index + 1].text : null
     };
   });
   const runner = opts.runner ?? (asks.length === 0 ? NOTHING_TO_ASK2 : await openModelRunner({ model, endpoint, server: kind, transport, log: opts.log }));
@@ -73132,18 +73460,41 @@ async function runCleanText(opts) {
       appendRecord(table.parts, triageKey({ text: table.source, triageModel: triage.model.id }), spliced.text);
     }
   }
-  const blockByKey = new Map(asked.map((block) => [block.target.key, block]));
+  const pieceByKey = new Map(askedPieces.map((piece) => [piece.key, piece]));
+  const sentenceOut = /* @__PURE__ */ new Map();
+  const sentencesLeft = /* @__PURE__ */ new Map();
+  for (const [blockKey, spans] of sentencesOf) {
+    if (!blocksAsked.has(blockKey)) continue;
+    sentenceOut.set(blockKey, spans.map((span) => span.text));
+  }
+  for (const piece of askedPieces) {
+    if (piece.sentence === void 0) continue;
+    const blockKey = piece.block.target.key;
+    sentencesLeft.set(blockKey, (sentencesLeft.get(blockKey) ?? 0) + 1);
+  }
   const cellsOutstanding = /* @__PURE__ */ new Map();
   for (const block of asked) {
     if (block.cell === void 0) continue;
     cellsOutstanding.set(block.parts, (cellsOutstanding.get(block.parts) ?? 0) + 1);
   }
   const bankAnswer = (key, decision) => {
-    const block = blockByKey.get(key);
-    if (block === void 0) {
+    const piece = pieceByKey.get(key);
+    if (piece === void 0) {
       throw new CleanTextError(
         `clean-text settled a verdict about ${key}, which is not a block of ${where} this run asked about. The loop and the plan disagree about what this book holds, and nothing was written.`
       );
+    }
+    const block = piece.block;
+    if (piece.sentence !== void 0) {
+      const blockKey = block.target.key;
+      sentenceOut.get(blockKey)[piece.sentence] = applySpans(piece.text, decision.accepted, key);
+      const left2 = sentencesLeft.get(blockKey) - 1;
+      sentencesLeft.set(blockKey, left2);
+      if (left2 > 0) return;
+      const text = reassemble(cleanText.get(blockKey), sentencesOf.get(blockKey), sentenceOut.get(blockKey));
+      if (text !== block.target.text) changed += 1;
+      appendRecord(block.parts, keyOf.get(blockKey), text);
+      return;
     }
     cleanText.set(key, applySpans(cleanText.get(key), decision.accepted, key));
     if (block.cell === void 0) {
@@ -73186,18 +73537,19 @@ async function runCleanText(opts) {
   const dispositions = {};
   const appliedByClass = {};
   let modelRefused = 0;
-  for (const block of asked) {
-    const decision = settled.decisions.get(block.target.key);
+  for (const piece of askedPieces) {
+    const block = piece.block;
+    const decision = settled.decisions.get(piece.key);
     if (decision === void 0) {
       throw new CleanTextError(
-        `clean-text reached no decision about ${block.target.key} of ${where}. The loop and the plan disagree about what this book holds, and nothing was written.`
+        `clean-text reached no decision about ${piece.key} of ${where}. The loop and the plan disagree about what this book holds, and nothing was written.`
       );
     }
     for (const record2 of decision.records) {
       dispositions[record2.status] = (dispositions[record2.status] ?? 0) + 1;
       if (isRefusal2(record2.status)) {
         modelRefused += 1;
-        sayRefusal2(opts.log, block.target.key, record2);
+        sayRefusal2(opts.log, piece.key, record2);
         continue;
       }
       if (record2.status === "APPLIED" || record2.status === "APPLIED_RULE") {
@@ -73206,11 +73558,13 @@ async function runCleanText(opts) {
       }
     }
     units.push({
-      key: block.target.key,
+      key: piece.key,
       kind: block.target.kind,
       file: fileName,
       status: decision.status,
-      text: block.target.text,
+      // A block keeps what it always recorded, its source text; a sentence records
+      // the stage-1 sentence it was shown, since it has no source text of its own.
+      text: piece.sentence === void 0 ? block.target.text : piece.text,
       edits: decision.records,
       ...decision.rawAnswer === void 0 ? {} : { rawAnswer: decision.rawAnswer }
     });
@@ -73286,7 +73640,7 @@ function sayRefusal2(log2, key, record2) {
     `clean-text: REFUSED ${record2.status} in ${key} \u2014 "${record2.find}" \u2192 "${record2.replace}"${record2.detail === void 0 ? "" : ` (${record2.detail})`}`
   );
 }
-var fs29, path24, import_node_crypto8, KEY_FORMAT, NUL6, TRIAGE_KEY_FORMAT, NOTHING_TO_ASK2;
+var fs29, path24, import_node_crypto8, KEY_FORMAT, SENTENCE_KEY_FORMAT, NUL6, TRIAGE_KEY_FORMAT, NOTHING_TO_ASK2;
 var init_run = __esm({
   "src/clean/run.ts"() {
     "use strict";
@@ -73302,6 +73656,7 @@ var init_run = __esm({
     init_model_server();
     init_transport();
     init_blocks2();
+    init_sentences();
     init_triage();
     init_digest();
     init_prompt();
@@ -73312,6 +73667,7 @@ var init_run = __esm({
     init_tts_number_normalizer();
     init_tts_punctuation();
     KEY_FORMAT = "clean/dialect/v1";
+    SENTENCE_KEY_FORMAT = "clean/sentence/v1";
     NUL6 = String.fromCharCode(0);
     TRIAGE_KEY_FORMAT = "clean/triage/v1";
     NOTHING_TO_ASK2 = {
@@ -101933,6 +102289,21 @@ var CT_TRIAGE = {
   placeholder: "<verdicts.json>",
   describe: "A clean-triage verdicts file. Blocks it found clean are recorded as examined and clean, with no model request; only the flagged ones are asked."
 };
+var CT_UNIT = {
+  name: "unit",
+  type: "string",
+  placeholder: "<sentence|block>",
+  describe: "What one question is about: a sentence (default) or a whole block. clean-text --triage must name the unit its verdicts were made at."
+};
+async function cleanUnit(args) {
+  const unit = optionalString(args, "unit");
+  if (unit === void 0) return void 0;
+  const { CLEAN_UNITS: CLEAN_UNITS2 } = await Promise.resolve().then(() => (init_blocks2(), blocks_exports));
+  if (!CLEAN_UNITS2.includes(unit)) {
+    throw new UsageError(`--unit takes ${CLEAN_UNITS2.join(" or ")}, not "${unit}"`);
+  }
+  return unit;
+}
 var CTR_OUT = {
   name: "out",
   type: "string",
@@ -101962,8 +102333,10 @@ async function runCleanTriageCommand(args) {
   if (concurrency !== void 0 && !/^[1-9]\d*$/.test(concurrency)) {
     throw new UsageError(`--concurrency takes a positive whole number, not "${concurrency}"`);
   }
+  const unit = await cleanUnit(args);
   const { runCleanTriage: runCleanTriage2 } = await Promise.resolve().then(() => (init_triage(), triage_exports));
   await runCleanTriage2({
+    ...unit === void 0 ? {} : { unit },
     bookPath: requireString(args, "book", "the book file whose blocks are judged"),
     outPath: requireString(args, "out", "where the verdicts are written"),
     endpoint: requireString(args, "endpoint", "the Crucible whose decide door is asked"),
@@ -101978,9 +102351,10 @@ async function runCleanText2(args) {
   if (concurrency !== void 0 && !/^[1-9]\d*$/.test(concurrency)) {
     throw new UsageError(`--concurrency takes a positive whole number, not "${concurrency}"`);
   }
+  const unit = await cleanUnit(args);
   const epubIn = optionalString(args, "epub");
   if (epubIn !== void 0) {
-    const bookRoute = ["book", "records", "stamp", "generation", "triage"].filter((name) => optionalString(args, name) !== void 0);
+    const bookRoute = ["book", "records", "stamp", "generation", "triage", "unit"].filter((name) => optionalString(args, name) !== void 0);
     if (bookRoute.length > 0) {
       throw new UsageError(
         `--epub is the bare-EPUB failsafe and ${bookRoute.map((n) => `--${n}`).join(", ")} belong${bookRoute.length === 1 ? "s" : ""} to the book-file route. They are two doors onto one pass: the book route writes RECORDS keyed by the row ids a derived book keeps, and this one rewrites a finished file in place of them. Asking for both would mean choosing a source silently and filing the answers under the other one's names. The EPUB route writes its stamp into --out's package document and beside it as <out>.stamp.json; it needs no --records, no --stamp and no --generation.`
@@ -102018,6 +102392,7 @@ async function runCleanText2(args) {
     ...concurrency !== void 0 ? { concurrency: Number(concurrency) } : {},
     ...optionalString(args, "generation") === void 0 ? {} : { generation: optionalString(args, "generation") },
     ...optionalString(args, "triage") === void 0 ? {} : { triagePath: optionalString(args, "triage") },
+    ...unit === void 0 ? {} : { unit },
     log
   });
 }
@@ -103894,7 +104269,7 @@ var COMMANDS = [
   {
     name: "clean-text",
     summary: "Clean a book's text for a narrator: punctuation, numbers as words, the model on every block.",
-    usage: "--book <book.jsonl> --records <out.records.jsonl> --stamp <out.stamp.json> [--generation <id>] [--endpoint <url>] [--model <name>] [--server <openai|ollama|anthropic>] [--concurrency <n>] [--triage <verdicts.json>]  |  --epub <in.epub> --out <out.epub> [--endpoint <url>] [--model <name>] [--server <openai|ollama|anthropic>] [--concurrency <n>]",
+    usage: "--book <book.jsonl> --records <out.records.jsonl> --stamp <out.stamp.json> [--generation <id>] [--endpoint <url>] [--model <name>] [--server <openai|ollama|anthropic>] [--concurrency <n>] [--triage <verdicts.json>] [--unit <sentence|block>]  |  --epub <in.epub> --out <out.epub> [--endpoint <url>] [--model <name>] [--server <openai|ollama|anthropic>] [--concurrency <n>]",
     detail: [
       "THE THIRD TEXT ACT. translate turns a book into another language, --rewrite",
       "turns it into plainer prose, and this turns it into the text a NARRATOR is",
@@ -104097,14 +104472,15 @@ var COMMANDS = [
       LLM_SERVER,
       CT_CONCURRENCY,
       TR_GENERATION,
-      CT_TRIAGE
+      CT_TRIAGE,
+      CT_UNIT
     ],
     run: runCleanText2
   },
   {
     name: "clean-triage",
     summary: "Judge which blocks of a book need cleaning at all, before clean-text is run.",
-    usage: "--book <book.jsonl> --out <verdicts.json> --endpoint <crucible url> --model <decide model> [--concurrency <n>]",
+    usage: "--book <book.jsonl> --out <verdicts.json> --endpoint <crucible url> --model <decide model> [--concurrency <n>] [--unit <sentence|block>]",
     detail: [
       'THE FIRST HALF OF A TRIAGED CLEANUP. Owen, 2026-09-23: "we create a list of',
       "blocks that need to be cleaned with snap and then we bring snap down and load",
@@ -104130,7 +104506,7 @@ var COMMANDS = [
       "A busy door (chat_queue_full) is waited out; a model that is not resident is",
       "refused by name."
     ].join("\n"),
-    options: [CT_BOOK_IN, CTR_OUT, CTR_ENDPOINT, CTR_MODEL, CTR_CONCURRENCY],
+    options: [CT_BOOK_IN, CTR_OUT, CTR_ENDPOINT, CTR_MODEL, CTR_CONCURRENCY, CT_UNIT],
     run: runCleanTriageCommand
   },
   {
