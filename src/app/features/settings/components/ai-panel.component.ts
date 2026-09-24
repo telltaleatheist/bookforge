@@ -29,6 +29,7 @@ import {
   capabilityClassWords,
   capabilityWords,
   localRouteWords,
+  reasonWords,
   routeWords,
   sizeWords,
   upstreamCredentialField,
@@ -688,7 +689,9 @@ export class AiPanelComponent implements OnInit {
    */
   readonly undecided = computed(() => {
     const doc = this.engine();
-    if (doc === null) return false;
+    // An engine that states no model assignment at all (localModels null) has
+    // not said it is undecided — it has said nothing, and nothing is drawn.
+    if (doc === null || doc.localModels === null) return false;
     return Object.keys(doc.localModels.choices).length === 0;
   });
 
@@ -759,7 +762,7 @@ export class AiPanelComponent implements OnInit {
    */
   isDefaultSubject(cls: string | null, id: string): boolean {
     if (cls === null) return false;
-    return this.engine()?.localModels.selected[cls] === id;
+    return this.engine()?.localModels?.selected[cls] === id;
   }
 
   /**
@@ -779,11 +782,11 @@ export class AiPanelComponent implements OnInit {
   anyAccountConfigured(): boolean {
     const doc = this.engine();
     if (doc === null) return false;
-    return this.UPSTREAMS.some((name) => doc.upstreams[name].configured);
+    return this.UPSTREAMS.some((name) => doc.upstreams[name]?.configured === true);
   }
 
   readonly modelClasses = computed<readonly string[]>(() => {
-    const choices = this.engine()?.localModels.choices ?? {};
+    const choices = this.engine()?.localModels?.choices ?? {};
     const present = Object.keys(choices);
     const acts = (CRUCIBLE_TEXT_ACT_NAMES as readonly string[]).filter((a) => present.includes(a));
     const rest = present.filter((key) => !(CRUCIBLE_TEXT_ACT_NAMES as readonly string[]).includes(key));
@@ -943,7 +946,10 @@ export class AiPanelComponent implements OnInit {
     const doc = this.engine();
     const record = this.capability();
     if (doc === null || record === null) return 'reading…';
-    return doc.backendKind + ' · ' + sizeWords(record.totalBytes) + ' card';
+    // Either fact may be unstated (Crucible 1.0.25) and is said to be.
+    const backend = doc.backendKind === null ? 'backend not stated' : doc.backendKind;
+    const card = record.totalBytes === null ? 'card size not stated' : sizeWords(record.totalBytes) + ' card';
+    return backend + ' · ' + card;
   }
 
   actWords(act: string): string { return capabilityClassWords(act); }
@@ -969,12 +975,12 @@ export class AiPanelComponent implements OnInit {
   }
 
   choicesFor(act: string): readonly CrucibleLocalModelChoice[] {
-    return this.engine()?.localModels.choices[act] ?? [];
+    return this.engine()?.localModels?.choices[act] ?? [];
   }
 
   selectedFor(act: string): string | null {
     const doc = this.engine();
-    if (doc === null) return null;
+    if (doc === null || doc.localModels === null) return null;
     return doc.localModels.selected[act] ?? null;
   }
 
@@ -987,13 +993,16 @@ export class AiPanelComponent implements OnInit {
   }
 
   choiceWords(choice: CrucibleLocalModelChoice): string {
+    // An unstated install or fit claims nothing either way (Crucible 1.0.25).
     const size = sizeWords(choice.memoryBytesEstimate);
-    if (!choice.installed) return size + ' · not downloaded yet';
-    return choice.fits ? size : size + ' · may not fit this card';
+    if (choice.installed === false) return size + ' · not downloaded yet';
+    return choice.fits === false ? size + ' · may not fit this card' : size;
   }
 
   rowWords(row: CrucibleCatalogRow): string {
-    const repo = row.source.startsWith('hf:') ? row.source.slice(3) : row.source;
+    // A server that did not name the source says so rather than showing a blank.
+    const repo = row.source === null ? 'source not stated'
+      : row.source.startsWith('hf:') ? row.source.slice(3) : row.source;
     const size = row.installed ? sizeWords(row.installedBytes) : sizeWords(row.expectedBytes);
     return repo + ' · ' + size;
   }
@@ -1068,7 +1077,10 @@ export class AiPanelComponent implements OnInit {
   downloadableFor(act: string): readonly CrucibleCatalogRow[] {
     const rows: CrucibleCatalogRow[] = [];
     for (const choice of this.choicesFor(act)) {
-      if (choice.installed) continue;
+      // Only a choice the engine SAYS is not installed is offered as a download;
+      // one whose install state it did not state (Crucible 1.0.25) is offered
+      // for use, and the engine answers a load of it by name either way.
+      if (choice.installed !== false) continue;
       const row = this.rowFor(act, choice.id);
       // NOT SKIPPED QUIETLY when the catalog does not have it. A candidate the
       // catalog cannot name has no `kind`, so there is no pull to offer; the
@@ -1207,7 +1219,9 @@ export class AiPanelComponent implements OnInit {
     const missing = this.downloadableFor(job);
 
     for (const choice of this.choicesFor(job)) {
-      if (choice.installed) {
+      // `!== false`, not truthiness: see `downloadableFor` — an unstated install
+      // state is offered for use, never as a download.
+      if (choice.installed !== false) {
         options.push({
           key: 'model:' + choice.id,
           title: this.modelLabel(job, choice.id),
@@ -1351,7 +1365,7 @@ export class AiPanelComponent implements OnInit {
   jobNow(job: string): string | null {
     const row = this.capability()?.classes.find((entry) => entry.capability === job);
     if (row === undefined) return null;
-    if (!row.enabled) return row.reason;
+    if (!row.enabled) return reasonWords(row.reason);
     if (row.route === 'upstream') return upstreamRouteWords(row.selected);
     return row.selected === '' ? null : this.modelLabel(job, row.selected);
   }
@@ -1441,7 +1455,7 @@ export class AiPanelComponent implements OnInit {
   }
 
   isConfigured(name: CrucibleUpstreamName): boolean {
-    return this.engine()?.upstreams[name].configured === true;
+    return this.engine()?.upstreams[name]?.configured === true;
   }
 
   fieldLabel(name: CrucibleUpstreamName): string { return upstreamFieldWords(name).label; }

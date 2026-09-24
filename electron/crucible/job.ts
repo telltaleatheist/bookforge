@@ -768,15 +768,31 @@ export async function runCrucibleJob(options: RunCrucibleJobOptions): Promise<Cr
       noteInFlightEvent(server, jobId, lastEventId);
     }
     options.onEvent?.(event);
+    /*
+     * A FRAME MAY STATE LESS THAN IT USED TO. Crucible 1.0.25 reads an absent
+     * informational field as null (Owen, 2026-09-24: any Crucible that answers
+     * works), and these frames are display only — nothing decides on them. So
+     * the one owner of the translation says what each part means here, and no
+     * consumer downstream sees a null: a `progress` frame that states no
+     * fraction moved nothing and is not forwarded (the bar stays where it
+     * was); one with a fraction and no words is described by its fraction; a
+     * `warming` frame with no words is still, truthfully, warming.
+     */
     if (event.event === 'warming') {
-      options.onProgress?.({ kind: 'warming', message: warmingHeadline(event.data.message) });
-    } else if (event.event === 'progress') {
       options.onProgress?.({
-        kind: 'progress',
-        fraction: event.data.fraction,
-        message: event.data.message,
-        extra: event.data.extra,
+        kind: 'warming',
+        message: event.data.message === null ? 'warming up' : warmingHeadline(event.data.message),
       });
+    } else if (event.event === 'progress') {
+      const fraction = event.data.fraction;
+      if (fraction !== null) {
+        options.onProgress?.({
+          kind: 'progress',
+          fraction,
+          message: event.data.message === null ? `${Math.round(fraction * 100)}%` : event.data.message,
+          extra: event.data.extra,
+        });
+      }
     } else if (event.event === 'artifact') {
       owed.announced(event.data.name, event.id);
     } else if (event.event === 'done' || event.event === 'failed' || event.event === 'cancelled') {

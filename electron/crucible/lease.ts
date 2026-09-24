@@ -376,39 +376,35 @@ async function leaseRequest(
     /*
      * THE SIX FIELDS `Lease.to_dict()` SENDS, READ AS THE SDK READS THEM.
      *
-     * Every one is REQUIRED, and a body missing one is a
-     * {@link CrucibleProtocolError} rather than a `CrucibleLeased` with blanks
-     * in it — the SDK's own policy on this exact body (`leasedRefusal`), and
-     * the reason is that a door shows the holder and the deadline to a person.
-     * Standing in `''` for a missing `since` would put "leased: foundry,
-     * translate, until " in front of somebody and tell nobody that the server
-     * had stopped saying. `client` is the one nullable field: null is an
-     * ANSWER there ("it did not say"), not an absence.
+     * Since Crucible 1.0.25 the SDK's `CrucibleLeased` carries every one as
+     * `string | null`: a server that did not send a field has said nothing
+     * about it, and null is "it did not say" — never a guess and never `''`.
+     * Owen, 2026-09-24: *"dont require any particular crucible server. if it
+     * can make the call to the crucible server then it should work."* It used
+     * to be a {@link CrucibleProtocolError} to leave one out; a refusal that
+     * names fewer facts is still the refusal the door needs (it WAITS on
+     * `leased` either way), and a door that shows the holder renders a null
+     * as unknown. A field that is PRESENT with the wrong type is still a
+     * protocol error: that is a server this client cannot read, not one that
+     * said less.
      */
     const held = (details ?? {}) as Record<string, unknown>;
-    const said = (key: string): string => {
+    const said = (key: string): string | null => {
       const value = held[key];
+      if (value === undefined || value === null) return null;
       if (typeof value !== 'string') {
         throw new CrucibleProtocolError(
-          `a 409 leased from ${where.url} carries no "${key}" in error.details, so this client `
-          + 'cannot say who holds the card or until when. crucible docs/DESIGN.md §4 and '
-          + 'crucible/leases.py Lease.to_dict list the six fields it sends.',
+          `a 409 leased from ${where.url} carries "${key}" as ${typeof value}, not a string, in `
+          + 'error.details. crucible docs/DESIGN.md §4 and crucible/leases.py Lease.to_dict list '
+          + 'the six fields it sends.',
         );
       }
       return value;
     };
-    const client = held['client'];
-    if (client !== null && typeof client !== 'string') {
-      throw new CrucibleProtocolError(
-        `a 409 leased from ${where.url} carries no "client" in error.details. The server sends `
-        + 'it, and null is its way of saying the holder was not named — a key that is simply '
-        + 'absent is a document this client cannot read, not an unnamed holder.',
-      );
-    }
     throw new CrucibleLeased(409, code, message, details, {
       leaseId: said('lease_id'),
       kind: said('kind'),
-      holder: client,
+      holder: said('client'),
       act: said('act'),
       since: said('since'),
       expiresAt: said('expires_at'),

@@ -62,6 +62,7 @@ import { CrucibleUnreachable } from '@crucible/client';
 import { CRUCIBLE_CLIENT_NAME, crucibleClientFor } from './servers';
 import { cancelCrucibleJobById, describeCrucibleJobRefusal } from './job';
 import { releaseCrucibleLeaseById } from './lease';
+import { stated } from './unstated';
 import {
   readInFlightLedger,
   settleInFlight,
@@ -149,16 +150,26 @@ export function cardHeldBy(
   const foreignRunning = activity.running.filter((job) => !ours.has(job.jobId));
   if (foreignRunning.length > 0) {
     const job = foreignRunning[0]!;
-    return `a ${job.type} job (${job.jobId}) from ${job.client}`;
+    return `a ${job.type} job (${job.jobId}) from ${stated(job.client)}`;
   }
   const foreignQueued = activity.queued.filter((job) => !ours.has(job.jobId));
   if (foreignQueued.length > 0) {
     const job = foreignQueued[0]!;
-    return `a queued ${job.type} job (${job.jobId}) from ${job.client}`;
+    return `a queued ${job.type} job (${job.jobId}) from ${stated(job.client)}`;
   }
   if (activity.claim !== null) return `a claim held by ${activity.claim.heldBy}`;
   if (activity.lease !== null) return 'an open lease';
-  if (activity.streaming !== null) return `a streaming session from ${activity.streaming.client}`;
+  if (activity.streaming !== null) return `a streaming session from ${stated(activity.streaming.client)}`;
+  /*
+   * A SERVER THAT DOES NOT STATE ITS CHATS IN FLIGHT (Crucible 1.0.25 reads the
+   * absent block or count as null; Owen 2026-09-24, any Crucible that answers)
+   * cannot be shown to have none — and this verdict decides whether a model is
+   * taken off a card somebody may be mid-block on. So the unknown answer is the
+   * safe one: leave it alone, and say why.
+   */
+  if (activity.chat === null || activity.chat.inFlight === null) {
+    return 'chat completions it does not report (so none can be ruled out)';
+  }
   if (activity.chat.inFlight > 0) return `${activity.chat.inFlight} chat completion(s) in flight`;
   if (activity.stopping !== null) return `a stop of ${activity.stopping.id} already under way`;
   return null;

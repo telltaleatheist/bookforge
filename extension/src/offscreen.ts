@@ -954,7 +954,8 @@ async function refreshServer(): Promise<boolean> {
     const rows = await bound.voices();
     voiceRows = rows.map((v: VoiceInfo): VoiceRow => ({
       id: v.id,
-      display: v.display,
+      // No display name (null, Crucible 1.0.25): the voice's own id names it.
+      display: v.display === null ? v.id : v.display,
       engine: v.narratorEngine,
       loadable: v.loadable,
       reason: v.reason,

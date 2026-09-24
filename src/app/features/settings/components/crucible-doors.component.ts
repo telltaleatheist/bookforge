@@ -264,8 +264,8 @@ import { CrucibleInstallProgressComponent } from './crucible-install-progress.co
                   @if (hereProbe(); as p) {
                     @if (p.outcome === 'ok') {
                       <p class="ok">
-                        Answering — v{{ p.facts.version }} · {{ p.facts.backend }} ·
-                        {{ p.facts.gpu.name }} · job types {{ p.facts.jobTypes.join(', ') }}
+                        Answering — v{{ p.facts.version ?? 'not stated' }} · {{ p.facts.backend ?? 'backend not stated' }} ·
+                        {{ p.facts.gpu?.name ?? 'GPU not stated' }} · job types {{ p.facts.jobTypes.join(', ') }}
                       </p>
                     } @else {
                       <p class="bad"><span class="code">{{ p.outcome }}</span> {{ p.message }}</p>

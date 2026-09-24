@@ -455,7 +455,7 @@ function buildVoiceOptions(rows: VoiceRow[], serverName: string): void {
   for (const v of rows) {
     const o = document.createElement('option');
     o.value = v.id;
-    const label = engines.size > 1 ? `${v.display} — ${v.engine}` : v.display;
+    const label = engines.size > 1 ? `${v.display} — ${v.engine ?? 'engine not stated'}` : v.display;
     // A voice that cannot be loaded on that host stays VISIBLE and disabled with
     // the server's own reason as its title: "not installed" is something you can
     // act on, a missing row is not.

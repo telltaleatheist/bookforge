@@ -103,6 +103,20 @@ export async function crucibleVoiceLadder(
       + `(${rows.length === 0 ? 'it advertises none' : `known: ${known}`}).`,
     );
   }
+  /*
+   * A ROW THAT STATES NO LADDER AT ALL (Crucible 1.0.25 reads an absent `takes`
+   * as null; Owen 2026-09-24, any Crucible that answers) is refused by name —
+   * the same refusal reroll.ts makes: a correction's candidates are rungs of
+   * the ladder, and there is no count to offer without one. Rendering the voice
+   * is unaffected.
+   */
+  if (row.takes === null) {
+    throw new CrucibleRenderRefused(
+      'crucible_voice_states_no_ladder',
+      `crucible "${venue.server}" does not state a take ladder for voice "${voice}", so the number `
+      + 'of candidates a correction can offer cannot be derived. Rendering with this voice still works.',
+    );
+  }
   if (!Number.isInteger(row.takes) || row.takes < 1) {
     // A row that states no ladder is a server this build cannot reason about:
     // take 0 always exists, so `0` or a non-integer is a malformed document

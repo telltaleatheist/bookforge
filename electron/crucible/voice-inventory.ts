@@ -74,9 +74,10 @@ export interface InventoryVoice {
    * machine runs, and the narration modal's engine strip used to be built from
    * what was installed on the box DRAWING the dialog — a fact about the wrong
    * computer, exactly as the voice list was before this module existed. See
-   * `enginesServed` in `voice-picker.ts`.
+   * `enginesServed` in `voice-picker.ts`. Null where the server's row did not
+   * say (Crucible 1.0.25) — then the row is no evidence about engines at all.
    */
-  readonly narratorEngine: string;
+  readonly narratorEngine: string | null;
   /**
    * The server expects the JOB to carry the reference clip — Crucible's
    * `clips = "from-request"`. See {@link placeCarriedVoices}: this is the one
@@ -199,7 +200,9 @@ export async function readVoiceInventory(
       state: 'answered',
       voices: rows.map((v) => ({
         id: v.id,
-        display: v.display,
+        // A row with no display name (Crucible 1.0.25 reads it as null) is shown
+        // by its id — the voice's own name on that server, not an invented one.
+        display: v.display === null ? v.id : v.display,
         loadable: v.loadable,
         reason: v.reason,
         narratorEngine: v.narratorEngine,
@@ -265,20 +268,17 @@ export function placeVoices(inventory: VoiceInventory): VoicePlacement[] {
         continue;
       }
       /*
-       * NOT LOADABLE AND NO REASON IS A PROTOCOL ERROR, and it is refused here
-       * rather than shown as an empty tooltip. The SDK states the contract
-       * ("a row that is not loadable and does not say why...") and this is the
-       * one place that reads the pair, so it is the place to hold the server to
-       * it — a silent blocked voice is a person told "no" with no next step.
+       * NOT LOADABLE AND NO REASON is shown as exactly that. It used to be a
+       * protocol error that threw away the whole voice list; Crucible 1.0.25
+       * reads an absent `reason` as null and Owen ruled on 2026-09-24 that any
+       * Crucible that answers works — one quiet row is not a reason to list no
+       * voices at all. The row is still BLOCKED, and it says the server did not
+       * say why, so nobody is told "no" as though it were an explanation.
        */
-      if (voice.reason === null) {
-        throw new Error(
-          `crucible "${entry.server}" says voice "${voice.id}" is not loadable and gives no reason. `
-          + 'API v1 requires the reason on every unloadable row, because without it the operator '
-          + 'cannot tell whether to pull weights, install an env, free the card, or use the other host.',
-        );
-      }
-      row.blocked.push({ server: entry.server, reason: voice.reason });
+      row.blocked.push({
+        server: entry.server,
+        reason: voice.reason === null ? 'the server did not say why it cannot load it' : voice.reason,
+      });
     }
   }
 
@@ -412,6 +412,7 @@ export function narratorEnginesServed(inventory: VoiceInventory): string[] {
   for (const entry of inventory.servers) {
     if (entry.state !== 'answered') continue;
     for (const voice of entry.voices) {
+      if (voice.narratorEngine === null) continue;
       const id = voice.narratorEngine.trim();
       if (id !== '') seen.add(id);
     }

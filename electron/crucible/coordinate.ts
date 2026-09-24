@@ -179,6 +179,16 @@ export function resetCoordinationForTests(): void {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
+ * The row's own reason, verbatim — or, where a server gave none (Crucible
+ * 1.0.25 reads an absent `reason` as null; Owen 2026-09-24, any Crucible that
+ * answers), the one sentence saying so. Like the no-row sentence below, it
+ * carries NO FULL STOP, because the words join several of these into one line.
+ */
+function rowReason(reason: string | null): string {
+  return reason === null ? 'this engine cannot serve it and did not say why' : reason;
+}
+
+/**
  * What the module asks for that this server has not got, and what it will
  * never have.
  *
@@ -276,12 +286,12 @@ export function missingForBookForge(
       continue;
     }
     if (!row.enabled) {
-      unmet.push({ class: need.class, reason: row.reason });
+      unmet.push({ class: need.class, reason: rowReason(row.reason) });
       continue;
     }
     if (row.route === 'upstream' || row.selected.includes('/')) continue;
     if (row.selected.length === 0) {
-      unmet.push({ class: need.class, reason: row.reason });
+      unmet.push({ class: need.class, reason: rowReason(row.reason) });
       continue;
     }
     const subject = catalog.find(
@@ -318,7 +328,11 @@ export function missingForBookForge(
   // Restored weights do not imply the executable serving them is installed.
   // The engine catalog owns these dependencies; upstream routes need none.
   for (const engine of catalog) {
-    if (engine.kind !== 'engine' || engine.installed || !localJobTypes.has(engine.jobType)) continue;
+    // An engine row that does not state its job type cannot be matched to any
+    // local route, so nothing here can say it is needed (Crucible 1.0.25 reads
+    // the absent field as null; Owen 2026-09-24: any Crucible that answers).
+    if (engine.kind !== 'engine' || engine.installed || engine.jobType === null
+      || !localJobTypes.has(engine.jobType)) continue;
     if (missing.some((entry) => entry.what !== 'job-type'
       && entry.kind === engine.kind && entry.id === engine.id)) continue;
     missing.push({

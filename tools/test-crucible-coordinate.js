@@ -1067,40 +1067,29 @@ async function main() {
     } finally { await fake.close(); }
   });
 
-  await check('a document where NO row carries a route is REFUSED, not read as local', async () => {
+  await check('a document where NO row carries a route reads as local and connects', async () => {
     /*
-     * INVERTED 2026-09-16, and the inversion is the point.
+     * INVERTED TWICE, and the history is the point.
      *
-     * This check used to assert the opposite — that a routeless document came
-     * from a server predating phase 15, where every class really was local.
-     * That reading lived in the SDK as `readCapabilityRow`'s `route = 'local'`
-     * arm, and Owen ended the population it served: *"we dont need to worry
-     * about legacy anything. we're the only ones running it."* Crucible 0.6.7
-     * deleted the arm and says why in place — it was Crucible-version
-     * tolerance, it made a wrong version work while saying nothing, and the
-     * rule is that shims go while named refusals stay.
-     *
-     * So this is the named refusal, kept rather than the assertion deleted.
-     * What made the old arm worth removing is worth restating: `local` and
-     * `upstream` decide whether a class costs GPU-minutes or money, and a
-     * client that fills that in when the document is silent has invented the
-     * one fact the routing exists to carry.
-     *
-     * The connect does not crash and does not post — it lands somewhere that
-     * NAMES the document as the problem, which is what a person needs to act.
+     * It asserted a routeless document came from a server predating phase 15,
+     * where every class was local; on 2026-09-16 it was inverted to a named
+     * refusal ("we dont need to worry about legacy anything"). Owen, 2026-09-24:
+     * *"dont require any particular crucible server. if it can make the call to
+     * the crucible server then it should work."* Crucible 1.0.25's SDK reads an
+     * absent `route` as `local` — the truth about a server that does not route
+     * (nothing on it can forward work anywhere) — so the connect goes ahead as
+     * it would against any server whose classes run on its own card, and no
+     * refusal names the route.
      */
     coordinate.resetCoordinationForTests();
     const fake = await startFake({ settings: { omitRoute: true } });
     try {
       const name = registerFake(fake.url);
       const state = await coordinate.coordinateServer(name, deps());
-      assert.notStrictEqual(state.phase, 'stocked',
-        'a document the SDK refuses must not read as a healthy connect');
       const said = JSON.stringify(state);
-      assert.ok(/route/i.test(said),
-        `the refusal must name the field that is missing, so somebody can fix the server: ${said}`);
-      assert.strictEqual(fake.seen.posts.length, 0,
-        'nothing is posted to a server whose document could not be read');
+      assert.ok(state.phase !== 'refused' && state.phase !== 'unreachable',
+        `a routeless document must connect like any all-local server: ${said}`);
+      assert.ok(!/route/i.test(said), `nothing should complain about a route: ${said}`);
     } finally { await fake.close(); }
   });
 

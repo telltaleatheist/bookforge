@@ -340,7 +340,8 @@ check('the pinned SDK is measured, not assumed, about the guard field', () => {
   // verdicts instead of unknowns.
   const sdk = require.resolve('@crucible/client');
   const client = fs.readFileSync(path.join(path.dirname(sdk), 'client.js'), 'utf8');
-  const readChunk = /function readChunk\([\s\S]{0,600}?\n\}/.exec(client);
+  // 2000, not 600: 1.0.25's readChunk carries more optional fields and outgrew the old window.
+  const readChunk = /function readChunk\([\s\S]{0,2000}?\n\}/.exec(client);
   assert.ok(readChunk, 'the SDK must still have a readChunk() to measure');
   const carriesGuard = /guard:/.test(readChunk[0]);
   const ledgerSrc = fs.readFileSync(

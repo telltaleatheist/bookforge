@@ -216,12 +216,22 @@ check('"has it but cannot load it" is kept apart from "has never heard of it"', 
     'a download the operator can do in a minute must not read as a catalog difference');
 });
 
-check('not loadable and no reason is refused as the protocol error it is', async () => {
+// Owen, 2026-09-24: "dont require any particular crucible server. if it can make
+// the call to the crucible server then it should work." This used to throw away
+// the whole voice list; now the one quiet row is blocked, and says it gave no reason.
+check('not loadable and no reason is BLOCKED and says so — the rest of the list survives', async () => {
   const inventory = await scripted({
-    '3090 Ti': [voice('deathstalker', { loadable: false, reason: null })],
+    '3090 Ti': [voice('deathstalker', { loadable: false, reason: null }), voice('mistborn')],
   });
-  assert.throws(() => inv.placeVoices(inventory), /not loadable and gives no reason/,
-    'a silent blocked voice is a person told no with no next step');
+  const placed = inv.placeVoices(inventory);
+  const ds = placed.find((v) => v.id === 'deathstalker');
+  assert.ok(ds, 'the quiet row was dropped instead of shown blocked');
+  assert.deepStrictEqual(ds.servedBy, []);
+  assert.strictEqual(ds.blocked.length, 1);
+  assert.match(ds.blocked[0].reason, /did not say why/,
+    'a blocked voice with no reason must say the server gave none, never read as an explanation');
+  assert.ok(placed.some((v) => v.id === 'mistborn' && v.servedBy.includes('3090 Ti')),
+    'one quiet row must not cost the other voices');
 });
 
 // ── The grouping Owen described ─────────────────────────────────────────────

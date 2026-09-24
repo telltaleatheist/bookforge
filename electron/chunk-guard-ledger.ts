@@ -393,8 +393,9 @@ export function recordCrucibleStreamRow(
   renderId: string,
   row: {
     readonly index: number;
-    readonly seconds: number;
-    readonly chars: number;
+    /** Null where the frame did not state it (Crucible 1.0.25) — recorded verbatim, like the rest. */
+    readonly seconds: number | null;
+    readonly chars: number | null;
     readonly charsPerSec: number | null;
     readonly capped: boolean | null;
     readonly cancelled: boolean;

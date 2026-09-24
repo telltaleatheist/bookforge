@@ -127,22 +127,30 @@ export interface CrucibleServersView {
 // What a server says about itself
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** `GET /v1/info` + `GET /v1/health`, as one answer. */
+/**
+ * `GET /v1/info` + `GET /v1/health`, as one answer.
+ *
+ * EVERY `| null` HERE IS "THE SERVER DID NOT SAY". Crucible 1.0.25 reads an
+ * informational field a server left out as null instead of refusing the whole
+ * answer — Owen, 2026-09-24: *"dont require any particular crucible server. if
+ * it can make the call to the crucible server then it should work."* These are
+ * facts for a person to read, and a screen shows a null as not stated.
+ */
 export interface ServerFacts {
   /** What the server calls itself — not the name this machine files it under. */
   serverName: string;
-  version: string;
+  version: string | null;
   apiVersion: number;
-  platform: string;
-  arch: string;
-  /** `cuda-linux` or `mlx-darwin`. Windows is never a backend. */
-  backend: string;
-  gpu: { vendor: string; name: string; vramBytes: number };
+  platform: string | null;
+  arch: string | null;
+  /** `cuda-linux`, `mlx-darwin`, `llama-windows`. */
+  backend: string | null;
+  gpu: { vendor: string | null; name: string | null; vramBytes: number | null } | null;
   /** What this server will accept as a job `type`. */
   jobTypes: string[];
-  /** The lane, right now. */
-  health: 'ok' | 'warming' | 'busy';
-  queueDepth: number;
+  /** The lane, right now: `ok`, `warming`, `busy` — verbatim, as the server said it. */
+  health: string | null;
+  queueDepth: number | null;
   /** The ids on the card, and what KIND holds it (`llm`, `tts`, … or null). */
   residentModels: string[];
   residentKind: string | null;
@@ -226,12 +234,19 @@ export interface CrucibleModuleProgress {
   server: string;
   taskId: string | null;
   state: 'running' | 'done' | 'failed' | 'cancelled';
-  /** `{name, index, total}` — for a module, one per entry plus the reload. */
-  step: { name: string; index: number; total: number } | null;
+  /**
+   * `{name, index, total}` — for a module, one per entry plus the reload. Each
+   * part null where the server's frame did not say (Crucible 1.0.25; Owen
+   * 2026-09-24, any Crucible that answers).
+   */
+  step: { name: string | null; index: number | null; total: number | null } | null;
   /** One line of pip's output. Draw it, never branch on it. */
   line: string | null;
-  /** A pull's byte counts. `total` is null where no manifest sizes it. */
-  bytes: { done: number; total: number | null; file: string } | null;
+  /**
+   * A pull's byte counts. `total` is null where no manifest sizes it; `file`
+   * is null where the server's frame did not name one (Crucible 1.0.25).
+   */
+  bytes: { done: number; total: number | null; file: string | null } | null;
   /** A module entry that was already true. Idempotence, reported. */
   skipped: string | null;
   /**
@@ -269,14 +284,15 @@ export interface CrucibleModuleProgress {
 /** One row of `GET /v1/models`: four separate facts, plus the reason for a no. */
 export interface CrucibleModelRow {
   id: string;
-  family: string;
-  paramsB: number;
-  backendSupported: boolean;
-  installed: boolean;
+  /** Each `| null` is "the server did not say" (Crucible 1.0.25; see {@link ServerFacts}). */
+  family: string | null;
+  paramsB: number | null;
+  backendSupported: boolean | null;
+  installed: boolean | null;
   resident: boolean;
   loadable: boolean;
-  /** Always present when `loadable` is false — a refusal with no reason is a bug. */
-  reason?: string;
+  /** Why not, when `loadable` is false — null or absent where the server gave no reason. */
+  reason?: string | null;
   /** Weights plus KV at the default context, measured on the host. */
   memoryBytesEstimate: number | null;
 }
@@ -287,8 +303,11 @@ export interface ActivityJobRow {
   type: string;
   model: string | null;
   status: string;
-  /** 0..1. A job HAS a denominator: the client posted the whole of the work up front. */
-  progress: number;
+  /**
+   * 0..1. A job HAS a denominator: the client posted the whole of the work up
+   * front. Null where the server did not report it (Crucible 1.0.25).
+   */
+  progress: number | null;
   message: string | null;
   /** The submitting client's User-Agent, or null when it did not say. */
   client: string | null;
@@ -303,29 +322,31 @@ export interface ActivityJobRow {
 export interface ActivityStreamRow {
   sessionId: string;
   voice: string;
-  since: string;
+  /** Each `| null` is "the server did not say" (Crucible 1.0.25). */
+  since: string | null;
   client: string | null;
-  said: number;
-  finished: number;
-  inFlight: number;
-  seconds: number;
+  said: number | null;
+  finished: number | null;
+  inFlight: number | null;
+  seconds: number | null;
 }
 
 /** `GET /v1/activity`, as the row draws it. */
 export interface CrucibleActivityView {
   serverName: string;
-  uptimeS: number;
-  resident: { kind: string; id: string; since: string } | null;
+  /** Each `| null` below is "the server did not say" (Crucible 1.0.25; see {@link ServerFacts}). */
+  uptimeS: number | null;
+  resident: { kind: string; id: string; since: string | null } | null;
   /** The id of a model being loaded right now, or null. */
   warming: string | null;
   /** Who holds narrator's wire. Not the lane — a stream holds this and not that. */
   claimedBy: string | null;
   streaming: ActivityStreamRow | null;
-  chatInFlight: number;
+  chatInFlight: number | null;
   slot: {
-    busy: number;
-    of: number;
-    queueDepth: number;
+    busy: number | null;
+    of: number | null;
+    queueDepth: number | null;
     /**
      * The server's own composition of "the lane is free AND nobody holds the
      * card". **Never a reservation** — reading it is not permission to submit;
@@ -381,10 +402,10 @@ export interface CrucibleCapabilityRow {
   enabled: boolean;
   /** The model that won, or `''` when none did. Branch on `enabled`, not on this. */
   selected: string;
-  /** Why, in the server's own words, whichever way it went. Never empty. */
-  reason: string;
-  /** How much more memory the smallest candidate needed, or 0. */
-  shortfallBytes: number;
+  /** Why, in the server's own words, whichever way it went — or null where it gave none. */
+  reason: string | null;
+  /** How much more memory the smallest candidate needed, or 0 — or null where the server did not say. */
+  shortfallBytes: number | null;
   /**
    * WHERE this class's work runs on that server (PHASE15 §3.3).
    *
@@ -413,9 +434,10 @@ export interface CrucibleCapabilityRow {
  * record is told from a current one without anybody writing down a date.
  */
 export interface CrucibleCapabilityView {
-  backendKind: string;
-  totalBytes: number;
-  desktopAllowanceBytes: number;
+  /** Each null where the server did not say (Crucible 1.0.25 reads an informational field a server left out as null — Owen, 2026-09-24: any Crucible that answers works). */
+  backendKind: string | null;
+  totalBytes: number | null;
+  desktopAllowanceBytes: number | null;
   classes: CrucibleCapabilityRow[];
 }
 
@@ -512,9 +534,10 @@ export interface CrucibleUpstreamRow {
  */
 export interface CrucibleLocalModelChoice {
   id: string;
-  memoryBytesEstimate: number;
-  fits: boolean;
-  installed: boolean;
+  /** Each of these three is null where the engine did not say (Crucible 1.0.25 reads an informational field a server left out as null — Owen, 2026-09-24: any Crucible that answers works). */
+  memoryBytesEstimate: number | null;
+  fits: boolean | null;
+  installed: boolean | null;
 }
 
 /**
@@ -532,26 +555,34 @@ export interface CrucibleLocalModels {
 export interface CrucibleEngineSettings {
   /** One entry per llm class, always all four. */
   routes: Record<CrucibleTextActName, CrucibleRouteRow>;
-  /** One entry per upstream, always all three, configured or not. */
-  upstreams: Record<CrucibleUpstreamName, CrucibleUpstreamRow>;
-  desktopAllowanceBytes: number;
-  /** `cuda-linux`, `mlx-darwin`, or `none` in host mode. */
-  backendKind: string;
   /**
-   * Always present. An engine that does not send both maps is refused by the
-   * SDK, by name and with the field path.
+   * One entry per upstream name. `null` = the server's document does not
+   * describe that upstream at all (Crucible 1.0.25 reads an informational field a server left out as null — Owen, 2026-09-24: any Crucible that answers works) — which is
+   * not "unconfigured": nothing can be routed to it, and nothing is claimed
+   * about it either.
+   */
+  upstreams: Record<CrucibleUpstreamName, CrucibleUpstreamRow | null>;
+  /** Null where the server did not say. */
+  desktopAllowanceBytes: number | null;
+  /** `cuda-linux`, `mlx-darwin`, or `none` in host mode — null where the server did not say. */
+  backendKind: string | null;
+  /**
+   * `null` = the engine's document states no model assignment at all.
    *
-   * It was `| null` for two hours on 2026-09-16, meaning "this server predates
-   * model assignment". Owen ruled that population out of existence the same
-   * evening — nothing is released, so nothing is legacy — and an optional shape
-   * kept for readers who do not exist is a branch every caller pays for.
+   * It was `| null` for two hours on 2026-09-16 ("this server predates model
+   * assignment"), then required when Owen ruled legacy servers out of
+   * existence. Owen's 2026-09-24 ruling reverses the requirement — *"dont
+   * require any particular crucible server. if it can make the call to the
+   * crucible server then it should work"* — and the SDK (1.0.25) reads the
+   * absent maps as null, so this carries that: a server that does not offer
+   * model choices is drawn as offering none, and its settings still work.
    *
    * `choices` can still be EMPTY, and that is a different thing: an engine
    * that has not measured its card yet has no candidates to offer and no budget
    * to measure them against. It is answering with nothing, not failing to
    * answer.
    */
-  localModels: CrucibleLocalModels;
+  localModels: CrucibleLocalModels | null;
 }
 
 /**

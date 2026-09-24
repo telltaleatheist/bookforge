@@ -42,9 +42,10 @@ import type { ServerEntry } from './servers';
 export interface ServerProbe {
   /** The server's own name — not the name it is registered under here. */
   name: string;
-  version: string;
-  /** `cuda-linux` or `mlx-darwin`. Windows is never a backend. */
-  backend: string;
+  /** Null where the server did not say (Crucible 1.0.25 reads a field a server left out as null; Owen 2026-09-24: any Crucible that answers works). */
+  version: string | null;
+  /** `cuda-linux`, `mlx-darwin`, `llama-windows` — null where the server did not say. */
+  backend: string | null;
   /** The voice (or model) on the card right now, or null. */
   resident: string | null;
   /** `tts`, `llm`, … or null when nothing is resident. */
@@ -341,11 +342,12 @@ export function describeHolder(activity: Activity, self: SelfIdentity): HolderNo
   }
   const running = activity.running[0];
   if (running !== undefined) {
-    const pct = Math.round(running.progress * 100);
+    // A job whose progress the server did not state says so, never "0%".
+    const pct = running.progress === null ? 'progress not stated' : `${Math.round(running.progress * 100)}%`;
     if (isOurs(running.client, running.jobId, self)) {
       const what = running.type === 'load-voice'
-        ? `Still loading the voice here (${pct}%) — Listen starts when it is resident.`
-        : `This browser is running a ${running.type} job here (${pct}%).`;
+        ? `Still loading the voice here (${pct}) — Listen starts when it is resident.`
+        : `This browser is running a ${running.type} job here (${pct}).`;
       return { ours: true, text: what };
     }
     return {
@@ -386,8 +388,11 @@ export async function loadVoice(
   ownJobs.add(jobId);
   try {
     for await (const event of client.events(jobId)) {
-      if (event.event === 'warming') onProgress?.(event.data.message);
-      else if (event.event === 'queued') onProgress?.(`queued (position ${event.data.position})`);
+      // Display only; either field may be unstated (Crucible 1.0.25).
+      if (event.event === 'warming') onProgress?.(event.data.message === null ? 'warming up' : event.data.message);
+      else if (event.event === 'queued') {
+        onProgress?.(event.data.position === null ? 'queued' : `queued (position ${event.data.position})`);
+      }
       else if (event.event === 'done') return;
       else if (event.event === 'failed') {
         throw new Error(`${event.data.error.code}: ${event.data.error.message}`);
@@ -423,7 +428,7 @@ export async function unloadVoice(
 ): Promise<void> {
   const jobId = await client.unloadVoice(voice);
   for await (const event of client.events(jobId)) {
-    if (event.event === 'warming') onProgress?.(event.data.message);
+    if (event.event === 'warming') onProgress?.(event.data.message === null ? 'warming up' : event.data.message);
     else if (event.event === 'done') return;
     else if (event.event === 'failed') {
       throw new Error(`${event.data.error.code}: ${event.data.error.message}`);

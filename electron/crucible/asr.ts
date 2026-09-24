@@ -72,6 +72,7 @@ import {
 } from './job';
 import type { VenueHost } from './generation-venue';
 import { venueForRunStep, type RunVenue, type StepVenue } from './step-venue';
+import { stated } from './unstated';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // The model id table
@@ -496,7 +497,8 @@ export async function runCrucibleAsr(options: RunCrucibleAsrOptions): Promise<Cr
     const fingerprint = written.provenance.model?.fingerprint ?? `${transcript.model}@${transcript.revision}`;
     log(`crucible "${server}" transcribed ${filename}: ${cues} cue(s), ${transcript.duration_s.toFixed(0)}s, `
       + `language ${transcript.language} (asked ${transcript.language_requested}), model ${fingerprint}, `
-      + `server ${written.provenance.server.name} ${written.provenance.server.version} (${written.provenance.backend})`);
+      + `server ${stated(written.provenance.server?.name ?? null)} `
+      + `${stated(written.provenance.server?.version ?? null)} (${stated(written.provenance.backend)})`);
 
     return {
       jobId: outcome.jobId,

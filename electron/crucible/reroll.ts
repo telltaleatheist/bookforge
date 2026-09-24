@@ -350,6 +350,22 @@ export async function runCrucibleReroll(
   // N above the ladder at the voice's own sampling, which for an audition is
   // the settings the rejected reading already used. See this file's header.
   const rungs = voiceRow.takes;
+  /*
+   * A VOICE THAT STATES NO LADDER CANNOT BE AUDITIONED. Crucible 1.0.25 reads an
+   * absent `takes` as null (Owen, 2026-09-24: any Crucible that answers works),
+   * and every candidate here is a rung OF that ladder — there is no rung to
+   * send without knowing how many exist, and a guessed count would be renders
+   * at settings nobody chose. So it is refused by name, before any job is
+   * submitted; an ordinary render of the voice is unaffected.
+   */
+  if (rungs === null) {
+    throw new CrucibleRerollRefused(
+      'crucible_voice_states_no_ladder',
+      `crucible "${server}" does not state a take ladder for voice "${voice}", so there are no rungs `
+      + 'to render re-roll candidates at. Rendering with this voice still works; re-rolling a sentence '
+      + 'needs a server that declares takes for the voice.',
+    );
+  }
   const spread = rungs - 1;
   if (takes > spread) {
     throw new CrucibleRerollRefused(
@@ -432,8 +448,14 @@ export async function runCrucibleReroll(
         },
         onEvent: (event) => {
           if (event.event !== 'progress' || options.onProgress === undefined) return;
+          // Display only — the rule job.ts and render.ts follow (Crucible 1.0.25):
+          // no fraction, nothing moved; no words, described by the fraction.
+          const fraction = event.data.fraction;
+          if (fraction === null) return;
           options.onProgress({
-            take, fraction: event.data.fraction, message: event.data.message, written, total,
+            take, fraction,
+            message: event.data.message === null ? `${Math.round(fraction * 100)}%` : event.data.message,
+            written, total,
           });
         },
       }).catch((err) => {

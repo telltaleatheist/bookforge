@@ -251,8 +251,8 @@ import { coordinationWords } from './crucible-words';
           @if (probe()[row.name]; as p) {
             @if (p.outcome === 'ok') {
               <p class="cru-facts">
-                <strong>{{ p.facts.serverName }}</strong> v{{ p.facts.version }} · {{ p.facts.backend }} ·
-                {{ p.facts.gpu.name }} ({{ gb(p.facts.gpu.vramBytes) }}) · lane {{ p.facts.health }}@if (p.facts.queueDepth > 0) {, {{ p.facts.queueDepth }} queued}
+                <strong>{{ p.facts.serverName }}</strong> v{{ said(p.facts.version) }} · {{ said(p.facts.backend) }} ·
+                @if (p.facts.gpu; as gpu) { {{ said(gpu.name) }} ({{ gpu.vramBytes === null ? 'memory not stated' : gb(gpu.vramBytes) }}) } @else { GPU not stated } · lane {{ said(p.facts.health) }}@if (p.facts.queueDepth !== null && p.facts.queueDepth > 0) {, {{ p.facts.queueDepth }} queued}
               </p>
               <p class="cru-meta">Job types: {{ p.facts.jobTypes.join(', ') }}</p>
               <p class="cru-meta">
@@ -271,7 +271,7 @@ import { coordinationWords } from './crucible-words';
           @if (activity()[row.name]; as a) {
             <div class="cru-activity">
               <p class="cru-meta">
-                Up {{ hours(a.uptimeS) }} · lane {{ a.slot.busy }}/{{ a.slot.of }}@if (a.slot.queueDepth > 0) {, {{ a.slot.queueDepth }} queued} ·
+                Up {{ a.uptimeS === null ? said(null) : hours(a.uptimeS) }} · lane {{ said(a.slot.busy) }}/{{ said(a.slot.of) }}@if (a.slot.queueDepth !== null && a.slot.queueDepth > 0) {, {{ a.slot.queueDepth }} queued} ·
                 {{ a.slot.acceptsWork ? 'accepting work' : 'not accepting work' }}
                 @if (a.warming) { · warming {{ a.warming }} }
                 @if (a.claimedBy) { · claimed by {{ a.claimedBy }} }
@@ -279,8 +279,12 @@ import { coordinationWords } from './crucible-words';
               @for (job of a.running; track job.jobId) {
                 <div class="cru-job">
                   <span class="cru-job-name">{{ job.type }}@if (job.model) { · {{ job.model }}}</span>
-                  <span class="cru-bar"><span class="cru-fill" [style.width.%]="job.progress * 100"></span></span>
-                  <span class="cru-pct">{{ (job.progress * 100).toFixed(0) }}%</span>
+                  @if (job.progress !== null) {
+                    <span class="cru-bar"><span class="cru-fill" [style.width.%]="job.progress * 100"></span></span>
+                    <span class="cru-pct">{{ (job.progress * 100).toFixed(0) }}%</span>
+                  } @else {
+                    <span class="cru-pct">progress not stated</span>
+                  }
                   <span class="cru-job-msg">{{ job.message }}</span>
                   @if (!isOurs(job.client)) { <span class="cru-badge muted">{{ job.client || 'another client' }}</span> }
                 </div>
@@ -294,13 +298,15 @@ import { coordinationWords } from './crucible-words';
                 <div class="cru-job">
                   <span class="cru-job-name">streaming · {{ s.voice }}</span>
                   <span class="cru-job-msg">
-                    {{ s.finished }} of {{ s.said }} said, {{ s.inFlight }} in flight, {{ s.seconds.toFixed(0) }}s of audio
+                    {{ said(s.finished) }} of {{ said(s.said) }} said, {{ said(s.inFlight) }} in flight, {{ s.seconds === null ? said(null) : s.seconds.toFixed(0) + 's' }} of audio
                     — no percentage: a listener never handed over the whole of the work.
                   </span>
                   @if (!isOurs(s.client)) { <span class="cru-badge muted">{{ s.client || 'another client' }}</span> }
                 </div>
               }
-              @if (a.chatInFlight > 0) {
+              @if (a.chatInFlight === null) {
+                <p class="cru-meta">Chat completions in flight: not stated.</p>
+              } @else if (a.chatInFlight > 0) {
                 <p class="cru-meta">{{ a.chatInFlight }} chat completion(s) in flight.</p>
               }
               @if (a.running.length === 0 && a.queued.length === 0 && !a.streaming && a.chatInFlight === 0) {
@@ -618,6 +624,15 @@ export class CrucibleServersPanelComponent {
 
   gb(bytes: number): string {
     return `${(bytes / 1024 ** 3).toFixed(1)} GB`;
+  }
+
+  /**
+   * A fact the server did not state, shown as that (Crucible 1.0.25 reads an
+   * absent informational field as null; Owen 2026-09-24, any Crucible that
+   * answers works) — never as "null", a blank, or a zero.
+   */
+  said(value: string | number | null): string {
+    return value === null ? 'not stated' : String(value);
   }
 
   hours(seconds: number): string {

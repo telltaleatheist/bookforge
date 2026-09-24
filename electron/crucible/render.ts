@@ -86,6 +86,7 @@ import {
   CrucibleRenderNotDone, downloadRenderArtifacts, type RenderArtifactsOutcome,
 } from './render-artifacts';
 import { CrucibleStreamLost, withStreamReconnect } from './stream-reconnect';
+import { stated } from './unstated';
 import {
   crucibleVoiceBand, describeVenueBand, refuseChunksOverVenueCap, renderBandFor,
 } from './voice-band';
@@ -374,13 +375,15 @@ export async function assertCrucibleVoiceAvailable(
  * cap — and "can this server load it" must mean one thing with one message.
  */
 export function assertVoiceRowLoadable(
-  row: { installed: boolean; loadable: boolean; reason: string | null },
+  row: { installed: boolean | null; loadable: boolean; reason: string | null },
   server: string,
   voice: string,
 ): void {
   if (row.loadable) return;
+  // `installed` may be unstated (Crucible 1.0.25): only a server that SAYS the
+  // voice is not installed gets that code; otherwise it is simply not loadable.
   throw new CrucibleRenderRefused(
-    row.installed ? 'crucible_voice_not_loadable' : 'crucible_voice_not_installed',
+    row.installed === false ? 'crucible_voice_not_installed' : 'crucible_voice_not_loadable',
     `crucible "${server}" cannot load voice "${voice}": ${row.reason ?? 'it did not say why'}`,
   );
 }
@@ -966,14 +969,22 @@ export async function runCrucibleRender(
         }
       }
       if (event.event === 'warming') {
-        log(`crucible "${server}": ${event.data.message}`);
+        log(`crucible "${server}": ${stated(event.data.message)}`);
         return;
       }
       if (event.event !== 'progress') return;
+      /*
+       * Display only, so decided here once (Crucible 1.0.25 reads absent frame
+       * fields as null; Owen 2026-09-24, any Crucible that answers): a frame
+       * that states no fraction moved nothing and is not forwarded; one with no
+       * words is described by its fraction. The same rule as job.ts's.
+       */
+      const fraction = event.data.fraction;
+      if (fraction === null) return;
       const extra = event.data.extra;
       options.onProgress?.({
-        fraction: event.data.fraction,
-        message: event.data.message,
+        fraction,
+        message: event.data.message === null ? `${Math.round(fraction * 100)}%` : event.data.message,
         rendered: typeof extra['rendered'] === 'number' ? extra['rendered'] : null,
         failed: typeof extra['failed'] === 'number' ? extra['failed'] : null,
         total: typeof extra['total'] === 'number' ? extra['total'] : null,
@@ -1175,12 +1186,18 @@ export async function runCrucibleRender(
   // owner of them. `identityBasis` is printed beside the identity because a
   // directory somebody pointed at (`asserted`) must not read like a commit
   // somebody fetched (`verified`).
-  const applied = Object.entries(outcome.result.sampling)
-    .map(([key, value]) => `${key} ${value}`).join(', ');
-  log(`crucible job ${jobId} done: ${outcome.result.rendered} rendered, ${downloaded} file(s) `
-    + `written into ${path.basename(sentencesDir)}; take ${outcome.result.take} at ${applied}, `
-    + `voice "${outcome.result.voice.id}" ${outcome.result.voice.identity} `
-    + `(${outcome.result.voice.identityBasis}), ${outcome.result.width === null
+  // Any of these may be unstated by a server (Crucible 1.0.25) and is logged as
+  // such — this line is a record for a person, and nothing decides on it.
+  const applied = outcome.result.sampling === null
+    ? stated(null)
+    : Object.entries(outcome.result.sampling).map(([key, value]) => `${key} ${value}`).join(', ');
+  const spoke = outcome.result.voice === null
+    ? `voice ${stated(null)}`
+    : `voice "${outcome.result.voice.id}" ${stated(outcome.result.voice.identity)} `
+      + `(${stated(outcome.result.voice.identityBasis)})`;
+  log(`crucible job ${jobId} done: ${stated(outcome.result.rendered)} rendered, ${downloaded} file(s) `
+    + `written into ${path.basename(sentencesDir)}; take ${stated(outcome.result.take)} at ${applied}, `
+    + `${spoke}, ${outcome.result.width === null
       ? 'width unstated' : `${outcome.result.width} chunk(s) in flight`}`);
 
   return {

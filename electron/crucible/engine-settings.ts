@@ -289,9 +289,20 @@ function projectSettings(doc: SettingsDocument, server: string): CrucibleEngineS
     routes[act] = row === undefined ? { route: 'local', model: null } : { route: row.route, model: row.model };
   }
 
-  const upstreams = {} as Record<CrucibleUpstreamName, CrucibleUpstreamRow>;
+  const upstreams = {} as Record<CrucibleUpstreamName, CrucibleUpstreamRow | null>;
   for (const name of CRUCIBLE_UPSTREAM_NAMES) {
-    const row: UpstreamSetting = doc.upstreams[name];
+    const row: UpstreamSetting | null = doc.upstreams[name];
+    /*
+     * AN UPSTREAM THE DOCUMENT DOES NOT DESCRIBE IS CARRIED AS NULL — not as
+     * "unconfigured", which would be a claim the server did not make. Crucible
+     * 1.0.25 reads the absent entry as null (Owen, 2026-09-24: any Crucible that
+     * answers works); nothing can be routed to it, and the panel says the
+     * engine does not describe it.
+     */
+    if (row === null) {
+      upstreams[name] = null;
+      continue;
+    }
     /*
      * `keyHint` and `url` are each ABSENT on the upstreams they do not apply to
      * — ollama has no key, anthropic and openai have no url — and the SDK keeps
@@ -328,7 +339,9 @@ function projectSettings(doc: SettingsDocument, server: string): CrucibleEngineS
    */
   noteCrucibleUpstreams(
     server,
-    CRUCIBLE_UPSTREAM_NAMES.some((name) => upstreams[name].configured),
+    // An upstream the document does not describe (null) is not one this engine
+    // can forward to, so it does not open the cloud lane.
+    CRUCIBLE_UPSTREAM_NAMES.some((name) => upstreams[name]?.configured === true),
   );
 
   return {
@@ -341,7 +354,17 @@ function projectSettings(doc: SettingsDocument, server: string): CrucibleEngineS
 }
 
 /**
- * The two model-assignment maps, both REQUIRED.
+ * The two model-assignment maps — ONE FACT, so both or neither.
+ *
+ * ── 2026-09-24: A SERVER THAT STATES NEITHER IS READ AGAIN, NOT REFUSED ──
+ *
+ * Owen: *"dont require any particular crucible server. if it can make the call
+ * to the crucible server then it should work."* The SDK (Crucible 1.0.25) now
+ * reads either absent map as null, and this returns null when EITHER is: a
+ * selection with no choices to go with it (or choices with no selection) is
+ * not something the panel can draw honestly, and the settings around it —
+ * routes, upstreams, the allowance — still work. The history below is why it
+ * was required for a while.
  *
  * This read a document with neither as a VINTAGE — a server older than model
  * assignment — and drew the panel disabled with a sentence saying so. Owen
@@ -366,6 +389,7 @@ function projectLocalModels(
   doc: SettingsDocument,
   server: string,
 ): CrucibleEngineSettings['localModels'] {
+  if (doc.localModels === null || doc.localModelChoices === null) return null;
   return {
     selected: { ...doc.localModels },
     choices: Object.fromEntries(

@@ -150,6 +150,7 @@ import type {
   StreamWorkerConfig,
 } from '../streaming-contract';
 import type { StreamEngineName, StreamingEngine } from '../streaming-engine';
+import { stated } from './unstated';
 
 /**
  * The language every Listen row is spoken in.
@@ -633,7 +634,8 @@ export class CrucibleStreamingEngine {
           });
           if (done.capped === true) {
             console.warn(`[CrucibleStream] row ${id} hit the frame cap after `
-              + `${done.seconds.toFixed(1)}s — delivered as is; Listen never re-rolls`);
+              + `${done.seconds === null ? 'an unstated length' : `${done.seconds.toFixed(1)}s`} — `
+              + 'delivered as is; Listen never re-rolls');
           }
         },
         warn: (line: string) => console.error(`[CrucibleStream] ${line}`),
@@ -651,7 +653,7 @@ export class CrucibleStreamingEngine {
     this.opening = false;
     this.idleWatch.touch();
     console.log(`[CrucibleStream] session ${session.sessionId} open on crucible "${server}": `
-      + `${voice} → ${session.fingerprint}, ${session.sampleRate} Hz, ${session.backend}`);
+      + `${voice} → ${stated(session.fingerprint)}, ${session.sampleRate} Hz, ${stated(session.backend)}`);
     void this.pump(live);
     this.broadcastState();
     return { success: true };
@@ -1014,7 +1016,9 @@ export class CrucibleStreamingEngine {
  * word for "not probed" — rather than guessed onto a card it is not.
  */
 const unknownBackendsReported = new Set<string>();
-function deviceForBackend(backend: string): 'cpu' | 'cuda' | 'mps' | null {
+function deviceForBackend(backend: string | null): 'cpu' | 'cuda' | 'mps' | null {
+  // A session that does not name its backend (Crucible 1.0.25) reports no device.
+  if (backend === null) return null;
   if (backend === 'cuda-linux') return 'cuda';
   if (backend === 'mlx-darwin') return 'mps';
   if (!unknownBackendsReported.has(backend)) {

@@ -2,6 +2,7 @@ import type { CrucibleClient } from '@crucible/client';
 import type { CrucibleEngineUpgradeProgress } from '../../shared/crucible/engine-controls-wire';
 import { crucibleClientFor } from './servers';
 import { forgetResolvedEngine } from './engine-resolve';
+import { stated } from './unstated';
 
 interface UpgradeDeps {
   client(server: string): Promise<Pick<CrucibleClient, 'info' | 'submitTask' | 'taskEvents'>>;
@@ -31,13 +32,13 @@ export async function upgradeWsl(
       for await (const event of client.taskEvents(taskId)) {
         if (event.event === 'failed') { failure = `${event.data.code}: ${event.data.message}`; break; }
         if (event.event === 'cancelled') { failure = 'The WSL upgrade was cancelled.'; break; }
-        if (event.event === 'step') say('running', event.data.name);
+        if (event.event === 'step') say('running', stated(event.data.name));
         if (event.event === 'unknown' && event.kind === 'state' && typeof event.data['sentence'] === 'string') {
           say('running', event.data['sentence']);
         }
         if (event.event === 'progress') {
           say('running', 'line' in event.data ? event.data.line
-            : `${event.data.file}: ${(event.data.bytesDone / 1e6).toFixed(1)} MB downloaded`);
+            : `${stated(event.data.file)}: ${(event.data.bytesDone / 1e6).toFixed(1)} MB downloaded`);
         }
         if (event.event === 'done') break;
       }

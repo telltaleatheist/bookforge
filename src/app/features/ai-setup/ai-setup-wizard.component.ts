@@ -383,7 +383,7 @@ import {
                     [disabled]="engineBusy() || draftFor(name).trim().length === 0"
                     (click)="saveUpstream(name)"
                   >Save</desktop-button>
-                  @if (doc.upstreams[name].configured) {
+                  @if (doc.upstreams[name]?.configured === true) {
                     <desktop-button
                       variant="ghost"
                       size="sm"
@@ -443,7 +443,7 @@ import {
                            it in either place is typing it once. Absent when
                            the account is already set up, because then the one
                            press is a route and nothing else. -->
-                      @if (!doc.upstreams[offerUpstream(act)].configured) {
+                      @if (doc.upstreams[offerUpstream(act)]?.configured !== true) {
                         <input
                           class="key-input"
                           [type]="fieldType(offerUpstream(act))"
@@ -765,8 +765,9 @@ export class AiSetupWizardComponent implements OnInit, OnDestroy {
   /** The four facts, as one phrase. Never collapsed into "available". */
   modelState(m: CrucibleModelRow): string {
     if (m.resident) return 'resident';
-    if (!m.backendSupported) return `not supported on this backend — ${m.reason ?? 'no reason given'}`;
-    if (!m.installed) return `not installed — ${m.reason ?? 'no reason given'}`;
+    // `=== false`: an unstated fact (null, Crucible 1.0.25) claims nothing either way.
+    if (m.backendSupported === false) return `not supported on this backend — ${m.reason ?? 'no reason given'}`;
+    if (m.installed === false) return `not installed — ${m.reason ?? 'no reason given'}`;
     if (!m.loadable) return `installed, not loadable — ${m.reason ?? 'no reason given'}`;
     return 'installed, loadable — not resident';
   }
@@ -1163,10 +1164,14 @@ export class AiSetupWizardComponent implements OnInit, OnDestroy {
 
   /** `qwen3.5-9b — 19.5 GiB` , or `… — 52.5 GiB, larger than this card`. */
   localChoiceWords(choice: CrucibleLocalModelChoice): string {
-    const size = `${(choice.memoryBytesEstimate / 1024 ** 3).toFixed(1)} GiB`;
+    // Each of the three may be unstated (Crucible 1.0.25): a size the engine did
+    // not give is said to be unknown, and an unstated fit or install claims nothing.
+    const size = choice.memoryBytesEstimate === null
+      ? 'size not stated'
+      : `${(choice.memoryBytesEstimate / 1024 ** 3).toFixed(1)} GiB`;
     const parts = [size];
-    if (!choice.fits) parts.push('larger than this card');
-    if (!choice.installed) parts.push('not downloaded yet');
+    if (choice.fits === false) parts.push('larger than this card');
+    if (choice.installed === false) parts.push('not downloaded yet');
     return `${choice.id} — ${parts.join(', ')}`;
   }
 

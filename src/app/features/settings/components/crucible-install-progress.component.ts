@@ -78,6 +78,17 @@ const OUR_STEPS: Readonly<Record<string, SetupPhase>> = {
   'local-readiness': 'windows-engine',
 };
 
+/**
+ * `name (index of total)`, saying only what the server's step frame stated —
+ * a Crucible may leave any part out (1.0.25 reads it as null), and a missing
+ * count is omitted rather than drawn as a zero.
+ */
+function stepWords(step: { name: string | null; index: number | null; total: number | null }): string {
+  const name = step.name ?? 'a step it did not name';
+  if (step.index === null) return name;
+  return step.total === null ? `${name} (step ${step.index})` : `${name} (${step.index} of ${step.total})`;
+}
+
 @Component({
   selector: 'app-crucible-install-progress',
   standalone: true,
@@ -299,8 +310,7 @@ export class CrucibleInstallProgressComponent {
         bytes: linuxState === 'running' ? this.moveBytes() : null,
         lines: [] },
       { id: 'job-types', title: 'Installing what BookForge needs', state: state('job-types'),
-        detail: progress !== null && progress.step !== null
-          ? `${progress.step.name} (${progress.step.index} of ${progress.step.total})` : null,
+        detail: progress !== null && progress.step !== null ? stepWords(progress.step) : null,
         bytes: null,
         // pip's own line, and only the last: a scrolling console in a settings
         // panel is a thing people watch instead of a thing they read.

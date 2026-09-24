@@ -349,7 +349,7 @@ export interface PagesVenueHost extends VenueHost {
    * rather than inferred from the model row — `backendSupported` is a boolean
    * about the manifest and says nothing about how many slots the engine has.
    */
-  backend(name: string): Promise<string>;
+  backend(name: string): Promise<string | null>;
 }
 
 /** The real one: the app's routing record, the real registry and real HTTP. */
@@ -365,7 +365,7 @@ export function processPagesVenueHost(): PagesVenueHost {
     async models(name: string): Promise<ModelInfo[]> {
       return (await crucibleClientFor(name, CRUCIBLE_CLIENT_NAME)).models();
     },
-    async backend(name: string): Promise<string> {
+    async backend(name: string): Promise<string | null> {
       return (await (await crucibleClientFor(name, CRUCIBLE_CLIENT_NAME)).info()).host.backend;
     },
   };
@@ -427,8 +427,11 @@ export interface CruciblePageReader {
   maskedHeaders: string;
   /** What the server's row said it is, for the run's record. `null` on a host with no block. */
   fingerprint: string | null;
-  /** The backend that answered: `cuda-linux` or `llama-windows`. For the record, and for {@link concurrency}. */
-  backend: string;
+  /**
+   * The backend that answered: `cuda-linux` or `llama-windows` — or null when the
+   * server did not say (Crucible 1.0.25). For the record, and for {@link concurrency}.
+   */
+  backend: string | null;
   /**
    * `--vlm-concurrency`: how many pages the engine may hold in flight against
    * THIS server. `0` means "send nothing and let foundry's measured default of
@@ -539,9 +542,10 @@ export async function resolveCruciblePageReader(
    * (mlx-darwin, since 2026-09-21) would have met. One in flight is the width
    * every engine admits, so the read works everywhere; what it costs is speed on
    * an engine that could take more, which is a pairing to add to the table, not
-   * a reason to stop the book.
+   * a reason to stop the book. A server that does not NAME its backend (null,
+   * Crucible 1.0.25) is the same case: nothing is paired with it.
    */
-  const paired = PAGE_CONCURRENCY_BY_BACKEND[backend];
+  const paired = backend === null ? undefined : PAGE_CONCURRENCY_BY_BACKEND[backend];
   const concurrency = paired ?? UNPAIRED_PAGE_CONCURRENCY;
 
   const entry = host.server(server);

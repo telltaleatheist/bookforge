@@ -216,8 +216,8 @@ async function testServer(entry: ServerEntry, button: HTMLButtonElement): Promis
       : `${answer.resident} (${answer.residentKind ?? 'unknown kind'}) loaded`;
     says.set(entry.name, {
       text: answer.servesTts
-        ? `${answer.name} ${answer.version} on ${answer.backend} — ${resident}.`
-        : `${answer.name} ${answer.version} on ${answer.backend} does NOT serve speech.`,
+        ? `${answer.name} ${answer.version ?? '(version not stated)'} on ${answer.backend ?? 'an unstated backend'} — ${resident}.`
+        : `${answer.name} ${answer.version ?? '(version not stated)'} on ${answer.backend ?? 'an unstated backend'} does NOT serve speech.`,
       cls: answer.servesTts ? 'good' : 'bad',
     });
   } catch (err) {
@@ -387,7 +387,10 @@ async function drawVoices(): Promise<void> {
   voiceEl.textContent = '';
   for (const v of rows) {
     const o = document.createElement('option');
-    const label = engines.size > 1 ? `${v.display} — ${v.narratorEngine}` : v.display;
+    // Either may be unstated (Crucible 1.0.25): the id names a voice with no
+    // display name, and an unstated engine is said to be.
+    const name = v.display === null ? v.id : v.display;
+    const label = engines.size > 1 ? `${name} — ${v.narratorEngine ?? 'engine not stated'}` : name;
     o.value = v.id;
     // A voice that is cloned from a clip says so IN THE LIST. Its row is the
     // authority (`needsReference`), never the id: picking it without a clip is

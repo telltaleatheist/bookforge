@@ -261,8 +261,11 @@ export async function loadVoiceOn(
     ? await client.loadVoice(load.voice)
     : await client.loadVoice(load.voice, { reference: load.reference });
   for await (const event of client.events(jobId)) {
-    if (event.event === 'warming') onProgress?.(event.data.message);
-    else if (event.event === 'queued') onProgress?.(`queued (position ${event.data.position})`);
+    // Display only; either field may be unstated (Crucible 1.0.25) and is said to be.
+    if (event.event === 'warming') onProgress?.(event.data.message === null ? 'warming up' : event.data.message);
+    else if (event.event === 'queued') {
+      onProgress?.(event.data.position === null ? 'queued' : `queued (position ${event.data.position})`);
+    }
     else if (event.event === 'done') {
       return {
         jobId,
