@@ -30678,7 +30678,7 @@ var init_version = __esm({
     init_engine_import_meta_url();
     init_package();
     VERSION = package_default.version;
-    GIT_COMMIT = "src 0b63365b2b2f".length > 0 ? "src 0b63365b2b2f" : null;
+    GIT_COMMIT = "src 95014c93da70".length > 0 ? "src 95014c93da70" : null;
   }
 });
 
@@ -72483,7 +72483,25 @@ var init_triage = __esm({
       "Ordinary prose with none of these does not need cleaning. If you are unsure, it needs cleaning.",
       "Lines marked (context) are shown only so the others read correctly; you are asked only about the other lines."
     ].join("\n");
-    SENTENCE_TRIAGE_STATE = "You are checking the sentences of a book, one at a time, before a text-to-speech voice reads them aloud.";
+    SENTENCE_TRIAGE_STATE = [
+      "You are checking the sentences of a book, one at a time, before a text-to-speech voice reads them aloud.",
+      "A sentence needs to be cleaned when something in it is printed one way and spoken another. Examples, with the right answer:",
+      "",
+      '"After 1871, the new empire was governed from Berlin." -> A (Yes): a year.',
+      '"By the mid-1890s the movement had lost its way." -> A (Yes): a decade.',
+      '"On 3 May 1905 the strike began." -> A (Yes): a date.',
+      '"The war cost the treasury 4.5 million pounds." -> A (Yes): a decimal number.',
+      '"The crowd numbered some 300 people." -> A (Yes): a number.',
+      '"It is reprinted in The Letters, ed. John Smith, with notes." -> A (Yes): an abbreviation said in full.',
+      '"The KPD refused to join the coalition." -> A (Yes): a run of capitals.',
+      '"He wrote to Weber [the finance minister] that night." -> A (Yes): a bracketed insertion.',
+      '"The plan failed - as everyone expected - within a week." -> A (Yes): a hyphen with spaces used as a dash.',
+      `"Frederick III reigned for only ninety-nine days." -> A (Yes): a roman numeral after a ruler's name.`,
+      '"What had seemed impossible now looked merely difficult." -> B (No): ordinary prose.',
+      '"The ministers never met again as a body.\xB2\u2077" -> B (No): a superscript note number does not count.',
+      '"In this sense the *idea* mattered more than the man." -> B (No): asterisks marking emphasis do not count.',
+      '"She left the city in the spring and did not return." -> B (No): ordinary prose, even with no punctuation to speak of.'
+    ].join("\n");
     TRIAGE_CRITERIA = TRIAGE_GUIDE.split("\n").filter((line) => line.startsWith("- ") || line.startsWith("Superscript") || line.startsWith("Ordinary prose")).join("\n");
     SENTENCE_OPTIONS = { yes: "Yes", no: "No" };
   }
