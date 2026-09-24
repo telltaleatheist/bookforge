@@ -206,6 +206,56 @@
  * checking a file the day it was renamed, and a rename is precisely the event
  * this exists to catch. The map is the contract.
  *
+ * ── THE DECISION OF 2026-09-24, 12b065d/8fcc27a → a1138f6: n7 AND n8, AND
+ *    THIS SIDE FOLLOWED ────────────────────────────────────────────────────────
+ *
+ * Owen, 2026-09-24, asked whether to port Foundry's n7/n8 into BookForge's copy:
+ * *"yes."* The first time a RULE MOVE crossed this keeper — both earlier
+ * decisions were ports — and it crossed in Foundry's direction, which is why
+ * this keeper records a new kind of entry (`resynced`, below).
+ *
+ * What moved, read commit by commit over `76444fb..a1138f6` (the range tier 3
+ * reported), one path at a time:
+ *
+ *   - `ea2ebb2`, `a5f6c46`, `dccc144`, `fdba761` — `tts-number-normalizer.ts`
+ *     only, and DRIVER-ONLY: every hunk sits in `askAboutEach`, `askForEdits`,
+ *     `normalizeTextBlocks`, the `AskOutcome`/`NumberNormalizationRecord`
+ *     interfaces and a new `ModelServerFacts` receipt type — answers recorded
+ *     where they land, a busy card waited on, the pool sized by the server, the
+ *     log reworded. No rule table and no validator body. n6 was right to stay
+ *     through them; nothing here had been recorded, which is what the old
+ *     binary anchor (8ee48b7) hid.
+ *   - `b3337c3`, **n7** — "valid fixes are no longer thrown away": an edit whose
+ *     find a NEIGHBOUR prints is CARRIED there; a number printed twice is read
+ *     at every place; `rejoinsSplitWord` ("fini sh" → "finish"). A RULE MOVE,
+ *     and Foundry moved `NORMALIZER_VERSION` n6 → n7 with it.
+ *   - `cf38ea2`, **n8** — "the model judges a year, code spells it": a bare
+ *     four-digit number in 1100–2099 with no comma/currency/unit is a YEAR read
+ *     in pair form by the RULES; year ranges read whole; the validator re-spells
+ *     a model's year reading. A RULE MOVE; n7 → n8. It also moved the number
+ *     prompt and the shared fixtures (year cases model → rules, `changed_in`).
+ *
+ * WHAT THIS SIDE DID: a THREE-WAY MERGE into `electron/tts-number-rules.ts`,
+ * `tts-number-normalizer.ts`, `tts-spoken-forms.ts` (base foundry `b3337c3^`,
+ * theirs `cf38ea2`, ours this repository) — so BookForge's own post-handover
+ * changes (Listen's shared exports, the ONE acronym list) survive — and the
+ * prompt and fixture taken byte-for-byte (this side never changed them after
+ * the handover). `NORMALIZER_VERSION` is `n8` on both sides, which is the whole
+ * point: `narration-text-readiness.ts` compares a book's stamp against this
+ * repository's constant, and a book cleaned by the vendored engine (n8) was
+ * about to be called stale by an n6 constant.
+ *
+ * WHAT IS DELIBERATELY NOT HERE: n7's CARRIED lives in Foundry's POOLED driver,
+ * and this copy keeps its SERIAL driver (the legacy local narration path, not
+ * the pass that cleans a book — that is `foundry clean-text`). The merged file
+ * says so where the code would be. So the two implementations share every RULE
+ * and every VALIDATOR verdict and differ in one DRIVER behaviour; the stamp is
+ * about the rules, and the rules agree.
+ *
+ * ORPHEUS-FINETUNE OWES A RE-VENDOR (its PROVENANCE pins the old n6 files, and
+ * both Foundry commits say so). Not done from here: that repository is not this
+ * keeper's.
+ *
  * ── The one normalization ───────────────────────────────────────────────────
  *
  * CR is stripped from both sides and nothing else is touched. BookForge has
@@ -362,7 +412,14 @@ const VENDOR_LEAVES = '770480d';
  * of exceptions, which is how this keeper's fixed anchor went wrong in the
  * first place.
  */
-const ONE_DOOR_BASELINE = '76444fb';
+/*
+ * MOVED 2026-09-24, 76444fb → cf38ea2, with the n7/n8 decision in the header:
+ * `cf38ea2` is the last commit that legitimately changed any of the three
+ * (normalizer and spoken-forms; punctuation has not moved since the handover),
+ * so the freeze is asserted from there. Nothing is loosened — every commit in
+ * `76444fb..cf38ea2` touching them was read and is named in that decision.
+ */
+const ONE_DOOR_BASELINE = 'cf38ea2';
 const FROZEN_SINCE_BASELINE = [
   'src/clean/tts-number-normalizer.ts',
   'src/clean/tts-spoken-forms.ts',
@@ -391,6 +448,10 @@ const FROZEN_SINCE_BASELINE = [
  *                                      must not have moved on again since.
  *   'replaced'                       — the file is GONE at FOUNDRY_SHIPPED, on
  *                                      purpose.
+ *   { resynced, sha256, why }        — FOUNDRY moved and this side FOLLOWED:
+ *                                      Foundry's copy is pinned by sha, and this
+ *                                      repository's working copy must be
+ *                                      byte-identical to it (CR-stripped).
  */
 const FILES = [
   {
@@ -404,9 +465,13 @@ const FILES = [
     theirs: 'src/clean/tts-number-rules.ts',
     vendoredAt: VENDOR_PASS,
     shipped: {
-      sha256: '2987477971d52a22bb069badc5f491d404a62075094044a8de5a260be6a9678c',
+      sha256: '5d3e05599c73a40de218025716fab37c0c788bc30b926735732cbc2478b646c8',
       why: 'the type-only `epub-processor.js` import retargeted to `./targets.js`, and the '
-        + 'unreferenced `VOLUME_TOKEN` deleted (noUnusedLocals is on there). No rule moved.',
+        + 'unreferenced `VOLUME_TOKEN` deleted (noUnusedLocals is on there). No rule moved. '
+        + 'REPINNED 2026-09-24 for cf38ea2 (n8): the YEAR rules (pair form, whole ranges, period '
+        + 'prefixes, comma-grouped stays cardinal) and the guard fixes the replay exposed — a '
+        + 'RULE MOVE, NORMALIZER_VERSION n8, and this repository\'s copy was 3-way merged to '
+        + 'match (see "THE DECISION OF 2026-09-24").',
     },
   },
   {
@@ -414,7 +479,7 @@ const FILES = [
     theirs: 'src/clean/tts-number-normalizer.ts',
     vendoredAt: VENDOR_PASS,
     shipped: {
-      sha256: 'f478c8a91f42bea5c92f33dbdabe0aa868af327085da14447b7d5001cf563c1e',
+      sha256: '73b464b6112f87eede7351bab27636d78f371b038aacf94ec2bd889a312e795b',
       why: 'the type-only `epub-processor.js` import retargeted to `./targets.js`; '
         + '`askAboutEach` exported so the engine\'s door is a third caller rather than a second '
         + 'copy of the retry rules; `normalizeNarrationNumbers` deleted (291 lines, all about a '
@@ -437,7 +502,12 @@ const FILES = [
         + 'both doors unchanged" became "shared by every door unchanged", because Anthropic '
         + 'made the door count three. Same nine characters, so the file is 122,131 bytes before '
         + 'and after and only the sha moved. A PORT with not one byte outside a comment — no '
-        + 'rule, no validator, no prompt, no constant — so n6 was right to stay.',
+        + 'rule, no validator, no prompt, no constant — so n6 was right to stay. '
+        + 'REPINNED 2026-09-24 at cf38ea2 (identical at a1138f6), after reading every commit in '
+        + '76444fb..cf38ea2: four DRIVER-only commits (ea2ebb2, a5f6c46, dccc144, fdba761) and '
+        + 'two RULE MOVES, b3337c3 (n7) and cf38ea2 (n8), which moved NORMALIZER_VERSION to n8. '
+        + 'This repository\'s copy was 3-way merged to n8 and keeps its serial driver without '
+        + 'n7\'s CARRIED — see "THE DECISION OF 2026-09-24".',
     },
   },
   {
@@ -471,7 +541,12 @@ const FILES = [
     ours: 'electron/prompts/tts-number-normalize.txt',
     theirs: 'src/clean/prompts/tts-number-normalize.txt',
     vendoredAt: VENDOR_PASS,
-    shipped: 'carried',
+    shipped: {
+      resynced: 'cf38ea2',
+      sha256: '3a2cfedc1e932c10dee3e47fac32bdb2d56c30f2930b11aeda99d44f91eed6e7',
+      why: 'n8 (cf38ea2) moved the prompt with the year rules, and this side took it '
+        + 'byte-for-byte on 2026-09-24 — see "THE DECISION OF 2026-09-24".',
+    },
   },
   {
     ours: 'electron/prompts/tts-narration-text.txt',
@@ -502,7 +577,13 @@ const FILES = [
     ours: 'tools/fixtures/text-normalization-cases.json',
     theirs: 'test/clean/fixtures/text-normalization-cases.json',
     vendoredAt: VENDOR_PASS,
-    shipped: 'carried',
+    shipped: {
+      resynced: 'cf38ea2',
+      sha256: '644ec9df7725dd3585f2d858e9c365ba10e7f2eec94aa971040c42165ea0a877',
+      why: 'n8 (cf38ea2) moved the year cases from the model to the rules (`changed_in`), and '
+        + 'this side took the fixture byte-for-byte on 2026-09-24 — see "THE DECISION OF '
+        + '2026-09-24".',
+    },
   },
   {
     ours: 'tools/fixtures/scripture-readings.json',
@@ -549,7 +630,9 @@ const VERSIONS = [
     ours: 'electron/tts-number-normalizer.ts',
     theirs: 'src/clean/tts-number-normalizer.ts',
     pattern: /NORMALIZER_VERSION[^=]*=\s*'([^']+)'/,
-    expected: 'n6',
+    // n6 → n8 on 2026-09-24: Foundry's b3337c3 (n7) and cf38ea2 (n8), followed
+    // here by the 3-way merge in "THE DECISION OF 2026-09-24".
+    expected: 'n8',
   },
   {
     name: 'PUNCTUATION_SPEC_VERSION',
@@ -770,6 +853,7 @@ function main() {
   let replaced = 0;
   let agreed = 0;
   let revendored = 0;
+  let resynced = 0;
 
   for (const entry of FILES) {
     const { ours, theirs, vendoredAt, shipped } = entry;
@@ -839,6 +923,35 @@ function main() {
           + 'it and the corpora must be re-vendored. If it is a port, pin it here with its reason.',
         );
       }
+      continue;
+    }
+
+    if (shipped.resynced) {
+      // FOUNDRY moved and this side followed. Two questions: has Foundry moved
+      // AGAIN (the pin), and does this checkout still carry what it followed?
+      // The WORKING COPY, not HEAD — a keeper checks the checkout as it stands,
+      // and a resync is asserted before it is committed as well as after.
+      const actualSha = sha256(atShip);
+      if (actualSha !== shipped.sha256) {
+        problems.push(
+          `TIER 2 ${theirs} @${FOUNDRY_SHIPPED}: sha256 ${actualSha}, pinned ${shipped.sha256} `
+          + `(resynced from ${shipped.resynced}: ${shipped.why}). Foundry moved it AGAIN since this `
+          + 'side followed; read the commit and decide whether to follow again.',
+        );
+        continue;
+      }
+      const onDisk = Buffer.from(
+        fs.readFileSync(path.join(bookforge, ours)).toString('binary').replace(/\r/g, ''), 'binary');
+      if (!onDisk.equals(atShip)) {
+        problems.push(
+          `TIER 2 ${ours}: recorded as RESYNCED from Foundry ${shipped.resynced} and this `
+          + `repository's copy (${onDisk.length} bytes) no longer equals Foundry's `
+          + `(${atShip.length} bytes). Somebody edited the followed copy here; the rule it `
+          + 'carries is Foundry\'s, so the edit belongs there.',
+        );
+        continue;
+      }
+      resynced += 1;
       continue;
     }
 
@@ -922,11 +1035,21 @@ function main() {
       const match = version.pattern.exec(buf.toString('utf8'));
       return match === null ? null : match[1];
     };
-    const here = read(bookforge, BOOKFORGE_ANCHOR, version.ours);
+    /*
+     * THIS SIDE'S VERSION IS READ FROM THE WORKING COPY, not from
+     * BOOKFORGE_ANCHOR. Until 2026-09-24 both said n6 and the difference was
+     * invisible; the anchor is the 2026-09-05 HANDOVER commit and says n6 for
+     * ever, so reading it there would assert a fact about a file this
+     * repository no longer ships. What a stamped book is checked against at
+     * runtime (`narration-text-readiness.ts`) is the constant as it stands.
+     */
+    const hereText = fs.readFileSync(path.join(bookforge, version.ours), 'utf8');
+    const hereMatch = version.pattern.exec(hereText);
+    const here = hereMatch === null ? null : hereMatch[1];
     const there = read(foundry, FOUNDRY_SHIPPED, version.theirs);
     if (here !== version.expected || there !== version.expected) {
       problems.push(
-        `${version.name}: BookForge ${BOOKFORGE_ANCHOR} says ${here}, Foundry ${FOUNDRY_SHIPPED} `
+        `${version.name}: BookForge (working copy) says ${here}, Foundry ${FOUNDRY_SHIPPED} `
         + `says ${there}, and this keeper expects ${version.expected} on both. The version is what `
         + 'a stamped book, a cached copy and a training corpus all key off; a mismatch means two '
         + 'programs are reading text by different rules while claiming the same name.',
@@ -945,14 +1068,15 @@ function main() {
   );
 
   assert.strictEqual(handover, FILES.length, 'every file must be checked at its vendor commit');
-  assert.strictEqual(carried + pinned + replaced + agreed + revendored, FILES.length);
+  assert.strictEqual(carried + pinned + replaced + agreed + revendored + resynced, FILES.length);
   console.log(
     `PASS test-foundry-clean-text-vendor — handover: ${handover}/${FILES.length} byte-identical to `
     + `bookforge ${BOOKFORGE_ANCHOR} at foundry ${VENDOR_PASS}/${VENDOR_LEAVES}. `
     + `Shipped (${FOUNDRY_SHIPPED}): ${carried} carried verbatim, ${pinned} ported and pinned, `
     + `${revendored} re-vendored FROM this repo at a later commit and pinned, `
+    + `${resynced} resynced FROM Foundry and pinned, `
     + `${replaced} replaced by the engine's own driver, ${agreed} checked by VALUE. `
-    + `n6/s1 agree on both sides. `
+    + `${VERSIONS.map((v) => v.expected).join('/')} agree on both sides. `
     + (freeze.note ?? `${freeze.frozen}/${FROZEN_SINCE_BASELINE.length} frozen since `
       + `${ONE_DOOR_BASELINE}. `)
     + `(${foundry}; anchor from ${anchor.source})`,

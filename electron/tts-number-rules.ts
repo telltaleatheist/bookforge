@@ -14,11 +14,15 @@
  *
  * GUARANTEE is the whole admission test. A shape belongs here only when the
  * printed form has exactly one spoken reading and the rule can prove it is
- * looking at that shape. Everything else — a bare four-digit number (year or
- * quantity), a decimal with no unit, a slash reference, a page citation, a roman
+ * looking at that shape. Everything else — a four-digit number beside a unit or
+ * a currency sign, a decimal with no unit, a slash reference, a page citation, a roman
  * numeral, digits glued to letters — is LEFT AS PRINTED for the model, which is
  * the pass that exists to weigh context. A rule that is 95% right is not a rule;
  * it is a defect with a schedule.
+ *
+ * A bare YEAR met that bar in n8 (Owen, 2026-09-22), by the printed signal he
+ * ruled on: a quantity carries a thousands comma, a year does not. See the year
+ * rule's own header for the measurement.
  *
  * ── Where the readings come from ────────────────────────────────────────────
  *
@@ -201,6 +205,18 @@ function isArchiveSigil(token: string): boolean {
 const PHONE_PART = /^(?:\(\d{3}\)|[^\w\s]*\d{1,4}[-‐-―]\d{2,4}[^\w\s]*)$/;
 
 /**
+ * `PHONE_PART`, less the one shape it shares with prose: a group led by a
+ * four-digit number in the year window is a year RANGE ("(1805–70)"), and
+ * since n8 a year range beside another ("1871–2, (1805–70)") is two readings,
+ * not a phone number and its other half.
+ */
+function isPhonePart(token: string): boolean {
+  if (!PHONE_PART.test(token)) return false;
+  const lead = /\d+/.exec(token)?.[0] ?? '';
+  return !(lead.length === 4 && Number(lead) >= 1100 && Number(lead) <= 2099);
+}
+
+/**
  * A roman numeral and a period, immediately in front of a number.
  *
  * Lower case as well as upper: a citation prints "iii. 1281-2" far more often
@@ -214,6 +230,8 @@ const PHONE_PART = /^(?:\(\d{3}\)|[^\w\s]*\d{1,4}[-‐-―]\d{2,4}[^\w\s]*)$/;
  */
 const ROMAN_CITATION_LEAD =
   /(?:^|[\s(\[])(?=[ivxlcdm])m{0,3}(?:cm|cd|d?c{0,3})(?:xc|xl|l?x{0,3})(?:ix|iv|v?i{0,3})\.\s*(?=\d)/i;
+/** The same lead, ending exactly where the number begins. */
+const ROMAN_CITATION_LEAD_AT_END = new RegExp(`${ROMAN_CITATION_LEAD.source}\\d$`, 'i');
 
 /**
  * The words that make the numbers after them PAGES.
@@ -302,7 +320,10 @@ export function sitsInCitation(target: string, find: string, at: number): boolea
   //    INSIDE the span as well as before it, because the model sends the lead
   //    and the number together.
   if (ROMAN_CITATION_LEAD.test(find)) return true;
-  if (ROMAN_CITATION_LEAD.test(target.slice(0, at) + find.slice(0, 1))) return true;
+  // IMMEDIATELY before, and only there: unanchored, a "c." ANYWHERE earlier in
+  // the block ("Toussaint (c.1743–1803), who … before 1789") made every later
+  // number in it apparatus. Measured on Pursuit of Power, 2026-09-22.
+  if (ROMAN_CITATION_LEAD_AT_END.test(target.slice(0, at) + find.slice(0, 1))) return true;
   // 7. AN ABBREVIATED PAGE RANGE BEHIND A PAGE LEAD — "pp. 51-2", "fol. 128-9":
   //    the second number is shorter than the first because it drops the shared
   //    leading digits, which is the page-range convention.
@@ -318,12 +339,16 @@ export function sitsInCitation(target: string, find: string, at: number): boolea
   const nextTokens = after.trim().split(/\s+/);
   const priorToken = priorTokens.length > 0 ? priorTokens[priorTokens.length - 1] : '';
   const nextToken = nextTokens.length > 0 ? nextTokens[0] : '';
-  if (PHONE_PART.test(priorToken) || PHONE_PART.test(nextToken)) return true;
+  if (isPhonePart(priorToken) || isPhonePart(nextToken)) return true;
   // 5. AN ARCHIVE SIGIL immediately before a BARE INTEGER — "HSG 11", "GnH 3659".
   //    The bare-integer condition is what keeps this off a date or a scripture
   //    reference standing after an acronym; a sigil in front of a whole phrase
   //    says nothing about that phrase.
   if (/^\d+$/.test(bareWord(find)) && isArchiveSigil(priorToken)) return true;
+  // A BRACKETED YEAR OR YEAR RANGE after a roman numeral is a ruler's dates —
+  // "Louis XVIII (1755–1824)", "Leopold II (1797–1870)" — not "Document II
+  // 9/34". The brackets are the difference, and a slash was refused above.
+  if (/^\(/.test(find) && yearReading(find) !== null) return false;
   return ROMAN_TOKEN.test(bareWord(priorToken)) || ROMAN_TOKEN.test(bareWord(nextToken));
 }
 
@@ -976,7 +1001,7 @@ function periodCouldEndSentence(after: string): boolean {
  * "Chapter 4 September" is a chapter and a month, not the fourth of September.
  */
 const DATE_LEAD_BLOCK =
-  /(?:chapter|part|section|volume|vol|book|figure|fig|table|act|no|nos|pp?|line|item|note)\.?\s+$/i;
+  /\b(?:chapter|part|section|volume|vol|book|figure|fig|table|act|no|nos|pp?|line|item|note)\.?\s+$/i;
 
 /** "June 12, 1933", "June 12th", "Dec. 19, 1991" — and "December 19" alone. */
 const DATE_MONTH_FIRST = new RegExp(
@@ -1107,7 +1132,16 @@ function percentCandidates(text: string): Candidate[] {
 // Rule: decade
 // ─────────────────────────────────────────────────────────────────────────────
 
-const FULL_DECADE = /(?<![\w.\-])(1[1-9]\d0|20\d0)s\b/g;
+/**
+ * "mid-", "early-", "late-", "pre-" and "post-" in front of a year or a decade
+ * are read as printed and the number after them as it would be alone —
+ * "mid-1850s" is "mid-eighteen fifties", "post-1815" is "post-eighteen
+ * fifteen". Before n8 the hyphen kept both rules off, and the model read them
+ * "mid-one thousand eight hundred fifties" (Pursuit of Power, 2026-09-22).
+ */
+const PERIOD_PREFIX = '(?<=(?<![\\w\\-])(?:[Mm]id|[Ee]arly|[Ll]ate|[Pp]re|[Pp]ost)-)';
+
+const FULL_DECADE = new RegExp(`(?:${PERIOD_PREFIX}|(?<![\\w.\\-]))(1[1-9]\\d0|20\\d0)s\\b`, 'g');
 const APOSTROPHE_DECADE = /['‘’](\d0)s\b/g;
 
 function decadeCandidates(text: string): Candidate[] {
@@ -1365,9 +1399,9 @@ const GROUPED_INT = new RegExp(
 /**
  * A bare 1-3 digit integer, whitespace-delimited modulo that punctuation.
  *
- * ONE TO THREE DIGITS, not e2a's one to four: a four-digit number is the
- * year-or-quantity ambiguity ("1200 people" is twelve hundred, 1200 alone is a
- * year) and that judgement is the model's whole job. Leading zeros are left
+ * ONE TO THREE DIGITS, not e2a's one to four: a four-digit number is the year
+ * rule's (n8), and what that rule declines — a number beside a unit or a
+ * currency sign — is the model's. Leading zeros are left
  * alone too — "001" is a code, and its cardinal ("one") would be a lie.
  */
 const BARE_INT = new RegExp(`(?<!\\S)(${OPENERS})(\\d{1,3})(${CLOSERS})(?!\\S)`, 'g');
@@ -1392,6 +1426,183 @@ function bareIntCandidates(text: string): Candidate[] {
     if (words === null) continue;
     if (sitsInCitation(text, m[0], m.index)) continue;
     out.push({ at: m.index, find: m[0], replace: `${m[1]}${words}${m[3]}`, rule: 'integer' });
+  }
+  return out;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Rule: the year, and the year range (n8)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/*
+ * ── WHY A YEAR IS NOW A RULE ─────────────────────────────────────────────────
+ *
+ * Until n8 a bare four-digit number was the model's, because "1200 people" is
+ * twelve hundred and "1200" alone is a year and only the sentence can say which.
+ * Pursuit of Power measured what that cost with a 9b model: 2,343 bare years and
+ * 781 year ranges read by the model, a great many of them wrong — "one thousand
+ * eight hundred forty-eight", "one eight six three", "1844–79" as "…to one
+ * hundred seventy-nine", "1871–2" as "…to two".
+ *
+ * Owen, 2026-09-22: the model's job for a year is the JUDGEMENT; the SPELLING
+ * is code. And the judgement has a printed signal: *"presumably numbers (not
+ * dates) would have a comma — lets try setting it up like that."* Measured on
+ * that book's own text: 5,466 bare four-digit numbers against 897
+ * comma-grouped, and every one of the eight bare numbers with a quantity word
+ * beside it ("around 1900", "On 18 June 1835 people") was a year. So:
+ *
+ *  - a bare four-digit number in the year window, NO thousands comma, with no
+ *    currency sign in front and no unit after, is a YEAR, read in pair form by
+ *    `yearToWords` (the reading dates and decades already use);
+ *  - a year RANGE, full or abbreviated, is one reading — "1844–79" is
+ *    "eighteen forty-four to eighteen seventy-nine";
+ *  - a comma-grouped number stays a cardinal (`groupedIntCandidates`).
+ *
+ * THE WINDOW IS 1100–2099, `yearToWords`' own contract: "1066" would read "ten
+ * sixty-six", which is right, but "1000" would read "ten hundred", which is
+ * not, and the eleventh century is rare enough to leave to the model.
+ */
+const YEAR_MIN = 1100;
+const YEAR_MAX = 2099;
+const inYearWindow = (n: number): boolean => n >= YEAR_MIN && n <= YEAR_MAX;
+
+/**
+ * What may close a year: the bare number's punctuation, plus the colon a title
+ * prints ("Europe 1850–1914: Progress"). A colon is kept off `CLOSERS` for
+ * "Chapter 3: The Long Year"; a number in the year window followed by a colon
+ * and a space is not a label, and `(?!\S)` keeps it off "1848:30".
+ */
+const YEAR_CLOSERS = '[)\\]"\'’”.,;:!?]*';
+
+/** "1844–79", "1871-2", "1789–1848": a four-digit year, a dash, and its end. */
+const YEAR_RANGE = new RegExp(
+  `(?<!\\S)(${OPENERS})(\\d{4})(\\s*[\\u2010-\\u2015\\u002D]\\s*)(\\d{1,4})(${YEAR_CLOSERS})(?!\\S)`,
+  'g');
+/** "1848", "(1848)", "1848," — a bare four-digit number. */
+const BARE_YEAR = new RegExp(
+  `(?:${PERIOD_PREFIX}|(?<!\\S))(${OPENERS})(\\d{4})(${YEAR_CLOSERS})(?!\\S)`, 'g');
+
+/** A currency sign in front makes it money, which is `moneyCandidates`' or the model's. */
+const YEAR_CURRENCY_LEAD = /[$£€¥¢]\s*$/;
+/**
+ * A unit after it makes it a QUANTITY — "1200 miles", "1500 tons". Kept to
+ * units of measure: a noun of people or things ("1835 people") is exactly the
+ * signal the measurement found to be a year every time.
+ */
+const YEAR_UNIT_TAIL =
+  /^\s*(?:%|per\s?cent|percent|km|kg|kilomet(?:re|er)s?|kilograms?|miles?|met(?:re|er)s?|feet|foot|ft|yards?|acres?|hectares?|tons?|tonnes?|lbs?|pounds?|lit(?:re|er)s?|gallons?|square|cubic|degrees?|°)(?![A-Za-z])/i;
+/** A numbered thing — "Chapter 1848", "no. 1848", "room 1848" — is not a year. */
+const YEAR_LEAD_BLOCK =
+  /\b(?:chapter|part|section|volume|vol|book|figure|fig|table|act|no|nos|pp?|page|line|item|note|number|room|op|opus|article|art)\.?\s*$/i;
+
+/**
+ * The end year a printed range means, or null when it cannot be one reading.
+ *
+ * An abbreviated end borrows the start's leading digits: "1871–2" ends 1872,
+ * "1844–79" ends 1879. An end that is not AFTER the start ("1899–03", which
+ * crosses a century) or has three digits is not guessed at.
+ */
+export function yearRangeEnd(first: number, printed: string): number | null {
+  if (printed.length === 3) return null;
+  if (printed.length === 4) {
+    const n = Number(printed);
+    return n > first && inYearWindow(n) ? n : null;
+  }
+  const scale = 10 ** printed.length;
+  const n = Math.floor(first / scale) * scale + Number(printed);
+  return n > first ? n : null;
+}
+
+/**
+ * The code's reading of a find that is EXACTLY a year or a year range, with the
+ * punctuation it wears — or null when it is not one.
+ *
+ * Shared with the validator, which holds a model's reading of a year to this
+ * spelling (`validateNumberEdits`): the model decides whether a number is a
+ * year, and this says how a year is said.
+ */
+export function yearReading(find: string): string | null {
+  const range = new RegExp(`^${YEAR_RANGE.source.replace('(?<!\\S)', '').replace('(?!\\S)', '')}$`)
+    .exec(find);
+  if (range !== null) {
+    const first = Number(range[2]);
+    if (!inYearWindow(first)) return null;
+    const end = yearRangeEnd(first, range[4]!);
+    if (end === null) return null;
+    return `${range[1]}${yearToWords(first)} to ${yearToWords(end)}${range[5]}`;
+  }
+  const bare = new RegExp(`^${BARE_YEAR.source.replace('(?<!\\S)', '').replace('(?!\\S)', '')}$`)
+    .exec(find);
+  if (bare === null || !inYearWindow(Number(bare[2]))) return null;
+  return `${bare[1]}${yearToWords(Number(bare[2]))}${bare[3]}`;
+}
+
+/**
+ * The QUANTITY readings of the same find — what a model that judged the number
+ * a count rather than a year may say instead: the cardinal ("one thousand two
+ * hundred fifty") or the hundreds form ("twelve hundred fifty").
+ */
+export function yearQuantityReadings(find: string): string[] {
+  const numbers = (find.match(/\d+/g) ?? []).map(Number);
+  const readings = (n: number): string[] => {
+    const out = [cardinalWords(n)!];
+    if (n % 1000 !== 0) {
+      const hundreds = cardinalWords(Math.floor(n / 100));
+      const rest = n % 100;
+      out.push(rest === 0 ? `${hundreds} hundred` : `${hundreds} hundred ${cardinalWords(rest)}`);
+    }
+    return out;
+  };
+  if (numbers.length === 1) return readings(numbers[0]!);
+  if (numbers.length === 2) {
+    const end = yearRangeEnd(numbers[0]!, (find.match(/\d+/g) ?? [])[1]!);
+    const ends = [numbers[1]!, ...(end === null ? [] : [end])];
+    const out: string[] = [];
+    for (const a of readings(numbers[0]!)) {
+      for (const e of ends) for (const b of readings(e)) out.push(`${a} to ${b}`);
+    }
+    return out;
+  }
+  return [];
+}
+
+/** Is the number at `at` in the running text a year the rule may read? */
+function yearContextAllows(text: string, at: number, end: number): boolean {
+  if (isQuantityContext(text, at, end)) return false;
+  // A BRACKETED year is never a numbered thing: "Relief Act (1858)" is a date,
+  // where "Act 3" is not.
+  return text[at] === '(' || !YEAR_LEAD_BLOCK.test(text.slice(0, at));
+}
+
+/**
+ * Does a currency sign stand in front of this number, or a unit after it? The
+ * printed signal that it is a COUNT — shared with the validator, which lets a
+ * model's quantity reading of a four-digit number stand only here.
+ */
+export function isQuantityContext(text: string, at: number, end: number): boolean {
+  return YEAR_CURRENCY_LEAD.test(text.slice(0, at)) || YEAR_UNIT_TAIL.test(text.slice(end));
+}
+
+function yearRangeCandidates(text: string): Candidate[] {
+  const out: Candidate[] = [];
+  for (const m of matches(YEAR_RANGE, text)) {
+    const replace = yearReading(m[0]);
+    if (replace === null) continue;
+    if (!yearContextAllows(text, m.index, m.index + m[0].length)) continue;
+    if (sitsInCitation(text, m[0], m.index)) continue;
+    out.push({ at: m.index, find: m[0], replace, rule: 'year-range' });
+  }
+  return out;
+}
+
+function bareYearCandidates(text: string): Candidate[] {
+  const out: Candidate[] = [];
+  for (const m of matches(BARE_YEAR, text)) {
+    const replace = yearReading(m[0]);
+    if (replace === null) continue;
+    if (!yearContextAllows(text, m.index, m.index + m[0].length)) continue;
+    if (sitsInCitation(text, m[0], m.index)) continue;
+    out.push({ at: m.index, find: m[0], replace, rule: 'year' });
   }
   return out;
 }
@@ -1424,6 +1635,11 @@ const RULES: readonly Rule[] = [
   { name: 'decade', scan: decadeCandidates },
   { name: 'ordinal', scan: ordinalCandidates },
   { name: 'marker', scan: markerCandidates },
+  // A range before its halves, so "1844–79" is one reading and not a year and
+  // a stray "79". Both after the date, money and percent rules, which know
+  // more about the numbers they take.
+  { name: 'year-range', scan: yearRangeCandidates },
+  { name: 'year', scan: bareYearCandidates },
   { name: 'grouped', scan: groupedIntCandidates },
   { name: 'integer', scan: bareIntCandidates },
   // LAST, because it is the widest net: every earlier rule that knows a shape

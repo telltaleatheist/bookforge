@@ -41,7 +41,7 @@
  *
  * What that costs is stated: this proves the WIRE (the JSON shape, the OPF meta,
  * the round trip), not that a cleanup produces those values. The values are held
- * by `test-foundry-clean-text-vendor`, which pins n6/s1 on both sides.
+ * by `test-foundry-clean-text-vendor`, which pins n8/s1 on both sides.
  *
  * ── The second stamp is the engine's own bytes ──────────────────────────────
  *
@@ -326,9 +326,24 @@ async function main() {
       // that ONE definition serves the renders and the corpora. If these ever
       // differ, a book the engine stamped reads stale here BY RULE — correctly —
       // and the fix is a re-vendor, not a looser gate.
-      assert.strictEqual(normalizer.NORMALIZER_VERSION, ENGINE_WROTE.normalizerVersion);
-      assert.strictEqual(punctuation.PUNCTUATION_SPEC_VERSION, ENGINE_WROTE.punctuationSpec);
-      assert.strictEqual(epub.NARRATION_TEXT_STAMP_VERSION, ENGINE_WROTE.stampVersion);
+      //
+      // Asked of the ENGINE THIS APP RUNS — the vendored bundle's own constants —
+      // and not of ENGINE_WROTE. That fixture is a stamp MEASURED off a real run
+      // on 2026-09-05 (foundry 1.1.0, n6) and stays as history for the read-back
+      // above; comparing against it meant this check went red the day the rules
+      // legitimately moved (n7/n8, resynced here 2026-09-24) while saying nothing
+      // about the engine that actually cleans a book.
+      const bundle = fs.readFileSync(ENGINE_BUNDLE, 'utf8');
+      const constant = (name, shape) => {
+        const found = new RegExp(`\\b${name} = ${shape}`).exec(bundle);
+        assert.ok(found !== null, `${name} not found in ${ENGINE_BUNDLE}`);
+        return found[1];
+      };
+      assert.strictEqual(normalizer.NORMALIZER_VERSION, constant('NORMALIZER_VERSION', '"([^"]+)"'));
+      assert.strictEqual(punctuation.PUNCTUATION_SPEC_VERSION,
+        constant('PUNCTUATION_SPEC_VERSION', '"([^"]+)"'));
+      assert.strictEqual(String(epub.NARRATION_TEXT_STAMP_VERSION),
+        constant('NARRATION_TEXT_STAMP_VERSION', '(\\d+)'));
     });
 
     /*

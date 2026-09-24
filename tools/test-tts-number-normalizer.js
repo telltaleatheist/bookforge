@@ -180,6 +180,19 @@ const CHAPTER = `<?xml version="1.0" encoding="utf-8"?>
 </html>`;
 
 /**
+ * THE SAME CHAPTER WITH A QUANTITY THE RULES STILL DECLINE.
+ *
+ * Since n8 (foundry cf38ea2, resynced here 2026-09-24) a bare four-digit number
+ * in 1100–2099 with no comma, currency sign or unit is a YEAR and the RULES read
+ * it — so "1200 members", "1934" and "1935" in {@link CHAPTER} are no longer the
+ * model's. A number beside a unit ("1200 miles") still is (foundry's own n8
+ * keeper: `untouched('a road 1200 miles long')`), so the tests that exist to
+ * watch a MODEL edit land use this chapter.
+ */
+const MODEL_CHAPTER = CHAPTER.replace(
+  'and 1200 members watched the pamphlet', 'and members from 1200 miles away watched the pamphlet');
+
+/**
  * A LONG chapter — twenty numbered paragraphs, so the >10% parse-failure gate
  * has a denominator big enough for one failure to sit under it and two to sit
  * over it. On the five-passage book above, ANY single failure trips the gate,
@@ -334,9 +347,12 @@ test('NOT_FOUND — the find is not verbatim in the target, and there is no ladd
   assert.strictEqual(only('On 23  March 1933 he spoke.', '23 March 1933', 'x'), 'NOT_FOUND');
 });
 
-test('AMBIGUOUS_FIND — the same span twice, so which one was meant is unknown', () => {
-  assert.strictEqual(
-    only('In 1933 and again in 1933.', '1933', 'nineteen thirty-three'), 'AMBIGUOUS_FIND');
+// n7 (foundry b3337c3, resynced 2026-09-24): a number printed twice is read at
+// every place it is printed, each occurrence judged on its own.
+test('a number printed twice is read at BOTH places (n7 — AMBIGUOUS_FIND no longer applies)', () => {
+  const { accepted } = check('In 1933 and again in 1933.',
+    [{ find: '1933', replace: 'nineteen thirty-three' }]);
+  assert.deepStrictEqual(accepted.map((a) => a.at), [3, 21]);
 });
 
 test('NO_DIGIT_IN_FIND — prose tidying cannot ride in on a number edit', () => {
@@ -453,8 +469,8 @@ test('AMBIGUOUS_FIND is DIGIT-BOUNDED — "1." is not found inside "11."', () =>
     'the only occurrence sits inside another number, so there is none');
   assert.strictEqual(only('1. Amulet and 11. Charm', '1.', 'one.'), 'APPLIED',
     'the real marker is found, and the one inside "11." is not a second one');
-  assert.strictEqual(only('1. Amulet and 1. Charm', '1.', 'one.'), 'AMBIGUOUS_FIND',
-    'two real occurrences are still ambiguous');
+  assert.strictEqual(check('1. Amulet and 1. Charm', [{ find: '1.', replace: 'one.' }])
+    .accepted.length, 2, 'two real occurrences are both read');
   // And the same boundary the other way: the "19" inside "1944" is not a second
   // occurrence, so the real one is found instead of being called ambiguous.
   const { accepted } = check('In 1944 he was 19.', [{ find: '19', replace: 'nineteen' }]);
@@ -916,16 +932,14 @@ const bookPass = async (book, runner, extra = {}) => norm.normalizeNarrationNumb
 const sharedCache = (name) => path.join(ROOT, `shared-${name}`);
 
 test('the pass rewrites TEXT NODES and leaves every tag where it was', async () => {
-  const book = await buildBook('apply.epub');
+  const book = await buildBook('apply.epub', MODEL_CHAPTER);
   const runner = scriptedRunner({
     // The date and the money are the RULES' now, and the model is shown the text
     // with them already read — so the one thing left to answer is the quantity.
-    'members watched': editsJson(['1200 members', 'twelve hundred members']),
-    // Both <li> items are ONE export unit (the <ul>), so they arrive in one
-    // request and come back in one edit list — which is exactly what has to
-    // survive being applied to two different text nodes.
-    'A printer is represented': editsJson(
-      ['1934', 'nineteen thirty-four'], ['1935', 'nineteen thirty-five']),
+    'miles away watched': editsJson(['1200 miles', 'twelve hundred miles']),
+    // Both <li> items are ONE export unit (the <ul>). Since n8 the RULES read
+    // both years, so the unit is never asked — and what has to survive is the
+    // rules' own edits landing in two different text nodes.
   });
   const out = await bookPass(book, runner);
   assert.ok(out !== null);
@@ -933,15 +947,17 @@ test('the pass rewrites TEXT NODES and leaves every tag where it was', async () 
   const chapter = await entryText(out.epubPath, 'OEBPS/chapter-01.xhtml');
   assert.ok(chapter.includes('March twenty-third, nineteen thirty-three'), 'the date landed');
   assert.ok(chapter.includes('five dollars and fifty cents'), 'the money landed');
-  assert.ok(chapter.includes('twelve hundred members'), 'and so did the model\'s own edit');
+  assert.ok(chapter.includes('twelve hundred miles'), 'and so did the model\'s own edit');
   // The model was never shown the digits the rules had already read.
-  const asked = runner.calls.map(targetOf).find((t) => t.includes('members watched'));
+  const asked = runner.calls.map(targetOf).find((t) => t.includes('miles away watched'));
   assert.ok(!asked.includes('23 March 1933') && !asked.includes('$5.50'),
     `the rule-applied text is what went out: ${asked}`);
   // The structure e2a depends on, still there.
   assert.ok(chapter.includes('<li>'), 'the list items are still list items');
   assert.ok(chapter.includes('nineteen thirty-four'), 'inside the first <li>');
   assert.ok(chapter.includes('nineteen thirty-five'), 'inside the second <li>');
+  assert.ok(!runner.calls.some((c) => targetOf(c).includes('A printer is represented')),
+    'the list cost no request: the rules read both years (n8)');
   assert.ok(chapter.includes('data-bf-cat="chapter"'), 'the conversion stamp survived');
   assert.ok(chapter.includes('<em>19</em>'), 'the <em> is untouched — the edit was refused');
   // The caption never went near the model. It is not in the copy either — the
@@ -955,19 +971,22 @@ test('the pass rewrites TEXT NODES and leaves every tag where it was', async () 
 });
 
 test('the pass VERIFIES the rewrite landed, against the written file', async () => {
-  const book = await buildBook('verify.epub');
+  const book = await buildBook('verify.epub', MODEL_CHAPTER);
   const runner = scriptedRunner({
-    'members watched': editsJson(['1200 members', 'twelve hundred members']),
+    'miles away watched': editsJson(['1200 miles', 'twelve hundred miles']),
   });
   const out = await bookPass(book, runner);
   // `writeNarrationEpub` re-reads the copy and walks it before this returns; a
   // rewrite that did not land destroys the file rather than shipping it. The
   // proof it ran is the count it reports, measured on disk.
-  assert.strictEqual(out.record.appliedSpans, 3, 'the date, the money and the quantity');
+  // Since n8 the RULES also read the two list years and the "1933" in the
+  // book's own title ("The 1933 Book"); the model keeps the quantity.
+  assert.strictEqual(out.record.appliedSpans, 6,
+    'the date, the money, three years (the rules, since n8) and the quantity (the model)');
   const record = JSON.parse(fs.readFileSync(out.recordPath, 'utf8'));
-  assert.strictEqual(record.appliedSpans, 3);
+  assert.strictEqual(record.appliedSpans, 6);
   // And the record says which half of the pass did which.
-  assert.strictEqual(record.appliedByRules, 2);
+  assert.strictEqual(record.appliedByRules, 5);
   assert.strictEqual(record.appliedByModel, 1);
   assert.strictEqual(record.appliedByRules + record.appliedByModel, record.appliedSpans);
 });
@@ -1013,7 +1032,9 @@ test('a span across an <em> is refused and RECORDED, never flattened', async () 
   });
   const out = await bookPass(book, runner);
   const statuses = statusesFor(out.record, 'He was born in');
-  assert.deepStrictEqual(statuses, ['SPANS_MARKUP']);
+  // TWO refusals since n8: the year RULE meets the <em> first and records its
+  // own refusal, and the model's edit for the same span is refused the same way.
+  assert.deepStrictEqual(statuses, ['SPANS_MARKUP', 'SPANS_MARKUP']);
   const chapter = await entryText(out.epubPath, 'OEBPS/chapter-01.xhtml');
   assert.ok(chapter.includes('<em>19</em>44'), 'the digits stand, and so does the markup');
 });
@@ -1202,10 +1223,10 @@ test('progress is counted over the passages that are actually ASKED', async () =
 });
 
 test('the record names every proposed edit and its disposition', async () => {
-  const book = await buildBook('record.epub');
+  const book = await buildBook('record.epub', MODEL_CHAPTER);
   const runner = scriptedRunner({
-    'members watched': editsJson(
-      ['1200 members', 'twelve hundred members'],
+    'miles away watched': editsJson(
+      ['1200 miles', 'twelve hundred miles'],
       // A span the RULES already read: the model does not get a second opinion.
       ['five dollars and fifty cents', 'five fifty'],
       ['Reichstag', 'parliament']),
@@ -1252,9 +1273,9 @@ test('a passage the RULES finished is never sent to the model', async () => {
 });
 
 test('a model edit is mapped back past the rules\' own length changes', async () => {
-  const book = await buildBook('mapback.epub');
+  const book = await buildBook('mapback.epub', MODEL_CHAPTER);
   const runner = scriptedRunner({
-    'members watched': editsJson(['1200 members', 'twelve hundred members']),
+    'miles away watched': editsJson(['1200 miles', 'twelve hundred miles']),
   });
   const out = await bookPass(book, runner);
   const unit = out.record.units.find((u) => u.text.includes('On 23 March 1933'));
@@ -1266,7 +1287,7 @@ test('a model edit is mapped back past the rules\' own length changes', async ()
   const chapter = await entryText(out.epubPath, 'OEBPS/chapter-01.xhtml');
   assert.ok(chapter.includes(
     'On March twenty-third, nineteen thirty-three the Reichstag passed the Enabling Act, '
-    + 'and twelve hundred members watched the pamphlet sell for five dollars and fifty cents.'),
+    + 'and members from twelve hundred miles away watched the pamphlet sell for five dollars and fifty cents.'),
     chapter);
 });
 
@@ -1421,6 +1442,54 @@ async function scriptureProbe(model) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────────────────────
+// n7 / n8 — mirrored from foundry b3337c3 / cf38ea2 (resynced 2026-09-24)
+//
+// Foundry's CARRIED tests are NOT mirrored: carrying an edit to the neighbour
+// that prints it lives in Foundry's pooled driver, and this copy keeps its
+// serial driver (see the NOT PORTED note in electron/tts-number-normalizer.ts).
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('split word — "fini sh" is joined; a space that may be the author\'s is not', () => {
+  const policy = norm.EVERY_CLASS;
+  const status = (target, find, replace) =>
+    norm.validateNumberEdits(target, [target.length], [{ find, replace }], [], policy).records[0];
+  const joined = status('read it from start to fini sh; those who', 'fini sh', 'finish');
+  assert.strictEqual(joined.status, 'APPLIED');
+  assert.strictEqual(joined.editClass, 'split-word');
+  assert.strictEqual(status('the nineteenth century', 'nineteenth', 'nineteen th').status, 'NOT_A_CLASS');
+  assert.strictEqual(status('twenty per cent of it', 'per cent', 'percent').status, 'NOT_A_CLASS');
+  assert.strictEqual(status('every one of them', 'every one', 'everyone').status, 'NOT_A_CLASS');
+});
+
+test('a year the model reads is SPELLED by code; a quantity reading stands', () => {
+  const read = (target, find, replace) => {
+    const hit = check(target, [{ find, replace }]).accepted[0];
+    return hit === undefined ? undefined : hit.replace;
+  };
+  // Beside a unit the rules decline, so these reach the model.
+  assert.strictEqual(read('built in 1863 miles away', '1863', 'one eight six three'),
+    'eighteen sixty-three');
+  assert.strictEqual(read('from 1847–1922 miles', '1847–1922', 'one eight forty seven to nineteen twenty two'),
+    'eighteen forty-seven to nineteen twenty-two');
+  assert.strictEqual(read('a road 1200 miles long', '1200', 'twelve hundred'), 'twelve hundred');
+  assert.strictEqual(read('a road 1250 miles long', '1250', 'one thousand two hundred fifty'),
+    'one thousand two hundred fifty');
+  assert.strictEqual(read('a road 1250 miles long', '1250', 'twelve hundred fifty'),
+    'twelve hundred fifty');
+});
+
+test('a cardinal reading of a year stands ONLY beside a unit or a currency sign', () => {
+  const read = (target, find, replace) => {
+    const hit = check(target, [{ find, replace }]).accepted[0];
+    return hit === undefined ? undefined : hit.replace;
+  };
+  assert.strictEqual(read('under Act 1858 it was', '1858', 'one thousand eight hundred fifty-eight'),
+    'eighteen fifty-eight');
+  assert.strictEqual(read('it cost £ 1858 then', '1858', 'one thousand eight hundred fifty-eight'),
+    'one thousand eight hundred fifty-eight');
+});
 
 (async () => {
   const scriptureAt = process.argv.indexOf('--scripture');

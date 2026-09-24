@@ -489,11 +489,37 @@ test('integer: a bare 1-3 digit number, keeping the punctuation it wears', () =>
   reads('Isaiah 29 is the chapter', 'Isaiah twenty nine is the chapter');
 });
 
-test('integer: four digits are the model\'s judgement, not a rule\'s', () => {
-  untouched('In 1985 it began');
-  untouched('1200 people came');
-  untouched('He was born in 1944 and never said so.');
-  untouched('1144');
+test('year: a bare four-digit number with no comma is a YEAR (n8 — Owen, 2026-09-22)', () => {
+  reads('In 1985 it began', 'In nineteen eighty-five it began');
+  reads('He was born in 1944 and never said so.', 'He was born in nineteen forty-four and never said so.');
+  reads('1144', 'eleven forty-four');
+  reads('the year 1900, exactly', 'the year nineteen hundred, exactly');
+  reads('from 1905 to 2006', 'from nineteen oh five to two thousand six');
+  reads('Europe 1850–1914: Progress', 'Europe eighteen fifty to nineteen fourteen: Progress');
+  // The eight numbers Pursuit of Power printed beside a quantity word — every
+  // one of them a year, which is why a noun of people is not a unit.
+  reads('around 1900 there were', 'around nineteen hundred there were');
+  reads('On 18 June 1835 people gathered', 'On June eighteenth, eighteen thirty-five people gathered');
+});
+
+test('year: a range is ONE reading, and an abbreviated end borrows the start', () => {
+  reads('the years 1844–79', 'the years eighteen forty-four to eighteen seventy-nine');
+  reads('in 1871–2,', 'in eighteen seventy-one to eighteen seventy-two,');
+  reads('(1789–1848)', '(seventeen eighty-nine to eighteen forty-eight)');
+  reads('(1805–70) and (1847–1922)',
+    '(eighteen oh five to eighteen seventy) and (eighteen forty-seven to nineteen twenty-two)');
+  // An end that is not after the start is not guessed at.
+  untouched('the years 1899–03');
+});
+
+test('year: a comma, a currency sign or a unit keeps it a QUANTITY', () => {
+  reads('1,250 men', 'one thousand two hundred fifty men');
+  reads('7,000 horses', 'seven thousand horses');
+  untouched('a road 1200 miles long');
+  untouched('it weighed 1500 tons');
+  untouched('see Chapter 1901');
+  // Outside the window pair form is wrong ("ten hundred"): the model's.
+  untouched('in 1000 and 1066');
 });
 
 test('integer: every adjacency on Owen\'s list refuses it', () => {
@@ -517,7 +543,7 @@ test('integer: an area code beside a phone number is half a phone number', () =>
   untouched('call (405) 235-5396 today');
   untouched('scheduled at (619) 471-1722.');
   // And a bare number beside ordinary prose is still an ordinary number.
-  reads('In 1985, 8 men came', 'In 1985, eight men came');
+  reads('In 1985, 8 men came', 'In nineteen eighty-five, eight men came');
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -590,7 +616,7 @@ test('date: a month ABBREVIATION expands to the month', () => {
 test('the leave-alone list, in one place', () => {
   for (const printed of [
     'vol. 2', 'no. 5', 'Document II 9/34', '298/38', '9/34',
-    '1985', '1200 people', '10:05', '73101',
+    '1200 miles', '10:05', '73101',
     'AfW HH R 231191', 'a ratio of 3.14159 exactly', 'Henry VIII',
     // A serial, a version and a leading zero are still codes, whatever letters
     // stand beside them — the glued rule refuses all three by shape.
@@ -678,10 +704,11 @@ test('glued: the n4 -> n5 RESIDUAL SET, and why each one stays', () => {
   // model, which can read the sentence. Left, and listed.
   for (const printed of ['RFZ 1', 'ADL 122', '18B', 'SS1488', 'L-1011']) untouched(printed);
 
-  // And the defect that bought them stays bought.
+  // And the defect that bought them stays bought: the catch-all reads nothing
+  // glued. Since n8 a PERIOD PREFIX ("pre-1914", "mid-1920s") is read by the
+  // year and decade rules instead — see the period-prefix test.
   for (const printed of [
-    'pre-1914 Europe', 'post-1945 Germany', 'the Kennedy-1963 assassination', 'Louis XIV-1715',
-    'By the mid-1920s at the latest', 'a mid-19th century view',
+    'the Kennedy-1963 assassination', 'Louis XIV-1715', 'a mid-19th century view',
   ]) untouched(printed);
 });
 
@@ -739,10 +766,10 @@ test('every offset is against the ORIGINAL text, exactly', () => {
 });
 
 test('a span that would cross a text node is REFUSED, and recorded', () => {
-  // "He was born in " + "19" + "44 and paid $5." — the money sits across the
-  // second boundary. (An <em> around the "19" is what makes three nodes.)
-  const text = 'He was born in 1944 and paid $5.50 for it.';
-  const cut = 'He was born in 1944 and paid $5.'.length;
+  // "He was born in Ohio and paid $5." + "50 for it." — the money sits across
+  // the boundary. (No year in the first node: since n8 a year there is read.)
+  const text = 'He was born in Ohio and paid $5.50 for it.';
+  const cut = 'He was born in Ohio and paid $5.'.length;
   const out = rules.applyNumberRules(text, [cut, text.length - cut]);
   assert.strictEqual(out.text, text, 'nothing was applied');
   assert.deepStrictEqual(out.rewrites, []);
@@ -860,6 +887,38 @@ test('a lead word keeps the digit a numbered thing, not a day', () => {
     'Chapter four September opens the file.');
   reads('Part 4 September follows.', 'Part four September follows.');
   reads('see p. 4 September there', 'see page four September there');
+});
+
+test('a roman citation lead is IMMEDIATELY before the number, not anywhere earlier', () => {
+  // Pursuit of Power, 2026-09-22: one "c." early in a block made every later
+  // number in it apparatus.
+  reads('Toussaint (c.1743–1803), who was widespread before 1789; for',
+    'Toussaint (c.1743–1803), who was widespread before seventeen eighty-nine; for');
+  untouched('see iii. 1281-2 there');
+});
+
+test('a ruler\'s bracketed dates after his numeral are read, not apparatus', () => {
+  reads('Louis XVIII (1755–1824), brother',
+    'Louis XVIII (seventeen fifty-five to eighteen twenty-four), brother');
+  untouched('Document II 9/34 filed');
+});
+
+test('a lead word is a WHOLE word — "Princip" and "Krupp" are not "p."', () => {
+  reads('Gavrilo Princip (1894–1918) declared',
+    'Gavrilo Princip (eighteen ninety-four to nineteen eighteen) declared');
+  reads('Alfred Krupp (1812–87) was', 'Alfred Krupp (eighteen twelve to eighteen eighty-seven) was');
+  untouched('see Chapter 1901');
+});
+
+test('a period prefix — mid-, early-, late-, pre-, post- — leaves the year its reading', () => {
+  reads('in the mid-1850s, and post-1815 Europe',
+    'in the mid-eighteen fifties, and post-eighteen fifteen Europe');
+  reads('pre-1789 France', 'pre-seventeen eighty-nine France');
+});
+
+test('a bracketed year after a lead word is a date, not a numbered thing', () => {
+  reads('the Jews\' Relief Act (1858) allowed', 'the Jews\' Relief Act (eighteen fifty-eight) allowed');
+  untouched('see Chapter 1858 now');
 });
 
 (async () => {

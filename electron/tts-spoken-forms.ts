@@ -366,6 +366,11 @@ export function englishWordCount(): number {
   return loadEnglishWords().size;
 }
 
+/** Does this build's word list carry it, case aside? No length floor — see `isEmphasisWord`. */
+export function isEnglishWord(word: string): boolean {
+  return loadEnglishWords().has(word.toLowerCase());
+}
+
 /**
  * Is this run of capitals a WORD the author shouted, rather than an initialism?
  *

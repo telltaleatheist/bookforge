@@ -1,52 +1,59 @@
 [
   {
     "id": "year-plain",
-    "stage": "model",
+    "stage": "rules",
     "rule": "year",
     "in": "He died in 1944.",
-    "want": "He died in nineteen forty-four."
+    "want": "He died in nineteen forty-four.",
+    "changed_in": "n8 — Owen 2026-09-22: the model judges a year, code spells it. A bare four-digit number in 1100-2099 with no thousands comma, no currency sign and no unit is a YEAR and the rules read it; so is a year range, full or abbreviated."
   },
   {
     "id": "year-oh",
-    "stage": "model",
+    "stage": "rules",
     "rule": "year",
     "in": "The photograph is from 1905.",
-    "want": "The photograph is from nineteen oh five."
+    "want": "The photograph is from nineteen oh five.",
+    "changed_in": "n8 — Owen 2026-09-22: the model judges a year, code spells it. A bare four-digit number in 1100-2099 with no thousands comma, no currency sign and no unit is a YEAR and the rules read it; so is a year range, full or abbreviated."
   },
   {
     "id": "year-2000s",
-    "stage": "model",
+    "stage": "rules",
     "rule": "year",
     "in": "It reopened in 2006.",
-    "want": "It reopened in two thousand six."
+    "want": "It reopened in two thousand six.",
+    "changed_in": "n8 — Owen 2026-09-22: the model judges a year, code spells it. A bare four-digit number in 1100-2099 with no thousands comma, no currency sign and no unit is a YEAR and the rules read it; so is a year range, full or abbreviated."
   },
   {
     "id": "year-hundred",
-    "stage": "model",
+    "stage": "rules",
     "rule": "year",
     "in": "the year 1900, exactly",
-    "want": "the year nineteen hundred, exactly"
+    "want": "the year nineteen hundred, exactly",
+    "changed_in": "n8 — Owen 2026-09-22: the model judges a year, code spells it. A bare four-digit number in 1100-2099 with no thousands comma, no currency sign and no unit is a YEAR and the rules read it; so is a year range, full or abbreviated."
   },
   {
     "id": "year-range-full",
-    "stage": "model",
+    "stage": "rules",
     "rule": "range",
     "in": "The occupation ran from 1914-1918.",
-    "want": "The occupation ran from nineteen fourteen to nineteen eighteen."
+    "want": "The occupation ran from nineteen fourteen to nineteen eighteen.",
+    "changed_in": "n8 — Owen 2026-09-22: the model judges a year, code spells it. A bare four-digit number in 1100-2099 with no thousands comma, no currency sign and no unit is a YEAR and the rules read it; so is a year range, full or abbreviated."
   },
   {
     "id": "year-range-abbrev",
-    "stage": "model",
+    "stage": "rules",
     "rule": "range",
     "in": "released in the course of 1933-6.",
-    "want": "released in the course of nineteen thirty-three to nineteen thirty-six."
+    "want": "released in the course of nineteen thirty-three to nineteen thirty-six.",
+    "changed_in": "n8 — Owen 2026-09-22: the model judges a year, code spells it. A bare four-digit number in 1100-2099 with no thousands comma, no currency sign and no unit is a YEAR and the rules read it; so is a year range, full or abbreviated."
   },
   {
     "id": "qty-not-year",
-    "stage": "model",
+    "stage": "rules",
     "rule": "year",
     "in": "By spring 1200 workers were on the line.",
-    "want": "By spring twelve hundred workers were on the line."
+    "want": "By spring twelve hundred workers were on the line.",
+    "changed_in": "n8 — Owen 2026-09-22: the model judges a year, code spells it. A bare four-digit number in 1100-2099 with no thousands comma, no currency sign and no unit is a YEAR and the rules read it; so is a year range, full or abbreviated. \"1200 workers\" carries no comma, so it is a year by that signal \u2014 and \"twelve hundred\" is both readings."
   },
   {
     "id": "scripture-abbrev",
@@ -545,35 +552,39 @@
   },
   {
     "id": "leave-glued-decade-mid",
-    "stage": "leave",
-    "rule": "leave",
+    "stage": "rules",
+    "rule": "decade",
     "in": "By the mid-1920s at the latest",
-    "want": "By the mid-1920s at the latest",
-    "added_in": "n5 — the adversarial review of 2026-09-04: the `glued` catch-all claimed shapes the decade, year and ordinal rules deliberately leave to the model, and read them MALFORMED (\"mid-one thousand nine hundred twenty s\"). One case per measured row."
+    "want": "By the mid-nineteen twenties at the latest",
+    "added_in": "n5 — the adversarial review of 2026-09-04: the `glued` catch-all claimed shapes the decade, year and ordinal rules deliberately leave to the model, and read them MALFORMED (\"mid-one thousand nine hundred twenty s\"). One case per measured row.",
+    "changed_in": "n8 — Owen 2026-09-22: a year is spelled by code. The glued catch-all still never reads these; the year and decade rules do, the period prefix kept as printed."
   },
   {
     "id": "leave-glued-decade-post",
-    "stage": "leave",
-    "rule": "leave",
+    "stage": "rules",
+    "rule": "decade",
     "in": "post-1990s attitudes",
-    "want": "post-1990s attitudes",
-    "added_in": "n5 — the adversarial review of 2026-09-04: the `glued` catch-all claimed shapes the decade, year and ordinal rules deliberately leave to the model, and read them MALFORMED (\"mid-one thousand nine hundred twenty s\"). One case per measured row."
+    "want": "post-nineteen nineties attitudes",
+    "added_in": "n5 — the adversarial review of 2026-09-04: the `glued` catch-all claimed shapes the decade, year and ordinal rules deliberately leave to the model, and read them MALFORMED (\"mid-one thousand nine hundred twenty s\"). One case per measured row.",
+    "changed_in": "n8 — Owen 2026-09-22: a year is spelled by code. The glued catch-all still never reads these; the year and decade rules do, the period prefix kept as printed."
   },
   {
     "id": "leave-glued-decade-2000s",
-    "stage": "leave",
-    "rule": "leave",
+    "stage": "rules",
+    "rule": "decade",
     "in": "a mid-2000s revival",
-    "want": "a mid-2000s revival",
-    "added_in": "n5 — the adversarial review of 2026-09-04: the `glued` catch-all claimed shapes the decade, year and ordinal rules deliberately leave to the model, and read them MALFORMED (\"mid-one thousand nine hundred twenty s\"). One case per measured row."
+    "want": "a mid-two thousands revival",
+    "added_in": "n5 — the adversarial review of 2026-09-04: the `glued` catch-all claimed shapes the decade, year and ordinal rules deliberately leave to the model, and read them MALFORMED (\"mid-one thousand nine hundred twenty s\"). One case per measured row.",
+    "changed_in": "n8 — Owen 2026-09-22: a year is spelled by code. The glued catch-all still never reads these; the year and decade rules do, the period prefix kept as printed."
   },
   {
     "id": "leave-glued-decade-early",
-    "stage": "leave",
-    "rule": "leave",
+    "stage": "rules",
+    "rule": "decade",
     "in": "early-1900s",
-    "want": "early-1900s",
-    "added_in": "n5 — the adversarial review of 2026-09-04: the `glued` catch-all claimed shapes the decade, year and ordinal rules deliberately leave to the model, and read them MALFORMED (\"mid-one thousand nine hundred twenty s\"). One case per measured row."
+    "want": "early-nineteen hundreds",
+    "added_in": "n5 — the adversarial review of 2026-09-04: the `glued` catch-all claimed shapes the decade, year and ordinal rules deliberately leave to the model, and read them MALFORMED (\"mid-one thousand nine hundred twenty s\"). One case per measured row.",
+    "changed_in": "n8 — Owen 2026-09-22: a year is spelled by code. The glued catch-all still never reads these; the year and decade rules do, the period prefix kept as printed."
   },
   {
     "id": "leave-glued-decade-anti",
@@ -585,19 +596,21 @@
   },
   {
     "id": "leave-glued-year-pre",
-    "stage": "leave",
-    "rule": "leave",
+    "stage": "rules",
+    "rule": "year",
     "in": "pre-1914 Europe",
-    "want": "pre-1914 Europe",
-    "added_in": "n5 — the adversarial review of 2026-09-04: the `glued` catch-all claimed shapes the decade, year and ordinal rules deliberately leave to the model, and read them MALFORMED (\"mid-one thousand nine hundred twenty s\"). One case per measured row."
+    "want": "pre-nineteen fourteen Europe",
+    "added_in": "n5 — the adversarial review of 2026-09-04: the `glued` catch-all claimed shapes the decade, year and ordinal rules deliberately leave to the model, and read them MALFORMED (\"mid-one thousand nine hundred twenty s\"). One case per measured row.",
+    "changed_in": "n8 — Owen 2026-09-22: a year is spelled by code. The glued catch-all still never reads these; the year and decade rules do, the period prefix kept as printed."
   },
   {
     "id": "leave-glued-year-post",
-    "stage": "leave",
-    "rule": "leave",
+    "stage": "rules",
+    "rule": "year",
     "in": "post-1945 Germany",
-    "want": "post-1945 Germany",
-    "added_in": "n5 — the adversarial review of 2026-09-04: the `glued` catch-all claimed shapes the decade, year and ordinal rules deliberately leave to the model, and read them MALFORMED (\"mid-one thousand nine hundred twenty s\"). One case per measured row."
+    "want": "post-nineteen forty-five Germany",
+    "added_in": "n5 — the adversarial review of 2026-09-04: the `glued` catch-all claimed shapes the decade, year and ordinal rules deliberately leave to the model, and read them MALFORMED (\"mid-one thousand nine hundred twenty s\"). One case per measured row.",
+    "changed_in": "n8 — Owen 2026-09-22: a year is spelled by code. The glued catch-all still never reads these; the year and decade rules do, the period prefix kept as printed."
   },
   {
     "id": "leave-glued-year-name",
