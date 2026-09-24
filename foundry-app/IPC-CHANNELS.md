@@ -1,5 +1,33 @@
 # Foundry's IPC channels — the whole list, for the collision audit
 
+## A cleanup with its triage in front of it (2026-09-23)
+
+**COUNTED BY SCRIPT OVER `app/electron/ipc.ts`: 143 `ipcMain.handle` call sites,
+143 distinct channel names, zero `ipcMain.on`.** The figure before this change
+measured **142**, one door arrived and none left. **AND THE HEAD OF THIS FILE WAS
+STALE AGAIN:** the section below says 130, and the source at the commit before
+this one measured 142 — twelve doors filed under an old figure, the standing
+failure this file keeps recording. The distinct-vs-total equality holds, so
+nothing in Foundry collides with itself.
+
+| Channel | Request/result |
+| --- | --- |
+| `queue:enqueue-clean-triaged` | `CleanRequest` → `{triage: Job \| null, clean: Job}`. Owen, 2026-09-23: *"we create a list of blocks that need to be cleaned with snap and then we bring snap down and load the full normal cleaning logic."* Queues TWO rows from one press: a `clean-triage` row (a small `decide` model on a Crucible marks which blocks need cleaning at all, writing a verdicts file main names beside the records, `<key>.clean[.<id8>].triage.json`) and the `clean` row chained behind it (`after` = the triage's row id, `triagePath` = that file, so `clean-text --triage` asks the cleaner only about what was flagged). Both are pinned to the same ledger row, so both read one book; a cleanup pressed on a greyed card defers its triage on the same promise and waits behind the triage. `triage` is null only when a cleanup writing the same records was already queued without one — that row comes back as `clean`. Routed like `queue:enqueue-translate`, and NOT refused hosted: the pair goes to the host's queue as two `enqueue` calls. |
+
+**A DOOR OF ITS OWN, NOT A FLAG ON `queue:enqueue-translate`.** That door
+answers with one row, and the Clean text dialog acts on both of these — a server
+picked there is pinned on each row and its Start releases each. The pair is made
+in main, in one turn, because the three facts that make it correct (the verdicts
+path, the pinned row, the link) are all main's; see `enqueueTriagedCleanup` in
+`app/electron/job-queue.ts`.
+
+**ONE PAYLOAD WIDENED INSIDE CHANNELS THAT DID NOT MOVE.** `Job.kind` gained
+`clean-triage` and `JobProgress.phase` gained `triage` (`queue:changed`,
+`queue:list`), and `CleanRequest` gained `triagePath`. **FOR BOOKFORGE:** the
+host seam's `FoundryHostQueue.enqueue` now takes `CleanTriageRequest` as well, and
+a host that mirrors rows has to name the kind — its lane (GPU), its label, its
+progress line `clean-triage: n/m`, and the fact that it lands nothing in the tree.
+
 ## The install door can be watched, not only driven (2026-09-19, crucible PHASE19)
 
 **COUNTED BY SCRIPT OVER `app/electron/ipc.ts` IN THIS WORKTREE: 130
@@ -1098,6 +1126,7 @@ cannot report a failure. They are registered in one function, `registerIpc`
 | `queue:clear-finished` | Clear the settled rows out of the shelf. Forwarded to the host's queue as well, where one is registered. |
 | `queue:enqueue` | Queue a reading or a rendering; captures the project's position as the parent step. Filed in the host's queue instead, where one is registered — this door is a person pressing something. |
 | `queue:enqueue-analysis` | Queue an analysis: the book read against the categories, held on the GPU lane. Never routed, and REFUSED outright hosted — the host's queue does not know this request shape, and Foundry's own queue is invisible in a hosted window. |
+| `queue:enqueue-clean-triaged` | Queue a cleanup WITH ITS TRIAGE in front of it — a `clean-triage` row, then the `clean` row chained behind it reading its verdicts (`--triage`). Answers both rows. Routed like `queue:enqueue-translate`; see the 2026-09-23 section at the head of this file. |
 | `queue:enqueue-translate` | Queue a TEXT PASS — a translation, a simplification or a narration cleanup (`TextPassRequest`). Routed like `queue:enqueue`. The name is the family's eldest member, kept rather than renamed: the door's behaviour is unchanged and a rename costs this audit two entries. |
 | `queue:list` | The queue, for the renderer's mirror — the host's rows where a host queue is registered, Foundry's own otherwise. |
 | `queue:remove` | Remove a held or settled row. Forwarded to the host's queue where one is registered. |

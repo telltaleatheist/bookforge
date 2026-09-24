@@ -20,6 +20,23 @@ import { RunTargetComponent } from '../run-target/run-target.component';
 import { api, hosted } from '../../core/foundry';
 
 /**
+ * WHERE THIS MACHINE REMEMBERS THE TRIAGE BOX — one reader on one machine, so the
+ * browser's own storage and nothing main has to know about (`MEASURE_KEY`'s
+ * arrangement in book-view). Absent or unreadable is the default, which is ON.
+ */
+const TRIAGE_KEY = 'foundry.clean-dialog.triage';
+
+/** The box as this machine last left it; ON when nothing was ever said. */
+function triageRemembered(): boolean {
+  try {
+    return localStorage.getItem(TRIAGE_KEY) !== 'off';
+  } catch {
+    // No storage in this window: the default stands for this press.
+    return true;
+  }
+}
+
+/**
  * Clean text — say the book again in the words it already has, punctuated and
  * typeset so a narrator can read it aloud.
  *
@@ -59,6 +76,19 @@ import { api, hosted } from '../../core/foundry';
  * such judgement — it is measured against a punctuation spec the engine owns and
  * stamps into the file (`--stamp`) — so a free-text instruction here would be an
  * invitation to move a specification the stamp then claims was followed.
+ *
+ * ── AND THE ONE BOX IT DOES ASK, WHICH IS ABOUT COST AND NOT ABOUT WORDS ────
+ *
+ * Owen, 2026-09-23: *"we create a list of blocks that need to be cleaned with
+ * snap and then we bring snap down and load the full normal cleaning logic."* With
+ * the box ticked the press makes two rows — a quick check on a small model that
+ * marks which paragraphs need anything at all, and the cleanup behind it, which
+ * asks its big model only about those. The text that comes out is the same text:
+ * a paragraph the check passes is recorded exactly as the cleaner's first,
+ * mechanical stage leaves it, and any doubt is resolved toward cleaning. So it is
+ * ON by default and remembered per machine, and it is drawn ONLY when an engine
+ * can do the check — otherwise it is a sentence, because a box that cannot be
+ * honoured is not an option (Owen, 2026-09-17).
  */
 @Component({
   selector: 'app-clean-dialog',
@@ -81,7 +111,7 @@ import { api, hosted } from '../../core/foundry';
           handed over at the press.
         -->
         @if (watched(); as job) {
-          <app-run-progress [job]="job" verb="Cleaning" />
+          <app-run-progress [job]="job" [verb]="job.kind === 'clean-triage' ? 'Checking which paragraphs need it' : 'Cleaning'" />
         } @else {
           <!-- WHERE IT WILL RUN, AND WHAT WILL RUN IT. The child draws the one
                real choice and states the rest — run-target.component.ts carries
@@ -100,6 +130,29 @@ import { api, hosted } from '../../core/foundry';
             book is not choosable here; the dialog was opened on it.
           -->
           <p class="fact" [title]="input">{{ name() }}</p>
+
+          <!--
+            THE QUICK CHECK IN FRONT OF THE CLEANUP. A box only when an engine
+            can do it; a sentence when none can, because a box that cannot be
+            honoured is not an option (Owen, 2026-09-17: "present it as
+            information or dont present it at all"). Nothing while the answer is
+            still being asked for -- a box that appears and then turns into a
+            sentence would be the screen changing its mind in front of somebody.
+          -->
+          @switch (triageOffer()) {
+            @case ('yes') {
+              <label class="check">
+                <input type="checkbox" [checked]="triaged()" (change)="setTriaged($event)" />
+                <span>Skip paragraphs that need no cleaning <em>(a quick check runs first)</em></span>
+              </label>
+            }
+            @case ('no') {
+              <p class="note">
+                Every paragraph goes to the cleaner. The quick check that skips the ones needing
+                nothing is not something {{ triageWhere() }} can do yet.
+              </p>
+            }
+          }
 
           <p class="note">
             The cleanup lands as a NEW step, in the same language, and the book you are cleaning
@@ -255,6 +308,12 @@ import { api, hosted } from '../../core/foundry';
     .label em { text-transform: none; letter-spacing: 0; font-style: normal; font-weight: 400; opacity: 0.75; }
 
     .note { margin: 0; font-size: 11px; color: var(--text-tertiary); line-height: 1.5; }
+    .check {
+      display: flex; align-items: flex-start; gap: 8px;
+      font-size: 12px; line-height: 1.5; color: var(--text-primary); cursor: pointer;
+    }
+    .check input { margin: 3px 0 0; flex: none; accent-color: var(--accent); }
+    .check em { font-style: normal; color: var(--text-tertiary); }
     .note strong { color: var(--text-secondary); font-weight: 600; }
     .problem { margin: 0; font-size: 12px; color: var(--warn); }
 
@@ -362,19 +421,59 @@ export class CleanDialogComponent {
   /** May this act run on that engine at all — the child's verdict. */
   protected readonly canRun = signal(false);
   /**
-   * THE ROW THIS CARD IS WATCHING, or null when it is a form. An id rather than
-   * the job: the job is re-pushed whole on every change, and a held copy would
-   * be a snapshot going stale under a progress bar.
+   * THE BOX: a quick check first, and the cleaner asked only about what it flags.
+   * ON unless this machine last said otherwise — see the class note.
    */
-  private readonly watching = signal<string | null>(null);
+  protected readonly triaged = signal(triageRemembered());
   /**
-   * That row as it stands now. NULL the moment it leaves the list, which is what
-   * makes Send to background and a finished run one code path.
+   * CAN ANY ENGINE THIS PRESS WOULD GO TO DO THE CHECK — `yes`, `no`, or null
+   * while that is still being asked.
+   *
+   * WHOSE ENGINES DEPENDS ON WHO PLACES THE RUN. Hosted, the host's queue picks
+   * the machine when the job starts (run-target says so), so the question is
+   * whether ANY of its engines serves the `decide` class. Standalone the row is
+   * pinned to the server chosen above, so it is whether THAT one does — a check
+   * offered because some other machine could run it would be pinned to one that
+   * cannot, and fail in the queue instead of being declined here.
+   *
+   * An engine older than the class has no row for it, which is a `no` — the true
+   * answer until it is upgraded — and never a guess that it might.
+   */
+  protected readonly triageOffer = signal<'yes' | 'no' | null>(null);
+  /** Who "cannot do it yet", for the sentence drawn in place of the box. */
+  protected readonly triageWhere = computed(() => {
+    const chosen = this.server();
+    return hosted() || chosen.length === 0 ? 'any connected engine' : `"${chosen}"`;
+  });
+  /**
+   * THE ROWS THIS CARD IS WATCHING, or null when it is a form. Ids rather than
+   * jobs: a job is re-pushed whole on every change, and a held copy would be a
+   * snapshot going stale under a progress bar. `triage` is null for a cleanup
+   * pressed without the check.
+   */
+  private readonly watching = signal<{ clean: string; triage: string | null } | null>(null);
+  /**
+   * THE ROW TO DRAW NOW — the check while it is still to come or running, and
+   * the cleanup after it. One bar at a time, in the order the work happens, so a
+   * person watching sees "Checking…" and then "Cleaning…" rather than a cleanup
+   * reading "waiting for an engine" for the length of a check they asked for.
+   *
+   * NULL the moment the cleanup leaves the list, which is what makes Send to
+   * background and a finished run one code path.
    */
   protected readonly watched = computed(() => {
-    const id = this.watching();
-    if (id === null) return null;
-    return this.queue.jobs().find((job) => job.id === id) ?? null;
+    const ids = this.watching();
+    if (ids === null) return null;
+    const jobs = this.queue.jobs();
+    const triage = ids.triage === null ? undefined : jobs.find((job) => job.id === ids.triage);
+    if (triage !== undefined
+      && (triage.state === 'held' || triage.state === 'queued' || triage.state === 'running'
+        || triage.state === 'failed' || triage.state === 'cancelled')) {
+      // A check that FAILED is drawn too: the cleanup behind it was taken with it,
+      // and the reason is on this row.
+      return triage;
+    }
+    return jobs.find((job) => job.id === ids.clean) ?? null;
   });
 
   /**
@@ -401,6 +500,47 @@ export class CleanDialogComponent {
       this.source();
       this.problem.set(null);
     });
+    // The chosen engine changed, so whether the check can run is asked again.
+    effect(() => {
+      void this.askTriage(this.server());
+    });
+  }
+
+  /** Tick or untick the box, and remember it on this machine. */
+  protected setTriaged(event: Event): void {
+    const on = (event.target as HTMLInputElement).checked;
+    this.triaged.set(on);
+    try {
+      localStorage.setItem(TRIAGE_KEY, on ? 'on' : 'off');
+    } catch { /* not kept: the box holds for this press regardless */ }
+  }
+
+  /**
+   * CAN THE CHECK RUN WHERE THIS PRESS WOULD GO — see `triageOffer`.
+   *
+   * A read that FAILS is a `no` with the failure in the console rather than on
+   * the card: the run-target line above already says, in the engine's own words,
+   * that this server could not be asked what it runs, and a second sentence about
+   * the same failure under it would be the dialog repeating itself.
+   */
+  private async askTriage(chosen: string): Promise<void> {
+    if (!api) return;
+    this.triageOffer.set(null);
+    try {
+      if (hosted() || chosen.length === 0) {
+        const serving = await api.crucible.serves('decide');
+        if (this.server() !== chosen) return;
+        this.triageOffer.set(serving === null ? 'no' : 'yes');
+        return;
+      }
+      const record = await api.crucible.engineCapability(chosen);
+      if (this.server() !== chosen) return;
+      const row = record.classes.find((entry) => entry.capability === 'decide');
+      this.triageOffer.set(row !== undefined && row.enabled && row.selected.length > 0 ? 'yes' : 'no');
+    } catch (err) {
+      console.error(`[clean] could not ask whether "${chosen}" can check which paragraphs need cleaning:`, err);
+      if (this.server() === chosen) this.triageOffer.set('no');
+    }
   }
 
   protected openDocument(): void {
@@ -478,15 +618,38 @@ export class CleanDialogComponent {
       // answers with the row that already exists, so a second press has queued
       // nothing and this card stays put and says so.
       /*
+       * ── WITH THE CHECK, TWO ROWS; WITHOUT IT, TODAY'S ONE ────────────────────
+       *
+       * The box is honoured only when an engine can do the check (`triageOffer`);
+       * when it is not drawn, this is the cleanup it has always been. With it, main
+       * makes the pair — the check, then the cleanup chained behind it — and hands
+       * back both ids, because everything below acts on both
+       * (`enqueueTriagedCleanup`, electron/job-queue.ts).
+       */
+      const withCheck = this.triaged() && this.triageOffer() === 'yes';
+      const { outcome, rows } = withCheck
+        ? await this.queue.enqueueTriagedCleanup(request).then((made) => ({
+          outcome: made.outcome,
+          rows: made.cleanId === null ? null : { clean: made.cleanId, triage: made.triageId },
+        }))
+        : await this.queue.enqueueTextPassNamed(request).then((made) => ({
+          outcome: made.outcome,
+          rows: made.id === null ? null : { clean: made.id, triage: null },
+        }));
+      /*
        * PINNED TO THE ENGINE THE CARD NAMED, and pinned AFTER the enqueue rather
        * than carried on the request: `waitFor` is a property of the ROW — a
        * person can re-route a parked row from the shelf — so the queue's own
        * door owns it. A blank server means nothing was chosen and the row keeps
        * the default it was admitted with.
+       *
+       * BOTH ROWS, when there are two: the check was offered because THIS engine
+       * can do it (`askTriage`), and a cleanup and its check on two different
+       * machines would load two models where the person picked one.
        */
-      const { outcome, id } = await this.queue.enqueueTextPassNamed(request);
-      if (id !== null && this.server().length > 0) {
-        await this.queue.setWaitFor(id, this.server());
+      if (rows !== null && this.server().length > 0) {
+        if (rows.triage !== null) await this.queue.setWaitFor(rows.triage, this.server());
+        await this.queue.setWaitFor(rows.clean, this.server());
       }
       if (outcome === 'already') {
         /*
@@ -495,9 +658,9 @@ export class CleanDialogComponent {
          * honest behaviour is to show it working. Add to queue keeps the
          * sentence, because there the news IS that the shelf did not grow.
          */
-        if (release && id !== null) {
-          await this.queue.release(id);
-          this.watching.set(id);
+        if (release && rows !== null) {
+          await this.releaseRows(rows);
+          this.watching.set(rows);
           return;
         }
         this.problem.set(
@@ -507,12 +670,12 @@ export class CleanDialogComponent {
       }
 
       /*
-       * START COMMITS TO THIS ROW AND NOTHING ELSE — `queue:release`, not
+       * START COMMITS TO THESE ROWS AND NOTHING ELSE — `queue:release`, not
        * `queue:start`, which lets go of every row somebody parked deliberately.
        */
-      if (release && id !== null) {
-        await this.queue.release(id);
-        this.watching.set(id);
+      if (release && rows !== null) {
+        await this.releaseRows(rows);
+        this.watching.set(rows);
         return;
       }
       /*
@@ -530,5 +693,16 @@ export class CleanDialogComponent {
     } finally {
       this.busy.set(null);
     }
+  }
+
+  /**
+   * START'S RELEASE, PER ROW — the check first, then the cleanup. Release is
+   * per-row by design (`queue:release` lets go of exactly the row it names), so a
+   * pair is two presses of it; the cleanup released second still waits behind its
+   * check on the board (`Job.after`), which is what makes the order safe.
+   */
+  private async releaseRows(rows: { clean: string; triage: string | null }): Promise<void> {
+    if (rows.triage !== null) await this.queue.release(rows.triage);
+    await this.queue.release(rows.clean);
   }
 }

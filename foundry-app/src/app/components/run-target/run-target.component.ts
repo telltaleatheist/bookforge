@@ -58,6 +58,7 @@ import type { ModelClass } from '@shared/types';
  */
 const ACT_WORDS: Readonly<Record<string, string>> = {
   pages: 'read pages',
+  decide: 'judge which blocks need cleaning',
   clean: 'clean up text',
   translate: 'translate',
   simplify: 'simplify',

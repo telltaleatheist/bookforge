@@ -1,6 +1,6 @@
 import { Injectable, computed, signal } from '@angular/core';
 
-import type { AnalyzeRequest, Job, JobRequest, TextPassRequest } from '@shared/types';
+import type { AnalyzeRequest, CleanRequest, Job, JobRequest, TextPassRequest } from '@shared/types';
 
 import { api } from './foundry';
 
@@ -114,6 +114,32 @@ export class QueueService {
     request: TextPassRequest,
   ): Promise<{ outcome: 'added' | 'already'; id: string | null }> {
     return this.identify(() => api?.queue.enqueueTranslate(request));
+  }
+
+  /**
+   * A CLEANUP WITH ITS TRIAGE IN FRONT OF IT — and the one door here that answers
+   * with TWO rows, because the dialog that calls it acts on both (it pins a picked
+   * server on each and its Start releases each).
+   *
+   * THE DEDUPE ANSWER IS THE CLEANUP'S, which is the row the person asked for.
+   * Main answers a second press with the rows the first one made, and a press over
+   * a cleanup already queued WITHOUT a triage with that row and a null triage — so
+   * `already` is read off the cleanup's id against the mirror as it stood before
+   * the call, exactly as {@link identify} reads it for the single-row doors.
+   */
+  async enqueueTriagedCleanup(request: CleanRequest): Promise<{
+    outcome: 'added' | 'already';
+    cleanId: string | null;
+    triageId: string | null;
+  }> {
+    const before = new Set(this.all().map((job) => job.id));
+    const made = await api?.queue.enqueueCleanTriaged(request);
+    if (!made) return { outcome: 'added', cleanId: null, triageId: null };
+    return {
+      outcome: before.has(made.clean.id) ? 'already' : 'added',
+      cleanId: made.clean.id,
+      triageId: made.triage?.id ?? null,
+    };
   }
 
   /**

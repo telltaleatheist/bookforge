@@ -4348,25 +4348,6 @@ function rejoinsSplitWord(find, replace, knownWord = isEnglishWord) {
   }
   return next === pieces.length;
 }
-function blockMayTakeAnEdit(text, knownWord = isEnglishWord) {
-  if (DIGIT2.test(text)) return true;
-  if (text.includes("&")) return true;
-  if (/[ 	]-[ 	]/.test(text)) return true;
-  if (/[[\]()]/.test(text)) return true;
-  if (/[A-ZÀ-Þ]{2}/.test(text)) return true;
-  const tokens = wordTokens(text);
-  for (const token of tokens) {
-    if ((token.endsWith(".") || DOTTED_LETTERS.test(token)) && ABBREVIATION_READINGS.has(abbreviationKey(token))) return true;
-  }
-  const pieces = text.split(/\s+/).filter((piece) => piece !== "");
-  for (let at = 0; at < pieces.length; at += 1) {
-    for (let width = 2; width <= 3 && at + width <= pieces.length; width += 1) {
-      const run = pieces.slice(at, at + width);
-      if (rejoinsSplitWord(run.join(" "), run.join(""), knownWord)) return true;
-    }
-  }
-  return false;
-}
 function validateNumberEdits(target, segments, edits, reserved = [], policy = NUMBERS_ONLY) {
   const starts = [];
   let running = 0;
@@ -4872,24 +4853,11 @@ async function askAboutEach(asks, runner, pass, systemPrompt2, onProgress, ask =
   }
   const ruledOf = /* @__PURE__ */ new Map();
   for (const ask2 of asks) ruledOf.set(ask2.key, applyNumberRules(ask2.text, ask2.segments));
-  const bookWords = /* @__PURE__ */ new Map();
-  if (policy.allowTextEdits && policy.knownWord === void 0) {
-    for (const one of asks) {
-      for (const word of one.text.toLowerCase().match(new RegExp("\\p{L}+", "gu")) ?? []) {
-        bookWords.set(word, (bookWords.get(word) ?? 0) + 1);
-      }
-    }
-  }
-  const judged = !policy.allowTextEdits || policy.knownWord !== void 0 ? policy : {
-    ...policy,
-    knownWord: (word) => isEnglishWord(word) || (bookWords.get(word.toLowerCase()) ?? 0) >= BOOK_WORD_MIN
-  };
   const inputs = /* @__PURE__ */ new Map();
   const asContext = (text) => text === null ? null : applyNumberRules(text, [text.length]).text;
   for (const one of asks) {
     const ruled = ruledOf.get(one.key);
     if (ask === "digit-bearing" && !stillHasDigits(ruled.text)) continue;
-    if (ask === "every-block" && policy.allowTextEdits && !blockMayTakeAnEdit(ruled.text, judged.knownWord ?? isEnglishWord)) continue;
     if (ruled.text.trim() === "") continue;
     inputs.set(
       one.key,
@@ -4920,6 +4888,18 @@ async function askAboutEach(asks, runner, pass, systemPrompt2, onProgress, ask =
     systemPrompt2,
     [...inputs.values()].reduce((a, b) => b.length > a.length ? b : a, "")
   );
+  const bookWords = /* @__PURE__ */ new Map();
+  if (policy.allowTextEdits && policy.knownWord === void 0) {
+    for (const one of asks) {
+      for (const word of one.text.toLowerCase().match(new RegExp("\\p{L}+", "gu")) ?? []) {
+        bookWords.set(word, (bookWords.get(word) ?? 0) + 1);
+      }
+    }
+  }
+  const judged = !policy.allowTextEdits || policy.knownWord !== void 0 ? policy : {
+    ...policy,
+    knownWord: (word) => isEnglishWord(word) || (bookWords.get(word.toLowerCase()) ?? 0) >= BOOK_WORD_MIN
+  };
   const jobs = asks.filter((one) => inputs.has(one.key));
   const answered = /* @__PURE__ */ new Map();
   let parseFailed = 0;
@@ -5404,20 +5384,20 @@ function crc32(data) {
   for (let i = 0; i < data.length; i++) c = CRC_TABLE[(c ^ data[i]) & 255] ^ c >>> 8;
   return (c ^ 4294967295) >>> 0;
 }
-function zipText(path24, text) {
-  return { path: path24, data: new TextEncoder().encode(text) };
+function zipText(path26, text) {
+  return { path: path26, data: new TextEncoder().encode(text) };
 }
-function checkPath(path24) {
-  if (path24.length === 0) throw new ZipError("an entry has an empty path");
-  if (path24.includes("\\")) {
-    throw new ZipError(`entry "${path24}" contains a backslash \u2014 ZIP paths are forward-slashed`);
+function checkPath(path26) {
+  if (path26.length === 0) throw new ZipError("an entry has an empty path");
+  if (path26.includes("\\")) {
+    throw new ZipError(`entry "${path26}" contains a backslash \u2014 ZIP paths are forward-slashed`);
   }
-  if (path24.startsWith("/")) throw new ZipError(`entry "${path24}" is absolute \u2014 ZIP paths are relative`);
-  if (path24.split("/").some((seg) => seg === "." || seg === ".." || seg === "")) {
-    throw new ZipError(`entry "${path24}" has an empty or relative path segment`);
+  if (path26.startsWith("/")) throw new ZipError(`entry "${path26}" is absolute \u2014 ZIP paths are relative`);
+  if (path26.split("/").some((seg) => seg === "." || seg === ".." || seg === "")) {
+    throw new ZipError(`entry "${path26}" has an empty or relative path segment`);
   }
-  const name = new TextEncoder().encode(path24);
-  if (name.length > MAX_U16) throw new ZipError(`entry "${path24}" has a name longer than ${MAX_U16} bytes`);
+  const name = new TextEncoder().encode(path26);
+  if (name.length > MAX_U16) throw new ZipError(`entry "${path26}" has a name longer than ${MAX_U16} bytes`);
   return name;
 }
 function writeZip(entries) {
@@ -6106,38 +6086,38 @@ function readZip(bytes) {
     const extraLen = u16(p + 30);
     const commentLen = u16(p + 32);
     const localOffset = u32(p + 42);
-    const path24 = decoder.decode(bytes.subarray(p + 46, p + 46 + nameLen));
+    const path26 = decoder.decode(bytes.subarray(p + 46, p + 46 + nameLen));
     p += 46 + nameLen + extraLen + commentLen;
     if (csize === 4294967295 || usize === 4294967295 || localOffset === 4294967295) {
-      throw new UnzipError(`entry "${path24}" is zip64, which this reader does not implement`);
+      throw new UnzipError(`entry "${path26}" is zip64, which this reader does not implement`);
     }
     if (localOffset + 30 > bytes.length || u32(localOffset) !== LOCAL_SIG2) {
-      throw new UnzipError(`entry "${path24}": bad local header signature`);
+      throw new UnzipError(`entry "${path26}": bad local header signature`);
     }
     const lFlags = u16(localOffset + 6);
     const lMethod = u16(localOffset + 8);
     const lNameLen = u16(localOffset + 26);
     const lExtraLen = u16(localOffset + 28);
     const lPath = decoder.decode(bytes.subarray(localOffset + 30, localOffset + 30 + lNameLen));
-    if (lPath !== path24) {
-      throw new UnzipError(`the central directory says "${path24}", its local header says "${lPath}"`);
+    if (lPath !== path26) {
+      throw new UnzipError(`the central directory says "${path26}", its local header says "${lPath}"`);
     }
     if (lMethod !== method) {
-      throw new UnzipError(`entry "${path24}": method ${lMethod} locally, ${method} centrally`);
+      throw new UnzipError(`entry "${path26}": method ${lMethod} locally, ${method} centrally`);
     }
     const streamed = (lFlags & 8) !== 0;
     if (!streamed) {
       const lCrc = u32(localOffset + 14);
       const lCsize = u32(localOffset + 18);
       const lUsize = u32(localOffset + 22);
-      if (lCrc !== crc) throw new UnzipError(`entry "${path24}": the two headers disagree about its checksum`);
+      if (lCrc !== crc) throw new UnzipError(`entry "${path26}": the two headers disagree about its checksum`);
       if (lCsize !== csize || lUsize !== usize) {
-        throw new UnzipError(`entry "${path24}": the two headers disagree about its size`);
+        throw new UnzipError(`entry "${path26}": the two headers disagree about its size`);
       }
     }
     const start = localOffset + 30 + lNameLen + lExtraLen;
     if (start + csize > bytes.length) {
-      throw new UnzipError(`entry "${path24}" runs past the end of the file \u2014 the archive is truncated`);
+      throw new UnzipError(`entry "${path26}" runs past the end of the file \u2014 the archive is truncated`);
     }
     const raw = bytes.slice(start, start + csize);
     let data;
@@ -6147,24 +6127,24 @@ function readZip(bytes) {
       try {
         data = new Uint8Array((0, import_node_zlib.inflateRawSync)(raw));
       } catch (error) {
-        throw new UnzipError(`entry "${path24}" is deflated and would not inflate: ${error.message}`);
+        throw new UnzipError(`entry "${path26}" is deflated and would not inflate: ${error.message}`);
       }
     } else {
       throw new UnzipError(
-        `entry "${path24}" uses compression method ${method}; this reader implements stored (0) and deflate (8)`
+        `entry "${path26}" uses compression method ${method}; this reader implements stored (0) and deflate (8)`
       );
     }
     if (data.length !== usize) {
-      throw new UnzipError(`entry "${path24}" is ${data.length} bytes, its header says ${usize}`);
+      throw new UnzipError(`entry "${path26}" is ${data.length} bytes, its header says ${usize}`);
     }
     const actual = crc322(data);
     if (actual !== crc) {
       throw new UnzipError(
-        `entry "${path24}" fails its checksum (${actual.toString(16)} against ${crc.toString(16)}) \u2014 the file is damaged`
+        `entry "${path26}" fails its checksum (${actual.toString(16)} against ${crc.toString(16)}) \u2014 the file is damaged`
       );
     }
     out.push({
-      path: path24,
+      path: path26,
       data,
       raw,
       method,
@@ -6225,9 +6205,9 @@ function resolveHref(baseDir, href) {
   }
   return out.join("/");
 }
-function directoryOf(path24) {
-  const slash = path24.lastIndexOf("/");
-  return slash < 0 ? "" : path24.slice(0, slash);
+function directoryOf(path26) {
+  const slash = path26.lastIndexOf("/");
+  return slash < 0 ? "" : path26.slice(0, slash);
 }
 function attr(el, name) {
   return el.attrs.get(name);
@@ -6281,13 +6261,13 @@ function containerFromMembers(members) {
     if (item === void 0) {
       throw new BookError(`the spine references manifest id "${idref}", which the manifest does not declare`);
     }
-    const path24 = resolveHref(opfDir, item.href);
-    const member = byPath.get(path24);
+    const path26 = resolveHref(opfDir, item.href);
+    const member = byPath.get(path26);
     if (member === void 0) {
-      throw new BookError(`the manifest declares "${path24}", and there is no such entry in the archive`);
+      throw new BookError(`the manifest declares "${path26}", and there is no such entry in the archive`);
     }
     const source = member.text();
-    documents.push({ path: path24, source, stamped: source.includes("data-bf-cat") });
+    documents.push({ path: path26, source, stamped: source.includes("data-bf-cat") });
   }
   if (documents.length === 0) {
     throw new BookError("this EPUB has an empty spine \u2014 there is no book in it");
@@ -7709,11 +7689,11 @@ function __metadata(metadataKey, metadataValue) {
 }
 function __awaiter(thisArg, _arguments, P, generator) {
   function adopt(value) {
-    return value instanceof P ? value : new P(function(resolve18) {
-      resolve18(value);
+    return value instanceof P ? value : new P(function(resolve19) {
+      resolve19(value);
     });
   }
-  return new (P || (P = Promise))(function(resolve18, reject) {
+  return new (P || (P = Promise))(function(resolve19, reject) {
     function fulfilled(value) {
       try {
         step(generator.next(value));
@@ -7729,7 +7709,7 @@ function __awaiter(thisArg, _arguments, P, generator) {
       }
     }
     function step(result) {
-      result.done ? resolve18(result.value) : adopt(result.value).then(fulfilled, rejected);
+      result.done ? resolve19(result.value) : adopt(result.value).then(fulfilled, rejected);
     }
     step((generator = generator.apply(thisArg, _arguments || [])).next());
   });
@@ -7907,14 +7887,14 @@ function __asyncValues(o) {
   }, i);
   function verb(n) {
     i[n] = o[n] && function(v) {
-      return new Promise(function(resolve18, reject) {
-        v = o[n](v), settle(resolve18, reject, v.done, v.value);
+      return new Promise(function(resolve19, reject) {
+        v = o[n](v), settle(resolve19, reject, v.done, v.value);
       });
     };
   }
-  function settle(resolve18, reject, d, v) {
+  function settle(resolve19, reject, d, v) {
     Promise.resolve(v).then(function(v2) {
-      resolve18({ value: v2, done: d });
+      resolve19({ value: v2, done: d });
     }, reject);
   }
 }
@@ -8338,9 +8318,9 @@ var require_async = __commonJS({
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.waitForTick = void 0;
     exports2.waitForTick = function() {
-      return new Promise(function(resolve18) {
+      return new Promise(function(resolve19) {
         setTimeout(function() {
-          return resolve18();
+          return resolve19();
         }, 0);
       });
     };
@@ -14330,7 +14310,7 @@ var require_PDFName = __commonJS({
       return charCode >= CharCodes_1.default.ExclamationPoint && charCode <= CharCodes_1.default.Tilde && !Irregular_1.IsIrregular[charCode];
     };
     var ENFORCER = {};
-    var pool = /* @__PURE__ */ new Map();
+    var pool2 = /* @__PURE__ */ new Map();
     var PDFName2 = (
       /** @class */
       (function(_super) {
@@ -14406,10 +14386,10 @@ var require_PDFName = __commonJS({
         };
         PDFName3.of = function(name) {
           var decodedValue = decodeName(name);
-          var instance = pool.get(decodedValue);
+          var instance = pool2.get(decodedValue);
           if (!instance) {
             instance = new PDFName3(ENFORCER, decodedValue);
-            pool.set(decodedValue, instance);
+            pool2.set(decodedValue, instance);
           }
           return instance;
         };
@@ -14770,7 +14750,7 @@ var require_PDFRef = __commonJS({
     var PDFObject_1 = tslib_1.__importDefault(require_PDFObject());
     var utils_1 = require_utils2();
     var ENFORCER = {};
-    var pool = /* @__PURE__ */ new Map();
+    var pool2 = /* @__PURE__ */ new Map();
     var PDFRef = (
       /** @class */
       (function(_super) {
@@ -14803,10 +14783,10 @@ var require_PDFRef = __commonJS({
             generationNumber = 0;
           }
           var tag = objectNumber + " " + generationNumber + " R";
-          var instance = pool.get(tag);
+          var instance = pool2.get(tag);
           if (!instance) {
             instance = new PDFRef2(ENFORCER, objectNumber, generationNumber);
-            pool.set(tag, instance);
+            pool2.set(tag, instance);
           }
           return instance;
         };
@@ -17150,12 +17130,12 @@ var require_CustomFontSubsetEmbedder = __commonJS({
         };
         CustomFontSubsetEmbedder2.prototype.serializeFont = function() {
           var _this = this;
-          return new Promise(function(resolve18, reject) {
+          return new Promise(function(resolve19, reject) {
             var parts = [];
             _this.subset.encodeStream().on("data", function(bytes) {
               return parts.push(bytes);
             }).on("end", function() {
-              return resolve18(utils_1.mergeUint8Arrays(parts));
+              return resolve19(utils_1.mergeUint8Arrays(parts));
             }).on("error", function(err) {
               return reject(err);
             });
@@ -24410,14 +24390,14 @@ var require_svgPath = __commonJS({
       ["Z", 0],
       ["z", 0]
     ]);
-    var parse = function(path24) {
+    var parse = function(path26) {
       var cmd;
       var ret = [];
       var args = [];
       var curArg = "";
       var foundDecimal = false;
       var params = 0;
-      for (var _i = 0, path_1 = path24; _i < path_1.length; _i++) {
+      for (var _i = 0, path_1 = path26; _i < path_1.length; _i++) {
         var c = path_1[_i];
         if (parameters.has(c)) {
           params = parameters.get(c);
@@ -24731,8 +24711,8 @@ var require_svgPath = __commonJS({
       ];
       return result;
     };
-    exports2.svgPathToOperators = function(path24) {
-      return apply(parse(path24));
+    exports2.svgPathToOperators = function(path26) {
+      return apply(parse(path26));
     };
   }
 });
@@ -24916,7 +24896,7 @@ var require_operations = __commonJS({
         operators_1.popGraphicsState()
       ]).filter(Boolean);
     };
-    exports2.drawSvgPath = function(path24, options) {
+    exports2.drawSvgPath = function(path26, options) {
       var _a, _b, _c;
       return tslib_1.__spreadArrays([
         operators_1.pushGraphicsState(),
@@ -24930,7 +24910,7 @@ var require_operations = __commonJS({
         options.borderWidth && operators_1.setLineWidth(options.borderWidth),
         options.borderLineCap && operators_1.setLineCap(options.borderLineCap),
         operators_1.setDashPattern((_b = options.borderDashArray) !== null && _b !== void 0 ? _b : [], (_c = options.borderDashPhase) !== null && _c !== void 0 ? _c : 0)
-      ], svgPath_1.svgPathToOperators(path24), [
+      ], svgPath_1.svgPathToOperators(path26), [
         // prettier-ignore
         options.color && options.borderWidth ? operators_1.fillAndStroke() : options.color ? operators_1.fill() : options.borderColor ? operators_1.stroke() : operators_1.closePath(),
         operators_1.popGraphicsState()
@@ -29254,12 +29234,12 @@ var require_PDFPage = __commonJS({
             graphicsState: graphicsStateKey
           }));
         };
-        PDFPage2.prototype.drawSvgPath = function(path24, options) {
+        PDFPage2.prototype.drawSvgPath = function(path26, options) {
           var _a, _b, _c, _d, _e, _f, _g, _h, _j;
           if (options === void 0) {
             options = {};
           }
-          utils_1.assertIs(path24, "path", ["string"]);
+          utils_1.assertIs(path26, "path", ["string"]);
           utils_1.assertOrUndefined(options.x, "options.x", ["number"]);
           utils_1.assertOrUndefined(options.y, "options.y", ["number"]);
           utils_1.assertOrUndefined(options.scale, "options.scale", ["number"]);
@@ -29288,7 +29268,7 @@ var require_PDFPage = __commonJS({
             options.borderColor = colors_1.rgb(0, 0, 0);
           }
           var contentStream = this.getContentStream();
-          contentStream.push.apply(contentStream, operations_1.drawSvgPath(path24, {
+          contentStream.push.apply(contentStream, operations_1.drawSvgPath(path26, {
             x: (_a = options.x) !== null && _a !== void 0 ? _a : this.x,
             y: (_b = options.y) !== null && _b !== void 0 ? _b : this.y,
             scale: options.scale,
@@ -30065,8 +30045,8 @@ async function withBusyWait(send, options) {
     log2(
       `${options.where} answered ${response.status} (${busyReason(response.status)}) \u2014 waiting ${(wait / 1e3).toFixed(1)}s${said === null ? "" : " (its own retry-after)"} and asking again; ${(waited / 1e3).toFixed(1)}s of this request's ${(budgetMs / 1e3).toFixed(0)}s slot budget spent so far.`
     );
-    await new Promise((resolve18) => {
-      setTimeout(resolve18, wait);
+    await new Promise((resolve19) => {
+      setTimeout(resolve19, wait);
     });
     backoff = Math.min(backoff * 2, BUSY_MAX_WAIT_MS);
   }
@@ -30678,7 +30658,7 @@ var init_version = __esm({
     init_engine_import_meta_url();
     init_package();
     VERSION = package_default.version;
-    GIT_COMMIT = "src 3a656e28c116".length > 0 ? "src 3a656e28c116" : null;
+    GIT_COMMIT = "src a47c83e0e8d7".length > 0 ? "src a47c83e0e8d7" : null;
   }
 });
 
@@ -64396,7 +64376,7 @@ var require_fontkit_umd = __commonJS({
           return cmds.join("");
         };
         _proto.mapPoints = function mapPoints(fn) {
-          var path24 = new Path2();
+          var path26 = new Path2();
           for (var _iterator2 = _createForOfIteratorHelperLoose$l(this.commands), _step2; !(_step2 = _iterator2()).done; ) {
             var c = _step2.value;
             var args = [];
@@ -64404,9 +64384,9 @@ var require_fontkit_umd = __commonJS({
               var _fn = fn(c.args[i2], c.args[i2 + 1]), x = _fn[0], y = _fn[1];
               args.push(x, y);
             }
-            path24[c.command].apply(path24, args);
+            path26[c.command].apply(path26, args);
           }
-          return path24;
+          return path26;
         };
         _proto.transform = function transform2(m0, m1, m2, m3, m4, m5) {
           return this.mapPoints(function(x, y) {
@@ -65016,7 +64996,7 @@ var require_fontkit_umd = __commonJS({
         };
         _proto2._getPath = function _getPath() {
           var contours = this._getContours();
-          var path24 = new Path();
+          var path26 = new Path();
           for (var i2 = 0; i2 < contours.length; i2++) {
             var contour = contours[i2];
             var firstPt = contour[0];
@@ -65033,32 +65013,32 @@ var require_fontkit_umd = __commonJS({
               }
               var curvePt = firstPt;
             }
-            path24.moveTo(firstPt.x, firstPt.y);
+            path26.moveTo(firstPt.x, firstPt.y);
             for (var j = start; j < contour.length; j++) {
               var pt = contour[j];
               var prevPt = j === 0 ? firstPt : contour[j - 1];
               if (prevPt.onCurve && pt.onCurve) {
-                path24.lineTo(pt.x, pt.y);
+                path26.lineTo(pt.x, pt.y);
               } else if (prevPt.onCurve && !pt.onCurve) {
                 var curvePt = pt;
               } else if (!prevPt.onCurve && !pt.onCurve) {
                 var midX = (prevPt.x + pt.x) / 2;
                 var midY = (prevPt.y + pt.y) / 2;
-                path24.quadraticCurveTo(prevPt.x, prevPt.y, midX, midY);
+                path26.quadraticCurveTo(prevPt.x, prevPt.y, midX, midY);
                 var curvePt = pt;
               } else if (!prevPt.onCurve && pt.onCurve) {
-                path24.quadraticCurveTo(curvePt.x, curvePt.y, pt.x, pt.y);
+                path26.quadraticCurveTo(curvePt.x, curvePt.y, pt.x, pt.y);
                 var curvePt = null;
               } else {
                 throw new Error("Unknown TTF path state");
               }
             }
             if (curvePt) {
-              path24.quadraticCurveTo(curvePt.x, curvePt.y, firstPt.x, firstPt.y);
+              path26.quadraticCurveTo(curvePt.x, curvePt.y, firstPt.x, firstPt.y);
             }
-            path24.closePath();
+            path26.closePath();
           }
-          return path24;
+          return path26;
         };
         return TTFGlyph2;
       })(Glyph);
@@ -65095,7 +65075,7 @@ var require_fontkit_umd = __commonJS({
           var str = cff.topDict.CharStrings[this.id];
           var end = str.offset + str.length;
           stream.pos = str.offset;
-          var path24 = new Path();
+          var path26 = new Path();
           var stack = [];
           var trans = [];
           var width = null;
@@ -65128,9 +65108,9 @@ var require_fontkit_umd = __commonJS({
           }
           function moveTo(x2, y2) {
             if (open) {
-              path24.closePath();
+              path26.closePath();
             }
-            path24.moveTo(x2, y2);
+            path26.moveTo(x2, y2);
             open = true;
           }
           var parse = function parse2() {
@@ -65158,7 +65138,7 @@ var require_fontkit_umd = __commonJS({
                     while (stack.length >= 2) {
                       x += stack.shift();
                       y += stack.shift();
-                      path24.lineTo(x, y);
+                      path26.lineTo(x, y);
                     }
                     break;
                   case 6:
@@ -65171,7 +65151,7 @@ var require_fontkit_umd = __commonJS({
                       } else {
                         y += stack.shift();
                       }
-                      path24.lineTo(x, y);
+                      path26.lineTo(x, y);
                       phase = !phase;
                     }
                     break;
@@ -65183,7 +65163,7 @@ var require_fontkit_umd = __commonJS({
                       var c2y = c1y + stack.shift();
                       x = c2x + stack.shift();
                       y = c2y + stack.shift();
-                      path24.bezierCurveTo(c1x, c1y, c2x, c2y, x, y);
+                      path26.bezierCurveTo(c1x, c1y, c2x, c2y, x, y);
                     }
                     break;
                   case 10:
@@ -65213,7 +65193,7 @@ var require_fontkit_umd = __commonJS({
                       checkWidth();
                     }
                     if (open) {
-                      path24.closePath();
+                      path26.closePath();
                       open = false;
                     }
                     break;
@@ -65277,17 +65257,17 @@ var require_fontkit_umd = __commonJS({
                       var c2y = c1y + stack.shift();
                       x = c2x + stack.shift();
                       y = c2y + stack.shift();
-                      path24.bezierCurveTo(c1x, c1y, c2x, c2y, x, y);
+                      path26.bezierCurveTo(c1x, c1y, c2x, c2y, x, y);
                     }
                     x += stack.shift();
                     y += stack.shift();
-                    path24.lineTo(x, y);
+                    path26.lineTo(x, y);
                     break;
                   case 25:
                     while (stack.length >= 8) {
                       x += stack.shift();
                       y += stack.shift();
-                      path24.lineTo(x, y);
+                      path26.lineTo(x, y);
                     }
                     var c1x = x + stack.shift();
                     var c1y = y + stack.shift();
@@ -65295,7 +65275,7 @@ var require_fontkit_umd = __commonJS({
                     var c2y = c1y + stack.shift();
                     x = c2x + stack.shift();
                     y = c2y + stack.shift();
-                    path24.bezierCurveTo(c1x, c1y, c2x, c2y, x, y);
+                    path26.bezierCurveTo(c1x, c1y, c2x, c2y, x, y);
                     break;
                   case 26:
                     if (stack.length % 2) {
@@ -65308,7 +65288,7 @@ var require_fontkit_umd = __commonJS({
                       c2y = c1y + stack.shift();
                       x = c2x;
                       y = c2y + stack.shift();
-                      path24.bezierCurveTo(c1x, c1y, c2x, c2y, x, y);
+                      path26.bezierCurveTo(c1x, c1y, c2x, c2y, x, y);
                     }
                     break;
                   case 27:
@@ -65322,7 +65302,7 @@ var require_fontkit_umd = __commonJS({
                       c2y = c1y + stack.shift();
                       x = c2x + stack.shift();
                       y = c2y;
-                      path24.bezierCurveTo(c1x, c1y, c2x, c2y, x, y);
+                      path26.bezierCurveTo(c1x, c1y, c2x, c2y, x, y);
                     }
                     break;
                   case 28:
@@ -65362,7 +65342,7 @@ var require_fontkit_umd = __commonJS({
                         x = c2x + stack.shift();
                         y = c2y + (stack.length === 1 ? stack.shift() : 0);
                       }
-                      path24.bezierCurveTo(c1x, c1y, c2x, c2y, x, y);
+                      path26.bezierCurveTo(c1x, c1y, c2x, c2y, x, y);
                       phase = !phase;
                     }
                     break;
@@ -65498,8 +65478,8 @@ var require_fontkit_umd = __commonJS({
                         var c6y = c5y;
                         x = c6x;
                         y = c6y;
-                        path24.bezierCurveTo(c1x, c1y, c2x, c2y, c3x, c3y);
-                        path24.bezierCurveTo(c4x, c4y, c5x, c5y, c6x, c6y);
+                        path26.bezierCurveTo(c1x, c1y, c2x, c2y, c3x, c3y);
+                        path26.bezierCurveTo(c4x, c4y, c5x, c5y, c6x, c6y);
                         break;
                       case 35:
                         var pts = [];
@@ -65508,8 +65488,8 @@ var require_fontkit_umd = __commonJS({
                           y += stack.shift();
                           pts.push(x, y);
                         }
-                        path24.bezierCurveTo.apply(path24, pts.slice(0, 6));
-                        path24.bezierCurveTo.apply(path24, pts.slice(6));
+                        path26.bezierCurveTo.apply(path26, pts.slice(0, 6));
+                        path26.bezierCurveTo.apply(path26, pts.slice(6));
                         stack.shift();
                         break;
                       case 36:
@@ -65527,8 +65507,8 @@ var require_fontkit_umd = __commonJS({
                         c6y = c5y;
                         x = c6x;
                         y = c6y;
-                        path24.bezierCurveTo(c1x, c1y, c2x, c2y, c3x, c3y);
-                        path24.bezierCurveTo(c4x, c4y, c5x, c5y, c6x, c6y);
+                        path26.bezierCurveTo(c1x, c1y, c2x, c2y, c3x, c3y);
+                        path26.bezierCurveTo(c4x, c4y, c5x, c5y, c6x, c6y);
                         break;
                       case 37:
                         var startx = x;
@@ -65547,8 +65527,8 @@ var require_fontkit_umd = __commonJS({
                           y += stack.shift();
                         }
                         pts.push(x, y);
-                        path24.bezierCurveTo.apply(path24, pts.slice(0, 6));
-                        path24.bezierCurveTo.apply(path24, pts.slice(6));
+                        path26.bezierCurveTo.apply(path26, pts.slice(0, 6));
+                        path26.bezierCurveTo.apply(path26, pts.slice(6));
                         break;
                       default:
                         throw new Error("Unknown op: 12 " + op);
@@ -65572,9 +65552,9 @@ var require_fontkit_umd = __commonJS({
           };
           parse();
           if (open) {
-            path24.closePath();
+            path26.closePath();
           }
-          return path24;
+          return path26;
         };
         return CFFGlyph2;
       })(Glyph);
@@ -66288,7 +66268,7 @@ var require_fontkit_umd = __commonJS({
         function TTFGlyphEncoder2() {
         }
         var _proto = TTFGlyphEncoder2.prototype;
-        _proto.encodeSimple = function encodeSimple(path24, instructions) {
+        _proto.encodeSimple = function encodeSimple(path26, instructions) {
           if (instructions === void 0) {
             instructions = [];
           }
@@ -66299,14 +66279,14 @@ var require_fontkit_umd = __commonJS({
           var same = 0;
           var lastX = 0, lastY = 0, lastFlag = 0;
           var pointCount = 0;
-          for (var i2 = 0; i2 < path24.commands.length; i2++) {
-            var c = path24.commands[i2];
+          for (var i2 = 0; i2 < path26.commands.length; i2++) {
+            var c = path26.commands[i2];
             for (var j = 0; j < c.args.length; j += 2) {
               var x = c.args[j];
               var y = c.args[j + 1];
               var flag2 = 0;
               if (c.command === "quadraticCurveTo" && j === 2) {
-                var next = path24.commands[i2 + 1];
+                var next = path26.commands[i2 + 1];
                 if (next && next.command === "quadraticCurveTo") {
                   var midX = (lastX + next.args[0]) / 2;
                   var midY = (lastY + next.args[1]) / 2;
@@ -66339,10 +66319,10 @@ var require_fontkit_umd = __commonJS({
               endPtsOfContours.push(pointCount - 1);
             }
           }
-          if (path24.commands.length > 1 && path24.commands[path24.commands.length - 1].command !== "closePath") {
+          if (path26.commands.length > 1 && path26.commands[path26.commands.length - 1].command !== "closePath") {
             endPtsOfContours.push(pointCount - 1);
           }
-          var bbox = path24.bbox;
+          var bbox = path26.bbox;
           var glyf2 = {
             numberOfContours: endPtsOfContours.length,
             xMin: bbox.minX,
@@ -66544,7 +66524,7 @@ var require_fontkit_umd = __commonJS({
             var gid = _step2.value;
             this.charstrings.push(this.cff.getCharString(gid));
             var glyph2 = this.font.getGlyph(gid);
-            var path24 = glyph2.path;
+            var path26 = glyph2.path;
             for (var subr in glyph2._usedGsubrs) {
               gsubrs[subr] = true;
             }
@@ -66585,7 +66565,7 @@ var require_fontkit_umd = __commonJS({
             used_fds[fd] = true;
             topDict.FDSelect.fds.push(topDict.FDArray.length - 1);
             var glyph2 = this.font.getGlyph(gid);
-            var path24 = glyph2.path;
+            var path26 = glyph2.path;
             for (var subr in glyph2._usedSubrs) {
               used_subrs[used_subrs.length - 1][subr] = true;
             }
@@ -66605,7 +66585,7 @@ var require_fontkit_umd = __commonJS({
           for (var _iterator3 = _createForOfIteratorHelperLoose$p(this.glyphs), _step3; !(_step3 = _iterator3()).done; ) {
             var gid = _step3.value;
             var glyph2 = this.font.getGlyph(gid);
-            var path24 = glyph2.path;
+            var path26 = glyph2.path;
             for (var subr in glyph2._usedSubrs) {
               used_subrs[subr] = true;
             }
@@ -71427,173 +71407,6 @@ var init_bookrows = __esm({
   }
 });
 
-// src/clean/prompts/tts-narration-text.txt
-var tts_narration_text_default;
-var init_tts_narration_text = __esm({
-  "src/clean/prompts/tts-narration-text.txt"() {
-    tts_narration_text_default = 'EVERYTHING ABOVE STILL HOLDS. What follows widens the question you are being asked.\n\nYou are reading one block of a book that is about to be narrated by a text-to-speech voice. The deterministic pass has already run: the punctuation is canonical (one kind of quote, "..." for every ellipsis, no invisible characters, no doubled spaces), and every number shape that has exactly one reading has already been converted. What is left is what only a reader of the sentence can settle.\n\nReturn the SAME anchored edit list, in the same JSON shape, or an empty list. Every `find` must be an exact, verbatim substring of the TARGET, occurring exactly once. You are not rewriting the block; you are naming the spans whose PRINTED form and SPOKEN form differ.\n\nTHE CLASSES YOU ARE BEING ASKED ABOUT\n\n1. NUMBER RESIDUE \u2014 anything the rules above declined: a bare four-digit number that is a year or a quantity depending on the sentence, an abbreviated range, a bare decimal, a heading number. Read them exactly as the rules above say.\n\n2. ABBREVIATIONS a narrator says in full: "Dr." is "Doctor", "St." is "Saint" or "Street" depending on the sentence, "Mt." is "Mount", "e.g." is "for example", "i.e." is "that is", "etc." is "et cetera", "vs." is "versus". A SPACED ampersand is the word: "&" is "and". An ampersand pressed between letters is ONE token and both sides are read: "AT&T" is "A T and T", "R&D" is "R and D", "Smith&Jones" is "Smith and Jones" \u2014 never "ATandT". "no." is "number" only when it is NUMBERING something ("file no. 12", "Doc. no. 5") \u2014 after a verb it is the word "no" ending a sentence and must be left. Leave "Mr.", "Mrs.", "Ms." exactly as printed \u2014 every voice already says those correctly, and expanding them adds nothing.\n\n2b. SCRIPTURE BOOK NAMES are said in FULL, always, and are never shortened. A deterministic pass runs before you and has already printed in full every book abbreviation it was certain of, so you will often be shown "Romans 5:17" and "First Corinthians 13:4" where the book printed "Rom. 5:17" and "1 Cor. 13:4". What reaches you still abbreviated is what that pass was NOT certain of, and it is yours: expand it, and read the reference by the scripture rules above. "Rev. 21:4" is "Revelation twenty one, verse four". "Jas. 1:17" is "James one, verse seventeen". "1 Cor. 13:4" is "First Corinthians thirteen, verse four". A book name already printed in full is read as printed and must never be abbreviated back \u2014 "Revelation 21:4" is "Revelation twenty one, verse four", never "Rev. twenty one". A leading volume number is an ordinal word, First / Second / Third, whether the book prints it as 1, as I, or as 1st. And a capitalized short word in front of a number that is NOT a book is still not a book: leave "Ch. 3:7", "Sec. 3:7", "Jan. 3:7", "Act 3:2" and "Fig. 3" to the rules above, which say how each of those is read.\n\n3. ALL-CAPS RUNS. An acronym said as letters is spelled out with spaces \u2014 "FBI" is "F B I", "NSDAP" is "N S D A P" \u2014 because a voice handed "FBI" may try to say it as a word. An acronym said AS a word is left alone: NASA, NATO, UNESCO, laser, radar. A word in capitals for EMPHASIS is written in ordinary case \u2014 "he SAID so" is "he said so" \u2014 because the capitals are typography, not sound. Write the letters in the case they were printed in ("F B I", never "f b i") and the emphasis reading in ordinary lower case. A run of TWO OR THREE capitals is an initialism and gets the letters reading only \u2014 "US" is "U S", never "us"; "WHO" is "W H O", never "who".\n\n4. BRACKETED INSERTIONS. Two different edits, and which one depends on what is inside.\n   APPARATUS is not spoken and is REMOVED whole, brackets and all, replaced by nothing but the surrounding spacing: "[sic]", "[12]", "[ed.]", "[...]", "(sic)", "(emphasis added)", "(see page twelve)", "(Kershaw 1993)", "(12)".\n   AN INTERPOLATION OF WORDS in SQUARE brackets is READ, not removed: the edit drops the brackets and keeps every word \u2014 "[he said]" becomes "he said". Never delete words.\n   A PARENTHESIS is the author\u2019s own punctuation and stays exactly as printed unless its contents are one of the apparatus shapes above. "(he was lying)" and "(note she wept)" are the book. If you are not certain, leave it.\n\n5. A SPACED HYPHEN used as a dash \u2014 "the man - who had waited - left" \u2014 is an em dash in disguise. Replace the spaced hyphen with an em dash. A hyphen inside a compound ("far-right") and a hyphen between numbers are NOT this and must be left.\n\n6. ROMAN NUMERALS are read as words ONLY where a book prints a numeral: after a part word ("Part IV" is "Part Four", "Chapter IX", "Book II"), after a monarch, pope or emperor\u2019s name ("Henry VIII" is "Henry the Eighth", "Pius XII"), or before a century ("the XIX century"). Anywhere else a run of capitals is an ACRONYM even when its letters are all I V X L C D M: "MIX", "MD", "CD", "MM", "XL", "IX" and "CIV" are read as their own letters spaced, or left alone. A roman numeral that is a citation or a volume \u2014 "Document II 9/34", "vol. iii" \u2014 is apparatus and stays exactly as printed.\n\n7. DIGIT RESIDUE. If a digit is still printed anywhere in the block after your edits, you have missed one. Go back and read it, or leave it deliberately because it is a code.\n\nFOOTNOTE AND REFERENCE MARKERS ARE NOT YOURS. A superscript reference number, a dagger, an asterisk used as a reference: the render door removes those from the narration copy itself, deterministically, and an edit that tried to would be refused because it deletes text without saying anything in its place. Leave them exactly where they are.\n\nTHE RULES THAT BOUND EVERY EDIT\n\n- KEEP THE PUNCTUATION. Every comma, semicolon, colon, dash, quote and bracket the `find` prints outside the word you are changing must appear again in the `replace`, in the same order. "Dr. Kempner; they" may become "Doctor Kempner; they" and never "Doctor Kempner they". If the abbreviation ends the span and a capital follows it in the block, its period may be ending a sentence \u2014 keep it: "Oxford St. The rain" becomes "Oxford Street. The rain".\n- ONE TOKEN PER EDIT. The replacement must repeat every word of the `find`, in order, EXCEPT the single token the class is about \u2014 the abbreviation, the run of capitals, the roman numeral. "Dr. Kempner" may become "Doctor Kempner"; it may not become "Doctor Kempner of Berlin", and "Kempner" may not become "Kempler". An edit that changes any other word is refused.\n- NEVER PARAPHRASE. You may change the SPOKEN FORM of a span. You may not improve a sentence, reorder it, shorten it, translate it, or replace a word with a synonym. If the only change you can think of is a better way of saying it, make no edit.\n- Every `find` is verbatim and occurs exactly once in the TARGET. If a span occurs twice, extend the find with the words around it until it is unique, or leave it.\n- Keep every edit SHORT. An edit is a span whose reading differs, not a clause.\n- Never edit the PREVIOUS or NEXT block. They are there so you can tell a year from a quantity and a Saint from a Street.\n- An empty edit list is the right answer for most blocks. Ordinary prose needs nothing.\n\nTARGET: The Reichstag met on March twenty-third, and Dr. Kempner of the FBI (see page twelve) said so.\n<answer>\n{"edits": [{"find": "Dr. Kempner", "replace": "Doctor Kempner"}, {"find": "FBI", "replace": "F B I"}, {"find": " (see page twelve)", "replace": ""}]}\n</answer>\n\nTARGET: Henry VIII had waited - and waited - for an answer he never SAID he wanted.\n<answer>\n{"edits": [{"find": "Henry VIII", "replace": "Henry the Eighth"}, {"find": "waited - and", "replace": "waited\u2014and"}, {"find": "waited - for", "replace": "waited\u2014for"}, {"find": "never SAID he", "replace": "never said he"}]}\n</answer>\n\nTARGET: He turned into Oxford St. The clerk [he said] worked for the MIX, no. 4 on the list.\n<answer>\n{"edits": [{"find": "Oxford St.", "replace": "Oxford Street."}, {"find": "[he said]", "replace": "he said"}, {"find": "MIX", "replace": "M I X"}]}\n</answer>\n\nTARGET: A paragraph of ordinary prose with nothing in it that is printed one way and read another.\n<answer>\n{"edits": []}\n</answer>\n';
-  }
-});
-
-// src/clean/prompts/tts-number-normalize.txt
-var tts_number_normalize_default;
-var init_tts_number_normalize = __esm({
-  "src/clean/prompts/tts-number-normalize.txt"() {
-    tts_number_normalize_default = `You convert printed numbers into the words a narrator says out loud. You never rewrite the text yourself: you report an edit list and a deterministic pass applies it.
-
-A DETERMINISTIC PASS HAS ALREADY RUN over this passage. Money, percentages, ordinals, dates with a month name, decades, YEARS AND YEAR RANGES, comma-grouped numbers and small whole numbers are ALREADY converted to words \u2014 you are seeing the result. What is left for you is mostly:
-- four-digit numbers the rules would not call years \u2014 one standing beside a unit or a currency sign, or a range they could not read \u2014 where only the sentence says whether it is a year or a quantity;
-- decimals and measurements with no currency or percent sign;
-- SCRIPTURE REFERENCES, which are left for you whole and are described below;
-- odd shapes the rules could not be certain of.
-If a number is already words, it is done. Leave it. Do not "improve" it.
-
-The user turn is one passage of a book, in this shape:
-
-PREVIOUS (context only, never edit this):
-<the paragraph before, or "(none)">
-
-TARGET (edit ONLY this):
-<the paragraph, heading or table-of-contents entry to convert>
-
-NEXT (context only, never edit this):
-<the paragraph after, or "(none)">
-
-Output ONLY this, inside <answer> tags:
-<answer>
-{"edits": [{"find": "exact text copied from the TARGET", "replace": "the spoken form"}]}
-</answer>
-
-Rules:
-- Every "find" must be copied from the TARGET character for character, must contain at least one digit, and must appear exactly once in the TARGET. Never quote the PREVIOUS or NEXT passages.
-- If the same number is printed more than once in the TARGET, extend each "find" with the word before or after it so that each one is unique ("in 1920 the" and "by 1920 it"). A "find" that matches twice is refused.
-- Every group of digits in "find" must come out as words in "replace". "20:6" is "twenty six", never "twenty".
-- Keep "find" as short as the number expression allows, but include every word that changes with it (a month name, a currency word, "per cent"). Every word in "find" that is not part of a number must appear again, unchanged and in the same order, in "replace" \u2014 EXCEPT the abbreviated book name of a scripture reference, which is the one word you may replace.
-- "replace" is plain spoken words. It may contain letters, spaces, hyphens, commas, apostrophes and periods, and it may NEVER contain a digit.
-- NEVER write the NAME of a punctuation mark. Not "hyphen", not "colon", not "dash", not "slash". A range is read "to" or "through"; a colon in a reference is read as a pause, not as the word "colon".
-- A "find" that is a list marker keeps its period: "4." is "four.", never "four".
-- A TARGET with nothing to convert gets {"edits": []}. Never edit anything that has no digit in it.
-
-Read every number as standard American English, whatever order the book prints it in.
-
-YEARS the rules left for you \u2014 pair form: 1944 is "nineteen forty-four"; 1905 is "nineteen oh five"; 2006 is "two thousand six"; 1900 is "nineteen hundred". A four-digit number that is a QUANTITY rather than a year reads as a quantity: "1200 people" is "twelve hundred people", "1500 copies" is "fifteen hundred copies". Decide from the sentence around it \u2014 that judgement is why you are being asked.
-
-RANGES \u2014 1914-1918 is "nineteen fourteen to nineteen eighteen"; 65-71 is "sixty-five to seventy-one". An ABBREVIATED range, where the second number is printed shorter than the first, is read in full: "112\u201314" is "one hundred twelve to one hundred fourteen"; "1914\u201318" is "nineteen fourteen to nineteen eighteen".
-
-WHOLE NUMBERS \u2014 cardinal, no hyphens between the groups, no "and": 5280 is "five thousand two hundred eighty".
-
-DECIMALS \u2014 2.9 million is "two point nine million"; 3.14 is "three point one four".
-
-TIMES \u2014 a clock time with a.m./p.m. or on the hour is already converted. A bare one that reached you reads as a clock: 10:05 is "ten oh five"; 7:02 is "seven oh two".
-
-SCRIPTURE REFERENCES are yours, and they are the one place you may change a word.
-
-THE FORM, which is how a narrator actually reads one: the book's FULL name, then the chapter as a number word, then a COMMA, then the word "verse", then the verse.
-
-- "1 Pet. 3:7" is "First Peter three, verse seven".
-- "Jas. 1:17" is "James one, verse seventeen".
-- "Rom. 5:17" is "Romans five, verse seventeen".
-- "Ps. 63:6" is "Psalm sixty-three, verse six".
-- "John 3:16" is "John three, verse sixteen".
-
-A RANGE takes the plural: "verses N to M".
-- "Jer. 44:17-19" is "Jeremiah forty four, verses seventeen to nineteen".
-- "Matt. 12:34-36" is "Matthew twelve, verses thirty four to thirty six".
-
-A LIST of verses in one chapter says "verse" once, and "and" before the last.
-- "Ps. 119:97, 101, 102" is "Psalm one hundred nineteen, verse ninety seven, one hundred one, and one hundred two".
-
-NEVER the word "chapter", and never "colon". "Psalm chapter sixty three, verse six" is wrong. "Psalm sixty three six", with the two numbers run together and no pause between them, is wrong.
-
-A bare comma with no "verse" is also accepted where it reads better \u2014 "First John one, nine" \u2014 but the form above is the one to use unless you have a reason.
-
-- A LEADING BOOK NUMBER is an ordinal word: 1 is "First", 2 is "Second", 3 is "Third" \u2014 never "one", never "two". "2 Cor. 5:17" is "Second Corinthians five, verse seventeen". A ROMAN numeral is the same number: "II Cor. 5:17" is "Second Corinthians five, verse seventeen", and "III John 1:4" is "Third John one, verse four".
-- Expand the abbreviation to the book it stands for, however the book prints it: "Gen." is Genesis, "Phlm." is Philemon, "Jas." is James, "Song" is the Song of Songs. Never leave a shortened name with its period in the reading.
-- Read "Ps." and "Psa." as the SINGULAR "Psalm"; read the plural "Pss." as "Psalms".
-- A RANGE ACROSS CHAPTERS names both: "Col. 3:19-4:1" is "Colossians three, verse nineteen to four, verse one".
-- A LIST ACROSS CHAPTERS keeps its punctuation, and every reference in it gets its own pause: "Lev. 19:31; 20:6" is "Leviticus nineteen, verse thirty one; twenty, verse six".
-- "ff." is read "and following". A verse letter is read as the letter: "18:23b" is "eighteen, verse twenty three b".
-- A CHAPTER with no verse reads as the chapter alone: "1 Pet. 3" is "First Peter three".
-- A capitalized word before a colon-number that is NOT a book is not a reference and gets NO reading of this kind. "Chapter 3:7", "Room 3:15", "Jan. 3:7" (a month), "Act 3:2" of a play, "Widescreen 16:9", "Flight 12:30" \u2014 read those as ordinary numbers, or leave them, whichever the sentence calls for.
-- An ABBREVIATION that is not a book is still an abbreviation: read "Sec. 3:7" as "Section three seven", "Ch. 3:7" as "Chapter three seven". Expand it, and give it no verse.
-
-DATES already came through the deterministic pass in the form "June twelfth, nineteen thirty-three". If you see one that did not, read it that way: month, ordinal day, pair-form year \u2014 "23 March 1933" is "March twenty-third, nineteen thirty-three". Never "twelve June". Never "the twelfth of June".
-
-ALREADY CONVERTED by the deterministic pass, so you will not see them and must not undo them:
-- page references \u2014 "p. 23" arrives as "page twenty three", "pp. 65-71" as "pages sixty five to seventy one";
-- digits glued to letters \u2014 COVID-19 arrives as "COVID-nineteen", B-17 as "B-seventeen", I-95 as "I-ninety five", R2D2 as "R two D two", 1940s-era as "nineteen forties-era".
-
-LEAVE AS PRINTED, with no edit at all:
-- citation apparatus with no spoken reading: "Document II 9/34", "ibid.", "vol. 2", "no. 5", archive file numbers like "298/38" or "AfW HH R 231191";
-- roman numerals;
-- phone numbers, ISBNs, catalogue, serial, part, version and code numbers, including anything with a leading zero like "001", "X-007", "Z-12345", "A1B2C3D4", "v1.2";
-- anything you are not sure is prose.
-
-Examples.
-
-TARGET: By spring 1200 miles of track were laid, and the war had been over since nineteen eighteen.
-<answer>
-{"edits": [{"find": "1200 miles", "replace": "twelve hundred miles"}]}
-</answer>
-
-TARGET: 2 Cor. 10:4 says the weapons are not carnal, and five thousand copies went out in nineteen eighty-five.
-<answer>
-{"edits": [{"find": "2 Cor. 10:4", "replace": "Second Corinthians ten, verse four"}]}
-</answer>
-
-TARGET: We are to dwell with each other according to knowledge (1 Pet. 3:7).
-<answer>
-{"edits": [{"find": "1 Pet. 3:7", "replace": "First Peter three, verse seven"}]}
-</answer>
-
-TARGET: Four separate archive files are cited: SLG HH, HSG 11 Js. Sond. 298/38; GnH 3659/42; VVN HH, Komiteeakten XZ 1; AfW HH R 231191.
-<answer>
-{"edits": []}
-</answer>
-
-TARGET: Wurm, Record, in: Kretschmar/Nicolaisen, Document II 9/34, page twenty three; ibid., Memoirs, page ninety four.
-<answer>
-{"edits": []}
-</answer>
-
-TARGET: The occupation ran from nineteen fourteen to nineteen eighteen, and the plant reopened with 1500 tons of steel.
-<answer>
-{"edits": [{"find": "1500 tons", "replace": "fifteen hundred tons"}]}
-</answer>
-
-TARGET: Job 41:1\u20132, 14\u201334 is the passage he read.
-<answer>
-{"edits": [{"find": "Job 41:1\u20132, 14\u201334", "replace": "Job forty one, verses one to two, fourteen to thirty four"}]}
-</answer>
-
-TARGET: The train left at 10:05 and reached the coast by dusk.
-<answer>
-{"edits": [{"find": "10:05", "replace": "ten oh five"}]}
-</answer>
-
-TARGET: Chapter 3: The Long Year
-<answer>
-{"edits": [{"find": "Chapter 3", "replace": "Chapter Three"}]}
-</answer>
-`;
-  }
-});
-
-// src/clean/prompt.ts
-function narrationTextPrompt() {
-  return `${tts_number_normalize_default.trim()}
-
-${tts_narration_text_default.trim()}`;
-}
-var init_prompt = __esm({
-  "src/clean/prompt.ts"() {
-    "use strict";
-    init_engine_import_meta_url();
-    init_tts_narration_text();
-    init_tts_number_normalize();
-  }
-});
-
 // node_modules/diff/libesm/diff/base.js
 var Diff;
 var init_base = __esm({
@@ -71698,16 +71511,16 @@ var init_base = __esm({
           }
         }
       }
-      addToPath(path24, added, removed, oldPosInc, options) {
-        const last = path24.lastComponent;
+      addToPath(path26, added, removed, oldPosInc, options) {
+        const last = path26.lastComponent;
         if (last && !options.oneChangePerToken && last.added === added && last.removed === removed) {
           return {
-            oldPos: path24.oldPos + oldPosInc,
+            oldPos: path26.oldPos + oldPosInc,
             lastComponent: { count: last.count + 1, added, removed, previousComponent: last.previousComponent }
           };
         } else {
           return {
-            oldPos: path24.oldPos + oldPosInc,
+            oldPos: path26.oldPos + oldPosInc,
             lastComponent: { count: 1, added, removed, previousComponent: last }
           };
         }
@@ -71988,6 +71801,521 @@ var init_punctuate = __esm({
   }
 });
 
+// src/clean/blocks.ts
+function cleanBlocks(book, where) {
+  const plan = bookRowPlan(book, where);
+  const blocks = [];
+  const tables = [];
+  const fileName = path21.basename(where);
+  const targetOf = (key, block) => ({
+    key,
+    kind: "row",
+    file: fileName,
+    tag: "",
+    statedCategory: block.category.toLowerCase(),
+    text: block.text,
+    segments: markerSegments(block.text),
+    // A book file row carries no styling and no `white-space` declaration, so
+    // nothing here can say the spaces are the author's. `targets.ts` names what
+    // that costs.
+    preformatted: false
+  });
+  for (const group of plan.groups) {
+    if (group.kind === "table" && group.grid !== void 0) {
+      const row = group.parts[0];
+      const table = {
+        parts: row.id,
+        where: `${where} block ${row.id} (Table, page ${row.page})`,
+        grid: group.grid,
+        cells: group.parts.map((part) => part.cell),
+        words: /* @__PURE__ */ new Map(),
+        source: row.text
+      };
+      tables.push(table);
+      for (const part of group.parts) {
+        blocks.push({
+          target: targetOf(`${row.id}#c${part.cell}`, part),
+          parts: row.id,
+          cell: part.cell
+        });
+      }
+      continue;
+    }
+    for (const part of group.parts) {
+      blocks.push({ target: targetOf(part.id, part), parts: part.id });
+    }
+  }
+  return { blocks, tables, plan };
+}
+function stageOneUnits(blocks, punctuated) {
+  const units = [];
+  const byParts = /* @__PURE__ */ new Map();
+  for (const block of blocks) {
+    const text = punctuated.get(block.target.key);
+    if (text === void 0) {
+      throw new Error(`stageOneUnits: no stage-1 text for ${block.target.key}`);
+    }
+    const open = byParts.get(block.parts);
+    if (open !== void 0 && block.cell !== void 0) {
+      open.text = `${open.text}${CELL_JOIN}${text}`;
+      continue;
+    }
+    const unit = { parts: block.parts, text, category: block.target.statedCategory };
+    byParts.set(block.parts, unit);
+    units.push(unit);
+  }
+  return units;
+}
+function punctuateAll(blocks) {
+  return punctuateBlocks(blocks.map((b) => b.target));
+}
+var path21, CELL_JOIN;
+var init_blocks2 = __esm({
+  "src/clean/blocks.ts"() {
+    "use strict";
+    init_engine_import_meta_url();
+    path21 = __toESM(require("node:path"), 1);
+    init_bookrows();
+    init_punctuate();
+    init_segments();
+    CELL_JOIN = " | ";
+  }
+});
+
+// src/clean/triage.ts
+var triage_exports = {};
+__export(triage_exports, {
+  DEFAULT_TRIAGE_CONCURRENCY: () => DEFAULT_TRIAGE_CONCURRENCY,
+  TRIAGE_FLAG_P: () => TRIAGE_FLAG_P,
+  TRIAGE_FORMAT: () => TRIAGE_FORMAT,
+  TRIAGE_GUIDE: () => TRIAGE_GUIDE,
+  TRIAGE_MIN_LABEL_MASS: () => TRIAGE_MIN_LABEL_MASS,
+  decideUrl: () => decideUrl,
+  groupState: () => groupState,
+  needsCleaning: () => needsCleaning,
+  readTriageFile: () => readTriageFile,
+  runCleanTriage: () => runCleanTriage,
+  triageGroups: () => triageGroups,
+  triageQuestion: () => triageQuestion
+});
+function decideUrl(endpoint) {
+  const base = endpoint.trim().replace(/\/+$/, "").replace(/\/v1$/, "");
+  return `${base}/v1/decide`;
+}
+function triageGroups(units) {
+  const groups = [];
+  let start = 0;
+  while (start < units.length) {
+    let end = start;
+    let chars = 0;
+    while (end < units.length && end - start < GROUP_MAX_UNITS) {
+      const next = units[end].text.length;
+      if (end > start && chars + next > GROUP_MAX_CHARS) break;
+      chars += next;
+      end += 1;
+    }
+    groups.push({
+      askFrom: start,
+      askTo: end,
+      from: Math.max(0, start - CONTEXT_UNITS),
+      to: Math.min(units.length, end + CONTEXT_UNITS)
+    });
+    start = end;
+  }
+  return groups;
+}
+function unitLine(unit, asked) {
+  const oneLine2 = unit.text.replace(/\s+/g, " ").trim();
+  if (asked) return `[${unit.parts}] (${unit.category ?? "text"}) ${oneLine2}`;
+  const cut = oneLine2.length > CONTEXT_CHARS ? `${oneLine2.slice(0, CONTEXT_CHARS)}\u2026` : oneLine2;
+  return `[${unit.parts}] (context) ${cut}`;
+}
+function groupState(units, group) {
+  const lines = [];
+  for (let i = group.from; i < group.to; i += 1) {
+    lines.push(unitLine(units[i], i >= group.askFrom && i < group.askTo));
+  }
+  return `${TRIAGE_GUIDE}
+
+BLOCKS
+${lines.join("\n")}`;
+}
+function triageQuestion(parts) {
+  return { type: "yesno", instructions: `Block [${parts}] needs cleaning.` };
+}
+function needsCleaning(p, labelMass) {
+  return p >= TRIAGE_FLAG_P || labelMass < TRIAGE_MIN_LABEL_MASS;
+}
+async function askGroup(transport, url, body, sleep, log2) {
+  let transportFailures = 0;
+  for (; ; ) {
+    let response;
+    try {
+      response = await transport.post(url, body);
+    } catch (err) {
+      transportFailures += 1;
+      if (transportFailures > TRANSPORT_RETRIES) {
+        throw new CleanTextError(
+          `clean-triage could not reach ${url} after ${TRANSPORT_RETRIES} retries: ${err.message}`
+        );
+      }
+      log2(`clean-triage: ${url} did not answer (${err.message}) \u2014 retrying (${transportFailures} of ${TRANSPORT_RETRIES})`);
+      await sleep(2e3 * transportFailures);
+      continue;
+    }
+    let reply;
+    try {
+      reply = JSON.parse(response.body);
+    } catch {
+      throw new CleanTextError(`clean-triage: ${url} answered ${response.status} with a body that is not JSON: ${response.body.slice(0, 200)}`);
+    }
+    if (response.status === 200) return reply;
+    const code = typeof reply.error?.code === "string" ? reply.error.code : `http_${response.status}`;
+    const message = typeof reply.error?.message === "string" ? reply.error.message : response.body.slice(0, 200);
+    if (response.status === 503 && code === "chat_queue_full") {
+      const header = Number(response.headers?.["retry-after"]);
+      const detail = Number(reply.error?.details?.retry_after);
+      const seconds = Number.isFinite(header) && header > 0 ? header : Number.isFinite(detail) && detail > 0 ? detail : 2;
+      log2(`clean-triage: the server is busy (${message}) \u2014 waiting ${seconds} s and asking again`);
+      await sleep(seconds * 1e3);
+      continue;
+    }
+    const problems = Array.isArray(reply.error?.details?.problems) ? reply.error.details.problems.slice(0, 5).map((p) => `${Array.isArray(p.location) ? p.location.join(".") : "?"}: ${String(p.message)}`).join("; ") : "";
+    throw new CleanTextError(
+      `clean-triage: ${url} refused the request (${response.status} ${code}): ${message}` + (problems ? ` \u2014 ${problems}` : "")
+    );
+  }
+}
+async function pool(count, concurrency, job) {
+  let next = 0;
+  const lanes = Array.from({ length: Math.min(concurrency, count) }, async () => {
+    while (next < count) {
+      const index = next;
+      next += 1;
+      await job(index);
+    }
+  });
+  await Promise.all(lanes);
+}
+async function runCleanTriage(opts) {
+  const started = Date.now();
+  const at = (/* @__PURE__ */ new Date()).toISOString();
+  const concurrency = opts.concurrency ?? DEFAULT_TRIAGE_CONCURRENCY;
+  const transport = opts.transport ?? fetchTransport(deadlineForConcurrency(concurrency));
+  const sleep = opts.sleep ?? ((ms) => new Promise((resolve19) => setTimeout(resolve19, ms)));
+  const url = decideUrl(opts.endpoint);
+  const where = path22.resolve(opts.bookPath);
+  let bookText;
+  try {
+    bookText = stripBom(fs27.readFileSync(where, "utf8"));
+  } catch (err) {
+    throw new CleanTextError(`--book ${where} cannot be read (${err.message}).`);
+  }
+  const book = readBookFile(bookText, where);
+  const { blocks } = cleanBlocks(book, where);
+  if (blocks.length === 0) {
+    throw new CleanTextError(`--book ${where} has no block with words in it, so there is nothing to triage.`);
+  }
+  const punctuated = punctuateAll(blocks);
+  const units = stageOneUnits(blocks, punctuated.text);
+  const groups = triageGroups(units);
+  opts.log(`clean-triage: ${units.length} position(s) in ${groups.length} group(s), asked of ${opts.model} at ${url}`);
+  const verdicts = {};
+  let served = null;
+  let engine = "";
+  let done = 0;
+  await pool(groups.length, concurrency, async (index) => {
+    const group = groups[index];
+    const asked = units.slice(group.askFrom, group.askTo);
+    const body = JSON.stringify({
+      model: opts.model,
+      state: groupState(units, group),
+      questions: Object.fromEntries(asked.map((unit) => [unit.parts, triageQuestion(unit.parts)]))
+    });
+    const reply = await askGroup(transport, url, body, sleep, opts.log);
+    for (const unit of asked) {
+      const answer = reply.answers?.[unit.parts];
+      if (answer === void 0 || typeof answer.p !== "number" || typeof answer.label_mass !== "number") {
+        throw new CleanTextError(`clean-triage: the door answered a group without a yes/no for ${unit.parts}.`);
+      }
+      verdicts[unit.parts] = {
+        needsCleaning: needsCleaning(answer.p, answer.label_mass),
+        p: answer.p,
+        labelMass: answer.label_mass,
+        digest: blockDigest(unit.text)
+      };
+    }
+    if (served === null && typeof reply.model?.id === "string") {
+      served = {
+        id: reply.model.id,
+        revision: typeof reply.model.revision === "string" ? reply.model.revision : null,
+        fingerprint: typeof reply.model.fingerprint === "string" ? reply.model.fingerprint : null
+      };
+      engine = typeof reply.engine === "string" ? reply.engine : "";
+    }
+    done += asked.length;
+    opts.log(`clean-triage: ${done}/${units.length}`);
+  });
+  if (served === null) {
+    throw new CleanTextError(`clean-triage: ${url} never said which model answered.`);
+  }
+  const file = {
+    format: TRIAGE_FORMAT,
+    at,
+    source: where,
+    model: served,
+    engine,
+    punctuationSpec: PUNCTUATION_SPEC_VERSION,
+    normalizerVersion: NORMALIZER_VERSION,
+    flagP: TRIAGE_FLAG_P,
+    minLabelMass: TRIAGE_MIN_LABEL_MASS,
+    // In the book's order, so the file reads alongside it.
+    blocks: Object.fromEntries(units.map((unit) => [unit.parts, verdicts[unit.parts]]))
+  };
+  const out = path22.resolve(opts.outPath);
+  ensureDir(path22.dirname(out));
+  const partial = `${out}.partial`;
+  fs27.writeFileSync(partial, `${JSON.stringify(file, null, 2)}
+`, "utf8");
+  fs27.renameSync(partial, out);
+  const flagged = Object.values(file.blocks).filter((v) => v.needsCleaning).length;
+  const seconds = ((Date.now() - started) / 1e3).toFixed(1);
+  opts.log(
+    `clean-triage: ${flagged} of ${units.length} position(s) need cleaning; ${units.length - flagged} examined and clean, in ${seconds}s. Verdicts: ${out}`
+  );
+  return { positions: units.length, flagged, clean: units.length - flagged, file };
+}
+function readTriageFile(triagePath) {
+  const where = path22.resolve(triagePath);
+  let parsed;
+  try {
+    parsed = JSON.parse(stripBom(fs27.readFileSync(where, "utf8")));
+  } catch (err) {
+    throw new CleanTextError(`--triage ${where} cannot be read as JSON (${err.message}).`);
+  }
+  const file = parsed;
+  if (file.format !== TRIAGE_FORMAT) {
+    throw new CleanTextError(`--triage ${where} is not a clean-triage file (format ${String(file.format)}, expected ${TRIAGE_FORMAT}).`);
+  }
+  if (typeof file.model?.id !== "string" || file.blocks === void 0 || typeof file.blocks !== "object") {
+    throw new CleanTextError(`--triage ${where} has no model or no verdicts.`);
+  }
+  for (const [parts, verdict] of Object.entries(file.blocks)) {
+    if (typeof verdict?.needsCleaning !== "boolean" || typeof verdict.digest !== "string" || typeof verdict.p !== "number" || typeof verdict.labelMass !== "number") {
+      throw new CleanTextError(`--triage ${where}: the verdict for ${parts} is malformed.`);
+    }
+  }
+  return file;
+}
+var fs27, path22, TRIAGE_FORMAT, TRIAGE_FLAG_P, TRIAGE_MIN_LABEL_MASS, GROUP_MAX_UNITS, GROUP_MAX_CHARS, CONTEXT_UNITS, CONTEXT_CHARS, DEFAULT_TRIAGE_CONCURRENCY, TRANSPORT_RETRIES, TRIAGE_GUIDE;
+var init_triage = __esm({
+  "src/clean/triage.ts"() {
+    "use strict";
+    init_engine_import_meta_url();
+    fs27 = __toESM(require("node:fs"), 1);
+    path22 = __toESM(require("node:path"), 1);
+    init_fsdirs();
+    init_bom();
+    init_bookrows();
+    init_transport();
+    init_blocks2();
+    init_digest();
+    init_punctuate();
+    init_tts_number_normalizer();
+    init_tts_punctuation();
+    TRIAGE_FORMAT = "foundry-clean-triage/v1";
+    TRIAGE_FLAG_P = 0.2;
+    TRIAGE_MIN_LABEL_MASS = 0.9;
+    GROUP_MAX_UNITS = 32;
+    GROUP_MAX_CHARS = 2e4;
+    CONTEXT_UNITS = 2;
+    CONTEXT_CHARS = 200;
+    DEFAULT_TRIAGE_CONCURRENCY = 2;
+    TRANSPORT_RETRIES = 5;
+    TRIAGE_GUIDE = [
+      "You are checking the blocks of a book before a text-to-speech voice reads it aloud.",
+      "A block NEEDS CLEANING if anything in it is printed one way and spoken another, or is printed but not meant to be spoken:",
+      "- any digit or number: a year, a quantity, a date, a range, a decimal, a heading or list number, a verse reference;",
+      "- an abbreviation a narrator says in full: Dr., St., Mt., e.g., i.e., etc., vs., no. before a number, an ampersand (Mr., Mrs. and Ms. alone do NOT count);",
+      "- a scripture reference or an abbreviated book of scripture: Rom. 5:17, 1 Cor. 13:4;",
+      "- a run of capital letters: an acronym such as FBI or NATO, or a word in capitals for emphasis;",
+      "- a bracketed insertion or apparatus: [sic], [12], [he said], (see page twelve), (Kershaw 1993);",
+      "- a hyphen with a space on each side, used as a dash;",
+      "- a roman numeral: Part IV, Chapter IX, Henry VIII.",
+      "Superscript note numbers, daggers and asterisks used as reference marks do NOT count \u2014 they are removed elsewhere.",
+      "Ordinary prose with none of these does not need cleaning. If you are unsure, it needs cleaning.",
+      "Lines marked (context) are shown only so the others read correctly; you are asked only about the other lines."
+    ].join("\n");
+  }
+});
+
+// src/clean/prompts/tts-narration-text.txt
+var tts_narration_text_default;
+var init_tts_narration_text = __esm({
+  "src/clean/prompts/tts-narration-text.txt"() {
+    tts_narration_text_default = 'EVERYTHING ABOVE STILL HOLDS. What follows widens the question you are being asked.\n\nYou are reading one block of a book that is about to be narrated by a text-to-speech voice. The deterministic pass has already run: the punctuation is canonical (one kind of quote, "..." for every ellipsis, no invisible characters, no doubled spaces), and every number shape that has exactly one reading has already been converted. What is left is what only a reader of the sentence can settle.\n\nReturn the SAME anchored edit list, in the same JSON shape, or an empty list. Every `find` must be an exact, verbatim substring of the TARGET, occurring exactly once. You are not rewriting the block; you are naming the spans whose PRINTED form and SPOKEN form differ.\n\nTHE CLASSES YOU ARE BEING ASKED ABOUT\n\n1. NUMBER RESIDUE \u2014 anything the rules above declined: a bare four-digit number that is a year or a quantity depending on the sentence, an abbreviated range, a bare decimal, a heading number. Read them exactly as the rules above say.\n\n2. ABBREVIATIONS a narrator says in full: "Dr." is "Doctor", "St." is "Saint" or "Street" depending on the sentence, "Mt." is "Mount", "e.g." is "for example", "i.e." is "that is", "etc." is "et cetera", "vs." is "versus". A SPACED ampersand is the word: "&" is "and". An ampersand pressed between letters is ONE token and both sides are read: "AT&T" is "A T and T", "R&D" is "R and D", "Smith&Jones" is "Smith and Jones" \u2014 never "ATandT". "no." is "number" only when it is NUMBERING something ("file no. 12", "Doc. no. 5") \u2014 after a verb it is the word "no" ending a sentence and must be left. Leave "Mr.", "Mrs.", "Ms." exactly as printed \u2014 every voice already says those correctly, and expanding them adds nothing.\n\n2b. SCRIPTURE BOOK NAMES are said in FULL, always, and are never shortened. A deterministic pass runs before you and has already printed in full every book abbreviation it was certain of, so you will often be shown "Romans 5:17" and "First Corinthians 13:4" where the book printed "Rom. 5:17" and "1 Cor. 13:4". What reaches you still abbreviated is what that pass was NOT certain of, and it is yours: expand it, and read the reference by the scripture rules above. "Rev. 21:4" is "Revelation twenty one, verse four". "Jas. 1:17" is "James one, verse seventeen". "1 Cor. 13:4" is "First Corinthians thirteen, verse four". A book name already printed in full is read as printed and must never be abbreviated back \u2014 "Revelation 21:4" is "Revelation twenty one, verse four", never "Rev. twenty one". A leading volume number is an ordinal word, First / Second / Third, whether the book prints it as 1, as I, or as 1st. And a capitalized short word in front of a number that is NOT a book is still not a book: leave "Ch. 3:7", "Sec. 3:7", "Jan. 3:7", "Act 3:2" and "Fig. 3" to the rules above, which say how each of those is read.\n\n3. ALL-CAPS RUNS. An acronym said as letters is spelled out with spaces \u2014 "FBI" is "F B I", "NSDAP" is "N S D A P" \u2014 because a voice handed "FBI" may try to say it as a word. An acronym said AS a word is left alone: NASA, NATO, UNESCO, laser, radar. A word in capitals for EMPHASIS is written in ordinary case \u2014 "he SAID so" is "he said so" \u2014 because the capitals are typography, not sound. Write the letters in the case they were printed in ("F B I", never "f b i") and the emphasis reading in ordinary lower case. A run of TWO OR THREE capitals is an initialism and gets the letters reading only \u2014 "US" is "U S", never "us"; "WHO" is "W H O", never "who".\n\n4. BRACKETED INSERTIONS. Two different edits, and which one depends on what is inside.\n   APPARATUS is not spoken and is REMOVED whole, brackets and all, replaced by nothing but the surrounding spacing: "[sic]", "[12]", "[ed.]", "[...]", "(sic)", "(emphasis added)", "(see page twelve)", "(Kershaw 1993)", "(12)".\n   AN INTERPOLATION OF WORDS in SQUARE brackets is READ, not removed: the edit drops the brackets and keeps every word \u2014 "[he said]" becomes "he said". Never delete words.\n   A PARENTHESIS is the author\u2019s own punctuation and stays exactly as printed unless its contents are one of the apparatus shapes above. "(he was lying)" and "(note she wept)" are the book. If you are not certain, leave it.\n\n5. A SPACED HYPHEN used as a dash \u2014 "the man - who had waited - left" \u2014 is an em dash in disguise. Replace the spaced hyphen with an em dash. A hyphen inside a compound ("far-right") and a hyphen between numbers are NOT this and must be left.\n\n6. ROMAN NUMERALS are read as words ONLY where a book prints a numeral: after a part word ("Part IV" is "Part Four", "Chapter IX", "Book II"), after a monarch, pope or emperor\u2019s name ("Henry VIII" is "Henry the Eighth", "Pius XII"), or before a century ("the XIX century"). Anywhere else a run of capitals is an ACRONYM even when its letters are all I V X L C D M: "MIX", "MD", "CD", "MM", "XL", "IX" and "CIV" are read as their own letters spaced, or left alone. A roman numeral that is a citation or a volume \u2014 "Document II 9/34", "vol. iii" \u2014 is apparatus and stays exactly as printed.\n\n7. DIGIT RESIDUE. If a digit is still printed anywhere in the block after your edits, you have missed one. Go back and read it, or leave it deliberately because it is a code.\n\nFOOTNOTE AND REFERENCE MARKERS ARE NOT YOURS. A superscript reference number, a dagger, an asterisk used as a reference: the render door removes those from the narration copy itself, deterministically, and an edit that tried to would be refused because it deletes text without saying anything in its place. Leave them exactly where they are.\n\nTHE RULES THAT BOUND EVERY EDIT\n\n- KEEP THE PUNCTUATION. Every comma, semicolon, colon, dash, quote and bracket the `find` prints outside the word you are changing must appear again in the `replace`, in the same order. "Dr. Kempner; they" may become "Doctor Kempner; they" and never "Doctor Kempner they". If the abbreviation ends the span and a capital follows it in the block, its period may be ending a sentence \u2014 keep it: "Oxford St. The rain" becomes "Oxford Street. The rain".\n- ONE TOKEN PER EDIT. The replacement must repeat every word of the `find`, in order, EXCEPT the single token the class is about \u2014 the abbreviation, the run of capitals, the roman numeral. "Dr. Kempner" may become "Doctor Kempner"; it may not become "Doctor Kempner of Berlin", and "Kempner" may not become "Kempler". An edit that changes any other word is refused.\n- NEVER PARAPHRASE. You may change the SPOKEN FORM of a span. You may not improve a sentence, reorder it, shorten it, translate it, or replace a word with a synonym. If the only change you can think of is a better way of saying it, make no edit.\n- Every `find` is verbatim and occurs exactly once in the TARGET. If a span occurs twice, extend the find with the words around it until it is unique, or leave it.\n- Keep every edit SHORT. An edit is a span whose reading differs, not a clause.\n- Never edit the PREVIOUS or NEXT block. They are there so you can tell a year from a quantity and a Saint from a Street.\n- An empty edit list is the right answer for most blocks. Ordinary prose needs nothing.\n\nTARGET: The Reichstag met on March twenty-third, and Dr. Kempner of the FBI (see page twelve) said so.\n<answer>\n{"edits": [{"find": "Dr. Kempner", "replace": "Doctor Kempner"}, {"find": "FBI", "replace": "F B I"}, {"find": " (see page twelve)", "replace": ""}]}\n</answer>\n\nTARGET: Henry VIII had waited - and waited - for an answer he never SAID he wanted.\n<answer>\n{"edits": [{"find": "Henry VIII", "replace": "Henry the Eighth"}, {"find": "waited - and", "replace": "waited\u2014and"}, {"find": "waited - for", "replace": "waited\u2014for"}, {"find": "never SAID he", "replace": "never said he"}]}\n</answer>\n\nTARGET: He turned into Oxford St. The clerk [he said] worked for the MIX, no. 4 on the list.\n<answer>\n{"edits": [{"find": "Oxford St.", "replace": "Oxford Street."}, {"find": "[he said]", "replace": "he said"}, {"find": "MIX", "replace": "M I X"}]}\n</answer>\n\nTARGET: A paragraph of ordinary prose with nothing in it that is printed one way and read another.\n<answer>\n{"edits": []}\n</answer>\n';
+  }
+});
+
+// src/clean/prompts/tts-number-normalize.txt
+var tts_number_normalize_default;
+var init_tts_number_normalize = __esm({
+  "src/clean/prompts/tts-number-normalize.txt"() {
+    tts_number_normalize_default = `You convert printed numbers into the words a narrator says out loud. You never rewrite the text yourself: you report an edit list and a deterministic pass applies it.
+
+A DETERMINISTIC PASS HAS ALREADY RUN over this passage. Money, percentages, ordinals, dates with a month name, decades, YEARS AND YEAR RANGES, comma-grouped numbers and small whole numbers are ALREADY converted to words \u2014 you are seeing the result. What is left for you is mostly:
+- four-digit numbers the rules would not call years \u2014 one standing beside a unit or a currency sign, or a range they could not read \u2014 where only the sentence says whether it is a year or a quantity;
+- decimals and measurements with no currency or percent sign;
+- SCRIPTURE REFERENCES, which are left for you whole and are described below;
+- odd shapes the rules could not be certain of.
+If a number is already words, it is done. Leave it. Do not "improve" it.
+
+The user turn is one passage of a book, in this shape:
+
+PREVIOUS (context only, never edit this):
+<the paragraph before, or "(none)">
+
+TARGET (edit ONLY this):
+<the paragraph, heading or table-of-contents entry to convert>
+
+NEXT (context only, never edit this):
+<the paragraph after, or "(none)">
+
+Output ONLY this, inside <answer> tags:
+<answer>
+{"edits": [{"find": "exact text copied from the TARGET", "replace": "the spoken form"}]}
+</answer>
+
+Rules:
+- Every "find" must be copied from the TARGET character for character, must contain at least one digit, and must appear exactly once in the TARGET. Never quote the PREVIOUS or NEXT passages.
+- If the same number is printed more than once in the TARGET, extend each "find" with the word before or after it so that each one is unique ("in 1920 the" and "by 1920 it"). A "find" that matches twice is refused.
+- Every group of digits in "find" must come out as words in "replace". "20:6" is "twenty six", never "twenty".
+- Keep "find" as short as the number expression allows, but include every word that changes with it (a month name, a currency word, "per cent"). Every word in "find" that is not part of a number must appear again, unchanged and in the same order, in "replace" \u2014 EXCEPT the abbreviated book name of a scripture reference, which is the one word you may replace.
+- "replace" is plain spoken words. It may contain letters, spaces, hyphens, commas, apostrophes and periods, and it may NEVER contain a digit.
+- NEVER write the NAME of a punctuation mark. Not "hyphen", not "colon", not "dash", not "slash". A range is read "to" or "through"; a colon in a reference is read as a pause, not as the word "colon".
+- A "find" that is a list marker keeps its period: "4." is "four.", never "four".
+- A TARGET with nothing to convert gets {"edits": []}. Never edit anything that has no digit in it.
+
+Read every number as standard American English, whatever order the book prints it in.
+
+YEARS the rules left for you \u2014 pair form: 1944 is "nineteen forty-four"; 1905 is "nineteen oh five"; 2006 is "two thousand six"; 1900 is "nineteen hundred". A four-digit number that is a QUANTITY rather than a year reads as a quantity: "1200 people" is "twelve hundred people", "1500 copies" is "fifteen hundred copies". Decide from the sentence around it \u2014 that judgement is why you are being asked.
+
+RANGES \u2014 1914-1918 is "nineteen fourteen to nineteen eighteen"; 65-71 is "sixty-five to seventy-one". An ABBREVIATED range, where the second number is printed shorter than the first, is read in full: "112\u201314" is "one hundred twelve to one hundred fourteen"; "1914\u201318" is "nineteen fourteen to nineteen eighteen".
+
+WHOLE NUMBERS \u2014 cardinal, no hyphens between the groups, no "and": 5280 is "five thousand two hundred eighty".
+
+DECIMALS \u2014 2.9 million is "two point nine million"; 3.14 is "three point one four".
+
+TIMES \u2014 a clock time with a.m./p.m. or on the hour is already converted. A bare one that reached you reads as a clock: 10:05 is "ten oh five"; 7:02 is "seven oh two".
+
+SCRIPTURE REFERENCES are yours, and they are the one place you may change a word.
+
+THE FORM, which is how a narrator actually reads one: the book's FULL name, then the chapter as a number word, then a COMMA, then the word "verse", then the verse.
+
+- "1 Pet. 3:7" is "First Peter three, verse seven".
+- "Jas. 1:17" is "James one, verse seventeen".
+- "Rom. 5:17" is "Romans five, verse seventeen".
+- "Ps. 63:6" is "Psalm sixty-three, verse six".
+- "John 3:16" is "John three, verse sixteen".
+
+A RANGE takes the plural: "verses N to M".
+- "Jer. 44:17-19" is "Jeremiah forty four, verses seventeen to nineteen".
+- "Matt. 12:34-36" is "Matthew twelve, verses thirty four to thirty six".
+
+A LIST of verses in one chapter says "verse" once, and "and" before the last.
+- "Ps. 119:97, 101, 102" is "Psalm one hundred nineteen, verse ninety seven, one hundred one, and one hundred two".
+
+NEVER the word "chapter", and never "colon". "Psalm chapter sixty three, verse six" is wrong. "Psalm sixty three six", with the two numbers run together and no pause between them, is wrong.
+
+A bare comma with no "verse" is also accepted where it reads better \u2014 "First John one, nine" \u2014 but the form above is the one to use unless you have a reason.
+
+- A LEADING BOOK NUMBER is an ordinal word: 1 is "First", 2 is "Second", 3 is "Third" \u2014 never "one", never "two". "2 Cor. 5:17" is "Second Corinthians five, verse seventeen". A ROMAN numeral is the same number: "II Cor. 5:17" is "Second Corinthians five, verse seventeen", and "III John 1:4" is "Third John one, verse four".
+- Expand the abbreviation to the book it stands for, however the book prints it: "Gen." is Genesis, "Phlm." is Philemon, "Jas." is James, "Song" is the Song of Songs. Never leave a shortened name with its period in the reading.
+- Read "Ps." and "Psa." as the SINGULAR "Psalm"; read the plural "Pss." as "Psalms".
+- A RANGE ACROSS CHAPTERS names both: "Col. 3:19-4:1" is "Colossians three, verse nineteen to four, verse one".
+- A LIST ACROSS CHAPTERS keeps its punctuation, and every reference in it gets its own pause: "Lev. 19:31; 20:6" is "Leviticus nineteen, verse thirty one; twenty, verse six".
+- "ff." is read "and following". A verse letter is read as the letter: "18:23b" is "eighteen, verse twenty three b".
+- A CHAPTER with no verse reads as the chapter alone: "1 Pet. 3" is "First Peter three".
+- A capitalized word before a colon-number that is NOT a book is not a reference and gets NO reading of this kind. "Chapter 3:7", "Room 3:15", "Jan. 3:7" (a month), "Act 3:2" of a play, "Widescreen 16:9", "Flight 12:30" \u2014 read those as ordinary numbers, or leave them, whichever the sentence calls for.
+- An ABBREVIATION that is not a book is still an abbreviation: read "Sec. 3:7" as "Section three seven", "Ch. 3:7" as "Chapter three seven". Expand it, and give it no verse.
+
+DATES already came through the deterministic pass in the form "June twelfth, nineteen thirty-three". If you see one that did not, read it that way: month, ordinal day, pair-form year \u2014 "23 March 1933" is "March twenty-third, nineteen thirty-three". Never "twelve June". Never "the twelfth of June".
+
+ALREADY CONVERTED by the deterministic pass, so you will not see them and must not undo them:
+- page references \u2014 "p. 23" arrives as "page twenty three", "pp. 65-71" as "pages sixty five to seventy one";
+- digits glued to letters \u2014 COVID-19 arrives as "COVID-nineteen", B-17 as "B-seventeen", I-95 as "I-ninety five", R2D2 as "R two D two", 1940s-era as "nineteen forties-era".
+
+LEAVE AS PRINTED, with no edit at all:
+- citation apparatus with no spoken reading: "Document II 9/34", "ibid.", "vol. 2", "no. 5", archive file numbers like "298/38" or "AfW HH R 231191";
+- roman numerals;
+- phone numbers, ISBNs, catalogue, serial, part, version and code numbers, including anything with a leading zero like "001", "X-007", "Z-12345", "A1B2C3D4", "v1.2";
+- anything you are not sure is prose.
+
+Examples.
+
+TARGET: By spring 1200 miles of track were laid, and the war had been over since nineteen eighteen.
+<answer>
+{"edits": [{"find": "1200 miles", "replace": "twelve hundred miles"}]}
+</answer>
+
+TARGET: 2 Cor. 10:4 says the weapons are not carnal, and five thousand copies went out in nineteen eighty-five.
+<answer>
+{"edits": [{"find": "2 Cor. 10:4", "replace": "Second Corinthians ten, verse four"}]}
+</answer>
+
+TARGET: We are to dwell with each other according to knowledge (1 Pet. 3:7).
+<answer>
+{"edits": [{"find": "1 Pet. 3:7", "replace": "First Peter three, verse seven"}]}
+</answer>
+
+TARGET: Four separate archive files are cited: SLG HH, HSG 11 Js. Sond. 298/38; GnH 3659/42; VVN HH, Komiteeakten XZ 1; AfW HH R 231191.
+<answer>
+{"edits": []}
+</answer>
+
+TARGET: Wurm, Record, in: Kretschmar/Nicolaisen, Document II 9/34, page twenty three; ibid., Memoirs, page ninety four.
+<answer>
+{"edits": []}
+</answer>
+
+TARGET: The occupation ran from nineteen fourteen to nineteen eighteen, and the plant reopened with 1500 tons of steel.
+<answer>
+{"edits": [{"find": "1500 tons", "replace": "fifteen hundred tons"}]}
+</answer>
+
+TARGET: Job 41:1\u20132, 14\u201334 is the passage he read.
+<answer>
+{"edits": [{"find": "Job 41:1\u20132, 14\u201334", "replace": "Job forty one, verses one to two, fourteen to thirty four"}]}
+</answer>
+
+TARGET: The train left at 10:05 and reached the coast by dusk.
+<answer>
+{"edits": [{"find": "10:05", "replace": "ten oh five"}]}
+</answer>
+
+TARGET: Chapter 3: The Long Year
+<answer>
+{"edits": [{"find": "Chapter 3", "replace": "Chapter Three"}]}
+</answer>
+`;
+  }
+});
+
+// src/clean/prompt.ts
+function narrationTextPrompt() {
+  return `${tts_number_normalize_default.trim()}
+
+${tts_narration_text_default.trim()}`;
+}
+var init_prompt = __esm({
+  "src/clean/prompt.ts"() {
+    "use strict";
+    init_engine_import_meta_url();
+    init_tts_narration_text();
+    init_tts_number_normalize();
+  }
+});
+
 // src/clean/runner.ts
 function contextWindowFor(systemPrompt2, longestInput) {
   const tokens = (systemPrompt2.length + longestInput.length) / CHARS_PER_TOKEN3 + EDIT_LIST_NUM_PREDICT + CTX_HEADROOM_TOKENS;
@@ -72089,10 +72417,10 @@ function cleanEpubKey(request) {
   return (0, import_node_crypto7.createHash)("sha256").update(fields.join(NUL5), "utf8").digest("hex");
 }
 function cleanEpubBankPath(outPath) {
-  return `${path21.resolve(outPath)}.clean-bank.jsonl`;
+  return `${path23.resolve(outPath)}.clean-bank.jsonl`;
 }
 function cleanEpubStampPath(outPath) {
-  return `${path21.resolve(outPath)}.stamp.json`;
+  return `${path23.resolve(outPath)}.stamp.json`;
 }
 function textNodesOf(source, site) {
   const fragment = source.slice(site.innerStart, site.innerEnd);
@@ -72179,8 +72507,8 @@ async function cleanTextEpub(opts) {
   });
   const transport = opts.transport ?? fetchTransport(deadlineForConcurrency(concurrency));
   const model = opts.model ?? opts.runner?.model ?? (await openModelServer({ kind, transport, endpoint, log: opts.log })).model;
-  const epubPath = path21.resolve(opts.epubPath);
-  const outPath = path21.resolve(opts.outPath);
+  const epubPath = path23.resolve(opts.epubPath);
+  const outPath = path23.resolve(opts.outPath);
   if (epubPath === outPath) {
     throw new CleanTextError(
       `--out ${outPath} is --epub itself. This command writes a NEW book and never edits one in place: the input is what a second run would have to read, and a pass that consumed it would make its own result impossible to check. Name a different --out.`
@@ -72188,7 +72516,7 @@ async function cleanTextEpub(opts) {
   }
   let bytes;
   try {
-    bytes = new Uint8Array(fs27.readFileSync(epubPath));
+    bytes = new Uint8Array(fs28.readFileSync(epubPath));
   } catch (err) {
     throw new CleanTextError(`--epub ${epubPath} cannot be read (${err.message}).`);
   }
@@ -72443,13 +72771,13 @@ async function cleanTextEpub(opts) {
       uncompressedSize: member.uncompressedSize
     };
   });
-  ensureDir(path21.dirname(outPath));
-  await fs27.promises.writeFile(outPath, writeZip(entries));
+  ensureDir(path23.dirname(outPath));
+  await fs28.promises.writeFile(outPath, writeZip(entries));
   const stampPath = cleanEpubStampPath(outPath);
-  fs27.writeFileSync(stampPath, `${JSON.stringify(stamp, null, 2)}
+  fs28.writeFileSync(stampPath, `${JSON.stringify(stamp, null, 2)}
 `, "utf8");
   const receiptPath2 = `${outPath}.receipt.json`;
-  fs27.writeFileSync(receiptPath2, `${JSON.stringify({
+  fs28.writeFileSync(receiptPath2, `${JSON.stringify({
     normalizerVersion: NORMALIZER_VERSION,
     punctuationSpec: PUNCTUATION_SPEC_VERSION,
     model,
@@ -72508,13 +72836,13 @@ function sayRefusal(log2, key, record2) {
     `clean-text: REFUSED ${record2.status} in ${key} \u2014 "${record2.find}" \u2192 "${record2.replace}"${record2.detail === void 0 ? "" : ` (${record2.detail})`}`
   );
 }
-var fs27, path21, import_node_crypto7, NUL5, NOTHING_TO_ASK;
+var fs28, path23, import_node_crypto7, NUL5, NOTHING_TO_ASK;
 var init_epub2 = __esm({
   "src/clean/epub.ts"() {
     "use strict";
     init_engine_import_meta_url();
-    fs27 = __toESM(require("node:fs"), 1);
-    path21 = __toESM(require("node:path"), 1);
+    fs28 = __toESM(require("node:fs"), 1);
+    path23 = __toESM(require("node:path"), 1);
     import_node_crypto7 = require("node:crypto");
     init_fsdirs();
     init_zip();
@@ -72552,7 +72880,8 @@ __export(run_exports, {
   CleanTextError: () => CleanTextError,
   cleanKey: () => cleanKey,
   receiptPath: () => receiptPath,
-  runCleanText: () => runCleanText
+  runCleanText: () => runCleanText,
+  triageKey: () => triageKey
 });
 function cleanKey(request) {
   const fields = [
@@ -72564,14 +72893,24 @@ function cleanKey(request) {
   ];
   return (0, import_node_crypto8.createHash)("sha256").update(fields.join(NUL6), "utf8").digest("hex");
 }
+function triageKey(request) {
+  const fields = [
+    TRIAGE_KEY_FORMAT,
+    request.triageModel.trim(),
+    NORMALIZER_VERSION,
+    PUNCTUATION_SPEC_VERSION,
+    request.text
+  ];
+  return (0, import_node_crypto8.createHash)("sha256").update(fields.join(NUL6), "utf8").digest("hex");
+}
 function receiptPath(recordsPath) {
-  return `${path22.resolve(recordsPath)}.receipt.json`;
+  return `${path24.resolve(recordsPath)}.receipt.json`;
 }
 function openBook(bookPath) {
-  const where = path22.resolve(bookPath);
+  const where = path24.resolve(bookPath);
   let text;
   try {
-    text = stripBom(fs28.readFileSync(where, "utf8"));
+    text = stripBom(fs29.readFileSync(where, "utf8"));
   } catch (err) {
     throw new CleanTextError(
       `--book ${where} cannot be read (${err.message}). It is the book file the app materialises for a step (docs/BOOK-FILE.md) \u2014 one JSON object per line, the header first.`
@@ -72606,9 +72945,10 @@ async function runCleanText(opts) {
   });
   const transport = opts.transport ?? fetchTransport(deadlineForConcurrency(concurrency));
   const model = opts.model ?? opts.runner?.model ?? (await openModelServer({ kind, transport, endpoint, log: opts.log })).model;
+  const triage = opts.triagePath === void 0 ? null : readTriageFile(opts.triagePath);
   const { text: bookText, where } = openBook(opts.bookPath);
   const book = readBookFile(bookText, where);
-  const plan = bookRowPlan(book, where);
+  const { blocks, tables, plan } = cleanBlocks(book, where);
   for (const [category, count] of plan.skipped) {
     opts.log(`clean-text: ${count} ${category} row(s) skipped \u2014 they have no words to clean`);
   }
@@ -72616,53 +72956,13 @@ async function runCleanText(opts) {
   for (const one of plan.kept) {
     opts.log(`clean-text: LEFT AS PRINTED \u2014 ${one}`);
   }
-  const blocks = [];
-  const tables = [];
-  const fileName = path22.basename(where);
-  const targetOf = (key, block) => ({
-    key,
-    kind: "row",
-    file: fileName,
-    tag: "",
-    statedCategory: block.category.toLowerCase(),
-    text: block.text,
-    segments: markerSegments(block.text),
-    // A book file row carries no styling and no `white-space` declaration, so
-    // nothing here can say the spaces are the author's. `targets.ts` names what
-    // that costs.
-    preformatted: false
-  });
-  for (const group of plan.groups) {
-    if (group.kind === "table" && group.grid !== void 0) {
-      const row = group.parts[0];
-      const table = {
-        parts: row.id,
-        where: `${where} block ${row.id} (Table, page ${row.page})`,
-        grid: group.grid,
-        cells: group.parts.map((part) => part.cell),
-        words: /* @__PURE__ */ new Map(),
-        source: row.text
-      };
-      tables.push(table);
-      for (const part of group.parts) {
-        blocks.push({
-          target: targetOf(`${row.id}#c${part.cell}`, part),
-          parts: row.id,
-          cell: part.cell
-        });
-      }
-      continue;
-    }
-    for (const part of group.parts) {
-      blocks.push({ target: targetOf(part.id, part), parts: part.id });
-    }
-  }
+  const fileName = path24.basename(where);
   if (blocks.length === 0) {
     throw new CleanTextError(
       `--book ${where} has no block with words in it, so there is nothing to clean. A book file whose every row is shelved, skipped or blank is not a book this pass can act on.`
     );
   }
-  const recordsPath = path22.resolve(opts.recordsPath);
+  const recordsPath = path24.resolve(opts.recordsPath);
   const records = TranslationRecords.open(recordsPath);
   refuseForeignRecords(records, new Set(blocks.map((b) => b.parts)), recordsPath, where);
   opts.log(records.size === 0 ? `clean-text: nothing is recorded in ${recordsPath}, so every block is asked of the model and recorded there as it lands.` : `clean-text: ${records.size} record(s) covering ${records.positions} position(s) are in ${recordsPath} \u2014 a block whose exact question is in there is not asked again, and every new answer is added to it.`);
@@ -72670,13 +72970,14 @@ async function runCleanText(opts) {
   for (const block of blocks) keyOf.set(block.target.key, cleanKey({ text: block.target.text, model }));
   const tableKey = /* @__PURE__ */ new Map();
   for (const table of tables) tableKey.set(table.parts, cleanKey({ text: table.source, model }));
+  const answered = (source, key) => records.get(key) !== void 0 || triage !== null && records.get(triageKey({ text: source, triageModel: triage.model.id })) !== void 0;
   const bankedTable = /* @__PURE__ */ new Set();
   for (const table of tables) {
-    if (records.get(tableKey.get(table.parts)) !== void 0) bankedTable.add(table.parts);
+    if (answered(table.source, tableKey.get(table.parts))) bankedTable.add(table.parts);
   }
   const outstanding = blocks.filter((block) => {
     if (block.cell !== void 0) return !bankedTable.has(block.parts);
-    return records.get(keyOf.get(block.target.key)) === void 0;
+    return !answered(block.target.text, keyOf.get(block.target.key));
   });
   const reused = blocks.length - outstanding.length;
   if (reused > 0) {
@@ -72697,7 +72998,44 @@ async function runCleanText(opts) {
   for (const block of outstanding) {
     cleanText.set(block.target.key, punctuated.text.get(block.target.key));
   }
-  const asks = outstanding.map((block, index) => {
+  let triageSummary;
+  const keptClean = /* @__PURE__ */ new Set();
+  if (triage !== null) {
+    const summary = {
+      file: path24.resolve(opts.triagePath),
+      model: triage.model.id,
+      clean: [],
+      flagged: 0,
+      stale: [],
+      unjudged: []
+    };
+    for (const unit of stageOneUnits(outstanding, cleanText)) {
+      const verdict = triage.blocks[unit.parts];
+      if (verdict === void 0) {
+        summary.unjudged.push(unit.parts);
+        continue;
+      }
+      if (verdict.digest !== blockDigest(unit.text)) {
+        summary.stale.push(unit.parts);
+        continue;
+      }
+      if (verdict.needsCleaning) {
+        summary.flagged += 1;
+        continue;
+      }
+      keptClean.add(unit.parts);
+      summary.clean.push(unit.parts);
+    }
+    opts.log(
+      `clean-text: triage by ${triage.model.id} \u2014 ${summary.clean.length} position(s) examined and clean, recorded with no model request; ${summary.flagged} flagged for cleaning${summary.stale.length > 0 ? `; ${summary.stale.length} judged on different text, asked` : ""}${summary.unjudged.length > 0 ? `; ${summary.unjudged.length} not judged, asked` : ""}.`
+    );
+    triageSummary = summary;
+  }
+  const asked = outstanding.filter((block) => !keptClean.has(block.parts));
+  const keptBlocks = outstanding.filter((block) => keptClean.has(block.parts));
+  const orderOf = new Map(outstanding.map((block, index) => [block.target.key, index]));
+  const asks = asked.map((block) => {
+    const index = orderOf.get(block.target.key);
     const text = cleanText.get(block.target.key);
     return {
       key: block.target.key,
@@ -72720,12 +73058,13 @@ async function runCleanText(opts) {
   let written = 0;
   let humanKept = 0;
   let changed = 0;
+  const tableByParts = new Map(tables.map((table) => [table.parts, table]));
   const appendRecord = (parts, key, text) => {
     const newest = records.rowFor(parts);
     if (newest !== void 0 && newest.text === text && newest.key === key) return;
     if (newest?.author === "user") {
-      const asked = records.questionFor(parts);
-      if (asked === void 0 || asked === key || newest.key === key) {
+      const asked2 = records.questionFor(parts);
+      if (asked2 === void 0 || asked2 === key || newest.key === key) {
         humanKept += 1;
         return;
       }
@@ -72741,10 +73080,31 @@ async function runCleanText(opts) {
     });
     written += 1;
   };
-  const blockByKey = new Map(outstanding.map((block) => [block.target.key, block]));
-  const tableByParts = new Map(tables.map((table) => [table.parts, table]));
+  if (triage !== null) {
+    const keptTables = /* @__PURE__ */ new Set();
+    for (const block of keptBlocks) {
+      const text = cleanText.get(block.target.key);
+      if (block.cell === void 0) {
+        if (text !== block.target.text) changed += 1;
+        appendRecord(block.parts, triageKey({ text: block.target.text, triageModel: triage.model.id }), text);
+        continue;
+      }
+      if (keptTables.has(block.parts)) continue;
+      keptTables.add(block.parts);
+      const table = tableByParts.get(block.parts);
+      for (const cell of table.cells) table.words.set(cell, cleanText.get(`${table.parts}#c${cell}`));
+      const spliced = spliceTableGrid(table.grid, table.words);
+      if ("complaint" in spliced) {
+        opts.log(`clean-text: LEFT AS PRINTED \u2014 ${table.where}: ${spliced.complaint}`);
+        continue;
+      }
+      if (spliced.text !== table.source) changed += 1;
+      appendRecord(table.parts, triageKey({ text: table.source, triageModel: triage.model.id }), spliced.text);
+    }
+  }
+  const blockByKey = new Map(asked.map((block) => [block.target.key, block]));
   const cellsOutstanding = /* @__PURE__ */ new Map();
-  for (const block of outstanding) {
+  for (const block of asked) {
     if (block.cell === void 0) continue;
     cellsOutstanding.set(block.parts, (cellsOutstanding.get(block.parts) ?? 0) + 1);
   }
@@ -72796,7 +73156,7 @@ async function runCleanText(opts) {
   const dispositions = {};
   const appliedByClass = {};
   let modelRefused = 0;
-  for (const block of outstanding) {
+  for (const block of asked) {
     const decision = settled.decisions.get(block.target.key);
     if (decision === void 0) {
       throw new CleanTextError(
@@ -72837,11 +73197,12 @@ async function runCleanText(opts) {
     appliedByClass,
     unitsAsked: settled.asked,
     unitsParseFailed: settled.parseFailed,
-    server: runner.serverFacts?.() ?? null
+    server: runner.serverFacts?.() ?? null,
+    ...triageSummary === void 0 ? {} : { triage: triageSummary }
   };
   const receiptOut = receiptPath(recordsPath);
-  ensureDir(path22.dirname(receiptOut));
-  fs28.writeFileSync(receiptOut, `${JSON.stringify(receipt, null, 2)}
+  ensureDir(path24.dirname(receiptOut));
+  fs29.writeFileSync(receiptOut, `${JSON.stringify(receipt, null, 2)}
 `, "utf8");
   const sourceTexts = bookPositionTexts(book);
   const digests = /* @__PURE__ */ new Map();
@@ -72860,15 +73221,15 @@ async function runCleanText(opts) {
     punctuationRefused: punctuated.record.refused.length,
     blocks: digests
   });
-  ensureDir(path22.dirname(path22.resolve(opts.stampPath)));
-  fs28.writeFileSync(path22.resolve(opts.stampPath), `${JSON.stringify(stamp, null, 2)}
+  ensureDir(path24.dirname(path24.resolve(opts.stampPath)));
+  fs29.writeFileSync(path24.resolve(opts.stampPath), `${JSON.stringify(stamp, null, 2)}
 `, "utf8");
   if (humanKept > 0) {
     opts.log(
       `clean-text: ${humanKept} position(s) whose newest row a person wrote were left exactly as they left them \u2014 their source text has not changed since.`
     );
   }
-  opts.log(`clean-text: the receipt is ${receiptOut}; the stamp is ${path22.resolve(opts.stampPath)}`);
+  opts.log(`clean-text: the receipt is ${receiptOut}; the stamp is ${path24.resolve(opts.stampPath)}`);
   opts.log(
     `clean-text: the stamp names ${digests.size} block position(s) and their text digest is ${stamp.textDigest} \u2014 vlm-compile --narration-stamp recomputes both over the book it is handed and refuses by name if it is not this one.`
   );
@@ -72895,13 +73256,13 @@ function sayRefusal2(log2, key, record2) {
     `clean-text: REFUSED ${record2.status} in ${key} \u2014 "${record2.find}" \u2192 "${record2.replace}"${record2.detail === void 0 ? "" : ` (${record2.detail})`}`
   );
 }
-var fs28, path22, import_node_crypto8, KEY_FORMAT, NUL6, NOTHING_TO_ASK2;
+var fs29, path24, import_node_crypto8, KEY_FORMAT, NUL6, TRIAGE_KEY_FORMAT, NOTHING_TO_ASK2;
 var init_run = __esm({
   "src/clean/run.ts"() {
     "use strict";
     init_engine_import_meta_url();
-    fs28 = __toESM(require("node:fs"), 1);
-    path22 = __toESM(require("node:path"), 1);
+    fs29 = __toESM(require("node:fs"), 1);
+    path24 = __toESM(require("node:path"), 1);
     import_node_crypto8 = require("node:crypto");
     init_fsdirs();
     init_bom();
@@ -72910,6 +73271,8 @@ var init_run = __esm({
     init_tablecells();
     init_model_server();
     init_transport();
+    init_blocks2();
+    init_triage();
     init_digest();
     init_prompt();
     init_punctuate();
@@ -72920,6 +73283,7 @@ var init_run = __esm({
     init_tts_punctuation();
     KEY_FORMAT = "clean/dialect/v1";
     NUL6 = String.fromCharCode(0);
+    TRIAGE_KEY_FORMAT = "clean/triage/v1";
     NOTHING_TO_ASK2 = {
       model: "(no model \u2014 every block was already answered)",
       generate() {
@@ -73608,14 +73972,14 @@ var require_util = __commonJS({
         }
         const port = url.port != null ? url.port : url.protocol === "https:" ? 443 : 80;
         let origin = url.origin != null ? url.origin : `${url.protocol || ""}//${url.hostname || ""}:${port}`;
-        let path24 = url.path != null ? url.path : `${url.pathname || ""}${url.search || ""}`;
+        let path26 = url.path != null ? url.path : `${url.pathname || ""}${url.search || ""}`;
         if (origin[origin.length - 1] === "/") {
           origin = origin.slice(0, origin.length - 1);
         }
-        if (path24 && path24[0] !== "/") {
-          path24 = `/${path24}`;
+        if (path26 && path26[0] !== "/") {
+          path26 = `/${path26}`;
         }
-        return new URL(`${origin}${path24}`);
+        return new URL(`${origin}${path26}`);
       }
       if (!isHttpOrHttpsPrefixed(url.origin || url.protocol)) {
         throw new InvalidArgumentError("Invalid URL protocol: the URL must start with `http:` or `https:`.");
@@ -74067,39 +74431,39 @@ var require_diagnostics = __commonJS({
       });
       diagnosticsChannel.channel("undici:client:sendHeaders").subscribe((evt) => {
         const {
-          request: { method, path: path24, origin }
+          request: { method, path: path26, origin }
         } = evt;
-        debuglog("sending request to %s %s/%s", method, origin, path24);
+        debuglog("sending request to %s %s/%s", method, origin, path26);
       });
       diagnosticsChannel.channel("undici:request:headers").subscribe((evt) => {
         const {
-          request: { method, path: path24, origin },
+          request: { method, path: path26, origin },
           response: { statusCode }
         } = evt;
         debuglog(
           "received response to %s %s/%s - HTTP %d",
           method,
           origin,
-          path24,
+          path26,
           statusCode
         );
       });
       diagnosticsChannel.channel("undici:request:trailers").subscribe((evt) => {
         const {
-          request: { method, path: path24, origin }
+          request: { method, path: path26, origin }
         } = evt;
-        debuglog("trailers received from %s %s/%s", method, origin, path24);
+        debuglog("trailers received from %s %s/%s", method, origin, path26);
       });
       diagnosticsChannel.channel("undici:request:error").subscribe((evt) => {
         const {
-          request: { method, path: path24, origin },
+          request: { method, path: path26, origin },
           error
         } = evt;
         debuglog(
           "request to %s %s/%s errored - %s",
           method,
           origin,
-          path24,
+          path26,
           error.message
         );
       });
@@ -74148,9 +74512,9 @@ var require_diagnostics = __commonJS({
         });
         diagnosticsChannel.channel("undici:client:sendHeaders").subscribe((evt) => {
           const {
-            request: { method, path: path24, origin }
+            request: { method, path: path26, origin }
           } = evt;
-          debuglog("sending request to %s %s/%s", method, origin, path24);
+          debuglog("sending request to %s %s/%s", method, origin, path26);
         });
       }
       diagnosticsChannel.channel("undici:websocket:open").subscribe((evt) => {
@@ -74214,7 +74578,7 @@ var require_request = __commonJS({
     var kHandler = /* @__PURE__ */ Symbol("handler");
     var Request = class {
       constructor(origin, {
-        path: path24,
+        path: path26,
         method,
         body,
         headers,
@@ -74229,11 +74593,11 @@ var require_request = __commonJS({
         expectContinue,
         servername
       }, handler) {
-        if (typeof path24 !== "string") {
+        if (typeof path26 !== "string") {
           throw new InvalidArgumentError("path must be a string");
-        } else if (path24[0] !== "/" && !(path24.startsWith("http://") || path24.startsWith("https://")) && method !== "CONNECT") {
+        } else if (path26[0] !== "/" && !(path26.startsWith("http://") || path26.startsWith("https://")) && method !== "CONNECT") {
           throw new InvalidArgumentError("path must be an absolute URL or start with a slash");
-        } else if (invalidPathRegex.test(path24)) {
+        } else if (invalidPathRegex.test(path26)) {
           throw new InvalidArgumentError("invalid request path");
         }
         if (typeof method !== "string") {
@@ -74296,7 +74660,7 @@ var require_request = __commonJS({
         this.completed = false;
         this.aborted = false;
         this.upgrade = upgrade || null;
-        this.path = query ? buildURL(path24, query) : path24;
+        this.path = query ? buildURL(path26, query) : path26;
         this.origin = origin;
         this.idempotent = idempotent == null ? method === "HEAD" || method === "GET" : idempotent;
         this.blocking = blocking == null ? false : blocking;
@@ -74610,9 +74974,9 @@ var require_dispatcher_base = __commonJS({
       }
       close(callback) {
         if (callback === void 0) {
-          return new Promise((resolve18, reject) => {
+          return new Promise((resolve19, reject) => {
             this.close((err, data) => {
-              return err ? reject(err) : resolve18(data);
+              return err ? reject(err) : resolve19(data);
             });
           });
         }
@@ -74650,12 +75014,12 @@ var require_dispatcher_base = __commonJS({
           err = null;
         }
         if (callback === void 0) {
-          return new Promise((resolve18, reject) => {
+          return new Promise((resolve19, reject) => {
             this.destroy(err, (err2, data) => {
               return err2 ? (
                 /* istanbul ignore next: should never error */
                 reject(err2)
-              ) : resolve18(data);
+              ) : resolve19(data);
             });
           });
         }
@@ -76933,8 +77297,8 @@ var require_util2 = __commonJS({
     function createDeferredPromise() {
       let res;
       let rej;
-      const promise = new Promise((resolve18, reject) => {
-        res = resolve18;
+      const promise = new Promise((resolve19, reject) => {
+        res = resolve19;
         rej = reject;
       });
       return { promise, resolve: res, reject: rej };
@@ -78830,7 +79194,7 @@ var require_client_h1 = __commonJS({
       return method !== "GET" && method !== "HEAD" && method !== "OPTIONS" && method !== "TRACE" && method !== "CONNECT";
     }
     function writeH1(client, request) {
-      const { method, path: path24, host, upgrade, blocking, reset } = request;
+      const { method, path: path26, host, upgrade, blocking, reset } = request;
       let { body, headers, contentLength } = request;
       const expectsPayload = method === "PUT" || method === "POST" || method === "PATCH" || method === "QUERY" || method === "PROPFIND" || method === "PROPPATCH";
       if (util.isFormDataLike(body)) {
@@ -78896,7 +79260,7 @@ var require_client_h1 = __commonJS({
       if (blocking) {
         socket[kBlocking] = true;
       }
-      let header = `${method} ${path24} HTTP/1.1\r
+      let header = `${method} ${path26} HTTP/1.1\r
 `;
       if (typeof host === "string") {
         header += `host: ${host}\r
@@ -79083,12 +79447,12 @@ upgrade: ${upgrade}\r
           cb();
         }
       }
-      const waitForDrain = () => new Promise((resolve18, reject) => {
+      const waitForDrain = () => new Promise((resolve19, reject) => {
         assert(callback === null);
         if (socket[kError]) {
           reject(socket[kError]);
         } else {
-          callback = resolve18;
+          callback = resolve19;
         }
       });
       socket.on("close", onDrain).on("drain", onDrain);
@@ -79423,7 +79787,7 @@ var require_client_h2 = __commonJS({
     }
     function writeH2(client, request) {
       const session = client[kHTTP2Session];
-      const { method, path: path24, host, upgrade, expectContinue, signal, headers: reqHeaders } = request;
+      const { method, path: path26, host, upgrade, expectContinue, signal, headers: reqHeaders } = request;
       let { body } = request;
       if (upgrade) {
         util.errorRequest(client, request, new Error("Upgrade not supported for H2"));
@@ -79490,7 +79854,7 @@ var require_client_h2 = __commonJS({
         });
         return true;
       }
-      headers[HTTP2_HEADER_PATH] = path24;
+      headers[HTTP2_HEADER_PATH] = path26;
       headers[HTTP2_HEADER_SCHEME] = "https";
       const expectsPayload = method === "PUT" || method === "POST" || method === "PATCH";
       if (body && typeof body.read === "function") {
@@ -79726,12 +80090,12 @@ var require_client_h2 = __commonJS({
           cb();
         }
       }
-      const waitForDrain = () => new Promise((resolve18, reject) => {
+      const waitForDrain = () => new Promise((resolve19, reject) => {
         assert(callback === null);
         if (socket[kError]) {
           reject(socket[kError]);
         } else {
-          callback = resolve18;
+          callback = resolve19;
         }
       });
       h2stream.on("close", onDrain).on("drain", onDrain);
@@ -79844,9 +80208,9 @@ var require_redirect_handler = __commonJS({
           return this.handler.onHeaders(statusCode, headers, resume, statusText);
         }
         const { origin, pathname, search } = util.parseURL(new URL(this.location, this.opts.origin && new URL(this.opts.path, this.opts.origin)));
-        const path24 = search ? `${pathname}${search}` : pathname;
+        const path26 = search ? `${pathname}${search}` : pathname;
         this.opts.headers = cleanRequestHeaders(this.opts.headers, statusCode === 303, this.opts.origin !== origin);
-        this.opts.path = path24;
+        this.opts.path = path26;
         this.opts.origin = origin;
         this.opts.maxRedirections = 0;
         this.opts.query = null;
@@ -80211,16 +80575,16 @@ var require_client = __commonJS({
         return this[kNeedDrain] < 2;
       }
       async [kClose]() {
-        return new Promise((resolve18) => {
+        return new Promise((resolve19) => {
           if (this[kSize]) {
-            this[kClosedResolve] = resolve18;
+            this[kClosedResolve] = resolve19;
           } else {
-            resolve18(null);
+            resolve19(null);
           }
         });
       }
       async [kDestroy](err) {
-        return new Promise((resolve18) => {
+        return new Promise((resolve19) => {
           const requests = this[kQueue].splice(this[kPendingIdx]);
           for (let i = 0; i < requests.length; i++) {
             const request = requests[i];
@@ -80231,7 +80595,7 @@ var require_client = __commonJS({
               this[kClosedResolve]();
               this[kClosedResolve] = null;
             }
-            resolve18(null);
+            resolve19(null);
           };
           if (this[kHTTPContext]) {
             this[kHTTPContext].destroy(err, callback);
@@ -80282,7 +80646,7 @@ var require_client = __commonJS({
         });
       }
       try {
-        const socket = await new Promise((resolve18, reject) => {
+        const socket = await new Promise((resolve19, reject) => {
           client[kConnector]({
             host,
             hostname,
@@ -80294,7 +80658,7 @@ var require_client = __commonJS({
             if (err) {
               reject(err);
             } else {
-              resolve18(socket2);
+              resolve19(socket2);
             }
           });
         });
@@ -80511,8 +80875,8 @@ var require_pool_stats = __commonJS({
     var { kFree, kConnected, kPending, kQueued, kRunning, kSize } = require_symbols();
     var kPool = /* @__PURE__ */ Symbol("pool");
     var PoolStats = class {
-      constructor(pool) {
-        this[kPool] = pool;
+      constructor(pool2) {
+        this[kPool] = pool2;
       }
       get connected() {
         return this[kPool][kConnected];
@@ -80564,35 +80928,35 @@ var require_pool_base = __commonJS({
         this[kQueue] = new FixedQueue();
         this[kClients] = [];
         this[kQueued] = 0;
-        const pool = this;
+        const pool2 = this;
         this[kOnDrain] = function onDrain(origin, targets) {
-          const queue = pool[kQueue];
+          const queue = pool2[kQueue];
           let needDrain = false;
           while (!needDrain) {
             const item = queue.shift();
             if (!item) {
               break;
             }
-            pool[kQueued]--;
+            pool2[kQueued]--;
             needDrain = !this.dispatch(item.opts, item.handler);
           }
           this[kNeedDrain] = needDrain;
-          if (!this[kNeedDrain] && pool[kNeedDrain]) {
-            pool[kNeedDrain] = false;
-            pool.emit("drain", origin, [pool, ...targets]);
+          if (!this[kNeedDrain] && pool2[kNeedDrain]) {
+            pool2[kNeedDrain] = false;
+            pool2.emit("drain", origin, [pool2, ...targets]);
           }
-          if (pool[kClosedResolve] && queue.isEmpty()) {
-            Promise.all(pool[kClients].map((c) => c.close())).then(pool[kClosedResolve]);
+          if (pool2[kClosedResolve] && queue.isEmpty()) {
+            Promise.all(pool2[kClients].map((c) => c.close())).then(pool2[kClosedResolve]);
           }
         };
         this[kOnConnect] = (origin, targets) => {
-          pool.emit("connect", origin, [pool, ...targets]);
+          pool2.emit("connect", origin, [pool2, ...targets]);
         };
         this[kOnDisconnect] = (origin, targets, err) => {
-          pool.emit("disconnect", origin, [pool, ...targets], err);
+          pool2.emit("disconnect", origin, [pool2, ...targets], err);
         };
         this[kOnConnectionError] = (origin, targets, err) => {
-          pool.emit("connectionError", origin, [pool, ...targets], err);
+          pool2.emit("connectionError", origin, [pool2, ...targets], err);
         };
         this[kStats] = new PoolStats(this);
       }
@@ -80633,8 +80997,8 @@ var require_pool_base = __commonJS({
         if (this[kQueue].isEmpty()) {
           await Promise.all(this[kClients].map((c) => c.close()));
         } else {
-          await new Promise((resolve18) => {
-            this[kClosedResolve] = resolve18;
+          await new Promise((resolve19) => {
+            this[kClosedResolve] = resolve19;
           });
         }
       }
@@ -80840,22 +81204,22 @@ var require_balanced_pool = __commonJS({
       }
       addUpstream(upstream) {
         const upstreamOrigin = parseOrigin(upstream).origin;
-        if (this[kClients].find((pool2) => pool2[kUrl].origin === upstreamOrigin && pool2.closed !== true && pool2.destroyed !== true)) {
+        if (this[kClients].find((pool3) => pool3[kUrl].origin === upstreamOrigin && pool3.closed !== true && pool3.destroyed !== true)) {
           return this;
         }
-        const pool = this[kFactory](upstreamOrigin, Object.assign({}, this[kOptions]));
-        this[kAddClient](pool);
-        pool.on("connect", () => {
-          pool[kWeight] = Math.min(this[kMaxWeightPerServer], pool[kWeight] + this[kErrorPenalty]);
+        const pool2 = this[kFactory](upstreamOrigin, Object.assign({}, this[kOptions]));
+        this[kAddClient](pool2);
+        pool2.on("connect", () => {
+          pool2[kWeight] = Math.min(this[kMaxWeightPerServer], pool2[kWeight] + this[kErrorPenalty]);
         });
-        pool.on("connectionError", () => {
-          pool[kWeight] = Math.max(1, pool[kWeight] - this[kErrorPenalty]);
+        pool2.on("connectionError", () => {
+          pool2[kWeight] = Math.max(1, pool2[kWeight] - this[kErrorPenalty]);
           this._updateBalancedPoolStats();
         });
-        pool.on("disconnect", (...args) => {
+        pool2.on("disconnect", (...args) => {
           const err = args[2];
           if (err && err.code === "UND_ERR_SOCKET") {
-            pool[kWeight] = Math.max(1, pool[kWeight] - this[kErrorPenalty]);
+            pool2[kWeight] = Math.max(1, pool2[kWeight] - this[kErrorPenalty]);
             this._updateBalancedPoolStats();
           }
         });
@@ -80874,9 +81238,9 @@ var require_balanced_pool = __commonJS({
       }
       removeUpstream(upstream) {
         const upstreamOrigin = parseOrigin(upstream).origin;
-        const pool = this[kClients].find((pool2) => pool2[kUrl].origin === upstreamOrigin && pool2.closed !== true && pool2.destroyed !== true);
-        if (pool) {
-          this[kRemoveClient](pool);
+        const pool2 = this[kClients].find((pool3) => pool3[kUrl].origin === upstreamOrigin && pool3.closed !== true && pool3.destroyed !== true);
+        if (pool2) {
+          this[kRemoveClient](pool2);
         }
         return this;
       }
@@ -80891,16 +81255,16 @@ var require_balanced_pool = __commonJS({
         if (!dispatcher) {
           return;
         }
-        const allClientsBusy = this[kClients].map((pool) => pool[kNeedDrain]).reduce((a, b) => a && b, true);
+        const allClientsBusy = this[kClients].map((pool2) => pool2[kNeedDrain]).reduce((a, b) => a && b, true);
         if (allClientsBusy) {
           return;
         }
         let counter = 0;
-        let maxWeightIndex = this[kClients].findIndex((pool) => !pool[kNeedDrain]);
+        let maxWeightIndex = this[kClients].findIndex((pool2) => !pool2[kNeedDrain]);
         while (counter++ < this[kClients].length) {
           this[kIndex] = (this[kIndex] + 1) % this[kClients].length;
-          const pool = this[kClients][this[kIndex]];
-          if (pool[kWeight] > this[kClients][maxWeightIndex][kWeight] && !pool[kNeedDrain]) {
+          const pool2 = this[kClients][this[kIndex]];
+          if (pool2[kWeight] > this[kClients][maxWeightIndex][kWeight] && !pool2[kNeedDrain]) {
             maxWeightIndex = this[kIndex];
           }
           if (this[kIndex] === 0) {
@@ -80909,8 +81273,8 @@ var require_balanced_pool = __commonJS({
               this[kCurrentWeight] = this[kMaxWeightPerServer];
             }
           }
-          if (pool[kWeight] >= this[kCurrentWeight] && !pool[kNeedDrain]) {
-            return pool;
+          if (pool2[kWeight] >= this[kCurrentWeight] && !pool2[kNeedDrain]) {
+            return pool2;
           }
         }
         this[kCurrentWeight] = this[kClients][maxWeightIndex][kWeight];
@@ -81781,7 +82145,7 @@ var require_readable = __commonJS({
         if (this._readableState.closeEmitted) {
           return null;
         }
-        return await new Promise((resolve18, reject) => {
+        return await new Promise((resolve19, reject) => {
           if (this[kContentLength] > limit) {
             this.destroy(new AbortError());
           }
@@ -81794,7 +82158,7 @@ var require_readable = __commonJS({
             if (signal?.aborted) {
               reject(signal.reason ?? new AbortError());
             } else {
-              resolve18(null);
+              resolve19(null);
             }
           }).on("error", noop).on("data", function(chunk) {
             limit -= chunk.length;
@@ -81813,7 +82177,7 @@ var require_readable = __commonJS({
     }
     async function consume(stream, type) {
       assert(!stream[kConsume]);
-      return new Promise((resolve18, reject) => {
+      return new Promise((resolve19, reject) => {
         if (isUnusable(stream)) {
           const rState = stream._readableState;
           if (rState.destroyed && rState.closeEmitted === false) {
@@ -81830,7 +82194,7 @@ var require_readable = __commonJS({
             stream[kConsume] = {
               type,
               stream,
-              resolve: resolve18,
+              resolve: resolve19,
               reject,
               length: 0,
               body: []
@@ -81900,18 +82264,18 @@ var require_readable = __commonJS({
       return buffer;
     }
     function consumeEnd(consume2) {
-      const { type, body, resolve: resolve18, stream, length } = consume2;
+      const { type, body, resolve: resolve19, stream, length } = consume2;
       try {
         if (type === "text") {
-          resolve18(chunksDecode(body, length));
+          resolve19(chunksDecode(body, length));
         } else if (type === "json") {
-          resolve18(JSON.parse(chunksDecode(body, length)));
+          resolve19(JSON.parse(chunksDecode(body, length)));
         } else if (type === "arrayBuffer") {
-          resolve18(chunksConcat(body, length).buffer);
+          resolve19(chunksConcat(body, length).buffer);
         } else if (type === "blob") {
-          resolve18(new Blob(body, { type: stream[kContentType] }));
+          resolve19(new Blob(body, { type: stream[kContentType] }));
         } else if (type === "bytes") {
-          resolve18(chunksConcat(body, length));
+          resolve19(chunksConcat(body, length));
         }
         consumeFinish(consume2);
       } catch (err) {
@@ -82170,9 +82534,9 @@ var require_api_request = __commonJS({
     };
     function request(opts, callback) {
       if (callback === void 0) {
-        return new Promise((resolve18, reject) => {
+        return new Promise((resolve19, reject) => {
           request.call(this, opts, (err, data) => {
-            return err ? reject(err) : resolve18(data);
+            return err ? reject(err) : resolve19(data);
           });
         });
       }
@@ -82397,9 +82761,9 @@ var require_api_stream = __commonJS({
     };
     function stream(opts, factory, callback) {
       if (callback === void 0) {
-        return new Promise((resolve18, reject) => {
+        return new Promise((resolve19, reject) => {
           stream.call(this, opts, factory, (err, data) => {
-            return err ? reject(err) : resolve18(data);
+            return err ? reject(err) : resolve19(data);
           });
         });
       }
@@ -82686,9 +83050,9 @@ var require_api_upgrade = __commonJS({
     };
     function upgrade(opts, callback) {
       if (callback === void 0) {
-        return new Promise((resolve18, reject) => {
+        return new Promise((resolve19, reject) => {
           upgrade.call(this, opts, (err, data) => {
-            return err ? reject(err) : resolve18(data);
+            return err ? reject(err) : resolve19(data);
           });
         });
       }
@@ -82781,9 +83145,9 @@ var require_api_connect = __commonJS({
     };
     function connect(opts, callback) {
       if (callback === void 0) {
-        return new Promise((resolve18, reject) => {
+        return new Promise((resolve19, reject) => {
           connect.call(this, opts, (err, data) => {
-            return err ? reject(err) : resolve18(data);
+            return err ? reject(err) : resolve19(data);
           });
         });
       }
@@ -82947,20 +83311,20 @@ var require_mock_utils = __commonJS({
       }
       return true;
     }
-    function safeUrl(path24) {
-      if (typeof path24 !== "string") {
-        return path24;
+    function safeUrl(path26) {
+      if (typeof path26 !== "string") {
+        return path26;
       }
-      const pathSegments = path24.split("?");
+      const pathSegments = path26.split("?");
       if (pathSegments.length !== 2) {
-        return path24;
+        return path26;
       }
       const qp = new URLSearchParams(pathSegments.pop());
       qp.sort();
       return [...pathSegments, qp.toString()].join("?");
     }
-    function matchKey(mockDispatch2, { path: path24, method, body, headers }) {
-      const pathMatch = matchValue(mockDispatch2.path, path24);
+    function matchKey(mockDispatch2, { path: path26, method, body, headers }) {
+      const pathMatch = matchValue(mockDispatch2.path, path26);
       const methodMatch = matchValue(mockDispatch2.method, method);
       const bodyMatch = typeof mockDispatch2.body !== "undefined" ? matchValue(mockDispatch2.body, body) : true;
       const headersMatch = matchHeaders(mockDispatch2, headers);
@@ -82982,7 +83346,7 @@ var require_mock_utils = __commonJS({
     function getMockDispatch(mockDispatches, key) {
       const basePath = key.query ? buildURL(key.path, key.query) : key.path;
       const resolvedPath = typeof basePath === "string" ? safeUrl(basePath) : basePath;
-      let matchedMockDispatches = mockDispatches.filter(({ consumed }) => !consumed).filter(({ path: path24 }) => matchValue(safeUrl(path24), resolvedPath));
+      let matchedMockDispatches = mockDispatches.filter(({ consumed }) => !consumed).filter(({ path: path26 }) => matchValue(safeUrl(path26), resolvedPath));
       if (matchedMockDispatches.length === 0) {
         throw new MockNotMatchedError(`Mock dispatch not matched for path '${resolvedPath}'`);
       }
@@ -83020,9 +83384,9 @@ var require_mock_utils = __commonJS({
       }
     }
     function buildKey(opts) {
-      const { path: path24, method, body, headers, query } = opts;
+      const { path: path26, method, body, headers, query } = opts;
       return {
-        path: path24,
+        path: path26,
         method,
         body,
         headers,
@@ -83490,10 +83854,10 @@ var require_pending_interceptors_formatter = __commonJS({
       }
       format(pendingInterceptors) {
         const withPrettyHeaders = pendingInterceptors.map(
-          ({ method, path: path24, data: { statusCode }, persist, times, timesInvoked, origin }) => ({
+          ({ method, path: path26, data: { statusCode }, persist, times, timesInvoked, origin }) => ({
             Method: method,
             Origin: origin,
-            Path: path24,
+            Path: path26,
             "Status code": statusCode,
             Persistent: persist ? PERSISTENT : NOT_PERSISTENT,
             Invocations: timesInvoked,
@@ -86658,7 +87022,7 @@ var require_fetch = __commonJS({
       function dispatch({ body }) {
         const url = requestCurrentURL(request);
         const agent = fetchParams.controller.dispatcher;
-        return new Promise((resolve18, reject) => agent.dispatch(
+        return new Promise((resolve19, reject) => agent.dispatch(
           {
             path: url.pathname + url.search,
             origin: url.origin,
@@ -86732,7 +87096,7 @@ var require_fetch = __commonJS({
                 }
               }
               const onError = this.onError.bind(this);
-              resolve18({
+              resolve19({
                 status,
                 statusText,
                 headersList,
@@ -86778,7 +87142,7 @@ var require_fetch = __commonJS({
               for (let i = 0; i < rawHeaders.length; i += 2) {
                 headersList.append(bufferToLowerCasedHeaderName(rawHeaders[i]), rawHeaders[i + 1].toString("latin1"), true);
               }
-              resolve18({
+              resolve19({
                 status,
                 statusText: STATUS_CODES[status],
                 headersList,
@@ -88392,9 +88756,9 @@ var require_util6 = __commonJS({
         }
       }
     }
-    function validateCookiePath(path24) {
-      for (let i = 0; i < path24.length; ++i) {
-        const code = path24.charCodeAt(i);
+    function validateCookiePath(path26) {
+      for (let i = 0; i < path26.length; ++i) {
+        const code = path26.charCodeAt(i);
         if (code < 32 || // exclude CTLs (0-31)
         code === 127 || // DEL
         code === 59) {
@@ -90395,8 +90759,8 @@ var require_util8 = __commonJS({
       return true;
     }
     function delay(ms) {
-      return new Promise((resolve18) => {
-        setTimeout(resolve18, ms).unref();
+      return new Promise((resolve19) => {
+        setTimeout(resolve19, ms).unref();
       });
     }
     module2.exports = {
@@ -91004,11 +91368,11 @@ var require_undici = __commonJS({
           if (typeof opts.path !== "string") {
             throw new InvalidArgumentError("invalid opts.path");
           }
-          let path24 = opts.path;
+          let path26 = opts.path;
           if (!opts.path.startsWith("/")) {
-            path24 = `/${path24}`;
+            path26 = `/${path26}`;
           }
-          url = new URL(util.parseOrigin(url).origin + path24);
+          url = new URL(util.parseOrigin(url).origin + path26);
         } else {
           if (!opts) {
             opts = typeof url === "object" ? url : {};
@@ -91198,7 +91562,7 @@ function formatOptions(specs) {
 
 // src/commands.ts
 init_engine_import_meta_url();
-var path23 = __toESM(require("node:path"), 1);
+var path25 = __toESM(require("node:path"), 1);
 
 // src/backend/plan.ts
 init_engine_import_meta_url();
@@ -91887,12 +92251,12 @@ var fs8 = __toESM(require("node:fs"), 1);
 var os = __toESM(require("node:os"), 1);
 var path6 = __toESM(require("node:path"), 1);
 var import_node_child_process = require("node:child_process");
-var spawnRunner = (cmd, args, timeoutMs) => new Promise((resolve18) => {
+var spawnRunner = (cmd, args, timeoutMs) => new Promise((resolve19) => {
   let proc;
   try {
     proc = (0, import_node_child_process.spawn)(cmd, [...args], { stdio: ["ignore", "pipe", "pipe"] });
   } catch (err) {
-    resolve18({ exitCode: null, stdout: "", stderr: "", failure: err.message });
+    resolve19({ exitCode: null, stdout: "", stderr: "", failure: err.message });
     return;
   }
   const out = [];
@@ -91906,11 +92270,11 @@ var spawnRunner = (cmd, args, timeoutMs) => new Promise((resolve18) => {
   proc.stderr.on("data", (d) => errBuf.push(d));
   proc.on("error", (err) => {
     clearTimeout(timer);
-    resolve18({ exitCode: null, stdout: "", stderr: "", failure: err.message });
+    resolve19({ exitCode: null, stdout: "", stderr: "", failure: err.message });
   });
   proc.on("close", (code) => {
     clearTimeout(timer);
-    resolve18({
+    resolve19({
       exitCode: code,
       stdout: decodeConsole(Buffer.concat(out)),
       stderr: decodeConsole(Buffer.concat(errBuf)),
@@ -93029,7 +93393,7 @@ async function readPagesWithVlm(opts) {
   let totals = null;
   const pages = [];
   const stderrTail = [];
-  const finished = new Promise((resolve18, reject) => {
+  const finished = new Promise((resolve19, reject) => {
     let stdout = "";
     let stderr = "";
     let failure = null;
@@ -93099,7 +93463,7 @@ async function readPagesWithVlm(opts) {
 ` + stderrTail.map((l) => `  ${l}`).join("\n")
         ));
       }
-      resolve18();
+      resolve19();
     });
   });
   proc.stdin.write(config);
@@ -93181,7 +93545,7 @@ async function cropPageRenders(opts) {
   });
   const written = [];
   const stderrTail = [];
-  const finished = new Promise((resolve18, reject) => {
+  const finished = new Promise((resolve19, reject) => {
     let stdout = "";
     proc.stdout.setEncoding("utf8");
     proc.stdout.on("data", (chunk) => {
@@ -93214,7 +93578,7 @@ async function cropPageRenders(opts) {
 ` + stderrTail.map((l) => `  ${l}`).join("\n")
         ));
       }
-      resolve18();
+      resolve19();
     });
   });
   proc.stdin.write(config);
@@ -93246,7 +93610,7 @@ async function readPdfTextLayer(opts) {
   });
   const layer = /* @__PURE__ */ new Map();
   const stderrTail = [];
-  const finished = new Promise((resolve18, reject) => {
+  const finished = new Promise((resolve19, reject) => {
     let stdout = "";
     proc.stdout.setEncoding("utf8");
     proc.stdout.on("data", (chunk) => {
@@ -93280,7 +93644,7 @@ async function readPdfTextLayer(opts) {
 ` + stderrTail.map((l) => `  ${l}`).join("\n")
         ));
       }
-      resolve18();
+      resolve19();
     });
   });
   proc.stdin.write(config);
@@ -93415,7 +93779,7 @@ async function readOnePage(url, page, opts) {
     opts.onWeather?.(
       `page ${page.number}: ${fault.said} That is weather, not a refusal -- trying again in ${wait >= 6e4 ? `${wait / 6e4} min` : `${wait / 1e3} s`} (${attempt} of ${tries}).`
     );
-    await new Promise((resolve18) => setTimeout(resolve18, wait));
+    await new Promise((resolve19) => setTimeout(resolve19, wait));
   }
 }
 async function tryOnePage(url, page, opts) {
@@ -94927,7 +95291,7 @@ ${detail.map((l) => `  ${l}`).join("\n")}` : "")
    * moment the claim can be tested against what actually loaded.
    */
   async waitForReady(home) {
-    await new Promise((resolve18, reject) => {
+    await new Promise((resolve19, reject) => {
       const timer = setTimeout(() => {
         this.readyWaiter = null;
         reject(new NliWorkerError(
@@ -94947,7 +95311,7 @@ ${detail.map((l) => `  ${l}`).join("\n")}` : "")
           this.ready = true;
           this.device = message.device ?? "unknown";
           this.revision = message.revision ?? null;
-          resolve18();
+          resolve19();
         },
         reject: (error) => {
           clearTimeout(timer);
@@ -95020,7 +95384,7 @@ ${message.trace.trim().split("\n").map((l) => `  ${l}`).join("\n")}` : "";
     if (texts.length === 0 || hypotheses.length === 0) return [];
     const sane = texts.map(scorableText);
     const id = this.nextId++;
-    return new Promise((resolve18, reject) => {
+    return new Promise((resolve19, reject) => {
       const expire = () => {
         this.pending.delete(id);
         reject(new NliWorkerError(
@@ -95028,7 +95392,7 @@ ${message.trace.trim().split("\n").map((l) => `  ${l}`).join("\n")}` : "";
         ));
       };
       const entry = {
-        resolve: resolve18,
+        resolve: resolve19,
         reject,
         timer: setTimeout(expire, SCORE_TIMEOUT_MS),
         progress: (done) => {
@@ -100678,7 +101042,7 @@ async function runTranslation(opts) {
     }
     accept(block, accepted, "model");
   };
-  const askGroup = async (chunk) => {
+  const askGroup2 = async (chunk) => {
     const payload = renderChunk(chunk.kind, chunk.parts.map((p) => p.masked.text), chunk.rowSizes);
     const system = systemPrompt(
       from,
@@ -100732,7 +101096,7 @@ async function runTranslation(opts) {
       await askOne(missing[0]);
       return;
     }
-    const answers = await askGroup(chunk);
+    const answers = await askGroup2(chunk);
     if (answers === null) {
       for (const part of missing) await askOne(part);
       return;
@@ -101533,6 +101897,51 @@ var CT_CONCURRENCY = {
   placeholder: "<n>",
   describe: `Blocks in flight at once. Default ${DEFAULT_TEXT_CONCURRENCY} on openai (${CRUCIBLE_CHAT_CONCURRENCY} on a Crucible's /openai door), ${DEFAULT_OLLAMA_CONCURRENCY} on ollama, ${DEFAULT_CLOUD_CONCURRENCY} on anthropic. Changes the speed, never the text.`
 };
+var CT_TRIAGE = {
+  name: "triage",
+  type: "string",
+  placeholder: "<verdicts.json>",
+  describe: "A clean-triage verdicts file. Blocks it found clean are recorded as examined and clean, with no model request; only the flagged ones are asked."
+};
+var CTR_OUT = {
+  name: "out",
+  type: "string",
+  placeholder: "<verdicts.json>",
+  describe: "Where the verdicts are written \u2014 the file clean-text --triage reads."
+};
+var CTR_ENDPOINT = {
+  name: "endpoint",
+  type: "string",
+  placeholder: "<url>",
+  describe: "The Crucible whose decide door is asked (http://host:port). Its credential comes from $FOUNDRY_ENDPOINT_HEADERS."
+};
+var CTR_MODEL = {
+  name: "model",
+  type: "string",
+  placeholder: "<id>",
+  describe: "The decide model, already resident on that Crucible. Required: the door never picks one."
+};
+var CTR_CONCURRENCY = {
+  name: "concurrency",
+  type: "string",
+  placeholder: "<n>",
+  describe: "Groups in flight at once (each is one request of many questions). Default 2."
+};
+async function runCleanTriageCommand(args) {
+  const concurrency = optionalString(args, "concurrency");
+  if (concurrency !== void 0 && !/^[1-9]\d*$/.test(concurrency)) {
+    throw new UsageError(`--concurrency takes a positive whole number, not "${concurrency}"`);
+  }
+  const { runCleanTriage: runCleanTriage2 } = await Promise.resolve().then(() => (init_triage(), triage_exports));
+  await runCleanTriage2({
+    bookPath: requireString(args, "book", "the book file whose blocks are judged"),
+    outPath: requireString(args, "out", "where the verdicts are written"),
+    endpoint: requireString(args, "endpoint", "the Crucible whose decide door is asked"),
+    model: requireString(args, "model", "the resident decide model"),
+    ...concurrency !== void 0 ? { concurrency: Number(concurrency) } : {},
+    log
+  });
+}
 async function runCleanText2(args) {
   const server = textServer(args);
   const concurrency = optionalString(args, "concurrency");
@@ -101541,7 +101950,7 @@ async function runCleanText2(args) {
   }
   const epubIn = optionalString(args, "epub");
   if (epubIn !== void 0) {
-    const bookRoute = ["book", "records", "stamp", "generation"].filter((name) => optionalString(args, name) !== void 0);
+    const bookRoute = ["book", "records", "stamp", "generation", "triage"].filter((name) => optionalString(args, name) !== void 0);
     if (bookRoute.length > 0) {
       throw new UsageError(
         `--epub is the bare-EPUB failsafe and ${bookRoute.map((n) => `--${n}`).join(", ")} belong${bookRoute.length === 1 ? "s" : ""} to the book-file route. They are two doors onto one pass: the book route writes RECORDS keyed by the row ids a derived book keeps, and this one rewrites a finished file in place of them. Asking for both would mean choosing a source silently and filing the answers under the other one's names. The EPUB route writes its stamp into --out's package document and beside it as <out>.stamp.json; it needs no --records, no --stamp and no --generation.`
@@ -101578,6 +101987,7 @@ async function runCleanText2(args) {
     ...server.model === void 0 ? {} : { model: server.model },
     ...concurrency !== void 0 ? { concurrency: Number(concurrency) } : {},
     ...optionalString(args, "generation") === void 0 ? {} : { generation: optionalString(args, "generation") },
+    ...optionalString(args, "triage") === void 0 ? {} : { triagePath: optionalString(args, "triage") },
     log
   });
 }
@@ -101941,12 +102351,12 @@ async function runTranslate(args) {
   }
   const outPath = recordsPath !== void 0 || epubPath === void 0 ? void 0 : named ?? defaultTranslationOut(epubPath, to);
   const input = epubPath ?? bookPath;
-  if (outPath !== void 0 && path23.resolve(outPath) === path23.resolve(input)) {
+  if (outPath !== void 0 && path25.resolve(outPath) === path25.resolve(input)) {
     throw new UsageError(
       `--out ${outPath} is the input itself. foundry reads the one and writes the other; a book overwritten by its own translation is the single input this command cannot get back.`
     );
   }
-  if (recordsPath !== void 0 && path23.resolve(recordsPath) === path23.resolve(input)) {
+  if (recordsPath !== void 0 && path25.resolve(recordsPath) === path25.resolve(input)) {
     throw new UsageError(
       `--records ${recordsPath} is the input itself. The records file is written to; the book is not.`
     );
@@ -102039,7 +102449,7 @@ async function runTranslate(args) {
 async function runEpubFinal(args) {
   const epubPath = requireString(args, "epub", "the working book to finish");
   const outPath = requireString(args, "out", "where the final EPUB is written");
-  if (path23.resolve(outPath) === path23.resolve(epubPath)) {
+  if (path25.resolve(outPath) === path25.resolve(epubPath)) {
     throw new UsageError(
       `--out ${outPath} is the input itself. foundry reads the working book and writes the edition; the working copy is where every cut lives, and a run that overwrites it cannot be run a second time.`
     );
@@ -102091,7 +102501,7 @@ async function runEpubFinal(args) {
 async function runEpubStamp(args) {
   const epubPath = requireString(args, "epub", "the book to stamp");
   const outPath = optionalString(args, "out");
-  if (outPath !== void 0 && path23.resolve(outPath) === path23.resolve(epubPath)) {
+  if (outPath !== void 0 && path25.resolve(outPath) === path25.resolve(epubPath)) {
     throw new UsageError(
       `--out ${outPath} is the input itself. foundry reads the one and writes the other; a directory working copy is stamped in place and takes no --out at all.`
     );
@@ -102127,7 +102537,7 @@ function metaLine(name, value) {
 async function runEpubMeta(args) {
   const epubPath = requireString(args, "epub", "the book whose metadata is being read or written");
   const outPath = optionalString(args, "out");
-  if (outPath !== void 0 && path23.resolve(outPath) === path23.resolve(epubPath)) {
+  if (outPath !== void 0 && path25.resolve(outPath) === path25.resolve(epubPath)) {
     throw new UsageError(
       `--out ${outPath} is the input itself. foundry reads the one and writes the other; a directory working copy is edited in place and takes no --out at all.`
     );
@@ -102214,7 +102624,7 @@ async function runEpubMeta(args) {
 async function runPdfMeta(args) {
   const pdfPath = requireString(args, "pdf", "the PDF whose metadata is being read or written");
   const outPath = optionalString(args, "out");
-  if (outPath !== void 0 && path23.resolve(outPath) === path23.resolve(pdfPath)) {
+  if (outPath !== void 0 && path25.resolve(outPath) === path25.resolve(pdfPath)) {
     throw new UsageError(
       `--out ${outPath} is the input itself. foundry reads the one and writes the other, and this command rewrites the whole file rather than patching it, so there would be nothing left to read.`
     );
@@ -103454,7 +103864,7 @@ var COMMANDS = [
   {
     name: "clean-text",
     summary: "Clean a book's text for a narrator: punctuation, numbers as words, the model on every block.",
-    usage: "--book <book.jsonl> --records <out.records.jsonl> --stamp <out.stamp.json> [--generation <id>] [--endpoint <url>] [--model <name>] [--server <openai|ollama|anthropic>] [--concurrency <n>]  |  --epub <in.epub> --out <out.epub> [--endpoint <url>] [--model <name>] [--server <openai|ollama|anthropic>] [--concurrency <n>]",
+    usage: "--book <book.jsonl> --records <out.records.jsonl> --stamp <out.stamp.json> [--generation <id>] [--endpoint <url>] [--model <name>] [--server <openai|ollama|anthropic>] [--concurrency <n>] [--triage <verdicts.json>]  |  --epub <in.epub> --out <out.epub> [--endpoint <url>] [--model <name>] [--server <openai|ollama|anthropic>] [--concurrency <n>]",
     detail: [
       "THE THIRD TEXT ACT. translate turns a book into another language, --rewrite",
       "turns it into plainer prose, and this turns it into the text a NARRATOR is",
@@ -103656,9 +104066,42 @@ var COMMANDS = [
       CT_MODEL,
       LLM_SERVER,
       CT_CONCURRENCY,
-      TR_GENERATION
+      TR_GENERATION,
+      CT_TRIAGE
     ],
     run: runCleanText2
+  },
+  {
+    name: "clean-triage",
+    summary: "Judge which blocks of a book need cleaning at all, before clean-text is run.",
+    usage: "--book <book.jsonl> --out <verdicts.json> --endpoint <crucible url> --model <decide model> [--concurrency <n>]",
+    detail: [
+      'THE FIRST HALF OF A TRIAGED CLEANUP. Owen, 2026-09-23: "we create a list of',
+      "blocks that need to be cleaned with snap and then we bring snap down and load",
+      'the full normal cleaning logic." This reads the book exactly as clean-text',
+      "would \u2014 the same blocks, the same stage-1 punctuation \u2014 and asks a Crucible's",
+      "decide door one yes/no per block: does it print anything a narrator would say",
+      "differently (a number, an abbreviation, capitals, a bracket, a spaced hyphen,",
+      "a roman numeral)? Every verdict is written to --out with the digest of the",
+      "text it judged.",
+      "",
+      "clean-text --triage <that file> is the second half: it asks the cleaning",
+      "model only about the flagged blocks, and records every other one as examined",
+      "and clean at its punctuated text, under a key of its own \u2014 so every block has",
+      "a row, and a later run without --triage still asks the cleaner about it.",
+      "",
+      "EVERY DOUBT RESOLVES TOWARD CLEANING. A block is kept only when the model is",
+      "confidently sure it needs nothing; an unsure answer, an answer whose belief",
+      "was not on the two letters, a verdict about text that has since changed, and",
+      "a block the file never judged are all cleaned.",
+      "",
+      "The model must already be resident: the app places this run on the decide",
+      "class, loaded and leased, and releases it after. This never loads a model.",
+      "A busy door (chat_queue_full) is waited out; a model that is not resident is",
+      "refused by name."
+    ].join("\n"),
+    options: [CT_BOOK_IN, CTR_OUT, CTR_ENDPOINT, CTR_MODEL, CTR_CONCURRENCY],
+    run: runCleanTriageCommand
   },
   {
     name: "epub-final",

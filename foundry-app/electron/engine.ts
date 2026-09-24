@@ -324,6 +324,24 @@ export function parseProgressLine(line: string): JobProgress | null {
   }
 
   /*
+   * `clean-triage: 412/2081` — the question before a cleanup, counting positions.
+   *
+   * `clean-text`'s discipline exactly, one command over and for its reason: the
+   * triage names no noun on its counting line, and its OTHER lines carry numbers
+   * that are not progress — `clean-triage: 2081 position(s) in 90 group(s), asked
+   * of …` at the start and `clean-triage: 312 of 2081 position(s) need cleaning`
+   * at the end. Anchored at both ends, neither of them can be read as a count.
+   *
+   * ITS OWN PHASE, `triage`, and not `clean`'s: the cleanup's bar follows this one
+   * on the next row, and a person watching two bars that both say "Cleaning" would
+   * be reading the first as the second (`JobProgress.phase`).
+   */
+  const triaged = /^clean-triage:\s+(\d+)\/(\d+)$/.exec(trimmed);
+  if (triaged) {
+    return { phase: 'triage', page: Number(triaged[1]), total: Number(triaged[2]) };
+  }
+
+  /*
    * `analyze: rank 141/141 sentences` and `analyze: verify 3/20 (hate)`.
    *
    * ── WHERE THIS SITS IN THE ORDER, WHICH IS THE LOAD-BEARING PART ───────────

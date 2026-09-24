@@ -103,6 +103,7 @@ function resourceFor(config: Record<string, unknown>): StepResource {
   const request = (config as unknown as FoundryJobStepConfig).request;
   const kind = request?.kind;
   return kind === 'read' || kind === 'translate' || kind === 'simplify' || kind === 'clean'
+    || kind === 'clean-triage'
     ? 'gpu'
     : 'cpu';
 }
@@ -217,6 +218,9 @@ export const foundryJobStep: StepModule = {
     switch (kind) {
       case 'read': return 'pages';
       case 'clean': return 'clean';
+      // The cleanup's triage asks a DECIDE model (Crucible 1.0.24's class), never
+      // a text one, and it is not routable upstream (foundry BOOKFORGE-HANDOFF §8c).
+      case 'clean-triage': return 'decide';
       case 'translate': return 'translate';
       case 'simplify': return 'simplify';
       default: return null;
@@ -266,7 +270,7 @@ export const foundryJobStep: StepModule = {
     /*
      * No engine-version check: the engine is vendored with foundry-app, so it
      * has every command the vendored Foundry schedules (the `clean-text` and
-     * clean-triage floors that stood here went with the downloaded engine,
+     * `clean-triage` floors that stood here went with the downloaded engine,
      * 2026-09-24 — see electron/foundry-bridge.ts).
      */
     const kind = config.request.kind;
@@ -286,8 +290,8 @@ export const foundryJobStep: StepModule = {
      * starts sending `kind: 'analysis'` here, this line, `FoundryJobKind`,
      * `isTextPass`, `resourceFor` and `labelFor` move together.
      */
-    const act: 'clean' | 'translate' | 'simplify' | null =
-      kind === 'clean' || kind === 'translate' || kind === 'simplify'
+    const act: 'clean' | 'clean-triage' | 'translate' | 'simplify' | null =
+      kind === 'clean' || kind === 'clean-triage' || kind === 'translate' || kind === 'simplify'
         ? kind : null;
     /*
      * ── WHERE THIS TEXT ACT RUNS, AND WHO COMPOSES IT ─────────────────────────
@@ -392,7 +396,7 @@ export const foundryJobStep: StepModule = {
      * book. One record, one decision, two doors into it.
      */
     let venueServer: string | null = null;
-    const placed: 'clean' | 'translate' | 'simplify' | 'read' | null =
+    const placed: 'clean' | 'clean-triage' | 'translate' | 'simplify' | 'read' | null =
       act ?? (kind === 'read' ? 'read' : null);
     if (placed !== null) {
       const { decideWhereTextActRuns, processTextVenueHost } =

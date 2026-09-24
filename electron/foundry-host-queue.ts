@@ -86,7 +86,7 @@ import type { QueueJob, QueueStep } from '../shared/queue/engine-types';
  * loud failure this house rule exists for.
  */
 export type FoundryJobKind =
-  'epub' | 'txt' | 'pdf' | 'read' | 'translate' | 'simplify' | 'clean';
+  'epub' | 'txt' | 'pdf' | 'read' | 'translate' | 'simplify' | 'clean' | 'clean-triage';
 
 /**
  * THE THREE TEXT PASSES, as one question — their `isTextPassRequest`.
@@ -258,7 +258,7 @@ export interface FoundryJobProgress {
    */
   page: number;
   total: number;
-  phase: 'render' | 'read' | 'translate' | 'clean' | 'rank' | 'verify';
+  phase: 'render' | 'read' | 'translate' | 'clean' | 'triage' | 'rank' | 'verify';
 }
 
 /** Their `Job` (`FoundryJobRow = Job`), as their shelf draws it. */
@@ -767,6 +767,14 @@ export function parseFoundryProgressLine(line: string): FoundryJobProgress | nul
     return { phase: 'clean', page: Number(cleaned[1]), total: Number(cleaned[2]) };
   }
 
+  // The cleanup's triage (foundry c7bcb1a): `clean-triage: <n>/<m>`, anchored at
+  // both ends — its summary lines (`… position(s) in 90 group(s)`, `312 of 2081
+  // position(s) need cleaning`) are notes, not counts.
+  const triaged = /^clean-triage:\s+(\d+)\/(\d+)$/.exec(trimmed);
+  if (triaged) {
+    return { phase: 'triage', page: Number(triaged[1]), total: Number(triaged[2]) };
+  }
+
   const analyzing = /^analyze:\s+(rank|verify)\s+(\d+)\/(\d+)\b/.exec(trimmed);
   if (analyzing) {
     return {
@@ -1206,6 +1214,7 @@ function labelFor(request: FoundryJobRequest): string {
      * Foundry's own row title for it (CLEAN_TRIAGE_TITLE, their job-queue), so the
      * step reads the same in the hosted window and in this queue.
      */
+    case 'clean-triage': return 'Clean text — triage';
     case 'simplify': return 'Simplify';
     /*
      * A SIMPLIFY USED TO BE A TRANSLATE STEP WEARING A REWRITE, and until foundry

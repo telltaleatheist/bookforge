@@ -71,7 +71,7 @@ import {
   slotAvailability,
 } from './crucible-registry';
 import { readAppSettings, type CrucibleServerEntry } from './app-settings';
-import type { CapabilityRecord, CapabilityRow } from '../shared/engine-settings';
+import { LLM_CLASSES, type CapabilityRecord, type CapabilityRow } from '../shared/engine-settings';
 import { upstreamLaneName } from '../shared/queue-board';
 import {
   ANY_SLOT,
@@ -122,7 +122,7 @@ export type CapabilityClass = ModelClass;
  *
  * So every user-facing sentence that names the ACT reads it from here, in two
  * shapes: `verb` for "<server> can't <verb>" / "no server can <verb>", and
- * `noun` for "route <noun> work". ONE map, so the five classes read the same in
+ * `noun` for "route <noun> work". ONE map, so the six classes read the same in
  * every sentence — and a new class is a compile error here until someone gives
  * it words a person would say, rather than leaking its token into a screen.
  */
@@ -132,13 +132,19 @@ const CAPABILITY_WORDS: Record<CapabilityClass, { verb: string; noun: string }> 
   translate: { verb: 'translate', noun: 'translation' },
   simplify: { verb: 'simplify text', noun: 'simplification' },
   analysis: { verb: 'analyse text', noun: 'analysis' },
+  /*
+   * THE CLEANUP'S TRIAGE, in the words its row and its dialog use: a server that
+   * "can't judge which blocks need cleaning" is the true sentence, where "can't
+   * decide" is the engine's own word for its door and says nothing to a person.
+   */
+  decide: { verb: 'judge which blocks need cleaning', noun: 'cleanup-triage' },
 };
 
 /**
  * THE ACT A JOB IS, as the server names it — and the value of `X-Crucible-Act`.
  *
  * The header is required on our side by Owen's naming ruling and is exactly one
- * of these five words. It is what makes a server's log say which act held the
+ * of these six words. It is what makes a server's log say which act held the
  * card, rather than "an llm job", which is the same lie the act-prefixed log
  * lines in the engine were built to end.
  *
@@ -153,6 +159,10 @@ export function capabilityClassOf(kind: JobKind): CapabilityClass | null {
     case 'simplify': return 'simplify';
     case 'analysis': return 'analysis';
     case 'read': return 'pages';
+    // THE ONE KIND WHOSE CLASS IS NOT ITS OWN NAME: a triage is asked of the
+    // `decide` class, which is what a server files the small yes/no model under
+    // and the word Crucible's `X-Crucible-Act` knows (PHASE22).
+    case 'clean-triage': return 'decide';
     default: return null;
   }
 }
@@ -258,6 +268,30 @@ export interface Placement {
   door: LlmServerKind;
   /** `--endpoint`, or null to use the request's own. */
   endpoint: string | null;
+  /**
+   * THE CRUCIBLE ENGINE'S OWN BASE ADDRESS — `http://host:port`, no door on it —
+   * or NULL for a run that never met a Crucible.
+   *
+   * ── Why a second address beside `endpoint` ─────────────────────────────────
+   *
+   * `endpoint` is a CHAT door, `<engine>/openai`, because every act that meets a
+   * model through it speaks the OpenAI dialect and the engine appends `/v1`. The
+   * cleanup's triage speaks no dialect: it POSTs Crucible's own `/v1/decide`,
+   * which reads the resident model's belief in two letters, so the engine it
+   * spawns has to be handed the server itself (`clean-triage --endpoint`, which
+   * strips a trailing `/v1` and never an `/openai`). Deriving it by cutting
+   * `/openai` off `endpoint` would be this app parsing its own routing decision
+   * back out of a string — the thing `endpoint`'s composition exists to never
+   * need — so the placement states it, from the same `engine.url` the door is
+   * composed from.
+   *
+   * THE ENGINE'S, NOT THE REGISTERED ADDRESS: after PHASE17 a registered URL may
+   * be the orchestrator's, which serves no job types, and `placeOnCrucible` has
+   * already followed the hop. Null on {@link UNPLACED} and on a cloud provider,
+   * neither of which is a Crucible; `argsFor` refuses a triage that arrives with
+   * it null, by name.
+   */
+  origin: string | null;
   /** `--model`, or null to use the request's own. */
   model: string | null;
   /**
@@ -370,6 +404,8 @@ export const UNPLACED: Placement = {
   slot: null,
   door: 'ollama',
   endpoint: null,
+  // NOT A CRUCIBLE, so there is no engine address to state. See `Placement.origin`.
+  origin: null,
   model: null,
   env: {},
   lease: null,
@@ -484,7 +520,15 @@ async function chatDepthFor(
   capability: CapabilityClass,
   say: PlacementProgress,
 ): Promise<number | null> {
-  if (capability === 'pages') return null;
+  /*
+   * NEITHER OF THE TWO ACTS THAT DO NOT CHAT HAS A CHAT DEPTH. A reading takes its
+   * number from the server that serves the pages (`--vlm-concurrency`), and the
+   * cleanup's triage asks Crucible's decide door, which bounds its own questions
+   * against the engine's admission on the server side (PHASE22). Reading the chat
+   * door's number for either would put "decide runs with 4 requests in flight" in
+   * front of a person about a door the run never uses.
+   */
+  if (capability === 'pages' || capability === 'decide') return null;
   const stated = await statedChatDepth(engine);
   if (stated === null) {
     say(
@@ -1102,6 +1146,9 @@ function placeOnCloud(slot: ComputeSlot, capability: CapabilityClass): Placement
        */
       door: entry.kind === 'anthropic' ? 'anthropic' : 'openai',
       endpoint: cloudEndpointOf(entry),
+      // A PROVIDER IS NOT A CRUCIBLE, so there is no decide door behind it and no
+      // engine address to state. See `Placement.origin`.
+      origin: null,
       /*
        * `--model` IS REQUIRED ON BOTH CLOUD DOORS and there is no default to
        * fall back on — a provider holds a catalog. The id is the one the person
@@ -1237,6 +1284,32 @@ async function placeOnCrucible(
    */
   const via = upstreamOf(row);
   if (via !== null) {
+    /*
+     * ── ONLY A ROUTABLE CLASS IS FORWARDED, AND THE CONTRACT SAYS WHICH ──────
+     *
+     * PHASE15 §1: *"Only the four `llm` classes … can route upstream; every other
+     * class is `local` and refuses anything else (`route_not_routable`)."* That
+     * list is `LLM_CLASSES` (shared/engine-settings.ts), and it is what the
+     * settings card offers a route for. So a record that routes any other class
+     * upstream is the server contradicting its own contract — for `decide` most
+     * of all, whose answer is read off a resident model's logits and which no
+     * upstream can serve (Crucible's lineup marks it not routable, and
+     * `POST /v1/decide` refuses an upstream id by name).
+     *
+     * REFUSED HERE, BY NAME, because this is the one place a route is honoured:
+     * the branch below would otherwise put a forwarded model id on a run that
+     * cannot use one and send it into the `[cloud]` lane. A refusal rather than a
+     * wait, because the record will say the same thing on every pass until
+     * somebody changes that server's settings.
+     */
+    if (!(LLM_CLASSES as readonly string[]).includes(capability)) {
+      return {
+        verdict: 'refuse',
+        reason: `"${slot.name}" says it forwards ${CAPABILITY_WORDS[capability].noun} work to `
+          + `${via}, and that work cannot be forwarded — it has to run on a model on the server's `
+          + 'own card. Set it back to run locally in that server\'s settings.',
+      };
+    }
     const lane = upstreamLaneName(slot.name);
     if (!claim(lane)) {
       return transientWait(
@@ -1263,6 +1336,8 @@ async function placeOnCrucible(
         // of this function. A `<orchestrator>/openai` would be a spawn pointed
         // at a process with no route to serve it.
         endpoint: `${engine.url}/openai`,
+        // The same engine, stated bare. See `Placement.origin`.
+        origin: engine.url,
         model: row.selected,
         env: { FOUNDRY_ENDPOINT_HEADERS: headerMapFor(engine, capability) },
       },
@@ -1465,6 +1540,13 @@ async function placeOnCrucible(
          * resolved one — see the hop at the top of this function.
          */
         endpoint: `${engine.url}/openai`,
+        /*
+         * AND THE ENGINE ITSELF, WITH NO DOOR ON IT — what the cleanup's triage is
+         * pointed at, because it asks `/v1/decide` of the model this placement
+         * just made resident and leased. The same `engine.url` the door above is
+         * composed from; see `Placement.origin`.
+         */
+        origin: engine.url,
         model: row.selected,
         env: { FOUNDRY_ENDPOINT_HEADERS: headerMapFor(engine, capability) },
         /** A resident model on that machine's card. Nothing was forwarded. */
@@ -1801,7 +1883,7 @@ function upstreamOf(row: CapabilityRow): string | null {
  * The header map for one spawn, as the JSON the engine reads.
  *
  * `X-Crucible-Act` is required on OUR side by Owen's naming ruling and is one of
- * the five class words. The engine neither writes it nor knows about it: to the
+ * the six class words. The engine neither writes it nor knows about it: to the
  * engine this is an opaque map of headers to send, and the word for anybody's
  * product does not appear anywhere in `src/`.
  *
