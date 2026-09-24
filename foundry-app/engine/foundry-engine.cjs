@@ -70951,33 +70951,33 @@ var require_fontkit_umd = __commonJS({
   }
 });
 
-// font-asset:C:\Users\tellt\Projects\foundry\src\vlm\assets\DejaVuSerif.ttf
+// font-asset:src/vlm/assets/DejaVuSerif.ttf
 var require_DejaVuSerif = __commonJS({
-  "font-asset:C:\\Users\\tellt\\Projects\\foundry\\src\\vlm\\assets\\DejaVuSerif.ttf"(exports2, module2) {
+  "font-asset:src/vlm/assets/DejaVuSerif.ttf"(exports2, module2) {
     init_engine_import_meta_url();
     module2.exports = require("node:path").join(__dirname, "assets", "DejaVuSerif.ttf");
   }
 });
 
-// font-asset:C:\Users\tellt\Projects\foundry\src\vlm\assets\DejaVuSerif-Italic.ttf
+// font-asset:src/vlm/assets/DejaVuSerif-Italic.ttf
 var require_DejaVuSerif_Italic = __commonJS({
-  "font-asset:C:\\Users\\tellt\\Projects\\foundry\\src\\vlm\\assets\\DejaVuSerif-Italic.ttf"(exports2, module2) {
+  "font-asset:src/vlm/assets/DejaVuSerif-Italic.ttf"(exports2, module2) {
     init_engine_import_meta_url();
     module2.exports = require("node:path").join(__dirname, "assets", "DejaVuSerif-Italic.ttf");
   }
 });
 
-// font-asset:C:\Users\tellt\Projects\foundry\src\vlm\assets\DejaVuSerif-Bold.ttf
+// font-asset:src/vlm/assets/DejaVuSerif-Bold.ttf
 var require_DejaVuSerif_Bold = __commonJS({
-  "font-asset:C:\\Users\\tellt\\Projects\\foundry\\src\\vlm\\assets\\DejaVuSerif-Bold.ttf"(exports2, module2) {
+  "font-asset:src/vlm/assets/DejaVuSerif-Bold.ttf"(exports2, module2) {
     init_engine_import_meta_url();
     module2.exports = require("node:path").join(__dirname, "assets", "DejaVuSerif-Bold.ttf");
   }
 });
 
-// font-asset:C:\Users\tellt\Projects\foundry\src\vlm\assets\DejaVuSerif-BoldItalic.ttf
+// font-asset:src/vlm/assets/DejaVuSerif-BoldItalic.ttf
 var require_DejaVuSerif_BoldItalic = __commonJS({
-  "font-asset:C:\\Users\\tellt\\Projects\\foundry\\src\\vlm\\assets\\DejaVuSerif-BoldItalic.ttf"(exports2, module2) {
+  "font-asset:src/vlm/assets/DejaVuSerif-BoldItalic.ttf"(exports2, module2) {
     init_engine_import_meta_url();
     module2.exports = require("node:path").join(__dirname, "assets", "DejaVuSerif-BoldItalic.ttf");
   }
