@@ -30678,7 +30678,7 @@ var init_version = __esm({
     init_engine_import_meta_url();
     init_package();
     VERSION = package_default.version;
-    GIT_COMMIT = "src 97d9af02da8f".length > 0 ? "src 97d9af02da8f" : null;
+    GIT_COMMIT = "src fd865b62b4e2".length > 0 ? "src fd865b62b4e2" : null;
   }
 });
 
@@ -72243,22 +72243,22 @@ function unitLine(unit, asked) {
   return `[${unit.parts}] (context) ${cut}`;
 }
 function groupState(units, group, unit = "block") {
+  if (unit === "sentence") return SENTENCE_TRIAGE_GUIDE;
   const lines = [];
   for (let i = group.from; i < group.to; i += 1) {
     lines.push(unitLine(units[i], i >= group.askFrom && i < group.askTo));
   }
-  if (unit === "sentence") return `${SENTENCE_TRIAGE_GUIDE}
-
-LINES
-${lines.join("\n")}`;
   return `${TRIAGE_GUIDE}
 
 BLOCKS
 ${lines.join("\n")}`;
 }
-function triageQuestion(parts, unit = "block") {
-  const noun = unit === "sentence" ? "Line" : "Block";
-  return { type: "yesno", instructions: `${noun} [${parts}] needs cleaning.` };
+function triageQuestion(parts, unit = "block", text) {
+  if (unit === "sentence") {
+    if (text === void 0) throw new Error(`triageQuestion: a sentence question needs its sentence (${parts}).`);
+    return { type: "yesno", instructions: `This sentence needs cleaning: \xAB${text.replace(/\s+/g, " ").trim()}\xBB` };
+  }
+  return { type: "yesno", instructions: `Block [${parts}] needs cleaning.` };
 }
 function needsCleaning(p, labelMass) {
   return p >= TRIAGE_FLAG_P || labelMass < TRIAGE_MIN_LABEL_MASS;
@@ -72350,7 +72350,7 @@ async function runCleanTriage(opts) {
     const body = JSON.stringify({
       model: opts.model,
       state: groupState(units, group, unit),
-      questions: Object.fromEntries(asked.map((one) => [one.parts, triageQuestion(one.parts, unit)]))
+      questions: Object.fromEntries(asked.map((one) => [one.parts, triageQuestion(one.parts, unit, one.text)]))
     });
     const reply = await askGroup(transport, url, body, sleep, opts.log);
     for (const unit2 of asked) {
@@ -72468,7 +72468,10 @@ var init_triage = __esm({
       "Ordinary prose with none of these does not need cleaning. If you are unsure, it needs cleaning.",
       "Lines marked (context) are shown only so the others read correctly; you are asked only about the other lines."
     ].join("\n");
-    SENTENCE_TRIAGE_GUIDE = TRIAGE_GUIDE.replace("You are checking the blocks of a book", "You are checking the sentences of a book, one per line,").replace("A block NEEDS CLEANING", "A line NEEDS CLEANING");
+    SENTENCE_TRIAGE_GUIDE = TRIAGE_GUIDE.replace("You are checking the blocks of a book", "You are checking the sentences of a book, one at a time,").replace("A block NEEDS CLEANING", "A sentence NEEDS CLEANING").replace(
+      "Lines marked (context) are shown only so the others read correctly; you are asked only about the other lines.",
+      "Each question quotes ONE sentence of the book, in full. Judge that sentence and nothing else."
+    );
   }
 });
 
