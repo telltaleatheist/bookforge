@@ -584,7 +584,7 @@ export async function crucibleCapabilityWithRoutes(
     throw settingsFailure(server, 'GET /v1/capability', err);
   }
   /*
-   * All six fields, spelled out rather than spread. The row the renderer draws
+   * All eight fields, spelled out rather than spread. The row the renderer draws
    * and the row the SDK parsed are two different types that happen to agree
    * today, and a projection that listed five of the six is exactly how `route`
    * went missing the first time.
@@ -596,6 +596,8 @@ export async function crucibleCapabilityWithRoutes(
     reason: row.reason,
     shortfallBytes: row.shortfallBytes,
     route: row.route,
+    work: row.work,
+    contextCeilings: row.contextCeilings,
   }));
   noteCrucibleRoutes(server, routesFromCapability(classes));
   /*

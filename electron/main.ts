@@ -8205,6 +8205,8 @@ function setupIpcHandlers(): void {
             reason: row.reason,
             shortfallBytes: row.shortfallBytes,
             route: row.route,
+            work: row.work,
+            contextCeilings: row.contextCeilings,
           })),
         },
       };

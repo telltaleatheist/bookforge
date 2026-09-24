@@ -14,6 +14,8 @@
  * re-earning it.
  */
 
+import type { CapabilityWork, ContextCeiling } from '@crucible/client';
+
 // ─────────────────────────────────────────────────────────────────────────────
 // The list
 // ─────────────────────────────────────────────────────────────────────────────
@@ -393,6 +395,15 @@ export interface CrucibleCapabilityRow {
    * anything else.
    */
   route: CrucibleRouteKind;
+  /**
+   * CRUCIBLE 1.0.24's two additions, carried through verbatim — the SDK demands
+   * both keys on the wire and types each as nullable (`CapabilityRow`), so this
+   * mirror carries exactly that and nothing drawn from them yet: what the class
+   * runs as (`work`), and the per-model context ceilings a load may go up to
+   * (`contextCeilings`).
+   */
+  work: CapabilityWork | null;
+  contextCeilings: readonly ContextCeiling[] | null;
 }
 
 /**

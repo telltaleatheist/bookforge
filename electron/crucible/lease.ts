@@ -371,7 +371,7 @@ async function leaseRequest(
       code, message, typeof served === 'number' ? served : null, Number(API_VERSION),
     );
   }
-  if (response.status >= 500) throw new CrucibleServerError(response.status, code, message);
+  if (response.status >= 500) throw new CrucibleServerError(response.status, code, message, details);
   if (response.status === 409 && code === 'leased') {
     /*
      * THE SIX FIELDS `Lease.to_dict()` SENDS, READ AS THE SDK READS THEM.
