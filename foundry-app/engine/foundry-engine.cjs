@@ -29961,6 +29961,13 @@ function deadlineForConcurrency(concurrency) {
 }
 function fetchTransport(timeoutMs = REQUEST_TIMEOUT_MS, headers = resolveEndpointHeaders()) {
   const extra = headers ?? {};
+  const merged = (...layers) => {
+    const out = new Headers();
+    for (const layer of layers) {
+      for (const [name, value] of Object.entries(layer ?? {})) out.set(name, value);
+    }
+    return out;
+  };
   const call = async (url, init) => {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -29980,10 +29987,10 @@ function fetchTransport(timeoutMs = REQUEST_TIMEOUT_MS, headers = resolveEndpoin
     }
   };
   return {
-    get: (url, dialect) => call(url, { method: "GET", headers: { ...dialect, ...extra } }),
+    get: (url, dialect) => call(url, { method: "GET", headers: merged(dialect, extra) }),
     post: (url, body, dialect) => call(url, {
       method: "POST",
-      headers: { ...dialect, ...extra, "content-type": "application/json" },
+      headers: merged(dialect, extra, { "content-type": "application/json" }),
       body
     })
   };
@@ -30651,7 +30658,7 @@ var init_version = __esm({
     init_engine_import_meta_url();
     init_package();
     VERSION = package_default.version;
-    GIT_COMMIT = "src d0086436f3cc".length > 0 ? "src d0086436f3cc" : null;
+    GIT_COMMIT = "src 29fc961d0720".length > 0 ? "src 29fc961d0720" : null;
   }
 });
 
@@ -71944,7 +71951,7 @@ async function askGroup(transport, url, body, sleep, log2) {
   for (; ; ) {
     let response;
     try {
-      response = await transport.post(url, body, { "Content-Type": "application/json" });
+      response = await transport.post(url, body);
     } catch (err) {
       transportFailures += 1;
       if (transportFailures > TRANSPORT_RETRIES) {
@@ -71973,7 +71980,10 @@ async function askGroup(transport, url, body, sleep, log2) {
       await sleep(seconds * 1e3);
       continue;
     }
-    throw new CleanTextError(`clean-triage: ${url} refused the request (${response.status} ${code}): ${message}`);
+    const problems = Array.isArray(reply.error?.details?.problems) ? reply.error.details.problems.slice(0, 5).map((p) => `${Array.isArray(p.location) ? p.location.join(".") : "?"}: ${String(p.message)}`).join("; ") : "";
+    throw new CleanTextError(
+      `clean-triage: ${url} refused the request (${response.status} ${code}): ${message}` + (problems ? ` \u2014 ${problems}` : "")
+    );
   }
 }
 async function pool(count, concurrency, job) {
@@ -84746,7 +84756,7 @@ var require_headers = __commonJS({
         }
       }
     };
-    var Headers = class _Headers {
+    var Headers2 = class _Headers {
       #guard;
       #headersList;
       constructor(init = void 0) {
@@ -84896,13 +84906,13 @@ var require_headers = __commonJS({
         o.#headersList = list;
       }
     };
-    var { getHeadersGuard, setHeadersGuard, getHeadersList, setHeadersList } = Headers;
-    Reflect.deleteProperty(Headers, "getHeadersGuard");
-    Reflect.deleteProperty(Headers, "setHeadersGuard");
-    Reflect.deleteProperty(Headers, "getHeadersList");
-    Reflect.deleteProperty(Headers, "setHeadersList");
-    iteratorMixin("Headers", Headers, kHeadersSortedMap, 0, 1);
-    Object.defineProperties(Headers.prototype, {
+    var { getHeadersGuard, setHeadersGuard, getHeadersList, setHeadersList } = Headers2;
+    Reflect.deleteProperty(Headers2, "getHeadersGuard");
+    Reflect.deleteProperty(Headers2, "setHeadersGuard");
+    Reflect.deleteProperty(Headers2, "getHeadersList");
+    Reflect.deleteProperty(Headers2, "setHeadersList");
+    iteratorMixin("Headers", Headers2, kHeadersSortedMap, 0, 1);
+    Object.defineProperties(Headers2.prototype, {
       append: kEnumerableProperty,
       delete: kEnumerableProperty,
       get: kEnumerableProperty,
@@ -84920,7 +84930,7 @@ var require_headers = __commonJS({
     webidl.converters.HeadersInit = function(V, prefix, argument) {
       if (webidl.util.Type(V) === "Object") {
         const iterator = Reflect.get(V, Symbol.iterator);
-        if (!util.types.isProxy(V) && iterator === Headers.prototype.entries) {
+        if (!util.types.isProxy(V) && iterator === Headers2.prototype.entries) {
           try {
             return getHeadersList(V).entriesList;
           } catch {
@@ -84941,7 +84951,7 @@ var require_headers = __commonJS({
       fill,
       // for test.
       compareHeaderName,
-      Headers,
+      Headers: Headers2,
       HeadersList,
       getHeadersGuard,
       setHeadersGuard,
@@ -84956,7 +84966,7 @@ var require_response = __commonJS({
   "node_modules/undici/lib/web/fetch/response.js"(exports2, module2) {
     "use strict";
     init_engine_import_meta_url();
-    var { Headers, HeadersList, fill, getHeadersGuard, setHeadersGuard, setHeadersList } = require_headers();
+    var { Headers: Headers2, HeadersList, fill, getHeadersGuard, setHeadersGuard, setHeadersList } = require_headers();
     var { extractBody, cloneBody, mixinBody, hasFinalizationRegistry, streamRegistry, bodyUnusable } = require_body();
     var util = require_util();
     var nodeUtil = require("node:util");
@@ -85034,7 +85044,7 @@ var require_response = __commonJS({
         }
         init = webidl.converters.ResponseInit(init);
         this[kState] = makeResponse({});
-        this[kHeaders] = new Headers(kConstruct);
+        this[kHeaders] = new Headers2(kConstruct);
         setHeadersGuard(this[kHeaders], "response");
         setHeadersList(this[kHeaders], this[kState].headersList);
         let bodyWithType = null;
@@ -85275,7 +85285,7 @@ var require_response = __commonJS({
     function fromInnerResponse(innerResponse, guard) {
       const response = new Response(kConstruct);
       response[kState] = innerResponse;
-      response[kHeaders] = new Headers(kConstruct);
+      response[kHeaders] = new Headers2(kConstruct);
       setHeadersList(response[kHeaders], innerResponse.headersList);
       setHeadersGuard(response[kHeaders], guard);
       if (hasFinalizationRegistry && innerResponse.body?.stream) {
@@ -85397,7 +85407,7 @@ var require_request2 = __commonJS({
     "use strict";
     init_engine_import_meta_url();
     var { extractBody, mixinBody, cloneBody, bodyUnusable } = require_body();
-    var { Headers, fill: fillHeaders, HeadersList, setHeadersGuard, getHeadersGuard, setHeadersList, getHeadersList } = require_headers();
+    var { Headers: Headers2, fill: fillHeaders, HeadersList, setHeadersGuard, getHeadersGuard, setHeadersList, getHeadersList } = require_headers();
     var { FinalizationRegistry: FinalizationRegistry2 } = require_dispatcher_weakref()();
     var util = require_util();
     var nodeUtil = require("node:util");
@@ -85665,7 +85675,7 @@ var require_request2 = __commonJS({
             requestFinalizer.register(ac, { signal, abort }, abort);
           }
         }
-        this[kHeaders] = new Headers(kConstruct);
+        this[kHeaders] = new Headers2(kConstruct);
         setHeadersList(this[kHeaders], request.headersList);
         setHeadersGuard(this[kHeaders], "request");
         if (mode === "no-cors") {
@@ -85954,7 +85964,7 @@ var require_request2 = __commonJS({
       const request = new Request(kConstruct);
       request[kState] = innerRequest;
       request[kSignal] = signal;
-      request[kHeaders] = new Headers(kConstruct);
+      request[kHeaders] = new Headers2(kConstruct);
       setHeadersList(request[kHeaders], innerRequest.headersList);
       setHeadersGuard(request[kHeaders], guard);
       return request;
@@ -89004,10 +89014,10 @@ var require_cookies = __commonJS({
     var { parseSetCookie } = require_parse();
     var { stringify } = require_util6();
     var { webidl } = require_webidl();
-    var { Headers } = require_headers();
+    var { Headers: Headers2 } = require_headers();
     function getCookies(headers) {
       webidl.argumentLengthCheck(arguments, 1, "getCookies");
-      webidl.brandCheck(headers, Headers, { strict: false });
+      webidl.brandCheck(headers, Headers2, { strict: false });
       const cookie = headers.get("cookie");
       const out = {};
       if (!cookie) {
@@ -89020,7 +89030,7 @@ var require_cookies = __commonJS({
       return out;
     }
     function deleteCookie(headers, name, attributes) {
-      webidl.brandCheck(headers, Headers, { strict: false });
+      webidl.brandCheck(headers, Headers2, { strict: false });
       const prefix = "deleteCookie";
       webidl.argumentLengthCheck(arguments, 2, prefix);
       name = webidl.converters.DOMString(name, prefix, "name");
@@ -89034,7 +89044,7 @@ var require_cookies = __commonJS({
     }
     function getSetCookies(headers) {
       webidl.argumentLengthCheck(arguments, 1, "getSetCookies");
-      webidl.brandCheck(headers, Headers, { strict: false });
+      webidl.brandCheck(headers, Headers2, { strict: false });
       const cookies = headers.getSetCookie();
       if (!cookies) {
         return [];
@@ -89043,7 +89053,7 @@ var require_cookies = __commonJS({
     }
     function setCookie(headers, cookie) {
       webidl.argumentLengthCheck(arguments, 2, "setCookie");
-      webidl.brandCheck(headers, Headers, { strict: false });
+      webidl.brandCheck(headers, Headers2, { strict: false });
       cookie = webidl.converters.Cookie(cookie);
       const str = stringify(cookie);
       if (str) {
@@ -89735,7 +89745,7 @@ var require_connection = __commonJS({
     var { CloseEvent } = require_events();
     var { makeRequest } = require_request2();
     var { fetching } = require_fetch();
-    var { Headers, getHeadersList } = require_headers();
+    var { Headers: Headers2, getHeadersList } = require_headers();
     var { getDecodeSplit } = require_util2();
     var { WebsocketFrameSend } = require_frame();
     var crypto5;
@@ -89757,7 +89767,7 @@ var require_connection = __commonJS({
         redirect: "error"
       });
       if (options.headers) {
-        const headersList = getHeadersList(new Headers(options.headers));
+        const headersList = getHeadersList(new Headers2(options.headers));
         request.headersList = headersList;
       }
       const keyValue = crypto5.randomBytes(16).toString("base64");
