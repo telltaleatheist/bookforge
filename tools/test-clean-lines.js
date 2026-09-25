@@ -215,6 +215,76 @@ const fresh = () => fs.mkdtempSync(path.join(os.tmpdir(), 'bf-clean-lines-'));
     await assert.rejects(step.runCleanLines({ inputPath: input, outputPath: input, language: 'en', log: () => {} }, deps), /must not be the input/);
   });
 
+  /*
+   * TRIAGE (2026-09-25, Owen: "ai cleanup triage, then clean the sentences triage
+   * decides should be cleaned"). The app's triaged press: `clean-triage` on the
+   * CLEAN model under the `decide` act (foundry 5989dc0), then `clean-text
+   * --triage <verdicts>`. A second run reuses the verdicts.
+   */
+  await check('triage runs first on the clean model as act decide, then clean-text reads its verdicts', async () => {
+    const dir = fresh();
+    const input = path.join(dir, 'lines.txt');
+    const output = path.join(dir, 'out.txt');
+    fs.writeFileSync(input, 'Chapter 1 begins.\nHe nodded.\n', 'utf8');
+    const spawns = []; const leases = [];
+    const crucible = {
+      server: 'pc', endpoint: 'http://c:7100/v1/openai', model: 'qwen3.5-9b', act: 'clean', maskedHeaders: '{}',
+      env: { FOUNDRY_ENDPOINT_HEADERS: JSON.stringify({ Authorization: 'Bearer t', 'X-Crucible-Api': '1', 'X-Crucible-Act': 'clean' }) },
+    };
+    const deps = {
+      foundryVersion: async () => ({ version: '1.4.0', path: 'f' }),
+      cleanTextEngineSettings: async () => ({ model: '', endpoint: 'e', source: 's' }),
+      processTextVenueHost: () => ({}),
+      decideWhereTextActRuns: async () => ({ where: 'crucible', server: 'pc', because: 'the test' }),
+      resolveCrucibleTextEngine: async (act) => { assert.strictEqual(act, 'clean'); return crucible; },
+      withCrucibleTextActLease: async (engine, run) => { leases.push({ act: engine.act, model: engine.model }); return run(); },
+      parseCleanTextProgress: () => null,
+      runFoundry: async (args, opts) => {
+        const at = (flag) => args[args.indexOf(flag) + 1];
+        spawns.push({ cmd: args[0], act: JSON.parse(opts.env.FOUNDRY_ENDPOINT_HEADERS)['X-Crucible-Act'], args });
+        if (args[0] === 'clean-triage') {
+          assert.strictEqual(at('--model'), 'qwen3.5-9b', 'triage asks the cleaner\'s model');
+          fs.writeFileSync(at('--out'), JSON.stringify({ format: 1, model: 'qwen3.5-9b', verdicts: {} }), 'utf8');
+          return { code: 0, stdout: '', stderr: '' };
+        }
+        assert.strictEqual(args[0], 'clean-text');
+        const book = fs.readFileSync(at('--book'), 'utf8').trim().split('\n').slice(1).map((l) => JSON.parse(l));
+        fs.writeFileSync(at('--records'), book.map((row) => JSON.stringify({ key: 'k', parts: row.id, text: row.text.replace('Chapter 1', 'Chapter one') })).join('\n') + '\n', 'utf8');
+        return { code: 0, stdout: '', stderr: '' };
+      },
+    };
+    const result = await step.runCleanLines({ inputPath: input, outputPath: output, language: 'en', triage: true, log: () => {} }, deps);
+    assert.deepStrictEqual(spawns.map((s) => s.cmd), ['clean-triage', 'clean-text']);
+    assert.strictEqual(spawns[0].act, 'decide', 'the triage is asked as decide');
+    assert.strictEqual(spawns[1].act, 'clean', 'the cleaner is asked as clean');
+    assert.deepStrictEqual(leases, [{ act: 'decide', model: 'qwen3.5-9b' }, { act: 'clean', model: 'qwen3.5-9b' }]);
+    const cleanArgs = spawns[1].args;
+    assert.strictEqual(cleanArgs[cleanArgs.indexOf('--triage') + 1], result.verdictsPath, 'clean-text reads the verdicts');
+    assert.strictEqual(fs.readFileSync(output, 'utf8'), 'Chapter one begins.\nHe nodded.\n');
+    assert.strictEqual(result.triaged, true);
+    // a second run reuses the verdicts: no second triage spawn
+    spawns.length = 0; leases.length = 0;
+    await step.runCleanLines({ inputPath: input, outputPath: output, language: 'en', triage: true, log: () => {} }, deps);
+    assert.deepStrictEqual(spawns.map((s) => s.cmd), ['clean-text']);
+  });
+  await check('triage without a Crucible is refused by name, before any spawn', async () => {
+    const dir = fresh();
+    const input = path.join(dir, 'lines.txt');
+    fs.writeFileSync(input, 'x\n', 'utf8');
+    let spawned = false;
+    await assert.rejects(step.runCleanLines(
+      { inputPath: input, outputPath: path.join(dir, 'o.txt'), language: 'en', triage: true, log: () => {} },
+      {
+        foundryVersion: async () => ({ version: '1.4.0', path: 'f' }),
+        cleanTextEngineSettings: async () => ({ model: 'm', endpoint: 'e', source: 's' }),
+        processTextVenueHost: () => ({}),
+        decideWhereTextActRuns: async () => ({ where: 'legacy-local-engines', because: 'the test' }),
+        parseCleanTextProgress: () => null,
+        runFoundry: async () => { spawned = true; return { code: 0, stdout: '', stderr: '' }; },
+      }), /--triage runs the Foundry clean-triage/);
+    assert.strictEqual(spawned, false);
+  });
+
   if (failed) { console.log(`\n${failed} check(s) FAILED.`); process.exit(1); }
   console.log('\nAll clean-lines checks passed.');
 })();

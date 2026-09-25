@@ -24,6 +24,11 @@
  *   node cli/clipforge-process.js sentences --clips <dir-or-list.txt> \
  *        --epub <book.epub> --out <dir> --speaker <name> \
  *        [--book-vtt <vtt> --spans <json>]   # map mode; else anchor (whisper)
+ *      (the Crucible way now: bookforge-cli generate-sentences --clips, cli/generate-sentences.js)
+ *   `cleanup`   — BookForge's AI cleanup over a corpus's text, the app's way: triage,
+ *      then the cleaner on what triage flags (runCleanup):
+ *   node cli/clipforge-process.js cleanup --vtt <aligned.vtt> --out <cleaned.vtt> \
+ *        [--crucible-server <name>] [--no-triage] [--language en]
  *
  * BookForge must be BUILT (dist/electron present) but need NOT be running. The
  * electron shim is preloaded so the compiled bridge's `require('electron')`
@@ -1863,7 +1868,8 @@ function printUsage() {
     '  narration    split a sliced corpus into narration vs character voices by quote marks',
     '  verify       embedding sweep: is every clip really the narrator?',
     '  merge/split  Adobe Podcast round-trip for CLIPS (keyed on a .mergemap.json)',
-    '  sentences    per-clip transcripts from the epub',
+    '  sentences    per-clip transcripts from the epub (Crucible way: generate-sentences --clips)',
+    '  cleanup      AI cleanup of a VTT/lines as the app does it: triage, then clean the flagged (--no-triage: all)',
     '',
     'TRAINING TOOLS (corpus in, corpus out) - wrappers over the orpheus-finetune scripts',
     '  slice        cut a book master into training clips        (slice_vtt.py)',
@@ -2224,6 +2230,89 @@ async function runDeploy(args) {
   await spawnTraining(python, path.join(stageDir(camp), 'promote_voice.py'), argv, camp, 'deploy');
 }
 
+/**
+ * runCleanup — BookForge's AI cleanup over a corpus's text, the way the app does it
+ * (2026-09-25). Owen: "give clipforge an ai cleanup verb that does it the same way
+ * bookforge does it - ai cleanup triage, then clean the sentences triage decides
+ * should be cleaned." And why: "since we're doing ai cleanup before rendering, i
+ * think it should be trained on exactly what it will eventually see."
+ *
+ *   node cli/clipforge-process.js cleanup --vtt <aligned.vtt> --out <cleaned.vtt> \
+ *        [--crucible-server <name>] [--no-triage] [--language en]
+ *   node cli/clipforge-process.js cleanup --lines <lines.txt> --out <cleaned.txt> [...]
+ *
+ * ONE IMPLEMENTATION: this is cli/clean-lines-step.js (the Foundry engine's
+ * `clean-triage` then `clean-text --triage`, with the app's model and venue), with
+ * a VTT reader and writer around it. Each cue's text is one line; a cue keeps its
+ * id and its times exactly, and only its text changes. Triage is ON by default, as
+ * in the app's press; --no-triage asks the cleaner about every line.
+ *
+ * Writes <out> and, beside it, <out stem>.changes.tsv (id, before, after) for every
+ * cue the pass changed - read it before training on the result. A killed run keeps
+ * its answers (the engine's records) and resumes.
+ */
+async function runCleanup(args) {
+  const src = args.vtt || args.lines;
+  if (!src || src === true || (args.vtt && args.lines)) throw new Error('cleanup: give exactly one of --vtt <file.vtt> or --lines <file.txt>');
+  if (!args.out || args.out === true) throw new Error('cleanup: --out <file> is required');
+  const inPath = path.resolve(src); const outPath = path.resolve(args.out);
+  if (!fs.existsSync(inPath)) throw new Error(`cleanup: input not found: ${inPath}`);
+  if (inPath === outPath) throw new Error('cleanup: --out must not be the input (a re-run resumes from the input)');
+  if (args['no-triage'] !== undefined && args['no-triage'] !== true) throw new Error('--no-triage is a switch and takes no value');
+  const language = args.language && args.language !== true ? String(args.language) : 'en';
+  const { runCleanLines, workDirFor } = require('./clean-lines-step.js');
+
+  // The cues, and one line of text per cue (a cue's text lines joined with a space).
+  const raw = fs.readFileSync(inPath, 'utf8').replace(/\r\n?/g, '\n');
+  let blocks = null; let lines;
+  if (args.vtt) {
+    blocks = raw.trim().split(/\n\n+/).map((b) => {
+      const L = b.split('\n');
+      const ti = L.findIndex((l) => l.includes('-->'));
+      if (ti < 0 || L[0].startsWith('WEBVTT') || L[0].startsWith('NOTE')) return { keep: b };
+      return { head: L.slice(0, ti + 1), text: L.slice(ti + 1).join(' ').replace(/\s+/g, ' ').trim(), id: ti === 1 ? L[0].trim() : '' };
+    });
+    lines = blocks.filter((b) => b.head).map((b) => b.text);
+    if (lines.length === 0) throw new Error(`cleanup: ${inPath} holds no cues`);
+  } else {
+    lines = raw.replace(/\n$/, '').split('\n');
+  }
+  const work = workDirFor(outPath); fs.mkdirSync(work, { recursive: true });
+  const linesIn = path.join(work, 'cues.txt'); const linesOut = path.join(work, 'cues.cleaned.txt');
+  fs.writeFileSync(linesIn, lines.join('\n') + '\n', 'utf8');
+  const triage = args['no-triage'] !== true;
+  console.log(`ClipForge cleanup — ${lines.length} ${args.vtt ? 'cue' : 'line'}(s) from ${inPath}; triage ${triage ? 'ON (the app\'s press)' : 'OFF (every line asked)'}`);
+  const r = await runCleanLines({
+    inputPath: linesIn, outputPath: linesOut, language, triage,
+    ...(typeof args['crucible-server'] === 'string' ? { crucibleServer: args['crucible-server'].trim() } : {}),
+    keepServer: args['keep-server'] === true,
+  });
+  const cleaned = fs.readFileSync(linesOut, 'utf8').replace(/\n$/, '').split('\n');
+  if (cleaned.length !== lines.length) throw new Error(`cleanup: ${lines.length} line(s) went in and ${cleaned.length} came back; nothing written`);
+
+  const changes = [];
+  if (blocks) {
+    let k = 0;
+    const out = blocks.map((b) => {
+      if (!b.head) return b.keep;
+      const after = cleaned[k]; const n = ++k;
+      if (after !== b.text) changes.push([b.id || String(n), b.text, after]);
+      return [...b.head, after].join('\n');
+    });
+    fs.writeFileSync(outPath, out.join('\n\n') + '\n', 'utf8');
+  } else {
+    cleaned.forEach((after, i) => { if (after !== lines[i]) changes.push([String(i + 1), lines[i], after]); });
+    fs.writeFileSync(outPath, cleaned.join('\n') + '\n', 'utf8');
+  }
+  const chPath = outPath.replace(/\.[^.]+$/, '') + '.changes.tsv';
+  const esc = (t) => t.replace(/\t/g, ' ');
+  fs.writeFileSync(chPath, ['id\tbefore\tafter', ...changes.map((c) => c.map(esc).join('\t'))].join('\n') + '\n', 'utf8');
+  console.log(`  ${changes.length} of ${lines.length} changed -> ${outPath}`);
+  console.log(`  changes: ${chPath}`);
+  if (r.receipt) console.log(`  engine: model ${r.receipt.model}, asked ${r.receipt.unitsAsked}${r.verdictsPath ? `, verdicts ${r.verdictsPath}` : ''}`);
+  process.exitCode = 0;
+}
+
 async function main() {
   const rawArgs = process.argv.slice(2);
   // Optional leading verb (no leading '--'). Default verb is the chain runner,
@@ -2267,6 +2356,7 @@ async function main() {
   if (verb === 'merge-lora') return runMergeLora(args);
   if (verb === 'ladder') return runLadder(args);
   if (verb === 'deploy') return runDeploy(args);
+  if (verb === 'cleanup') return runCleanup(args);
   if (verb === 'help') return printUsage();
   printUsage();
   throw new Error(`unknown verb: ${verb}`);

@@ -209,6 +209,7 @@ async function runCleanLines(opts, deps) {
   const recordsPath = path.join(workDir, 'lines.records.jsonl');
   const stampPath = path.join(workDir, 'lines.stamp.json');
   const receiptPath = `${recordsPath}.receipt.json`;
+  const verdictsPath = path.join(workDir, 'lines.triage.json');
   fs.writeFileSync(bookPath, bookFileFor(parsed.items, { engine: installed.version, language }), 'utf8');
 
   /*
@@ -269,7 +270,13 @@ async function runCleanLines(opts, deps) {
       '--stamp', stampPath,
       '--endpoint', crucible.endpoint,
       '--model', crucible.model,
+      ...(opts.triage === true ? ['--triage', verdictsPath] : []),
     ];
+  if (opts.triage === true && crucible === null) {
+    throw new Error(
+      '--triage runs the Foundry clean-triage, which only the decide door of a Crucible answers; this run resolved to '
+      + `${settings.endpoint} (${venue.because}). Name a Crucible with --crucible-server, or drop --triage.`);
+  }
   log(
     `[clean-lines] ${parsed.items.length} line(s) of ${parsed.total} in ${path.basename(inputPath)} → `
     + `${installed.path} ${args.join(' ')}`);
@@ -326,6 +333,52 @@ async function runCleanLines(opts, deps) {
      * card and unload the model this run is using. The lease is what says
      * otherwise; it is released on success and failure alike.
      */
+    /*
+     * ── TRIAGE FIRST, THE APP'S WAY (2026-09-25) ─────────────────────────────
+     *
+     * Owen: "ai cleanup triage, then clean the sentences triage decides should be
+     * cleaned". The app's triaged press is two engine runs: `foundry clean-triage`
+     * asks one yes/no per sentence, then `clean-text --triage <verdicts>` sends the
+     * cleaner only the flagged ones and records the rest as examined and clean.
+     * Every doubt resolves toward cleaning (the engine's rule, not this file's).
+     *
+     * THE MODEL IS THE CLEANER'S, THE ACT IS `decide` - exactly as the vendored
+     * dispatcher places it (foundry 5989dc0, BookForge f70005df): the triage is
+     * answered by the model the server serves `clean` with (qwen3.5-9b, AUC 0.89 /
+     * 0.976 where the 2B managed 0.55-0.82), and leased and asked as `decide`, the
+     * door it is sent through. So the resolved clean engine is reused with only its
+     * act changed - on the lease and in X-Crucible-Act.
+     *
+     * A verdicts file already in the work dir is reused: its verdicts carry the
+     * digest of the text they judged, and the engine cleans any line whose text has
+     * changed since, so a stale verdict can only cause MORE cleaning, never less.
+     */
+    if (opts.triage === true) {
+      if (fs.existsSync(verdictsPath)) {
+        log(`[clean-lines] triage: reusing ${verdictsPath} (verdicts carry the digest of the text they judged)`);
+      } else {
+        const headers = JSON.parse(crucible.env.FOUNDRY_ENDPOINT_HEADERS);
+        for (const k of Object.keys(headers)) if (k.toLowerCase() === 'x-crucible-act') headers[k] = 'decide';
+        const triageEngine = { ...crucible, act: 'decide', env: { FOUNDRY_ENDPOINT_HEADERS: JSON.stringify(headers) } };
+        const triageArgs = [
+          'clean-triage', '--book', bookPath, '--out', verdictsPath,
+          '--endpoint', triageEngine.endpoint, '--model', triageEngine.model,
+        ];
+        log(`[clean-lines] triage: ${installed.path} ${triageArgs.join(' ')} (act decide, model ${triageEngine.model})`);
+        const tri = await d.withCrucibleTextActLease(triageEngine, () => d.runFoundry(triageArgs, {
+          ...(opts.signal === undefined ? {} : { signal: opts.signal }),
+          env: triageEngine.env,
+          onProgress: (line) => {
+            const trimmed = line.trim();
+            if (trimmed.length > 0) log(`[foundry] ${trimmed}`);
+          },
+        }));
+        if (tri.code !== 0) {
+          throw new Error(`foundry clean-triage exited ${tri.code}. What it said:\n${(tri.stderr || '').slice(-4000)}`);
+        }
+        if (!fs.existsSync(verdictsPath)) throw new Error(`foundry clean-triage exited 0 and wrote no verdicts at ${verdictsPath}.`);
+      }
+    }
     const spawnEngine = () => d.runFoundry(args, {
       ...(opts.signal === undefined ? {} : { signal: opts.signal }),
       // The credential, on THIS child and no other: `runFoundry` merges an
@@ -390,6 +443,7 @@ async function runCleanLines(opts, deps) {
   return {
     inputPath, outputPath, recordsPath, receiptPath, stampPath,
     lines: parsed.items.length, total: parsed.total, changed: zipped.changed, resumed, receipt,
+    triaged: opts.triage === true, verdictsPath: opts.triage === true ? verdictsPath : null,
   };
 }
 

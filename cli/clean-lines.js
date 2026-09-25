@@ -46,7 +46,7 @@ async function main() {
   if (!args.input || args.input === true) {
     throw new Error(
       'usage: clean-lines.js --input <lines.txt> [--output <cleaned.txt>] --language <en> '
-      + '[--crucible-server <name>] '
+      + '[--crucible-server <name>] [--triage] '
       + '[--keep-server]');
   }
   if (!args.language || args.language === true) {
@@ -76,6 +76,9 @@ async function main() {
      * goes back to whatever is queued for it.
      */
     keepServer: args['keep-server'] === true,
+    // --triage: the app's triaged press - clean-triage first, then the cleaner only
+    // on the sentences it flags (clean-lines-step.js). Needs a Crucible.
+    triage: args.triage === true,
     /*
      * THE VENUE, and it is the same field the app fills from a queue row.
      * A name (or the reserved `local`) sends this act to that Crucible;
@@ -92,6 +95,7 @@ async function main() {
     lines: result.lines,
     changed: result.changed,
     resumed: result.resumed,
+    triaged: result.triaged,
     records: result.recordsPath,
     receipt: result.receiptPath,
   }));
