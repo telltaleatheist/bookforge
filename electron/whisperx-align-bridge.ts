@@ -590,6 +590,68 @@ export async function runEpubAlign(
 }
 
 /**
+ * The ebook's sentences in reading order, exactly as every alignment reads them —
+ * the whole-book run below and the clips run (runEpubAlignOnClips) both come
+ * through here, so a clip gets the same sentence boundaries a book would.
+ */
+async function extractAlignSentences(epubPath: string, paragraphAware: boolean): Promise<AlignSentence[]> {
+  glog(`[epub-align] extracting sentences from ${epubPath}`);
+  // markHeadings: <h1>-<h6> come back stamped, so the classifier never has to
+  // infer for a real heading tag. keepFootnoteMarkers stays false (the default) —
+  // this path wants markers gone.
+  const { chapters } = await loadEpubForComparison(epubPath, false, true);
+  // '\n\n', not '\n': a chapter seam is a block boundary like any other, and the
+  // paragraph-aware splitter reads blank lines. Joining on a single newline let
+  // the last sentence of one chapter fuse with the first heading of the next.
+  const fullText = chapters.map((c) => c.text).join('\n\n');
+  const sentences = splitSentences(fullText, paragraphAware);
+  if (sentences.length === 0) throw new Error('No sentences extracted from the ebook');
+  const headingCount = sentences.filter((s) => s.kind === 'heading').length;
+  glog(`[epub-align] extracted ${sentences.length} sentences (${headingCount} heading-like, ` +
+    `paragraph-aware=${paragraphAware})`);
+  return sentences;
+}
+
+/**
+ * GENERATE SENTENCES FOR CLIPS (Owen, 2026-09-25): "make sure bookforge-cli's
+ * generate-sentences can run on clips and find the original text if given the
+ * source epub." Many short clips whose places in the book are unknown; each gets
+ * the book's exact text, per-sentence times, and its edge-cut sentences reported
+ * as partial. Crucible only - the ASR and the aligner are its jobs and the logic
+ * is `crucible/clip-sentence-align.ts`; there is no local road for this mode.
+ */
+export async function runEpubAlignOnClips(
+  epubPath: string,
+  clips: readonly { id: string; path: string }[],
+  language: string | undefined,
+  opts: {
+    crucibleServer: string;
+    outDir: string;
+    paragraphAware?: boolean;
+    signal?: AbortSignal;
+    onProgress?: (p: { stage: string; fraction: number; message: string }) => void;
+    onLog?: (line: string) => void;
+  },
+): Promise<{ jsonPath: string; tsvPath: string; vttDir: string; stats: Record<string, number> }> {
+  if (!fs.existsSync(epubPath)) throw new Error(`Ebook file not found: ${epubPath}`);
+  const sentences = await extractAlignSentences(epubPath, opts.paragraphAware ?? DEFAULT_PARAGRAPH_AWARE);
+  const { runClipSentenceAlign } = await import('./crucible/clip-sentence-align.js');
+  glog(`[epub-align/clips] on crucible "${opts.crucibleServer}": ${clips.length} clip(s) against ${sentences.length} sentence(s)`);
+  const r = await runClipSentenceAlign({
+    server: opts.crucibleServer,
+    clips,
+    sentences: sentences.map((s) => ({ text: s.text, kind: s.kind })),
+    language: language && language !== 'auto' ? language : 'en',
+    ffmpegPath: getFfmpegPath(),
+    outDir: opts.outDir,
+    ...(opts.signal ? { signal: opts.signal } : {}),
+    ...(opts.onProgress ? { onProgress: opts.onProgress } : {}),
+    onLog: (line) => { glog(`[epub-align/clips] ${line}`); opts.onLog?.(line); },
+  });
+  return { jsonPath: r.jsonPath, tsvPath: r.tsvPath, vttDir: r.vttDir, stats: r.stats };
+}
+
+/**
  * File-based epub→audio forced alignment: everything runEpubAlign does AFTER the
  * manifest lookup. Takes explicit paths so the headless CLI (and any future caller
  * without a project) can drive the REAL alignment pipeline. `win` is only an event
@@ -643,21 +705,8 @@ export async function runEpubAlignOnFiles(
   if (!fs.existsSync(audioPath)) throw new Error(`Audio file not found: ${audioPath}`);
 
   // 2. Extract sentences from the ebook in reading order.
-  glog(`[epub-align] extracting sentences from ${epubPath}`);
-  // markHeadings: <h1>-<h6> come back stamped, so the classifier never has to
-  // infer for a real heading tag. keepFootnoteMarkers stays false (the default) —
-  // this path wants markers gone.
-  const { chapters } = await loadEpubForComparison(epubPath, false, true);
-  // '\n\n', not '\n': a chapter seam is a block boundary like any other, and the
-  // paragraph-aware splitter reads blank lines. Joining on a single newline let
-  // the last sentence of one chapter fuse with the first heading of the next.
-  const fullText = chapters.map((c) => c.text).join('\n\n');
   const paragraphAware = opts?.paragraphAware ?? DEFAULT_PARAGRAPH_AWARE;
-  const sentences = splitSentences(fullText, paragraphAware);
-  if (sentences.length === 0) throw new Error('No sentences extracted from the ebook');
-  const headingCount = sentences.filter((s) => s.kind === 'heading').length;
-  glog(`[epub-align] extracted ${sentences.length} sentences (${headingCount} heading-like, ` +
-    `paragraph-aware=${paragraphAware})`);
+  const sentences = await extractAlignSentences(epubPath, paragraphAware);
 
   /*
    * 2b. THE SAME ALIGNMENT, ON A SERVER — when the queue assigned one.

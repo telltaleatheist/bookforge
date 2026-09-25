@@ -95,7 +95,11 @@ interface CachedTranscript {
   readonly words: HeardWord[];
 }
 
-async function transcribe(o: RunSentenceAlignOptions, scratch: string): Promise<{ words: HeardWord[]; durationS: number }> {
+/** What the transcription reads of a run's options — shared with the clips run (clip-sentence-align.ts). */
+export type TranscribeOptions = Pick<RunSentenceAlignOptions,
+  'server' | 'audioPath' | 'language' | 'transcriptCachePath' | 'signal' | 'onProgress' | 'onLog'>;
+
+export async function transcribe(o: TranscribeOptions, scratch: string): Promise<{ words: HeardWord[]; durationS: number }> {
   const log = o.onLog ?? (() => undefined);
   const st = fs.statSync(o.audioPath);
   if (o.transcriptCachePath && fs.existsSync(o.transcriptCachePath)) {
@@ -150,7 +154,7 @@ async function transcribe(o: RunSentenceAlignOptions, scratch: string): Promise<
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** 20 ms RMS in dBFS over the whole book, from one streaming 16 kHz mono decode. */
-function levelEnvelope(ffmpeg: string, audio: string, signal?: AbortSignal): Promise<LevelEnvelope> {
+export function levelEnvelope(ffmpeg: string, audio: string, signal?: AbortSignal): Promise<LevelEnvelope> {
   return new Promise((resolve, reject) => {
     const SR = 16000; const per = Math.round(FRAME_S * SR);
     const p = spawn(ffmpeg, ['-v', 'error', '-nostdin', '-i', audio, '-ac', '1', '-ar', String(SR), '-f', 's16le', '-'], { stdio: ['ignore', 'pipe', 'pipe'] });
@@ -182,7 +186,7 @@ function levelEnvelope(ffmpeg: string, audio: string, signal?: AbortSignal): Pro
  * caller checks the signal before each cut, so a run with hundreds of disputed
  * windows stops within one cut rather than after all of them.
  */
-function cutWindow(ffmpeg: string, audio: string, start: number, end: number, out: string, signal?: AbortSignal): Promise<void> {
+export function cutWindow(ffmpeg: string, audio: string, start: number, end: number, out: string, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
     const p = spawn(ffmpeg, ['-v', 'error', '-nostdin', '-y', '-ss', start.toFixed(3), '-i', audio, '-t', (end - start).toFixed(3),
       '-ac', '1', '-ar', '16000', '-c:a', 'flac', out], { stdio: ['ignore', 'ignore', 'pipe'] });

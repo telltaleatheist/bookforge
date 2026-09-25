@@ -10,6 +10,19 @@
  *     alignment supplies only the timings (whisperx-align-bridge →
  *     runEpubAlignOnFiles → align_audiobook.py, CPU-only whisperx-env). Produces a
  *     VTT whose text is the book's own words — the "link epub source to audio" mode.
+ *     With --crucible-server <name> it is the app's Crucible pipeline instead
+ *     (crucible/sentence-align.ts: qwen3-asr-1.7b → the EPUB diff here →
+ *     qwen3-aligner on the disputed windows → cue edges in real pauses).
+ *
+ *   CLIPS (--clips <dir|list.txt> --epub --out-dir --crucible-server, 2026-09-25):
+ *     many short clips whose places in the book are unknown. Each is LOCATED in the
+ *     book on its own (clip order does not matter), then gets the book's exact text,
+ *     per-sentence times, and its edge-cut sentences reported as partial. Writes
+ *     clips.json, clips.tsv (id, status, text) and vtt/<id>.vtt. The ASR runs once
+ *     over all clips; a re-run over the same clips reuses it.
+ *
+ *     node --require ./cli/electron-stub.js cli/generate-sentences.js \
+ *          --clips <dir|list.txt> --epub book.epub --out-dir <dir> --crucible-server <name> [--language en]
  *
  * Reuses, unchanged: component install (whisper pip overlay / whisperx-env),
  * whisper-model download cache, both python pipelines, the app's m4b subtitle
@@ -188,8 +201,80 @@ async function ensureWhisperReady(modelId) {
   return wm.whisperModelDir(modelId);
 }
 
+/** Audio files a clips run accepts from a directory. */
+const CLIP_EXT = /\.(wav|flac|mp3|m4a|ogg|opus|aac)$/i;
+
+/**
+ * `--clips <dir|list.txt>`: a directory (its audio files, by name) or a text file of
+ * paths, one per line (relative to the list's own folder). A clip's id is its file
+ * name without the extension, and names every output for it.
+ */
+function listClips(spec) {
+  const p = path.resolve(spec);
+  if (!fs.existsSync(p)) throw new Error(`--clips not found: ${p}`);
+  let files;
+  if (fs.statSync(p).isDirectory()) {
+    files = fs.readdirSync(p).filter((f) => CLIP_EXT.test(f)).sort().map((f) => path.join(p, f));
+  } else {
+    files = fs.readFileSync(p, 'utf-8').split(/\r?\n/).map((l) => l.trim()).filter((l) => l && !l.startsWith('#'))
+      .map((l) => path.resolve(path.dirname(p), l));
+  }
+  if (files.length === 0) throw new Error(`--clips ${p} holds no audio files`);
+  return files.map((f) => ({ id: path.basename(f).replace(/\.[^.]+$/, ''), path: f }));
+}
+
+/**
+ * CLIPS MODE (2026-09-25). Owen: "make sure bookforge-cli's generate-sentences can
+ * run on clips and find the original text if given the source epub." Each clip is
+ * located in the book on its own, so their order does not matter; the ASR runs once
+ * over all of them. Crucible only (qwen3-asr-1.7b + qwen3-aligner).
+ */
+async function runClipsMode(args) {
+  if (!args.epub) throw new Error('--clips needs --epub <book.epub>: the book is where the text comes from');
+  if (!args['out-dir'] || args['out-dir'] === true) throw new Error('--clips needs --out-dir <dir> (clips.json, clips.tsv, vtt/)');
+  if (!args['crucible-server'] || args['crucible-server'] === true) {
+    throw new Error('--clips runs on a Crucible (its asr and align jobs): pass --crucible-server <name>');
+  }
+  for (const f of ['audio', 'out', 'report', 'rough-cache', 'hole-min', 'align-workers', 'embed', 'whisper-model', 'snap-silence', 'no-snap-silence']) {
+    if (args[f] !== undefined) throw new Error(`--${f} does not apply to --clips (each clip's outputs land in --out-dir)`);
+  }
+  const paragraphAware = switchFlag(args, 'no-paragraph-split') ? false : undefined;
+  if (!fs.existsSync(args.epub)) throw new Error(`epub file not found: ${args.epub}`);
+  const clips = listClips(args.clips);
+  const outDir = path.resolve(args['out-dir']);
+  const language = args.language && args.language !== 'auto' ? args.language : 'en';
+  const wab = require('../dist/electron/whisperx-align-bridge.js');
+  if (typeof wab.runEpubAlignOnClips !== 'function') {
+    throw new Error('runEpubAlignOnClips missing — rebuild BookForge (npx tsc -p tsconfig.electron.json)');
+  }
+  const controller = new AbortController();
+  process.on('SIGINT', () => { console.log('\n[sentences] SIGINT — cancelling the Crucible jobs...'); controller.abort(); });
+  console.log(`[sentences] CLIPS: ${clips.length} clip(s) from ${path.resolve(args.clips)} against "${path.basename(args.epub)}" `
+    + `on crucible "${args['crucible-server']}" -> ${outDir}`);
+  const t0 = Date.now();
+  let last = '';
+  const r = await wab.runEpubAlignOnClips(path.resolve(args.epub), clips, language, {
+    crucibleServer: String(args['crucible-server']), outDir,
+    ...(paragraphAware === false ? { paragraphAware: false } : {}),
+    signal: controller.signal,
+    onProgress: (p) => { const l = `[sentences] ${p.stage} ${Math.round(p.fraction * 100)}% ${p.message}`; if (l !== last) { console.log(l); last = l; } },
+    onLog: (line) => console.log(`[sentences] ${line}`),
+  });
+  const s = r.stats;
+  console.log(`[sentences] ${s.complete} complete, ${s.partial} partial, ${s.unlocated} unlocated, ${s.silent} silent of ${s.clips}; `
+    + `${s.sentencesPlaced} sentence(s) placed, ${s.partialSentences} partial`);
+  console.log(`[sentences] ${r.jsonPath}\n[sentences] ${r.tsvPath}\n[sentences] ${r.vttDir}`);
+  console.log(`[sentences] done in ${((Date.now() - t0) / 1000).toFixed(0)}s`);
+  process.exitCode = 0;
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
+  if (args.clips !== undefined) return runClipsMode(args);
+  if (args['crucible-server'] === true) throw new Error('--crucible-server needs a server name');
+  if (args['crucible-server'] !== undefined && !args.epub) {
+    throw new Error('--crucible-server applies to --epub (the Crucible sentence pipeline); whisper mode runs here');
+  }
   // ARGUMENTS FIRST, FILESYSTEM SECOND. The existence checks used to sit up here,
   // above every flag check, so a bad flag combination was reported as "audio file
   // not found" whenever the path happened to be wrong — and, worse, a flag-parity
@@ -291,12 +376,15 @@ async function main() {
     if (typeof wab.runEpubAlignOnFiles !== 'function') {
       throw new Error('runEpubAlignOnFiles missing — rebuild BookForge (npx tsc -p tsconfig.electron.json)');
     }
-    console.log(`[sentences] EPUB-ALIGN: "${path.basename(args.epub)}" -> "${path.basename(args.audio)}" (whisperx-env, device=${args.device || 'auto'})`);
+    const crucibleServer = args['crucible-server'] === undefined ? undefined : String(args['crucible-server']);
+    console.log(crucibleServer
+      ? `[sentences] EPUB-ALIGN: "${path.basename(args.epub)}" -> "${path.basename(args.audio)}" on crucible "${crucibleServer}" (qwen3-asr-1.7b + qwen3-aligner)`
+      : `[sentences] EPUB-ALIGN: "${path.basename(args.epub)}" -> "${path.basename(args.audio)}" (whisperx-env, device=${args.device || 'auto'})`);
     const reportPath = args.report ? path.resolve(args.report) : undefined;
     if (reportPath) fs.mkdirSync(path.dirname(reportPath), { recursive: true });
     const r = await wab.runEpubAlignOnFiles(jobId, makeProgressWindow(), args.epub, args.audio, language,
       { reportPath, holeMinS, roughCachePath, alignWorkers, device: args.device,
-        snapSilenceS, paragraphAware, reportHoleMinS });
+        snapSilenceS, paragraphAware, reportHoleMinS, ...(crucibleServer ? { crucibleServer } : {}) });
     vttSource = r.vttPath;
     cues = r.cues;
     warning = r.warning;
