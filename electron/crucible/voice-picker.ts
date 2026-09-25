@@ -44,6 +44,7 @@
 import {
   listHiggsModels,
   higgsVoiceUnavailableReason,
+  PICKER_HIDDEN_VOICE_KINDS,
   SELECTABLE_VOICE_KINDS,
 } from '../higgs-models';
 import { CRUCIBLE_VOICE_BY_BOOKFORGE_VOICE } from './render';
@@ -110,10 +111,13 @@ function reKeyToCatalog(placements: readonly VoicePlacement[]): VoicePlacement[]
     bookforgeIdOf.set(theirs, ours);
   }
   const labelOf = new Map(listHiggsModels().map((m) => [m.id, m.label]));
+  // The base model is never offered (Owen, 2026-09-25) — see PICKER_HIDDEN_VOICE_KINDS.
+  const hidden = new Set(listHiggsModels().filter((m) => PICKER_HIDDEN_VOICE_KINDS.has(m.kind)).map((m) => m.id));
 
   return placements.flatMap((placement) => {
     const ours = bookforgeIdOf.get(placement.id);
     if (ours === undefined) return [];
+    if (hidden.has(ours)) return [];
     const label = labelOf.get(ours);
     if (label === undefined) {
       throw new Error(

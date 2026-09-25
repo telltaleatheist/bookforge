@@ -199,6 +199,20 @@ export const SELECTABLE_VOICE_KINDS: ReadonlySet<HiggsVoiceKind> =
   new Set(['default', 'checkpoint', 'clips']);
 
 /**
+ * Kinds a render still accepts but the narration DROPDOWN never lists.
+ *
+ * Owen, 2026-09-25: *"remove the higgs base model from the tts modal voice list
+ * … just remove it from the dropdown. it isnt necessary, the user will never
+ * render something from the base model. they might use voice cloning, but thats
+ * a different logic path altogether. the fine tunes are fused models."* So the
+ * `default` voice leaves both pickers (`higgsNarrationVoices` and
+ * `crucible/voice-picker.ts`) and nothing else: `SELECTABLE_VOICE_KINDS` is also
+ * what the render path reads, and a book or a CLI run that names `default` still
+ * renders.
+ */
+export const PICKER_HIDDEN_VOICE_KINDS: ReadonlySet<HiggsVoiceKind> = new Set(['default']);
+
+/**
  * One reference clip, in narrator's document spelling.
  *
  * ONE PER VOICE, AT MOST. vllm-omni refuses multi-shot cloning, so "two clips"
@@ -2917,7 +2931,7 @@ export function higgsNarrationVoices(userDataDir: string): {
       }
       return m;
     })
-    .filter((m) => SELECTABLE_VOICE_KINDS.has(m.kind))
+    .filter((m) => SELECTABLE_VOICE_KINDS.has(m.kind) && !PICKER_HIDDEN_VOICE_KINDS.has(m.kind))
     .map((m) => {
       // TWO WAYS TO BE UNAVAILABLE, said differently, because they send a person
       // to different places. `_pendingNote` is "this artifact does not exist yet,

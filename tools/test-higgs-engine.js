@@ -2146,8 +2146,12 @@ check('the certified voice is offered SELECTABLE, with no warning attached', () 
   assert.ok(row, 'the production fine-tune is not listed at all');
   assert.ok(!row.unavailable, 'the certified voice is still offered as unavailable');
   assert.ok(!/not installed/.test(row.label), 'the label still says not installed');
-  const ok = higgs.higgsNarrationVoices(PICKER_USER_DATA).find((v) => v.value === 'default');
-  assert.ok(!ok.unavailable, 'a renderable voice was marked unavailable');
+  // The base model is renderable but never OFFERED (Owen, 2026-09-25: "the user will never
+  // render something from the base model"): the dropdown leaves it out, and the render
+  // path still resolves it.
+  assert.strictEqual(higgs.higgsNarrationVoices(PICKER_USER_DATA).find((v) => v.value === 'default'), undefined,
+    'the base model is still offered in the narration dropdown');
+  assert.ok(higgs.SELECTABLE_VOICE_KINDS.has('default'), 'a render naming the base model would now be refused');
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
