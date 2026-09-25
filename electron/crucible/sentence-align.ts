@@ -213,13 +213,23 @@ export async function runSentenceAlign(o: RunSentenceAlignOptions): Promise<Sent
   }
 
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'bookforge-sentence-align-'));
+  /*
+   * THE LEVEL DECODE HAS AN OWNER. It runs beside the ASR and used to stop only on
+   * the user's cancel, so a run that failed or was abandoned mid-ASR left its
+   * ffmpeg decoding a whole book with no one reading it (found orphaned
+   * 2026-09-25, from a keeper run). Its own stop, fired by the `finally` below on
+   * every exit and by the caller's cancel.
+   */
+  const envStop = new AbortController();
+  const onCallerAbort = (): void => envStop.abort();
+  o.signal?.addEventListener('abort', onCallerAbort, { once: true });
   try {
     // 1. ASR (and, beside it, this side's level envelope for the edges)
     progress('transcribe', 0, 'Transcribing with Qwen3-ASR on Crucible');
     // The envelope decodes beside the ASR, but its failure is raised only AFTER the
     // ASR settles: a Promise.all would reject on a bad decode while the GPU job was
     // still being submitted, leaving it running with nothing holding its cancel.
-    const envP = levelEnvelope(o.ffmpegPath, o.audioPath, o.signal)
+    const envP = levelEnvelope(o.ffmpegPath, o.audioPath, envStop.signal)
       .then((v) => ({ v, e: null as Error | null }), (e: Error) => ({ v: null as LevelEnvelope | null, e }));
     const asr = await transcribe(o, scratch);
     const envR = await envP;
@@ -336,6 +346,8 @@ export async function runSentenceAlign(o: RunSentenceAlignOptions): Promise<Sent
     progress('write', 1, 'Done');
     return { vttPath: o.outVttPath, reportPath: o.reportPath, cues: cues.length, stats };
   } finally {
+    envStop.abort();
+    o.signal?.removeEventListener('abort', onCallerAbort);
     fs.rmSync(scratch, { recursive: true, force: true });
   }
 }
