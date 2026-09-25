@@ -177,14 +177,25 @@ function levelEnvelope(ffmpeg: string, audio: string, signal?: AbortSignal): Pro
   });
 }
 
-function cutWindow(ffmpeg: string, audio: string, start: number, end: number, out: string): Promise<void> {
+/**
+ * One window's audio. The ✕ reaches it: a cancel kills the running ffmpeg, and the
+ * caller checks the signal before each cut, so a run with hundreds of disputed
+ * windows stops within one cut rather than after all of them.
+ */
+function cutWindow(ffmpeg: string, audio: string, start: number, end: number, out: string, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
     const p = spawn(ffmpeg, ['-v', 'error', '-nostdin', '-y', '-ss', start.toFixed(3), '-i', audio, '-t', (end - start).toFixed(3),
       '-ac', '1', '-ar', '16000', '-c:a', 'flac', out], { stdio: ['ignore', 'ignore', 'pipe'] });
+    const onAbort = (): void => { p.kill(); };
+    signal?.addEventListener('abort', onAbort, { once: true });
     let err = '';
     p.stderr.on('data', (d: Buffer) => { err += d.toString(); });
     p.on('error', reject);
-    p.on('close', (code) => (code === 0 ? resolve() : reject(new Error(`ffmpeg could not cut ${start.toFixed(2)}-${end.toFixed(2)} s: ${err.trim().slice(-300)}`))));
+    p.on('close', (code) => {
+      signal?.removeEventListener('abort', onAbort);
+      if (signal?.aborted) return reject(new Error('cancelled'));
+      return code === 0 ? resolve() : reject(new Error(`ffmpeg could not cut ${start.toFixed(2)}-${end.toFixed(2)} s: ${err.trim().slice(-300)}`));
+    });
   });
 }
 
@@ -232,8 +243,9 @@ export async function runSentenceAlign(o: RunSentenceAlignOptions): Promise<Sent
       const wdir = path.join(scratch, 'windows'); fs.mkdirSync(wdir);
       const inputs: Record<string, string> = {};
       for (const w of windows) {
+        if (o.signal?.aborted) throw new Error('cancelled');
         const f = path.join(wdir, `${w.index}.flac`);
-        await cutWindow(o.ffmpegPath, o.audioPath, w.start, w.end, f);
+        await cutWindow(o.ffmpegPath, o.audioPath, w.start, w.end, f, o.signal);
         inputs[`${w.index}.flac`] = f;
       }
       const client = await crucibleClientFor(o.server, CRUCIBLE_CLIENT_NAME);
