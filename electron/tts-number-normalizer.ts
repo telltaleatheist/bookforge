@@ -188,11 +188,18 @@ export { sitsInCitation, bareWord };
  * spelling-out, quote, hyphen, case, translation and invented-numeral edits, and
  * passes the citation, abbreviation and broken-word readings the strict gate lost.
  *
+ * n15 → n16 (2026-09-25, after the n15 Mac run): the prompt leans a comma-less
+ * four-digit number toward a YEAR (Owen: "lean toward writing four digit numbers
+ * without a comma as years") and reads other dates from the model's knowledge
+ * ("538 BCE", "AD 70", "the year 12,000"); every ruler's numeral is read
+ * ("Pope Pius IX" is "Pope Pius the Ninth"); "transl. and ed." before a name; and
+ * a day range always puts the month first.
+ *
  * A BUMP HERE IS A CROSS-REPO EVENT. These rules are vendored byte-for-byte into
  * orpheus-finetune's `pipeline/normalization/vendor/` and drift-checked on every
  * training build — see docs/NARRATION_TEXT_PASS.md.
  */
-export const NORMALIZER_VERSION = 'n15';
+export const NORMALIZER_VERSION = 'n16';
 
 /**
  * The model this pass uses when the setting is absent.

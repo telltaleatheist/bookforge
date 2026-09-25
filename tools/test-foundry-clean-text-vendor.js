@@ -460,7 +460,8 @@ const VENDOR_LEAVES = '770480d';
  */
 /* MOVED 2026-09-25, f168809 → 2c5edfc (n14), read in full: the version constant and its comment only in these files; the rules moved in the engine's own prompt file. */
 /* MOVED 2026-09-25, 2c5edfc → 9c2aa68 (n15), read in full: the light gate — the normalizer imports src/clean/light-gate.ts (carried here as electron/light-gate.ts, byte-identical) and applies it under policy.gate 'light'. */
-const ONE_DOOR_BASELINE = '9c2aa68';
+/* MOVED 2026-09-25, 9c2aa68 → f57402c (n16), read in full: the version constant and its comment only in these files; the prompt moved in the engine's own file. */
+const ONE_DOOR_BASELINE = 'f57402c';
 const FROZEN_SINCE_BASELINE = [
   'src/clean/tts-number-normalizer.ts',
   'src/clean/tts-spoken-forms.ts',
@@ -522,7 +523,7 @@ const FILES = [
     theirs: 'src/clean/tts-number-normalizer.ts',
     vendoredAt: VENDOR_PASS,
     shipped: {
-      sha256: '20e9e6cabca6f04db171f7bd319ab66260437cf6aff2470336bf34178433bf39',
+      sha256: 'f4de273e58ecf72bdb67b0f7f44a9c4388a1ff0cbaa3ea8880d8547d75455ad7',
       why: 'the type-only `epub-processor.js` import retargeted to `./targets.js`; '
         + '`askAboutEach` exported so the engine\'s door is a third caller rather than a second '
         + 'copy of the retry rules; `normalizeNarrationNumbers` deleted (291 lines, all about a '
@@ -703,7 +704,8 @@ const VERSIONS = [
     // n12 → n13: Foundry f168809 (one short prompt; markup stays unedited).
     // n13 → n14: Foundry 2c5edfc (three broad rules in the clean-text prompt).
     // n14 → n15: Foundry 9c2aa68 (the light gate).
-    expected: 'n15',
+    // n15 → n16: Foundry f57402c (years, rulers, transl./ed., month-first ranges).
+    expected: 'n16',
   },
   {
     name: 'PUNCTUATION_SPEC_VERSION',

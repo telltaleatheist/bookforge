@@ -5322,7 +5322,7 @@ var init_tts_number_normalizer = __esm({
     init_tts_number_rules();
     init_number_expansion();
     init_tts_spoken_forms();
-    NORMALIZER_VERSION = "n15";
+    NORMALIZER_VERSION = "n16";
     RAW_ANSWER_EXCERPT = 600;
     MAX_PARSE_FAIL_SHARE = 0.1;
     ROMAN_WORD = /(?:^|\s)[IVXLCDM]{2,}(?:$|[\s,.;:)\]])/;
@@ -30925,7 +30925,7 @@ var init_version = __esm({
     init_engine_import_meta_url();
     init_package();
     VERSION = package_default.version;
-    GIT_COMMIT = "src 0bbdb777b8e6".length > 0 ? "src 0bbdb777b8e6" : null;
+    GIT_COMMIT = "src 3896be3f1fa3".length > 0 ? "src 3896be3f1fa3" : null;
   }
 });
 
@@ -72801,11 +72801,12 @@ WHAT YOU READ
 A program has already read most numbers: years, dates, money, percentages, decades, ordinals and small whole numbers arrive as words. Leave anything already in words. What is left for you:
 
 NUMBERS the program left. Read each one the way a narrator says it, in American English.
-- A four-digit number is a year or a quantity, and the sentence says which: 1944 as a year is "nineteen forty-four", 1905 is "nineteen oh five", 1900 is "nineteen hundred"; "1200 people" is "twelve hundred people".
+- A four-digit number printed WITHOUT a comma is almost always a year: read it as one unless the sentence plainly makes it a count. 1944 is "nineteen forty-four", 1905 is "nineteen oh five", 1900 is "nineteen hundred", 2006 is "two thousand six"; in a citation, "(London, 1994)" is "(London, nineteen ninety-four)". Only a clear count reads as a quantity: "1200 people" is "twelve hundred people".
+- Other dates are read the way a historian says them, from what you know: "538 BCE" is "five thirty-eight B C E"; "AD 70" is "A D seventy"; "the year 12,000" is "the year twelve thousand"; "c. 1200" is "circa twelve hundred".
 - A range is read with "to", and a shortened range in full: 1914-1918 is "nineteen fourteen to nineteen eighteen"; "112\u201314" is "one hundred twelve to one hundred fourteen".
 - Every decimal: "2.9 million" is "two point nine million"; "1.5 kilos" is "one point five kilos".
 - A clock: "10:05" is "ten oh five". A British book prints it with a point: "2.00 p.m." is "two p.m.", "4.15 p.m." is "four fifteen p.m.".
-- A day range is one date: "28\u201329 November 1830" is "November twenty-eighth to twenty-ninth, eighteen thirty"; "14\u201315 May" is "May fourteenth to fifteenth".
+- A day range is one date, and the MONTH always comes first: "28\u201329 November 1830" is "November twenty-eighth to twenty-ninth, eighteen thirty"; "15\u201317 May 1848" is "May fifteenth to seventeenth, eighteen forty-eight"; "3\u20134 June" is "June third to fourth".
 - An old British sum is pounds, shillings and pence: "\xA3803.11.0" is "eight hundred three pounds, eleven shillings"; "\xA33.10.6" is "three pounds, ten shillings and six pence".
 - A heading or list number keeps its period: "4." is "four.".
 
@@ -72824,13 +72825,13 @@ SCRIPTURE is read as the book's full name, the chapter, a comma, "verse" and the
 - A book name already printed in full stays in full: "Revelation 21:4" is "Revelation twenty one, verse four".
 
 ROMAN NUMERALS are read where a book prints a number.
-- After a ruler's name, always "the" and the ordinal, every time it is printed: "Henry VIII" is "Henry the Eighth"; "Napoleon III" is "Napoleon the Third"; "Louis XVIII" is "Louis the Eighteenth"; "Leopold II" is "Leopold the Second"; "Vittorio Emanuele II" is "Vittorio Emanuele the Second".
+- After a ruler's name, always "the" and the ordinal, and EVERY one the TARGET prints is read \u2014 look for each before you answer: "Henry VIII" is "Henry the Eighth"; "Napoleon III" is "Napoleon the Third"; "Louis XVIII" is "Louis the Eighteenth"; "Leopold II" is "Leopold the Second"; "Vittorio Emanuele II" is "Vittorio Emanuele the Second"; "Pope Pius IX" is "Pope Pius the Ninth"; "Christian VIII" is "Christian the Eighth"; "Wilhelm IV" is "Wilhelm the Fourth".
 - A one-letter numeral after a ruler's name is a numeral: "Alexander I" is "Alexander the First"; "George V" is "George the Fifth".
 - A possessive keeps its "'s" outside the find: in "Napoleon I's armies" the find is "Napoleon I" and the reading "Napoleon the First".
 - After a part word, the number: "Part IV" is "Part Four"; "Chapter IX" is "Chapter Nine". Before a century: "the XIX century" is "the nineteenth century".
 
 ABBREVIATIONS a narrator says in full.
-- "Dr." is "Doctor"; "Mt." is "Mount"; "St." is "Saint" or "Street", whichever the sentence means; "e.g." is "for example"; "i.e." is "that is"; "etc." is "et cetera"; "vs." is "versus"; "ed." after a name is "editor" and before one is "edited by"; "trans." before a name is "translated by"; "edn" is "edition".
+- "Dr." is "Doctor"; "Mt." is "Mount"; "St." is "Saint" or "Street", whichever the sentence means; "e.g." is "for example"; "i.e." is "that is"; "etc." is "et cetera"; "vs." is "versus"; "ed." after a name is "editor" and before one is "edited by"; "trans." and "transl." before a name are "translated by"; "transl. and ed." before a name is "translated and edited by"; "edn" is "edition".
 - A spaced ampersand is "and"; one between letters keeps both sides: "AT&T" is "A T and T".
 - "Mr.", "Mrs." and "Ms." stay as printed.
 
@@ -72849,6 +72850,11 @@ DASHES AND BROKEN WORDS.
 - A word broken across a line is one word: "Verlags- anstalt" is "Verlagsanstalt"; "fini sh" is "finish".
 
 WORKED ANSWERS
+
+TARGET: Under Pope Pius IX and King Christian VIII the old order held, as The Letters of a Soldier, ed. John Hale (London, nineteen ninety-one), and A Life, transl. and ed. Ann Bell (Paris, two thousand five), both record.
+<answer>
+{"edits": [{"find": "Pope Pius IX", "replace": "Pope Pius the Ninth"}, {"find": "Christian VIII", "replace": "Christian the Eighth"}, {"find": "ed. John", "replace": "edited by John"}, {"find": "transl. and ed. Ann", "replace": "translated and edited by Ann"}]}
+</answer>
 
 TARGET: Under Alexander I the empire grew, while in France Louis XVIII's ministers - wary of the court - waited until 2.00 p.m. for word from the FBI.
 <answer>
