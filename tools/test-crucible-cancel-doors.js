@@ -411,6 +411,23 @@ function startCancellingAlignServer(patienceMs) {
     const route = ctx.url.pathname;
     const { state, send, sseWriter } = ctx;
 
+    // Since 2026-09-24 the bridge's server road is BookForge's own sentence-align:
+    // it asks for `qwen3-asr-1.7b` (asr) before its upload and `qwen3-aligner`
+    // (align) later. The ✕ must reach whichever of its jobs is running.
+    if (route === '/v1/info' && req.method === 'GET') {
+      const row = (id) => ({ id, revision: 'r', source: id, resident: false, vram_bytes: 1 });
+      send(res, 200, {
+        server: { name: 'fake-crucible', version: '0.5.0', api_version: 1 },
+        host: { platform: 'linux', arch: 'x86_64', backend: 'cuda-linux', gpu: { vendor: 'nvidia', name: 'fake', vram_bytes: 1 } },
+        job_types: ['echo', 'asr', 'align', 'align-longform'],
+        capabilities: [
+          { job_type: 'asr', models: [row('qwen3-asr-1.7b')] },
+          { job_type: 'align', models: [row('qwen3-aligner')] },
+        ],
+      });
+      return true;
+    }
+
     if (route === '/v1/jobs' && req.method === 'POST') {
       const body = JSON.parse((await ctx.readBody(req)).toString('utf-8'));
       state.submitted.push(body);

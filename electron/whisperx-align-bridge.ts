@@ -678,67 +678,43 @@ export async function runEpubAlignOnFiles(
    * would be a different venue than the one the queue charged a slot for, and
    * the bench would be wrong about which card is busy.
    */
+  /*
+   * 2026-09-24 — THE LOGIC IS BOOKFORGE'S, THE MODELS ARE CRUCIBLE'S. Owen: "all gpu
+   * use in bookforge should run through crucible … bookforge manages the logic, but
+   * we dont ever directly call the qwen model. we call it through the crucible api
+   * and get files back." So the server no longer runs the whole act (`align-longform`,
+   * faster-whisper `small` as its locator): this side runs `crucible/sentence-align.ts`
+   * — Qwen3-ASR (`asr` job) → the EPUB diff here → `align` job on the windows the two
+   * disagree on → cue edges at the centre of real pauses → the VTT. Same two files,
+   * same names, same place, so everything after this cannot tell the difference.
+   */
   if (opts?.crucibleServer !== undefined) {
-    const { runLongformAlign } = await import('./crucible/align-longform.js');
+    const { runSentenceAlign } = await import('./crucible/sentence-align.js');
+    const { getFfmpegPath } = await import('./tool-paths.js');
     glog(`[epub-align] on crucible "${opts.crucibleServer}": `
-      + `${sentences.length} sentence(s), ${path.basename(audioPath)}`);
-    /*
-     * AND THE ✕ REACHES IT, through the same door the local child is killed
-     * through. `cancelEpubAlign(jobId)` is what `cancelGenerateSentences` calls
-     * unconditionally and first, because this stage is the long one and the
-     * cooperative flag is only read between stages. Registered BEFORE the
-     * upload, which on a 16 h book is itself minutes of an hours-long job that
-     * the operator must be able to stop.
-     */
+      + `${sentences.length} sentence(s), ${path.basename(audioPath)} (qwen3-asr + qwen3-aligner, BookForge diff)`);
+    const outDir = path.dirname(reportPath ?? audioPath);
     const stop = new AbortController();
     activeAligns.set(jobId, { where: 'crucible', stop });
-    let outcome: Awaited<ReturnType<typeof runLongformAlign>>;
     try {
-      outcome = await runLongformAlign({
+      const r = await runSentenceAlign({
         server: opts.crucibleServer,
         audioPath,
-        sentences: sentences.map((sentence, index) => ({
-          index, text: sentence.text, kind: sentence.kind,
-        })),
+        sentences: sentences.map((s) => ({ text: s.text, kind: s.kind })),
         language: language && language !== 'auto' ? language : 'en',
-        outputDir: path.dirname(reportPath ?? audioPath),
+        ffmpegPath: getFfmpegPath(),
+        outVttPath: path.join(outDir, 'alignment.vtt'),
+        reportPath: reportPath ?? path.join(outDir, 'align-report.json'),
+        ...(opts.roughCachePath ? { transcriptCachePath: opts.roughCachePath } : {}),
         signal: stop.signal,
-        onProgress: (p) => sendProgress(
-          win, jobId,
-          Math.round(p.fraction * 100),
-          p.message || stageMessage(p.stage ?? ''),
-        ),
+        onProgress: (p) => sendProgress(win, jobId, Math.round(p.fraction * 100), p.message || stageMessage(p.stage)),
         onLog: (line) => glog(`[epub-align/crucible] ${line}`),
       });
+      glog(`[epub-align] crucible "${opts.crucibleServer}": ${r.cues} cue(s) placed`);
+      return { vttPath: r.vttPath, cues: r.cues, reportPath: r.reportPath };
     } finally {
-      // This job is over, however it ended. Left behind, the entry would make a
-      // later cancel abort a controller nothing is listening to and — worse —
-      // answer "yes, something was running" for a job that was not.
       activeAligns.delete(jobId);
     }
-    /*
-     * THE COUNT IS THE SERVER'S OWN, out of `align-report.json`'s `placed`, and
-     * not re-derived by parsing the VTT here. The server counted what it wrote;
-     * a second count on this side is a second answer to one question, and the
-     * two would disagree the first time a cue carries a NOTE.
-     *
-     * A report that cannot be read is a failure rather than a zero: `cues: 0`
-     * flows downstream as a successful alignment that placed nothing.
-     */
-    let cues: number;
-    try {
-      const report = JSON.parse(fs.readFileSync(outcome.reportPath, 'utf8')) as { placed?: unknown };
-      if (typeof report.placed !== 'number') throw new Error('no `placed` count');
-      cues = report.placed;
-    } catch (err) {
-      throw new Error(
-        `crucible "${opts.crucibleServer}" wrote an alignment report this build cannot read `
-        + `(${outcome.reportPath}): ${(err as Error).message}. The cue count is the server's own `
-        + 'number and is not guessed at here.',
-      );
-    }
-    glog(`[epub-align] crucible "${opts.crucibleServer}" placed ${cues} cue(s)`);
-    return { vttPath: outcome.vttPath, cues, reportPath: outcome.reportPath };
   }
 
   /*
