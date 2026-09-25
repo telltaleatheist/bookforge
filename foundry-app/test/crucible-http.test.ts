@@ -9,8 +9,8 @@ const setup=await import('../electron/setup');
 const coordinate=await import('../electron/crucible-coordinate');
 const dispatch=await import('../electron/crucible-dispatch');
 afterEach(()=>mock.restore());
-const classes=['pages','clean','translate','simplify','analysis'];
-const chosen=(cls:string)=>cls==='pages'?'dots-ocr':cls==='clean'?'qwen3.5-9b':'qwen3.8-27b-4bit';
+const classes=['pages','clean','translate','simplify','analysis','decide'];
+const chosen=(cls:string)=>cls==='pages'?'dots-ocr':cls==='clean'?'qwen3.5-9b':cls==='decide'?'qwen3.5-2b':'qwen3.8-27b-4bit';
 
 function fixture(options:{missing?:boolean;competing?:boolean;competitorStocks?:boolean;failCompetitor?:boolean;leased?:boolean;chatMaxInFlight?:number|null;admitsOnlyWhenResident?:number;noActivity?:boolean;oldActivity?:boolean;leaseOnLoad?:boolean}={}) {
   let stocked=!options.missing, competed=false, loaded:string|null=null, loadLease:string|null=null;
@@ -297,6 +297,24 @@ test('real HTTP a server whose activity document this build cannot read still pl
  * the pages; a chat depth on a `pages` placement would be a number about the
  * wrong door.
  */
+/**
+ * A CLEANUP'S TRIAGE RUNS ON THE CLEANER'S MODEL (2026-09-25). The server's `decide`
+ * class picks the 2B here and its `clean` class the 9B; the triage takes the 9B —
+ * measured the model that separates, and the one the cleanup is about to use —
+ * while the act on the lease stays `decide`, which is what the door is asked as.
+ */
+test('real HTTP a clean-triage is placed on the clean class model, leased as decide',async()=>{
+  const f=fixture();try{
+    const result=await dispatch.placeJob('clean-triage',f.entry.name,()=>{},()=>true);
+    expect(result.verdict).toBe('go');if(result.verdict!=='go')throw Error(JSON.stringify(result));
+    try{expect(result.placement.model).toBe('qwen3.5-9b');
+      const load=f.calls.find(c=>c.path==='/v1/jobs')!;
+      expect(load.body.model).toBe('qwen3.5-9b');
+      expect(load.body.params.lease).toEqual({act:'decide',ttl_seconds:120});
+    }finally{await result.placement.lease?.release();}
+  }finally{f.close();}
+});
+
 test('real HTTP a reading placement states no chat depth and does not ask for one',async()=>{
   const f=fixture({chatMaxInFlight:2});try{
     const result=await dispatch.placeJob('read',f.entry.name,()=>{},()=>true);

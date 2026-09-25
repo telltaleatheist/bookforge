@@ -1219,7 +1219,21 @@ async function placeOnCrucible(
    * field on a registry entry and no picker showing one.
    */
   const record = await readCapability(entry);
-  const row = record.classes.find((entry_) => entry_.capability === capability);
+  /*
+   * ── A CLEANUP'S TRIAGE IS ASKED OF THE CLEANER'S OWN MODEL (2026-09-25) ────
+   *
+   * The act is still `decide` — the door, the lease and `X-Crucible-Act` — but the
+   * MODEL is the one the server serves `clean` with, not the shared `decide`
+   * class's pick. Measured on Working Towards the Führer and Pursuit of Power:
+   * qwen3.5-2b's yes/no never separated sentences that need cleaning from ones
+   * that do not (AUC 0.55–0.82, nearly everything flagged); qwen3.5-9b did (AUC
+   * 0.89 and 0.976, 331 of 335 caught). The 9B is also the cleaner, so the press
+   * never swaps models between its two rows. Owen: "go ahead and use that for
+   * cleanup triage if its best for it". The shared `decide` setting is left
+   * alone — Briefcase and snap choose it for their own work.
+   */
+  const modelClass = capability === 'decide' ? 'clean' : capability;
+  const row = record.classes.find((entry_) => entry_.capability === modelClass);
   if (row === undefined) {
     return {
       verdict: 'refuse',
