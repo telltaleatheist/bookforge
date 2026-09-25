@@ -166,11 +166,17 @@ export { sitsInCitation, bareWord };
  * example ("Vol. 23" is "Volume twenty-three", "ii. 207" is "volume two, page two
  * hundred seven"), where they used to be left as apparatus. No rule moved.
  *
+ * n12 → n13 (2026-09-25): clean-text sends ONE prompt, `prompts/tts-clean-text.txt`
+ * (~2,100 tokens where the two joined files were ~5,700), with what is never
+ * changed first — the n12 run showed those rules ignored at the end of the long
+ * one. And with the gate off, inline MARKUP is still never edited: the n11 run
+ * turned "⁴¹" into "forty one", words the narration cut can no longer strip.
+ *
  * A BUMP HERE IS A CROSS-REPO EVENT. These rules are vendored byte-for-byte into
  * orpheus-finetune's `pipeline/normalization/vendor/` and drift-checked on every
  * training build — see docs/NARRATION_TEXT_PASS.md.
  */
-export const NORMALIZER_VERSION = 'n12';
+export const NORMALIZER_VERSION = 'n13';
 
 /**
  * The model this pass uses when the setting is absent.
@@ -2069,8 +2075,18 @@ export function validateNumberEdits(
       'NOOP', 'NOT_FOUND', 'AMBIGUOUS_FIND', 'SPANS_MARKUP', 'OVERLAPS_APPLIED', 'CARRIED',
       'SCRIPTURE_PROTECTED', 'TOC_MISMATCH', 'APPLIED', 'APPLIED_RULE',
     ]);
+    /*
+     * INLINE MARKUP IS STRUCTURE, NOT TEXT — never edited, gate or no gate. A
+     * superscript note number is removed deterministically when the narration
+     * copy is cut, and only while it is still a superscript: the first gate-off
+     * run turned "⁴¹" into "forty one", words the cut can no longer recognise,
+     * so the narrator would have said them. An emphasis delimiter is the same:
+     * "Tagebücher*" → "Tagebücher" deleted italics. Same set as `markerSegments`.
+     */
+    const MARKUP = /[*_⁰¹²³⁴⁵⁶⁷⁸⁹]/;
     for (const record of records) {
       if (MECHANICAL.has(record.status) || record.find === '') continue;
+      if (MARKUP.test(record.find)) continue;
       const at = target.indexOf(record.find);
       if (at < 0 || target.indexOf(record.find, at + 1) >= 0) continue;
       const end = at + record.find.length;

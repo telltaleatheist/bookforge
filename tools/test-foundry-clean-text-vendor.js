@@ -451,7 +451,14 @@ const VENDOR_LEAVES = '770480d';
  * full: the prompts only (a "WHAT YOU NEVER CHANGE" section, citations read by
  * example) and the version constant. This side took the same diff.
  */
-const ONE_DOOR_BASELINE = '571d57f';
+/*
+ * MOVED 2026-09-25, 571d57f → f168809, as a DECISION: `f168809` is n13, read in
+ * full. In these files only the version constant and one validator change (an
+ * edit touching inline markup stays refused with the gate off) moved; the
+ * cleanup prompt itself moved to a new file, `src/clean/prompts/tts-clean-text.txt`,
+ * which the engine embeds and this repository does not carry.
+ */
+const ONE_DOOR_BASELINE = 'f168809';
 const FROZEN_SINCE_BASELINE = [
   'src/clean/tts-number-normalizer.ts',
   'src/clean/tts-spoken-forms.ts',
@@ -513,7 +520,7 @@ const FILES = [
     theirs: 'src/clean/tts-number-normalizer.ts',
     vendoredAt: VENDOR_PASS,
     shipped: {
-      sha256: '0c529f58ae9c67a252900f750dab7d57d7f85635995bbf8c6f6290ae8e97ca0b',
+      sha256: '831eed54c1e8332be47213c8b22ce314cb2c673d5d57f5090eb68d9128a638d5',
       why: 'the type-only `epub-processor.js` import retargeted to `./targets.js`; '
         + '`askAboutEach` exported so the engine\'s door is a third caller rather than a second '
         + 'copy of the retry rules; `normalizeNarrationNumbers` deleted (291 lines, all about a '
@@ -548,7 +555,9 @@ const FILES = [
         + 'comment only. Same diff here. '
         + 'REPINNED 2026-09-24 (late) for c04e4a2 (n11): a lone ruler numeral, the clock zero '
         + 'minutes, proven-exact readings off the budget, and policy.gate. Same diff here. '
-        + 'REPINNED 2026-09-25 for 571d57f (n12): the version constant and its comment. Same diff here.',
+        + 'REPINNED 2026-09-25 for 571d57f (n12): the version constant and its comment. Same diff here. '
+        + 'REPINNED 2026-09-25 for f168809 (n13): the version constant and markup never edited with the '
+        + 'gate off. Same diff here.',
     },
   },
   {
@@ -687,7 +696,8 @@ const VERSIONS = [
     // n9 → n10 the same night: Foundry 3025407 (the sentence unit's prompt wording).
     // n10 → n11 later that night: Foundry c04e4a2 (examples; the gate switch).
     // n11 → n12: Foundry 571d57f (never-change section; citations read).
-    expected: 'n12',
+    // n12 → n13: Foundry f168809 (one short prompt; markup stays unedited).
+    expected: 'n13',
   },
   {
     name: 'PUNCTUATION_SPEC_VERSION',

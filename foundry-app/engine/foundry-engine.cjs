@@ -4812,8 +4812,10 @@ function validateNumberEdits(target, segments, edits, reserved = [], policy = NU
       "APPLIED",
       "APPLIED_RULE"
     ]);
+    const MARKUP = /[*_⁰¹²³⁴⁵⁶⁷⁸⁹]/;
     for (const record2 of records) {
       if (MECHANICAL.has(record2.status) || record2.find === "") continue;
+      if (MARKUP.test(record2.find)) continue;
       const at = target.indexOf(record2.find);
       if (at < 0 || target.indexOf(record2.find, at + 1) >= 0) continue;
       const end = at + record2.find.length;
@@ -5134,7 +5136,7 @@ var init_tts_number_normalizer = __esm({
     init_tts_number_rules();
     init_number_expansion();
     init_tts_spoken_forms();
-    NORMALIZER_VERSION = "n12";
+    NORMALIZER_VERSION = "n13";
     RAW_ANSWER_EXCERPT = 600;
     MAX_PARSE_FAIL_SHARE = 0.1;
     ROMAN_WORD = /(?:^|\s)[IVXLCDM]{2,}(?:$|[\s,.;:)\]])/;
@@ -30737,7 +30739,7 @@ var init_version = __esm({
     init_engine_import_meta_url();
     init_package();
     VERSION = package_default.version;
-    GIT_COMMIT = "src 1ae0c9cc05f4".length > 0 ? "src 1ae0c9cc05f4" : null;
+    GIT_COMMIT = "src d780da49f4fb".length > 0 ? "src d780da49f4fb" : null;
   }
 });
 
@@ -72566,169 +72568,117 @@ var init_triage = __esm({
   }
 });
 
-// src/clean/prompts/tts-narration-text.txt
-var tts_narration_text_default;
-var init_tts_narration_text = __esm({
-  "src/clean/prompts/tts-narration-text.txt"() {
-    tts_narration_text_default = 'EVERYTHING ABOVE STILL HOLDS. What follows widens the question you are being asked.\n\nYou are reading one passage of a book \u2014 usually a single sentence \u2014 that is about to be narrated by a text-to-speech voice. The deterministic pass has already run: the punctuation is canonical (one kind of quote, "..." for every ellipsis, no invisible characters, no doubled spaces), and every number shape that has exactly one reading has already been converted. What is left is what only a reader of the sentence can settle.\n\nReturn the SAME anchored edit list, in the same JSON shape, or an empty list. Every `find` must be an exact, verbatim substring of the TARGET, occurring exactly once. You are not rewriting the block; you are naming the spans whose PRINTED form and SPOKEN form differ.\n\nTHE CLASSES YOU ARE BEING ASKED ABOUT\n\n1. NUMBER RESIDUE \u2014 anything the rules above declined: a bare four-digit number that is a year or a quantity depending on the sentence, an abbreviated range, a bare decimal, a heading number. Read them exactly as the rules above say.\n\n2. ABBREVIATIONS a narrator says in full: "Dr." is "Doctor", "St." is "Saint" or "Street" depending on the sentence, "Mt." is "Mount", "e.g." is "for example", "i.e." is "that is", "etc." is "et cetera", "vs." is "versus". A SPACED ampersand is the word: "&" is "and". An ampersand pressed between letters is ONE token and both sides are read: "AT&T" is "A T and T", "R&D" is "R and D", "Smith&Jones" is "Smith and Jones" \u2014 never "ATandT". "no." is "number" only when it is NUMBERING something ("file no. 12", "Doc. no. 5") \u2014 after a verb it is the word "no" ending a sentence and must be left. Leave "Mr.", "Mrs.", "Ms." exactly as printed \u2014 every voice already says those correctly, and expanding them adds nothing.\n\n2b. SCRIPTURE BOOK NAMES are said in FULL, always, and are never shortened. A deterministic pass runs before you and has already printed in full every book abbreviation it was certain of, so you will often be shown "Romans 5:17" and "First Corinthians 13:4" where the book printed "Rom. 5:17" and "1 Cor. 13:4". What reaches you still abbreviated is what that pass was NOT certain of, and it is yours: expand it, and read the reference by the scripture rules above. "Rev. 21:4" is "Revelation twenty one, verse four". "Jas. 1:17" is "James one, verse seventeen". "1 Cor. 13:4" is "First Corinthians thirteen, verse four". A book name already printed in full is read as printed and must never be abbreviated back \u2014 "Revelation 21:4" is "Revelation twenty one, verse four", never "Rev. twenty one". A leading volume number is an ordinal word, First / Second / Third, whether the book prints it as 1, as I, or as 1st. And a capitalized short word in front of a number that is NOT a book is still not a book: leave "Ch. 3:7", "Sec. 3:7", "Jan. 3:7", "Act 3:2" and "Fig. 3" to the rules above, which say how each of those is read.\n\n3. ALL-CAPS RUNS. An acronym said as letters is spelled out with spaces \u2014 "FBI" is "F B I", "NSDAP" is "N S D A P" \u2014 because a voice handed "FBI" may try to say it as a word. An acronym said AS a word is left alone: NASA, NATO, UNESCO, laser, radar. A word in capitals for EMPHASIS is written in ordinary case \u2014 "he SAID so" is "he said so" \u2014 because the capitals are typography, not sound. Write the letters in the case they were printed in ("F B I", never "f b i") and the emphasis reading in ordinary lower case. A run of TWO OR THREE capitals is an initialism and gets the letters reading only \u2014 "US" is "U S", never "us"; "WHO" is "W H O", never "who".\n\n4. BRACKETED INSERTIONS. Two different edits, and which one depends on what is inside.\n   APPARATUS is not spoken and is REMOVED whole, brackets and all, replaced by nothing but the surrounding spacing: "[sic]", "[12]", "[ed.]", "[...]", "(sic)", "(emphasis added)", "(see page twelve)", "(Kershaw 1993)", "(12)".\n   AN INTERPOLATION OF WORDS in SQUARE brackets is READ, not removed: the edit drops the brackets and keeps every word \u2014 "[he said]" becomes "he said". Never delete words.\n   A PARENTHESIS is the author\u2019s own punctuation and stays exactly as printed unless its contents are one of the apparatus shapes above. "(he was lying)" and "(note she wept)" are the book. If you are not certain, leave it.\n\n5. A SPACED HYPHEN used as a dash \u2014 "the man - who had waited - left" \u2014 is an em dash in disguise. Replace EVERY spaced hyphen with an em dash, one edit each, with the word either side in the find: "himself - written" becomes "himself\u2014written"; "put on - unless" becomes "put on\u2014unless". A hyphen inside a compound ("far-right") and a hyphen between numbers are NOT this and must be left.\n\n6. ROMAN NUMERALS are read as words ONLY where a book prints a numeral: after a part word ("Part IV" is "Part Four", "Chapter IX", "Book II"), after a monarch, pope or emperor\u2019s name, or before a century ("the XIX century"). After a ruler\'s name the numeral is ALWAYS read "the" and the ORDINAL, never the plain number, and it is read EVERY time the book prints it \u2014 a paragraph that names Napoleon III four times needs four readings, each find made unique by the words around it:\n   "Henry VIII" is "Henry the Eighth". "Pius IX" is "Pius the Ninth". "Napoleon III" is "Napoleon the Third". "Louis XVIII" is "Louis the Eighteenth". "Friedrich Wilhelm IV" is "Friedrich Wilhelm the Fourth". "Vittorio Emanuele II" is "Vittorio Emanuele the Second". "Leopold II" is "Leopold the Second", never "Leopold two".\n   A ONE-LETTER numeral after a ruler\'s name is a numeral too, not the word "I": "Alexander I" is "Alexander the First", "George V" is "George the Fifth", "Franz I" is "Franz the First". The pronoun "I" anywhere else is never touched.\n   A possessive keeps its "\'s" OUTSIDE the find: for "Napoleon I\'s armies" the find is "Napoleon I" and the reading "Napoleon the First". Anywhere else a run of capitals is an ACRONYM even when its letters are all I V X L C D M: "MIX", "MD", "CD", "MM", "XL", "IX" and "CIV" are read as their own letters spaced, or left alone. A roman numeral that is part of a document identifier ("Document II 9/34") stays exactly as printed; one that numbers a VOLUME in a citation is read as the rules above say ("vol. iii" is "volume three").\n\n7. DIGIT RESIDUE. If a digit is still printed anywhere in the TARGET after your edits, you have missed one. Go back and read it, or leave it deliberately because it is a code.\n\nFOOTNOTE AND REFERENCE MARKERS ARE NOT YOURS. A superscript reference number, a dagger, an asterisk used as a reference: the render door removes those from the narration copy itself, deterministically, and an edit that tried to would be refused because it deletes text without saying anything in its place. Leave them exactly where they are: never turn one into a word or a digit.\n\nWHAT YOU NEVER CHANGE\n\nOnly the classes above are yours. Everything else in the passage is already spoken exactly as it is printed, so:\n- A word printed in ordinary letters is read as a word. Only a run of CAPITALS may be spelled out letter by letter.\n- Words in another language stay in that language, word for word, however they would be said in English.\n- Capital and small letters stay as printed, except a run of capitals read in ordinary case for emphasis.\n- An abbreviation is expanded only when you are certain what it stands for. Initials keep their periods exactly as printed ("J. M. W. Turner" stays "J. M. W. Turner").\n- A word the page broke across a line with a hyphen and a space is one word: "Verlags- anstalt" is "Verlagsanstalt".\n\nTHE RULES THAT BOUND EVERY EDIT\n\n- KEEP THE PUNCTUATION. Every comma, semicolon, colon, dash, quote and bracket the `find` prints outside the word you are changing must appear again in the `replace`, in the same order. "Dr. Kempner; they" may become "Doctor Kempner; they" and never "Doctor Kempner they". If the abbreviation ends the span and a capital follows it in the block, its period may be ending a sentence \u2014 keep it: "Oxford St. The rain" becomes "Oxford Street. The rain".\n- ONE TOKEN PER EDIT. The replacement must repeat every word of the `find`, in order, EXCEPT the single token the class is about \u2014 the abbreviation, the run of capitals, the roman numeral. "Dr. Kempner" may become "Doctor Kempner"; it may not become "Doctor Kempner of Berlin", and "Kempner" may not become "Kempler". An edit that changes any other word is refused.\n- NEVER PARAPHRASE. You may change the SPOKEN FORM of a span. You may not improve a sentence, reorder it, shorten it, translate it, or replace a word with a synonym. If the only change you can think of is a better way of saying it, make no edit.\n- Every `find` is verbatim and occurs exactly once in the TARGET. If a span occurs twice, extend the find with the words around it until it is unique, or leave it.\n- Keep every edit SHORT. An edit is a span whose reading differs, not a clause.\n- Never edit the PREVIOUS or NEXT passage. They are there so you can tell a year from a quantity and a Saint from a Street.\n- An empty edit list is the right answer for most passages. Ordinary prose needs nothing.\n\nTARGET: The Reichstag met on March twenty-third, and Dr. Kempner of the FBI (see page twelve) said so.\n<answer>\n{"edits": [{"find": "Dr. Kempner", "replace": "Doctor Kempner"}, {"find": "FBI", "replace": "F B I"}, {"find": " (see page twelve)", "replace": ""}]}\n</answer>\n\nTARGET: Henry VIII had waited - and waited - for an answer he never SAID he wanted.\n<answer>\n{"edits": [{"find": "Henry VIII", "replace": "Henry the Eighth"}, {"find": "waited - and", "replace": "waited\u2014and"}, {"find": "waited - for", "replace": "waited\u2014for"}, {"find": "never SAID he", "replace": "never said he"}]}\n</answer>\n\nTARGET: He turned into Oxford St. The clerk [he said] worked for the MIX, no. 4 on the list.\n<answer>\n{"edits": [{"find": "Oxford St.", "replace": "Oxford Street."}, {"find": "[he said]", "replace": "he said"}, {"find": "MIX", "replace": "M I X"}]}\n</answer>\n\nTARGET: Under Alexander I and then Nicholas I the empire grew, while in France Louis XVIII\'s ministers - wary of Napoleon III\'s cousins - waited.\n<answer>\n{"edits": [{"find": "Alexander I", "replace": "Alexander the First"}, {"find": "Nicholas I", "replace": "Nicholas the First"}, {"find": "Louis XVIII", "replace": "Louis the Eighteenth"}, {"find": "ministers - wary", "replace": "ministers\u2014wary"}, {"find": "Napoleon III", "replace": "Napoleon the Third"}, {"find": "cousins - waited", "replace": "cousins\u2014waited"}]}\n</answer>\n\nTARGET: A paragraph of ordinary prose with nothing in it that is printed one way and read another.\n<answer>\n{"edits": []}\n</answer>\n';
-  }
-});
+// src/clean/prompts/tts-clean-text.txt
+var tts_clean_text_default;
+var init_tts_clean_text = __esm({
+  "src/clean/prompts/tts-clean-text.txt"() {
+    tts_clean_text_default = `You prepare one passage of a book for a text-to-speech narrator. Where something is PRINTED one way and SPOKEN another, you say how it is spoken. You do not rewrite the passage: you name the spans that change, and a program applies them.
 
-// src/clean/prompts/tts-number-normalize.txt
-var tts_number_normalize_default;
-var init_tts_number_normalize = __esm({
-  "src/clean/prompts/tts-number-normalize.txt"() {
-    tts_number_normalize_default = `You convert printed numbers into the words a narrator says out loud. You never rewrite the text yourself: you report an edit list and a deterministic pass applies it.
+WHAT YOU NEVER CHANGE
 
-A DETERMINISTIC PASS HAS ALREADY RUN over this passage. Money, percentages, ordinals, dates with a month name, decades, YEARS AND YEAR RANGES, comma-grouped numbers and small whole numbers are ALREADY converted to words \u2014 you are seeing the result. What is left for you is mostly:
-- four-digit numbers the rules would not call years \u2014 one standing beside a unit or a currency sign, or a range they could not read \u2014 where only the sentence says whether it is a year or a quantity;
-- decimals and measurements with no currency or percent sign;
-- DAY RANGES ("28\u201329 November 1830") and PRE-DECIMAL British sums ("\xA3803.11.0"), left for you whole and described below;
-- SCRIPTURE REFERENCES, which are left for you whole and are described below;
-- odd shapes the rules could not be certain of.
-If a number is already words, it is done. Leave it. Do not "improve" it.
+Everything that is not in the list further down is already spoken exactly as printed. So:
+- A word in ordinary letters is read as a word, never letter by letter. Only a run of CAPITAL letters may be spelled out.
+- A name printed in capitals, such as an author's name at the head of an article, is a name: it is read in ordinary case, never spelled out.
+- Words in another language stay in that language, word for word.
+- Capital and small letters stay as printed, apart from the capitals rule above.
+- An abbreviation is expanded only when you are sure what it stands for. Initials keep their periods exactly as printed.
+- Superscript note numbers (\xB9 \xB2 \xB3 \u2026) and the asterisks and underscores that mark emphasis are markup. They are never part of an edit.
+- You never improve, shorten, reorder or paraphrase. An empty list is the right answer for most passages.
 
-The user turn is one passage of a book, in this shape:
+THE PASSAGE AND YOUR ANSWER
+
+You are shown three parts. Only the TARGET is yours; the other two are context, so you can tell a year from a quantity or a Saint from a Street.
 
 PREVIOUS (context only, never edit this):
 <the passage before, or "(none)">
 
 TARGET (edit ONLY this):
-<the passage to convert: usually ONE SENTENCE of a paragraph, or a heading or a table-of-contents entry>
+<the passage to read: usually one sentence, or a heading or a contents entry>
 
 NEXT (context only, never edit this):
 <the passage after, or "(none)">
 
-Output ONLY this, inside <answer> tags:
+Answer ONLY with this, inside <answer> tags:
 <answer>
-{"edits": [{"find": "exact text copied from the TARGET", "replace": "the spoken form"}]}
+{"edits": [{"find": "text copied exactly from the TARGET", "replace": "how it is spoken"}]}
 </answer>
 
-Rules:
-- Every "find" must be copied from the TARGET character for character, must contain at least one digit, and must appear exactly once in the TARGET. Never quote the PREVIOUS or NEXT passages.
-- If the same number is printed more than once in the TARGET, extend each "find" with the word before or after it so that each one is unique ("in 1920 the" and "by 1920 it"). A "find" that matches twice is refused.
-- Every group of digits in "find" must come out as words in "replace". "20:6" is "twenty six", never "twenty".
-- Keep "find" as short as the number expression allows, but include every word that changes with it (a month name, a currency word, "per cent"). Every word in "find" that is not part of a number must appear again, unchanged and in the same order, in "replace" \u2014 EXCEPT the abbreviated book name of a scripture reference, which is the one word you may replace.
-- "replace" is plain spoken words. It may contain letters, spaces, hyphens, commas, apostrophes and periods, and it may NEVER contain a digit.
-- NEVER write the NAME of a punctuation mark. Not "hyphen", not "colon", not "dash", not "slash". A range is read "to" or "through"; a colon in a reference is read as a pause, not as the word "colon".
-- A "find" that is a list marker keeps its period: "4." is "four.", never "four".
-- A TARGET with nothing to convert gets {"edits": []}. Never edit anything that has no digit in it.
+- Each "find" is copied from the TARGET character for character and occurs there exactly once. If the same thing is printed twice, add the word before or after it until each find is unique, and give each its own edit.
+- Keep each find as short as it can be while holding everything that changes with it. Every word of the find that does not change comes back unchanged, in the same order, with the same punctuation around it.
+- "replace" is plain spoken words. It never contains a digit, and never the NAME of a punctuation mark ("hyphen", "colon", "slash"): a range is read "to".
 
-Read every number as standard American English, whatever order the book prints it in.
+WHAT YOU READ
 
-YEARS the rules left for you \u2014 pair form: 1944 is "nineteen forty-four"; 1905 is "nineteen oh five"; 2006 is "two thousand six"; 1900 is "nineteen hundred". A four-digit number that is a QUANTITY rather than a year reads as a quantity: "1200 people" is "twelve hundred people", "1500 copies" is "fifteen hundred copies". Decide from the sentence around it \u2014 that judgement is why you are being asked.
+A program has already read most numbers: years, dates, money, percentages, decades, ordinals and small whole numbers arrive as words. Leave anything already in words. What is left for you:
 
-RANGES \u2014 1914-1918 is "nineteen fourteen to nineteen eighteen"; 65-71 is "sixty-five to seventy-one". An ABBREVIATED range, where the second number is printed shorter than the first, is read in full: "112\u201314" is "one hundred twelve to one hundred fourteen"; "1914\u201318" is "nineteen fourteen to nineteen eighteen".
+NUMBERS the program left. Read each one the way a narrator says it, in American English.
+- A four-digit number is a year or a quantity, and the sentence says which: 1944 as a year is "nineteen forty-four", 1905 is "nineteen oh five", 1900 is "nineteen hundred"; "1200 people" is "twelve hundred people".
+- A range is read with "to", and a shortened range in full: 1914-1918 is "nineteen fourteen to nineteen eighteen"; "112\u201314" is "one hundred twelve to one hundred fourteen".
+- Every decimal: "2.9 million" is "two point nine million"; "1.5 kilos" is "one point five kilos".
+- A clock: "10:05" is "ten oh five". A British book prints it with a point: "2.00 p.m." is "two p.m.", "4.15 p.m." is "four fifteen p.m.".
+- A day range is one date: "28\u201329 November 1830" is "November twenty-eighth to twenty-ninth, eighteen thirty"; "14\u201315 May" is "May fourteenth to fifteenth".
+- An old British sum is pounds, shillings and pence: "\xA3803.11.0" is "eight hundred three pounds, eleven shillings"; "\xA33.10.6" is "three pounds, ten shillings and six pence".
+- A heading or list number keeps its period: "4." is "four.".
 
-WHOLE NUMBERS \u2014 cardinal, no hyphens between the groups, no "and": 5280 is "five thousand two hundred eighty".
+CITATIONS are read the way a narrator reads a reference aloud.
+- "Vol. 23" is "Volume twenty-three"; "vol. 2" is "volume two".
+- A small roman numeral before a page is the volume: "ii. 207" is "volume two, page two hundred seven"; "i. 112\u201314" is "volume one, pages one hundred twelve to one hundred fourteen".
+- "No. 29" is "Number twenty-nine"; "chs. 8-9" is "chapters eight to nine"; "fol. 15" is "folio fifteen".
+- A bare page range after a publisher and date is pages: "(Munich, nineteen eighty-seven), 13-35" is "(Munich, nineteen eighty-seven), pages thirteen to thirty-five".
+- Identifiers stay exactly as printed: "Document II 9/34", "NG-5428", "298/38", and "ibid." and "et al.".
 
-DECIMALS \u2014 2.9 million is "two point nine million"; 3.14 is "three point one four"; "1.5 kilos" is "one point five kilos"; "5.4 degrees" is "five point four degrees". Every decimal in the TARGET is read, whatever it counts.
+SCRIPTURE is read as the book's full name, the chapter, a comma, "verse" and the verse.
+- "1 Pet. 3:7" is "First Peter three, verse seven"; "II Cor. 5:17" is "Second Corinthians five, verse seventeen"; "Ps. 63:6" is "Psalm sixty-three, verse six".
+- "Jer. 44:17-19" is "Jeremiah forty four, verses seventeen to nineteen"; "Col. 3:19-4:1" is "Colossians three, verse nineteen to four, verse one".
+- "Ps. 119:97, 101, 102" is "Psalm one hundred nineteen, verse ninety seven, one hundred one, and one hundred two"; "Lev. 19:31; 20:6" is "Leviticus nineteen, verse thirty one; twenty, verse six".
+- "18:23b" is "eighteen, verse twenty three b"; "ff." is "and following"; "1 Pet. 3" is "First Peter three".
+- A book name already printed in full stays in full: "Revelation 21:4" is "Revelation twenty one, verse four".
 
-TIMES \u2014 a clock time with a.m./p.m. or on the hour is already converted. A bare one that reached you reads as a clock: 10:05 is "ten oh five"; 7:02 is "seven oh two". A British book prints the time with a POINT instead of a colon, and it is the same clock: "2.00 p.m." is "two p.m." (never "two oh two"); "10.30 a.m." is "ten thirty a.m."; "4.15 p.m." is "four fifteen p.m.". ":00" and ".00" are the hour itself and are not said.
+ROMAN NUMERALS are read where a book prints a number.
+- After a ruler's name, always "the" and the ordinal, every time it is printed: "Henry VIII" is "Henry the Eighth"; "Napoleon III" is "Napoleon the Third"; "Louis XVIII" is "Louis the Eighteenth"; "Leopold II" is "Leopold the Second"; "Vittorio Emanuele II" is "Vittorio Emanuele the Second".
+- A one-letter numeral after a ruler's name is a numeral: "Alexander I" is "Alexander the First"; "George V" is "George the Fifth".
+- A possessive keeps its "'s" outside the find: in "Napoleon I's armies" the find is "Napoleon I" and the reading "Napoleon the First".
+- After a part word, the number: "Part IV" is "Part Four"; "Chapter IX" is "Chapter Nine". Before a century: "the XIX century" is "the nineteenth century".
 
-SCRIPTURE REFERENCES are yours, and they are the one place you may change a word.
+ABBREVIATIONS a narrator says in full.
+- "Dr." is "Doctor"; "Mt." is "Mount"; "St." is "Saint" or "Street", whichever the sentence means; "e.g." is "for example"; "i.e." is "that is"; "etc." is "et cetera"; "vs." is "versus"; "ed." after a name is "editor" and before one is "edited by"; "trans." before a name is "translated by"; "edn" is "edition".
+- A spaced ampersand is "and"; one between letters keeps both sides: "AT&T" is "A T and T".
+- "Mr.", "Mrs." and "Ms." stay as printed.
 
-THE FORM, which is how a narrator actually reads one: the book's FULL name, then the chapter as a number word, then a COMMA, then the word "verse", then the verse.
+CAPITALS.
+- An acronym said as letters is spelled with spaces, in capitals: "FBI" is "F B I"; "SS" is "S S". Two or three capitals are always letters.
+- An acronym said as a word stays: "NATO", "NASA", "UNESCO".
+- A word in capitals for emphasis is read in ordinary case: "he SAID so" is "he said so".
 
-- "1 Pet. 3:7" is "First Peter three, verse seven".
-- "Jas. 1:17" is "James one, verse seventeen".
-- "Rom. 5:17" is "Romans five, verse seventeen".
-- "Ps. 63:6" is "Psalm sixty-three, verse six".
-- "John 3:16" is "John three, verse sixteen".
+BRACKETS.
+- Apparatus in brackets is removed with the space before it: "[sic]", "[12]", "(see page twelve)", "(Kershaw 1993)".
+- Words an editor added in square brackets are read without the brackets: "[he said]" is "he said".
+- A parenthesis of the author's own stays as printed.
 
-A RANGE takes the plural: "verses N to M".
-- "Jer. 44:17-19" is "Jeremiah forty four, verses seventeen to nineteen".
-- "Matt. 12:34-36" is "Matthew twelve, verses thirty four to thirty six".
+DASHES AND BROKEN WORDS.
+- A hyphen with a space on each side is a dash: replace each one, with the word either side in the find: "himself - written" is "himself\u2014written".
+- A word broken across a line is one word: "Verlags- anstalt" is "Verlagsanstalt"; "fini sh" is "finish".
 
-A LIST of verses in one chapter says "verse" once, and "and" before the last.
-- "Ps. 119:97, 101, 102" is "Psalm one hundred nineteen, verse ninety seven, one hundred one, and one hundred two".
+WORKED ANSWERS
 
-NEVER the word "chapter", and never "colon". "Psalm chapter sixty three, verse six" is wrong. "Psalm sixty three six", with the two numbers run together and no pause between them, is wrong.
-
-A bare comma with no "verse" is also accepted where it reads better \u2014 "First John one, nine" \u2014 but the form above is the one to use unless you have a reason.
-
-- A LEADING BOOK NUMBER is an ordinal word: 1 is "First", 2 is "Second", 3 is "Third" \u2014 never "one", never "two". "2 Cor. 5:17" is "Second Corinthians five, verse seventeen". A ROMAN numeral is the same number: "II Cor. 5:17" is "Second Corinthians five, verse seventeen", and "III John 1:4" is "Third John one, verse four".
-- Expand the abbreviation to the book it stands for, however the book prints it: "Gen." is Genesis, "Phlm." is Philemon, "Jas." is James, "Song" is the Song of Songs. Never leave a shortened name with its period in the reading.
-- Read "Ps." and "Psa." as the SINGULAR "Psalm"; read the plural "Pss." as "Psalms".
-- A RANGE ACROSS CHAPTERS names both: "Col. 3:19-4:1" is "Colossians three, verse nineteen to four, verse one".
-- A LIST ACROSS CHAPTERS keeps its punctuation, and every reference in it gets its own pause: "Lev. 19:31; 20:6" is "Leviticus nineteen, verse thirty one; twenty, verse six".
-- "ff." is read "and following". A verse letter is read as the letter: "18:23b" is "eighteen, verse twenty three b".
-- A CHAPTER with no verse reads as the chapter alone: "1 Pet. 3" is "First Peter three".
-- A capitalized word before a colon-number that is NOT a book is not a reference and gets NO reading of this kind. "Chapter 3:7", "Room 3:15", "Jan. 3:7" (a month), "Act 3:2" of a play, "Widescreen 16:9", "Flight 12:30" \u2014 read those as ordinary numbers, or leave them, whichever the sentence calls for.
-- An ABBREVIATION that is not a book is still an abbreviation: read "Sec. 3:7" as "Section three seven", "Ch. 3:7" as "Chapter three seven". Expand it, and give it no verse.
-
-DATES already came through the deterministic pass in the form "June twelfth, nineteen thirty-three". If you see one that did not, read it that way: month, ordinal day, pair-form year \u2014 "23 March 1933" is "March twenty-third, nineteen thirty-three". Never "twelve June". Never "the twelfth of June".
-
-A DAY RANGE is one date with two days, and it is left for you whole. Read it the same way, with the days joined by "to": "28\u201329 November 1830" is "November twenty-eighth to twenty-ninth, eighteen thirty"; "14\u201315 May" is "May fourteenth to fifteenth"; "November 28\u201329, 1830" is "November twenty-eighth to twenty-ninth, eighteen thirty". Never leave one day as digits, and never read "28\u2013" on its own.
-
-A PRE-DECIMAL BRITISH SUM prints pounds, shillings and pence with points, and it is left for you whole: "\xA3803.11.0" is "eight hundred three pounds, eleven shillings"; "\xA33.10.6" is "three pounds, ten shillings and six pence"; "\xA32.0.6" is "two pounds and six pence". A part that is zero is not said.
-
-ALREADY CONVERTED by the deterministic pass, so you will not see them and must not undo them:
-- page references \u2014 "p. 23" arrives as "page twenty three", "pp. 65-71" as "pages sixty five to seventy one";
-- digits glued to letters \u2014 COVID-19 arrives as "COVID-nineteen", B-17 as "B-seventeen", I-95 as "I-ninety five", R2D2 as "R two D two", 1940s-era as "nineteen forties-era".
-
-CITATIONS, when a passage carries one, are read the way a narrator reads a reference aloud:
-- "Vol. 23" is "Volume twenty-three"; "vol. 2" is "volume two"; "Vols 45-6" is "volumes forty-five to forty-six";
-- a small roman numeral before a page is the VOLUME: "ii. 207" is "volume two, page two hundred seven"; "i. 112\u201314" is "volume one, pages one hundred twelve to one hundred fourteen";
-- "no. 5" and "No. 29" are "number five" and "Number twenty-nine"; "chs. 8-9" is "chapters eight to nine"; "fol. 15" is "folio fifteen";
-- a bare page or page range after a title or a date is read as pages: "(Munich, 1987), 13-35" is "(Munich, nineteen eighty-seven), pages thirteen to thirty-five".
-
-LEAVE AS PRINTED, with no edit at all:
-- identifiers with no spoken reading: "Document II 9/34", "ibid.", "et al.", archive and document numbers like "298/38", "NG-5428" or "AfW HH R 231191";
-- roman numerals \u2014 EXCEPT where a later section of these instructions says a book prints one as a number (after a ruler's name, after a part word, before a century): those are read, as that section says;
-- phone numbers, ISBNs, catalogue, serial, part, version and code numbers, including anything with a leading zero like "001", "X-007", "Z-12345", "A1B2C3D4", "v1.2";
-- anything you are not sure is prose.
-
-Examples.
-
-TARGET: By spring 1200 miles of track were laid, and the war had been over since nineteen eighteen.
+TARGET: Under Alexander I the empire grew, while in France Louis XVIII's ministers - wary of the court - waited until 2.00 p.m. for word from the FBI.
 <answer>
-{"edits": [{"find": "1200 miles", "replace": "twelve hundred miles"}]}
+{"edits": [{"find": "Alexander I", "replace": "Alexander the First"}, {"find": "Louis XVIII", "replace": "Louis the Eighteenth"}, {"find": "ministers - wary", "replace": "ministers\u2014wary"}, {"find": "court - waited", "replace": "court\u2014waited"}, {"find": "2.00 p.m.", "replace": "two p.m."}, {"find": "FBI", "replace": "F B I"}]}
 </answer>
 
-TARGET: 2 Cor. 10:4 says the weapons are not carnal, and five thousand copies went out in nineteen eighty-five.
+TARGET: Noakes and Pridham, Nazism, ii. 207, and Fr\xF6hlich, ed., Die Tageb\xFCcher, Vol. 3 (Munich, nineteen eighty-seven), 21-4.
 <answer>
-{"edits": [{"find": "2 Cor. 10:4", "replace": "Second Corinthians ten, verse four"}]}
+{"edits": [{"find": "ii. 207", "replace": "volume two, page two hundred seven"}, {"find": "Fr\xF6hlich, ed.,", "replace": "Fr\xF6hlich, editor,"}, {"find": "Vol. 3", "replace": "Volume three"}, {"find": "21-4", "replace": "pages twenty-one to twenty-four"}]}
 </answer>
 
-TARGET: We are to dwell with each other according to knowledge (1 Pet. 3:7).
+TARGET: We are to dwell with each other according to knowledge (1 Pet. 3:7), as Dr. Kempner [the pastor] said.
 <answer>
-{"edits": [{"find": "1 Pet. 3:7", "replace": "First Peter three, verse seven"}]}
+{"edits": [{"find": "1 Pet. 3:7", "replace": "First Peter three, verse seven"}, {"find": "Dr. Kempner", "replace": "Doctor Kempner"}, {"find": "[the pastor]", "replace": "the pastor"}]}
 </answer>
 
-TARGET: Four separate archive files are cited: SLG HH, HSG 11 Js. Sond. 298/38; GnH 3659/42; VVN HH, Komiteeakten XZ 1; AfW HH R 231191.
+TARGET: What had seemed impossible now looked merely difficult.
 <answer>
 {"edits": []}
-</answer>
-
-TARGET: Wurm, Record, in: Kretschmar/Nicolaisen, Document II 9/34, page twenty three; ibid., Memoirs, page ninety four.
-<answer>
-{"edits": []}
-</answer>
-
-TARGET: The occupation ran from nineteen fourteen to nineteen eighteen, and the plant reopened with 1500 tons of steel.
-<answer>
-{"edits": [{"find": "1500 tons", "replace": "fifteen hundred tons"}]}
-</answer>
-
-TARGET: Job 41:1\u20132, 14\u201334 is the passage he read.
-<answer>
-{"edits": [{"find": "Job 41:1\u20132, 14\u201334", "replace": "Job forty one, verses one to two, fourteen to thirty four"}]}
-</answer>
-
-TARGET: On the night of 28\u201329 November 1830 the rising began, and it had cost \xA3803.11.0 by nineteen oh five.
-<answer>
-{"edits": [{"find": "28\u201329 November 1830", "replace": "November twenty-eighth to twenty-ninth, eighteen thirty"}, {"find": "\xA3803.11.0", "replace": "eight hundred three pounds, eleven shillings"}]}
-</answer>
-
-TARGET: The train left at 10:05 and reached the coast by dusk.
-<answer>
-{"edits": [{"find": "10:05", "replace": "ten oh five"}]}
-</answer>
-
-TARGET: Chapter 3: The Long Year
-<answer>
-{"edits": [{"find": "Chapter 3", "replace": "Chapter Three"}]}
 </answer>
 `;
   }
@@ -72736,16 +72686,13 @@ TARGET: Chapter 3: The Long Year
 
 // src/clean/prompt.ts
 function narrationTextPrompt() {
-  return `${tts_number_normalize_default.trim()}
-
-${tts_narration_text_default.trim()}`;
+  return tts_clean_text_default.trim();
 }
 var init_prompt = __esm({
   "src/clean/prompt.ts"() {
     "use strict";
     init_engine_import_meta_url();
-    init_tts_narration_text();
-    init_tts_number_normalize();
+    init_tts_clean_text();
   }
 });
 
