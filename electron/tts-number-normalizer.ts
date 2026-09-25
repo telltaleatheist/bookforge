@@ -157,11 +157,20 @@ export { sitsInCitation, bareWord };
  * longer spending the rewrite budget), and `policy.gate === false` — clean-text's
  * default for now — applies every judgement refusal and records it as UNGATED.
  *
+ * n11 → n12 (2026-09-24, after the first gate-off run on the PC): the prompt says
+ * BROADLY what is never changed — Owen: *"i dont want to give negative examples
+ * because it might see it and do it anyway … but tell it broadly what not to
+ * do"* — a word in ordinary letters is never spelled out, another language is
+ * never translated, case is never changed, initials keep their periods, a
+ * superscript note number is never read; and CITATIONS are now read, by positive
+ * example ("Vol. 23" is "Volume twenty-three", "ii. 207" is "volume two, page two
+ * hundred seven"), where they used to be left as apparatus. No rule moved.
+ *
  * A BUMP HERE IS A CROSS-REPO EVENT. These rules are vendored byte-for-byte into
  * orpheus-finetune's `pipeline/normalization/vendor/` and drift-checked on every
  * training build — see docs/NARRATION_TEXT_PASS.md.
  */
-export const NORMALIZER_VERSION = 'n11';
+export const NORMALIZER_VERSION = 'n12';
 
 /**
  * The model this pass uses when the setting is absent.

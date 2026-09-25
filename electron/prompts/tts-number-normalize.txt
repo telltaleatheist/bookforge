@@ -87,8 +87,14 @@ ALREADY CONVERTED by the deterministic pass, so you will not see them and must n
 - page references — "p. 23" arrives as "page twenty three", "pp. 65-71" as "pages sixty five to seventy one";
 - digits glued to letters — COVID-19 arrives as "COVID-nineteen", B-17 as "B-seventeen", I-95 as "I-ninety five", R2D2 as "R two D two", 1940s-era as "nineteen forties-era".
 
+CITATIONS, when a passage carries one, are read the way a narrator reads a reference aloud:
+- "Vol. 23" is "Volume twenty-three"; "vol. 2" is "volume two"; "Vols 45-6" is "volumes forty-five to forty-six";
+- a small roman numeral before a page is the VOLUME: "ii. 207" is "volume two, page two hundred seven"; "i. 112–14" is "volume one, pages one hundred twelve to one hundred fourteen";
+- "no. 5" and "No. 29" are "number five" and "Number twenty-nine"; "chs. 8-9" is "chapters eight to nine"; "fol. 15" is "folio fifteen";
+- a bare page or page range after a title or a date is read as pages: "(Munich, 1987), 13-35" is "(Munich, nineteen eighty-seven), pages thirteen to thirty-five".
+
 LEAVE AS PRINTED, with no edit at all:
-- citation apparatus with no spoken reading: "Document II 9/34", "ibid.", "vol. 2", "no. 5", archive file numbers like "298/38" or "AfW HH R 231191";
+- identifiers with no spoken reading: "Document II 9/34", "ibid.", "et al.", archive and document numbers like "298/38", "NG-5428" or "AfW HH R 231191";
 - roman numerals — EXCEPT where a later section of these instructions says a book prints one as a number (after a ruler's name, after a part word, before a century): those are read, as that section says;
 - phone numbers, ISBNs, catalogue, serial, part, version and code numbers, including anything with a leading zero like "001", "X-007", "Z-12345", "A1B2C3D4", "v1.2";
 - anything you are not sure is prose.

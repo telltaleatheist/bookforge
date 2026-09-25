@@ -446,7 +446,12 @@ const VENDOR_LEAVES = '770480d';
  * examples the n10 runs showed were missing). NORMALIZER_VERSION n10 → n11, and
  * this side took the same diff.
  */
-const ONE_DOOR_BASELINE = 'c04e4a2';
+/*
+ * MOVED 2026-09-25, c04e4a2 → 571d57f, as a DECISION: `571d57f` is n12, read in
+ * full: the prompts only (a "WHAT YOU NEVER CHANGE" section, citations read by
+ * example) and the version constant. This side took the same diff.
+ */
+const ONE_DOOR_BASELINE = '571d57f';
 const FROZEN_SINCE_BASELINE = [
   'src/clean/tts-number-normalizer.ts',
   'src/clean/tts-spoken-forms.ts',
@@ -508,7 +513,7 @@ const FILES = [
     theirs: 'src/clean/tts-number-normalizer.ts',
     vendoredAt: VENDOR_PASS,
     shipped: {
-      sha256: '8eb858da151967ce44d761da850d8e3ee726c9338e53c27c55e712d8f0d1da6f',
+      sha256: '0c529f58ae9c67a252900f750dab7d57d7f85635995bbf8c6f6290ae8e97ca0b',
       why: 'the type-only `epub-processor.js` import retargeted to `./targets.js`; '
         + '`askAboutEach` exported so the engine\'s door is a third caller rather than a second '
         + 'copy of the retry rules; `normalizeNarrationNumbers` deleted (291 lines, all about a '
@@ -542,7 +547,8 @@ const FILES = [
         + 'REPINNED 2026-09-24 (night) for 3025407 (n10): the version constant and its '
         + 'comment only. Same diff here. '
         + 'REPINNED 2026-09-24 (late) for c04e4a2 (n11): a lone ruler numeral, the clock zero '
-        + 'minutes, proven-exact readings off the budget, and policy.gate. Same diff here.',
+        + 'minutes, proven-exact readings off the budget, and policy.gate. Same diff here. '
+        + 'REPINNED 2026-09-25 for 571d57f (n12): the version constant and its comment. Same diff here.',
     },
   },
   {
@@ -577,14 +583,14 @@ const FILES = [
     theirs: 'src/clean/prompts/tts-number-normalize.txt',
     vendoredAt: VENDOR_PASS,
     shipped: {
-      resynced: 'c04e4a2',
-      sha256: '04d72b3081f03de6a02cefbec733e774a4853293f22b5c4b1d06efdfd89d28af',
+      resynced: '571d57f',
+      sha256: 'a5350150375b734605a17079dcaf0d543a33216913bb11e22a68e942575705a1',
       why: 'n8 (cf38ea2) moved the prompt with the year rules, and this side took it '
         + 'byte-for-byte on 2026-09-24 — see "THE DECISION OF 2026-09-24". n9 (4d67274) added '
         + 'the day-range and pre-decimal-sum examples, taken byte-for-byte the same evening. n10 '
         + '(3025407) worded TARGET for a sentence and made roman numerals defer to class 6, '
         + 'taken byte-for-byte the same night. n11 (c04e4a2) added the point-time and decimal '
-        + 'examples, taken byte-for-byte.',
+        + 'examples, taken byte-for-byte. n12 (571d57f) reads citations by example, taken byte-for-byte.',
     },
   },
   {
@@ -592,12 +598,13 @@ const FILES = [
     theirs: 'src/clean/prompts/tts-narration-text.txt',
     vendoredAt: VENDOR_PASS,
     shipped: {
-      resynced: 'c04e4a2',
-      sha256: 'e35a5a079fccdcd1c44fce622bf18b0e3a43e5494a53bc34bb2252f52f68e2a1',
+      resynced: '571d57f',
+      sha256: '05302f4f795730a656da865da6fe7e7cdc8e7b331411b03cb0f112bbb3f7d5a3',
       why: 'RESYNCED 2026-09-24 (night) for 3025407 (n10): Foundry worded it for a TARGET that '
         + 'is usually one sentence (four phrases: "one passage … usually a single sentence", '
         + '"in the TARGET", "PREVIOUS or NEXT passage", "most passages"), and this side took it '
-        + 'byte-for-byte. n11 (c04e4a2) added the ruler-numeral and spaced-hyphen examples, taken '
+        + 'byte-for-byte. n11 (c04e4a2) added the ruler-numeral and spaced-hyphen examples, and n12 (571d57f) the '
+        + '"WHAT YOU NEVER CHANGE" section, taken '
         + 'byte-for-byte. What it was before: '
         + 'THE FIRST RE-VENDOR THAT RAN THE OTHER WAY — see "THE DECISION OF 2026-09-14 '
         + '(evening)" in the header. BookForge `9df3d93a` added CLASS 2b, "scripture book names '
@@ -679,7 +686,8 @@ const VERSIONS = [
     // n8 → n9 the same evening: Foundry 4d67274, taken here as the same diff.
     // n9 → n10 the same night: Foundry 3025407 (the sentence unit's prompt wording).
     // n10 → n11 later that night: Foundry c04e4a2 (examples; the gate switch).
-    expected: 'n11',
+    // n11 → n12: Foundry 571d57f (never-change section; citations read).
+    expected: 'n12',
   },
   {
     name: 'PUNCTUATION_SPEC_VERSION',

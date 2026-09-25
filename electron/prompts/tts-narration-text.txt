@@ -24,11 +24,20 @@ THE CLASSES YOU ARE BEING ASKED ABOUT
 6. ROMAN NUMERALS are read as words ONLY where a book prints a numeral: after a part word ("Part IV" is "Part Four", "Chapter IX", "Book II"), after a monarch, pope or emperor’s name, or before a century ("the XIX century"). After a ruler's name the numeral is ALWAYS read "the" and the ORDINAL, never the plain number, and it is read EVERY time the book prints it — a paragraph that names Napoleon III four times needs four readings, each find made unique by the words around it:
    "Henry VIII" is "Henry the Eighth". "Pius IX" is "Pius the Ninth". "Napoleon III" is "Napoleon the Third". "Louis XVIII" is "Louis the Eighteenth". "Friedrich Wilhelm IV" is "Friedrich Wilhelm the Fourth". "Vittorio Emanuele II" is "Vittorio Emanuele the Second". "Leopold II" is "Leopold the Second", never "Leopold two".
    A ONE-LETTER numeral after a ruler's name is a numeral too, not the word "I": "Alexander I" is "Alexander the First", "George V" is "George the Fifth", "Franz I" is "Franz the First". The pronoun "I" anywhere else is never touched.
-   A possessive keeps its "'s" OUTSIDE the find: for "Napoleon I's armies" the find is "Napoleon I" and the reading "Napoleon the First". Anywhere else a run of capitals is an ACRONYM even when its letters are all I V X L C D M: "MIX", "MD", "CD", "MM", "XL", "IX" and "CIV" are read as their own letters spaced, or left alone. A roman numeral that is a citation or a volume — "Document II 9/34", "vol. iii" — is apparatus and stays exactly as printed.
+   A possessive keeps its "'s" OUTSIDE the find: for "Napoleon I's armies" the find is "Napoleon I" and the reading "Napoleon the First". Anywhere else a run of capitals is an ACRONYM even when its letters are all I V X L C D M: "MIX", "MD", "CD", "MM", "XL", "IX" and "CIV" are read as their own letters spaced, or left alone. A roman numeral that is part of a document identifier ("Document II 9/34") stays exactly as printed; one that numbers a VOLUME in a citation is read as the rules above say ("vol. iii" is "volume three").
 
 7. DIGIT RESIDUE. If a digit is still printed anywhere in the TARGET after your edits, you have missed one. Go back and read it, or leave it deliberately because it is a code.
 
-FOOTNOTE AND REFERENCE MARKERS ARE NOT YOURS. A superscript reference number, a dagger, an asterisk used as a reference: the render door removes those from the narration copy itself, deterministically, and an edit that tried to would be refused because it deletes text without saying anything in its place. Leave them exactly where they are.
+FOOTNOTE AND REFERENCE MARKERS ARE NOT YOURS. A superscript reference number, a dagger, an asterisk used as a reference: the render door removes those from the narration copy itself, deterministically, and an edit that tried to would be refused because it deletes text without saying anything in its place. Leave them exactly where they are: never turn one into a word or a digit.
+
+WHAT YOU NEVER CHANGE
+
+Only the classes above are yours. Everything else in the passage is already spoken exactly as it is printed, so:
+- A word printed in ordinary letters is read as a word. Only a run of CAPITALS may be spelled out letter by letter.
+- Words in another language stay in that language, word for word, however they would be said in English.
+- Capital and small letters stay as printed, except a run of capitals read in ordinary case for emphasis.
+- An abbreviation is expanded only when you are certain what it stands for. Initials keep their periods exactly as printed ("J. M. W. Turner" stays "J. M. W. Turner").
+- A word the page broke across a line with a hyphen and a space is one word: "Verlags- anstalt" is "Verlagsanstalt".
 
 THE RULES THAT BOUND EVERY EDIT
 
