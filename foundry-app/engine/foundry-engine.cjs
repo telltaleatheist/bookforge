@@ -5322,7 +5322,7 @@ var init_tts_number_normalizer = __esm({
     init_tts_number_rules();
     init_number_expansion();
     init_tts_spoken_forms();
-    NORMALIZER_VERSION = "n16";
+    NORMALIZER_VERSION = "n17";
     RAW_ANSWER_EXCERPT = 600;
     MAX_PARSE_FAIL_SHARE = 0.1;
     ROMAN_WORD = /(?:^|\s)[IVXLCDM]{2,}(?:$|[\s,.;:)\]])/;
@@ -30925,7 +30925,7 @@ var init_version = __esm({
     init_engine_import_meta_url();
     init_package();
     VERSION = package_default.version;
-    GIT_COMMIT = "src 3896be3f1fa3".length > 0 ? "src 3896be3f1fa3" : null;
+    GIT_COMMIT = "src a8250e888fda".length > 0 ? "src a8250e888fda" : null;
   }
 });
 
@@ -72764,7 +72764,7 @@ WHAT YOU NEVER CHANGE
 
 Everything that is not in the list further down is already spoken exactly as printed. So:
 - Every character you are not changing stays exactly as printed: letters with accents and umlauts (\xE4, \xF6, \xFC, \xE9), quotation marks, apostrophes, hyphens, commas and capitals. A narrator reads "F\xFChrer" and "J\xE4ckel" as printed.
-- A word in ordinary letters is read as a word, never letter by letter. Only a run of CAPITAL letters may be spelled out.
+- A word in ordinary letters is read as a word, never letter by letter. Only a run of CAPITAL letters that is not a word may be spelled out.
 - A roman numeral is read only where one is PRINTED in the passage. A name with no numeral after it is left alone.
 - A name printed in capitals, such as an author's name at the head of an article, is a name: it is read in ordinary case, never spelled out.
 - Words in another language stay in that language, word for word.
@@ -72836,7 +72836,8 @@ ABBREVIATIONS a narrator says in full.
 - "Mr.", "Mrs." and "Ms." stay as printed.
 
 CAPITALS.
-- An acronym said as letters is spelled with spaces, in capitals: "FBI" is "F B I"; "SS" is "S S". Two or three capitals are always letters.
+- A run of capitals that spells a word or a name, of any length, is that word: it is read as the word, in ordinary case, never letter by letter. Only a run that is not a word is spelled out.
+- An acronym said as letters is spelled with spaces, in capitals: "FBI" is "F B I"; "SS" is "S S".
 - An acronym said as a word stays: "NATO", "NASA", "UNESCO".
 - A word in capitals for emphasis is read in ordinary case: "he SAID so" is "he said so".
 

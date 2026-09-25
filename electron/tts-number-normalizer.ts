@@ -195,11 +195,18 @@ export { sitsInCitation, bareWord };
  * ("Pope Pius IX" is "Pope Pius the Ninth"); "transl. and ed." before a name; and
  * a day range always puts the month first.
  *
+ * n16 → n17 (2026-09-25, Shift): a run of capitals that spells a word or a name
+ * is read as that word, whatever its length — a chapter's opening words set in
+ * capitals were spelled out letter by letter ("TROY" → "T R O Y") under the old
+ * "two or three capitals are always letters". A general rule, no example (Owen:
+ * "specific examples sometimes lead to smaller models using the examples and
+ * nothing else").
+ *
  * A BUMP HERE IS A CROSS-REPO EVENT. These rules are vendored byte-for-byte into
  * orpheus-finetune's `pipeline/normalization/vendor/` and drift-checked on every
  * training build — see docs/NARRATION_TEXT_PASS.md.
  */
-export const NORMALIZER_VERSION = 'n16';
+export const NORMALIZER_VERSION = 'n17';
 
 /**
  * The model this pass uses when the setting is absent.
