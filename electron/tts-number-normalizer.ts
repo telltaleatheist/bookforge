@@ -69,6 +69,7 @@ import { promises as fs } from 'fs';
 import * as path from 'path';
 
 import { hasLetter } from './ai-cleanup-prepass.js';
+import { lightGateRefusal } from './light-gate.js';
 import {
   applyNumberRules, bareWord, CANONICAL_BOOK_NAMES, cardinalWords, scriptureSpans,
   isQuantityContext, printsPreDecimalSum, sitsInCitation, stillHasDigits, yearQuantityReadings, yearReading,
@@ -180,11 +181,18 @@ export { sitsInCitation, bareWord };
  * roman numeral is read only where one is printed; every edit is one of the
  * listed kinds.
  *
+ * n14 → n15 (2026-09-25, Owen: "rebuild the gate to have a very light touch"):
+ * `policy.gate === 'light'`, clean-text's default — a strict refusal is applied
+ * unless src/clean/light-gate.ts finds the reading changes what is already spoken
+ * as printed. Built from every edit of five gate-off runs: it refuses the accent,
+ * spelling-out, quote, hyphen, case, translation and invented-numeral edits, and
+ * passes the citation, abbreviation and broken-word readings the strict gate lost.
+ *
  * A BUMP HERE IS A CROSS-REPO EVENT. These rules are vendored byte-for-byte into
  * orpheus-finetune's `pipeline/normalization/vendor/` and drift-checked on every
  * training build — see docs/NARRATION_TEXT_PASS.md.
  */
-export const NORMALIZER_VERSION = 'n14';
+export const NORMALIZER_VERSION = 'n15';
 
 /**
  * The model this pass uses when the setting is absent.
@@ -1406,7 +1414,7 @@ export interface NumberEditPolicy {
    * prompt is tuned): every judgement refusal is applied anyway and recorded as
    * `UNGATED — …`; only an edit that cannot be spliced stays out.
    */
-  gate?: boolean;
+  gate?: boolean | 'light';
 }
 
 /** The number pass's own policy — the behaviour every caller had before 2026-09-04. */
@@ -2078,7 +2086,7 @@ export function validateNumberEdits(
    * or is in it more than once, a span across markup or over another edit, one
    * carried to a neighbour, a protected reference, a heading/contents mismatch.
    */
-  if (policy.gate === false) {
+  if (policy.gate === false || policy.gate === 'light') {
     const MECHANICAL: ReadonlySet<NumberEditStatus> = new Set<NumberEditStatus>([
       'NOOP', 'NOT_FOUND', 'AMBIGUOUS_FIND', 'SPANS_MARKUP', 'OVERLAPS_APPLIED', 'CARRIED',
       'SCRIPTURE_PROTECTED', 'TOC_MISMATCH', 'APPLIED', 'APPLIED_RULE',
@@ -2101,8 +2109,23 @@ export function validateNumberEdits(
       if (!withinOneNode(at, end)) continue;
       if (reserved.some((r) => at < r.end && r.at < end)
         || accepted.some((a) => at < a.at + a.find.length && a.at < end)) continue;
+      /*
+       * ── THE LIGHT GATE (Owen, 2026-09-25) ─────────────────────────────────
+       * "only reject the things that it should, and preferably never reject a
+       * legitimate change." The strict checks above refused this; the light gate
+       * (src/clean/light-gate.ts) asks the one question the gate-off runs showed
+       * matters — does the reading change what is already spoken as printed? —
+       * and only a yes keeps it out.
+       */
+      if (policy.gate === 'light') {
+        const why = lightGateRefusal(record.find, record.replace);
+        if (why !== null) {
+          record.detail = `LIGHT GATE — ${why} (strict: ${record.status}${record.detail === undefined ? '' : `: ${record.detail}`})`;
+          continue;
+        }
+      }
       accepted.push({ find: record.find, replace: record.replace, at });
-      record.detail = `UNGATED — the gate would have refused ${record.status}`
+      record.detail = `${policy.gate === 'light' ? 'LIGHT GATE passed' : 'UNGATED'} — the strict gate would have refused ${record.status}`
         + `${record.detail === undefined ? '' : `: ${record.detail}`}`;
       record.status = 'APPLIED';
     }

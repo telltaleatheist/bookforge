@@ -446,18 +446,18 @@ function followedByLookahead(fb) {
 }
 function composeFootnoteRegex(p, anchorClassOverride) {
   const t = p.marker_type || "arabic";
-  let core;
+  let core2;
   if (t === "arabic") {
     const hi = p.restarts_each_chapter === false ? 3 : Math.min(3, Math.max(1, String(Math.trunc(p.max_value ?? 99)).length));
-    core = String.raw`\d{1,${hi}}`;
+    core2 = String.raw`\d{1,${hi}}`;
   } else if (t === "roman") {
-    core = "[ivxlcdmIVXLCDM]{1,7}";
+    core2 = "[ivxlcdmIVXLCDM]{1,7}";
   } else if (t === "letter") {
-    core = "[a-z]";
+    core2 = "[a-z]";
   } else if (t === "symbol") {
     const chars = p.symbol_chars || "";
     if (!chars) throw new Error("marker_type=symbol but symbol_chars is empty");
-    core = `[${escapeForClass(chars)}]{1,4}`;
+    core2 = `[${escapeForClass(chars)}]{1,4}`;
   } else {
     throw new Error(`unknown marker_type ${JSON.stringify(t)}`);
   }
@@ -477,7 +477,7 @@ function composeFootnoteRegex(p, anchorClassOverride) {
   }
   const lb = parts.length === 1 ? parts[0] : `(?:${parts.join("|")})`;
   const gap = p.space_between_anchor_and_marker ? "[ ]" : "";
-  const pattern = lb + gap + core + String.raw`(?![A-Za-z])` + followedByLookahead(p.followed_by);
+  const pattern = lb + gap + core2 + String.raw`(?![A-Za-z])` + followedByLookahead(p.followed_by);
   return new RegExp(pattern, "g");
 }
 function scoreFootnoteCandidates(text) {
@@ -1082,1040 +1082,6 @@ var init_ai_cleanup_prepass = __esm({
     LETTER = /[A-Za-zÀ-ÿ]/;
     ALNUM = /[A-Za-zÀ-ÿ0-9]/;
     QUOTE_STRIP = /[“”‘’‚„«»"']/g;
-  }
-});
-
-// src/clean/number-expansion.ts
-function threeDigitToWords(n) {
-  const parts = [];
-  const hundreds = Math.floor(n / 100);
-  const rest = n % 100;
-  if (hundreds > 0) parts.push(`${ONES[hundreds]} hundred`);
-  if (rest > 0) {
-    if (rest < 20) {
-      parts.push(ONES[rest]);
-    } else {
-      const tens = Math.floor(rest / 10);
-      const ones = rest % 10;
-      parts.push(ones > 0 ? `${TENS[tens]}-${ONES[ones]}` : TENS[tens]);
-    }
-  }
-  return parts.join(" ");
-}
-function integerToWords(n) {
-  if (!Number.isInteger(n) || n < 0) return null;
-  if (n === 0) return "zero";
-  if (n >= 1e15) return null;
-  const groups = [];
-  let remaining = n;
-  while (remaining > 0) {
-    groups.push(remaining % 1e3);
-    remaining = Math.floor(remaining / 1e3);
-  }
-  const out = [];
-  for (let i = groups.length - 1; i >= 0; i--) {
-    const g = groups[i];
-    if (g === 0) continue;
-    const scale = SCALES[i];
-    out.push(scale ? `${threeDigitToWords(g)} ${scale}` : threeDigitToWords(g));
-  }
-  return out.join(" ");
-}
-function ordinalizeWord(word) {
-  if (word.includes("-")) {
-    const [head, tail] = word.split("-");
-    return `${head}-${ordinalizeWord(tail)}`;
-  }
-  if (ONE_ORDINALS[word]) return ONE_ORDINALS[word];
-  if (TENS_ORDINALS[word]) return TENS_ORDINALS[word];
-  if (SCALE_ORDINALS[word]) return SCALE_ORDINALS[word];
-  return `${word}th`;
-}
-function ordinalToWords(n) {
-  const cardinal = integerToWords(n);
-  if (cardinal === null) return null;
-  const tokens = cardinal.split(" ");
-  tokens[tokens.length - 1] = ordinalizeWord(tokens[tokens.length - 1]);
-  return tokens.join(" ");
-}
-function yearToWords(y) {
-  if (y >= 2e3 && y <= 2009) {
-    const lo2 = y % 100;
-    return lo2 ? `two thousand ${integerToWords(lo2)}` : "two thousand";
-  }
-  const hi = Math.floor(y / 100);
-  const lo = y % 100;
-  const hiWords = integerToWords(hi);
-  if (lo === 0) return `${hiWords} hundred`;
-  const loWords = lo >= 10 ? integerToWords(lo) : `oh ${integerToWords(lo)}`;
-  return `${hiWords} ${loWords}`;
-}
-function pluralizeLastWord(words2) {
-  const tokens = words2.split(" ");
-  const last = tokens[tokens.length - 1];
-  tokens[tokens.length - 1] = last.endsWith("y") ? `${last.slice(0, -1)}ies` : `${last}s`;
-  return tokens.join(" ");
-}
-var ONES, TENS, SCALES, ONE_ORDINALS, TENS_ORDINALS, SCALE_ORDINALS;
-var init_number_expansion = __esm({
-  "src/clean/number-expansion.ts"() {
-    "use strict";
-    init_engine_import_meta_url();
-    ONES = [
-      "zero",
-      "one",
-      "two",
-      "three",
-      "four",
-      "five",
-      "six",
-      "seven",
-      "eight",
-      "nine",
-      "ten",
-      "eleven",
-      "twelve",
-      "thirteen",
-      "fourteen",
-      "fifteen",
-      "sixteen",
-      "seventeen",
-      "eighteen",
-      "nineteen"
-    ];
-    TENS = ["", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety"];
-    SCALES = ["", "thousand", "million", "billion", "trillion"];
-    ONE_ORDINALS = {
-      zero: "zeroth",
-      one: "first",
-      two: "second",
-      three: "third",
-      four: "fourth",
-      five: "fifth",
-      six: "sixth",
-      seven: "seventh",
-      eight: "eighth",
-      nine: "ninth",
-      ten: "tenth",
-      eleven: "eleventh",
-      twelve: "twelfth",
-      thirteen: "thirteenth",
-      fourteen: "fourteenth",
-      fifteen: "fifteenth",
-      sixteen: "sixteenth",
-      seventeen: "seventeenth",
-      eighteen: "eighteenth",
-      nineteen: "nineteenth"
-    };
-    TENS_ORDINALS = {
-      twenty: "twentieth",
-      thirty: "thirtieth",
-      forty: "fortieth",
-      fifty: "fiftieth",
-      sixty: "sixtieth",
-      seventy: "seventieth",
-      eighty: "eightieth",
-      ninety: "ninetieth"
-    };
-    SCALE_ORDINALS = {
-      hundred: "hundredth",
-      thousand: "thousandth",
-      million: "millionth",
-      billion: "billionth",
-      trillion: "trillionth"
-    };
-  }
-});
-
-// src/clean/tts-number-rules.ts
-function cardinalWords(n) {
-  if (!Number.isInteger(n) || n < 0 || n > 9999) return null;
-  if (n < 20) return ONES2[n];
-  if (n < 100) {
-    const rest = n % 10;
-    return rest === 0 ? TENS2[Math.floor(n / 10)] : `${TENS2[Math.floor(n / 10)]} ${ONES2[rest]}`;
-  }
-  if (n < 1e3) {
-    const head2 = `${ONES2[Math.floor(n / 100)]} hundred`;
-    return n % 100 === 0 ? head2 : `${head2} ${cardinalWords(n % 100)}`;
-  }
-  const head = `${ONES2[Math.floor(n / 1e3)]} thousand`;
-  return n % 1e3 === 0 ? head : `${head} ${cardinalWords(n % 1e3)}`;
-}
-function bigCardinalWords(n) {
-  if (!Number.isInteger(n) || n < 0 || n > 999999999) return null;
-  if (n < 1e4) return cardinalWords(n);
-  const parts = [];
-  let rest = n;
-  if (rest >= 1e6) {
-    parts.push(`${cardinalWords(Math.floor(rest / 1e6))} million`);
-    rest %= 1e6;
-  }
-  if (rest >= 1e3) {
-    parts.push(`${cardinalWords(Math.floor(rest / 1e3))} thousand`);
-    rest %= 1e3;
-  }
-  if (rest > 0) parts.push(cardinalWords(rest));
-  return parts.join(" ");
-}
-function fractionDigits(frac) {
-  return [...frac].map((d) => ONES2[Number(d)]).join(" ");
-}
-function decimalPhrase(token) {
-  const bare = token.replace(/,/g, "");
-  const dot = bare.indexOf(".");
-  if (dot < 0) return bigCardinalWords(Number(bare));
-  const whole = bigCardinalWords(Number(bare.slice(0, dot) === "" ? "0" : bare.slice(0, dot)));
-  if (whole === null) return null;
-  return `${whole} point ${fractionDigits(bare.slice(dot + 1))}`;
-}
-function isArchiveSigil(token) {
-  const word = bareWord(token);
-  if (!ARCHIVE_SIGIL.test(word)) return false;
-  return word === word.toUpperCase() || /[A-Z]/.test(word.slice(1));
-}
-function isPhonePart(token) {
-  if (!PHONE_PART.test(token)) return false;
-  const lead = /\d+/.exec(token)?.[0] ?? "";
-  return !(lead.length === 4 && Number(lead) >= 1100 && Number(lead) <= 2099);
-}
-function isAbbreviatedPageRange(target, find, at) {
-  const before = target.slice(0, at);
-  for (const m of find.matchAll(/(\d{2,})\s*[\u2010-\u2015\u002D]\s*(\d+)/g)) {
-    const first = m[1];
-    const second = m[2];
-    const value = Number(first);
-    if (value >= 1100 && value <= 2099) continue;
-    if (second.length >= first.length) continue;
-    if (!PAGE_RANGE_LEAD.test(before + find.slice(0, m.index))) continue;
-    return true;
-  }
-  return false;
-}
-function bareWord(token) {
-  return token.replace(/^[^A-Za-zÀ-ÿ0-9]+|[^A-Za-zÀ-ÿ0-9]+$/g, "");
-}
-function sitsInCitation(target, find, at) {
-  if (/\d\s*\/\s*\d/.test(find)) return true;
-  if (ROMAN_CITATION_LEAD.test(find)) return true;
-  if (ROMAN_CITATION_LEAD_AT_END.test(target.slice(0, at) + find.slice(0, 1))) return true;
-  if (isAbbreviatedPageRange(target, find, at)) return true;
-  const before = target.slice(0, at);
-  const after = target.slice(at + find.length);
-  if (/\d\s*$/.test(before) && /^\s*\//.test(after)) return true;
-  if (/\/\s*$/.test(before) && /^\s*\d/.test(after)) return true;
-  if (/\d$/.test(find) && /^\s*\/\s*\d/.test(after)) return true;
-  if (/^\d/.test(find) && /\d\s*\/\s*$/.test(before)) return true;
-  if (CITATION_LEAD.test(before)) return true;
-  const priorTokens = before.trim().split(/\s+/);
-  const nextTokens = after.trim().split(/\s+/);
-  const priorToken = priorTokens.length > 0 ? priorTokens[priorTokens.length - 1] : "";
-  const nextToken = nextTokens.length > 0 ? nextTokens[0] : "";
-  if (isPhonePart(priorToken) || isPhonePart(nextToken)) return true;
-  if (/^\d+$/.test(bareWord(find)) && isArchiveSigil(priorToken)) return true;
-  if (/^\(/.test(find) && yearReading(find) !== null) return false;
-  return ROMAN_TOKEN.test(bareWord(priorToken)) || ROMAN_TOKEN.test(bareWord(nextToken));
-}
-function namesNoBook(token) {
-  return monthName(token.toLowerCase().replace(/\.$/, "")) !== null;
-}
-function monthName(token) {
-  return MONTHS.get(token.toLowerCase().replace(/\.$/, "")) ?? null;
-}
-function* matches(re, text) {
-  re.lastIndex = 0;
-  let m;
-  while ((m = re.exec(text)) !== null) {
-    if (m[0] === "") {
-      re.lastIndex++;
-      continue;
-    }
-    yield m;
-  }
-}
-function clockMinutes(mm) {
-  const minutes = Number(mm);
-  if (minutes === 0) return "";
-  if (minutes < 10) return ` oh ${cardinalWords(minutes)}`;
-  const words2 = cardinalWords(minutes);
-  return words2 === null ? null : ` ${words2}`;
-}
-function clockCandidates(text) {
-  const out = [];
-  for (const m of matches(CLOCK_MERIDIEM, text)) {
-    const hour = cardinalWords(Number(m[1]));
-    const minutes = clockMinutes(m[2]);
-    if (hour === null || minutes === null) continue;
-    const meridiem = m[0].slice(m[0].indexOf(m[3]));
-    out.push({ at: m.index, find: m[0], replace: `${hour}${minutes} ${meridiem}`, rule: "clock" });
-  }
-  for (const m of matches(CLOCK_ON_THE_HOUR, text)) {
-    const hour = cardinalWords(Number(m[1]));
-    if (hour === null) continue;
-    out.push({ at: m.index, find: m[0], replace: `${hour} o'clock`, rule: "clock" });
-  }
-  return out;
-}
-function scriptureSpans(text) {
-  const found = [];
-  const add = (at, end) => {
-    if (found.some((s) => at < s.end && s.at < end)) return;
-    found.push({ at, end, find: text.slice(at, end) });
-  };
-  for (const m of matches(SCRIPTURE_REF, text)) {
-    const [, volume, bookToken, period] = m;
-    if (namesNoBook(bookToken)) continue;
-    const bare = bookToken.toLowerCase();
-    const evidence = period === "." || volume !== void 0 || CANONICAL_BOOK_NAMES.has(bare) || bookToken.length <= 3 && !SHORT_NOT_A_BOOK.has(bare);
-    if (!evidence) continue;
-    let end = m.index + m[0].length;
-    if (TRAILING_MERIDIEM.test(text.slice(end))) continue;
-    for (; ; ) {
-      const tail = REF_LIST_TAIL.exec(text.slice(end));
-      if (tail === null) break;
-      if (!tail[0].includes(":")) {
-        if (/^\s+[A-Z]/.test(text.slice(end + tail[0].length))) break;
-        const numbers = tail[0].match(/\d{1,3}/g) ?? [];
-        if (numbers.some((n) => Number(n) > HIGHEST_VERSE)) break;
-        if (/^,\d{3}(?!\d)/.test(text.slice(end + tail[0].length))) break;
-      }
-      end += tail[0].length;
-    }
-    add(m.index, end);
-  }
-  for (const m of matches(SCRIPTURE_CHAPTER_ONLY, text)) {
-    if (namesNoBook(m[2])) continue;
-    add(m.index, m.index + m[0].length);
-  }
-  for (const m of matches(BARE_NUMBERED_BOOK, text)) {
-    add(m.index, m.index + m[0].length);
-  }
-  found.sort((a, b) => a.at - b.at);
-  return found;
-}
-function verseOrClockCandidates(text) {
-  const out = [];
-  for (const m of matches(BOOKLESS_REF, text)) {
-    const [whole, chapter, verse, verseLetter, chapter2, verse2, verse2Letter, ff] = m;
-    if (Number(verse) < 10) continue;
-    const chapterWords = cardinalWords(Number(chapter));
-    const verseWords = cardinalWords(Number(verse));
-    if (chapterWords === null || verseWords === null) continue;
-    let spoken = `${chapterWords} ${verseWords}`;
-    if (verseLetter !== void 0) spoken += ` ${verseLetter}`;
-    if (verse2 !== void 0) {
-      const verse2Words = cardinalWords(Number(verse2));
-      if (verse2Words === null) continue;
-      spoken += " through";
-      if (chapter2 !== void 0) {
-        const chapter2Words = cardinalWords(Number(chapter2));
-        if (chapter2Words === null) continue;
-        spoken += ` ${chapter2Words}`;
-      }
-      spoken += ` ${verse2Words}`;
-      if (verse2Letter !== void 0) spoken += ` ${verse2Letter}`;
-    }
-    if (ff !== void 0) spoken += " and following";
-    out.push({ at: m.index, find: whole, replace: spoken, rule: "verse-or-clock" });
-  }
-  return out;
-}
-function periodCouldEndSentence(after) {
-  const next = after.replace(/^[\s\u00a0]+/, "");
-  return next === "" || /^["'\u201c\u2018([]/.test(next) || /^[A-Z\u00c0-\u00de]/.test(next);
-}
-function dateWords(month, day, year) {
-  if (day < 1 || day > 31) return null;
-  const dayWords = ordinalToWords(day);
-  if (dayWords === null) return null;
-  if (year === void 0) return `${month} ${dayWords}`;
-  return `${month} ${dayWords}, ${yearToWords(Number(year))}`;
-}
-function dateCandidates(text) {
-  const out = [];
-  for (const m of matches(DATE_DAY_FIRST, text)) {
-    const month = monthName(m[2]);
-    if (month === null) continue;
-    const spoken = dateWords(month, Number(m[1]), m[4]);
-    if (spoken === null) continue;
-    out.push({ at: m.index, find: m[0], replace: spoken, rule: "date" });
-  }
-  for (const m of matches(DATE_MONTH_FIRST, text)) {
-    const month = monthName(m[1]);
-    if (month === null) continue;
-    const spoken = dateWords(month, Number(m[3]), m[4]);
-    if (spoken === null) continue;
-    out.push({ at: m.index, find: m[0], replace: spoken, rule: "date" });
-  }
-  for (const m of matches(DATE_DAY_FIRST_NO_YEAR, text)) {
-    const month = monthName(m[2]);
-    if (month === null) continue;
-    if (DATE_LEAD_BLOCK.test(text.slice(0, m.index))) continue;
-    const spoken = dateWords(month, Number(m[1]), void 0);
-    if (spoken === null) continue;
-    const abbreviated = m[2].toLowerCase() !== month.toLowerCase();
-    const period = m[3] === "." && abbreviated;
-    const find = period ? m[0] : m[0].slice(0, m[0].length - m[3].length);
-    if (sitsInCitation(text, find, m.index)) continue;
-    const after = text.slice(m.index + find.length);
-    const replace = period && periodCouldEndSentence(after) ? `${spoken}.` : spoken;
-    out.push({ at: m.index, find, replace, rule: "date" });
-  }
-  return out;
-}
-function printsPreDecimalSum(text) {
-  POUNDS_SHILLINGS_PENCE.lastIndex = 0;
-  const found = POUNDS_SHILLINGS_PENCE.test(text);
-  POUNDS_SHILLINGS_PENCE.lastIndex = 0;
-  return found;
-}
-function moneyCandidates(text) {
-  const out = [];
-  for (const m of matches(MONEY, text)) {
-    const unit = CURRENCY[m[1]];
-    const whole = Number(m[2].replace(/,/g, ""));
-    const wholeWords = bigCardinalWords(whole);
-    if (wholeWords === null) continue;
-    const frac = m[3];
-    const scale = m[4]?.toLowerCase();
-    let replace;
-    if (scale !== void 0) {
-      const amount = frac === void 0 ? wholeWords : `${wholeWords} point ${fractionDigits(frac)}`;
-      replace = `${amount} ${scale} ${unit.many}`;
-    } else if (frac === void 0) {
-      replace = `${wholeWords} ${whole === 1 ? unit.one : unit.many}`;
-    } else if (frac.length <= 2) {
-      const sub = Number(frac.padEnd(2, "0"));
-      if (sub === 0) {
-        replace = `${wholeWords} ${whole === 1 ? unit.one : unit.many}`;
-      } else if (whole === 0) {
-        replace = `${cardinalWords(sub)} ${unit.sub}`;
-      } else {
-        replace = `${wholeWords} ${whole === 1 ? unit.one : unit.many} and ${cardinalWords(sub)} ${unit.sub}`;
-      }
-    } else {
-      continue;
-    }
-    out.push({ at: m.index, find: m[0], replace, rule: "money" });
-  }
-  for (const m of matches(CENTS, text)) {
-    const words2 = cardinalWords(Number(m[1]));
-    if (words2 === null) continue;
-    out.push({ at: m.index, find: m[0], replace: `${words2} cents`, rule: "money" });
-  }
-  return out;
-}
-function percentCandidates(text) {
-  const out = [];
-  for (const m of matches(PERCENT, text)) {
-    const words2 = decimalPhrase(m[1]);
-    if (words2 === null) continue;
-    const unit = m[2] === "%" ? "percent" : m[2];
-    out.push({ at: m.index, find: m[0], replace: `${words2} ${unit}`, rule: "percent" });
-  }
-  return out;
-}
-function decadeCandidates(text) {
-  const out = [];
-  for (const m of matches(FULL_DECADE, text)) {
-    out.push({
-      at: m.index,
-      find: m[0],
-      replace: pluralizeLastWord(yearToWords(Number(m[1]))),
-      rule: "decade"
-    });
-  }
-  for (const m of matches(APOSTROPHE_DECADE, text)) {
-    const words2 = APOSTROPHE_DECADES[m[1]];
-    if (words2 === void 0) continue;
-    out.push({ at: m.index, find: m[0], replace: words2, rule: "decade" });
-  }
-  return out;
-}
-function ordinalCandidates(text) {
-  const out = [];
-  for (const m of matches(ORDINAL, text)) {
-    const words2 = ordinalToWords(Number(m[1]));
-    if (words2 === null) continue;
-    out.push({ at: m.index, find: m[0], replace: words2, rule: "ordinal" });
-  }
-  return out;
-}
-function markerCandidates(text) {
-  const out = [];
-  for (const m of matches(NUMBER_MARKER, text)) {
-    const words2 = cardinalWords(Number(m[1]));
-    if (words2 === null) continue;
-    out.push({ at: m.index, find: m[0], replace: `number ${words2}`, rule: "marker" });
-  }
-  return out;
-}
-function pageCandidates(text) {
-  const out = [];
-  for (const m of matches(PAGE_REF, text)) {
-    const [whole, abbrev, first, second] = m;
-    if (first.length > 1 && first.startsWith("0")) continue;
-    if (second !== void 0 && second.length > 1 && second.startsWith("0")) continue;
-    if (second !== void 0 && second.length < first.length) continue;
-    const firstWords = cardinalWords(Number(first));
-    if (firstWords === null) continue;
-    let spoken = abbrev.toLowerCase() === "pp" ? "pages" : "page";
-    if (abbrev[0] === abbrev[0].toUpperCase()) spoken = spoken[0].toUpperCase() + spoken.slice(1);
-    spoken += ` ${firstWords}`;
-    if (second !== void 0) {
-      const secondWords = cardinalWords(Number(second));
-      if (secondWords === null) continue;
-      spoken += ` to ${secondWords}`;
-    }
-    out.push({ at: m.index, find: whole, replace: spoken, rule: "page" });
-  }
-  return out;
-}
-function gluedCandidates(text) {
-  const out = [];
-  for (const m of matches(GLUED_ALNUM, text)) {
-    const token = m[0];
-    if (token.length > 24) continue;
-    if (!/[A-Za-z]/.test(token) || !/\d/.test(token)) continue;
-    const runs = token.match(/\d+/g);
-    if (runs.length > GLUED_MAX_RUNS) continue;
-    if (runs.some((run) => run.length > GLUED_MAX_DIGITS)) continue;
-    if (runs.some((run) => run.length > 1 && run.startsWith("0"))) continue;
-    if (DIGITS_THEN_UNIT.test(token)) continue;
-    let claimed = false;
-    for (const runMatch of token.matchAll(/\d+/g)) {
-      if (CLAIMED_BY_ANOTHER_RULE.test(token.slice(runMatch.index + runMatch[0].length))) {
-        claimed = true;
-        break;
-      }
-    }
-    if (claimed) continue;
-    if (/^\.\d/.test(text.slice(m.index + token.length))) continue;
-    if (sitsInCitation(text, token, m.index)) continue;
-    let replace = "";
-    let refused = false;
-    for (let i = 0; i < token.length; ) {
-      if (!/\d/.test(token[i])) {
-        replace += token[i];
-        i++;
-        continue;
-      }
-      let end = i;
-      while (end < token.length && /\d/.test(token[end])) end++;
-      const words2 = cardinalWords(Number(token.slice(i, end)));
-      if (words2 === null) {
-        refused = true;
-        break;
-      }
-      if (i > 0 && /[A-Za-z]/.test(token[i - 1])) replace += " ";
-      replace += words2;
-      if (end < token.length && /[A-Za-z]/.test(token[end])) replace += " ";
-      i = end;
-    }
-    if (refused || replace === token) continue;
-    out.push({ at: m.index, find: token, replace, rule: "glued" });
-  }
-  return out;
-}
-function groupedIntCandidates(text) {
-  const out = [];
-  for (const m of matches(GROUPED_INT, text)) {
-    const words2 = bigCardinalWords(Number(m[2].replace(/,/g, "")));
-    if (words2 === null) continue;
-    if (sitsInCitation(text, m[0], m.index)) continue;
-    out.push({ at: m.index, find: m[0], replace: `${m[1]}${words2}${m[3]}`, rule: "grouped" });
-  }
-  return out;
-}
-function bareIntCandidates(text) {
-  const out = [];
-  for (const m of matches(BARE_INT, text)) {
-    const digits = m[2];
-    if (digits.length > 1 && digits.startsWith("0")) continue;
-    const words2 = cardinalWords(Number(digits));
-    if (words2 === null) continue;
-    if (sitsInCitation(text, m[0], m.index)) continue;
-    out.push({ at: m.index, find: m[0], replace: `${m[1]}${words2}${m[3]}`, rule: "integer" });
-  }
-  return out;
-}
-function yearRangeEnd(first, printed) {
-  if (printed.length === 3) return null;
-  if (printed.length === 4) {
-    const n2 = Number(printed);
-    return n2 > first && inYearWindow(n2) ? n2 : null;
-  }
-  const scale = 10 ** printed.length;
-  const n = Math.floor(first / scale) * scale + Number(printed);
-  return n > first ? n : null;
-}
-function yearReading(find) {
-  const range = new RegExp(`^${YEAR_RANGE.source.replace("(?<!\\S)", "").replace("(?!\\S)", "")}$`).exec(find);
-  if (range !== null) {
-    const first = Number(range[2]);
-    if (!inYearWindow(first)) return null;
-    const end = yearRangeEnd(first, range[4]);
-    if (end === null) return null;
-    return `${range[1]}${yearToWords(first)} to ${yearToWords(end)}${range[5]}`;
-  }
-  const bare = new RegExp(`^${BARE_YEAR.source.replace("(?<!\\S)", "").replace("(?!\\S)", "")}$`).exec(find);
-  if (bare === null || !inYearWindow(Number(bare[2]))) return null;
-  return `${bare[1]}${yearToWords(Number(bare[2]))}${bare[3]}`;
-}
-function yearQuantityReadings(find) {
-  const numbers = (find.match(/\d+/g) ?? []).map(Number);
-  const readings = (n) => {
-    const out = [cardinalWords(n)];
-    if (n % 1e3 !== 0) {
-      const hundreds = cardinalWords(Math.floor(n / 100));
-      const rest = n % 100;
-      out.push(rest === 0 ? `${hundreds} hundred` : `${hundreds} hundred ${cardinalWords(rest)}`);
-    }
-    return out;
-  };
-  if (numbers.length === 1) return readings(numbers[0]);
-  if (numbers.length === 2) {
-    const end = yearRangeEnd(numbers[0], (find.match(/\d+/g) ?? [])[1]);
-    const ends = [numbers[1], ...end === null ? [] : [end]];
-    const out = [];
-    for (const a of readings(numbers[0])) {
-      for (const e of ends) for (const b of readings(e)) out.push(`${a} to ${b}`);
-    }
-    return out;
-  }
-  return [];
-}
-function yearContextAllows(text, at, end) {
-  if (isQuantityContext(text, at, end)) return false;
-  return text[at] === "(" || !YEAR_LEAD_BLOCK.test(text.slice(0, at));
-}
-function isQuantityContext(text, at, end) {
-  return YEAR_CURRENCY_LEAD.test(text.slice(0, at)) || YEAR_UNIT_TAIL.test(text.slice(end));
-}
-function yearRangeCandidates(text) {
-  const out = [];
-  for (const m of matches(YEAR_RANGE, text)) {
-    const replace = yearReading(m[0]);
-    if (replace === null) continue;
-    if (!yearContextAllows(text, m.index, m.index + m[0].length)) continue;
-    if (sitsInCitation(text, m[0], m.index)) continue;
-    out.push({ at: m.index, find: m[0], replace, rule: "year-range" });
-  }
-  return out;
-}
-function bareYearCandidates(text) {
-  const out = [];
-  for (const m of matches(BARE_YEAR, text)) {
-    const replace = yearReading(m[0]);
-    if (replace === null) continue;
-    if (!yearContextAllows(text, m.index, m.index + m[0].length)) continue;
-    if (sitsInCitation(text, m[0], m.index)) continue;
-    out.push({ at: m.index, find: m[0], replace, rule: "year" });
-  }
-  return out;
-}
-function applyNumberRules(text, segments) {
-  const starts = [];
-  let running = 0;
-  for (const length of segments) {
-    starts.push(running);
-    running += length;
-  }
-  if (running !== text.length) {
-    throw new Error(
-      `The number rules were handed segments summing to ${running} for a ${text.length}-character text. Those describe two different strings; nothing was rewritten.`
-    );
-  }
-  const withinOneNode = (at, end) => starts.some((start, i) => at >= start && end <= start + segments[i]);
-  const rewrites = [];
-  const refused = [];
-  const closed = [];
-  for (const m of matches(CLOCK_RANGE, text)) {
-    closed.push({ at: m.index, end: m.index + m[0].length });
-  }
-  for (const re of [DAY_RANGE_SPAN, POUNDS_SHILLINGS_PENCE]) {
-    for (const m of matches(re, text)) closed.push({ at: m.index, end: m.index + m[0].length });
-  }
-  const scripture = scriptureSpans(text);
-  for (const span of scripture) closed.push({ at: span.at, end: span.end });
-  const isClosed = (at, end) => closed.some((c) => at < c.end && c.at < end);
-  for (const rule of RULES) {
-    for (const candidate of rule.scan(text).sort((a, b) => a.at - b.at)) {
-      const end = candidate.at + candidate.find.length;
-      if (text.slice(candidate.at, end) !== candidate.find) {
-        throw new Error(
-          `The ${candidate.rule} rule proposed "${candidate.find}" at ${candidate.at}, where the text reads "${text.slice(candidate.at, end)}". Nothing was rewritten.`
-        );
-      }
-      if (isClosed(candidate.at, end)) continue;
-      if (!withinOneNode(candidate.at, end)) {
-        refused.push({
-          find: candidate.find,
-          replace: candidate.replace,
-          rule: candidate.rule,
-          reason: "the span crosses a text-node boundary"
-        });
-        closed.push({ at: candidate.at, end });
-        continue;
-      }
-      rewrites.push({ at: candidate.at, find: candidate.find, replace: candidate.replace, rule: candidate.rule });
-      closed.push({ at: candidate.at, end });
-    }
-  }
-  rewrites.sort((a, b) => a.at - b.at);
-  const grown = [...segments];
-  let out = "";
-  let cursor = 0;
-  for (const edit of rewrites) {
-    out += text.slice(cursor, edit.at) + edit.replace;
-    cursor = edit.at + edit.find.length;
-    const node = starts.findIndex((start, i) => edit.at >= start && edit.at < start + segments[i]);
-    if (node < 0) {
-      throw new Error(
-        `The number rules rewrote "${edit.find}" at ${edit.at}, which sits in no text node. Nothing was written.`
-      );
-    }
-    grown[node] += edit.replace.length - edit.find.length;
-  }
-  out += text.slice(cursor);
-  return { rewrites, refused, text: out, segments: grown, scripture };
-}
-function stillHasDigits(text) {
-  return DIGIT.test(text);
-}
-var DIGIT, ONES2, TENS2, CITATION_LEAD, ROMAN_TOKEN, ARCHIVE_SIGIL, PHONE_PART, ROMAN_CITATION_LEAD, ROMAN_CITATION_LEAD_AT_END, PAGE_RANGE_LEAD, CANONICAL_BOOK_NAMES, NUMBERED_BOOK_NAMES, VOLUME_NUMBER, SHORT_NOT_A_BOOK, MONTHS, MONTH_ALTERNATION, APOSTROPHE_DECADES, CLOCK_MERIDIEM, CLOCK_ON_THE_HOUR, SCRIPTURE_REF, SCRIPTURE_CHAPTER_ONLY, BARE_NUMBERED_BOOK, CLOCK_RANGE, HIGHEST_VERSE, REF_LIST_TAIL, TRAILING_MERIDIEM, BOOKLESS_REF, NOT_AFTER_A_DAY_AND_DASH, DATE_DAY_FIRST, DAY_RANGE_SPAN, DATE_DAY_FIRST_NO_YEAR, DATE_LEAD_BLOCK, DATE_MONTH_FIRST, CURRENCY, MONEY, POUNDS_SHILLINGS_PENCE, CENTS, PERCENT, PERIOD_PREFIX, FULL_DECADE, APOSTROPHE_DECADE, ORDINAL, NUMBER_MARKER, PAGE_REF, GLUED_ALNUM, GLUED_MAX_DIGITS, GLUED_MAX_RUNS, DIGITS_THEN_UNIT, CLAIMED_BY_ANOTHER_RULE, OPENERS, CLOSERS, GROUPED_INT, BARE_INT, YEAR_MIN, YEAR_MAX, inYearWindow, YEAR_CLOSERS, YEAR_RANGE, BARE_YEAR, YEAR_CURRENCY_LEAD, YEAR_UNIT_TAIL, YEAR_LEAD_BLOCK, RULES;
-var init_tts_number_rules = __esm({
-  "src/clean/tts-number-rules.ts"() {
-    "use strict";
-    init_engine_import_meta_url();
-    init_number_expansion();
-    DIGIT = /[0-9]/;
-    ONES2 = [
-      "zero",
-      "one",
-      "two",
-      "three",
-      "four",
-      "five",
-      "six",
-      "seven",
-      "eight",
-      "nine",
-      "ten",
-      "eleven",
-      "twelve",
-      "thirteen",
-      "fourteen",
-      "fifteen",
-      "sixteen",
-      "seventeen",
-      "eighteen",
-      "nineteen"
-    ];
-    TENS2 = ["", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety"];
-    CITATION_LEAD = /(?:^|[\s(\[“"])(?:vols?|nos?|ibid|cf|fol)\.\s*$/i;
-    ROMAN_TOKEN = /^[IVXLCDM]{2,}$/;
-    ARCHIVE_SIGIL = /^[A-Za-z]{2,4}$/;
-    PHONE_PART = /^(?:\(\d{3}\)|[^\w\s]*\d{1,4}[-‐-―]\d{2,4}[^\w\s]*)$/;
-    ROMAN_CITATION_LEAD = /(?:^|[\s(\[])(?=[ivxlcdm])m{0,3}(?:cm|cd|d?c{0,3})(?:xc|xl|l?x{0,3})(?:ix|iv|v?i{0,3})\.\s*(?=\d)/i;
-    ROMAN_CITATION_LEAD_AT_END = new RegExp(`${ROMAN_CITATION_LEAD.source}\\d$`, "i");
-    PAGE_RANGE_LEAD = /(?:\bpp?|\bpages?|\bnos?|\bfols?|\bff|\blines?|\bll)\.?\s*$/i;
-    CANONICAL_BOOK_NAMES = /* @__PURE__ */ new Set([
-      "genesis",
-      "exodus",
-      "leviticus",
-      "numbers",
-      "deuteronomy",
-      "joshua",
-      "judges",
-      "ruth",
-      "samuel",
-      "kings",
-      "chronicles",
-      "ezra",
-      "nehemiah",
-      "esther",
-      "job",
-      "psalm",
-      "psalms",
-      "proverbs",
-      "ecclesiastes",
-      "qoheleth",
-      "song",
-      "songs",
-      "solomon",
-      "canticles",
-      "isaiah",
-      "jeremiah",
-      "lamentations",
-      "ezekiel",
-      "daniel",
-      "hosea",
-      "joel",
-      "amos",
-      "obadiah",
-      "jonah",
-      "micah",
-      "nahum",
-      "habakkuk",
-      "zephaniah",
-      "haggai",
-      "zechariah",
-      "malachi",
-      "matthew",
-      "mark",
-      "luke",
-      "john",
-      "acts",
-      "apostles",
-      "romans",
-      "corinthians",
-      "galatians",
-      "ephesians",
-      "philippians",
-      "colossians",
-      "thessalonians",
-      "timothy",
-      "titus",
-      "philemon",
-      "hebrews",
-      "james",
-      "peter",
-      "jude",
-      "revelation",
-      "tobit",
-      "judith",
-      "wisdom",
-      "sirach",
-      "ecclesiasticus",
-      "baruch",
-      "maccabees",
-      "esdras",
-      "susanna",
-      "manasseh",
-      "dragon"
-    ]);
-    NUMBERED_BOOK_NAMES = [
-      "Samuel",
-      "Kings",
-      "Chronicles",
-      "Corinthians",
-      "Thessalonians",
-      "Timothy",
-      "Peter",
-      "Maccabees",
-      "Esdras"
-    ];
-    VOLUME_NUMBER = "[123]|III|II|I|1st|2nd|3rd";
-    SHORT_NOT_A_BOOK = /* @__PURE__ */ new Set([
-      "an",
-      "as",
-      "at",
-      "be",
-      "by",
-      "do",
-      "go",
-      "he",
-      "if",
-      "in",
-      "is",
-      "it",
-      "its",
-      "me",
-      "my",
-      "no",
-      "of",
-      "on",
-      "or",
-      "our",
-      "see",
-      "she",
-      "so",
-      "the",
-      "to",
-      "up",
-      "us",
-      "we",
-      "you",
-      "and",
-      "but",
-      "for",
-      "her",
-      "his",
-      "not",
-      "now",
-      "per",
-      "via",
-      "was",
-      "yet",
-      // …and the citation markers, which point at a number without naming one.
-      "cf",
-      "cp",
-      "eg",
-      "ie",
-      "ib",
-      "id",
-      "nos",
-      "pp",
-      "vs"
-    ]);
-    MONTHS = new Map(Object.entries({
-      jan: "January",
-      january: "January",
-      feb: "February",
-      february: "February",
-      mar: "March",
-      march: "March",
-      apr: "April",
-      april: "April",
-      may: "May",
-      jun: "June",
-      june: "June",
-      jul: "July",
-      july: "July",
-      aug: "August",
-      august: "August",
-      sep: "September",
-      sept: "September",
-      september: "September",
-      oct: "October",
-      october: "October",
-      nov: "November",
-      november: "November",
-      dec: "December",
-      december: "December"
-    }));
-    MONTH_ALTERNATION = "January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sept|Sep|Oct|Nov|Dec";
-    APOSTROPHE_DECADES = {
-      20: "twenties",
-      30: "thirties",
-      40: "forties",
-      50: "fifties",
-      60: "sixties",
-      70: "seventies",
-      80: "eighties",
-      90: "nineties"
-    };
-    CLOCK_MERIDIEM = new RegExp(
-      "(?<![\\w:.\\-])(1[0-2]|0?[1-9]):([0-5]\\d)\\s*([AaPp])\\.?\\s?([Mm])\\.?(?![A-Za-z\\d])",
-      "g"
-    );
-    CLOCK_ON_THE_HOUR = /(?<![\w:.\-])(1[0-2]|0?[1-9]):00(?![\d:])/g;
-    SCRIPTURE_REF = new RegExp(
-      `(?:(?<![\\w:.\\-])(${VOLUME_NUMBER})\\s+)?([A-Z][A-Za-z]{1,13})(\\.?)\\s+(?<![\\d:.])(\\d{1,3}):(\\d{1,3})(?:(?!ff\\.)([a-z])(?![a-z\\d]))?(?:\\s*[\\u2010-\\u2015\\u002D]\\s*(?:(\\d{1,3}):)?(\\d{1,3})(?:(?!ff\\.)([a-z])(?![a-z\\d]))?)?(ff\\.)?(?![A-Za-z\\d])`,
-      // and nothing else glued to it
-      "gd"
-    );
-    SCRIPTURE_CHAPTER_ONLY = new RegExp(
-      `(?<![\\w:.\\-])(${VOLUME_NUMBER})\\s+([A-Z][A-Za-z]{1,12})\\.\\s+(\\d{1,3})(?![\\d:]|\\.\\d|\\s*[\\u2010-\\u2015\\u002D]\\s*\\d)`,
-      "gd"
-    );
-    BARE_NUMBERED_BOOK = new RegExp(
-      `(?<![\\w:.\\-])(${VOLUME_NUMBER})\\s+(${NUMBERED_BOOK_NAMES.join("|")})\\b`,
-      "g"
-    );
-    CLOCK_RANGE = /\d{1,2}:\d{2}\s*[‐-―-]\s*\d{1,2}:\d{2}/g;
-    HIGHEST_VERSE = 176;
-    REF_LIST_TAIL = new RegExp(
-      "^(?:\\s*[;,]\\s*(?:and\\s+)?|\\s+and\\s+)(?:\\d{1,3}:)?\\d{1,3}(?:(?!ff\\.)[a-z](?![a-z\\d]))?(?:\\s*[\\u2010-\\u2015\\u002D]\\s*(?:\\d{1,3}:)?\\d{1,3}(?:(?!ff\\.)[a-z](?![a-z\\d]))?)?(?:ff\\.)?(?![A-Za-z\\d])"
-    );
-    TRAILING_MERIDIEM = /^\s*(?:[ap]\.?\s?m\.?(?![A-Za-z])|o'clock\b)/i;
-    BOOKLESS_REF = new RegExp(
-      "(?<![\\d:.])(\\d{1,3}):(\\d{1,3})(?:(?!ff\\.)([a-z])(?![a-z\\d]))?(?:\\s*[\\u2010-\\u2015\\u002D]\\s*(?:(\\d{1,3}):)?(\\d{1,3})(?:(?!ff\\.)([a-z])(?![a-z\\d]))?)?(ff\\.)?(?![A-Za-z\\d])",
-      "g"
-    );
-    NOT_AFTER_A_DAY_AND_DASH = "(?<!\\d\\s?[\\u2010-\\u2015\\-]\\s?)";
-    DATE_DAY_FIRST = new RegExp(
-      `(?<![\\w:.\\-])${NOT_AFTER_A_DAY_AND_DASH}(\\d{1,2})(?:st|nd|rd|th)?\\s+(${MONTH_ALTERNATION})(\\.?),?\\s+(1[1-9]\\d{2}|20\\d{2})(?![\\w\\-])`,
-      "g"
-    );
-    DAY_RANGE_SPAN = new RegExp(
-      `(?<![\\w:.\\-])(?:\\d{1,2}(?:st|nd|rd|th)?\\s?[\\u2010-\\u2015\\-]\\s?\\d{1,2}(?:st|nd|rd|th)?\\s+(?:${MONTH_ALTERNATION})\\.?|(?:${MONTH_ALTERNATION})\\.?\\s+\\d{1,2}(?:st|nd|rd|th)?\\s?[\\u2010-\\u2015\\-]\\s?\\d{1,2}(?:st|nd|rd|th)?)(?![A-Za-z\\d])(?:,?\\s+(?:1[1-9]\\d{2}|20\\d{2})(?![\\w\\-]))?`,
-      "g"
-    );
-    DATE_DAY_FIRST_NO_YEAR = new RegExp(
-      `(?<![\\w:.\\-])${NOT_AFTER_A_DAY_AND_DASH}(\\d{1,2})(?:st|nd|rd|th)?\\s+(${MONTH_ALTERNATION})(\\.?)(?![A-Za-z])(?!,?\\s*(?:1[1-9]\\d{2}|20\\d{2}))`,
-      "g"
-    );
-    DATE_LEAD_BLOCK = /\b(?:chapter|part|section|volume|vol|book|figure|fig|table|act|no|nos|pp?|line|item|note)\.?\s+$/i;
-    DATE_MONTH_FIRST = new RegExp(
-      `(?<![\\w\\-])(${MONTH_ALTERNATION})(\\.?)\\s+(\\d{1,2})(?:st|nd|rd|th)?(?:,?\\s+(1[1-9]\\d{2}|20\\d{2}))?(?![\\w\\-:])(?!\\s?[\\u2010-\\u2015]\\s?\\d)`,
-      "g"
-    );
-    CURRENCY = {
-      $: { one: "dollar", many: "dollars", sub: "cents" },
-      "\xA3": { one: "pound", many: "pounds", sub: "pence" },
-      "\u20AC": { one: "euro", many: "euros", sub: "cents" }
-    };
-    MONEY = /([$£€])\s?(\d{1,3}(?:,\d{3})+|\d+)(?:\.(\d+))?(?!\.?\d)(?:\s*(hundred|thousand|million|billion|trillion))?/gi;
-    POUNDS_SHILLINGS_PENCE = /£\s?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d{1,2}){2}(?![\d.]*\d)/g;
-    CENTS = /(?<![\w.\-])(\d{1,3})\s?¢/g;
-    PERCENT = /(?<![\w.\-])(\d{1,3}(?:,\d{3})*(?:\.\d+)?)\s*(%|per cent|percent)/g;
-    PERIOD_PREFIX = "(?<=(?<![\\w\\-])(?:[Mm]id|[Ee]arly|[Ll]ate|[Pp]re|[Pp]ost)-)";
-    FULL_DECADE = new RegExp(`(?:${PERIOD_PREFIX}|(?<![\\w.\\-]))(1[1-9]\\d0|20\\d0)s\\b`, "g");
-    APOSTROPHE_DECADE = /['‘’](\d0)s\b/g;
-    ORDINAL = /(?<![\w.\-])(\d{1,4})(?:st|nd|rd|th)\b/g;
-    NUMBER_MARKER = /#\s?(\d{1,4})(?![\w\-])/g;
-    PAGE_REF = new RegExp(
-      "(?<![\\w.\\-])(pp?)\\.\\s*(\\d{1,4})(?:\\s*[\\u2010-\\u2015\\u002D]\\s*(\\d{1,4}))?(?![\\w\\-])",
-      "gi"
-    );
-    GLUED_ALNUM = /(?<![\w/.\-])[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*(?![\w/\-])/g;
-    GLUED_MAX_DIGITS = 3;
-    GLUED_MAX_RUNS = 3;
-    DIGITS_THEN_UNIT = /^\d+[A-Za-z]/;
-    CLAIMED_BY_ANOTHER_RULE = /^(?:s|st|nd|rd|th)/i;
-    OPENERS = `[(\\["'\u2018\u201C\xA1\xBF]*`;
-    CLOSERS = `[)\\]"'\u2019\u201D.,;!?]*`;
-    GROUPED_INT = new RegExp(
-      `(?<!\\S)(${OPENERS})(\\d{1,3}(?:,\\d{3})+)(${CLOSERS})(?!\\S)`,
-      "g"
-    );
-    BARE_INT = new RegExp(`(?<!\\S)(${OPENERS})(\\d{1,3})(${CLOSERS})(?!\\S)`, "g");
-    YEAR_MIN = 1100;
-    YEAR_MAX = 2099;
-    inYearWindow = (n) => n >= YEAR_MIN && n <= YEAR_MAX;
-    YEAR_CLOSERS = `[)\\]"'\u2019\u201D.,;:!?]*`;
-    YEAR_RANGE = new RegExp(
-      `(?<!\\S)(${OPENERS})(\\d{4})(\\s*[\\u2010-\\u2015\\u002D]\\s*)(\\d{1,4})(${YEAR_CLOSERS})(?!\\S)`,
-      "g"
-    );
-    BARE_YEAR = new RegExp(
-      `(?:${PERIOD_PREFIX}|(?<!\\S))(${OPENERS})(\\d{4})(${YEAR_CLOSERS})(?!\\S)`,
-      "g"
-    );
-    YEAR_CURRENCY_LEAD = /[$£€¥¢]\s*$/;
-    YEAR_UNIT_TAIL = /^\s*(?:%|per\s?cent|percent|km|kg|kilomet(?:re|er)s?|kilograms?|miles?|met(?:re|er)s?|feet|foot|ft|yards?|acres?|hectares?|tons?|tonnes?|lbs?|pounds?|lit(?:re|er)s?|gallons?|square|cubic|degrees?|°)(?![A-Za-z])/i;
-    YEAR_LEAD_BLOCK = /\b(?:chapter|part|section|volume|vol|book|figure|fig|table|act|no|nos|pp?|page|line|item|note|number|room|op|opus|article|art)\.?\s*$/i;
-    RULES = [
-      // A clock with a meridiem, or on the hour, is settled before scripture can
-      // read "2:00 p.m." as a chapter and a verse (the Mac's live finding).
-      { name: "clock", scan: clockCandidates },
-      // What is left of scripture in this file: a book-LESS chapter:verse, read only
-      // where the verse and the clock readings coincide. Every reference with a book
-      // in front of it was closed before this list ran and belongs to the model.
-      { name: "verse-or-clock", scan: verseOrClockCandidates },
-      // Before the date and the integer, because "p. 12" is a page and not a day,
-      // and because the whole "pp. 65-71" is one reading its halves are not.
-      { name: "page", scan: pageCandidates },
-      { name: "date", scan: dateCandidates },
-      { name: "money", scan: moneyCandidates },
-      { name: "percent", scan: percentCandidates },
-      { name: "decade", scan: decadeCandidates },
-      { name: "ordinal", scan: ordinalCandidates },
-      { name: "marker", scan: markerCandidates },
-      // A range before its halves, so "1844–79" is one reading and not a year and
-      // a stray "79". Both after the date, money and percent rules, which know
-      // more about the numbers they take.
-      { name: "year-range", scan: yearRangeCandidates },
-      { name: "year", scan: bareYearCandidates },
-      { name: "grouped", scan: groupedIntCandidates },
-      { name: "integer", scan: bareIntCandidates },
-      // LAST, because it is the widest net: every earlier rule that knows a shape
-      // ("1940s-era" is a decade before it is a glued token) has already taken it,
-      // and what reaches here is a token no other rule recognized.
-      { name: "glued", scan: gluedCandidates }
-    ];
   }
 });
 
@@ -4103,6 +3069,1218 @@ var init_tts_spoken_forms = __esm({
   }
 });
 
+// src/clean/light-gate.ts
+function core(token) {
+  return token.replace(/^[^\p{L}\p{N}&]+|[^\p{L}\p{N}&.]+$/gu, "");
+}
+function romanHere(tokens, i) {
+  const bare = core(tokens[i]).replace(/'s$|’s$/, "");
+  if (!/^[IVXLCDM]+$/.test(bare)) return false;
+  if (bare.length >= 2) return true;
+  return isRomanContext(tokens.slice(0, i).join(" "), tokens.slice(i + 1).join(" "));
+}
+function isPrintedForm(tokens, i) {
+  const token = tokens[i];
+  const bare = core(token);
+  if (DIGIT.test(token)) return true;
+  if (/[[\]()&]/.test(token)) return true;
+  if (/[¹²³⁴⁵⁶⁷⁸⁹⁰]/.test(token)) return true;
+  const beforePeriod = bare.replace(/\.$/, "");
+  if (beforePeriod.includes(".")) return true;
+  if (bare.endsWith(".") && new RegExp("^\\p{L}$", "u").test(beforePeriod)) return true;
+  if (/^[ivxlcdm]+(?:[-–][ivxlcdm]+)?$/.test(beforePeriod)) return true;
+  if (new RegExp("\\p{Script=Han}|\\p{Script=Cyrillic}|\\p{Script=Greek}", "u").test(bare) && new RegExp("\\p{Script=Latin}", "u").test(bare)) return true;
+  if (new RegExp("^\\p{Lu}{2,}(?:['\u2019]s)?$", "u").test(bare)) return true;
+  if (romanHere(tokens, i)) return true;
+  if (/-$/.test(token)) return true;
+  if (PERIODLESS_ABBREVIATIONS.has(beforePeriod.toLowerCase())) return true;
+  return false;
+}
+function wholeShape(find, replace) {
+  const dashed = find.replace(/(^|\s)[-–](\s|$)/g, "\u2014");
+  if (dashed !== find && dashed === replace.replace(/\s*—\s*/g, "\u2014")) return "dash";
+  if (/\[[^\]]*\]/.test(find) && find.replace(/\[([^\]]*)\]/g, "$1") === replace) return "interpolation";
+  const trimmed = find.trim();
+  if (replace.trim() === "" && /^[[(][^[\]()]*[\])]$/.test(trimmed) && trimmed.split(/\s+/).length <= 4) {
+    return "apparatus";
+  }
+  return null;
+}
+function lightGateRefusal(find, replace) {
+  if (wholeShape(find, replace) !== null) return null;
+  const findTokens = find.split(/\s+/).filter(Boolean);
+  const replaceTokens = replace.split(/\s+/).filter(Boolean);
+  for (const token of replaceTokens) {
+    if (DIGIT.test(token) && !findTokens.includes(token)) {
+      return `the reading prints "${token}": a reading is words, and a digit left in it is still a digit`;
+    }
+  }
+  const units = [];
+  for (let i = 0; i < findTokens.length; i++) {
+    let joined = false;
+    for (let span = 2; span <= 3 && i + span <= findTokens.length; span++) {
+      const glued = findTokens.slice(i, i + span).map((t, k) => k < span - 1 ? t.replace(/-$/, "") : t).join("");
+      if (replaceTokens.includes(glued) && glued.length > 2) {
+        units.push({ text: glued, printed: false });
+        i += span - 1;
+        joined = true;
+        break;
+      }
+    }
+    if (!joined) units.push({ text: findTokens[i], printed: isPrintedForm(findTokens, i) });
+  }
+  let r = 0;
+  let lastWasChanged = false;
+  for (let u = 0; u < units.length; u++) {
+    const unit = units[u];
+    if (unit.printed) {
+      lastWasChanged = true;
+      const nextPlain = units.slice(u + 1).find((x) => !x.printed);
+      if (nextPlain === void 0) return null;
+      const at2 = replaceTokens.indexOf(nextPlain.text, r);
+      if (at2 < 0) {
+        return `"${nextPlain.text}" is already spoken as printed, and the reading changed or dropped it`;
+      }
+      r = at2;
+      continue;
+    }
+    const at = replaceTokens.indexOf(unit.text, r);
+    if (at < 0) {
+      return `"${unit.text}" is already spoken as printed, and the reading changed or dropped it`;
+    }
+    if (at !== r && !lastWasChanged) {
+      return `the reading adds "${replaceTokens.slice(r, at).join(" ")}" beside "${unit.text}", which it did not change; words may be added only where a printed form is being read`;
+    }
+    r = at + 1;
+    lastWasChanged = false;
+  }
+  if (r < replaceTokens.length && !lastWasChanged) {
+    return `the reading adds "${replaceTokens.slice(r).join(" ")}" after words it did not change`;
+  }
+  return null;
+}
+var PERIODLESS_ABBREVIATIONS, DIGIT;
+var init_light_gate = __esm({
+  "src/clean/light-gate.ts"() {
+    "use strict";
+    init_engine_import_meta_url();
+    init_tts_spoken_forms();
+    PERIODLESS_ABBREVIATIONS = /* @__PURE__ */ new Set([
+      "st",
+      "dr",
+      "mr",
+      "mrs",
+      "ms",
+      "mt",
+      "sr",
+      "jr",
+      "rev",
+      "col",
+      "gen",
+      "capt",
+      "lt",
+      "prof",
+      "eds",
+      "edn",
+      "edns",
+      "ed",
+      "vol",
+      "vols",
+      "no",
+      "nos",
+      "pp",
+      "ch",
+      "chs",
+      "fol",
+      "fols",
+      "ff",
+      "cf",
+      "ibid",
+      "etc",
+      "vs",
+      "trans",
+      "transl",
+      "repr",
+      "nr",
+      "n",
+      "nn",
+      "p",
+      "c",
+      "ca",
+      "al",
+      "approx",
+      "esp",
+      "suppl",
+      "ser",
+      "sec",
+      "art",
+      "fig",
+      "figs",
+      "pl",
+      "hon",
+      "gov",
+      "sen",
+      "rep",
+      "maj",
+      "sgt",
+      "adm",
+      "ave",
+      "rd",
+      "co",
+      "inc",
+      "ltd",
+      "bros",
+      "jan",
+      "feb",
+      "mar",
+      "apr",
+      "jun",
+      "jul",
+      "aug",
+      "sep",
+      "sept",
+      "oct",
+      "nov",
+      "dec"
+    ]);
+    DIGIT = /\d/;
+  }
+});
+
+// src/clean/number-expansion.ts
+function threeDigitToWords(n) {
+  const parts = [];
+  const hundreds = Math.floor(n / 100);
+  const rest = n % 100;
+  if (hundreds > 0) parts.push(`${ONES[hundreds]} hundred`);
+  if (rest > 0) {
+    if (rest < 20) {
+      parts.push(ONES[rest]);
+    } else {
+      const tens = Math.floor(rest / 10);
+      const ones = rest % 10;
+      parts.push(ones > 0 ? `${TENS[tens]}-${ONES[ones]}` : TENS[tens]);
+    }
+  }
+  return parts.join(" ");
+}
+function integerToWords(n) {
+  if (!Number.isInteger(n) || n < 0) return null;
+  if (n === 0) return "zero";
+  if (n >= 1e15) return null;
+  const groups = [];
+  let remaining = n;
+  while (remaining > 0) {
+    groups.push(remaining % 1e3);
+    remaining = Math.floor(remaining / 1e3);
+  }
+  const out = [];
+  for (let i = groups.length - 1; i >= 0; i--) {
+    const g = groups[i];
+    if (g === 0) continue;
+    const scale = SCALES[i];
+    out.push(scale ? `${threeDigitToWords(g)} ${scale}` : threeDigitToWords(g));
+  }
+  return out.join(" ");
+}
+function ordinalizeWord(word) {
+  if (word.includes("-")) {
+    const [head, tail] = word.split("-");
+    return `${head}-${ordinalizeWord(tail)}`;
+  }
+  if (ONE_ORDINALS[word]) return ONE_ORDINALS[word];
+  if (TENS_ORDINALS[word]) return TENS_ORDINALS[word];
+  if (SCALE_ORDINALS[word]) return SCALE_ORDINALS[word];
+  return `${word}th`;
+}
+function ordinalToWords(n) {
+  const cardinal = integerToWords(n);
+  if (cardinal === null) return null;
+  const tokens = cardinal.split(" ");
+  tokens[tokens.length - 1] = ordinalizeWord(tokens[tokens.length - 1]);
+  return tokens.join(" ");
+}
+function yearToWords(y) {
+  if (y >= 2e3 && y <= 2009) {
+    const lo2 = y % 100;
+    return lo2 ? `two thousand ${integerToWords(lo2)}` : "two thousand";
+  }
+  const hi = Math.floor(y / 100);
+  const lo = y % 100;
+  const hiWords = integerToWords(hi);
+  if (lo === 0) return `${hiWords} hundred`;
+  const loWords = lo >= 10 ? integerToWords(lo) : `oh ${integerToWords(lo)}`;
+  return `${hiWords} ${loWords}`;
+}
+function pluralizeLastWord(words2) {
+  const tokens = words2.split(" ");
+  const last = tokens[tokens.length - 1];
+  tokens[tokens.length - 1] = last.endsWith("y") ? `${last.slice(0, -1)}ies` : `${last}s`;
+  return tokens.join(" ");
+}
+var ONES, TENS, SCALES, ONE_ORDINALS, TENS_ORDINALS, SCALE_ORDINALS;
+var init_number_expansion = __esm({
+  "src/clean/number-expansion.ts"() {
+    "use strict";
+    init_engine_import_meta_url();
+    ONES = [
+      "zero",
+      "one",
+      "two",
+      "three",
+      "four",
+      "five",
+      "six",
+      "seven",
+      "eight",
+      "nine",
+      "ten",
+      "eleven",
+      "twelve",
+      "thirteen",
+      "fourteen",
+      "fifteen",
+      "sixteen",
+      "seventeen",
+      "eighteen",
+      "nineteen"
+    ];
+    TENS = ["", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety"];
+    SCALES = ["", "thousand", "million", "billion", "trillion"];
+    ONE_ORDINALS = {
+      zero: "zeroth",
+      one: "first",
+      two: "second",
+      three: "third",
+      four: "fourth",
+      five: "fifth",
+      six: "sixth",
+      seven: "seventh",
+      eight: "eighth",
+      nine: "ninth",
+      ten: "tenth",
+      eleven: "eleventh",
+      twelve: "twelfth",
+      thirteen: "thirteenth",
+      fourteen: "fourteenth",
+      fifteen: "fifteenth",
+      sixteen: "sixteenth",
+      seventeen: "seventeenth",
+      eighteen: "eighteenth",
+      nineteen: "nineteenth"
+    };
+    TENS_ORDINALS = {
+      twenty: "twentieth",
+      thirty: "thirtieth",
+      forty: "fortieth",
+      fifty: "fiftieth",
+      sixty: "sixtieth",
+      seventy: "seventieth",
+      eighty: "eightieth",
+      ninety: "ninetieth"
+    };
+    SCALE_ORDINALS = {
+      hundred: "hundredth",
+      thousand: "thousandth",
+      million: "millionth",
+      billion: "billionth",
+      trillion: "trillionth"
+    };
+  }
+});
+
+// src/clean/tts-number-rules.ts
+function cardinalWords(n) {
+  if (!Number.isInteger(n) || n < 0 || n > 9999) return null;
+  if (n < 20) return ONES2[n];
+  if (n < 100) {
+    const rest = n % 10;
+    return rest === 0 ? TENS2[Math.floor(n / 10)] : `${TENS2[Math.floor(n / 10)]} ${ONES2[rest]}`;
+  }
+  if (n < 1e3) {
+    const head2 = `${ONES2[Math.floor(n / 100)]} hundred`;
+    return n % 100 === 0 ? head2 : `${head2} ${cardinalWords(n % 100)}`;
+  }
+  const head = `${ONES2[Math.floor(n / 1e3)]} thousand`;
+  return n % 1e3 === 0 ? head : `${head} ${cardinalWords(n % 1e3)}`;
+}
+function bigCardinalWords(n) {
+  if (!Number.isInteger(n) || n < 0 || n > 999999999) return null;
+  if (n < 1e4) return cardinalWords(n);
+  const parts = [];
+  let rest = n;
+  if (rest >= 1e6) {
+    parts.push(`${cardinalWords(Math.floor(rest / 1e6))} million`);
+    rest %= 1e6;
+  }
+  if (rest >= 1e3) {
+    parts.push(`${cardinalWords(Math.floor(rest / 1e3))} thousand`);
+    rest %= 1e3;
+  }
+  if (rest > 0) parts.push(cardinalWords(rest));
+  return parts.join(" ");
+}
+function fractionDigits(frac) {
+  return [...frac].map((d) => ONES2[Number(d)]).join(" ");
+}
+function decimalPhrase(token) {
+  const bare = token.replace(/,/g, "");
+  const dot = bare.indexOf(".");
+  if (dot < 0) return bigCardinalWords(Number(bare));
+  const whole = bigCardinalWords(Number(bare.slice(0, dot) === "" ? "0" : bare.slice(0, dot)));
+  if (whole === null) return null;
+  return `${whole} point ${fractionDigits(bare.slice(dot + 1))}`;
+}
+function isArchiveSigil(token) {
+  const word = bareWord(token);
+  if (!ARCHIVE_SIGIL.test(word)) return false;
+  return word === word.toUpperCase() || /[A-Z]/.test(word.slice(1));
+}
+function isPhonePart(token) {
+  if (!PHONE_PART.test(token)) return false;
+  const lead = /\d+/.exec(token)?.[0] ?? "";
+  return !(lead.length === 4 && Number(lead) >= 1100 && Number(lead) <= 2099);
+}
+function isAbbreviatedPageRange(target, find, at) {
+  const before = target.slice(0, at);
+  for (const m of find.matchAll(/(\d{2,})\s*[\u2010-\u2015\u002D]\s*(\d+)/g)) {
+    const first = m[1];
+    const second = m[2];
+    const value = Number(first);
+    if (value >= 1100 && value <= 2099) continue;
+    if (second.length >= first.length) continue;
+    if (!PAGE_RANGE_LEAD.test(before + find.slice(0, m.index))) continue;
+    return true;
+  }
+  return false;
+}
+function bareWord(token) {
+  return token.replace(/^[^A-Za-zÀ-ÿ0-9]+|[^A-Za-zÀ-ÿ0-9]+$/g, "");
+}
+function sitsInCitation(target, find, at) {
+  if (/\d\s*\/\s*\d/.test(find)) return true;
+  if (ROMAN_CITATION_LEAD.test(find)) return true;
+  if (ROMAN_CITATION_LEAD_AT_END.test(target.slice(0, at) + find.slice(0, 1))) return true;
+  if (isAbbreviatedPageRange(target, find, at)) return true;
+  const before = target.slice(0, at);
+  const after = target.slice(at + find.length);
+  if (/\d\s*$/.test(before) && /^\s*\//.test(after)) return true;
+  if (/\/\s*$/.test(before) && /^\s*\d/.test(after)) return true;
+  if (/\d$/.test(find) && /^\s*\/\s*\d/.test(after)) return true;
+  if (/^\d/.test(find) && /\d\s*\/\s*$/.test(before)) return true;
+  if (CITATION_LEAD.test(before)) return true;
+  const priorTokens = before.trim().split(/\s+/);
+  const nextTokens = after.trim().split(/\s+/);
+  const priorToken = priorTokens.length > 0 ? priorTokens[priorTokens.length - 1] : "";
+  const nextToken = nextTokens.length > 0 ? nextTokens[0] : "";
+  if (isPhonePart(priorToken) || isPhonePart(nextToken)) return true;
+  if (/^\d+$/.test(bareWord(find)) && isArchiveSigil(priorToken)) return true;
+  if (/^\(/.test(find) && yearReading(find) !== null) return false;
+  return ROMAN_TOKEN.test(bareWord(priorToken)) || ROMAN_TOKEN.test(bareWord(nextToken));
+}
+function namesNoBook(token) {
+  return monthName(token.toLowerCase().replace(/\.$/, "")) !== null;
+}
+function monthName(token) {
+  return MONTHS.get(token.toLowerCase().replace(/\.$/, "")) ?? null;
+}
+function* matches(re, text) {
+  re.lastIndex = 0;
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    if (m[0] === "") {
+      re.lastIndex++;
+      continue;
+    }
+    yield m;
+  }
+}
+function clockMinutes(mm) {
+  const minutes = Number(mm);
+  if (minutes === 0) return "";
+  if (minutes < 10) return ` oh ${cardinalWords(minutes)}`;
+  const words2 = cardinalWords(minutes);
+  return words2 === null ? null : ` ${words2}`;
+}
+function clockCandidates(text) {
+  const out = [];
+  for (const m of matches(CLOCK_MERIDIEM, text)) {
+    const hour = cardinalWords(Number(m[1]));
+    const minutes = clockMinutes(m[2]);
+    if (hour === null || minutes === null) continue;
+    const meridiem = m[0].slice(m[0].indexOf(m[3]));
+    out.push({ at: m.index, find: m[0], replace: `${hour}${minutes} ${meridiem}`, rule: "clock" });
+  }
+  for (const m of matches(CLOCK_ON_THE_HOUR, text)) {
+    const hour = cardinalWords(Number(m[1]));
+    if (hour === null) continue;
+    out.push({ at: m.index, find: m[0], replace: `${hour} o'clock`, rule: "clock" });
+  }
+  return out;
+}
+function scriptureSpans(text) {
+  const found = [];
+  const add = (at, end) => {
+    if (found.some((s) => at < s.end && s.at < end)) return;
+    found.push({ at, end, find: text.slice(at, end) });
+  };
+  for (const m of matches(SCRIPTURE_REF, text)) {
+    const [, volume, bookToken, period] = m;
+    if (namesNoBook(bookToken)) continue;
+    const bare = bookToken.toLowerCase();
+    const evidence = period === "." || volume !== void 0 || CANONICAL_BOOK_NAMES.has(bare) || bookToken.length <= 3 && !SHORT_NOT_A_BOOK.has(bare);
+    if (!evidence) continue;
+    let end = m.index + m[0].length;
+    if (TRAILING_MERIDIEM.test(text.slice(end))) continue;
+    for (; ; ) {
+      const tail = REF_LIST_TAIL.exec(text.slice(end));
+      if (tail === null) break;
+      if (!tail[0].includes(":")) {
+        if (/^\s+[A-Z]/.test(text.slice(end + tail[0].length))) break;
+        const numbers = tail[0].match(/\d{1,3}/g) ?? [];
+        if (numbers.some((n) => Number(n) > HIGHEST_VERSE)) break;
+        if (/^,\d{3}(?!\d)/.test(text.slice(end + tail[0].length))) break;
+      }
+      end += tail[0].length;
+    }
+    add(m.index, end);
+  }
+  for (const m of matches(SCRIPTURE_CHAPTER_ONLY, text)) {
+    if (namesNoBook(m[2])) continue;
+    add(m.index, m.index + m[0].length);
+  }
+  for (const m of matches(BARE_NUMBERED_BOOK, text)) {
+    add(m.index, m.index + m[0].length);
+  }
+  found.sort((a, b) => a.at - b.at);
+  return found;
+}
+function verseOrClockCandidates(text) {
+  const out = [];
+  for (const m of matches(BOOKLESS_REF, text)) {
+    const [whole, chapter, verse, verseLetter, chapter2, verse2, verse2Letter, ff] = m;
+    if (Number(verse) < 10) continue;
+    const chapterWords = cardinalWords(Number(chapter));
+    const verseWords = cardinalWords(Number(verse));
+    if (chapterWords === null || verseWords === null) continue;
+    let spoken = `${chapterWords} ${verseWords}`;
+    if (verseLetter !== void 0) spoken += ` ${verseLetter}`;
+    if (verse2 !== void 0) {
+      const verse2Words = cardinalWords(Number(verse2));
+      if (verse2Words === null) continue;
+      spoken += " through";
+      if (chapter2 !== void 0) {
+        const chapter2Words = cardinalWords(Number(chapter2));
+        if (chapter2Words === null) continue;
+        spoken += ` ${chapter2Words}`;
+      }
+      spoken += ` ${verse2Words}`;
+      if (verse2Letter !== void 0) spoken += ` ${verse2Letter}`;
+    }
+    if (ff !== void 0) spoken += " and following";
+    out.push({ at: m.index, find: whole, replace: spoken, rule: "verse-or-clock" });
+  }
+  return out;
+}
+function periodCouldEndSentence(after) {
+  const next = after.replace(/^[\s\u00a0]+/, "");
+  return next === "" || /^["'\u201c\u2018([]/.test(next) || /^[A-Z\u00c0-\u00de]/.test(next);
+}
+function dateWords(month, day, year) {
+  if (day < 1 || day > 31) return null;
+  const dayWords = ordinalToWords(day);
+  if (dayWords === null) return null;
+  if (year === void 0) return `${month} ${dayWords}`;
+  return `${month} ${dayWords}, ${yearToWords(Number(year))}`;
+}
+function dateCandidates(text) {
+  const out = [];
+  for (const m of matches(DATE_DAY_FIRST, text)) {
+    const month = monthName(m[2]);
+    if (month === null) continue;
+    const spoken = dateWords(month, Number(m[1]), m[4]);
+    if (spoken === null) continue;
+    out.push({ at: m.index, find: m[0], replace: spoken, rule: "date" });
+  }
+  for (const m of matches(DATE_MONTH_FIRST, text)) {
+    const month = monthName(m[1]);
+    if (month === null) continue;
+    const spoken = dateWords(month, Number(m[3]), m[4]);
+    if (spoken === null) continue;
+    out.push({ at: m.index, find: m[0], replace: spoken, rule: "date" });
+  }
+  for (const m of matches(DATE_DAY_FIRST_NO_YEAR, text)) {
+    const month = monthName(m[2]);
+    if (month === null) continue;
+    if (DATE_LEAD_BLOCK.test(text.slice(0, m.index))) continue;
+    const spoken = dateWords(month, Number(m[1]), void 0);
+    if (spoken === null) continue;
+    const abbreviated = m[2].toLowerCase() !== month.toLowerCase();
+    const period = m[3] === "." && abbreviated;
+    const find = period ? m[0] : m[0].slice(0, m[0].length - m[3].length);
+    if (sitsInCitation(text, find, m.index)) continue;
+    const after = text.slice(m.index + find.length);
+    const replace = period && periodCouldEndSentence(after) ? `${spoken}.` : spoken;
+    out.push({ at: m.index, find, replace, rule: "date" });
+  }
+  return out;
+}
+function printsPreDecimalSum(text) {
+  POUNDS_SHILLINGS_PENCE.lastIndex = 0;
+  const found = POUNDS_SHILLINGS_PENCE.test(text);
+  POUNDS_SHILLINGS_PENCE.lastIndex = 0;
+  return found;
+}
+function moneyCandidates(text) {
+  const out = [];
+  for (const m of matches(MONEY, text)) {
+    const unit = CURRENCY[m[1]];
+    const whole = Number(m[2].replace(/,/g, ""));
+    const wholeWords = bigCardinalWords(whole);
+    if (wholeWords === null) continue;
+    const frac = m[3];
+    const scale = m[4]?.toLowerCase();
+    let replace;
+    if (scale !== void 0) {
+      const amount = frac === void 0 ? wholeWords : `${wholeWords} point ${fractionDigits(frac)}`;
+      replace = `${amount} ${scale} ${unit.many}`;
+    } else if (frac === void 0) {
+      replace = `${wholeWords} ${whole === 1 ? unit.one : unit.many}`;
+    } else if (frac.length <= 2) {
+      const sub = Number(frac.padEnd(2, "0"));
+      if (sub === 0) {
+        replace = `${wholeWords} ${whole === 1 ? unit.one : unit.many}`;
+      } else if (whole === 0) {
+        replace = `${cardinalWords(sub)} ${unit.sub}`;
+      } else {
+        replace = `${wholeWords} ${whole === 1 ? unit.one : unit.many} and ${cardinalWords(sub)} ${unit.sub}`;
+      }
+    } else {
+      continue;
+    }
+    out.push({ at: m.index, find: m[0], replace, rule: "money" });
+  }
+  for (const m of matches(CENTS, text)) {
+    const words2 = cardinalWords(Number(m[1]));
+    if (words2 === null) continue;
+    out.push({ at: m.index, find: m[0], replace: `${words2} cents`, rule: "money" });
+  }
+  return out;
+}
+function percentCandidates(text) {
+  const out = [];
+  for (const m of matches(PERCENT, text)) {
+    const words2 = decimalPhrase(m[1]);
+    if (words2 === null) continue;
+    const unit = m[2] === "%" ? "percent" : m[2];
+    out.push({ at: m.index, find: m[0], replace: `${words2} ${unit}`, rule: "percent" });
+  }
+  return out;
+}
+function decadeCandidates(text) {
+  const out = [];
+  for (const m of matches(FULL_DECADE, text)) {
+    out.push({
+      at: m.index,
+      find: m[0],
+      replace: pluralizeLastWord(yearToWords(Number(m[1]))),
+      rule: "decade"
+    });
+  }
+  for (const m of matches(APOSTROPHE_DECADE, text)) {
+    const words2 = APOSTROPHE_DECADES[m[1]];
+    if (words2 === void 0) continue;
+    out.push({ at: m.index, find: m[0], replace: words2, rule: "decade" });
+  }
+  return out;
+}
+function ordinalCandidates(text) {
+  const out = [];
+  for (const m of matches(ORDINAL, text)) {
+    const words2 = ordinalToWords(Number(m[1]));
+    if (words2 === null) continue;
+    out.push({ at: m.index, find: m[0], replace: words2, rule: "ordinal" });
+  }
+  return out;
+}
+function markerCandidates(text) {
+  const out = [];
+  for (const m of matches(NUMBER_MARKER, text)) {
+    const words2 = cardinalWords(Number(m[1]));
+    if (words2 === null) continue;
+    out.push({ at: m.index, find: m[0], replace: `number ${words2}`, rule: "marker" });
+  }
+  return out;
+}
+function pageCandidates(text) {
+  const out = [];
+  for (const m of matches(PAGE_REF, text)) {
+    const [whole, abbrev, first, second] = m;
+    if (first.length > 1 && first.startsWith("0")) continue;
+    if (second !== void 0 && second.length > 1 && second.startsWith("0")) continue;
+    if (second !== void 0 && second.length < first.length) continue;
+    const firstWords = cardinalWords(Number(first));
+    if (firstWords === null) continue;
+    let spoken = abbrev.toLowerCase() === "pp" ? "pages" : "page";
+    if (abbrev[0] === abbrev[0].toUpperCase()) spoken = spoken[0].toUpperCase() + spoken.slice(1);
+    spoken += ` ${firstWords}`;
+    if (second !== void 0) {
+      const secondWords = cardinalWords(Number(second));
+      if (secondWords === null) continue;
+      spoken += ` to ${secondWords}`;
+    }
+    out.push({ at: m.index, find: whole, replace: spoken, rule: "page" });
+  }
+  return out;
+}
+function gluedCandidates(text) {
+  const out = [];
+  for (const m of matches(GLUED_ALNUM, text)) {
+    const token = m[0];
+    if (token.length > 24) continue;
+    if (!/[A-Za-z]/.test(token) || !/\d/.test(token)) continue;
+    const runs = token.match(/\d+/g);
+    if (runs.length > GLUED_MAX_RUNS) continue;
+    if (runs.some((run) => run.length > GLUED_MAX_DIGITS)) continue;
+    if (runs.some((run) => run.length > 1 && run.startsWith("0"))) continue;
+    if (DIGITS_THEN_UNIT.test(token)) continue;
+    let claimed = false;
+    for (const runMatch of token.matchAll(/\d+/g)) {
+      if (CLAIMED_BY_ANOTHER_RULE.test(token.slice(runMatch.index + runMatch[0].length))) {
+        claimed = true;
+        break;
+      }
+    }
+    if (claimed) continue;
+    if (/^\.\d/.test(text.slice(m.index + token.length))) continue;
+    if (sitsInCitation(text, token, m.index)) continue;
+    let replace = "";
+    let refused = false;
+    for (let i = 0; i < token.length; ) {
+      if (!/\d/.test(token[i])) {
+        replace += token[i];
+        i++;
+        continue;
+      }
+      let end = i;
+      while (end < token.length && /\d/.test(token[end])) end++;
+      const words2 = cardinalWords(Number(token.slice(i, end)));
+      if (words2 === null) {
+        refused = true;
+        break;
+      }
+      if (i > 0 && /[A-Za-z]/.test(token[i - 1])) replace += " ";
+      replace += words2;
+      if (end < token.length && /[A-Za-z]/.test(token[end])) replace += " ";
+      i = end;
+    }
+    if (refused || replace === token) continue;
+    out.push({ at: m.index, find: token, replace, rule: "glued" });
+  }
+  return out;
+}
+function groupedIntCandidates(text) {
+  const out = [];
+  for (const m of matches(GROUPED_INT, text)) {
+    const words2 = bigCardinalWords(Number(m[2].replace(/,/g, "")));
+    if (words2 === null) continue;
+    if (sitsInCitation(text, m[0], m.index)) continue;
+    out.push({ at: m.index, find: m[0], replace: `${m[1]}${words2}${m[3]}`, rule: "grouped" });
+  }
+  return out;
+}
+function bareIntCandidates(text) {
+  const out = [];
+  for (const m of matches(BARE_INT, text)) {
+    const digits = m[2];
+    if (digits.length > 1 && digits.startsWith("0")) continue;
+    const words2 = cardinalWords(Number(digits));
+    if (words2 === null) continue;
+    if (sitsInCitation(text, m[0], m.index)) continue;
+    out.push({ at: m.index, find: m[0], replace: `${m[1]}${words2}${m[3]}`, rule: "integer" });
+  }
+  return out;
+}
+function yearRangeEnd(first, printed) {
+  if (printed.length === 3) return null;
+  if (printed.length === 4) {
+    const n2 = Number(printed);
+    return n2 > first && inYearWindow(n2) ? n2 : null;
+  }
+  const scale = 10 ** printed.length;
+  const n = Math.floor(first / scale) * scale + Number(printed);
+  return n > first ? n : null;
+}
+function yearReading(find) {
+  const range = new RegExp(`^${YEAR_RANGE.source.replace("(?<!\\S)", "").replace("(?!\\S)", "")}$`).exec(find);
+  if (range !== null) {
+    const first = Number(range[2]);
+    if (!inYearWindow(first)) return null;
+    const end = yearRangeEnd(first, range[4]);
+    if (end === null) return null;
+    return `${range[1]}${yearToWords(first)} to ${yearToWords(end)}${range[5]}`;
+  }
+  const bare = new RegExp(`^${BARE_YEAR.source.replace("(?<!\\S)", "").replace("(?!\\S)", "")}$`).exec(find);
+  if (bare === null || !inYearWindow(Number(bare[2]))) return null;
+  return `${bare[1]}${yearToWords(Number(bare[2]))}${bare[3]}`;
+}
+function yearQuantityReadings(find) {
+  const numbers = (find.match(/\d+/g) ?? []).map(Number);
+  const readings = (n) => {
+    const out = [cardinalWords(n)];
+    if (n % 1e3 !== 0) {
+      const hundreds = cardinalWords(Math.floor(n / 100));
+      const rest = n % 100;
+      out.push(rest === 0 ? `${hundreds} hundred` : `${hundreds} hundred ${cardinalWords(rest)}`);
+    }
+    return out;
+  };
+  if (numbers.length === 1) return readings(numbers[0]);
+  if (numbers.length === 2) {
+    const end = yearRangeEnd(numbers[0], (find.match(/\d+/g) ?? [])[1]);
+    const ends = [numbers[1], ...end === null ? [] : [end]];
+    const out = [];
+    for (const a of readings(numbers[0])) {
+      for (const e of ends) for (const b of readings(e)) out.push(`${a} to ${b}`);
+    }
+    return out;
+  }
+  return [];
+}
+function yearContextAllows(text, at, end) {
+  if (isQuantityContext(text, at, end)) return false;
+  return text[at] === "(" || !YEAR_LEAD_BLOCK.test(text.slice(0, at));
+}
+function isQuantityContext(text, at, end) {
+  return YEAR_CURRENCY_LEAD.test(text.slice(0, at)) || YEAR_UNIT_TAIL.test(text.slice(end));
+}
+function yearRangeCandidates(text) {
+  const out = [];
+  for (const m of matches(YEAR_RANGE, text)) {
+    const replace = yearReading(m[0]);
+    if (replace === null) continue;
+    if (!yearContextAllows(text, m.index, m.index + m[0].length)) continue;
+    if (sitsInCitation(text, m[0], m.index)) continue;
+    out.push({ at: m.index, find: m[0], replace, rule: "year-range" });
+  }
+  return out;
+}
+function bareYearCandidates(text) {
+  const out = [];
+  for (const m of matches(BARE_YEAR, text)) {
+    const replace = yearReading(m[0]);
+    if (replace === null) continue;
+    if (!yearContextAllows(text, m.index, m.index + m[0].length)) continue;
+    if (sitsInCitation(text, m[0], m.index)) continue;
+    out.push({ at: m.index, find: m[0], replace, rule: "year" });
+  }
+  return out;
+}
+function applyNumberRules(text, segments) {
+  const starts = [];
+  let running = 0;
+  for (const length of segments) {
+    starts.push(running);
+    running += length;
+  }
+  if (running !== text.length) {
+    throw new Error(
+      `The number rules were handed segments summing to ${running} for a ${text.length}-character text. Those describe two different strings; nothing was rewritten.`
+    );
+  }
+  const withinOneNode = (at, end) => starts.some((start, i) => at >= start && end <= start + segments[i]);
+  const rewrites = [];
+  const refused = [];
+  const closed = [];
+  for (const m of matches(CLOCK_RANGE, text)) {
+    closed.push({ at: m.index, end: m.index + m[0].length });
+  }
+  for (const re of [DAY_RANGE_SPAN, POUNDS_SHILLINGS_PENCE]) {
+    for (const m of matches(re, text)) closed.push({ at: m.index, end: m.index + m[0].length });
+  }
+  const scripture = scriptureSpans(text);
+  for (const span of scripture) closed.push({ at: span.at, end: span.end });
+  const isClosed = (at, end) => closed.some((c) => at < c.end && c.at < end);
+  for (const rule of RULES) {
+    for (const candidate of rule.scan(text).sort((a, b) => a.at - b.at)) {
+      const end = candidate.at + candidate.find.length;
+      if (text.slice(candidate.at, end) !== candidate.find) {
+        throw new Error(
+          `The ${candidate.rule} rule proposed "${candidate.find}" at ${candidate.at}, where the text reads "${text.slice(candidate.at, end)}". Nothing was rewritten.`
+        );
+      }
+      if (isClosed(candidate.at, end)) continue;
+      if (!withinOneNode(candidate.at, end)) {
+        refused.push({
+          find: candidate.find,
+          replace: candidate.replace,
+          rule: candidate.rule,
+          reason: "the span crosses a text-node boundary"
+        });
+        closed.push({ at: candidate.at, end });
+        continue;
+      }
+      rewrites.push({ at: candidate.at, find: candidate.find, replace: candidate.replace, rule: candidate.rule });
+      closed.push({ at: candidate.at, end });
+    }
+  }
+  rewrites.sort((a, b) => a.at - b.at);
+  const grown = [...segments];
+  let out = "";
+  let cursor = 0;
+  for (const edit of rewrites) {
+    out += text.slice(cursor, edit.at) + edit.replace;
+    cursor = edit.at + edit.find.length;
+    const node = starts.findIndex((start, i) => edit.at >= start && edit.at < start + segments[i]);
+    if (node < 0) {
+      throw new Error(
+        `The number rules rewrote "${edit.find}" at ${edit.at}, which sits in no text node. Nothing was written.`
+      );
+    }
+    grown[node] += edit.replace.length - edit.find.length;
+  }
+  out += text.slice(cursor);
+  return { rewrites, refused, text: out, segments: grown, scripture };
+}
+function stillHasDigits(text) {
+  return DIGIT2.test(text);
+}
+var DIGIT2, ONES2, TENS2, CITATION_LEAD, ROMAN_TOKEN, ARCHIVE_SIGIL, PHONE_PART, ROMAN_CITATION_LEAD, ROMAN_CITATION_LEAD_AT_END, PAGE_RANGE_LEAD, CANONICAL_BOOK_NAMES, NUMBERED_BOOK_NAMES, VOLUME_NUMBER, SHORT_NOT_A_BOOK, MONTHS, MONTH_ALTERNATION, APOSTROPHE_DECADES, CLOCK_MERIDIEM, CLOCK_ON_THE_HOUR, SCRIPTURE_REF, SCRIPTURE_CHAPTER_ONLY, BARE_NUMBERED_BOOK, CLOCK_RANGE, HIGHEST_VERSE, REF_LIST_TAIL, TRAILING_MERIDIEM, BOOKLESS_REF, NOT_AFTER_A_DAY_AND_DASH, DATE_DAY_FIRST, DAY_RANGE_SPAN, DATE_DAY_FIRST_NO_YEAR, DATE_LEAD_BLOCK, DATE_MONTH_FIRST, CURRENCY, MONEY, POUNDS_SHILLINGS_PENCE, CENTS, PERCENT, PERIOD_PREFIX, FULL_DECADE, APOSTROPHE_DECADE, ORDINAL, NUMBER_MARKER, PAGE_REF, GLUED_ALNUM, GLUED_MAX_DIGITS, GLUED_MAX_RUNS, DIGITS_THEN_UNIT, CLAIMED_BY_ANOTHER_RULE, OPENERS, CLOSERS, GROUPED_INT, BARE_INT, YEAR_MIN, YEAR_MAX, inYearWindow, YEAR_CLOSERS, YEAR_RANGE, BARE_YEAR, YEAR_CURRENCY_LEAD, YEAR_UNIT_TAIL, YEAR_LEAD_BLOCK, RULES;
+var init_tts_number_rules = __esm({
+  "src/clean/tts-number-rules.ts"() {
+    "use strict";
+    init_engine_import_meta_url();
+    init_number_expansion();
+    DIGIT2 = /[0-9]/;
+    ONES2 = [
+      "zero",
+      "one",
+      "two",
+      "three",
+      "four",
+      "five",
+      "six",
+      "seven",
+      "eight",
+      "nine",
+      "ten",
+      "eleven",
+      "twelve",
+      "thirteen",
+      "fourteen",
+      "fifteen",
+      "sixteen",
+      "seventeen",
+      "eighteen",
+      "nineteen"
+    ];
+    TENS2 = ["", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety"];
+    CITATION_LEAD = /(?:^|[\s(\[“"])(?:vols?|nos?|ibid|cf|fol)\.\s*$/i;
+    ROMAN_TOKEN = /^[IVXLCDM]{2,}$/;
+    ARCHIVE_SIGIL = /^[A-Za-z]{2,4}$/;
+    PHONE_PART = /^(?:\(\d{3}\)|[^\w\s]*\d{1,4}[-‐-―]\d{2,4}[^\w\s]*)$/;
+    ROMAN_CITATION_LEAD = /(?:^|[\s(\[])(?=[ivxlcdm])m{0,3}(?:cm|cd|d?c{0,3})(?:xc|xl|l?x{0,3})(?:ix|iv|v?i{0,3})\.\s*(?=\d)/i;
+    ROMAN_CITATION_LEAD_AT_END = new RegExp(`${ROMAN_CITATION_LEAD.source}\\d$`, "i");
+    PAGE_RANGE_LEAD = /(?:\bpp?|\bpages?|\bnos?|\bfols?|\bff|\blines?|\bll)\.?\s*$/i;
+    CANONICAL_BOOK_NAMES = /* @__PURE__ */ new Set([
+      "genesis",
+      "exodus",
+      "leviticus",
+      "numbers",
+      "deuteronomy",
+      "joshua",
+      "judges",
+      "ruth",
+      "samuel",
+      "kings",
+      "chronicles",
+      "ezra",
+      "nehemiah",
+      "esther",
+      "job",
+      "psalm",
+      "psalms",
+      "proverbs",
+      "ecclesiastes",
+      "qoheleth",
+      "song",
+      "songs",
+      "solomon",
+      "canticles",
+      "isaiah",
+      "jeremiah",
+      "lamentations",
+      "ezekiel",
+      "daniel",
+      "hosea",
+      "joel",
+      "amos",
+      "obadiah",
+      "jonah",
+      "micah",
+      "nahum",
+      "habakkuk",
+      "zephaniah",
+      "haggai",
+      "zechariah",
+      "malachi",
+      "matthew",
+      "mark",
+      "luke",
+      "john",
+      "acts",
+      "apostles",
+      "romans",
+      "corinthians",
+      "galatians",
+      "ephesians",
+      "philippians",
+      "colossians",
+      "thessalonians",
+      "timothy",
+      "titus",
+      "philemon",
+      "hebrews",
+      "james",
+      "peter",
+      "jude",
+      "revelation",
+      "tobit",
+      "judith",
+      "wisdom",
+      "sirach",
+      "ecclesiasticus",
+      "baruch",
+      "maccabees",
+      "esdras",
+      "susanna",
+      "manasseh",
+      "dragon"
+    ]);
+    NUMBERED_BOOK_NAMES = [
+      "Samuel",
+      "Kings",
+      "Chronicles",
+      "Corinthians",
+      "Thessalonians",
+      "Timothy",
+      "Peter",
+      "Maccabees",
+      "Esdras"
+    ];
+    VOLUME_NUMBER = "[123]|III|II|I|1st|2nd|3rd";
+    SHORT_NOT_A_BOOK = /* @__PURE__ */ new Set([
+      "an",
+      "as",
+      "at",
+      "be",
+      "by",
+      "do",
+      "go",
+      "he",
+      "if",
+      "in",
+      "is",
+      "it",
+      "its",
+      "me",
+      "my",
+      "no",
+      "of",
+      "on",
+      "or",
+      "our",
+      "see",
+      "she",
+      "so",
+      "the",
+      "to",
+      "up",
+      "us",
+      "we",
+      "you",
+      "and",
+      "but",
+      "for",
+      "her",
+      "his",
+      "not",
+      "now",
+      "per",
+      "via",
+      "was",
+      "yet",
+      // …and the citation markers, which point at a number without naming one.
+      "cf",
+      "cp",
+      "eg",
+      "ie",
+      "ib",
+      "id",
+      "nos",
+      "pp",
+      "vs"
+    ]);
+    MONTHS = new Map(Object.entries({
+      jan: "January",
+      january: "January",
+      feb: "February",
+      february: "February",
+      mar: "March",
+      march: "March",
+      apr: "April",
+      april: "April",
+      may: "May",
+      jun: "June",
+      june: "June",
+      jul: "July",
+      july: "July",
+      aug: "August",
+      august: "August",
+      sep: "September",
+      sept: "September",
+      september: "September",
+      oct: "October",
+      october: "October",
+      nov: "November",
+      november: "November",
+      dec: "December",
+      december: "December"
+    }));
+    MONTH_ALTERNATION = "January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sept|Sep|Oct|Nov|Dec";
+    APOSTROPHE_DECADES = {
+      20: "twenties",
+      30: "thirties",
+      40: "forties",
+      50: "fifties",
+      60: "sixties",
+      70: "seventies",
+      80: "eighties",
+      90: "nineties"
+    };
+    CLOCK_MERIDIEM = new RegExp(
+      "(?<![\\w:.\\-])(1[0-2]|0?[1-9]):([0-5]\\d)\\s*([AaPp])\\.?\\s?([Mm])\\.?(?![A-Za-z\\d])",
+      "g"
+    );
+    CLOCK_ON_THE_HOUR = /(?<![\w:.\-])(1[0-2]|0?[1-9]):00(?![\d:])/g;
+    SCRIPTURE_REF = new RegExp(
+      `(?:(?<![\\w:.\\-])(${VOLUME_NUMBER})\\s+)?([A-Z][A-Za-z]{1,13})(\\.?)\\s+(?<![\\d:.])(\\d{1,3}):(\\d{1,3})(?:(?!ff\\.)([a-z])(?![a-z\\d]))?(?:\\s*[\\u2010-\\u2015\\u002D]\\s*(?:(\\d{1,3}):)?(\\d{1,3})(?:(?!ff\\.)([a-z])(?![a-z\\d]))?)?(ff\\.)?(?![A-Za-z\\d])`,
+      // and nothing else glued to it
+      "gd"
+    );
+    SCRIPTURE_CHAPTER_ONLY = new RegExp(
+      `(?<![\\w:.\\-])(${VOLUME_NUMBER})\\s+([A-Z][A-Za-z]{1,12})\\.\\s+(\\d{1,3})(?![\\d:]|\\.\\d|\\s*[\\u2010-\\u2015\\u002D]\\s*\\d)`,
+      "gd"
+    );
+    BARE_NUMBERED_BOOK = new RegExp(
+      `(?<![\\w:.\\-])(${VOLUME_NUMBER})\\s+(${NUMBERED_BOOK_NAMES.join("|")})\\b`,
+      "g"
+    );
+    CLOCK_RANGE = /\d{1,2}:\d{2}\s*[‐-―-]\s*\d{1,2}:\d{2}/g;
+    HIGHEST_VERSE = 176;
+    REF_LIST_TAIL = new RegExp(
+      "^(?:\\s*[;,]\\s*(?:and\\s+)?|\\s+and\\s+)(?:\\d{1,3}:)?\\d{1,3}(?:(?!ff\\.)[a-z](?![a-z\\d]))?(?:\\s*[\\u2010-\\u2015\\u002D]\\s*(?:\\d{1,3}:)?\\d{1,3}(?:(?!ff\\.)[a-z](?![a-z\\d]))?)?(?:ff\\.)?(?![A-Za-z\\d])"
+    );
+    TRAILING_MERIDIEM = /^\s*(?:[ap]\.?\s?m\.?(?![A-Za-z])|o'clock\b)/i;
+    BOOKLESS_REF = new RegExp(
+      "(?<![\\d:.])(\\d{1,3}):(\\d{1,3})(?:(?!ff\\.)([a-z])(?![a-z\\d]))?(?:\\s*[\\u2010-\\u2015\\u002D]\\s*(?:(\\d{1,3}):)?(\\d{1,3})(?:(?!ff\\.)([a-z])(?![a-z\\d]))?)?(ff\\.)?(?![A-Za-z\\d])",
+      "g"
+    );
+    NOT_AFTER_A_DAY_AND_DASH = "(?<!\\d\\s?[\\u2010-\\u2015\\-]\\s?)";
+    DATE_DAY_FIRST = new RegExp(
+      `(?<![\\w:.\\-])${NOT_AFTER_A_DAY_AND_DASH}(\\d{1,2})(?:st|nd|rd|th)?\\s+(${MONTH_ALTERNATION})(\\.?),?\\s+(1[1-9]\\d{2}|20\\d{2})(?![\\w\\-])`,
+      "g"
+    );
+    DAY_RANGE_SPAN = new RegExp(
+      `(?<![\\w:.\\-])(?:\\d{1,2}(?:st|nd|rd|th)?\\s?[\\u2010-\\u2015\\-]\\s?\\d{1,2}(?:st|nd|rd|th)?\\s+(?:${MONTH_ALTERNATION})\\.?|(?:${MONTH_ALTERNATION})\\.?\\s+\\d{1,2}(?:st|nd|rd|th)?\\s?[\\u2010-\\u2015\\-]\\s?\\d{1,2}(?:st|nd|rd|th)?)(?![A-Za-z\\d])(?:,?\\s+(?:1[1-9]\\d{2}|20\\d{2})(?![\\w\\-]))?`,
+      "g"
+    );
+    DATE_DAY_FIRST_NO_YEAR = new RegExp(
+      `(?<![\\w:.\\-])${NOT_AFTER_A_DAY_AND_DASH}(\\d{1,2})(?:st|nd|rd|th)?\\s+(${MONTH_ALTERNATION})(\\.?)(?![A-Za-z])(?!,?\\s*(?:1[1-9]\\d{2}|20\\d{2}))`,
+      "g"
+    );
+    DATE_LEAD_BLOCK = /\b(?:chapter|part|section|volume|vol|book|figure|fig|table|act|no|nos|pp?|line|item|note)\.?\s+$/i;
+    DATE_MONTH_FIRST = new RegExp(
+      `(?<![\\w\\-])(${MONTH_ALTERNATION})(\\.?)\\s+(\\d{1,2})(?:st|nd|rd|th)?(?:,?\\s+(1[1-9]\\d{2}|20\\d{2}))?(?![\\w\\-:])(?!\\s?[\\u2010-\\u2015]\\s?\\d)`,
+      "g"
+    );
+    CURRENCY = {
+      $: { one: "dollar", many: "dollars", sub: "cents" },
+      "\xA3": { one: "pound", many: "pounds", sub: "pence" },
+      "\u20AC": { one: "euro", many: "euros", sub: "cents" }
+    };
+    MONEY = /([$£€])\s?(\d{1,3}(?:,\d{3})+|\d+)(?:\.(\d+))?(?!\.?\d)(?:\s*(hundred|thousand|million|billion|trillion))?/gi;
+    POUNDS_SHILLINGS_PENCE = /£\s?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d{1,2}){2}(?![\d.]*\d)/g;
+    CENTS = /(?<![\w.\-])(\d{1,3})\s?¢/g;
+    PERCENT = /(?<![\w.\-])(\d{1,3}(?:,\d{3})*(?:\.\d+)?)\s*(%|per cent|percent)/g;
+    PERIOD_PREFIX = "(?<=(?<![\\w\\-])(?:[Mm]id|[Ee]arly|[Ll]ate|[Pp]re|[Pp]ost)-)";
+    FULL_DECADE = new RegExp(`(?:${PERIOD_PREFIX}|(?<![\\w.\\-]))(1[1-9]\\d0|20\\d0)s\\b`, "g");
+    APOSTROPHE_DECADE = /['‘’](\d0)s\b/g;
+    ORDINAL = /(?<![\w.\-])(\d{1,4})(?:st|nd|rd|th)\b/g;
+    NUMBER_MARKER = /#\s?(\d{1,4})(?![\w\-])/g;
+    PAGE_REF = new RegExp(
+      "(?<![\\w.\\-])(pp?)\\.\\s*(\\d{1,4})(?:\\s*[\\u2010-\\u2015\\u002D]\\s*(\\d{1,4}))?(?![\\w\\-])",
+      "gi"
+    );
+    GLUED_ALNUM = /(?<![\w/.\-])[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*(?![\w/\-])/g;
+    GLUED_MAX_DIGITS = 3;
+    GLUED_MAX_RUNS = 3;
+    DIGITS_THEN_UNIT = /^\d+[A-Za-z]/;
+    CLAIMED_BY_ANOTHER_RULE = /^(?:s|st|nd|rd|th)/i;
+    OPENERS = `[(\\["'\u2018\u201C\xA1\xBF]*`;
+    CLOSERS = `[)\\]"'\u2019\u201D.,;!?]*`;
+    GROUPED_INT = new RegExp(
+      `(?<!\\S)(${OPENERS})(\\d{1,3}(?:,\\d{3})+)(${CLOSERS})(?!\\S)`,
+      "g"
+    );
+    BARE_INT = new RegExp(`(?<!\\S)(${OPENERS})(\\d{1,3})(${CLOSERS})(?!\\S)`, "g");
+    YEAR_MIN = 1100;
+    YEAR_MAX = 2099;
+    inYearWindow = (n) => n >= YEAR_MIN && n <= YEAR_MAX;
+    YEAR_CLOSERS = `[)\\]"'\u2019\u201D.,;:!?]*`;
+    YEAR_RANGE = new RegExp(
+      `(?<!\\S)(${OPENERS})(\\d{4})(\\s*[\\u2010-\\u2015\\u002D]\\s*)(\\d{1,4})(${YEAR_CLOSERS})(?!\\S)`,
+      "g"
+    );
+    BARE_YEAR = new RegExp(
+      `(?:${PERIOD_PREFIX}|(?<!\\S))(${OPENERS})(\\d{4})(${YEAR_CLOSERS})(?!\\S)`,
+      "g"
+    );
+    YEAR_CURRENCY_LEAD = /[$£€¥¢]\s*$/;
+    YEAR_UNIT_TAIL = /^\s*(?:%|per\s?cent|percent|km|kg|kilomet(?:re|er)s?|kilograms?|miles?|met(?:re|er)s?|feet|foot|ft|yards?|acres?|hectares?|tons?|tonnes?|lbs?|pounds?|lit(?:re|er)s?|gallons?|square|cubic|degrees?|°)(?![A-Za-z])/i;
+    YEAR_LEAD_BLOCK = /\b(?:chapter|part|section|volume|vol|book|figure|fig|table|act|no|nos|pp?|page|line|item|note|number|room|op|opus|article|art)\.?\s*$/i;
+    RULES = [
+      // A clock with a meridiem, or on the hour, is settled before scripture can
+      // read "2:00 p.m." as a chapter and a verse (the Mac's live finding).
+      { name: "clock", scan: clockCandidates },
+      // What is left of scripture in this file: a book-LESS chapter:verse, read only
+      // where the verse and the clock readings coincide. Every reference with a book
+      // in front of it was closed before this list ran and belongs to the model.
+      { name: "verse-or-clock", scan: verseOrClockCandidates },
+      // Before the date and the integer, because "p. 12" is a page and not a day,
+      // and because the whole "pp. 65-71" is one reading its halves are not.
+      { name: "page", scan: pageCandidates },
+      { name: "date", scan: dateCandidates },
+      { name: "money", scan: moneyCandidates },
+      { name: "percent", scan: percentCandidates },
+      { name: "decade", scan: decadeCandidates },
+      { name: "ordinal", scan: ordinalCandidates },
+      { name: "marker", scan: markerCandidates },
+      // A range before its halves, so "1844–79" is one reading and not a year and
+      // a stray "79". Both after the date, money and percent rules, which know
+      // more about the numbers they take.
+      { name: "year-range", scan: yearRangeCandidates },
+      { name: "year", scan: bareYearCandidates },
+      { name: "grouped", scan: groupedIntCandidates },
+      { name: "integer", scan: bareIntCandidates },
+      // LAST, because it is the widest net: every earlier rule that knows a shape
+      // ("1940s-era" is a decade before it is a glued token) has already taken it,
+      // and what reaches here is a token no other rule recognized.
+      { name: "glued", scan: gluedCandidates }
+    ];
+  }
+});
+
 // src/clean/tts-number-normalizer.ts
 function hasRegnalSingleNumeral(find) {
   for (const m of find.matchAll(SINGLE_NUMERAL)) {
@@ -4116,7 +4294,7 @@ function isWholeBracketedInsertion(find) {
 }
 function classifyEdit(find) {
   if (isWholeBracketedInsertion(find)) return "bracketed";
-  if (DIGIT2.test(find)) return "number";
+  if (DIGIT3.test(find)) return "number";
   if (/[()[\]]/.test(find)) return "bracketed";
   if (ROMAN_WORD.test(find) || hasRegnalSingleNumeral(find)) return "roman";
   if (find.includes("&")) return "ampersand";
@@ -4293,7 +4471,7 @@ function fewestNumberWords(text) {
   return needed;
 }
 function keepsEveryWord(find, replace) {
-  const required = find.split(/\s+/).filter((t) => hasLetter(t) && !DIGIT2.test(t)).map((t) => bareWord(t).toLowerCase()).filter((t) => t.length > 0);
+  const required = find.split(/\s+/).filter((t) => hasLetter(t) && !DIGIT3.test(t)).map((t) => bareWord(t).toLowerCase()).filter((t) => t.length > 0);
   if (required.length === 0) return true;
   const got = replace.split(/\s+/).map((t) => bareWord(t).toLowerCase());
   let at = 0;
@@ -4321,7 +4499,7 @@ function expandsToken(token, word) {
   return true;
 }
 function scriptureWordsSurvive(find, replace) {
-  const prose = (text) => text.split(/\s+/).filter((t) => hasLetter(t) && !DIGIT2.test(t)).map((t) => bareWord(t).toLowerCase()).filter((t) => t.length > 0);
+  const prose = (text) => text.split(/\s+/).filter((t) => hasLetter(t) && !DIGIT3.test(t)).map((t) => bareWord(t).toLowerCase()).filter((t) => t.length > 0);
   const required = prose(find);
   if (required.length > 1 && ROMAN_VOLUME.test(required[0])) required.shift();
   const got = prose(replace);
@@ -4369,9 +4547,9 @@ function digitBoundedOccurrences(target, find) {
   const out = [];
   if (find === "") return out;
   for (let at = target.indexOf(find); at >= 0; at = target.indexOf(find, at + 1)) {
-    if (DIGIT2.test(find[0]) && at > 0 && DIGIT2.test(target[at - 1])) continue;
+    if (DIGIT3.test(find[0]) && at > 0 && DIGIT3.test(target[at - 1])) continue;
     const end = at + find.length;
-    if (DIGIT2.test(find[find.length - 1]) && end < target.length && DIGIT2.test(target[end])) continue;
+    if (DIGIT3.test(find[find.length - 1]) && end < target.length && DIGIT3.test(target[end])) continue;
     out.push(at);
   }
   return out;
@@ -4381,7 +4559,7 @@ function sameReading(a, b) {
   return words2(a) === words2(b);
 }
 function rejoinsSplitWord(find, replace, knownWord = isEnglishWord) {
-  if (DIGIT2.test(find) || DIGIT2.test(replace)) return false;
+  if (DIGIT3.test(find) || DIGIT3.test(replace)) return false;
   if (find.replace(/\s+/g, "") !== replace.replace(/\s+/g, "")) return false;
   const pieces = find.trim().split(/\s+/);
   const joined = replace.trim().split(/\s+/);
@@ -4452,7 +4630,7 @@ function validateNumberEdits(target, segments, edits, reserved = [], policy = NU
       continue;
     }
     seen.add(said2);
-    const everywhere = DIGIT2.test(find) && replace.trim() !== "" ? digitBoundedOccurrences(target, find) : [];
+    const everywhere = DIGIT3.test(find) && replace.trim() !== "" ? digitBoundedOccurrences(target, find) : [];
     if (everywhere.length > 1) {
       for (const at of everywhere) positioned.push({ find, replace, at, from: proposed.from });
     } else {
@@ -4467,7 +4645,7 @@ function validateNumberEdits(target, segments, edits, reserved = [], policy = NU
     let provenExact = false;
     carriedFrom = proposed.from;
     const isRemoval = replace.trim() === "";
-    const isNumber = DIGIT2.test(find) && !isRemoval;
+    const isNumber = DIGIT3.test(find) && !isRemoval;
     if (find === "" || find === replace) {
       reject(find, replace, "NOOP");
       continue;
@@ -4566,7 +4744,7 @@ function validateNumberEdits(target, segments, edits, reserved = [], policy = NU
       });
       continue;
     }
-    if (DIGIT2.test(replace)) {
+    if (DIGIT3.test(replace)) {
       reject(find, replace, "DIGIT_IN_REPLACE");
       continue;
     }
@@ -4799,7 +4977,7 @@ function validateNumberEdits(target, segments, edits, reserved = [], policy = NU
     const why = said(respelled);
     records.push(why === void 0 ? { find, replace: reading, status: "APPLIED", editClass: recordClass } : { find, replace: reading, status: "APPLIED", editClass: recordClass, detail: why });
   }
-  if (policy.gate === false) {
+  if (policy.gate === false || policy.gate === "light") {
     const MECHANICAL = /* @__PURE__ */ new Set([
       "NOOP",
       "NOT_FOUND",
@@ -4821,8 +4999,15 @@ function validateNumberEdits(target, segments, edits, reserved = [], policy = NU
       const end = at + record2.find.length;
       if (!withinOneNode(at, end)) continue;
       if (reserved.some((r) => at < r.end && r.at < end) || accepted.some((a) => at < a.at + a.find.length && a.at < end)) continue;
+      if (policy.gate === "light") {
+        const why = lightGateRefusal(record2.find, record2.replace);
+        if (why !== null) {
+          record2.detail = `LIGHT GATE \u2014 ${why} (strict: ${record2.status}${record2.detail === void 0 ? "" : `: ${record2.detail}`})`;
+          continue;
+        }
+      }
       accepted.push({ find: record2.find, replace: record2.replace, at });
-      record2.detail = `UNGATED \u2014 the gate would have refused ${record2.status}${record2.detail === void 0 ? "" : `: ${record2.detail}`}`;
+      record2.detail = `${policy.gate === "light" ? "LIGHT GATE passed" : "UNGATED"} \u2014 the strict gate would have refused ${record2.status}${record2.detail === void 0 ? "" : `: ${record2.detail}`}`;
       record2.status = "APPLIED";
     }
   }
@@ -5127,22 +5312,23 @@ async function askAboutEach(asks, runner, pass, systemPrompt2, onProgress, ask =
   }
   return { decisions, parseFailed, asked: total };
 }
-var NORMALIZER_VERSION, RAW_ANSWER_EXCERPT, MAX_PARSE_FAIL_SHARE, ROMAN_WORD, SINGLE_NUMERAL, WHOLE_BRACKET, DIGIT2, SPOKEN_BASE, NEVER_SPOKEN, PUNCTUATION_NAMES, HYPHEN_DASH_ALLOWANCE, LIST_MARKER, WORD_TOKEN, wordKey, READING_PUNCTUATION, DOTTED_LETTERS, MAX_BRACKET_WORDS, NUMBER_WORD_SLACK, NUMBER_WORDS, ORDINAL_VOLUME_WORDS, ROMAN_VOLUME, NUMBERS_ONLY, EVERY_CLASS, MAX_FIND_CHARS, replaceCap, MAX_EDITS_PER_BLOCK, MAX_TEXT_EDIT_SHARE, MIN_TEXT_EDIT_BUDGET, BOOK_WORD_MIN, TRANSPORT_PROSE, TRANSPORT_CAUSES;
+var NORMALIZER_VERSION, RAW_ANSWER_EXCERPT, MAX_PARSE_FAIL_SHARE, ROMAN_WORD, SINGLE_NUMERAL, WHOLE_BRACKET, DIGIT3, SPOKEN_BASE, NEVER_SPOKEN, PUNCTUATION_NAMES, HYPHEN_DASH_ALLOWANCE, LIST_MARKER, WORD_TOKEN, wordKey, READING_PUNCTUATION, DOTTED_LETTERS, MAX_BRACKET_WORDS, NUMBER_WORD_SLACK, NUMBER_WORDS, ORDINAL_VOLUME_WORDS, ROMAN_VOLUME, NUMBERS_ONLY, EVERY_CLASS, MAX_FIND_CHARS, replaceCap, MAX_EDITS_PER_BLOCK, MAX_TEXT_EDIT_SHARE, MIN_TEXT_EDIT_BUDGET, BOOK_WORD_MIN, TRANSPORT_PROSE, TRANSPORT_CAUSES;
 var init_tts_number_normalizer = __esm({
   "src/clean/tts-number-normalizer.ts"() {
     "use strict";
     init_engine_import_meta_url();
     init_ai_cleanup_prepass();
+    init_light_gate();
     init_tts_number_rules();
     init_number_expansion();
     init_tts_spoken_forms();
-    NORMALIZER_VERSION = "n14";
+    NORMALIZER_VERSION = "n15";
     RAW_ANSWER_EXCERPT = 600;
     MAX_PARSE_FAIL_SHARE = 0.1;
     ROMAN_WORD = /(?:^|\s)[IVXLCDM]{2,}(?:$|[\s,.;:)\]])/;
     SINGLE_NUMERAL = /(?:^|\s)([IVX])(?=$|[\s,.;:)\]'’])/g;
     WHOLE_BRACKET = /^\s*[([][^()[\]]*[)\]]\s*$/;
-    DIGIT2 = /[0-9]/;
+    DIGIT3 = /[0-9]/;
     SPOKEN_BASE = /[A-Za-zÀ-ÿ\s'’,.-]/;
     NEVER_SPOKEN = /[0-9$£€¢%#/\\<>{}|@*_~^+=]/;
     PUNCTUATION_NAMES = /\b(?:hyphen|colon|dash|slash)e?s?\b/gi;
@@ -30739,7 +30925,7 @@ var init_version = __esm({
     init_engine_import_meta_url();
     init_package();
     VERSION = package_default.version;
-    GIT_COMMIT = "src 40bf1861b54c".length > 0 ? "src 40bf1861b54c" : null;
+    GIT_COMMIT = "src 0bbdb777b8e6".length > 0 ? "src 0bbdb777b8e6" : null;
   }
 });
 
@@ -73720,7 +73906,7 @@ var init_run = __esm({
     KEY_FORMAT = "clean/dialect/v1";
     SENTENCE_KEY_FORMAT = "clean/sentence/v1";
     NUL6 = String.fromCharCode(0);
-    DEFAULT_CLEAN_GATE = false;
+    DEFAULT_CLEAN_GATE = "light";
     TRIAGE_KEY_FORMAT = "clean/triage/v1";
     NOTHING_TO_ASK2 = {
       model: "(no model \u2014 every block was already answered)",
@@ -102350,8 +102536,8 @@ var CT_UNIT = {
 var CT_GATE = {
   name: "gate",
   type: "string",
-  placeholder: "<on|off>",
-  describe: "Enforce the validators judgement refusals (on), or apply every edit the model proposes that can be spliced and record what the gate would have said (off, the default while the prompt is tuned)."
+  placeholder: "<light|on|off>",
+  describe: "light (default): refuse only a reading that changes what is already spoken as printed. on: the strict validators. off: apply every edit that can be spliced. Every setting records what the strict gate would have said."
 };
 async function cleanUnit(args) {
   const unit = optionalString(args, "unit");
@@ -102411,10 +102597,10 @@ async function runCleanText2(args) {
   }
   const unit = await cleanUnit(args);
   const gateArg = optionalString(args, "gate");
-  if (gateArg !== void 0 && gateArg !== "on" && gateArg !== "off") {
-    throw new UsageError(`--gate takes on or off, not "${gateArg}"`);
+  if (gateArg !== void 0 && gateArg !== "on" && gateArg !== "off" && gateArg !== "light") {
+    throw new UsageError(`--gate takes light, on or off, not "${gateArg}"`);
   }
-  const gate = gateArg === void 0 ? void 0 : gateArg === "on";
+  const gate = gateArg === void 0 ? void 0 : gateArg === "light" ? "light" : gateArg === "on";
   const epubIn = optionalString(args, "epub");
   if (epubIn !== void 0) {
     const bookRoute = ["book", "records", "stamp", "generation", "triage", "unit"].filter((name) => optionalString(args, name) !== void 0);
@@ -104333,7 +104519,7 @@ var COMMANDS = [
   {
     name: "clean-text",
     summary: "Clean a book's text for a narrator: punctuation, numbers as words, the model on every block.",
-    usage: "--book <book.jsonl> --records <out.records.jsonl> --stamp <out.stamp.json> [--generation <id>] [--endpoint <url>] [--model <name>] [--server <openai|ollama|anthropic>] [--concurrency <n>] [--triage <verdicts.json>] [--unit <sentence|block>] [--gate <on|off>]  |  --epub <in.epub> --out <out.epub> [--endpoint <url>] [--model <name>] [--server <openai|ollama|anthropic>] [--concurrency <n>]",
+    usage: "--book <book.jsonl> --records <out.records.jsonl> --stamp <out.stamp.json> [--generation <id>] [--endpoint <url>] [--model <name>] [--server <openai|ollama|anthropic>] [--concurrency <n>] [--triage <verdicts.json>] [--unit <sentence|block>] [--gate <light|on|off>]  |  --epub <in.epub> --out <out.epub> [--endpoint <url>] [--model <name>] [--server <openai|ollama|anthropic>] [--concurrency <n>]",
     detail: [
       "THE THIRD TEXT ACT. translate turns a book into another language, --rewrite",
       "turns it into plainer prose, and this turns it into the text a NARRATOR is",
