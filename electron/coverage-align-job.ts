@@ -832,6 +832,14 @@ async function runCoverageAlignOnCrucible(
     console.log(`[COVERAGE-ALIGN] crucible "${server}" aligned ${outcome.chunks} chunk(s) in ${minutes} min, `
       + `${outcome.failed.length} failed; items at ${outcome.alignmentPath}`);
     /*
+     * THE RENDER'S FILES ARE RELEASED NOW (render-holds.ts). The align was their
+     * last consumer on the server: the measure below reads `alignment.json`, and
+     * so does its retry. Owen, 2026-09-25: "keep all working files on the
+     * crucible side until the chain is complete. then remove them."
+     */
+    const { releaseRenderHolds } = await import('./crucible/render-holds.js');
+    await releaseRenderHolds(config.processDir, (line) => console.log(`[COVERAGE-ALIGN] ${line}`));
+    /*
      * AND NOW NARRATOR'S HALF, HERE — `align.ts`'s shape (a), built 2026-09-18.
      *
      * Until that date this returned `narratorDoorOwedMessage`: the items were on

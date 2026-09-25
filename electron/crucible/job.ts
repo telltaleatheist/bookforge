@@ -443,8 +443,12 @@ export async function assertCrucibleModelOffered(
 // The job
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** A local file to upload, or bytes already in hand. */
-export type CrucibleJobInputSource = string | Uint8Array;
+/**
+ * A local file to upload, bytes already in hand, or an artifact a previous job
+ * on the SAME server left there (`client.artifactRef`, Crucible 1.0.38) — which
+ * crosses the wire as a name and is never uploaded.
+ */
+export type CrucibleJobInputSource = string | Uint8Array | { readonly artifact: { readonly jobId: string; readonly name: string } };
 
 /**
  * What the server said about how far along it is. `warming` lines are the
@@ -1089,8 +1093,17 @@ async function uploadInputs(
   options: RunCrucibleJobOptions,
   log: (line: string) => void,
 ): Promise<Record<string, JobInput>> {
-  const entries = Object.entries(options.inputs);
   const out: Record<string, JobInput> = {};
+  // A REFERENCE IS NOT UPLOADED: it names bytes the server already holds, and
+  // the server checks it at submit (`artifact_expired`, before the job exists).
+  const entries: [string, string | Uint8Array][] = [];
+  for (const [name, source] of Object.entries(options.inputs)) {
+    if (typeof source === 'object' && !(source instanceof Uint8Array)) {
+      out[name] = { artifact: { jobId: source.artifact.jobId, name: source.artifact.name } };
+    } else {
+      entries.push([name, source]);
+    }
+  }
   if (entries.length === 0) return out;
 
   // Every input is checked BEFORE the first byte crosses: a missing chunk file
@@ -1125,17 +1138,13 @@ async function uploadInputs(
           + 'instead is not done here.',
         );
       }
-    } else if (!(source instanceof Uint8Array)) {
-      throw new CrucibleJobRefused(
-        'crucible_input_unreadable', server,
-        `input "${name}" is neither a path nor bytes (${typeof source})`,
-      );
     } else if (source.length === 0) {
       throw new CrucibleJobRefused('crucible_input_empty', server, `input "${name}" is zero bytes`);
     }
   }
 
-  log(`uploading ${entries.length} input(s) for the ${type} job to crucible "${server}"`);
+  log(`uploading ${entries.length} input(s) for the ${type} job to crucible "${server}"`
+    + `${Object.keys(out).length > 0 ? `; ${Object.keys(out).length} more named from earlier jobs there` : ''}`);
   let next = 0;
   /*
    * THE FIRST THROW STOPS THE OTHER THREE (bug hunt C3, 2026-09-20).

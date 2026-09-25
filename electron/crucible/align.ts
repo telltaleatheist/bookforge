@@ -88,8 +88,10 @@ import {
   CrucibleJobRefused,
   assertCrucibleModelOffered,
   runCrucibleJob,
+  type CrucibleJobOutcome,
   type CrucibleJobProgress,
 } from './job';
+import { planAlignInputs, uploadEveryChunk, type AlignInputPlan } from './render-holds';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // The model id table
@@ -173,6 +175,8 @@ export interface SessionAlignChunk {
   /** The spoken text — what narrator hands its own aligner. */
   readonly text: string;
   readonly audioPath: string;
+  /** Its size as stat'd here — what proves the server's copy is these bytes (render-holds.ts). */
+  readonly size: number;
 }
 
 export interface SessionAlignChunks {
@@ -256,7 +260,7 @@ export function sessionAlignChunks(processDir: string, indices?: readonly number
       skipped.push({ index, reason: 'empty audio file' });
       return;
     }
-    chunks.push({ index, text: spoken, audioPath });
+    chunks.push({ index, text: spoken, audioPath, size });
   });
   if (wanted !== null) {
     for (const index of wanted) {
@@ -390,17 +394,16 @@ export async function runCrucibleAlign(options: RunCrucibleAlignOptions): Promis
   const client = await crucibleClientFor(server, CRUCIBLE_CLIENT_NAME);
   await assertCrucibleModelOffered(client, server, 'align', model);
 
-  const inputs: Record<string, string> = {};
-  for (const chunk of options.chunks) {
-    inputs[`${chunk.index}.flac`] = chunk.audioPath;
-  }
+  // THE RENDER'S FILES WHERE THE SERVER STILL HOLDS THEM, the rest uploaded
+  // (render-holds.ts, Crucible 1.0.38).
+  const plan = await planAlignInputs(client, server, processDir, options.chunks, log);
   const params = {
     language: options.language.trim(),
     chunks: options.chunks.map((c) => ({ index: c.index, text: c.text })),
   };
 
   let cues = 0;
-  const outcome = await runCrucibleJob({
+  const submit = (inputs: AlignInputPlan['inputs']): Promise<CrucibleJobOutcome> => runCrucibleJob({
     server,
     type: 'align',
     model,
@@ -434,6 +437,23 @@ export async function runCrucibleAlign(options: RunCrucibleAlignOptions): Promis
       });
     },
   });
+
+  /*
+   * A NAMED FILE THE SERVER LOST BETWEEN THE PLAN AND THE SUBMIT is refused
+   * `artifact_expired` before the job exists — the one moment it can happen is
+   * the collector running in between. Every chunk then goes up as a file, once:
+   * that is how a server is given bytes it does not have, not a second try at
+   * the same thing.
+   */
+  let outcome: CrucibleJobOutcome;
+  try {
+    outcome = await submit(plan.inputs);
+  } catch (err) {
+    if (!(err instanceof CrucibleJobRefused && err.code === 'artifact_expired' && plan.referenced > 0)) throw err;
+    log(`crucible "${server}" no longer holds a render file the align named (${err.message}); `
+      + `uploading all ${options.chunks.length} chunk(s)`);
+    outcome = await submit(uploadEveryChunk(options.chunks).inputs);
+  }
 
   if (outcome.artifacts.where !== 'disk') {
     throw new CrucibleAlignRefused('crucible_align_artifact_missing', 'artifacts were not written to disk');

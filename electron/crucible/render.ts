@@ -75,6 +75,7 @@ import type { RenderChunk, RenderResult } from '@crucible/client';
 import { CRUCIBLE_CLIENT_NAME, crucibleClientFor } from './servers';
 import { noteInFlightEvent, recordInFlight } from './in-flight-ledger';
 import { artifactOnDiskIn, createArtifactsOwed } from './artifacts-owed';
+import { holdRenderAtSubmit, processDirOfSentencesDir, writeRenderHoldRecord } from './render-holds';
 import { crucibleTransientLine } from './job';
 import { transportFailureCause } from './transport-failure';
 import {
@@ -773,6 +774,30 @@ export async function runCrucibleRender(
   }
 
   /*
+   * KEEP THIS RENDER'S FILES ON THE SERVER FOR THE ALIGN (render-holds.ts).
+   * Asked the moment the job exists, before the first download: the server
+   * reaps a job whose every artifact has been fetched, and this render fetches
+   * each one as it lands. Asked again on an attach (it is idempotent), so a
+   * resumed render has its record too. The record is written now, empty, so a
+   * hard kill still leaves the hold an owner, and again with every landed
+   * chunk's size when the stream ends.
+   */
+  const renderProcessDir = processDirOfSentencesDir(sentencesDir);
+  const held = await holdRenderAtSubmit(client, server, jobId, log);
+  const landedSizes: Record<string, number> = {};
+  const recordHold = (): void => {
+    if (!held) return;
+    try {
+      writeRenderHoldRecord(renderProcessDir, server, jobId, landedSizes);
+    } catch (err) {
+      log(`could not record render ${jobId}'s hold in ${renderProcessDir}; the align will upload `
+        + `these chunks and the server collects the hold at its retention window: `
+        + `${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+  recordHold();
+
+  /*
    * THE RECEIPT A HARD KILL CANNOT LOSE.
    *
    * This is the exact job Owen found still running at 70% an hour after ctrl-C
@@ -943,6 +968,7 @@ export async function runCrucibleRender(
       // progress bar for a file that is not a chunk.
       const m = /^(\d+)\.flac$/.exec(written.name);
       if (m) {
+        landedSizes[m[1]] = written.bytes;
         options.onChunkWritten?.(parseInt(m[1], 10), written.path);
       } else {
         log(`crucible job ${jobId} wrote ${written.name}, which is not an <index>.flac`);
@@ -1047,6 +1073,8 @@ export async function runCrucibleRender(
   } catch (err) {
     streamError = err;
   }
+  // Whatever ended the stream, what landed is on disk and on the server.
+  recordHold();
 
   /*
    * ── THE ONE EXIT ─────────────────────────────────────────────────────────

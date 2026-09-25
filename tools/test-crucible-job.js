@@ -554,8 +554,9 @@ async function uploadPoolStopsOnFailure() {
 
   const dir = freshDir('pool');
   const inputs = {};
-  // Twelve against a pool of four: three full passes if nothing stops it.
-  for (let n = 1; n <= 12; n += 1) {
+  // Forty-eight against a pool of sixteen (job.ts UPLOAD_CONCURRENCY, 16 since
+  // 2026-09-25): three full passes if nothing stops it.
+  for (let n = 1; n <= 48; n += 1) {
     const file = path.join(dir, `chunk-${n}.flac`);
     fs.writeFileSync(file, `fLaC${n}`);
     inputs[`chunk-${n}.flac`] = file;
@@ -573,8 +574,8 @@ async function uploadPoolStopsOnFailure() {
   await check('the first failed upload stops the pool — nothing after it crosses the wire', () => {
     assert.ok(thrown !== null, 'a refused upload is a refused job');
     assert.strictEqual(thrown.code, 'invalid_inputs');
-    assert.ok(asked <= 4,
-      `only the first pool-width was ever attempted; asked for ${asked} of 12 uploads`);
+    assert.ok(asked <= 16,
+      `only the first pool-width was ever attempted; asked for ${asked} of 48 uploads`);
     assert.strictEqual(submits, 0,
       'and no job was submitted — the rest of the book would have gone to a server that '
       + 'was never going to run it');
