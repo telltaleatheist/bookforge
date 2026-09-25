@@ -458,7 +458,8 @@ const VENDOR_LEAVES = '770480d';
  * cleanup prompt itself moved to a new file, `src/clean/prompts/tts-clean-text.txt`,
  * which the engine embeds and this repository does not carry.
  */
-const ONE_DOOR_BASELINE = 'f168809';
+/* MOVED 2026-09-25, f168809 → 2c5edfc (n14), read in full: the version constant and its comment only in these files; the rules moved in the engine's own prompt file. */
+const ONE_DOOR_BASELINE = '2c5edfc';
 const FROZEN_SINCE_BASELINE = [
   'src/clean/tts-number-normalizer.ts',
   'src/clean/tts-spoken-forms.ts',
@@ -520,7 +521,7 @@ const FILES = [
     theirs: 'src/clean/tts-number-normalizer.ts',
     vendoredAt: VENDOR_PASS,
     shipped: {
-      sha256: '831eed54c1e8332be47213c8b22ce314cb2c673d5d57f5090eb68d9128a638d5',
+      sha256: '782208b1a99619b899b80b8489be93b09aeafdc8478939c81d38e9cb54b67d86',
       why: 'the type-only `epub-processor.js` import retargeted to `./targets.js`; '
         + '`askAboutEach` exported so the engine\'s door is a third caller rather than a second '
         + 'copy of the retry rules; `normalizeNarrationNumbers` deleted (291 lines, all about a '
@@ -557,7 +558,8 @@ const FILES = [
         + 'minutes, proven-exact readings off the budget, and policy.gate. Same diff here. '
         + 'REPINNED 2026-09-25 for 571d57f (n12): the version constant and its comment. Same diff here. '
         + 'REPINNED 2026-09-25 for f168809 (n13): the version constant and markup never edited with the '
-        + 'gate off. Same diff here.',
+        + 'gate off. Same diff here. REPINNED 2026-09-25 for 2c5edfc (n14): the version constant '
+        + 'and its comment. Same diff here.',
     },
   },
   {
@@ -697,7 +699,8 @@ const VERSIONS = [
     // n10 → n11 later that night: Foundry c04e4a2 (examples; the gate switch).
     // n11 → n12: Foundry 571d57f (never-change section; citations read).
     // n12 → n13: Foundry f168809 (one short prompt; markup stays unedited).
-    expected: 'n13',
+    // n13 → n14: Foundry 2c5edfc (three broad rules in the clean-text prompt).
+    expected: 'n14',
   },
   {
     name: 'PUNCTUATION_SPEC_VERSION',

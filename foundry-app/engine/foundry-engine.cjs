@@ -5136,7 +5136,7 @@ var init_tts_number_normalizer = __esm({
     init_tts_number_rules();
     init_number_expansion();
     init_tts_spoken_forms();
-    NORMALIZER_VERSION = "n13";
+    NORMALIZER_VERSION = "n14";
     RAW_ANSWER_EXCERPT = 600;
     MAX_PARSE_FAIL_SHARE = 0.1;
     ROMAN_WORD = /(?:^|\s)[IVXLCDM]{2,}(?:$|[\s,.;:)\]])/;
@@ -30739,7 +30739,7 @@ var init_version = __esm({
     init_engine_import_meta_url();
     init_package();
     VERSION = package_default.version;
-    GIT_COMMIT = "src d780da49f4fb".length > 0 ? "src d780da49f4fb" : null;
+    GIT_COMMIT = "src 40bf1861b54c".length > 0 ? "src 40bf1861b54c" : null;
   }
 });
 
@@ -72577,12 +72577,15 @@ var init_tts_clean_text = __esm({
 WHAT YOU NEVER CHANGE
 
 Everything that is not in the list further down is already spoken exactly as printed. So:
+- Every character you are not changing stays exactly as printed: letters with accents and umlauts (\xE4, \xF6, \xFC, \xE9), quotation marks, apostrophes, hyphens, commas and capitals. A narrator reads "F\xFChrer" and "J\xE4ckel" as printed.
 - A word in ordinary letters is read as a word, never letter by letter. Only a run of CAPITAL letters may be spelled out.
+- A roman numeral is read only where one is PRINTED in the passage. A name with no numeral after it is left alone.
 - A name printed in capitals, such as an author's name at the head of an article, is a name: it is read in ordinary case, never spelled out.
 - Words in another language stay in that language, word for word.
 - Capital and small letters stay as printed, apart from the capitals rule above.
 - An abbreviation is expanded only when you are sure what it stands for. Initials keep their periods exactly as printed.
 - Superscript note numbers (\xB9 \xB2 \xB3 \u2026) and the asterisks and underscores that mark emphasis are markup. They are never part of an edit.
+- Every edit you make is one of the kinds listed under WHAT YOU READ. A change that is not one of those kinds is not made, however natural it seems.
 - You never improve, shorten, reorder or paraphrase. An empty list is the right answer for most passages.
 
 THE PASSAGE AND YOUR ANSWER

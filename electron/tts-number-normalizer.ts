@@ -172,11 +172,19 @@ export { sitsInCitation, bareWord };
  * one. And with the gate off, inline MARKUP is still never edited: the n11 run
  * turned "⁴¹" into "forty one", words the narration cut can no longer strip.
  *
+ * n13 → n14 (2026-09-25, after the n13 PC run): the short prompt stopped the
+ * spelling-out, the note numbers and the translation, and the 9B overreached in new
+ * ways — "Führer" → "Fuehrer", "Stalin's" → "Stalin the First's", quotation marks
+ * and hyphens stripped. Three broad rules, no negative examples: every character
+ * not being changed stays as printed (accents, quotes, hyphens, commas, case); a
+ * roman numeral is read only where one is printed; every edit is one of the
+ * listed kinds.
+ *
  * A BUMP HERE IS A CROSS-REPO EVENT. These rules are vendored byte-for-byte into
  * orpheus-finetune's `pipeline/normalization/vendor/` and drift-checked on every
  * training build — see docs/NARRATION_TEXT_PASS.md.
  */
-export const NORMALIZER_VERSION = 'n13';
+export const NORMALIZER_VERSION = 'n14';
 
 /**
  * The model this pass uses when the setting is absent.
