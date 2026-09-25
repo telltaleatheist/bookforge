@@ -494,6 +494,12 @@ const REGNAL_NAMES: ReadonlySet<string> = new Set([
   'casimir', 'suleiman', 'mehmed', 'selim', 'ramesses',
   'ptolemy', 'seti', 'thutmose', 'amenhotep', 'darius', 'xerxes', 'artaxerxes', 'antiochus',
   'tiberius', 'claudius', 'vespasian', 'trajan',
+  // Measured missing in Pursuit of Power (2026-09-24): the model's correct
+  // "Vittorio Emanuele the Second" was refused because the name was not here.
+  'emanuele', 'emmanuel', 'umberto', 'fernando', 'ferdinando', 'francesco', 'isabella', 'amadeo',
+  'oscar', 'karl', 'willem', 'carol', 'nikola', 'pavel', 'augustus', 'murad', 'mahmud',
+  'abdülhamid', 'abdulhamid', 'menelik', 'rameses', 'maria', 'joão', 'manuel', 'miguel',
+  'wilhelmina', 'juliana', 'milan', 'mihailo', 'alexandru',
 ]);
 
 /** A regnal name immediately before it: "Henry VIII", "Pius XII". */

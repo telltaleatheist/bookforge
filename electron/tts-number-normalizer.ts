@@ -147,11 +147,21 @@ export { sitsInCitation, bareWord };
  * numerals in Pursuit of Power — now defers to that class. No rule and no
  * validator moved.
  *
+ * n10 → n11 (2026-09-24, Owen: *"focus on fixing the cleanup logic/prompting so
+ * it gives us the right results"*): the prompts teach by example what the n10
+ * runs got wrong — every ruler's numeral read "the" + ordinal every time (a lone
+ * "Alexander I" included, a possessive's "'s" outside the find), a British
+ * point-time ("2.00 p.m." is "two p.m."), every decimal, every spaced hyphen. The
+ * validator lets those readings through (a lone numeral after a ruler's name,
+ * more ruler names, the zero minutes of a clock, and a proven-exact reading no
+ * longer spending the rewrite budget), and `policy.gate === false` — clean-text's
+ * default for now — applies every judgement refusal and records it as UNGATED.
+ *
  * A BUMP HERE IS A CROSS-REPO EVENT. These rules are vendored byte-for-byte into
  * orpheus-finetune's `pipeline/normalization/vendor/` and drift-checked on every
  * training build — see docs/NARRATION_TEXT_PASS.md.
  */
-export const NORMALIZER_VERSION = 'n10';
+export const NORMALIZER_VERSION = 'n11';
 
 /**
  * The model this pass uses when the setting is absent.
@@ -303,6 +313,23 @@ export type NumberEditClass =
 const ROMAN_WORD = /(?:^|\s)[IVXLCDM]{2,}(?:$|[\s,.;:)\]])/;
 
 /**
+ * A ONE-LETTER numeral after a ruler's name — "Alexander I", "Napoleon I",
+ * "George V". A lone "I" is the pronoun everywhere else, which is why the
+ * two-letter rule above leaves it out; here the name before it settles it
+ * (`isRomanContext`, the curated list). Measured 2026-09-24: 106 of Pursuit of
+ * Power's ~330 unread regnal numerals were a lone "I", and the model's correct
+ * "Franz I → Franz the First" was refused as prose.
+ */
+const SINGLE_NUMERAL = /(?:^|\s)([IVX])(?=$|[\s,.;:)\]'’])/g;
+function hasRegnalSingleNumeral(find: string): boolean {
+  for (const m of find.matchAll(SINGLE_NUMERAL)) {
+    const at = m.index + m[0].length - 1;
+    if (isRomanContext(find.slice(0, at), find.slice(at + 1))) return true;
+  }
+  return false;
+}
+
+/**
  * A WHOLE bracketed insertion, with whatever spacing stands around it —
  * " (see p. 12)", "[sic]".
  *
@@ -330,7 +357,7 @@ export function classifyEdit(find: string): NumberEditClass {
   if (isWholeBracketedInsertion(find)) return 'bracketed';
   if (DIGIT.test(find)) return 'number';
   if (/[()[\]]/.test(find)) return 'bracketed';
-  if (ROMAN_WORD.test(find)) return 'roman';
+  if (ROMAN_WORD.test(find) || hasRegnalSingleNumeral(find)) return 'roman';
   if (find.includes('&')) return 'ampersand';
   if (/\s-\s/.test(find)) return 'spaced-hyphen';
   // ANCHORED TO A WHOLE TOKEN. Unanchored, this matched any span containing a
@@ -955,6 +982,10 @@ function isClassToken(token: string): boolean {
   if (token.includes('.')) return true;                       // Dr. · e.g. · St.
   const bare = token.replace(/\./g, '');
   if (/^[IVXLCDM]{2,}$/.test(bare)) return true;              // VIII · XIV
+  // A lone I, V or X: only ever READ as a numeral where a ruler's name stands
+  // before it (`readingRefusal` asks `isRomanContext`); anywhere else the caps
+  // table refuses any reading of it, so "When I find" can never become "When one".
+  if (/^[IVX]$/.test(bare)) return true;
   return /^[A-Z]{2,}$/.test(bare);                            // FBI · NSDAP
 }
 
@@ -1046,6 +1077,9 @@ function fewestNumberWords(text: string): number {
   // six pence", and demanding a word for the "0" refused the correct reading.
   const preDecimal = printsPreDecimalSum(text);
   let needed = 0;
+  // Nor are a clock time's zero minutes: "2.00 p.m." and "2:00 p.m." are "two
+  // p.m." — the prompt's own example, which this refused (2026-09-24).
+  text = text.replace(/([.:])00(?=\s?[ap]\.?\s?m\b)/gi, '$1');
   for (const run of digitRuns(text)) {
     if (preDecimal && /^0+$/.test(run)) continue;
     needed += run.length >= 3 ? 2 : 1;
@@ -1343,6 +1377,13 @@ export interface NumberEditPolicy {
    * forty times does.
    */
   knownWord?: (word: string) => boolean;
+  /**
+   * Are refusals on JUDGEMENT enforced? Absent or true: yes, as always. False
+   * (the clean-text default since 2026-09-24, Owen: turn the gate off while the
+   * prompt is tuned): every judgement refusal is applied anyway and recorded as
+   * `UNGATED — …`; only an edit that cannot be spliced stays out.
+   */
+  gate?: boolean;
 }
 
 /** The number pass's own policy — the behaviour every caller had before 2026-09-04. */
@@ -1586,6 +1627,15 @@ export function validateNumberEdits(
     const editClass = classifyEdit(find);
     /** What the record calls it — the class, unless a narrower shape proved it. */
     let recordClass: NumberEditClass = editClass;
+    /**
+     * A reading PROVEN EXACT by its own check, like a number's — a ruler's
+     * numeral read as exactly "the" and its ordinal, or an interpolation whose
+     * brackets were dropped and every word kept. Such an edit cannot paraphrase,
+     * so it does not spend the text budget (below). Measured 2026-09-24: at
+     * sentence size the budget refused "[head of the Presidial Chancellory]"
+     * in Working Towards the Führer, and a sentence naming four rulers ran it out.
+     */
+    let provenExact = false;
     carriedFrom = proposed.from;
     // WHICH INVARIANTS APPLY, asked directly rather than read off the class: a
     // bracketed insertion carrying a page number is both a bracket and a number,
@@ -1670,14 +1720,8 @@ export function validateNumberEdits(
         reject(find, replace, 'OVERLAPS_APPLIED');
         continue;
       }
-      const dashSpends = Math.max(find.length, replace.length);
-      if (textBudgetSpent + dashSpends > textBudget) {
-        reject(find, replace, 'BLOCK_BUDGET',
-          `the readings accepted so far already replace ${textBudgetSpent} of this block's `
-          + `${target.length} characters`);
-        continue;
-      }
-      textBudgetSpent += dashSpends;
+      // NO BUDGET: `hyphenToDash(find) === replace` IS the proof — the dash is the
+      // only character that changed, so nothing here can paraphrase.
       accepted.push({ find, replace, at });
       const whence = said(undefined);
       records.push({
@@ -1820,6 +1864,7 @@ export function validateNumberEdits(
             + '[interpolation] may have its brackets dropped');
           continue;
         }
+        provenExact = true;
       } else if (rejoinsSplitWord(find, replace, policy.knownWord)) {
         // A WORD THE PAGE BROKE, joined again. Its proof is the whole of
         // `rejoinsSplitWord`; the budget, markup and overlap checks below still
@@ -1910,6 +1955,9 @@ export function validateNumberEdits(
             reject(find, replace, 'NOT_A_READING', notAReading);
             continue;
           }
+          // A numeral after a ruler's name, read: `romanReadingRefusal` has proven
+          // the words are exactly its value's.
+          if (romanValue(changed) !== null && isRomanContext(before, after)) provenExact = true;
         }
 
         // ── AND EVERY MARK OUTSIDE THE CHANGED TOKEN SURVIVES ─────────────
@@ -1931,7 +1979,7 @@ export function validateNumberEdits(
       // The budget counts whichever side is bigger: a sixty-character find that
       // became two hundred characters of invention spent sixty of the block's
       // budget before this was measured (the first adversarial review).
-      const spends = Math.max(find.length, replace.length);
+      const spends = provenExact ? 0 : Math.max(find.length, replace.length);
       if (textBudgetSpent + spends > textBudget) {
         reject(find, replace, 'BLOCK_BUDGET',
           `the readings accepted so far already replace ${textBudgetSpent} of this block's `
@@ -1984,12 +2032,47 @@ export function validateNumberEdits(
       }
     }
 
-    if (!isNumber) textBudgetSpent += Math.max(find.length, replace.length);
+    if (!isNumber && !provenExact) textBudgetSpent += Math.max(find.length, replace.length);
     accepted.push({ find, replace: reading, at });
     const why = said(respelled);
     records.push(why === undefined
       ? { find, replace: reading, status: 'APPLIED', editClass: recordClass }
       : { find, replace: reading, status: 'APPLIED', editClass: recordClass, detail: why });
+  }
+
+  /*
+   * ── THE GATE, OFF (Owen, 2026-09-24) ──────────────────────────────────────
+   *
+   * *"we're focusing too much on gating/limiting/validating. we could turn the
+   * gate and eveyrthing off completely for the moment … focus on fixing the
+   * cleanup logic/prompting so it gives us the right results."*
+   *
+   * With `policy.gate === false` every edit the checks above refused on a
+   * JUDGEMENT is applied anyway, and its record keeps what the gate would have
+   * said (`UNGATED — …`), so the receipt still shows where the model and the
+   * gate disagree when it is turned back on. What stays refused is only what
+   * cannot be spliced at all: nothing proposed, a find that is not in the text
+   * or is in it more than once, a span across markup or over another edit, one
+   * carried to a neighbour, a protected reference, a heading/contents mismatch.
+   */
+  if (policy.gate === false) {
+    const MECHANICAL: ReadonlySet<NumberEditStatus> = new Set<NumberEditStatus>([
+      'NOOP', 'NOT_FOUND', 'AMBIGUOUS_FIND', 'SPANS_MARKUP', 'OVERLAPS_APPLIED', 'CARRIED',
+      'SCRIPTURE_PROTECTED', 'TOC_MISMATCH', 'APPLIED', 'APPLIED_RULE',
+    ]);
+    for (const record of records) {
+      if (MECHANICAL.has(record.status) || record.find === '') continue;
+      const at = target.indexOf(record.find);
+      if (at < 0 || target.indexOf(record.find, at + 1) >= 0) continue;
+      const end = at + record.find.length;
+      if (!withinOneNode(at, end)) continue;
+      if (reserved.some((r) => at < r.end && r.at < end)
+        || accepted.some((a) => at < a.at + a.find.length && a.at < end)) continue;
+      accepted.push({ find: record.find, replace: record.replace, at });
+      record.detail = `UNGATED — the gate would have refused ${record.status}`
+        + `${record.detail === undefined ? '' : `: ${record.detail}`}`;
+      record.status = 'APPLIED';
+    }
   }
   return { accepted, records };
 }

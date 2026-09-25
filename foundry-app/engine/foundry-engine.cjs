@@ -4037,7 +4037,39 @@ var init_tts_spoken_forms = __esm({
       "tiberius",
       "claudius",
       "vespasian",
-      "trajan"
+      "trajan",
+      // Measured missing in Pursuit of Power (2026-09-24): the model's correct
+      // "Vittorio Emanuele the Second" was refused because the name was not here.
+      "emanuele",
+      "emmanuel",
+      "umberto",
+      "fernando",
+      "ferdinando",
+      "francesco",
+      "isabella",
+      "amadeo",
+      "oscar",
+      "karl",
+      "willem",
+      "carol",
+      "nikola",
+      "pavel",
+      "augustus",
+      "murad",
+      "mahmud",
+      "abd\xFClhamid",
+      "abdulhamid",
+      "menelik",
+      "rameses",
+      "maria",
+      "jo\xE3o",
+      "manuel",
+      "miguel",
+      "wilhelmina",
+      "juliana",
+      "milan",
+      "mihailo",
+      "alexandru"
     ]);
     REGNAL_NAME = /\b([A-ZÀ-Þ][a-zà-ÿ]+)\s*$/;
     CENTURY_AFTER = /^\s*(?:century|centuries)\b/i;
@@ -4072,6 +4104,13 @@ var init_tts_spoken_forms = __esm({
 });
 
 // src/clean/tts-number-normalizer.ts
+function hasRegnalSingleNumeral(find) {
+  for (const m of find.matchAll(SINGLE_NUMERAL)) {
+    const at = m.index + m[0].length - 1;
+    if (isRomanContext(find.slice(0, at), find.slice(at + 1))) return true;
+  }
+  return false;
+}
 function isWholeBracketedInsertion(find) {
   return WHOLE_BRACKET.test(find);
 }
@@ -4079,7 +4118,7 @@ function classifyEdit(find) {
   if (isWholeBracketedInsertion(find)) return "bracketed";
   if (DIGIT2.test(find)) return "number";
   if (/[()[\]]/.test(find)) return "bracketed";
-  if (ROMAN_WORD.test(find)) return "roman";
+  if (ROMAN_WORD.test(find) || hasRegnalSingleNumeral(find)) return "roman";
   if (find.includes("&")) return "ampersand";
   if (/\s-\s/.test(find)) return "spaced-hyphen";
   if (hasAbbreviationToken(find)) return "abbreviation";
@@ -4231,6 +4270,7 @@ function isClassToken(token) {
   if (token.includes(".")) return true;
   const bare = token.replace(/\./g, "");
   if (/^[IVXLCDM]{2,}$/.test(bare)) return true;
+  if (/^[IVX]$/.test(bare)) return true;
   return /^[A-Z]{2,}$/.test(bare);
 }
 function numberWordCount(text) {
@@ -4245,6 +4285,7 @@ function digitRunCount(text) {
 function fewestNumberWords(text) {
   const preDecimal = printsPreDecimalSum(text);
   let needed = 0;
+  text = text.replace(/([.:])00(?=\s?[ap]\.?\s?m\b)/gi, "$1");
   for (const run of digitRuns(text)) {
     if (preDecimal && /^0+$/.test(run)) continue;
     needed += run.length >= 3 ? 2 : 1;
@@ -4423,6 +4464,7 @@ function validateNumberEdits(target, segments, edits, reserved = [], policy = NU
     const replace = typeof proposed?.replace === "string" ? proposed.replace : "";
     const editClass = classifyEdit(find);
     let recordClass = editClass;
+    let provenExact = false;
     carriedFrom = proposed.from;
     const isRemoval = replace.trim() === "";
     const isNumber = DIGIT2.test(find) && !isRemoval;
@@ -4513,17 +4555,6 @@ function validateNumberEdits(target, segments, edits, reserved = [], policy = NU
         reject(find, replace, "OVERLAPS_APPLIED");
         continue;
       }
-      const dashSpends = Math.max(find.length, replace.length);
-      if (textBudgetSpent + dashSpends > textBudget) {
-        reject(
-          find,
-          replace,
-          "BLOCK_BUDGET",
-          `the readings accepted so far already replace ${textBudgetSpent} of this block's ${target.length} characters`
-        );
-        continue;
-      }
-      textBudgetSpent += dashSpends;
       accepted.push({ find, replace, at });
       const whence = said(void 0);
       records.push({
@@ -4639,6 +4670,7 @@ function validateNumberEdits(target, segments, edits, reserved = [], policy = NU
           );
           continue;
         }
+        provenExact = true;
       } else if (rejoinsSplitWord(find, replace, policy.knownWord)) {
         recordClass = "split-word";
       } else {
@@ -4715,6 +4747,7 @@ function validateNumberEdits(target, segments, edits, reserved = [], policy = NU
             reject(find, replace, "NOT_A_READING", notAReading);
             continue;
           }
+          if (romanValue(changed) !== null && isRomanContext(before, after)) provenExact = true;
         }
         const wantPunct = punctuationOutsideToken(find, aligned.droppedIndex, sentencePeriod);
         const gotPunct = punctuationOf(replace);
@@ -4728,7 +4761,7 @@ function validateNumberEdits(target, segments, edits, reserved = [], policy = NU
           continue;
         }
       }
-      const spends = Math.max(find.length, replace.length);
+      const spends = provenExact ? 0 : Math.max(find.length, replace.length);
       if (textBudgetSpent + spends > textBudget) {
         reject(
           find,
@@ -4761,10 +4794,35 @@ function validateNumberEdits(target, segments, edits, reserved = [], policy = NU
         respelled = `the model read it "${replace}"; a year is spelled by code`;
       }
     }
-    if (!isNumber) textBudgetSpent += Math.max(find.length, replace.length);
+    if (!isNumber && !provenExact) textBudgetSpent += Math.max(find.length, replace.length);
     accepted.push({ find, replace: reading, at });
     const why = said(respelled);
     records.push(why === void 0 ? { find, replace: reading, status: "APPLIED", editClass: recordClass } : { find, replace: reading, status: "APPLIED", editClass: recordClass, detail: why });
+  }
+  if (policy.gate === false) {
+    const MECHANICAL = /* @__PURE__ */ new Set([
+      "NOOP",
+      "NOT_FOUND",
+      "AMBIGUOUS_FIND",
+      "SPANS_MARKUP",
+      "OVERLAPS_APPLIED",
+      "CARRIED",
+      "SCRIPTURE_PROTECTED",
+      "TOC_MISMATCH",
+      "APPLIED",
+      "APPLIED_RULE"
+    ]);
+    for (const record2 of records) {
+      if (MECHANICAL.has(record2.status) || record2.find === "") continue;
+      const at = target.indexOf(record2.find);
+      if (at < 0 || target.indexOf(record2.find, at + 1) >= 0) continue;
+      const end = at + record2.find.length;
+      if (!withinOneNode(at, end)) continue;
+      if (reserved.some((r) => at < r.end && r.at < end) || accepted.some((a) => at < a.at + a.find.length && a.at < end)) continue;
+      accepted.push({ find: record2.find, replace: record2.replace, at });
+      record2.detail = `UNGATED \u2014 the gate would have refused ${record2.status}${record2.detail === void 0 ? "" : `: ${record2.detail}`}`;
+      record2.status = "APPLIED";
+    }
   }
   return { accepted, records };
 }
@@ -5067,7 +5125,7 @@ async function askAboutEach(asks, runner, pass, systemPrompt2, onProgress, ask =
   }
   return { decisions, parseFailed, asked: total };
 }
-var NORMALIZER_VERSION, RAW_ANSWER_EXCERPT, MAX_PARSE_FAIL_SHARE, ROMAN_WORD, WHOLE_BRACKET, DIGIT2, SPOKEN_BASE, NEVER_SPOKEN, PUNCTUATION_NAMES, HYPHEN_DASH_ALLOWANCE, LIST_MARKER, WORD_TOKEN, wordKey, READING_PUNCTUATION, DOTTED_LETTERS, MAX_BRACKET_WORDS, NUMBER_WORD_SLACK, NUMBER_WORDS, ORDINAL_VOLUME_WORDS, ROMAN_VOLUME, NUMBERS_ONLY, EVERY_CLASS, MAX_FIND_CHARS, replaceCap, MAX_EDITS_PER_BLOCK, MAX_TEXT_EDIT_SHARE, MIN_TEXT_EDIT_BUDGET, BOOK_WORD_MIN, TRANSPORT_PROSE, TRANSPORT_CAUSES;
+var NORMALIZER_VERSION, RAW_ANSWER_EXCERPT, MAX_PARSE_FAIL_SHARE, ROMAN_WORD, SINGLE_NUMERAL, WHOLE_BRACKET, DIGIT2, SPOKEN_BASE, NEVER_SPOKEN, PUNCTUATION_NAMES, HYPHEN_DASH_ALLOWANCE, LIST_MARKER, WORD_TOKEN, wordKey, READING_PUNCTUATION, DOTTED_LETTERS, MAX_BRACKET_WORDS, NUMBER_WORD_SLACK, NUMBER_WORDS, ORDINAL_VOLUME_WORDS, ROMAN_VOLUME, NUMBERS_ONLY, EVERY_CLASS, MAX_FIND_CHARS, replaceCap, MAX_EDITS_PER_BLOCK, MAX_TEXT_EDIT_SHARE, MIN_TEXT_EDIT_BUDGET, BOOK_WORD_MIN, TRANSPORT_PROSE, TRANSPORT_CAUSES;
 var init_tts_number_normalizer = __esm({
   "src/clean/tts-number-normalizer.ts"() {
     "use strict";
@@ -5076,10 +5134,11 @@ var init_tts_number_normalizer = __esm({
     init_tts_number_rules();
     init_number_expansion();
     init_tts_spoken_forms();
-    NORMALIZER_VERSION = "n10";
+    NORMALIZER_VERSION = "n11";
     RAW_ANSWER_EXCERPT = 600;
     MAX_PARSE_FAIL_SHARE = 0.1;
     ROMAN_WORD = /(?:^|\s)[IVXLCDM]{2,}(?:$|[\s,.;:)\]])/;
+    SINGLE_NUMERAL = /(?:^|\s)([IVX])(?=$|[\s,.;:)\]'’])/g;
     WHOLE_BRACKET = /^\s*[([][^()[\]]*[)\]]\s*$/;
     DIGIT2 = /[0-9]/;
     SPOKEN_BASE = /[A-Za-zÀ-ÿ\s'’,.-]/;
@@ -30678,7 +30737,7 @@ var init_version = __esm({
     init_engine_import_meta_url();
     init_package();
     VERSION = package_default.version;
-    GIT_COMMIT = "src 95014c93da70".length > 0 ? "src 95014c93da70" : null;
+    GIT_COMMIT = "src 93675fc32fe3".length > 0 ? "src 93675fc32fe3" : null;
   }
 });
 
@@ -72511,7 +72570,7 @@ var init_triage = __esm({
 var tts_narration_text_default;
 var init_tts_narration_text = __esm({
   "src/clean/prompts/tts-narration-text.txt"() {
-    tts_narration_text_default = 'EVERYTHING ABOVE STILL HOLDS. What follows widens the question you are being asked.\n\nYou are reading one passage of a book \u2014 usually a single sentence \u2014 that is about to be narrated by a text-to-speech voice. The deterministic pass has already run: the punctuation is canonical (one kind of quote, "..." for every ellipsis, no invisible characters, no doubled spaces), and every number shape that has exactly one reading has already been converted. What is left is what only a reader of the sentence can settle.\n\nReturn the SAME anchored edit list, in the same JSON shape, or an empty list. Every `find` must be an exact, verbatim substring of the TARGET, occurring exactly once. You are not rewriting the block; you are naming the spans whose PRINTED form and SPOKEN form differ.\n\nTHE CLASSES YOU ARE BEING ASKED ABOUT\n\n1. NUMBER RESIDUE \u2014 anything the rules above declined: a bare four-digit number that is a year or a quantity depending on the sentence, an abbreviated range, a bare decimal, a heading number. Read them exactly as the rules above say.\n\n2. ABBREVIATIONS a narrator says in full: "Dr." is "Doctor", "St." is "Saint" or "Street" depending on the sentence, "Mt." is "Mount", "e.g." is "for example", "i.e." is "that is", "etc." is "et cetera", "vs." is "versus". A SPACED ampersand is the word: "&" is "and". An ampersand pressed between letters is ONE token and both sides are read: "AT&T" is "A T and T", "R&D" is "R and D", "Smith&Jones" is "Smith and Jones" \u2014 never "ATandT". "no." is "number" only when it is NUMBERING something ("file no. 12", "Doc. no. 5") \u2014 after a verb it is the word "no" ending a sentence and must be left. Leave "Mr.", "Mrs.", "Ms." exactly as printed \u2014 every voice already says those correctly, and expanding them adds nothing.\n\n2b. SCRIPTURE BOOK NAMES are said in FULL, always, and are never shortened. A deterministic pass runs before you and has already printed in full every book abbreviation it was certain of, so you will often be shown "Romans 5:17" and "First Corinthians 13:4" where the book printed "Rom. 5:17" and "1 Cor. 13:4". What reaches you still abbreviated is what that pass was NOT certain of, and it is yours: expand it, and read the reference by the scripture rules above. "Rev. 21:4" is "Revelation twenty one, verse four". "Jas. 1:17" is "James one, verse seventeen". "1 Cor. 13:4" is "First Corinthians thirteen, verse four". A book name already printed in full is read as printed and must never be abbreviated back \u2014 "Revelation 21:4" is "Revelation twenty one, verse four", never "Rev. twenty one". A leading volume number is an ordinal word, First / Second / Third, whether the book prints it as 1, as I, or as 1st. And a capitalized short word in front of a number that is NOT a book is still not a book: leave "Ch. 3:7", "Sec. 3:7", "Jan. 3:7", "Act 3:2" and "Fig. 3" to the rules above, which say how each of those is read.\n\n3. ALL-CAPS RUNS. An acronym said as letters is spelled out with spaces \u2014 "FBI" is "F B I", "NSDAP" is "N S D A P" \u2014 because a voice handed "FBI" may try to say it as a word. An acronym said AS a word is left alone: NASA, NATO, UNESCO, laser, radar. A word in capitals for EMPHASIS is written in ordinary case \u2014 "he SAID so" is "he said so" \u2014 because the capitals are typography, not sound. Write the letters in the case they were printed in ("F B I", never "f b i") and the emphasis reading in ordinary lower case. A run of TWO OR THREE capitals is an initialism and gets the letters reading only \u2014 "US" is "U S", never "us"; "WHO" is "W H O", never "who".\n\n4. BRACKETED INSERTIONS. Two different edits, and which one depends on what is inside.\n   APPARATUS is not spoken and is REMOVED whole, brackets and all, replaced by nothing but the surrounding spacing: "[sic]", "[12]", "[ed.]", "[...]", "(sic)", "(emphasis added)", "(see page twelve)", "(Kershaw 1993)", "(12)".\n   AN INTERPOLATION OF WORDS in SQUARE brackets is READ, not removed: the edit drops the brackets and keeps every word \u2014 "[he said]" becomes "he said". Never delete words.\n   A PARENTHESIS is the author\u2019s own punctuation and stays exactly as printed unless its contents are one of the apparatus shapes above. "(he was lying)" and "(note she wept)" are the book. If you are not certain, leave it.\n\n5. A SPACED HYPHEN used as a dash \u2014 "the man - who had waited - left" \u2014 is an em dash in disguise. Replace the spaced hyphen with an em dash. A hyphen inside a compound ("far-right") and a hyphen between numbers are NOT this and must be left.\n\n6. ROMAN NUMERALS are read as words ONLY where a book prints a numeral: after a part word ("Part IV" is "Part Four", "Chapter IX", "Book II"), after a monarch, pope or emperor\u2019s name ("Henry VIII" is "Henry the Eighth", "Pius XII"), or before a century ("the XIX century"). Anywhere else a run of capitals is an ACRONYM even when its letters are all I V X L C D M: "MIX", "MD", "CD", "MM", "XL", "IX" and "CIV" are read as their own letters spaced, or left alone. A roman numeral that is a citation or a volume \u2014 "Document II 9/34", "vol. iii" \u2014 is apparatus and stays exactly as printed.\n\n7. DIGIT RESIDUE. If a digit is still printed anywhere in the TARGET after your edits, you have missed one. Go back and read it, or leave it deliberately because it is a code.\n\nFOOTNOTE AND REFERENCE MARKERS ARE NOT YOURS. A superscript reference number, a dagger, an asterisk used as a reference: the render door removes those from the narration copy itself, deterministically, and an edit that tried to would be refused because it deletes text without saying anything in its place. Leave them exactly where they are.\n\nTHE RULES THAT BOUND EVERY EDIT\n\n- KEEP THE PUNCTUATION. Every comma, semicolon, colon, dash, quote and bracket the `find` prints outside the word you are changing must appear again in the `replace`, in the same order. "Dr. Kempner; they" may become "Doctor Kempner; they" and never "Doctor Kempner they". If the abbreviation ends the span and a capital follows it in the block, its period may be ending a sentence \u2014 keep it: "Oxford St. The rain" becomes "Oxford Street. The rain".\n- ONE TOKEN PER EDIT. The replacement must repeat every word of the `find`, in order, EXCEPT the single token the class is about \u2014 the abbreviation, the run of capitals, the roman numeral. "Dr. Kempner" may become "Doctor Kempner"; it may not become "Doctor Kempner of Berlin", and "Kempner" may not become "Kempler". An edit that changes any other word is refused.\n- NEVER PARAPHRASE. You may change the SPOKEN FORM of a span. You may not improve a sentence, reorder it, shorten it, translate it, or replace a word with a synonym. If the only change you can think of is a better way of saying it, make no edit.\n- Every `find` is verbatim and occurs exactly once in the TARGET. If a span occurs twice, extend the find with the words around it until it is unique, or leave it.\n- Keep every edit SHORT. An edit is a span whose reading differs, not a clause.\n- Never edit the PREVIOUS or NEXT passage. They are there so you can tell a year from a quantity and a Saint from a Street.\n- An empty edit list is the right answer for most passages. Ordinary prose needs nothing.\n\nTARGET: The Reichstag met on March twenty-third, and Dr. Kempner of the FBI (see page twelve) said so.\n<answer>\n{"edits": [{"find": "Dr. Kempner", "replace": "Doctor Kempner"}, {"find": "FBI", "replace": "F B I"}, {"find": " (see page twelve)", "replace": ""}]}\n</answer>\n\nTARGET: Henry VIII had waited - and waited - for an answer he never SAID he wanted.\n<answer>\n{"edits": [{"find": "Henry VIII", "replace": "Henry the Eighth"}, {"find": "waited - and", "replace": "waited\u2014and"}, {"find": "waited - for", "replace": "waited\u2014for"}, {"find": "never SAID he", "replace": "never said he"}]}\n</answer>\n\nTARGET: He turned into Oxford St. The clerk [he said] worked for the MIX, no. 4 on the list.\n<answer>\n{"edits": [{"find": "Oxford St.", "replace": "Oxford Street."}, {"find": "[he said]", "replace": "he said"}, {"find": "MIX", "replace": "M I X"}]}\n</answer>\n\nTARGET: A paragraph of ordinary prose with nothing in it that is printed one way and read another.\n<answer>\n{"edits": []}\n</answer>\n';
+    tts_narration_text_default = 'EVERYTHING ABOVE STILL HOLDS. What follows widens the question you are being asked.\n\nYou are reading one passage of a book \u2014 usually a single sentence \u2014 that is about to be narrated by a text-to-speech voice. The deterministic pass has already run: the punctuation is canonical (one kind of quote, "..." for every ellipsis, no invisible characters, no doubled spaces), and every number shape that has exactly one reading has already been converted. What is left is what only a reader of the sentence can settle.\n\nReturn the SAME anchored edit list, in the same JSON shape, or an empty list. Every `find` must be an exact, verbatim substring of the TARGET, occurring exactly once. You are not rewriting the block; you are naming the spans whose PRINTED form and SPOKEN form differ.\n\nTHE CLASSES YOU ARE BEING ASKED ABOUT\n\n1. NUMBER RESIDUE \u2014 anything the rules above declined: a bare four-digit number that is a year or a quantity depending on the sentence, an abbreviated range, a bare decimal, a heading number. Read them exactly as the rules above say.\n\n2. ABBREVIATIONS a narrator says in full: "Dr." is "Doctor", "St." is "Saint" or "Street" depending on the sentence, "Mt." is "Mount", "e.g." is "for example", "i.e." is "that is", "etc." is "et cetera", "vs." is "versus". A SPACED ampersand is the word: "&" is "and". An ampersand pressed between letters is ONE token and both sides are read: "AT&T" is "A T and T", "R&D" is "R and D", "Smith&Jones" is "Smith and Jones" \u2014 never "ATandT". "no." is "number" only when it is NUMBERING something ("file no. 12", "Doc. no. 5") \u2014 after a verb it is the word "no" ending a sentence and must be left. Leave "Mr.", "Mrs.", "Ms." exactly as printed \u2014 every voice already says those correctly, and expanding them adds nothing.\n\n2b. SCRIPTURE BOOK NAMES are said in FULL, always, and are never shortened. A deterministic pass runs before you and has already printed in full every book abbreviation it was certain of, so you will often be shown "Romans 5:17" and "First Corinthians 13:4" where the book printed "Rom. 5:17" and "1 Cor. 13:4". What reaches you still abbreviated is what that pass was NOT certain of, and it is yours: expand it, and read the reference by the scripture rules above. "Rev. 21:4" is "Revelation twenty one, verse four". "Jas. 1:17" is "James one, verse seventeen". "1 Cor. 13:4" is "First Corinthians thirteen, verse four". A book name already printed in full is read as printed and must never be abbreviated back \u2014 "Revelation 21:4" is "Revelation twenty one, verse four", never "Rev. twenty one". A leading volume number is an ordinal word, First / Second / Third, whether the book prints it as 1, as I, or as 1st. And a capitalized short word in front of a number that is NOT a book is still not a book: leave "Ch. 3:7", "Sec. 3:7", "Jan. 3:7", "Act 3:2" and "Fig. 3" to the rules above, which say how each of those is read.\n\n3. ALL-CAPS RUNS. An acronym said as letters is spelled out with spaces \u2014 "FBI" is "F B I", "NSDAP" is "N S D A P" \u2014 because a voice handed "FBI" may try to say it as a word. An acronym said AS a word is left alone: NASA, NATO, UNESCO, laser, radar. A word in capitals for EMPHASIS is written in ordinary case \u2014 "he SAID so" is "he said so" \u2014 because the capitals are typography, not sound. Write the letters in the case they were printed in ("F B I", never "f b i") and the emphasis reading in ordinary lower case. A run of TWO OR THREE capitals is an initialism and gets the letters reading only \u2014 "US" is "U S", never "us"; "WHO" is "W H O", never "who".\n\n4. BRACKETED INSERTIONS. Two different edits, and which one depends on what is inside.\n   APPARATUS is not spoken and is REMOVED whole, brackets and all, replaced by nothing but the surrounding spacing: "[sic]", "[12]", "[ed.]", "[...]", "(sic)", "(emphasis added)", "(see page twelve)", "(Kershaw 1993)", "(12)".\n   AN INTERPOLATION OF WORDS in SQUARE brackets is READ, not removed: the edit drops the brackets and keeps every word \u2014 "[he said]" becomes "he said". Never delete words.\n   A PARENTHESIS is the author\u2019s own punctuation and stays exactly as printed unless its contents are one of the apparatus shapes above. "(he was lying)" and "(note she wept)" are the book. If you are not certain, leave it.\n\n5. A SPACED HYPHEN used as a dash \u2014 "the man - who had waited - left" \u2014 is an em dash in disguise. Replace EVERY spaced hyphen with an em dash, one edit each, with the word either side in the find: "himself - written" becomes "himself\u2014written"; "put on - unless" becomes "put on\u2014unless". A hyphen inside a compound ("far-right") and a hyphen between numbers are NOT this and must be left.\n\n6. ROMAN NUMERALS are read as words ONLY where a book prints a numeral: after a part word ("Part IV" is "Part Four", "Chapter IX", "Book II"), after a monarch, pope or emperor\u2019s name, or before a century ("the XIX century"). After a ruler\'s name the numeral is ALWAYS read "the" and the ORDINAL, never the plain number, and it is read EVERY time the book prints it \u2014 a paragraph that names Napoleon III four times needs four readings, each find made unique by the words around it:\n   "Henry VIII" is "Henry the Eighth". "Pius IX" is "Pius the Ninth". "Napoleon III" is "Napoleon the Third". "Louis XVIII" is "Louis the Eighteenth". "Friedrich Wilhelm IV" is "Friedrich Wilhelm the Fourth". "Vittorio Emanuele II" is "Vittorio Emanuele the Second". "Leopold II" is "Leopold the Second", never "Leopold two".\n   A ONE-LETTER numeral after a ruler\'s name is a numeral too, not the word "I": "Alexander I" is "Alexander the First", "George V" is "George the Fifth", "Franz I" is "Franz the First". The pronoun "I" anywhere else is never touched.\n   A possessive keeps its "\'s" OUTSIDE the find: for "Napoleon I\'s armies" the find is "Napoleon I" and the reading "Napoleon the First". Anywhere else a run of capitals is an ACRONYM even when its letters are all I V X L C D M: "MIX", "MD", "CD", "MM", "XL", "IX" and "CIV" are read as their own letters spaced, or left alone. A roman numeral that is a citation or a volume \u2014 "Document II 9/34", "vol. iii" \u2014 is apparatus and stays exactly as printed.\n\n7. DIGIT RESIDUE. If a digit is still printed anywhere in the TARGET after your edits, you have missed one. Go back and read it, or leave it deliberately because it is a code.\n\nFOOTNOTE AND REFERENCE MARKERS ARE NOT YOURS. A superscript reference number, a dagger, an asterisk used as a reference: the render door removes those from the narration copy itself, deterministically, and an edit that tried to would be refused because it deletes text without saying anything in its place. Leave them exactly where they are.\n\nTHE RULES THAT BOUND EVERY EDIT\n\n- KEEP THE PUNCTUATION. Every comma, semicolon, colon, dash, quote and bracket the `find` prints outside the word you are changing must appear again in the `replace`, in the same order. "Dr. Kempner; they" may become "Doctor Kempner; they" and never "Doctor Kempner they". If the abbreviation ends the span and a capital follows it in the block, its period may be ending a sentence \u2014 keep it: "Oxford St. The rain" becomes "Oxford Street. The rain".\n- ONE TOKEN PER EDIT. The replacement must repeat every word of the `find`, in order, EXCEPT the single token the class is about \u2014 the abbreviation, the run of capitals, the roman numeral. "Dr. Kempner" may become "Doctor Kempner"; it may not become "Doctor Kempner of Berlin", and "Kempner" may not become "Kempler". An edit that changes any other word is refused.\n- NEVER PARAPHRASE. You may change the SPOKEN FORM of a span. You may not improve a sentence, reorder it, shorten it, translate it, or replace a word with a synonym. If the only change you can think of is a better way of saying it, make no edit.\n- Every `find` is verbatim and occurs exactly once in the TARGET. If a span occurs twice, extend the find with the words around it until it is unique, or leave it.\n- Keep every edit SHORT. An edit is a span whose reading differs, not a clause.\n- Never edit the PREVIOUS or NEXT passage. They are there so you can tell a year from a quantity and a Saint from a Street.\n- An empty edit list is the right answer for most passages. Ordinary prose needs nothing.\n\nTARGET: The Reichstag met on March twenty-third, and Dr. Kempner of the FBI (see page twelve) said so.\n<answer>\n{"edits": [{"find": "Dr. Kempner", "replace": "Doctor Kempner"}, {"find": "FBI", "replace": "F B I"}, {"find": " (see page twelve)", "replace": ""}]}\n</answer>\n\nTARGET: Henry VIII had waited - and waited - for an answer he never SAID he wanted.\n<answer>\n{"edits": [{"find": "Henry VIII", "replace": "Henry the Eighth"}, {"find": "waited - and", "replace": "waited\u2014and"}, {"find": "waited - for", "replace": "waited\u2014for"}, {"find": "never SAID he", "replace": "never said he"}]}\n</answer>\n\nTARGET: He turned into Oxford St. The clerk [he said] worked for the MIX, no. 4 on the list.\n<answer>\n{"edits": [{"find": "Oxford St.", "replace": "Oxford Street."}, {"find": "[he said]", "replace": "he said"}, {"find": "MIX", "replace": "M I X"}]}\n</answer>\n\nTARGET: Under Alexander I and then Nicholas I the empire grew, while in France Louis XVIII\'s ministers - wary of Napoleon III\'s cousins - waited.\n<answer>\n{"edits": [{"find": "Alexander I", "replace": "Alexander the First"}, {"find": "Nicholas I", "replace": "Nicholas the First"}, {"find": "Louis XVIII", "replace": "Louis the Eighteenth"}, {"find": "ministers - wary", "replace": "ministers\u2014wary"}, {"find": "Napoleon III", "replace": "Napoleon the Third"}, {"find": "cousins - waited", "replace": "cousins\u2014waited"}]}\n</answer>\n\nTARGET: A paragraph of ordinary prose with nothing in it that is printed one way and read another.\n<answer>\n{"edits": []}\n</answer>\n';
   }
 });
 
@@ -72563,9 +72622,9 @@ RANGES \u2014 1914-1918 is "nineteen fourteen to nineteen eighteen"; 65-71 is "s
 
 WHOLE NUMBERS \u2014 cardinal, no hyphens between the groups, no "and": 5280 is "five thousand two hundred eighty".
 
-DECIMALS \u2014 2.9 million is "two point nine million"; 3.14 is "three point one four".
+DECIMALS \u2014 2.9 million is "two point nine million"; 3.14 is "three point one four"; "1.5 kilos" is "one point five kilos"; "5.4 degrees" is "five point four degrees". Every decimal in the TARGET is read, whatever it counts.
 
-TIMES \u2014 a clock time with a.m./p.m. or on the hour is already converted. A bare one that reached you reads as a clock: 10:05 is "ten oh five"; 7:02 is "seven oh two".
+TIMES \u2014 a clock time with a.m./p.m. or on the hour is already converted. A bare one that reached you reads as a clock: 10:05 is "ten oh five"; 7:02 is "seven oh two". A British book prints the time with a POINT instead of a colon, and it is the same clock: "2.00 p.m." is "two p.m." (never "two oh two"); "10.30 a.m." is "ten thirty a.m."; "4.15 p.m." is "four fifteen p.m.". ":00" and ".00" are the hour itself and are not said.
 
 SCRIPTURE REFERENCES are yours, and they are the one place you may change a word.
 
@@ -73246,6 +73305,7 @@ var init_epub2 = __esm({
 var run_exports = {};
 __export(run_exports, {
   CleanTextError: () => CleanTextError,
+  DEFAULT_CLEAN_GATE: () => DEFAULT_CLEAN_GATE,
   cleanKey: () => cleanKey,
   receiptPath: () => receiptPath,
   runCleanText: () => runCleanText,
@@ -73564,7 +73624,7 @@ async function runCleanText(opts) {
       if (total > 0 && label !== "Releasing model") opts.log(`clean-text: ${done}/${total}`);
     },
     "every-block",
-    EVERY_CLASS,
+    { ...EVERY_CLASS, gate: opts.gate ?? DEFAULT_CLEAN_GATE },
     concurrency,
     bankAnswer
   );
@@ -73675,7 +73735,7 @@ function sayRefusal2(log2, key, record2) {
     `clean-text: REFUSED ${record2.status} in ${key} \u2014 "${record2.find}" \u2192 "${record2.replace}"${record2.detail === void 0 ? "" : ` (${record2.detail})`}`
   );
 }
-var fs29, path24, import_node_crypto8, KEY_FORMAT, SENTENCE_KEY_FORMAT, NUL6, TRIAGE_KEY_FORMAT, NOTHING_TO_ASK2;
+var fs29, path24, import_node_crypto8, KEY_FORMAT, SENTENCE_KEY_FORMAT, NUL6, DEFAULT_CLEAN_GATE, TRIAGE_KEY_FORMAT, NOTHING_TO_ASK2;
 var init_run = __esm({
   "src/clean/run.ts"() {
     "use strict";
@@ -73704,6 +73764,7 @@ var init_run = __esm({
     KEY_FORMAT = "clean/dialect/v1";
     SENTENCE_KEY_FORMAT = "clean/sentence/v1";
     NUL6 = String.fromCharCode(0);
+    DEFAULT_CLEAN_GATE = false;
     TRIAGE_KEY_FORMAT = "clean/triage/v1";
     NOTHING_TO_ASK2 = {
       model: "(no model \u2014 every block was already answered)",
@@ -102330,6 +102391,12 @@ var CT_UNIT = {
   placeholder: "<sentence|block>",
   describe: "What one question is about: a sentence (default) or a whole block. clean-text --triage must name the unit its verdicts were made at."
 };
+var CT_GATE = {
+  name: "gate",
+  type: "string",
+  placeholder: "<on|off>",
+  describe: "Enforce the validators judgement refusals (on), or apply every edit the model proposes that can be spliced and record what the gate would have said (off, the default while the prompt is tuned)."
+};
 async function cleanUnit(args) {
   const unit = optionalString(args, "unit");
   if (unit === void 0) return void 0;
@@ -102387,6 +102454,11 @@ async function runCleanText2(args) {
     throw new UsageError(`--concurrency takes a positive whole number, not "${concurrency}"`);
   }
   const unit = await cleanUnit(args);
+  const gateArg = optionalString(args, "gate");
+  if (gateArg !== void 0 && gateArg !== "on" && gateArg !== "off") {
+    throw new UsageError(`--gate takes on or off, not "${gateArg}"`);
+  }
+  const gate = gateArg === void 0 ? void 0 : gateArg === "on";
   const epubIn = optionalString(args, "epub");
   if (epubIn !== void 0) {
     const bookRoute = ["book", "records", "stamp", "generation", "triage", "unit"].filter((name) => optionalString(args, name) !== void 0);
@@ -102428,6 +102500,7 @@ async function runCleanText2(args) {
     ...optionalString(args, "generation") === void 0 ? {} : { generation: optionalString(args, "generation") },
     ...optionalString(args, "triage") === void 0 ? {} : { triagePath: optionalString(args, "triage") },
     ...unit === void 0 ? {} : { unit },
+    ...gate === void 0 ? {} : { gate },
     log
   });
 }
@@ -104304,7 +104377,7 @@ var COMMANDS = [
   {
     name: "clean-text",
     summary: "Clean a book's text for a narrator: punctuation, numbers as words, the model on every block.",
-    usage: "--book <book.jsonl> --records <out.records.jsonl> --stamp <out.stamp.json> [--generation <id>] [--endpoint <url>] [--model <name>] [--server <openai|ollama|anthropic>] [--concurrency <n>] [--triage <verdicts.json>] [--unit <sentence|block>]  |  --epub <in.epub> --out <out.epub> [--endpoint <url>] [--model <name>] [--server <openai|ollama|anthropic>] [--concurrency <n>]",
+    usage: "--book <book.jsonl> --records <out.records.jsonl> --stamp <out.stamp.json> [--generation <id>] [--endpoint <url>] [--model <name>] [--server <openai|ollama|anthropic>] [--concurrency <n>] [--triage <verdicts.json>] [--unit <sentence|block>] [--gate <on|off>]  |  --epub <in.epub> --out <out.epub> [--endpoint <url>] [--model <name>] [--server <openai|ollama|anthropic>] [--concurrency <n>]",
     detail: [
       "THE THIRD TEXT ACT. translate turns a book into another language, --rewrite",
       "turns it into plainer prose, and this turns it into the text a NARRATOR is",
@@ -104508,7 +104581,8 @@ var COMMANDS = [
       CT_CONCURRENCY,
       TR_GENERATION,
       CT_TRIAGE,
-      CT_UNIT
+      CT_UNIT,
+      CT_GATE
     ],
     run: runCleanText2
   },

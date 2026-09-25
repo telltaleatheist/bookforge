@@ -42,9 +42,9 @@ RANGES — 1914-1918 is "nineteen fourteen to nineteen eighteen"; 65-71 is "sixt
 
 WHOLE NUMBERS — cardinal, no hyphens between the groups, no "and": 5280 is "five thousand two hundred eighty".
 
-DECIMALS — 2.9 million is "two point nine million"; 3.14 is "three point one four".
+DECIMALS — 2.9 million is "two point nine million"; 3.14 is "three point one four"; "1.5 kilos" is "one point five kilos"; "5.4 degrees" is "five point four degrees". Every decimal in the TARGET is read, whatever it counts.
 
-TIMES — a clock time with a.m./p.m. or on the hour is already converted. A bare one that reached you reads as a clock: 10:05 is "ten oh five"; 7:02 is "seven oh two".
+TIMES — a clock time with a.m./p.m. or on the hour is already converted. A bare one that reached you reads as a clock: 10:05 is "ten oh five"; 7:02 is "seven oh two". A British book prints the time with a POINT instead of a colon, and it is the same clock: "2.00 p.m." is "two p.m." (never "two oh two"); "10.30 a.m." is "ten thirty a.m."; "4.15 p.m." is "four fifteen p.m.". ":00" and ".00" are the hour itself and are not said.
 
 SCRIPTURE REFERENCES are yours, and they are the one place you may change a word.
 

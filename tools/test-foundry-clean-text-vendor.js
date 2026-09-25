@@ -438,7 +438,15 @@ const VENDOR_LEAVES = '770480d';
  * prompt's class 6. No rule and no validator moved; NORMALIZER_VERSION went
  * n9 → n10 because a prompt is part of the transform. This side took the same diff.
  */
-const ONE_DOOR_BASELINE = '3025407';
+/*
+ * MOVED 2026-09-24 (late), 3025407 → c04e4a2, as a DECISION: `c04e4a2` is n11,
+ * read in full. A RULE MOVE in the validator (a lone numeral after a ruler's
+ * name, more ruler names in tts-spoken-forms, a clock's zero minutes, proven-exact
+ * readings off the rewrite budget, and `policy.gate`) and in both prompts (the
+ * examples the n10 runs showed were missing). NORMALIZER_VERSION n10 → n11, and
+ * this side took the same diff.
+ */
+const ONE_DOOR_BASELINE = 'c04e4a2';
 const FROZEN_SINCE_BASELINE = [
   'src/clean/tts-number-normalizer.ts',
   'src/clean/tts-spoken-forms.ts',
@@ -500,7 +508,7 @@ const FILES = [
     theirs: 'src/clean/tts-number-normalizer.ts',
     vendoredAt: VENDOR_PASS,
     shipped: {
-      sha256: '63455639a94ec74430cd021a39913603023cea458fb0ec403be4076f2137c1c8',
+      sha256: '8eb858da151967ce44d761da850d8e3ee726c9338e53c27c55e712d8f0d1da6f',
       why: 'the type-only `epub-processor.js` import retargeted to `./targets.js`; '
         + '`askAboutEach` exported so the engine\'s door is a third caller rather than a second '
         + 'copy of the retry rules; `normalizeNarrationNumbers` deleted (291 lines, all about a '
@@ -532,7 +540,9 @@ const FILES = [
         + 'REPINNED 2026-09-24 (evening) for 4d67274 (n9): NORMALIZER_VERSION n9, and a pre-decimal '
         + 'sum gets one more joining word and no word for its zero part. Same diff here. '
         + 'REPINNED 2026-09-24 (night) for 3025407 (n10): the version constant and its '
-        + 'comment only. Same diff here.',
+        + 'comment only. Same diff here. '
+        + 'REPINNED 2026-09-24 (late) for c04e4a2 (n11): a lone ruler numeral, the clock zero '
+        + 'minutes, proven-exact readings off the budget, and policy.gate. Same diff here.',
     },
   },
   {
@@ -567,13 +577,14 @@ const FILES = [
     theirs: 'src/clean/prompts/tts-number-normalize.txt',
     vendoredAt: VENDOR_PASS,
     shipped: {
-      resynced: '3025407',
-      sha256: '2c81bf6c66403f58b25ee09069abe06273af52869f95b5a4b93c3b35cbf8999a',
+      resynced: 'c04e4a2',
+      sha256: '04d72b3081f03de6a02cefbec733e774a4853293f22b5c4b1d06efdfd89d28af',
       why: 'n8 (cf38ea2) moved the prompt with the year rules, and this side took it '
         + 'byte-for-byte on 2026-09-24 — see "THE DECISION OF 2026-09-24". n9 (4d67274) added '
         + 'the day-range and pre-decimal-sum examples, taken byte-for-byte the same evening. n10 '
         + '(3025407) worded TARGET for a sentence and made roman numerals defer to class 6, '
-        + 'taken byte-for-byte the same night.',
+        + 'taken byte-for-byte the same night. n11 (c04e4a2) added the point-time and decimal '
+        + 'examples, taken byte-for-byte.',
     },
   },
   {
@@ -581,11 +592,12 @@ const FILES = [
     theirs: 'src/clean/prompts/tts-narration-text.txt',
     vendoredAt: VENDOR_PASS,
     shipped: {
-      resynced: '3025407',
-      sha256: 'ce8376957a6bd094c36d2f3cab753f9504ff0f3ec8e3a055f8078eeaddf7ada9',
+      resynced: 'c04e4a2',
+      sha256: 'e35a5a079fccdcd1c44fce622bf18b0e3a43e5494a53bc34bb2252f52f68e2a1',
       why: 'RESYNCED 2026-09-24 (night) for 3025407 (n10): Foundry worded it for a TARGET that '
         + 'is usually one sentence (four phrases: "one passage … usually a single sentence", '
         + '"in the TARGET", "PREVIOUS or NEXT passage", "most passages"), and this side took it '
+        + 'byte-for-byte. n11 (c04e4a2) added the ruler-numeral and spaced-hyphen examples, taken '
         + 'byte-for-byte. What it was before: '
         + 'THE FIRST RE-VENDOR THAT RAN THE OTHER WAY — see "THE DECISION OF 2026-09-14 '
         + '(evening)" in the header. BookForge `9df3d93a` added CLASS 2b, "scripture book names '
@@ -666,7 +678,8 @@ const VERSIONS = [
     // here by the 3-way merge in "THE DECISION OF 2026-09-24".
     // n8 → n9 the same evening: Foundry 4d67274, taken here as the same diff.
     // n9 → n10 the same night: Foundry 3025407 (the sentence unit's prompt wording).
-    expected: 'n10',
+    // n10 → n11 later that night: Foundry c04e4a2 (examples; the gate switch).
+    expected: 'n11',
   },
   {
     name: 'PUNCTUATION_SPEC_VERSION',
