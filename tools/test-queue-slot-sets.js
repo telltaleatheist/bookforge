@@ -821,23 +821,39 @@ test('A HELD STEP AFTER THE NEXT ACT CHANGES NOTHING — only the next act decid
   assert.strictEqual(gpuOn(job, 'pc'), 1);
 });
 
-test('PREPARE ALONE HOLDS NOTHING — "they can run the preparation step locally"', () => {
+test('A BOUND BOOK\'S LOCAL PREP HOLDS ITS CARD — "it sohuld still hold the slot lease"', () => {
+  // Owen, 2026-09-25: a book dragged onto the WSL lane ran its prep locally
+  // holding nothing, and the next book dragged there took the card. Until then
+  // this keeper said the opposite ("PREPARE ALONE HOLDS NOTHING").
   const job = narration({ status: 'queued' }, { status: 'waiting' });
-  assert.strictEqual(slots.gpuHoldOf(job), null, 'no GPU act of this book has started');
-  assert.strictEqual(gpuOn(job, 'mac'), 0);
-  const unassigned = narration({ status: 'running', venue: 'mac' }, { status: 'waiting' },
-    { waitForResolved: undefined });
-  assert.strictEqual(slots.gpuHoldOf(unassigned), null, 'and a run with no machine holds none');
+  assert.deepStrictEqual(slots.gpuHoldOf(job), { server: 'mac' }, "the prep landed; the card is the book's");
+  assert.strictEqual(gpuOn(job, 'mac'), 1);
+  const dragged = jobOfSteps([
+    stepOf({ id: 'prep', type: 'prepare', label: 'Prepare', resource: 'cpu', status: 'running' }),
+    stepOf({ id: 'render', type: 'tts-conversion', label: 'Narrate', travels: true, status: 'waiting' }),
+  ], { waitFor: 'mac' });
+  assert.deepStrictEqual(slots.gpuHoldOf(dragged), { server: 'mac' },
+    'a book its own picker binds holds from its first step, before any card assigned it');
+  const notBegun = jobOfSteps([
+    stepOf({ id: 'prep', type: 'prepare', label: 'Prepare', resource: 'cpu', status: 'queued' }),
+    stepOf({ id: 'render', type: 'tts-conversion', label: 'Narrate', travels: true, status: 'waiting' }),
+  ], { waitFor: 'mac' });
+  assert.strictEqual(slots.gpuHoldOf(notBegun), null, 'nothing has begun, so nothing is held');
+  const anyMachine = narration({ status: 'queued' }, { status: 'waiting' },
+    { waitForResolved: undefined, waitFor: waitFor.WAIT_FOR_ANY });
+  assert.strictEqual(slots.gpuHoldOf(anyMachine), null, 'and a run that will take any machine holds none');
 });
 
-test('A NON-TRAVELLING GPU STEP NEITHER STARTS NOR EXTENDS A HOLD', () => {
+test('A NON-TRAVELLING GPU STEP DOES NOT EXTEND A HOLD past the last act on the card', () => {
   // A local RVC or denoise pass is on `local-longform-align`, this machine's
   // own row. It has never been on the server's card.
   const started = jobOfSteps([
     stepOf({ id: 'rvc', type: 'rvc-enhancement', label: 'Convert voice', status: 'running' }),
     stepOf({ id: 'align', type: 'align', label: 'Align', travels: true, status: 'queued' }),
   ], { waitForResolved: 'mac' });
-  assert.strictEqual(slots.gpuHoldOf(started), null, 'nothing of this book has been on the server');
+  // A BOUND book's local work holds its card (2026-09-25), GPU or CPU alike.
+  assert.deepStrictEqual(slots.gpuHoldOf(started), { server: 'mac' },
+    'a local pass of a bound book keeps the card for the act after it');
   const extended = jobOfSteps([
     stepOf({ id: 'render', type: 'tts-conversion', label: 'Narrate', travels: true,
       status: 'done' }),
@@ -875,7 +891,13 @@ test('THE HELD CARD SAYS WHOSE IT IS, and that the wait is a short one', () => {
   assert.strictEqual(slots.gpuHoldWords(waiting),
     'holding the card for Mistborn between GPU steps — waiting to start Align');
   assert.strictEqual(slots.gpuHoldStep(waiting).id, 'align');
-  const none = narration({ status: 'queued' }, { status: 'waiting' });
+  // Before its first act on the card, a bound book holds from its prep
+  // (2026-09-25), and the words do not say "between GPU steps".
+  const prepped = narration({ status: 'queued' }, { status: 'waiting' });
+  assert.strictEqual(slots.gpuHoldWords(prepped),
+    'holding the card for Mistborn — waiting to start Narrate');
+  const none = narration({ status: 'queued' }, { status: 'waiting' },
+    { waitForResolved: undefined, waitFor: waitFor.WAIT_FOR_ANY });
   assert.strictEqual(slots.gpuHoldWords(none), null, 'no hold, nothing to say');
   assert.strictEqual(slots.gpuHoldStep(none), null);
 });

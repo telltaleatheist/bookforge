@@ -93,6 +93,7 @@ import {
 import {
   decideWaitFor,
   holdBusy,
+  RETIRED_LOCAL_NARRATOR_VENUE,
   WAIT_FOR_ANY,
   type ServerState,
   type WaitForServer,
@@ -108,6 +109,10 @@ import {
   gpuHoldCharges,
   gpuHoldOf,
   gpuHoldWords,
+  boundServerOf,
+  onItsCard,
+  runHasStarted,
+  runWantsItsCard,
   isCloudLane,
   isTravellingGpuStep,
   longformAlignCharged,
@@ -530,6 +535,11 @@ interface RunningStep {
    * asks to stop.
    */
   stopReason?: StopReason;
+  /**
+   * The press was a STOP (the work is to be kept), not a removal — `cancel`'s
+   * `resumable` option. Read by `settleStep` to send the run back to Pending.
+   */
+  stopKeepsRun?: boolean;
 }
 const runningSteps = new Map<string, RunningStep>();
 
@@ -1881,6 +1891,7 @@ export async function cancel(
         // Recorded BEFORE the module is asked to stop: the module's own bridge
         // can settle the step inside that await, and `settleStep` reads this.
         live.stopReason = stopReason;
+        live.stopKeepsRun = opts?.resumable === true;
         log.info(`[QUEUE] Stopping ${job.title} — ${step.label} (${step.type}, ${step.id})`);
         const t0 = Date.now();
         try {
@@ -3297,6 +3308,38 @@ function jobIsStageable(job: QueueJob): boolean {
  * of it right in one of them, which is exactly how a narration run came to be
  * born un-staged (see the block in `appendStep`).
  */
+/**
+ * A RUN A PERSON STOPPED GOES BACK TO PENDING, AND GIVES UP ITS CARD (Owen,
+ * 2026-09-25: *"if i hit stop it should give up the lease and move to pending
+ * again"*). It used to stay on its lane, still assigned to the server, still
+ * drawn in the slot.
+ *
+ * NOT {@link returnToPending}, which is "start over" and clears every step.
+ * A Stop promises the work already done is kept, so a `done` step stays done
+ * and the stopped one stays `held` and interrupted — Send to queue releases it
+ * and it resumes where it stopped. What goes is everything that binds the run
+ * to a card: the assignment, the venues of the steps still to run, the parks,
+ * and the row's lease. Its own picker (`waitFor`) is left as the operator
+ * set it.
+ *
+ * Only once NOTHING of the run is running: a Stop of a whole run settles each
+ * running step in turn, and the last one to land moves the run.
+ */
+function stoppedRunToPending(job: QueueJob): void {
+  if (!jobIsStageable(job) || isPending(job)) return;
+  if (job.steps.some((step) => step.status === 'running')) return;
+  job.pending = true;
+  job.waitForResolved = undefined;
+  for (const step of job.steps) {
+    if (TERMINAL_STEP_STATUSES.has(step.status)) continue;
+    step.status = 'held';
+    step.venue = undefined;
+    forgetStepParks(step.id);
+  }
+  if (crucibleLeaseHost !== null) void crucibleLeaseHost.closeRow(job.id);
+  getMainLogger().info(`[QUEUE] ${job.title} was stopped: back to Pending, its card and lease given up`);
+}
+
 function stageRun(job: QueueJob): void {
   job.pending = true;
   for (const step of job.steps) step.status = 'held';
@@ -3688,7 +3731,7 @@ function settleReserve(
        * seconds. So the row parks on its own sentence with the SHORT cool-off
        * and keeps everything — its venue, its hold, its place.
        */
-      if (gpuHoldOf(found.job) !== null) {
+      if (onItsCard(found.job)) {
         parkOnOwnTail(step, server, busyLine);
         pump();
         return;
@@ -3878,6 +3921,38 @@ function gpuSlotHolder(
 }
 
 /**
+ * WHY A RUN BOUND TO A SERVER MAY NOT BEGIN YET, as the sentence its row wears,
+ * or null when it may.
+ *
+ * Two reasons, in order. An EARLIER book in the queue bound to the same server
+ * that is ready to begin goes first — the queue's order is the operator's order
+ * (Owen: *"order should be respected"*). And, when the book begins with LOCAL
+ * work, the card must have room: every slot of that set already charged to
+ * other books' work or holds means this book would begin and then hold a card
+ * it cannot have. A book whose first step is itself the card's work is asked
+ * that by the GPU admission below, which also knows a switched-off machine and
+ * a class routed to the cloud; answering first here would put the wrong
+ * sentence on it. A run that will take any machine, or has no card work left
+ * the queue will start, is not asked.
+ */
+function boundRunMayNotBegin(job: QueueJob, step: QueueStep, sets: readonly SlotSet[]): string | null {
+  const server = boundServerOf(job);
+  if (server === null || server === RETIRED_LOCAL_NARRATOR_VENUE) return null;
+  if (!runWantsItsCard(job)) return null;
+  for (const other of jobs) {
+    if (other === job) break;
+    if (isPending(other) || boundServerOf(other) !== server || runHasStarted(other)) continue;
+    if (!runWantsItsCard(other)) continue;
+    if (!other.steps.some((step) => step.status === 'queued')) continue;
+    return `Waiting: ${other.title} is ahead of it on ${server}.`;
+  }
+  if (step.resource === 'gpu') return null;
+  const holder = gpuSlotHolder(server, sets, job);
+  if (holder !== null) return `Waiting for the card on ${server}: ${holder}.`;
+  return null;
+}
+
+/**
  * THE MOMENT A BOOK IS TAKEN BY A GPU — the one place `waitForResolved` is
  * written, and the boundary every routing edit is measured against.
  *
@@ -4030,6 +4105,22 @@ export function pump(): void {
         transientParks.delete(step.id);
       }
 
+      /*
+       * A BOOK BOUND TO A SERVER BEGINS ONLY WHEN THAT CARD HAS ROOM FOR IT,
+       * AND IN ITS TURN (Owen, 2026-09-25). Its FIRST step may be local — a
+       * narration opens with `prepare` on this machine's CPU — and from the
+       * moment it starts, the run holds the card (`gpuHoldOf`). So the question
+       * "may this book have that card" is asked here, before the first step of
+       * any resource, rather than at the render: *"if it goes to the local cpu
+       * for prep, it sohuld still hold the slot lease"* and *"order should be
+       * respected"*. Asked only before the run starts; after that its hold is
+       * the answer.
+       */
+      if (!runHasStarted(job)) {
+        const notYet = boundRunMayNotBegin(job, step, sets);
+        if (notYet !== null) { holdStep(step, notYet); continue; }
+      }
+
       if (step.resource !== 'gpu') {
         /*
          * NON-GPU WORK NEEDS NO MACHINE DECIDED, so its set is known up front:
@@ -4077,7 +4168,7 @@ export function pump(): void {
          * row with its own sentence, because those are facts about the machine
          * rather than about this book's tail.
          */
-        const cardHeld = step.travels === true && gpuHoldOf(job) !== null;
+        const cardHeld = step.travels === true && onItsCard(job);
         /*
          * A STEP PARKED ON ITS OWN BOOK'S TAIL, re-asked on the short cadence.
          * See `heldTailParks`: the previous act of THIS run was still closing
@@ -4740,6 +4831,7 @@ function settleStep(job: QueueJob, step: QueueStep, outcome: StepOutcome): void 
    * here: they are one fact about the attempt that has just ended.
    */
   const stopAskedBy: StopReason = live?.stopReason ?? (closing ? 'closed' : 'user');
+  const stopKeepsRun = live?.stopKeepsRun === true;
   /*
    * WAS THIS A WAIT? ONE READER, ONE FIELD — the line the refusal carried.
    *
@@ -4861,7 +4953,7 @@ function settleStep(job: QueueJob, step: QueueStep, outcome: StepOutcome): void 
      * been on that card? A first submit refused by a stranger answers no and
      * takes the branch below, exactly as it always has.
      */
-    if (gpuHoldOf(job) !== null) {
+    if (onItsCard(job)) {
       step.progress = { ...step.progress, percent: undefined };
       parkOnOwnTail(step, job.waitForResolved ?? 'that server', busyLine);
       changed();
@@ -5016,6 +5108,23 @@ function settleStep(job: QueueJob, step: QueueStep, outcome: StepOutcome): void 
     const said = step.error ?? (outcome.ok ? undefined : outcome.error);
     if (said !== undefined && said !== '') step.lastError = said;
     step.error = undefined;
+    if (askedBy === 'user') stoppedRunToPending(job);
+  } else if (stopped && stopKeepsRun && stopAskedBy === 'user' && jobIsStageable(job)) {
+    /*
+     * A STOP OF WORK THAT CANNOT RESUME — `prepare` is the case: nothing it
+     * wrote is kept, so it starts again from the top. It used to be cancelled,
+     * and everything after it with it, so a Stop during prep threw the whole
+     * run away. A Stop keeps the run: this step goes back to `held` as if it
+     * had never started, and the run goes to Pending with the rest
+     * (`stoppedRunToPending`). A REMOVAL still cancels, on the arm below.
+     */
+    step.status = 'held';
+    step.wasInterrupted = undefined;
+    step.progress = {};
+    step.error = undefined;
+    step.startedAt = undefined;
+    step.finishedAt = undefined;
+    stoppedRunToPending(job);
   } else if (stopped) {
     step.status = 'cancelled';
     step.error = outcome.error || 'Stopped by the user.';

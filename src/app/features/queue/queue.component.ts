@@ -1380,6 +1380,11 @@ interface ChainRung {
             Ready" and "this one next" are the same sentence. It goes through
             the same 'applyPlanOrder' a drag does.
 
+            THE BUTTON SAYS WHAT IT DOES (Owen, 2026-09-25): "Move to pending"
+            on a book in the queue, "Move to queue" on one in Pending. It used
+            to name the state it was in ("Ready" / "Pending"), which read as a
+            label rather than a press.
+
             Drawn only where it can be honoured. A book that holds a card is
             locked and its control is Stop; the lock's sentence is the pill's
             tooltip, which is where a hand that failed to drag it looks.
@@ -1390,7 +1395,7 @@ interface ChainRung {
                 type="button"
                 class="btn stop xs"
                 (click)="stopBookAsked(plan, lane)"
-                title="Stop what this book is running and free its slots. It keeps everything it has rendered; Start picks it up from there. The rest of the queue carries on."
+                title="Stop what this book is running, give up its card and move it to Pending. It keeps everything it has rendered; Move to queue picks it up from there. The rest of the queue carries on."
               >■ Stop</button>
             } @else if (isLocked(plan)) {
               <span class="pill" [title]="lockedReason(plan)">on a card</span>
@@ -1402,7 +1407,7 @@ interface ChainRung {
                 [attr.aria-pressed]="isReady(plan, staged)"
                 (click)="setReady(plan, staged, !isReady(plan, staged))"
                 [title]="readyHint(plan, staged)"
-              >{{ isReady(plan, staged) ? 'Ready' : 'Pending' }}</button>
+              >{{ isReady(plan, staged) ? 'Move to pending' : 'Move to queue' }}</button>
               <!-- ── THE ✕ ──────────────────────────────────────────────
                    Owen, 2026-09-20: *"get rid of the 'staged' text in the top
                    right and replace it with an X. if the user hits X, it
@@ -4516,10 +4521,10 @@ export class QueueComponent {
   /** Which way the Ready/Pending pill will flip, said before it is pressed. */
   readyHint(plan: BookPlan, staged: boolean): string {
     return this.isReady(plan, staged)
-      ? 'Ready — it starts on the first machine that will take it. Press to hold it instead, '
-        + 'or drag it onto a lane to name one.'
-      : 'Pending — nothing starts it, and it keeps its settings and anything it has rendered. '
-        + 'Press to put it at the front of Up next.';
+      ? 'In the queue — it starts on the first machine that will take it. Press to move it to '
+        + 'Pending instead, or drag it onto a lane to name one.'
+      : 'In Pending — nothing starts it, and it keeps its settings and anything it has rendered. '
+        + 'Press to move it to the front of the queue.';
   }
 
   /**

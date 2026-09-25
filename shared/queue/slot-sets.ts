@@ -450,12 +450,20 @@ export function slotSetForStep(
  *
  * ── The two halves, and what each rules out ────────────────────────────────
  *
- * (a) STARTED — a travelling GPU step of this run is `running` or `done`. A run
- *     whose render has not begun holds nothing: `prepare` is local work and
- *     Owen's ruling says so in as many words ("they can run the preparation
- *     step locally before going to the GPU"). `failed` and `cancelled` are not
- *     starts either — the run is over, and a hold that survived a failure would
- *     be a card held for work that will never run.
+ * (a) STARTED — any step of this run is `running` or `done`, its local
+ *     `prepare` included. Until 2026-09-25 only a GPU step started a hold, so
+ *     a book dragged onto the WSL lane ran its prep here holding nothing, and
+ *     the next book dragged onto the same lane took the card (Owen: *"if it
+ *     goes to the local cpu for prep, it sohuld still hold the slot lease"*).
+ *     The prep still runs locally; the card is kept for the book while it
+ *     does. The server is the run's assigned one, or before any card took it
+ *     the one its own picker names ({@link boundServerOf}): a run that will
+ *     take any machine has no card to keep. The pump admits a bound run's
+ *     first step only when that card has room (electron/queue-engine.ts), so
+ *     two books' preps can never each hold the one slot the other needs.
+ *     `failed` and `cancelled` are not starts — the run is over, and a hold
+ *     that survived a failure would be a card held for work that will never
+ *     run.
  * (b) OUTSTANDING — the run's NEXT GPU ACT ({@link nextTravellingGpuStep}, the
  *     first travelling GPU step that is not `done`) is RELEASED and not
  *     terminal: `queued`, `waiting` or `running`. Only that ONE step is asked,
@@ -508,8 +516,8 @@ export function slotSetForStep(
  * engine's knowledge, and this module is pure by design.
  */
 export function gpuHoldOf(job: QueueJob): { readonly server: string } | null {
-  const server = job.waitForResolved;
-  if (server === undefined) return null;
+  const server = boundServerOf(job);
+  if (server === null) return null;
   /*
    * NOT A SERVER, so there is no card to hold. A row assigned to the deleted
    * narrator spawn holds with its own sentence (`wait-for.ts`); reading it as a
@@ -521,11 +529,56 @@ export function gpuHoldOf(job: QueueJob): { readonly server: string } | null {
   const next = nextTravellingGpuStep(job);
   if (next === null) return null;
   if (!RELEASED_STEP_STATUSES.has(next.status)) return null;
-  // (a) STARTED — asked over ALL of them, because "has this book been on the
-  // card" is a fact about its history, not about the act in front of it.
-  const started = job.steps.some((step) => isTravellingGpuStep(step)
+  // (a) STARTED — any step of the run, local ones included (Owen, 2026-09-25).
+  return runHasStarted(job) ? { server } : null;
+}
+
+/**
+ * HAS THIS BOOK ALREADY BEEN ON ITS ASSIGNED CARD, with its next act there
+ * still to come — the question a 409 is read against, which is NOT the slot
+ * question {@link gpuHoldOf} answers.
+ *
+ * Until 2026-09-25 the two were one function, because a run held its slot only
+ * once a GPU act had started. Now a bound run holds its slot from its first
+ * local step, and that must not change how a refusal is read: a 409 to a book
+ * whose only landed step is a local `prepare` is a STRANGER on the card, not
+ * this book's own previous act closing (bug hunt Q1), and a busy machine is
+ * busy to it. So the "own tail" readers ask this: an assigned server, a
+ * travelling GPU act that ran there, and the next act released.
+ */
+export function onItsCard(job: QueueJob): boolean {
+  const server = job.waitForResolved;
+  if (server === undefined || server === RETIRED_LOCAL_NARRATOR_VENUE) return false;
+  const next = nextTravellingGpuStep(job);
+  if (next === null || !RELEASED_STEP_STATUSES.has(next.status)) return false;
+  return job.steps.some((step) => isTravellingGpuStep(step)
     && (step.status === 'running' || step.status === 'done'));
-  return started ? { server } : null;
+}
+
+/**
+ * THE SERVER A RUN IS BOUND TO — the one it was assigned when a card took it,
+ * or, before that, the one its own picker names (a book dragged onto a lane).
+ * Null for a run that will take any machine: it has no card to keep yet.
+ */
+export function boundServerOf(job: QueueJob): string | null {
+  if (job.waitForResolved !== undefined) return job.waitForResolved;
+  if (job.waitFor !== undefined && job.waitFor !== WAIT_FOR_ANY) return job.waitFor;
+  return null;
+}
+
+/** Has any step of this run begun — running now, or landed? */
+export function runHasStarted(job: QueueJob): boolean {
+  return job.steps.some((step) => step.status === 'running' || step.status === 'done');
+}
+
+/**
+ * DOES THIS RUN STILL HAVE WORK FOR A SERVER'S CARD that the queue will start
+ * on its own — the outstanding half of {@link gpuHoldOf}, asked without the
+ * started half, for the admission that decides whether a bound run may BEGIN.
+ */
+export function runWantsItsCard(job: QueueJob): boolean {
+  const next = nextTravellingGpuStep(job);
+  return next !== null && RELEASED_STEP_STATUSES.has(next.status);
 }
 
 /**
@@ -644,6 +697,21 @@ export function gpuHoldWords(
 ): string | null {
   const step = gpuHoldStep(job);
   if (step === null) return null;
+  /*
+   * BEFORE THE BOOK'S FIRST ACT ON THE CARD (2026-09-25): a bound book holds
+   * from its local prep, and "between GPU steps" would be untrue — there has
+   * been none yet.
+   */
+  const beenOnCard = job.steps.some((s) => isTravellingGpuStep(s)
+    && (s.status === 'running' || s.status === 'done'));
+  if (!beenOnCard) {
+    const first = step.resource === 'cpu' || step.travels !== true
+      ? `${step.label} is running on this machine first`
+      : opts.queueRunning === false
+        ? `${step.label} is next, but the queue is idle — press Start`
+        : `waiting to start ${step.label}`;
+    return `holding the card for ${job.title} — ${first}`;
+  }
   const what = step.resource === 'cpu'
     ? `${step.label} is finishing on the CPU`
     : opts.queueRunning === false

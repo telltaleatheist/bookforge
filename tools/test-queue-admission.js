@@ -1142,8 +1142,18 @@ test("A HELD NEXT ACT FREES THE CARD: the second book takes the PC (Owen's Pursu
   render.runs[0].reject(new Error('Stopped by the user.'));
   await settle();
   assert.strictEqual(stepOf(pursuit.id, 3).status, 'held');
-  assert.strictEqual(stepOf(pursuit.id, 4).status, 'waiting', 'Align still sits behind it');
-  assert.strictEqual(jobOf(pursuit.id).waitForResolved, 'pc', '§4.3: the book stays on its machine');
+  assert.strictEqual(stepOf(pursuit.id, 3).wasInterrupted, true, 'and it resumes where it stopped');
+  /*
+   * A STOP SENDS THE BOOK TO PENDING AND GIVES UP ITS CARD (Owen, 2026-09-25:
+   * "if i hit stop it should give up the lease and move to pending again").
+   * Until then it stayed on its machine, Align waiting behind it. The work
+   * already done is kept: Clean, the landing and the Prepare stay done.
+   */
+  assert.strictEqual(jobOf(pursuit.id).pending, true, 'the stopped book is in Pending');
+  assert.strictEqual(stepOf(pursuit.id, 4).status, 'held', 'Align is held with it');
+  assert.strictEqual(jobOf(pursuit.id).waitForResolved, undefined, 'and it gave up the PC');
+  assert.deepStrictEqual([0, 1, 2].map((i) => stepOf(pursuit.id, i).status), ['done', 'done', 'done'],
+    'the work already done is kept');
 
   /*
    * Start is pressed on the OTHER book (a stop leaves the queue running, but
@@ -1160,6 +1170,72 @@ test("A HELD NEXT ACT FREES THE CARD: the second book takes the PC (Owen's Pursu
   assert.strictEqual(jobOf(next.id).waitForResolved, 'pc');
   assert.strictEqual(stepOf(pursuit.id, 3).status, 'held',
     'and the held book did not quietly restart itself');
+});
+
+test('A BOOK DRAGGED ONTO A LANE HOLDS ITS CARD THROUGH ITS LOCAL PREP, and the next one waits its turn', async () => {
+  /*
+   * Owen, 2026-09-25: *"i dragged pursuit of power to the wsl slot. it started.
+   * then i dragged yahweh or jesus to the same slot. yahweh or jesus took the
+   * slot and started processing instead of pursuit of power ... if it goes to
+   * the local cpu for prep, it sohuld still hold the slot lease"* — and *"order
+   * should be respected"*. Pursuit's run opened with a local `prepare`, which
+   * held nothing, so Yahweh's clean (GPU first) took the PC.
+   */
+  const clean = fakeModule('foundry-job');
+  const prep = fakeModule('prepare', { travels: false, resource: () => 'cpu' });
+  const render = fakeModule('tts-conversion');
+  const host = fakeHost({
+    ranked: [{ name: 'pc', enabled: true }],
+    defaultWaitFor: 'any',
+    reach: { pc: { reachable: true } },
+  });
+  await fresh('dragged-prep-holds', [clean, prep, render], host, null);
+
+  // A drag onto a lane is `setWaitFor` (queue.component's `setPlanServer`),
+  // made while the book is in Pending, then Move to queue.
+  const dragged = (spec) => {
+    const job = engine.enqueue(spec);
+    engine.setWaitFor(job.id, 'pc');
+    if (jobOf(job.id).pending === true) engine.sendToQueue(job.id);
+    return job;
+  };
+  const pursuit = dragged({
+    title: 'Pursuit',
+    steps: [
+      { type: 'prepare', label: 'Prepare', config: {}, sourceRef: { kind: 'epub', path: '/p.epub' } },
+      { type: 'tts-conversion', label: 'Narrate', config: {}, parentIndex: 0 },
+    ],
+  });
+  engine.start();
+  await settle();
+  assert.deepStrictEqual(runningOf(prep), ['Pursuit'], 'Pursuit prepares on this machine');
+
+  const yahweh = dragged({
+    title: 'Yahweh',
+    steps: [{ type: 'foundry-job', label: 'Clean', config: {}, sourceRef: { kind: 'epub', path: '/y.epub' } }],
+  });
+  await settle();
+  assert.deepStrictEqual(runningOf(clean), [], 'Yahweh does not take the card Pursuit is holding');
+  assert.strictEqual(stepOf(yahweh.id, 0).status, 'queued');
+
+  prep.runs[0].resolve({ kind: 'prepared-session', path: '/out/prepared' });
+  await settle();
+  assert.deepStrictEqual(runningOf(render), ['Pursuit'], 'Pursuit narrates on the card it kept');
+  assert.deepStrictEqual(runningOf(clean), [], 'and Yahweh still waits');
+
+  // And a second bound book whose own first step is LOCAL does not begin (and
+  // so does not start holding) while the card is Pursuit's.
+  const third = dragged({
+    title: 'Third',
+    steps: [
+      { type: 'prepare', label: 'Prepare', config: {}, sourceRef: { kind: 'epub', path: '/t.epub' } },
+      { type: 'tts-conversion', label: 'Narrate', config: {}, parentIndex: 0 },
+    ],
+  });
+  await settle();
+  assert.strictEqual(stepOf(third.id, 0).status, 'queued', 'its prep waits for the card, in order');
+  assert.ok(/Yahweh is ahead of it|Waiting/.test(stepOf(third.id, 0).progress.message ?? ''),
+    `and says why: ${stepOf(third.id, 0).progress.message}`);
 });
 
 // ── Runner ──────────────────────────────────────────────────────────────────
