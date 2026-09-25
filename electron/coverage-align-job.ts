@@ -774,6 +774,7 @@ async function runCoverageAlignOnCrucible(
   activeCrucibleAligns.set(stepId, controller);
   const startedAt = Date.now();
   const total = selection.chunks.length;
+  let lastUploadReport = 0;
   sendProgress(mainWindow, stepId, {
     phase: 'preparing', percentage: 0, processed: 0, total,
     // THE FIRST BAR OPENS HERE — see CoverageAlignProgress.stage. Everything
@@ -789,6 +790,23 @@ async function runCoverageAlignOnCrucible(
       backend: BOOKFORGE_ALIGN_BACKEND,
       chunks: selection.chunks,
       signal: controller.signal,
+      /*
+       * THE UPLOAD IS COUNTED ON THE ROW. Every chunk FLAC crosses before the
+       * job exists — 2.5 min on Shift (2026-09-25, server timeline) — and the
+       * row said one thing through all of it. The count goes in the message
+       * only: `processed` is the ALIGNER's count and feeds the rate, which an
+       * upload's pace would poison. Said at most twice a second.
+       */
+      onUploaded: ({ done, total: sent }) => {
+        const now = Date.now();
+        if (done !== sent && now - lastUploadReport < 500) return;
+        lastUploadReport = now;
+        sendProgress(mainWindow, stepId, {
+          phase: 'preparing', percentage: 0, processed: 0, total,
+          stage: 'place', server,
+          message: `Uploading chunks to crucible "${server}"… (${done}/${sent})`,
+        });
+      },
       onLog: (line) => console.log(`[COVERAGE-ALIGN] ${line}`),
       onProgress: (p) => {
         if (p.stage === 'warming') {

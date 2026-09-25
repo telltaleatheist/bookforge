@@ -300,6 +300,8 @@ export interface RunCrucibleAlignOptions {
   readonly chunks: readonly SessionAlignChunk[];
   readonly onProgress?: (progress: CrucibleAlignProgress) => void;
   readonly onCue?: (cue: CrucibleAlignCue) => void;
+  /** Each chunk FLAC as it lands on the server, before the job exists. */
+  readonly onUploaded?: (uploaded: { readonly done: number; readonly total: number }) => void;
   readonly onLog?: (line: string) => void;
   readonly signal?: AbortSignal;
 }
@@ -406,6 +408,7 @@ export async function runCrucibleAlign(options: RunCrucibleAlignOptions): Promis
     inputs,
     artifactsTo: processDir,
     ...(options.signal === undefined ? {} : { signal: options.signal }),
+    ...(options.onUploaded === undefined ? {} : { onUploaded: options.onUploaded }),
     onLog: log,
     onEvent: (event: JobEvent) => {
       // `cue` is a kind this SDK does not model; it arrives as `unknown` with

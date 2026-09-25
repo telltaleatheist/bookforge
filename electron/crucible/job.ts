@@ -519,6 +519,13 @@ export interface RunCrucibleJobOptions {
   readonly onEvent?: (event: JobEvent) => void;
   /** Called once the job exists, with the handle that cancels it. */
   readonly onStarted?: (started: { readonly jobId: string; readonly cancel: () => Promise<void> }) => void;
+  /**
+   * Each input as it lands on the server, BEFORE the job exists. A book's align
+   * uploads 2,500 chunk files first (2.5 min on Shift, 2026-09-25), and a row
+   * with nothing to count through that read as a step doing nothing (Owen:
+   * "it took about 5 minutes before it showed any progress at all").
+   */
+  readonly onUploaded?: (uploaded: { readonly done: number; readonly total: number }) => void;
   /** Free text for the job log. */
   readonly onLog?: (line: string) => void;
   /** Cancels: before the submit, nothing is submitted; after it, the job is DELETEd. */
@@ -596,8 +603,15 @@ export interface CrucibleJobOutcome {
   readonly lastEventId: number;
 }
 
-/** How many inputs are uploaded at once. A LAN, not a queue policy. */
-const UPLOAD_CONCURRENCY = 4;
+/**
+ * How many inputs are uploaded at once. A LAN, not a queue policy.
+ *
+ * 16, MEASURED (2026-09-25): an align's inputs are a session's chunk FLACs, and
+ * a session lives on the project share. Reading 500 of Shift's (~500 KB each)
+ * off Z: took 17.4 s four at a time and 12.4 s sixteen at a time — the share's
+ * latency, not its bandwidth, was the limit.
+ */
+const UPLOAD_CONCURRENCY = 16;
 
 /**
  * Run one Crucible job to its end and hand back what it produced.
@@ -1086,12 +1100,17 @@ async function uploadInputs(
       throw new CrucibleJobRefused('crucible_input_unnamed', server, 'an input has no name');
     }
     if (typeof source === 'string') {
-      if (!fs.existsSync(source)) {
+      // ONE stat, not an exists and then a stat: on the project share each is a
+      // round trip, and a book's align checks 2,500 of them here.
+      let size: number;
+      try {
+        size = fs.statSync(source).size;
+      } catch {
         throw new CrucibleJobRefused(
           'crucible_input_missing', server, `input "${name}" names ${source}, which does not exist`,
         );
       }
-      if (fs.statSync(source).size === 0) {
+      if (size === 0) {
         throw new CrucibleJobRefused(
           'crucible_input_empty', server,
           `input "${name}" names ${source}, which is empty. An empty file is not a file to `
@@ -1129,6 +1148,7 @@ async function uploadInputs(
    * place, and it is the rule the SDK's own `writeArtifactsTo` already applies.
    */
   let failed = false;
+  let uploaded = 0;
   const worker = async (): Promise<void> => {
     while (next < entries.length) {
       if (options.signal?.aborted || failed) return;
@@ -1146,6 +1166,8 @@ async function uploadInputs(
         throw describeCrucibleJobRefusal(err, server, `uploading input "${name}"`);
       }
       out[name] = { blobId };
+      uploaded += 1;
+      options.onUploaded?.({ done: uploaded, total: entries.length });
     }
   };
   await Promise.all(
