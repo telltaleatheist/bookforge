@@ -881,6 +881,18 @@ export class EpubProcessor {
     // for the markers to be KEPT so its diff is a record of what it did.
     if (!keepFootnoteMarkers) text = stripFootnoteMarkerSups(text).text;
 
+    // INLINE TAGS ADD NO SPACE (2026-09-26). A browser renders `<i>Keep focused</i>.`
+    // as "Keep focused." - an inline element is not a word boundary. The blanket
+    // tag->space strip below made it "Keep focused ." and "Careful , he told
+    // himself": every italic thought ending at punctuation. Measured on Mistborn:
+    // ~790 cues across three books, carried into every aligned VTT, every training
+    // corpus, and every render of this text. Inline tags go with no space; any
+    // other tag still becomes one (a missing block boundary must not fuse words).
+    text = text.replace(
+      /<\/?(?:a|abbr|b|bdi|bdo|cite|code|dfn|em|font|i|kbd|mark|q|s|samp|small|span|strike|strong|sub|sup|tt|u|var)\b[^>]*>/gi,
+      '',
+    );
+
     // Remove all remaining tags
     text = text.replace(/<[^>]+>/g, ' ');
 
