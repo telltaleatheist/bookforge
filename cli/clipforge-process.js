@@ -2283,7 +2283,8 @@ async function runCleanup(args) {
   const triage = args['no-triage'] !== true;
   console.log(`ClipForge cleanup — ${lines.length} ${args.vtt ? 'cue' : 'line'}(s) from ${inPath}; triage ${triage ? 'ON (the app\'s press)' : 'OFF (every line asked)'}`);
   const r = await runCleanLines({
-    inputPath: linesIn, outputPath: linesOut, language, triage,
+    // loadFirst: each act (triage, clean) makes the model resident before it runs - the card empties between them
+    inputPath: linesIn, outputPath: linesOut, language, triage, loadFirst: true,
     ...(typeof args['crucible-server'] === 'string' ? { crucibleServer: args['crucible-server'].trim() } : {}),
     keepServer: args['keep-server'] === true,
   });

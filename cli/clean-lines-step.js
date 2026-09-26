@@ -251,7 +251,7 @@ async function runCleanLines(opts, deps) {
   const venue = await d.decideWhereTextActRuns(opts.crucibleServer, venueHost);
   const crucible = venue.where === 'crucible'
     // `spawn`: this door calls `runFoundry` with an explicit `env` below.
-    ? await d.resolveCrucibleTextEngine('clean', venue.server, venueHost, { headerReach: 'spawn' })
+    ? await d.resolveCrucibleTextEngine('clean', venue.server, venueHost, { headerReach: 'spawn', ...(opts.loadFirst === true ? { loadFirst: true } : {}) })
     : null;
 
   const args = crucible === null
@@ -382,6 +382,16 @@ async function runCleanLines(opts, deps) {
         }
         if (!fs.existsSync(verdictsPath)) throw new Error(`foundry clean-triage exited 0 and wrote no verdicts at ${verdictsPath}.`);
       }
+    }
+    /*
+     * THE CARD EMPTIES BETWEEN THE TWO ACTS (2026-09-25). Releasing the triage's lease leaves the model idle,
+     * and Crucible unloads an idle model (Owen: "Models should always be unloaded when we're done with them"),
+     * so clean-text found nothing resident: 409 not_resident. The app's dispatcher places each act on its own
+     * (load, lease, run); with --load-first this does the same, re-resolving - and so re-loading - before the
+     * cleaner. Without it, the second act still refuses by name, as before.
+     */
+    if (opts.triage === true && crucible !== null && opts.loadFirst === true) {
+      await d.resolveCrucibleTextEngine('clean', venue.server, venueHost, { headerReach: 'spawn', loadFirst: true });
     }
     const spawnEngine = () => d.runFoundry(args, {
       ...(opts.signal === undefined ? {} : { signal: opts.signal }),
