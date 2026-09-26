@@ -422,14 +422,14 @@ export async function runSentenceAlign(o: RunSentenceAlignOptions): Promise<Sent
     };
     const cueText = new Map<number, string>();
     const corrections: { index: number; start: number; end: number; book: string; heard: string; text: string; agreement: number; edits: unknown[] }[] = [];
-    let barelyMatched = 0;
+    let barelyMatched = 0; const barelyIdx: number[] = [];
     for (const c of cues) {
       const book = o.sentences[c.index].text.replace(/\s+/g, ' ').trim();
       const p = placements[c.index];
       if (!p || p.start === null || p.end === null) { cueText.set(c.index, book); continue; }
       const heard = heardIn(p.start, p.end);
       const r = correctToHeard(book, heard);
-      if (r.agreement < MIN_AGREEMENT) barelyMatched++;
+      if (r.agreement < MIN_AGREEMENT) { barelyMatched++; barelyIdx.push(c.index); }
       cueText.set(c.index, r.changed ? r.text : book);
       if (r.changed) corrections.push({ index: c.index, start: c.start, end: c.end, book, heard: heard.join(' '), text: r.text, agreement: +r.agreement.toFixed(3), edits: r.edits as unknown[] });
     }
@@ -478,7 +478,9 @@ export async function runSentenceAlign(o: RunSentenceAlignOptions): Promise<Sent
     });
     const discrepanciesPath = path.join(path.dirname(o.reportPath), 'discrepancies.json');
     fs.writeFileSync(discrepanciesPath, JSON.stringify({ audio: o.audioPath, ...discrepancies,
-      corrections: { count: corrections.length, note: 'cue text corrected to the words heard; the book word is kept wherever the reader said it (near-miss spellings included)', items: corrections } }, null, 1));
+      corrections: { count: corrections.length, note: 'cue text corrected to the words heard; the book word is kept wherever the reader said it (near-miss spellings included)', items: corrections },
+      // cues whose heard words agree on < 30 % of the book's: more likely misplaced than reworded - exclusion candidates
+      barelyMatched: { count: barelyIdx.length, sentences: barelyIdx } }, null, 1));
     log(`discrepancies: ${Object.entries(discrepancies.summary).map(([k, v]) => `${k} ${v.count} (${v.seconds} s)`).join(', ') || 'none'} -> ${discrepanciesPath}`);
     log(`wrote ${cues.length} cue(s) to ${o.outVttPath}; ${stats.notPlaced} sentence(s) not placed, `
       + `${noPause} edge(s) without a pause, ${collapsed} collapsed; report ${o.reportPath}`);

@@ -1870,6 +1870,7 @@ function printUsage() {
     '  merge/split  Adobe Podcast round-trip for CLIPS (keyed on a .mergemap.json)',
     '  sentences    per-clip transcripts from the epub (Crucible way: generate-sentences --clips)',
     '  cleanup      AI cleanup of a VTT/lines as the app does it: triage, then clean the flagged (--no-triage: all)',
+    '  book-text    audio + EPUB -> training text: generate-sentences (Qwen, corrected to the reader) + AI cleanup + exclusions',
     '',
     'TRAINING TOOLS (corpus in, corpus out) - wrappers over the orpheus-finetune scripts',
     '  slice        cut a book master into training clips        (slice_vtt.py)',
@@ -2314,6 +2315,103 @@ async function runCleanup(args) {
   process.exitCode = 0;
 }
 
+/**
+ * runBookText — a book's audio + its EPUB -> the training-ready text, in one verb (2026-09-25).
+ *
+ * Owen: "maybe write a verb in clipforge or bookforge-cli thatll do all of this automatically for us", and "we should
+ * also make ai cleanup a part of the process before we train, so what goes in matches what will come out".
+ *
+ *   node cli/clipforge-process.js book-text --audio <book or web master> --epub <book.epub> --out-dir <dir> \
+ *        --crucible-server <name> --python <py> --training-root <orpheus-finetune> [--name <stem>] [--language en]
+ *
+ *   1. generate-sentences on Crucible (cli/generate-sentences.js): digital silence cut out before the ASR (qwen3-asr-
+ *      1.7b), the EPUB diffed against what was heard, disputed spans aligned (qwen3-aligner), cue edges at pause
+ *      centres, every cue CORRECTED to what the reader said (the book's word wherever the reader said it; the
+ *      reader's words for dropped clauses, paraphrase, additions) -> <name>.vtt, align-report.json, discrepancies.json
+ *   2. the render's AI cleanup, triaged (runCleanup; the model is made resident per act and unloaded after) -
+ *      NOT optional: the text a voice trains on must be the text it will be handed -> <name>_clean.vtt, changes.tsv
+ *   3. strict dialogue on the cleaned VTT (dialogue_cues_strict.py: quotes, their sentence, attributions, lead-ins)
+ *   4. <name>_exclude_ids.txt: dialogue + cues the ASR barely matched (misplaced) + high-severity pace outliers +
+ *      cues overlapping non-speech audio or music under the voice. Slice with --exclude-cue-ids @<that file>.
+ *   5. book-text.json: what every step produced.
+ * Re-runs are cheap: the ASR transcript and the cleaner's answers are cached in --out-dir.
+ */
+async function runBookText(args) {
+  for (const k of ['audio', 'epub', 'out-dir', 'crucible-server']) {
+    if (!args[k] || args[k] === true) throw new Error(`book-text: --${k} is required`);
+  }
+  const audio = path.resolve(args.audio); const epub = path.resolve(args.epub); const out = path.resolve(args['out-dir']);
+  if (!fs.existsSync(audio)) throw new Error(`book-text: audio not found: ${audio}`);
+  if (!fs.existsSync(epub)) throw new Error(`book-text: epub not found: ${epub}`);
+  const server = String(args['crucible-server']); const language = args.language && args.language !== true ? String(args.language) : 'en';
+  const name = args.name && args.name !== true ? String(args.name) : path.basename(audio).replace(/\.[^.]+$/, '');
+  const root = resolveTrainingRoot(args); const python = resolveTrainingPython(args, 'book-text (dialogue_cues_strict.py)');
+  fs.mkdirSync(out, { recursive: true });
+  const P = (f) => path.join(out, f);
+  const runNode = (argv, label) => new Promise((resolve, reject) => {
+    console.log(`[book-text] ${label}: node ${argv.join(' ')}`);
+    const c = spawn(process.execPath, argv, { cwd: path.resolve(__dirname, '..'), stdio: 'inherit' });
+    c.on('error', reject); c.on('close', (code) => (code === 0 ? resolve() : reject(new Error(`${label} exited ${code}`))));
+  });
+  const t0 = Date.now();
+
+  // 1. generate-sentences (corrected to what the reader said)
+  await runNode(['--require', './cli/electron-stub.js', 'cli/generate-sentences.js', '--audio', audio, '--epub', epub,
+    '--out', P(`${name}.vtt`), '--report', P('align-report.json'), '--rough-cache', P('transcript.json'),
+    '--crucible-server', server, '--language', language], 'generate-sentences');
+
+  // 2. the render's AI cleanup (triaged), then hand the card back
+  let cleanupErr = null;
+  try {
+    await runCleanup({ vtt: P(`${name}.vtt`), out: P(`${name}_clean.vtt`), 'crucible-server': server, language });
+  } catch (e) { cleanupErr = e; }
+  await new Promise((resolve) => {
+    const c = spawn('python', [path.join(__dirname, 'bookforge-tts.py'), '--crucible-unload', '--server', server, '--model', 'qwen3.5-9b'],
+      { stdio: ['ignore', 'pipe', 'pipe'] });
+    c.on('error', () => resolve()); c.on('close', () => resolve());
+  });
+  if (cleanupErr) throw new Error(`book-text: the AI cleanup failed (the text is NOT training-ready): ${cleanupErr.message}`);
+
+  // 3. strict dialogue, on the cleaned text
+  const dlg = P(`${name}_dialogue_strict_ids.txt`);
+  const code = await spawnTraining(python, path.join(root, 'pipeline', 'enhance', 'dialogue_cues_strict.py'),
+    [P(`${name}_clean.vtt`), dlg], path.join(root, 'pipeline', 'enhance'), 'book-text dialogue');
+  if (code !== 0 || !fs.existsSync(dlg)) throw new Error('book-text: dialogue_cues_strict.py failed');
+
+  // 4. exclusions
+  const disc = JSON.parse(fs.readFileSync(P('discrepancies.json'), 'utf8'));
+  const cues = []; const txt = fs.readFileSync(P(`${name}_clean.vtt`), 'utf8').replace(/\r\n?/g, '\n');
+  const ts = (x) => { const p = x.trim().split(/\s+/)[0].split(':').map(Number); return p.length === 3 ? p[0] * 3600 + p[1] * 60 + p[2] : p[0] * 60 + p[1]; };
+  for (const b of txt.trim().split(/\n\n+/)) {
+    const L = b.split('\n'); const ti = L.findIndex((l) => l.includes('-->'));
+    if (ti !== 1) continue;
+    const [a, z] = L[1].split('-->'); cues.push({ id: L[0].trim(), start: ts(a), end: ts(z) });
+  }
+  const why = new Map();
+  const add = (id, reason) => { if (!why.has(id)) why.set(id, reason); };
+  for (const id of fs.readFileSync(dlg, 'utf8').split(/\s+/).filter(Boolean)) add(id, 'dialogue');
+  for (const i of (disc.barelyMatched && disc.barelyMatched.sentences) || []) add(String(i + 1), 'barely matched (likely misplaced)');
+  for (const x of disc.items || []) {
+    if (x.kind === 'pace_outlier' && x.severity === 'high') for (const i of x.sentences || []) add(String(i + 1), 'pace outlier (high)');
+    if ((x.kind === 'non_speech_audio' || x.kind === 'music_under_speech') && x.start !== null && x.end !== null) {
+      for (const c of cues) if (c.start < x.end && c.end > x.start) add(c.id, x.kind);
+    }
+  }
+  const excl = P(`${name}_exclude_ids.txt`);
+  fs.writeFileSync(excl, [...why.keys()].sort((a, b) => Number(a) - Number(b)).join('\n') + '\n', 'utf8');
+  const byReason = {}; for (const r of why.values()) byReason[r] = (byReason[r] || 0) + 1;
+
+  // 5. summary
+  const summary = { verb: 'book-text', ranAt: new Date().toISOString(), seconds: Math.round((Date.now() - t0) / 1000),
+    audio, epub, server, cues: cues.length, corrected: disc.corrections ? disc.corrections.count : null,
+    excluded: why.size, excludedBy: byReason, discrepancies: disc.summary,
+    files: { vtt: P(`${name}.vtt`), clean: P(`${name}_clean.vtt`), exclude: excl, dialogue: dlg, discrepancies: P('discrepancies.json'), report: P('align-report.json') } };
+  fs.writeFileSync(P('book-text.json'), JSON.stringify(summary, null, 1));
+  console.log(`[book-text] ${cues.length} cue(s), ${summary.corrected} corrected to the reader, ${why.size} excluded ${JSON.stringify(byReason)}`);
+  console.log(`[book-text] training text: ${P(`${name}_clean.vtt`)}  exclusions: ${excl}`);
+  process.exitCode = 0;
+}
+
 async function main() {
   const rawArgs = process.argv.slice(2);
   // Optional leading verb (no leading '--'). Default verb is the chain runner,
@@ -2358,6 +2456,7 @@ async function main() {
   if (verb === 'ladder') return runLadder(args);
   if (verb === 'deploy') return runDeploy(args);
   if (verb === 'cleanup') return runCleanup(args);
+  if (verb === 'book-text') return runBookText(args);
   if (verb === 'help') return printUsage();
   printUsage();
   throw new Error(`unknown verb: ${verb}`);
