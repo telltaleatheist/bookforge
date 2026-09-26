@@ -48,6 +48,7 @@ import {
 } from '../../shared/sentence-align/book-diff';
 import { endEdge, FRAME_S, startEdge, type LevelEnvelope } from '../../shared/sentence-align/cue-edges';
 import { findDiscrepancies } from '../../shared/sentence-align/discrepancies';
+import { compactedLength, keepPieces, mapWordsBack, type KeptPiece } from '../../shared/sentence-align/silence-compact';
 
 export const SENTENCE_ASR_MODEL = 'qwen3-asr-1.7b';
 export const SENTENCE_ALIGN_MODEL = 'qwen3-aligner';
@@ -206,6 +207,63 @@ export function cutWindow(ffmpeg: string, audio: string, start: number, end: num
   });
 }
 
+/**
+ * The audio with its digital silence cut out: one streaming 16 kHz mono decode, only the samples inside `pieces`
+ * written, KEEP_GAP_S of silence between them (their dstStart already carries it). 16-bit WAV.
+ */
+function writeCompacted(ffmpeg: string, audio: string, pieces: readonly KeptPiece[], out: string, signal?: AbortSignal): Promise<void> {
+  // STREAMED to disk, never held whole (HoA's 12.8 h would be ~1.5 GB in memory on a machine that is short of it):
+  // the pieces are in timeline order, so the output only ever grows - write each kept sample at its place and pad
+  // the gaps between pieces with zeros as they are reached.
+  return new Promise((resolve, reject) => {
+    const SR = 16000;
+    const last = pieces[pieces.length - 1];
+    const total = Math.ceil((last.dstStart + (last.srcEnd - last.srcStart)) * SR);
+    const tmp = `${out}.${process.pid}.part`;
+    const fd = fs.openSync(tmp, 'w');
+    const hdr = Buffer.alloc(44);
+    hdr.write('RIFF', 0); hdr.writeUInt32LE(36 + total * 2, 4); hdr.write('WAVE', 8); hdr.write('fmt ', 12);
+    hdr.writeUInt32LE(16, 16); hdr.writeUInt16LE(1, 20); hdr.writeUInt16LE(1, 22); hdr.writeUInt32LE(SR, 24);
+    hdr.writeUInt32LE(SR * 2, 28); hdr.writeUInt16LE(2, 32); hdr.writeUInt16LE(16, 34); hdr.write('data', 36); hdr.writeUInt32LE(total * 2, 40);
+    fs.writeSync(fd, hdr);
+    let written = 0;                                   // samples written so far
+    const zeros = Buffer.alloc(SR * 2 * 10);
+    const padTo = (d: number): void => { while (written < d) { const k = Math.min(d - written, zeros.length / 2); fs.writeSync(fd, zeros, 0, k * 2); written += k; } };
+    const p = spawn(ffmpeg, ['-v', 'error', '-nostdin', '-i', audio, '-ac', '1', '-ar', String(SR), '-f', 's16le', '-'], { stdio: ['ignore', 'pipe', 'pipe'] });
+    const onAbort = (): void => { p.kill(); };
+    signal?.addEventListener('abort', onAbort, { once: true });
+    let n = 0; let k = 0; let carry: Buffer | null = null; let err = '';
+    p.stdout.on('data', (chunk: Buffer) => {
+      const b = carry ? Buffer.concat([carry, chunk]) : chunk;
+      const whole = b.length - (b.length % 2);
+      const outBuf = Buffer.alloc(whole); let o = 0; let runStart = -1;
+      const flush = (): void => { if (o > 0) { fs.writeSync(fd, outBuf, 0, o); written += o / 2; o = 0; } };
+      for (let i = 0; i < whole; i += 2, n++) {
+        const t = n / SR;
+        while (k < pieces.length && t >= pieces[k].srcEnd) k++;
+        if (k >= pieces.length) break;
+        const pc = pieces[k];
+        if (t < pc.srcStart) continue;
+        const d = Math.round((pc.dstStart + (t - pc.srcStart)) * SR);
+        if (d >= total) continue;
+        if (d !== written + o / 2) { flush(); if (d > written) padTo(d); else continue; }
+        outBuf[o] = b[i]; outBuf[o + 1] = b[i + 1]; o += 2; runStart = d;
+      }
+      flush(); void runStart;
+      carry = whole < b.length ? b.subarray(whole) : null;
+    });
+    p.stderr.on('data', (d: Buffer) => { err += d.toString(); });
+    p.on('error', (e) => { fs.closeSync(fd); reject(e); });
+    p.on('close', (code) => {
+      signal?.removeEventListener('abort', onAbort);
+      try { padTo(total); } finally { fs.closeSync(fd); }
+      if (signal?.aborted) { fs.rmSync(tmp, { force: true }); return reject(new Error('cancelled')); }
+      if (code !== 0) { fs.rmSync(tmp, { force: true }); return reject(new Error(`ffmpeg could not decode ${audio} to compact it (exit ${code}): ${err.trim().slice(-300)}`)); }
+      fs.renameSync(tmp, out); resolve();
+    });
+  });
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // The run
 // ─────────────────────────────────────────────────────────────────────────────
@@ -231,17 +289,34 @@ export async function runSentenceAlign(o: RunSentenceAlignOptions): Promise<Sent
   const onCallerAbort = (): void => envStop.abort();
   o.signal?.addEventListener('abort', onCallerAbort, { once: true });
   try {
-    // 1. ASR (and, beside it, this side's level envelope for the edges)
-    progress('transcribe', 0, 'Transcribing with Qwen3-ASR on Crucible');
-    // The envelope decodes beside the ASR, but its failure is raised only AFTER the
-    // ASR settles: a Promise.all would reject on a bad decode while the GPU job was
-    // still being submitted, leaving it running with nothing holding its cancel.
-    const envP = levelEnvelope(o.ffmpegPath, o.audioPath, envStop.signal)
-      .then((v) => ({ v, e: null as Error | null }), (e: Error) => ({ v: null as LevelEnvelope | null, e }));
-    const asr: { words: HeardWord[]; durationS: number } = await transcribe(o, scratch);
-    const envR = await envP;
-    if (envR.e) throw envR.e;
-    const env = envR.v!;
+    // 1. The level envelope FIRST (it says where the silence is), then the ASR on the audio only.
+    // Owen 2026-09-25: "we should never send silence to the ASR tool" - Qwen3-ASR has no VAD and transcribes a
+    // partial recording's silent stretches (83 min of an invented sentence on WoA's website master). So digital
+    // silence >= MIN_SILENT_S is cut out before the upload and every word is mapped back (silence-compact.ts).
+    progress('transcribe', 0, 'Measuring the audio (where the silence is)');
+    const env = await levelEnvelope(o.ffmpegPath, o.audioPath, envStop.signal);
+    const pieces = keepPieces(env, env.db.length * FRAME_S);
+    let asr: { words: HeardWord[]; durationS: number };
+    if (pieces === null) {
+      progress('transcribe', 0, 'Transcribing with Qwen3-ASR on Crucible');
+      asr = await transcribe(o, scratch);
+    } else {
+      const kept = compactedLength(pieces); const whole = env.db.length * FRAME_S;
+      log(`cutting ${((whole - kept) / 3600).toFixed(2)} h of digital silence out of ${(whole / 3600).toFixed(2)} h before the ASR `
+        + `(${pieces.length} piece(s), ${(kept / 3600).toFixed(2)} h sent)`);
+      // Kept beside the transcript cache and rebuilt only when the pieces change, so a re-run reuses the ASR.
+      const compact = o.transcriptCachePath ? `${o.transcriptCachePath}.compact.wav` : path.join(scratch, 'compact.wav');
+      const sig = JSON.stringify(pieces); const sigPath = `${compact}.pieces.json`;
+      if (!fs.existsSync(compact) || !fs.existsSync(sigPath) || fs.readFileSync(sigPath, 'utf-8') !== sig) {
+        await writeCompacted(o.ffmpegPath, o.audioPath, pieces, compact, envStop.signal);
+        fs.writeFileSync(sigPath, sig);
+      }
+      progress('transcribe', 0, 'Transcribing the audio (silence cut out) with Qwen3-ASR on Crucible');
+      const heard = await transcribe({ ...o, audioPath: compact }, scratch);
+      const back = mapWordsBack(heard.words, pieces);
+      if (back.dropped) log(`dropped ${back.dropped} word(s) heard in the gaps between kept pieces`);
+      asr = { words: back.words, durationS: whole };
+    }
     const audioS = Math.max(asr.durationS, env.db.length * FRAME_S);
     /*
      * WORDS HEARD IN DIGITAL SILENCE ARE NOT WORDS (2026-09-25). Qwen3-ASR runs with no VAD (Crucible refuses

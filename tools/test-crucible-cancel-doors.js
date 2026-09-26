@@ -531,7 +531,16 @@ async function bridgeAlignCancelChecks() {
   const dir = path.join(work, 'align-bridge');
   fs.mkdirSync(dir, { recursive: true });
   const audio = path.join(dir, 'book.m4b');
-  fs.writeFileSync(audio, Buffer.from('not really an m4b'));
+  // REAL audio since 2026-09-25: the run measures the audio (where the silence is) BEFORE it submits the ASR, so a
+  // file of text ("not really an m4b") now fails locally and nothing reaches the server to be cancelled. A 3 s tone -
+  // loud, so nothing is cut as silence - lets the run submit, which is what this check is about.
+  {
+    const { spawnSync } = require('child_process');
+    const { getFfmpegPath } = require('../dist/electron/tool-paths.js');
+    const r = spawnSync(getFfmpegPath(), ['-v', 'error', '-nostdin', '-y', '-f', 'lavfi', '-i', 'sine=frequency=440:duration=3',
+      '-c:a', 'aac', audio]);
+    if (r.status !== 0) throw new Error(`could not make the test audio: ${String(r.stderr).slice(-300)}`);
+  }
   const epub = path.join(dir, 'book.epub');
   await writeEpub(ZipWriter, epub, [
     'He had been walking for some time.',
