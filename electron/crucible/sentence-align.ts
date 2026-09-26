@@ -49,6 +49,7 @@ import {
 import { endEdge, FRAME_S, startEdge, type LevelEnvelope } from '../../shared/sentence-align/cue-edges';
 import { findDiscrepancies } from '../../shared/sentence-align/discrepancies';
 import { compactedLength, keepPieces, mapWordsBack, type KeptPiece } from '../../shared/sentence-align/silence-compact';
+import { correctToHeard, MIN_AGREEMENT } from '../../shared/sentence-align/correct-to-heard';
 
 export const SENTENCE_ASR_MODEL = 'qwen3-asr-1.7b';
 export const SENTENCE_ALIGN_MODEL = 'qwen3-aligner';
@@ -405,13 +406,42 @@ export async function runSentenceAlign(o: RunSentenceAlignOptions): Promise<Sent
       prevEdgeEnd = b;
     }
 
+    // 4b. THE CUE SAYS WHAT THE READER SAID (Owen 2026-09-25: "correct the vtt so it reflects the real audio so we
+    // arent losing training data" - and "a normal part of the process of prepping a book"). Word by word against the
+    // words heard in the cue's span: the BOOK's word wherever the reader said it (near-miss spellings and proper
+    // nouns included), the READER's word where it differs, insertions kept, omissions removed; a cue that barely
+    // matches is left as the book has it (more likely misplaced than reworded). Every change is recorded.
+    progress('write', 0, 'Correcting each sentence to what the reader said');
+    const heardSorted = asr.words.slice().sort((a, b) => a.start - b.start);
+    const heardIn = (a: number, b: number): string[] => {
+      let lo = 0; let hi = heardSorted.length;
+      while (lo < hi) { const m = (lo + hi) >> 1; if ((heardSorted[m].start + heardSorted[m].end) / 2 < a) lo = m + 1; else hi = m; }
+      const out: string[] = [];
+      for (let k = lo; k < heardSorted.length && (heardSorted[k].start + heardSorted[k].end) / 2 <= b; k++) out.push(heardSorted[k].word);
+      return out;
+    };
+    const cueText = new Map<number, string>();
+    const corrections: { index: number; start: number; end: number; book: string; heard: string; text: string; agreement: number; edits: unknown[] }[] = [];
+    let barelyMatched = 0;
+    for (const c of cues) {
+      const book = o.sentences[c.index].text.replace(/\s+/g, ' ').trim();
+      const p = placements[c.index];
+      if (!p || p.start === null || p.end === null) { cueText.set(c.index, book); continue; }
+      const heard = heardIn(p.start, p.end);
+      const r = correctToHeard(book, heard);
+      if (r.agreement < MIN_AGREEMENT) barelyMatched++;
+      cueText.set(c.index, r.changed ? r.text : book);
+      if (r.changed) corrections.push({ index: c.index, start: c.start, end: c.end, book, heard: heard.join(' '), text: r.text, agreement: +r.agreement.toFixed(3), edits: r.edits as unknown[] });
+    }
+    log(`corrected ${corrections.length} of ${cues.length} cue(s) to what the reader said; ${barelyMatched} barely matched (left as the book has them)`);
+
     // 5. WRITE
     progress('write', 0, 'Writing the sentences');
     const lines = ['WEBVTT', ''];
     for (const c of cues) {
       lines.push(String(c.index + 1));
       lines.push(`${vttTimestamp(c.start)} --> ${vttTimestamp(c.end)}`);
-      lines.push(o.sentences[c.index].text.replace(/\s+/g, ' ').trim());
+      lines.push(cueText.get(c.index) ?? o.sentences[c.index].text.replace(/\s+/g, ' ').trim());
       lines.push('');
     }
     const tmp = `${o.outVttPath}.${process.pid}.part`;
@@ -421,7 +451,7 @@ export async function runSentenceAlign(o: RunSentenceAlignOptions): Promise<Sent
       ...diff.stats,
       alignWindows: windows.length, alignWindowsFailed: alignFailed.length,
       tooLongForAligner: tooLong.reduce((n, t) => n + t.sentences.length, 0),
-      cues: cues.length, notPlaced: placements.length - cues.length,
+      cues: cues.length, notPlaced: placements.length - cues.length, correctedToHeard: corrections.length,
       edgesWithoutPause: noPause, collapsed,
     };
     const report = {
@@ -447,7 +477,8 @@ export async function runSentenceAlign(o: RunSentenceAlignOptions): Promise<Sent
       cues, heard: asr.words, extraAudio: diff.extraAudio, env,
     });
     const discrepanciesPath = path.join(path.dirname(o.reportPath), 'discrepancies.json');
-    fs.writeFileSync(discrepanciesPath, JSON.stringify({ audio: o.audioPath, ...discrepancies }, null, 1));
+    fs.writeFileSync(discrepanciesPath, JSON.stringify({ audio: o.audioPath, ...discrepancies,
+      corrections: { count: corrections.length, note: 'cue text corrected to the words heard; the book word is kept wherever the reader said it (near-miss spellings included)', items: corrections } }, null, 1));
     log(`discrepancies: ${Object.entries(discrepancies.summary).map(([k, v]) => `${k} ${v.count} (${v.seconds} s)`).join(', ') || 'none'} -> ${discrepanciesPath}`);
     log(`wrote ${cues.length} cue(s) to ${o.outVttPath}; ${stats.notPlaced} sentence(s) not placed, `
       + `${noPause} edge(s) without a pause, ${collapsed} collapsed; report ${o.reportPath}`);
