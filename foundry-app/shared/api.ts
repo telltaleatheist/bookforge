@@ -1093,8 +1093,13 @@ export interface FoundryApi {
      * row anybody can see. The rejection is a sentence, and the tile that would
      * raise it is gated off in the same window (electron/ipc.ts carries the whole
      * argument). It reaches BookForge by the normal re-vendor.
+     *
+     * TWO ROWS COME BACK, `enqueueCleanTriaged`'s shape: the ranking on a
+     * Crucible's decide model, and the analysis waiting behind it. `rank` is null
+     * only when an existing analysis row answered a second press and its ranking
+     * has already finished.
      */
-    enqueueAnalysis(request: AnalyzeRequest): Promise<Job>;
+    enqueueAnalysis(request: AnalyzeRequest): Promise<{ rank: Job | null; analysis: Job }>;
     /**
      * Run an EXPORT now, and answer when it is over — the Export dialog's door.
      *

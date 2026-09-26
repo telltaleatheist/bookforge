@@ -634,9 +634,9 @@ export class QueueViewService {
    * Owen, 2026-08-25: *"right now it looks like it does the first pass, 1-100,
    * and the same progress bar starts over for the 27b run at 0% and goes to
    * 100%. could be good to have two different smaller progress bars, after the
-   * bookforge queue model."* A run ranks every sentence with the small
-   * entailment model and then verifies the survivors with the large one
-   * (docs/ANALYSIS.md §2), and one bar drawn over both is a measurement that
+   * bookforge queue model."* A run ranks every sentence on a small decide model
+   * and then verifies the ranked passages with the large one (docs/ANALYSIS.md
+   * §2) — two rows since 2026-09-25, but the same two stages, and one bar drawn over both is a measurement that
    * completes and then un-completes — which is what a glitch looks like, no
    * matter what the sentence under it says.
    *
@@ -1046,7 +1046,7 @@ const STAGE_ORDER: readonly ('rank' | 'verify')[] = ['rank', 'verify'];
  * WHAT EACH STAGE IS CALLED, in words a reader owes nothing to.
  *
  * NOT MODEL NAMES, and that is the rule rather than a preference. The stages are
- * a small entailment model and `qwen3.8:27b`, and a bar labelled "27b" tells a
+ * a small decide model and `qwen3.8:27b`, and a bar labelled "27b" tells a
  * person reading their own book's progress precisely nothing — it is this app's
  * bookkeeping wearing the costume of a status. What they are DOING is ranking
  * the sentences and then verifying the passages that survived, so that is what
@@ -1061,12 +1061,11 @@ const STAGE_LABEL: Readonly<Record<'rank' | 'verify', string>> = {
  * AND WHAT EACH OF THEM IS COUNTING — the half of the fraction that stops two
  * unrelated totals reading as one number that jumped.
  *
- * Ranking counts SENTENCES: every sentence in the book, scored by the entailment
- * model. Verifying counts PASSAGES: the windows that survived the floor, one
- * Ollama call apiece. The engine's own lines carry the first noun already
- * (`analyze: rank 141/141 sentences`); the second is this app's word for what
- * `analyze: verify 3/20 (hate)` is counting, and it is the word the panel and
- * the docs use for the same thing.
+ * Ranking counts SENTENCES: every sentence in the book (a short one read with the
+ * next), scored by the decide model. Verifying counts PASSAGES: the ranked
+ * windows, one model call apiece. The engine prints the counts bare
+ * (`analyze: rank 141/141`, `analyze: verify 3/20 (hate)`); the nouns are this
+ * app's words for what they count, and the words the panel and the docs use.
  *
  * NEITHER OF THEM IS EVER `pages`. That noun belongs to a reading, and a queue
  * that spent it here would be measuring somebody's book in the wrong unit.

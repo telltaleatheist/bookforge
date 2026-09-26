@@ -3528,8 +3528,8 @@ function scriptureSpans(text) {
     const [, volume, bookToken, period] = m;
     if (namesNoBook(bookToken)) continue;
     const bare = bookToken.toLowerCase();
-    const evidence = period === "." || volume !== void 0 || CANONICAL_BOOK_NAMES.has(bare) || bookToken.length <= 3 && !SHORT_NOT_A_BOOK.has(bare);
-    if (!evidence) continue;
+    const evidence2 = period === "." || volume !== void 0 || CANONICAL_BOOK_NAMES.has(bare) || bookToken.length <= 3 && !SHORT_NOT_A_BOOK.has(bare);
+    if (!evidence2) continue;
     let end = m.index + m[0].length;
     if (TRAILING_MERIDIEM.test(text.slice(end))) continue;
     for (; ; ) {
@@ -7956,11 +7956,11 @@ function __metadata(metadataKey, metadataValue) {
 }
 function __awaiter(thisArg, _arguments, P, generator) {
   function adopt(value) {
-    return value instanceof P ? value : new P(function(resolve19) {
-      resolve19(value);
+    return value instanceof P ? value : new P(function(resolve20) {
+      resolve20(value);
     });
   }
-  return new (P || (P = Promise))(function(resolve19, reject) {
+  return new (P || (P = Promise))(function(resolve20, reject) {
     function fulfilled(value) {
       try {
         step(generator.next(value));
@@ -7976,7 +7976,7 @@ function __awaiter(thisArg, _arguments, P, generator) {
       }
     }
     function step(result) {
-      result.done ? resolve19(result.value) : adopt(result.value).then(fulfilled, rejected);
+      result.done ? resolve20(result.value) : adopt(result.value).then(fulfilled, rejected);
     }
     step((generator = generator.apply(thisArg, _arguments || [])).next());
   });
@@ -8154,14 +8154,14 @@ function __asyncValues(o) {
   }, i);
   function verb(n) {
     i[n] = o[n] && function(v) {
-      return new Promise(function(resolve19, reject) {
-        v = o[n](v), settle(resolve19, reject, v.done, v.value);
+      return new Promise(function(resolve20, reject) {
+        v = o[n](v), settle(resolve20, reject, v.done, v.value);
       });
     };
   }
-  function settle(resolve19, reject, d, v) {
+  function settle(resolve20, reject, d, v) {
     Promise.resolve(v).then(function(v2) {
-      resolve19({ value: v2, done: d });
+      resolve20({ value: v2, done: d });
     }, reject);
   }
 }
@@ -8585,9 +8585,9 @@ var require_async = __commonJS({
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.waitForTick = void 0;
     exports2.waitForTick = function() {
-      return new Promise(function(resolve19) {
+      return new Promise(function(resolve20) {
         setTimeout(function() {
-          return resolve19();
+          return resolve20();
         }, 0);
       });
     };
@@ -17397,12 +17397,12 @@ var require_CustomFontSubsetEmbedder = __commonJS({
         };
         CustomFontSubsetEmbedder2.prototype.serializeFont = function() {
           var _this = this;
-          return new Promise(function(resolve19, reject) {
+          return new Promise(function(resolve20, reject) {
             var parts = [];
             _this.subset.encodeStream().on("data", function(bytes) {
               return parts.push(bytes);
             }).on("end", function() {
-              return resolve19(utils_1.mergeUint8Arrays(parts));
+              return resolve20(utils_1.mergeUint8Arrays(parts));
             }).on("error", function(err) {
               return reject(err);
             });
@@ -30312,8 +30312,8 @@ async function withBusyWait(send, options) {
     log2(
       `${options.where} answered ${response.status} (${busyReason(response.status)}) \u2014 waiting ${(wait / 1e3).toFixed(1)}s${said === null ? "" : " (its own retry-after)"} and asking again; ${(waited / 1e3).toFixed(1)}s of this request's ${(budgetMs / 1e3).toFixed(0)}s slot budget spent so far.`
     );
-    await new Promise((resolve19) => {
-      setTimeout(resolve19, wait);
+    await new Promise((resolve20) => {
+      setTimeout(resolve20, wait);
     });
     backoff = Math.min(backoff * 2, BUSY_MAX_WAIT_MS);
   }
@@ -30925,7 +30925,7 @@ var init_version = __esm({
     init_engine_import_meta_url();
     init_package();
     VERSION = package_default.version;
-    GIT_COMMIT = "src a8250e888fda".length > 0 ? "src a8250e888fda" : null;
+    GIT_COMMIT = "src 40f4fcdd4541".length > 0 ? "src 40f4fcdd4541" : null;
   }
 });
 
@@ -32577,7 +32577,7 @@ function suppressRunningHeads(pages) {
       }
     }
   }
-  const evidence = (tagged, where, key, category) => {
+  const evidence2 = (tagged, where, key, category) => {
     if (!/[A-Z]/.test(key)) return null;
     if ((where.get(key)?.size ?? 0) < FURNITURE_PAGES) return null;
     if (tagged.has(key)) return "tagged";
@@ -32592,7 +32592,7 @@ function suppressRunningHeads(pages) {
       if (!MISTAGGED.has(block.category) || block.text.length >= FURNITURE_CHARS) return true;
       const key = furnitureKey(block.text);
       if (key.length === 0) return true;
-      const why = (topFraction(block) <= FURNITURE_BAND ? evidence(taggedHead, headerPages, key, block.category) : null) ?? (bottomFraction(block) >= 1 - FURNITURE_BAND ? evidence(taggedFoot, footerPages, key, block.category) : null);
+      const why = (topFraction(block) <= FURNITURE_BAND ? evidence2(taggedHead, headerPages, key, block.category) : null) ?? (bottomFraction(block) >= 1 - FURNITURE_BAND ? evidence2(taggedFoot, footerPages, key, block.category) : null);
       if (why === null) return true;
       removed.push({ ...block, why });
       return false;
@@ -32868,8 +32868,8 @@ function resolveJoin(previous, next, lexicon) {
     rest: next.slice(head.length)
   };
 }
-function joinedText(join12) {
-  return join12.opening + join12.separator + (join12.fused ?? "") + join12.rest;
+function joinedText(join11) {
+  return join11.opening + join11.separator + (join11.fused ?? "") + join11.rest;
 }
 function closeEmphasisBeforeBreak(text) {
   return text.replace(BREAK_BEHIND_EMPHASIS, "$3$1$2");
@@ -33415,18 +33415,18 @@ function flowBlocks(blocks, starts, column, lexicon, joins) {
       const last = open.parts[open.parts.length - 1];
       open.text = closeEmphasisBeforeBreak(open.text);
       last.text = closeEmphasisBeforeBreak(last.text);
-      const join12 = resolveJoin(open.text, block.text, lexicon);
-      last.text = last.text.slice(0, last.text.length - (open.text.length - join12.opening.length));
+      const join11 = resolveJoin(open.text, block.text, lexicon);
+      last.text = last.text.slice(0, last.text.length - (open.text.length - join11.opening.length));
       open.parts.push({
         block,
         page: block.page,
         order: block.order,
         part: block.part,
-        join: join12.fused === null ? "space" : "fused",
-        fused: join12.fused,
-        text: join12.rest
+        join: join11.fused === null ? "space" : "fused",
+        fused: join11.fused,
+        text: join11.rest
       });
-      open.text = joinedText(join12);
+      open.text = joinedText(join11);
       flowIndexOf[index] = out.length - 1;
     } else {
       flowIndexOf[index] = out.length;
@@ -34187,6 +34187,264 @@ var init_model_server = __esm({
   }
 });
 
+// src/analyze/plan.ts
+function customOptionText(description, maxChars = CUSTOM_OPTION_MAX_CHARS) {
+  const text = description.replace(/\s+/g, " ").trim();
+  const m = /^.*?[.!?](?=\s|$)/.exec(text);
+  let first = (m ? m[0] : text).trim();
+  if (first.length > maxChars) first = first.slice(0, maxChars - 1).trimEnd() + "\u2026";
+  return first;
+}
+function builtInCategories() {
+  return [...Object.keys(OPTION_TEXTS), ...UNTUNED_BOOK_CATEGORIES.map((c) => c.category)];
+}
+function integerLike(key) {
+  return /^(0|[1-9]\d*)$/.test(key) && Number(key) < 4294967295;
+}
+function buildPlan(requested, log2) {
+  const requests = requested === null ? builtInCategories().map((name) => ({ name })) : [...requested];
+  const plan = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const request of requests) {
+    const name = request.name.trim();
+    if (seen.has(name)) {
+      throw new AnalysisPlanError(
+        `the category "${name}" was asked for twice. Two plans for one name would score it twice and put it in the report twice, and there is no rule here for which of the two wins.`
+      );
+    }
+    seen.add(name);
+    if (request.enabled === false) continue;
+    if (name === EXCLUDED_CATEGORY) {
+      log2(`analyze: the category "${EXCLUDED_CATEGORY}" is not ranked \u2014 ${MISINFORMATION_EXCLUSION}`);
+      continue;
+    }
+    if (name.toLowerCase() === NONE_KEY) {
+      throw new AnalysisPlanError(
+        `a category cannot be called "${name}": every question the ranker asks keeps that name for "none of these", and a category under it would be read as the absence of every category.`
+      );
+    }
+    if (integerLike(name)) {
+      throw new AnalysisPlanError(
+        `a category cannot be called "${name}": the ranker's options travel as a JSON object, and a key that looks like a number is moved to the front of it \u2014 its letter would stop being the category the question listed.`
+      );
+    }
+    const tuned = OPTION_TEXTS[name];
+    const untunedBuiltIn = UNTUNED_BOOK_CATEGORIES.find((one) => one.category === name);
+    const description = (request.description ?? "").replace(/\s+/g, " ").trim();
+    const label = (request.label ?? "").trim() || CATEGORY_NAMES[name] || name;
+    if (tuned !== void 0) {
+      plan.push({ category: name, label, option: tuned, proposition: PROPOSITIONS[name], tuned: true });
+      continue;
+    }
+    if (untunedBuiltIn !== void 0) {
+      plan.push({ ...untunedBuiltIn, label });
+      continue;
+    }
+    if (description.length === 0) {
+      throw new AnalysisPlanError(
+        `the category "${name}" is not one this program has a line for, and it was given no description. There is nothing to rank a sentence against, and a category that scored nothing would sit in the report reading as "nothing in this book matched it".`
+      );
+    }
+    const option = customOptionText(description);
+    log2(
+      `analyze: "${name}" has no measured line, so the ranker reads the first sentence of its description (${JSON.stringify(option)}) and the report names it untuned.`
+    );
+    plan.push({ category: name, label, option, proposition: description, tuned: false });
+  }
+  if (plan.length === 0) {
+    throw new AnalysisPlanError(
+      "no category is enabled, so this run has nothing to look for. A report with no categories in it would say the book is clean, which is a claim nothing measured."
+    );
+  }
+  if (plan.length > MAX_CATEGORIES) {
+    throw new AnalysisPlanError(
+      `${plan.length} categories are enabled and the ranker can ask about at most ${MAX_CATEGORIES}: every question is one letter per category, the letters run A to Z, and one of them is "none of these". Turn some off.`
+    );
+  }
+  const owner = /* @__PURE__ */ new Map();
+  for (const entry of plan) {
+    const already = owner.get(entry.option);
+    if (already !== void 0) {
+      throw new AnalysisPlanError(
+        `the categories "${already}" and "${entry.category}" are asking the same question, word for word: "${entry.option}". The ranker would offer them as two letters with one meaning, and one of them would be reported for the other's evidence.`
+      );
+    }
+    owner.set(entry.option, entry.category);
+  }
+  return plan;
+}
+function parseCategoriesJson(text, where) {
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch (err) {
+    throw new AnalysisPlanError(`${where} is not JSON (${err.message})`);
+  }
+  if (!Array.isArray(parsed)) {
+    throw new AnalysisPlanError(
+      `${where} holds ${parsed === null ? "null" : typeof parsed} and a categories file is a LIST of categories: [{"name":"hate"}, {"name":"my-topic","description":"\u2026"}]`
+    );
+  }
+  const known = /* @__PURE__ */ new Set(["name", "enabled", "description", "label"]);
+  const out = [];
+  for (const [index, raw] of parsed.entries()) {
+    const at = `${where}, category ${index + 1}`;
+    if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+      throw new AnalysisPlanError(`${at} is not an object`);
+    }
+    const entry = raw;
+    for (const key of Object.keys(entry)) {
+      if (key === "hypotheses") {
+        throw new AnalysisPlanError(
+          `${at} carries "hypotheses", which the entailment ranker read and the snap ranker that replaced it does not. Give the category a "description": its first sentence is what the ranker reads and the whole of it is what the verifier tests.`
+        );
+      }
+      if (!known.has(key)) {
+        throw new AnalysisPlanError(
+          `${at} carries a field called "${key}", and a category is made of ${[...known].join(", ")}. A field this program does not read would do nothing, silently, for the whole run.`
+        );
+      }
+    }
+    if (typeof entry["name"] !== "string" || entry["name"].trim().length === 0) {
+      throw new AnalysisPlanError(`${at} has no name`);
+    }
+    if (entry["enabled"] !== void 0 && typeof entry["enabled"] !== "boolean") {
+      throw new AnalysisPlanError(`${at}: "enabled" is true or false`);
+    }
+    if (entry["description"] !== void 0 && typeof entry["description"] !== "string") {
+      throw new AnalysisPlanError(`${at}: "description" is a string`);
+    }
+    if (entry["label"] !== void 0 && typeof entry["label"] !== "string") {
+      throw new AnalysisPlanError(`${at}: "label" is a string \u2014 the display name a reader sees`);
+    }
+    out.push({
+      name: entry["name"],
+      ...entry["enabled"] !== void 0 ? { enabled: entry["enabled"] } : {},
+      ...entry["description"] !== void 0 ? { description: entry["description"] } : {},
+      ...entry["label"] !== void 0 ? { label: entry["label"] } : {}
+    });
+  }
+  return out;
+}
+function optionSetVersion(plan) {
+  const NUL7 = String.fromCharCode(0);
+  const fields = ["foundry-analysis-options-1"];
+  for (const entry of plan) {
+    fields.push(entry.category, entry.tuned ? "tuned" : "untuned", entry.option, entry.proposition);
+  }
+  return (0, import_node_crypto3.createHash)("sha256").update(fields.join(NUL7), "utf8").digest("hex").slice(0, 16);
+}
+function untunedNames(plan) {
+  return plan.filter((entry) => !entry.tuned).map((entry) => entry.category);
+}
+function categoryHue(category) {
+  const known = CATEGORY_HUES[category];
+  if (known !== void 0) return known;
+  let hash = 2166136261;
+  for (let i = 0; i < category.length; i += 1) {
+    hash ^= category.charCodeAt(i);
+    hash = Math.imul(hash, 16777619) >>> 0;
+  }
+  return hash % 360;
+}
+function planHues(plan) {
+  const hues = {};
+  for (const entry of plan) hues[entry.category] = categoryHue(entry.category);
+  return hues;
+}
+function planNames(plan) {
+  const names = {};
+  for (const entry of plan) names[entry.category] = entry.label;
+  return names;
+}
+var import_node_crypto3, AnalysisPlanError, OPTION_TEXTS, PROPOSITIONS, UNTUNED_BOOK_CATEGORIES, MISINFORMATION_EXCLUSION, EXCLUDED_CATEGORY, NONE_KEY, MAX_CATEGORIES, CUSTOM_OPTION_MAX_CHARS, CATEGORY_NAMES, CATEGORY_HUES;
+var init_plan = __esm({
+  "src/analyze/plan.ts"() {
+    "use strict";
+    init_engine_import_meta_url();
+    import_node_crypto3 = require("node:crypto");
+    AnalysisPlanError = class extends Error {
+      constructor(message) {
+        super(message);
+        this.name = "AnalysisPlanError";
+      }
+    };
+    OPTION_TEXTS = {
+      "political-demonization": "Calls political opponents communists, Marxists, or enemies of the country",
+      hate: "Shows hostility or mockery toward a group because of race, religion, ethnicity, sexuality, or identity",
+      conspiracy: "Presents a conspiracy theory (stolen election, deep state, a hidden plot) as true",
+      dehumanization: "Describes people as vermin, disease, zombies, or less than human, or calls opponents' politics a mental illness",
+      violence: "Calls for, threatens, or glorifies violence",
+      "false-prophecy": "Claims God spoke to them or someone they cite, or announces a prophecy or revelation",
+      "christian-nationalism": "Says Christianity or the church should run government, or that God is directing the nation or its leaders",
+      "prosperity-gospel": "Asks followers for money as a religious duty, or promises blessing in return for giving",
+      extremism: "Defends oppression, supremacy, ethnic cleansing, or authoritarian rule",
+      "political-violence": "Defends or downplays a political attack, riot, or insurrection"
+    };
+    PROPOSITIONS = {
+      hate: "a group of people deserves hostility, contempt, or mockery because of their race, ethnicity, religion, national origin, immigration status, gender, or sexuality",
+      conspiracy: "a conspiracy theory is true \u2014 a secret coordinated plot by a hidden group (election fraud, deep state, globalists, New World Order, and the like)",
+      "false-prophecy": "God has spoken to the author or to someone they cite, or a divine revelation or prophecy has been received",
+      violence: "violence against people is justified, deserved, or something to look forward to",
+      "christian-nationalism": "Christianity should direct government, law, or politics",
+      "prosperity-gospel": "followers should give money to a religious leader or ministry in order to receive blessing or wealth",
+      extremism: "oppression, supremacy, ethnic cleansing, or authoritarian rule is justified",
+      "political-violence": "a political attack, riot, or insurrection was justified, was staged, or was not a serious wrong",
+      "political-demonization": "political opponents are communists, Marxists, socialists, or enemies within \u2014 a label applied to the people themselves rather than a critique of a specific policy",
+      dehumanization: "a group of people is vermin, disease, infestation, zombies, animals, or otherwise less than human \u2014 or that opponents' politics are the product of mental illness or personal damage rather than sincere belief"
+    };
+    UNTUNED_BOOK_CATEGORIES = [
+      {
+        category: "anti-evolution",
+        label: "Anti-evolution and science denial",
+        option: "Says evolution is false or a deception, or that life was created in its present forms on a young earth",
+        proposition: "evolution is false and living things were created in their present forms \u2014 that the scientific account of origins is a lie, a deception, or satanic, and that a young earth or a special creation is the fact",
+        tuned: false
+      },
+      {
+        category: "authoritarian-blueprint",
+        label: "Authoritarian blueprint",
+        option: "Argues for replacing civil servants with loyalists, or for the executive to control the agencies, courts, or prosecutions unchecked",
+        proposition: "the executive should be staffed with loyalists in place of career civil servants, should hold direct control over the agencies and prosecutions, and should not be restrained by the checks that limit it",
+        tuned: false
+      }
+    ];
+    MISINFORMATION_EXCLUSION = 'misinformation is not ranked \u2014 whether an assertion is false is world knowledge, and a ranker that reads for what a book says sees only "makes a factual assertion". Measured in briefcase against its reference videos: 169 of 205 candidates and 19 of 20 verified false positives were this one category.';
+    EXCLUDED_CATEGORY = "misinformation";
+    NONE_KEY = "none";
+    MAX_CATEGORIES = 25;
+    CUSTOM_OPTION_MAX_CHARS = 140;
+    CATEGORY_NAMES = {
+      "political-demonization": "Political demonization",
+      "hate": "Hate",
+      "conspiracy": "Conspiracy",
+      "dehumanization": "Dehumanization",
+      "violence": "Violence",
+      "false-prophecy": "False prophecy",
+      "christian-nationalism": "Christian nationalism",
+      "prosperity-gospel": "Prosperity gospel",
+      "extremism": "Extremism",
+      "political-violence": "Political violence",
+      "anti-evolution": "Anti-evolution and science denial",
+      "authoritarian-blueprint": "Authoritarian blueprint"
+    };
+    CATEGORY_HUES = {
+      "political-demonization": 352,
+      "hate": 130,
+      "conspiracy": 264,
+      "dehumanization": 68,
+      "violence": 210,
+      "false-prophecy": 20,
+      "christian-nationalism": 158,
+      "prosperity-gospel": 300,
+      "extremism": 96,
+      "political-violence": 236,
+      "anti-evolution": 44,
+      "authoritarian-blueprint": 186
+    };
+  }
+});
+
 // src/vlm/book-file.ts
 function coordinate(block) {
   return block.part === 0 ? `${block.page}:${block.order}` : `${block.page}:${block.order}:${block.part}`;
@@ -34291,8 +34549,8 @@ function shelfRow(block, shelf, why) {
 function furnitureWhy(category) {
   return `the model itself tagged this block ${category}, so the parse set it aside before the book was assembled`;
 }
-function suppressedHeadWhy(evidence) {
-  return evidence === "tagged" ? "the model tagged these same words page furniture elsewhere in the book, and they recur in the furniture band on three pages or more" : "nothing in the book ever tagged these words as furniture, and they recur in the furniture band at body size on three pages or more, which no chapter opening is printed at";
+function suppressedHeadWhy(evidence2) {
+  return evidence2 === "tagged" ? "the model tagged these same words page furniture elsewhere in the book, and they recur in the furniture band on three pages or more" : "nothing in the book ever tagged these words as furniture, and they recur in the furniture band at body size on three pages or more, which no chapter opening is printed at";
 }
 function bookParts(block, id) {
   const parts = [];
@@ -34648,6 +34906,661 @@ var init_book_file = __esm({
       }
     };
     ROW_ID = /^(?:b\d+-\d+(?:-\d+)?|e-\d+|u\d+)(?:#\d+)?(?:\/\d+)*$/;
+  }
+});
+
+// src/analyze/sentences.ts
+function splitSentences(text) {
+  const bounds = [];
+  BOUNDARY.lastIndex = 0;
+  let match;
+  while ((match = BOUNDARY.exec(text)) !== null) bounds.push(match.index + match[0].length);
+  if (bounds.length === 0 || bounds[bounds.length - 1] < text.length) bounds.push(text.length);
+  const out = [];
+  let cursor = 0;
+  for (const bound of bounds) {
+    let start = cursor;
+    let end = bound;
+    while (start < end && isSpace(text.charCodeAt(start))) start += 1;
+    while (end > start && isSpace(text.charCodeAt(end - 1))) end -= 1;
+    if (end > start) out.push({ start, end, text: text.slice(start, end) });
+    cursor = bound;
+  }
+  return out;
+}
+function isSpace(code) {
+  return code === 32 || code === 9 || code === 10 || code === 13 || code === 11 || code === 12 || code === 160;
+}
+function wordCount4(text) {
+  const trimmed = text.trim();
+  if (trimmed.length === 0) return 0;
+  return trimmed.split(/\s+/).length;
+}
+var BOUNDARY;
+var init_sentences = __esm({
+  "src/analyze/sentences.ts"() {
+    "use strict";
+    init_engine_import_meta_url();
+    BOUNDARY = /[.!?]+["')\]]*(?=\s|$)/g;
+  }
+});
+
+// src/analyze/rank.ts
+function bookSentence(row, start, end, text) {
+  return { row, start, end, text, words: wordCount4(text) };
+}
+function wordPrefix(sentences) {
+  const prefix = new Array(sentences.length + 1).fill(0);
+  for (let i = 0; i < sentences.length; i += 1) prefix[i + 1] = prefix[i] + sentences[i].words;
+  return prefix;
+}
+function words(prefix, from, to) {
+  if (to < from) return 0;
+  return prefix[to + 1] - prefix[from];
+}
+function categoriesFromSpan(candidates) {
+  return candidates.map((candidate) => ({
+    category: candidate.category,
+    proposition: candidate.proposition,
+    score: candidate.score,
+    sentenceIndex: candidate.sentenceIndex,
+    sentenceIndices: Array.from(
+      { length: candidate.spanTo - candidate.spanFrom + 1 },
+      (_unused, offset) => candidate.spanFrom + offset
+    )
+  }));
+}
+function mergeWindowCategories(a, b) {
+  const out = /* @__PURE__ */ new Map();
+  for (const entry of [...a, ...b]) {
+    const existing = out.get(entry.category);
+    if (!existing) {
+      out.set(entry.category, { ...entry, sentenceIndices: [...entry.sentenceIndices] });
+      continue;
+    }
+    const best = entry.score > existing.score ? entry : existing;
+    const indices = /* @__PURE__ */ new Set([...existing.sentenceIndices, ...entry.sentenceIndices]);
+    out.set(entry.category, {
+      ...best,
+      sentenceIndices: [...indices].sort((x, y) => x - y)
+    });
+  }
+  return [...out.values()];
+}
+function buildWindows(sentences, candidates) {
+  if (candidates.length === 0 || sentences.length === 0) return [];
+  const prefix = wordPrefix(sentences);
+  const bySpan = /* @__PURE__ */ new Map();
+  for (const candidate of candidates) {
+    const key = `${candidate.spanFrom}:${candidate.spanTo}`;
+    const list = bySpan.get(key);
+    if (list) list.push(candidate);
+    else bySpan.set(key, [candidate]);
+  }
+  const hot = [...bySpan.values()].sort(
+    (a, b) => a[0].spanFrom - b[0].spanFrom || a[0].spanTo - b[0].spanTo
+  );
+  const expanded = hot.map((group) => {
+    let from = group[0].spanFrom;
+    let to = group[0].spanTo;
+    for (let step = 0; step < WINDOW_CONTEXT_SENTENCES; step += 1) {
+      if (from > 0 && words(prefix, from - 1, to) <= WINDOW_MAX_CONTEXT_WORDS) from -= 1;
+      if (to + 1 < sentences.length && words(prefix, from, to + 1) <= WINDOW_MAX_CONTEXT_WORDS) to += 1;
+    }
+    return {
+      contextFrom: from,
+      contextTo: to,
+      firedFrom: group[0].spanFrom,
+      firedTo: group[0].spanTo,
+      categories: categoriesFromSpan(group),
+      score: 0
+    };
+  });
+  const merged = [];
+  for (const window2 of expanded) {
+    const previous = merged[merged.length - 1];
+    if (previous) {
+      const sentenceGap = window2.contextFrom - previous.contextTo - 1;
+      const wordGap = words(prefix, previous.contextTo + 1, window2.contextFrom - 1);
+      const joinedFrom = Math.min(previous.contextFrom, window2.contextFrom);
+      const joinedTo = Math.max(previous.contextTo, window2.contextTo);
+      const joinedWords = words(prefix, joinedFrom, joinedTo);
+      const close = sentenceGap <= WINDOW_MERGE_GAP_SENTENCES || wordGap <= WINDOW_MERGE_GAP_WORDS;
+      if (close && joinedWords <= WINDOW_MAX_MERGED_WORDS) {
+        previous.contextFrom = joinedFrom;
+        previous.contextTo = joinedTo;
+        previous.firedFrom = Math.min(previous.firedFrom, window2.firedFrom);
+        previous.firedTo = Math.max(previous.firedTo, window2.firedTo);
+        previous.categories = mergeWindowCategories(previous.categories, window2.categories);
+        continue;
+      }
+    }
+    merged.push({ ...window2, categories: [...window2.categories] });
+  }
+  for (const window2 of merged) {
+    window2.categories.sort((x, y) => y.score - x.score);
+    window2.score = 1 - window2.categories.reduce((product, c) => product * (1 - c.score), 1);
+  }
+  return merged;
+}
+function windowStrength(window2) {
+  return window2.categories.reduce(
+    (sum, c) => sum + Math.log(Math.max(1 - c.score, Number.MIN_VALUE)),
+    0
+  );
+}
+var WORDS_PER_SECOND, WINDOW_CONTEXT_SENTENCES, WINDOW_MAX_CONTEXT_WORDS, WINDOW_MERGE_GAP_SENTENCES, WINDOW_MERGE_GAP_WORDS, WINDOW_MAX_MERGED_WORDS;
+var init_rank = __esm({
+  "src/analyze/rank.ts"() {
+    "use strict";
+    init_engine_import_meta_url();
+    init_sentences();
+    WORDS_PER_SECOND = 3.25;
+    WINDOW_CONTEXT_SENTENCES = 2;
+    WINDOW_MAX_CONTEXT_WORDS = Math.round(25 * WORDS_PER_SECOND);
+    WINDOW_MERGE_GAP_SENTENCES = 1;
+    WINDOW_MERGE_GAP_WORDS = Math.round(5 * WORDS_PER_SECOND);
+    WINDOW_MAX_MERGED_WORDS = Math.round(40 * WORDS_PER_SECOND);
+  }
+});
+
+// src/analyze/prose.ts
+function readProse(bookPath, act, log2) {
+  if (!fs16.existsSync(bookPath)) throw new AnalyzeError(`no such book file: ${bookPath}`);
+  const book = parseBookFile(stripBom(fs16.readFileSync(bookPath, "utf8")));
+  const sentences = [];
+  let rows = 0;
+  for (const row of book.rows) {
+    if (row.shelf !== void 0) continue;
+    if (!PROSE.has(row.category)) continue;
+    rows += 1;
+    for (const sentence of splitSentences(row.text)) {
+      sentences.push(bookSentence(row.id, sentence.start, sentence.end, sentence.text));
+    }
+  }
+  log2(
+    `${act}: ${book.rows.length} row(s) in the book, ${rows} of them prose in the flow, cut into ${sentences.length} sentence(s)`
+  );
+  if (sentences.length === 0) {
+    throw new AnalyzeError(
+      `${bookPath} has no prose to analyse. Its rows are all shelved, or all figures, formulae and tables \u2014 there is nothing here for a model to read.`
+    );
+  }
+  return { sentences, bankSha: book.source.bankSha, generation: book.source.generation };
+}
+var fs16, AnalyzeError, PROSE;
+var init_prose = __esm({
+  "src/analyze/prose.ts"() {
+    "use strict";
+    init_engine_import_meta_url();
+    fs16 = __toESM(require("node:fs"), 1);
+    init_bom();
+    init_book_file();
+    init_rank();
+    init_sentences();
+    AnalyzeError = class extends Error {
+      constructor(message) {
+        super(message);
+        this.name = "AnalyzeError";
+      }
+    };
+    PROSE = /* @__PURE__ */ new Set([
+      "Caption",
+      "Footnote",
+      "List-item",
+      "Quote",
+      "Section-header",
+      "Text",
+      "Title"
+    ]);
+  }
+});
+
+// src/backend/decide-door.ts
+function decideUrl(endpoint) {
+  const base = endpoint.trim().replace(/\/+$/, "").replace(/\/v1$/, "");
+  return `${base}/v1/decide`;
+}
+async function askDecide(transport, url, body, caller) {
+  const { who, fail, sleep, log: log2 } = caller;
+  let transportFailures = 0;
+  for (; ; ) {
+    let response;
+    try {
+      response = await transport.post(url, body);
+    } catch (err) {
+      transportFailures += 1;
+      if (transportFailures > TRANSPORT_RETRIES) {
+        throw fail(`${who} could not reach ${url} after ${TRANSPORT_RETRIES} retries: ${err.message}`);
+      }
+      log2(`${who}: ${url} did not answer (${err.message}) \u2014 retrying (${transportFailures} of ${TRANSPORT_RETRIES})`);
+      await sleep(2e3 * transportFailures);
+      continue;
+    }
+    let reply;
+    try {
+      reply = JSON.parse(response.body);
+    } catch {
+      throw fail(`${who}: ${url} answered ${response.status} with a body that is not JSON: ${response.body.slice(0, 200)}`);
+    }
+    if (response.status === 200) return reply;
+    const code = typeof reply.error?.code === "string" ? reply.error.code : `http_${response.status}`;
+    const message = typeof reply.error?.message === "string" ? reply.error.message : response.body.slice(0, 200);
+    if (response.status === 503 && code === "chat_queue_full") {
+      const header = Number(response.headers?.["retry-after"]);
+      const detail = Number(reply.error?.details?.retry_after);
+      const seconds = Number.isFinite(header) && header > 0 ? header : Number.isFinite(detail) && detail > 0 ? detail : 2;
+      log2(`${who}: the server is busy (${message}) \u2014 waiting ${seconds} s and asking again`);
+      await sleep(seconds * 1e3);
+      continue;
+    }
+    const problems = Array.isArray(reply.error?.details?.problems) ? reply.error.details.problems.slice(0, 5).map((p) => `${Array.isArray(p.location) ? p.location.join(".") : "?"}: ${String(p.message)}`).join("; ") : "";
+    throw fail(
+      `${who}: ${url} refused the request (${response.status} ${code}): ${message}` + (problems ? ` \u2014 ${problems}` : "")
+    );
+  }
+}
+async function pool(count, concurrency, job) {
+  let next = 0;
+  const lanes = Array.from({ length: Math.min(concurrency, count) }, async () => {
+    while (next < count) {
+      const index = next;
+      next += 1;
+      await job(index);
+    }
+  });
+  await Promise.all(lanes);
+}
+var TRANSPORT_RETRIES;
+var init_decide_door = __esm({
+  "src/backend/decide-door.ts"() {
+    "use strict";
+    init_engine_import_meta_url();
+    TRANSPORT_RETRIES = 5;
+  }
+});
+
+// src/analyze/snap.ts
+var snap_exports = {};
+__export(snap_exports, {
+  GROUP_SIZE: () => GROUP_SIZE,
+  GROUP_STRIDE: () => GROUP_STRIDE,
+  LABEL_MASS_GATE: () => LABEL_MASS_GATE,
+  RANK_FORMAT: () => RANK_FORMAT,
+  buildUnits: () => buildUnits,
+  categoryTitle: () => categoryTitle,
+  chunkBudget: () => chunkBudget,
+  chunkState: () => chunkState,
+  estimateTokens: () => estimateTokens,
+  groupQuestion: () => groupQuestion,
+  groupsOf: () => groupsOf,
+  planChunks: () => planChunks,
+  rankFileFor: () => rankFileFor,
+  readAnswer: () => readAnswer,
+  readPlan: () => readPlan,
+  readRankFile: () => readRankFile,
+  runAnalyzeRank: () => runAnalyzeRank
+});
+function buildUnits(sentences) {
+  const prefix = new Array(sentences.length + 1).fill(0);
+  for (let i = 0; i < sentences.length; i += 1) prefix[i + 1] = prefix[i] + sentences[i].words;
+  const folded = [];
+  let pending = null;
+  for (const [i, sentence] of sentences.entries()) {
+    let unit = { text: sentence.text.trim(), sFrom: i, sTo: i };
+    if (pending) {
+      unit = { text: `${pending.text} ${unit.text}`, sFrom: pending.sFrom, sTo: i };
+      pending = null;
+    }
+    if (wordCount4(unit.text) < UNIT_MIN_WORDS) {
+      pending = unit;
+      continue;
+    }
+    folded.push(unit);
+  }
+  if (pending) folded.push(pending);
+  const out = [];
+  const push = (text, sFrom, sTo) => {
+    out.push({
+      index: out.length,
+      text,
+      sentenceFrom: sFrom,
+      sentenceTo: sTo,
+      start: prefix[sFrom],
+      end: prefix[sTo + 1]
+    });
+  };
+  for (const unit of folded) {
+    if (wordCount4(unit.text) <= UNIT_MAX_WORDS) {
+      push(unit.text, unit.sFrom, unit.sTo);
+      continue;
+    }
+    const words2 = [];
+    for (let s = unit.sFrom; s <= unit.sTo; s += 1) {
+      for (const w of sentences[s].text.split(/\s+/).filter(Boolean)) words2.push({ w, s });
+    }
+    const n = Math.ceil(words2.length / UNIT_PIECE_WORDS);
+    const size = Math.ceil(words2.length / n);
+    for (let k = 0; k < words2.length; k += size) {
+      const slice = words2.slice(k, k + size);
+      push(slice.map((x) => x.w).join(" "), slice[0].s, slice[slice.length - 1].s);
+    }
+  }
+  return out;
+}
+function chunkBudget(loadedContext) {
+  const single = Math.min(BRIEFCASE_SINGLE_CHUNK_TOKENS, loadedContext - CHUNK_RESERVE_TOKENS);
+  if (single < 2048) {
+    throw new AnalyzeError(
+      `the ranking model is loaded with a ${loadedContext}-token context, which leaves ${single} for the book once the ${CHUNK_RESERVE_TOKENS} the questions need are set aside. Load it with more context.`
+    );
+  }
+  return {
+    singleChunkMaxTokens: single,
+    coreMaxTokens: Math.floor(single * 12 / 16),
+    overlapTokens: Math.floor(single * 2 / 16)
+  };
+}
+function estimateTokens(text) {
+  return Math.ceil((text.length + 1) / 3.6);
+}
+function planChunks(units, budget) {
+  const n = units.length;
+  if (n === 0) return [];
+  const tok = units.map((u) => estimateTokens(u.text));
+  const total = tok.reduce((a, b) => a + b, 0);
+  if (total <= budget.singleChunkMaxTokens) return [{ coreFrom: 0, coreTo: n, contextFrom: 0, contextTo: n }];
+  const cores = Math.ceil(total / budget.coreMaxTokens);
+  const target = total / cores;
+  const bounds = [];
+  let from = 0;
+  let acc = 0;
+  for (let i = 0; i < n; i += 1) {
+    acc += tok[i];
+    const remainingCores = cores - bounds.length - 1;
+    if (acc >= target && remainingCores > 0 && n - (i + 1) >= remainingCores) {
+      bounds.push([from, i + 1]);
+      from = i + 1;
+      acc = 0;
+    }
+  }
+  bounds.push([from, n]);
+  return bounds.map(([a, b]) => {
+    let lo = a;
+    let t = 0;
+    while (lo > 0 && t + tok[lo - 1] <= budget.overlapTokens) t += tok[--lo];
+    let hi = b;
+    t = 0;
+    while (hi < n && t + tok[hi] <= budget.overlapTokens) t += tok[hi++];
+    return { coreFrom: a, coreTo: b, contextFrom: lo, contextTo: hi };
+  });
+}
+function groupsOf(from, to) {
+  const out = [];
+  for (let a = from; a < to; a += GROUP_STRIDE) {
+    const b = Math.min(a + GROUP_SIZE, to);
+    out.push([a, b - 1]);
+    if (b === to) break;
+  }
+  return out;
+}
+function clip(text, max) {
+  const t = text.replace(/\s+/g, " ").trim();
+  return t.length <= max ? t : `${t.slice(0, max - 1).trimEnd()}\u2026`;
+}
+function categoryTitle(name) {
+  const spaced = name.replace(/[-_]+/g, " ").replace(/\s+/g, " ").trim();
+  return spaced ? spaced[0].toUpperCase() + spaced.slice(1) : name;
+}
+function chunkState(unitTexts, plan) {
+  const legend = [
+    "Categories (the options in the questions below):",
+    ...plan.map((p) => `- ${p.category}: ${p.option}`),
+    `- ${NONE_KEY}: ${NONE_OPTION_TEXT}`
+  ].join("\n");
+  return `${unitTexts.join("\n")}
+
+${legend}`;
+}
+function groupQuestion(texts, plan) {
+  const passage = texts.map((t) => clip(t, GROUP_UNIT_CHARS)).join(" ");
+  const options = {};
+  for (const p of plan) options[p.category] = categoryTitle(p.category);
+  options[NONE_KEY] = "None of these";
+  return {
+    type: "choice",
+    instructions: `Passage from the text above: "${passage}"
+Which of the categories listed above does the author do in this passage?`,
+    options
+  };
+}
+function logSumExp(xs) {
+  const m = Math.max(...xs);
+  if (!Number.isFinite(m)) return m;
+  let s = 0;
+  for (const x of xs) s += Math.exp(x - m);
+  return m + Math.log(s);
+}
+function readAnswer(answer, labels, question) {
+  if (answer === void 0 || answer.type !== "choice" || typeof answer.probabilities !== "object" || answer.probabilities === null || typeof answer.label_mass !== "number" || !Array.isArray(answer.missing_labels)) {
+    throw new AnalyzeError(
+      `the decide door answered ${question} without a report-mode choice (probabilities, label_mass and missing_labels) \u2014 it is not the door this program speaks to.`
+    );
+  }
+  const mass = answer.label_mass;
+  const missing = new Set(answer.missing_labels.map(String));
+  const raw = labels.map((label) => {
+    const p = answer.probabilities[label];
+    if (p === null || p === void 0) {
+      if (!missing.has(label)) {
+        throw new AnalyzeError(`the decide door gave ${question} no probability for "${label}" and did not say it was missing.`);
+      }
+      return null;
+    }
+    if (typeof p !== "number") throw new AnalyzeError(`the decide door gave ${question} a probability that is not a number for "${label}".`);
+    return p > 0 && mass > 0 ? Math.log(p) + Math.log(mass) : -Infinity;
+  });
+  const returned = raw.filter((x) => x !== null && Number.isFinite(x));
+  if (returned.length === 0) {
+    throw new AnalyzeError(`the decide door returned no option with any probability for ${question}.`);
+  }
+  const absent = raw.filter((x) => x === null).length;
+  let floor = -Infinity;
+  if (absent > 0) {
+    const rest = 1 - mass;
+    const shared = rest > 0 ? Math.log(rest / (absent + TOP_K_MARGIN)) : -Infinity;
+    floor = Math.max(LOG_FLOOR, Math.min(Math.min(...returned), shared));
+  }
+  const logs = raw.map((x) => x === null ? floor : x);
+  if (mass < LABEL_MASS_GATE) {
+    return { probs: labels.map(() => 1 / labels.length), labelMass: mass, missing: absent, gated: true };
+  }
+  const z = logSumExp(logs);
+  return { probs: logs.map((lp) => Math.exp(lp - z)), labelMass: mass, missing: absent, gated: false };
+}
+function rankFileFor(reportPath) {
+  return `${path14.resolve(reportPath)}.rank.json`;
+}
+function readRankFile(rankPath) {
+  const where = path14.resolve(rankPath);
+  let parsed;
+  try {
+    parsed = JSON.parse(stripBom(fs18.readFileSync(where, "utf8")));
+  } catch (err) {
+    throw new AnalyzeError(`--ranks ${where} cannot be read as JSON (${err.message}).`);
+  }
+  const file = parsed;
+  if (file.format !== RANK_FORMAT) {
+    throw new AnalyzeError(`--ranks ${where} is not a rank file (format ${String(file.format)}, expected ${RANK_FORMAT}).`);
+  }
+  if (!Array.isArray(file.units) || !Array.isArray(file.p1) || !Array.isArray(file.categories) || file.p1.length !== file.units.length || typeof file.bankSha !== "string" || typeof file.options !== "string" || typeof file.model?.id !== "string") {
+    throw new AnalyzeError(`--ranks ${where} is missing its units, its scores, its book or its model.`);
+  }
+  const width = file.categories.length + 1;
+  for (const [i, row] of file.p1.entries()) {
+    if (!Array.isArray(row) || row.length !== width || row.some((v) => typeof v !== "number")) {
+      throw new AnalyzeError(`--ranks ${where}: the scores for unit ${i} are not ${width} numbers.`);
+    }
+  }
+  return file;
+}
+function readPlan(categoriesPath, log2) {
+  let requested = null;
+  if (categoriesPath) {
+    if (!fs18.existsSync(categoriesPath)) {
+      throw new AnalyzeError(`no such categories file: ${categoriesPath}`);
+    }
+    requested = parseCategoriesJson(stripBom(fs18.readFileSync(categoriesPath, "utf8")), categoriesPath);
+  }
+  const plan = buildPlan(requested, log2);
+  const untuned = untunedNames(plan);
+  log2(
+    `analyze: ${plan.length} categor(ies) \u2014 ${plan.map((one) => one.category).join(", ")}` + (untuned.length > 0 ? `. Nothing has calibrated ${untuned.join(", ")}, so their counts may be high or low and the report says so in its header.` : "")
+  );
+  return plan;
+}
+async function loadedContextOf(transport, endpoint, model) {
+  const served = await servedModels(transport, endpoint);
+  const row = served.find((one) => one.id === model);
+  if (row === void 0) {
+    throw new AnalyzeError(
+      `${endpoint} is not serving "${model}" (it lists ${served.map((one) => one.id).join(", ") || "nothing"}). The ranking model must be resident before this runs \u2014 the app places and leases it.`
+    );
+  }
+  if (row.maxModelLen === null) {
+    throw new AnalyzeError(
+      `${endpoint} serves "${model}" but does not say what context it was loaded at, and the book is cut into chunks that fit it. A chunk sized by guess is a state the engine refuses an hour in.`
+    );
+  }
+  return row.maxModelLen;
+}
+async function runAnalyzeRank(opts) {
+  const started = Date.now();
+  const { log: log2 } = opts;
+  const transport = opts.transport ?? fetchTransport(deadlineForConcurrency(1));
+  const sleep = opts.sleep ?? ((ms) => new Promise((resolve20) => setTimeout(resolve20, ms)));
+  const url = decideUrl(opts.endpoint);
+  const { sentences, bankSha: bankSha2 } = readProse(opts.bookPath, "analyze", log2);
+  const plan = readPlan(opts.categoriesPath ?? null, log2);
+  const units = buildUnits(sentences);
+  const loadedContext = await loadedContextOf(transport, opts.endpoint, opts.model);
+  const chunks = planChunks(units, chunkBudget(loadedContext));
+  const perChunk = chunks.map((chunk) => groupsOf(chunk.coreFrom, chunk.coreTo));
+  const total = perChunk.reduce((n, g) => n + g.length, 0);
+  log2(
+    `analyze: ${sentences.length} sentence(s) -> ${units.length} unit(s) in ${chunks.length} chunk(s) at a ${loadedContext}-token context: ${total} group question(s) (${GROUP_SIZE} units, stride ${GROUP_STRIDE}) asked of ${opts.model} at ${url}`
+  );
+  const labels = [...plan.map((p) => p.category), NONE_KEY];
+  const width = labels.length;
+  const sum = units.map(() => new Array(width).fill(0));
+  const massSum = units.map(() => 0);
+  const seen = units.map(() => 0);
+  let gated = 0;
+  let asked = 0;
+  let unitsDone = 0;
+  let served = null;
+  for (const [c, chunk] of chunks.entries()) {
+    const state = chunkState(units.slice(chunk.contextFrom, chunk.contextTo).map((u) => u.text), plan);
+    const groups = perChunk[c];
+    for (let k = 0; k < groups.length; k += BATCH_SIZE) {
+      const batch = groups.slice(k, k + BATCH_SIZE);
+      const names = batch.map((_group, n) => `g:${asked + n}`);
+      const body = JSON.stringify({
+        model: opts.model,
+        state,
+        questions: Object.fromEntries(batch.map(([a, b], n) => [
+          names[n],
+          groupQuestion(units.slice(a, b + 1).map((u) => u.text), plan)
+        ])),
+        missing: "report"
+      });
+      const reply = await askDecide(transport, url, body, {
+        who: "analyze",
+        fail: (message) => new AnalyzeError(message),
+        sleep,
+        log: log2
+      });
+      batch.forEach(([a, b], n) => {
+        const answer = readAnswer(reply.answers?.[names[n]], labels, names[n]);
+        if (answer.gated) gated += 1;
+        for (let i = a; i <= b; i += 1) {
+          for (let j = 0; j < width; j += 1) sum[i][j] += answer.probs[j];
+          massSum[i] += answer.labelMass;
+          seen[i] += 1;
+        }
+        unitsDone = Math.max(unitsDone, b + 1);
+      });
+      if (served === null && typeof reply.model?.id === "string") {
+        served = {
+          id: reply.model.id,
+          revision: typeof reply.model.revision === "string" ? reply.model.revision : null,
+          fingerprint: typeof reply.model.fingerprint === "string" ? reply.model.fingerprint : null
+        };
+      }
+      asked += batch.length;
+      log2(`analyze: rank ${unitsDone}/${units.length}`);
+    }
+  }
+  if (served === null) throw new AnalyzeError(`${url} never said which model answered.`);
+  const round6 = (v) => Math.round(v * 1e6) / 1e6;
+  const file = {
+    format: RANK_FORMAT,
+    engine: VERSION,
+    bankSha: bankSha2,
+    options: optionSetVersion(plan),
+    model: served,
+    loadedContext,
+    chunks,
+    untuned: untunedNames(plan),
+    categories: plan.map((p) => p.category),
+    units,
+    // Every unit is in at least one group: `groupsOf` covers each core whole.
+    p1: sum.map((row, i) => row.map((v) => round6(v / Math.max(1, seen[i])))),
+    labelMass: massSum.map((m, i) => round6(m / Math.max(1, seen[i]))),
+    gated
+  };
+  const out = path14.resolve(opts.outPath);
+  ensureDir(path14.dirname(out));
+  const partial = `${out}.partial`;
+  fs18.writeFileSync(partial, `${JSON.stringify(file)}
+`, "utf8");
+  fs18.renameSync(partial, out);
+  const seconds = ((Date.now() - started) / 1e3).toFixed(1);
+  log2(
+    `analyze: ranked ${units.length} unit(s) with ${asked} question(s) in ${seconds}s` + (gated > 0 ? `; ${gated} answer(s) put under ${LABEL_MASS_GATE} of their belief on a letter and were read as no evidence` : "") + `. Rank file: ${out}`
+  );
+  return { units: units.length, groups: asked, gated, file };
+}
+var fs18, path14, UNIT_MIN_WORDS, UNIT_MAX_WORDS, UNIT_PIECE_WORDS, CHUNK_RESERVE_TOKENS, BRIEFCASE_SINGLE_CHUNK_TOKENS, GROUP_SIZE, GROUP_STRIDE, BATCH_SIZE, GROUP_UNIT_CHARS, NONE_OPTION_TEXT, LABEL_MASS_GATE, LOG_FLOOR, TOP_K_MARGIN, RANK_FORMAT;
+var init_snap = __esm({
+  "src/analyze/snap.ts"() {
+    "use strict";
+    init_engine_import_meta_url();
+    fs18 = __toESM(require("node:fs"), 1);
+    path14 = __toESM(require("node:path"), 1);
+    init_bom();
+    init_fsdirs();
+    init_decide_door();
+    init_transport();
+    init_vllm();
+    init_version();
+    init_plan();
+    init_prose();
+    init_sentences();
+    UNIT_MIN_WORDS = 4;
+    UNIT_MAX_WORDS = 60;
+    UNIT_PIECE_WORDS = 30;
+    CHUNK_RESERVE_TOKENS = 4096;
+    BRIEFCASE_SINGLE_CHUNK_TOKENS = 16e3;
+    GROUP_SIZE = 3;
+    GROUP_STRIDE = 2;
+    BATCH_SIZE = 64;
+    GROUP_UNIT_CHARS = 300;
+    NONE_OPTION_TEXT = "None of these: ordinary talk about something else";
+    LABEL_MASS_GATE = 0.01;
+    LOG_FLOOR = Math.log(1e-12);
+    TOP_K_MARGIN = 4;
+    RANK_FORMAT = "foundry-analysis-rank/v1";
   }
 });
 
@@ -71267,7 +72180,7 @@ function bankKey(question) {
     (question.instructions ?? "").trim(),
     question.text
   ];
-  return (0, import_node_crypto6.createHash)("sha256").update(fields.join(NUL4), "utf8").digest("hex");
+  return (0, import_node_crypto5.createHash)("sha256").update(fields.join(NUL4), "utf8").digest("hex");
 }
 function pendingBankPath(bankPath) {
   return `${path20.resolve(bankPath)}.pending`;
@@ -71315,12 +72228,12 @@ function openTranslationBank(request) {
     sentence: `${request.act}: ${banked} answer(s) are banked in ${bankPath} \u2014 a block whose exact question is in there is not asked again, and every new answer is added to it.`
   };
 }
-var import_node_crypto6, fs25, path20, TranslateBankError, KEY_FORMATS, NUL4, TranslationBank;
+var import_node_crypto5, fs25, path20, TranslateBankError, KEY_FORMATS, NUL4, TranslationBank;
 var init_bank = __esm({
   "src/translate/bank.ts"() {
     "use strict";
     init_engine_import_meta_url();
-    import_node_crypto6 = require("node:crypto");
+    import_node_crypto5 = require("node:crypto");
     fs25 = __toESM(require("node:fs"), 1);
     path20 = __toESM(require("node:path"), 1);
     init_bom();
@@ -72132,7 +73045,7 @@ function reassemble(text, spans, cleaned) {
   return out + text.slice(at);
 }
 var MIN_SENTENCE_CHARS, ABBREVIATIONS, BOUNDARY2, CAN_START;
-var init_sentences = __esm({
+var init_sentences2 = __esm({
   "src/clean/sentences.ts"() {
     "use strict";
     init_engine_import_meta_url();
@@ -72433,7 +73346,7 @@ var init_blocks2 = __esm({
     init_bookrows();
     init_punctuate();
     init_segments();
-    init_sentences();
+    init_sentences2();
     CELL_JOIN = " | ";
     DEFAULT_CLEAN_UNIT = "sentence";
     CLEAN_UNITS = ["sentence", "block"];
@@ -72456,10 +73369,6 @@ __export(triage_exports, {
   triageGroups: () => triageGroups,
   triageQuestion: () => triageQuestion
 });
-function decideUrl(endpoint) {
-  const base = endpoint.trim().replace(/\/+$/, "").replace(/\/v1$/, "");
-  return `${base}/v1/decide`;
-}
 function triageGroups(units, unit = "block") {
   const maxUnits = unit === "sentence" ? GROUP_MAX_SENTENCES : GROUP_MAX_UNITS;
   const groups = [];
@@ -72524,63 +73433,12 @@ function yesProbability(answer) {
   const yes = answer.probabilities?.["yes"];
   return typeof yes === "number" ? yes : void 0;
 }
-async function askGroup(transport, url, body, sleep, log2) {
-  let transportFailures = 0;
-  for (; ; ) {
-    let response;
-    try {
-      response = await transport.post(url, body);
-    } catch (err) {
-      transportFailures += 1;
-      if (transportFailures > TRANSPORT_RETRIES) {
-        throw new CleanTextError(
-          `clean-triage could not reach ${url} after ${TRANSPORT_RETRIES} retries: ${err.message}`
-        );
-      }
-      log2(`clean-triage: ${url} did not answer (${err.message}) \u2014 retrying (${transportFailures} of ${TRANSPORT_RETRIES})`);
-      await sleep(2e3 * transportFailures);
-      continue;
-    }
-    let reply;
-    try {
-      reply = JSON.parse(response.body);
-    } catch {
-      throw new CleanTextError(`clean-triage: ${url} answered ${response.status} with a body that is not JSON: ${response.body.slice(0, 200)}`);
-    }
-    if (response.status === 200) return reply;
-    const code = typeof reply.error?.code === "string" ? reply.error.code : `http_${response.status}`;
-    const message = typeof reply.error?.message === "string" ? reply.error.message : response.body.slice(0, 200);
-    if (response.status === 503 && code === "chat_queue_full") {
-      const header = Number(response.headers?.["retry-after"]);
-      const detail = Number(reply.error?.details?.retry_after);
-      const seconds = Number.isFinite(header) && header > 0 ? header : Number.isFinite(detail) && detail > 0 ? detail : 2;
-      log2(`clean-triage: the server is busy (${message}) \u2014 waiting ${seconds} s and asking again`);
-      await sleep(seconds * 1e3);
-      continue;
-    }
-    const problems = Array.isArray(reply.error?.details?.problems) ? reply.error.details.problems.slice(0, 5).map((p) => `${Array.isArray(p.location) ? p.location.join(".") : "?"}: ${String(p.message)}`).join("; ") : "";
-    throw new CleanTextError(
-      `clean-triage: ${url} refused the request (${response.status} ${code}): ${message}` + (problems ? ` \u2014 ${problems}` : "")
-    );
-  }
-}
-async function pool(count, concurrency, job) {
-  let next = 0;
-  const lanes = Array.from({ length: Math.min(concurrency, count) }, async () => {
-    while (next < count) {
-      const index = next;
-      next += 1;
-      await job(index);
-    }
-  });
-  await Promise.all(lanes);
-}
 async function runCleanTriage(opts) {
   const started = Date.now();
   const at = (/* @__PURE__ */ new Date()).toISOString();
   const concurrency = opts.concurrency ?? DEFAULT_TRIAGE_CONCURRENCY;
   const transport = opts.transport ?? fetchTransport(deadlineForConcurrency(concurrency));
-  const sleep = opts.sleep ?? ((ms) => new Promise((resolve19) => setTimeout(resolve19, ms)));
+  const sleep = opts.sleep ?? ((ms) => new Promise((resolve20) => setTimeout(resolve20, ms)));
   const url = decideUrl(opts.endpoint);
   const where = path22.resolve(opts.bookPath);
   let bookText;
@@ -72613,7 +73471,12 @@ async function runCleanTriage(opts) {
       state: groupState(units, group, unit),
       questions: Object.fromEntries(asked.map((one) => [one.parts, triageQuestion(one.parts, unit, one.text)]))
     });
-    const reply = await askGroup(transport, url, body, sleep, opts.log);
+    const reply = await askDecide(transport, url, body, {
+      who: "clean-triage",
+      fail: (message) => new CleanTextError(message),
+      sleep,
+      log: opts.log
+    });
     for (const unit2 of asked) {
       const answer = reply.answers?.[unit2.parts];
       const p = answer === void 0 ? void 0 : yesProbability(answer);
@@ -72690,7 +73553,7 @@ function readTriageFile(triagePath) {
   }
   return file;
 }
-var fs27, path22, TRIAGE_FORMAT, TRIAGE_FLAG_P, TRIAGE_MIN_LABEL_MASS, GROUP_MAX_UNITS, GROUP_MAX_SENTENCES, GROUP_MAX_CHARS, CONTEXT_UNITS, CONTEXT_CHARS, DEFAULT_TRIAGE_CONCURRENCY, TRANSPORT_RETRIES, TRIAGE_GUIDE, SENTENCE_TRIAGE_STATE, TRIAGE_CRITERIA, SENTENCE_OPTIONS;
+var fs27, path22, TRIAGE_FORMAT, TRIAGE_FLAG_P, TRIAGE_MIN_LABEL_MASS, GROUP_MAX_UNITS, GROUP_MAX_SENTENCES, GROUP_MAX_CHARS, CONTEXT_UNITS, CONTEXT_CHARS, DEFAULT_TRIAGE_CONCURRENCY, TRIAGE_GUIDE, SENTENCE_TRIAGE_STATE, TRIAGE_CRITERIA, SENTENCE_OPTIONS;
 var init_triage = __esm({
   "src/clean/triage.ts"() {
     "use strict";
@@ -72701,6 +73564,7 @@ var init_triage = __esm({
     init_bom();
     init_bookrows();
     init_transport();
+    init_decide_door();
     init_blocks2();
     init_digest();
     init_punctuate();
@@ -72715,7 +73579,6 @@ var init_triage = __esm({
     CONTEXT_UNITS = 2;
     CONTEXT_CHARS = 200;
     DEFAULT_TRIAGE_CONCURRENCY = 2;
-    TRANSPORT_RETRIES = 5;
     TRIAGE_GUIDE = [
       "You are checking the blocks of a book before a text-to-speech voice reads it aloud.",
       "A block NEEDS CLEANING if anything in it is printed one way and spoken another, or is printed but not meant to be spoken:",
@@ -72990,7 +73853,7 @@ function cleanEpubKey(request) {
     PUNCTUATION_SPEC_VERSION,
     ...request.nodes
   ];
-  return (0, import_node_crypto7.createHash)("sha256").update(fields.join(NUL5), "utf8").digest("hex");
+  return (0, import_node_crypto6.createHash)("sha256").update(fields.join(NUL5), "utf8").digest("hex");
 }
 function cleanEpubBankPath(outPath) {
   return `${path23.resolve(outPath)}.clean-bank.jsonl`;
@@ -73412,14 +74275,14 @@ function sayRefusal(log2, key, record2) {
     `clean-text: REFUSED ${record2.status} in ${key} \u2014 "${record2.find}" \u2192 "${record2.replace}"${record2.detail === void 0 ? "" : ` (${record2.detail})`}`
   );
 }
-var fs28, path23, import_node_crypto7, NUL5, NOTHING_TO_ASK;
+var fs28, path23, import_node_crypto6, NUL5, NOTHING_TO_ASK;
 var init_epub2 = __esm({
   "src/clean/epub.ts"() {
     "use strict";
     init_engine_import_meta_url();
     fs28 = __toESM(require("node:fs"), 1);
     path23 = __toESM(require("node:path"), 1);
-    import_node_crypto7 = require("node:crypto");
+    import_node_crypto6 = require("node:crypto");
     init_fsdirs();
     init_zip();
     init_meta();
@@ -73468,7 +74331,7 @@ function cleanKey(request) {
     PUNCTUATION_SPEC_VERSION,
     request.text
   ];
-  return (0, import_node_crypto8.createHash)("sha256").update(fields.join(NUL6), "utf8").digest("hex");
+  return (0, import_node_crypto7.createHash)("sha256").update(fields.join(NUL6), "utf8").digest("hex");
 }
 function triageKey(request) {
   const fields = [
@@ -73478,7 +74341,7 @@ function triageKey(request) {
     PUNCTUATION_SPEC_VERSION,
     request.text
   ];
-  return (0, import_node_crypto8.createHash)("sha256").update(fields.join(NUL6), "utf8").digest("hex");
+  return (0, import_node_crypto7.createHash)("sha256").update(fields.join(NUL6), "utf8").digest("hex");
 }
 function receiptPath(recordsPath) {
   return `${path24.resolve(recordsPath)}.receipt.json`;
@@ -73884,14 +74747,14 @@ function sayRefusal2(log2, key, record2) {
     `clean-text: REFUSED ${record2.status} in ${key} \u2014 "${record2.find}" \u2192 "${record2.replace}"${record2.detail === void 0 ? "" : ` (${record2.detail})`}`
   );
 }
-var fs29, path24, import_node_crypto8, KEY_FORMAT, SENTENCE_KEY_FORMAT, NUL6, DEFAULT_CLEAN_GATE, TRIAGE_KEY_FORMAT, NOTHING_TO_ASK2;
+var fs29, path24, import_node_crypto7, KEY_FORMAT, SENTENCE_KEY_FORMAT, NUL6, DEFAULT_CLEAN_GATE, TRIAGE_KEY_FORMAT, NOTHING_TO_ASK2;
 var init_run = __esm({
   "src/clean/run.ts"() {
     "use strict";
     init_engine_import_meta_url();
     fs29 = __toESM(require("node:fs"), 1);
     path24 = __toESM(require("node:path"), 1);
-    import_node_crypto8 = require("node:crypto");
+    import_node_crypto7 = require("node:crypto");
     init_fsdirs();
     init_bom();
     init_bookrows();
@@ -73900,7 +74763,7 @@ var init_run = __esm({
     init_model_server();
     init_transport();
     init_blocks2();
-    init_sentences();
+    init_sentences2();
     init_triage();
     init_digest();
     init_prompt();
@@ -75605,9 +76468,9 @@ var require_dispatcher_base = __commonJS({
       }
       close(callback) {
         if (callback === void 0) {
-          return new Promise((resolve19, reject) => {
+          return new Promise((resolve20, reject) => {
             this.close((err, data) => {
-              return err ? reject(err) : resolve19(data);
+              return err ? reject(err) : resolve20(data);
             });
           });
         }
@@ -75645,12 +76508,12 @@ var require_dispatcher_base = __commonJS({
           err = null;
         }
         if (callback === void 0) {
-          return new Promise((resolve19, reject) => {
+          return new Promise((resolve20, reject) => {
             this.destroy(err, (err2, data) => {
               return err2 ? (
                 /* istanbul ignore next: should never error */
                 reject(err2)
-              ) : resolve19(data);
+              ) : resolve20(data);
             });
           });
         }
@@ -77928,8 +78791,8 @@ var require_util2 = __commonJS({
     function createDeferredPromise() {
       let res;
       let rej;
-      const promise = new Promise((resolve19, reject) => {
-        res = resolve19;
+      const promise = new Promise((resolve20, reject) => {
+        res = resolve20;
         rej = reject;
       });
       return { promise, resolve: res, reject: rej };
@@ -80078,12 +80941,12 @@ upgrade: ${upgrade}\r
           cb();
         }
       }
-      const waitForDrain = () => new Promise((resolve19, reject) => {
+      const waitForDrain = () => new Promise((resolve20, reject) => {
         assert(callback === null);
         if (socket[kError]) {
           reject(socket[kError]);
         } else {
-          callback = resolve19;
+          callback = resolve20;
         }
       });
       socket.on("close", onDrain).on("drain", onDrain);
@@ -80721,12 +81584,12 @@ var require_client_h2 = __commonJS({
           cb();
         }
       }
-      const waitForDrain = () => new Promise((resolve19, reject) => {
+      const waitForDrain = () => new Promise((resolve20, reject) => {
         assert(callback === null);
         if (socket[kError]) {
           reject(socket[kError]);
         } else {
-          callback = resolve19;
+          callback = resolve20;
         }
       });
       h2stream.on("close", onDrain).on("drain", onDrain);
@@ -81206,16 +82069,16 @@ var require_client = __commonJS({
         return this[kNeedDrain] < 2;
       }
       async [kClose]() {
-        return new Promise((resolve19) => {
+        return new Promise((resolve20) => {
           if (this[kSize]) {
-            this[kClosedResolve] = resolve19;
+            this[kClosedResolve] = resolve20;
           } else {
-            resolve19(null);
+            resolve20(null);
           }
         });
       }
       async [kDestroy](err) {
-        return new Promise((resolve19) => {
+        return new Promise((resolve20) => {
           const requests = this[kQueue].splice(this[kPendingIdx]);
           for (let i = 0; i < requests.length; i++) {
             const request = requests[i];
@@ -81226,7 +82089,7 @@ var require_client = __commonJS({
               this[kClosedResolve]();
               this[kClosedResolve] = null;
             }
-            resolve19(null);
+            resolve20(null);
           };
           if (this[kHTTPContext]) {
             this[kHTTPContext].destroy(err, callback);
@@ -81277,7 +82140,7 @@ var require_client = __commonJS({
         });
       }
       try {
-        const socket = await new Promise((resolve19, reject) => {
+        const socket = await new Promise((resolve20, reject) => {
           client[kConnector]({
             host,
             hostname,
@@ -81289,7 +82152,7 @@ var require_client = __commonJS({
             if (err) {
               reject(err);
             } else {
-              resolve19(socket2);
+              resolve20(socket2);
             }
           });
         });
@@ -81628,8 +82491,8 @@ var require_pool_base = __commonJS({
         if (this[kQueue].isEmpty()) {
           await Promise.all(this[kClients].map((c) => c.close()));
         } else {
-          await new Promise((resolve19) => {
-            this[kClosedResolve] = resolve19;
+          await new Promise((resolve20) => {
+            this[kClosedResolve] = resolve20;
           });
         }
       }
@@ -82776,7 +83639,7 @@ var require_readable = __commonJS({
         if (this._readableState.closeEmitted) {
           return null;
         }
-        return await new Promise((resolve19, reject) => {
+        return await new Promise((resolve20, reject) => {
           if (this[kContentLength] > limit) {
             this.destroy(new AbortError());
           }
@@ -82789,7 +83652,7 @@ var require_readable = __commonJS({
             if (signal?.aborted) {
               reject(signal.reason ?? new AbortError());
             } else {
-              resolve19(null);
+              resolve20(null);
             }
           }).on("error", noop).on("data", function(chunk) {
             limit -= chunk.length;
@@ -82808,7 +83671,7 @@ var require_readable = __commonJS({
     }
     async function consume(stream, type) {
       assert(!stream[kConsume]);
-      return new Promise((resolve19, reject) => {
+      return new Promise((resolve20, reject) => {
         if (isUnusable(stream)) {
           const rState = stream._readableState;
           if (rState.destroyed && rState.closeEmitted === false) {
@@ -82825,7 +83688,7 @@ var require_readable = __commonJS({
             stream[kConsume] = {
               type,
               stream,
-              resolve: resolve19,
+              resolve: resolve20,
               reject,
               length: 0,
               body: []
@@ -82895,18 +83758,18 @@ var require_readable = __commonJS({
       return buffer;
     }
     function consumeEnd(consume2) {
-      const { type, body, resolve: resolve19, stream, length } = consume2;
+      const { type, body, resolve: resolve20, stream, length } = consume2;
       try {
         if (type === "text") {
-          resolve19(chunksDecode(body, length));
+          resolve20(chunksDecode(body, length));
         } else if (type === "json") {
-          resolve19(JSON.parse(chunksDecode(body, length)));
+          resolve20(JSON.parse(chunksDecode(body, length)));
         } else if (type === "arrayBuffer") {
-          resolve19(chunksConcat(body, length).buffer);
+          resolve20(chunksConcat(body, length).buffer);
         } else if (type === "blob") {
-          resolve19(new Blob(body, { type: stream[kContentType] }));
+          resolve20(new Blob(body, { type: stream[kContentType] }));
         } else if (type === "bytes") {
-          resolve19(chunksConcat(body, length));
+          resolve20(chunksConcat(body, length));
         }
         consumeFinish(consume2);
       } catch (err) {
@@ -83165,9 +84028,9 @@ var require_api_request = __commonJS({
     };
     function request(opts, callback) {
       if (callback === void 0) {
-        return new Promise((resolve19, reject) => {
+        return new Promise((resolve20, reject) => {
           request.call(this, opts, (err, data) => {
-            return err ? reject(err) : resolve19(data);
+            return err ? reject(err) : resolve20(data);
           });
         });
       }
@@ -83392,9 +84255,9 @@ var require_api_stream = __commonJS({
     };
     function stream(opts, factory, callback) {
       if (callback === void 0) {
-        return new Promise((resolve19, reject) => {
+        return new Promise((resolve20, reject) => {
           stream.call(this, opts, factory, (err, data) => {
-            return err ? reject(err) : resolve19(data);
+            return err ? reject(err) : resolve20(data);
           });
         });
       }
@@ -83681,9 +84544,9 @@ var require_api_upgrade = __commonJS({
     };
     function upgrade(opts, callback) {
       if (callback === void 0) {
-        return new Promise((resolve19, reject) => {
+        return new Promise((resolve20, reject) => {
           upgrade.call(this, opts, (err, data) => {
-            return err ? reject(err) : resolve19(data);
+            return err ? reject(err) : resolve20(data);
           });
         });
       }
@@ -83776,9 +84639,9 @@ var require_api_connect = __commonJS({
     };
     function connect(opts, callback) {
       if (callback === void 0) {
-        return new Promise((resolve19, reject) => {
+        return new Promise((resolve20, reject) => {
           connect.call(this, opts, (err, data) => {
-            return err ? reject(err) : resolve19(data);
+            return err ? reject(err) : resolve20(data);
           });
         });
       }
@@ -87653,7 +88516,7 @@ var require_fetch = __commonJS({
       function dispatch({ body }) {
         const url = requestCurrentURL(request);
         const agent = fetchParams.controller.dispatcher;
-        return new Promise((resolve19, reject) => agent.dispatch(
+        return new Promise((resolve20, reject) => agent.dispatch(
           {
             path: url.pathname + url.search,
             origin: url.origin,
@@ -87727,7 +88590,7 @@ var require_fetch = __commonJS({
                 }
               }
               const onError = this.onError.bind(this);
-              resolve19({
+              resolve20({
                 status,
                 statusText,
                 headersList,
@@ -87773,7 +88636,7 @@ var require_fetch = __commonJS({
               for (let i = 0; i < rawHeaders.length; i += 2) {
                 headersList.append(bufferToLowerCasedHeaderName(rawHeaders[i]), rawHeaders[i + 1].toString("latin1"), true);
               }
-              resolve19({
+              resolve20({
                 status,
                 statusText: STATUS_CODES[status],
                 headersList,
@@ -91390,8 +92253,8 @@ var require_util8 = __commonJS({
       return true;
     }
     function delay(ms) {
-      return new Promise((resolve19) => {
-        setTimeout(resolve19, ms).unref();
+      return new Promise((resolve20) => {
+        setTimeout(resolve20, ms).unref();
       });
     }
     module2.exports = {
@@ -92882,12 +93745,12 @@ var fs8 = __toESM(require("node:fs"), 1);
 var os = __toESM(require("node:os"), 1);
 var path6 = __toESM(require("node:path"), 1);
 var import_node_child_process = require("node:child_process");
-var spawnRunner = (cmd, args, timeoutMs) => new Promise((resolve19) => {
+var spawnRunner = (cmd, args, timeoutMs) => new Promise((resolve20) => {
   let proc;
   try {
     proc = (0, import_node_child_process.spawn)(cmd, [...args], { stdio: ["ignore", "pipe", "pipe"] });
   } catch (err) {
-    resolve19({ exitCode: null, stdout: "", stderr: "", failure: err.message });
+    resolve20({ exitCode: null, stdout: "", stderr: "", failure: err.message });
     return;
   }
   const out = [];
@@ -92901,11 +93764,11 @@ var spawnRunner = (cmd, args, timeoutMs) => new Promise((resolve19) => {
   proc.stderr.on("data", (d) => errBuf.push(d));
   proc.on("error", (err) => {
     clearTimeout(timer);
-    resolve19({ exitCode: null, stdout: "", stderr: "", failure: err.message });
+    resolve20({ exitCode: null, stdout: "", stderr: "", failure: err.message });
   });
   proc.on("close", (code) => {
     clearTimeout(timer);
-    resolve19({
+    resolve20({
       exitCode: code,
       stdout: decodeConsole(Buffer.concat(out)),
       stderr: decodeConsole(Buffer.concat(errBuf)),
@@ -94024,7 +94887,7 @@ async function readPagesWithVlm(opts) {
   let totals = null;
   const pages = [];
   const stderrTail = [];
-  const finished = new Promise((resolve19, reject) => {
+  const finished = new Promise((resolve20, reject) => {
     let stdout = "";
     let stderr = "";
     let failure = null;
@@ -94094,7 +94957,7 @@ async function readPagesWithVlm(opts) {
 ` + stderrTail.map((l) => `  ${l}`).join("\n")
         ));
       }
-      resolve19();
+      resolve20();
     });
   });
   proc.stdin.write(config);
@@ -94176,7 +95039,7 @@ async function cropPageRenders(opts) {
   });
   const written = [];
   const stderrTail = [];
-  const finished = new Promise((resolve19, reject) => {
+  const finished = new Promise((resolve20, reject) => {
     let stdout = "";
     proc.stdout.setEncoding("utf8");
     proc.stdout.on("data", (chunk) => {
@@ -94209,7 +95072,7 @@ async function cropPageRenders(opts) {
 ` + stderrTail.map((l) => `  ${l}`).join("\n")
         ));
       }
-      resolve19();
+      resolve20();
     });
   });
   proc.stdin.write(config);
@@ -94241,7 +95104,7 @@ async function readPdfTextLayer(opts) {
   });
   const layer = /* @__PURE__ */ new Map();
   const stderrTail = [];
-  const finished = new Promise((resolve19, reject) => {
+  const finished = new Promise((resolve20, reject) => {
     let stdout = "";
     proc.stdout.setEncoding("utf8");
     proc.stdout.on("data", (chunk) => {
@@ -94275,7 +95138,7 @@ async function readPdfTextLayer(opts) {
 ` + stderrTail.map((l) => `  ${l}`).join("\n")
         ));
       }
-      resolve19();
+      resolve20();
     });
   });
   proc.stdin.write(config);
@@ -94410,7 +95273,7 @@ async function readOnePage(url, page, opts) {
     opts.onWeather?.(
       `page ${page.number}: ${fault.said} That is weather, not a refusal -- trying again in ${wait >= 6e4 ? `${wait / 6e4} min` : `${wait / 1e3} s`} (${attempt} of ${tries}).`
     );
-    await new Promise((resolve19) => setTimeout(resolve19, wait));
+    await new Promise((resolve20) => setTimeout(resolve20, wait));
   }
 }
 async function tryOnePage(url, page, opts) {
@@ -95339,1345 +96202,16 @@ async function renderSizes(missing, opts, readingsPath, fallbackBudget) {
 
 // src/analyze/run.ts
 init_engine_import_meta_url();
-var fs18 = __toESM(require("node:fs"), 1);
-init_bom();
 init_model_server();
 init_transport();
-init_book_file();
-
-// src/analyze/nli-bridge.ts
-init_engine_import_meta_url();
-var import_node_child_process3 = require("node:child_process");
-var import_node_crypto3 = require("node:crypto");
-var fs16 = __toESM(require("node:fs"), 1);
-var os5 = __toESM(require("node:os"), 1);
-var path13 = __toESM(require("node:path"), 1);
-var import_node_url2 = require("node:url");
-
-// src/analyze/nli_worker.py
-var nli_worker_default = `"""nli_worker \u2014 a resident zero-shot entailment scorer, spoken to over stdio.
-
-WHAT THIS IS. One long-lived Python process holding one NLI model in memory,
-answering scoring requests until its stdin closes. It is the first RESIDENT
-subprocess in foundry: \`vlm_page.py\` is a batch worker (config in, pages out,
-stdin closed at the start), and this one keeps stdin open because the model
-costs ten to ninety seconds to load and a book is scored in several passes.
-
-THE WIRE, and it is briefcase's so its measurements transfer, plus one line
-briefcase never had (\`progress\`, foundry's \u2014 see \`score()\`):
-
-    worker -> {"ready": true, "device": "cpu", "model": "...", "revision": "<sha>"}
-                 (\`device\` is always cpu since 2026-09-17; \`revision\` is the
-                  model commit, or null when transformers did not stamp one)
-    host   -> {"id": 1, "texts": ["..."], "hypotheses": ["..."]}
-    worker -> {"id": 1, "progress": 32}          (texts scored so far, per chunk)
-    worker -> {"id": 1, "scores": [[0.91, 0.02], ...]}
-    worker -> {"id": 1, "error": "...", "trace": "..."}   (this request only; still alive)
-
-\`scores\` is ROW-MAJOR texts x hypotheses, raw per-hypothesis probabilities.
-\`multi_label=True\`, so a row does NOT sum to 1 \u2014 each hypothesis is scored
-against the text on its own, which is the whole point: a sentence may entail
-three categories at once and an argmax over a softmax would make them compete.
-
-THE ONE PLACE A REIMPLEMENTATION SILENTLY BREAKS, said here and in
-docs/ANALYSIS.md \xA74: the transformers zero-shot pipeline returns \`labels\` and
-\`scores\` SORTED BY SCORE, DESCENDING. It does not return them in the order the
-candidate labels were passed. A worker that zips \`result['scores']\` straight
-into the response hands every text's highest score to whichever category
-happened to be first in the list, and the output still looks exactly like
-plausible scores. So every row is re-mapped back to the INPUT hypothesis order
-by label text before it is emitted, and duplicate hypotheses are refused rather
-than collapsed (two identical labels are one entry in that map, and the second
-category would silently inherit the first's score).
-
-THE HYPOTHESIS TEMPLATE IS THE PIPELINE'S DEFAULT ("This example is {}."),
-AND THAT IS THE CALIBRATION, NOT AN OVERSIGHT. This port first shipped with
-the bare template ('{}') on the reasoning that wrapping a full-sentence
-hypothesis reads as broken English \u2014 which is precisely the "clean-up" the
-real briefcase worker's header forbids in as many words: "MEASURED CHOICES
-(do not 'clean these up') \u2026 the pipeline's DEFAULT hypothesis_template \u2026
-is the exact configuration the threshold 0.7 was calibrated against;
-changing the template silently moves the threshold." The model was trained
-on pairs in that wrapper; how a hypothesis reads to a person is not evidence
-about how it scores. Corrected 2026-08-25 against the worker on the Mac (the
-file was never committed, which is how the divergence slipped in), and the
-rank cache key was bumped the same day so no bare-template score is ever
-reused as if it answered this configuration's question.
-
-STDOUT IS THE PROTOCOL AND NOTHING ELSE MAY REACH IT. File descriptor 1 is
-duplicated into a private handle and then pointed at stderr, exactly as
-\`vlm_page.py\` does and for the reason it learned: a native library below Python
-(here: tokenizers, torch, and every progress bar transformers draws) can write
-to fd 1 directly, and one such line in the middle of the stream fails the whole
-run at the host's JSON parser.
-
-NOTHING HERE EVER RETRIES OR SUBSTITUTES. A request that fails is answered with
-an error line naming the failure and the process stays alive for the next one;
-a MODEL that will not load is fatal and says so in one sentence naming the
-model, the cache it looked in, and the flag that fetches it.
-"""
-import json
-import os
-import sys
-
-# The protocol channel is the REAL stdout, held privately, and fd 1 is then
-# pointed at stderr. See the module docstring: after this swap nothing in this
-# process can reach the host's parser except emit().
-_protocol = os.fdopen(os.dup(sys.stdout.fileno()), 'w', encoding='utf-8')
-os.dup2(sys.stderr.fileno(), sys.stdout.fileno())
-
-# STDIN IS UTF-8 BY DECLARATION, NOT BY LUCK. The host writes UTF-8; on Windows
-# a piped stdin defaults to the ANSI code page with surrogateescape, and under
-# cp1252 that read every curly quote in the book as mojibake ('\xE2\u20AC\u2122' scored in
-# place of an apostrophe) and turned the close-quote's final byte \u2014 0x9d,
-# undefined in cp1252 \u2014 into the lone surrogate \\udc9d, which the Rust
-# tokenizer under transformers refuses as "TextInputSequence must be str"
-# (Flashpoint of Revival, 2026-08-25: one evening of bisecting, because every
-# probe that read the FILES saw clean text and only the PIPE was lying).
-# \`strict\`, not surrogateescape: a byte that is not UTF-8 is a protocol
-# violation to be named at the line it arrived on, never smuggled into a score.
-sys.stdin.reconfigure(encoding='utf-8', errors='strict')
-
-# The model this worker is. It is a CONSTANT rather than a request field
-# because the host writes it into the report header as provenance, and a header
-# that named one model while another had been loaded would be a false claim
-# about how every score in the file was produced. The host checks the ready
-# line's \`model\` against its own copy of this string.
-MODEL_ID = 'MoritzLaurer/deberta-v3-base-zeroshot-v2.0'
-
-# How many texts go to the model at once.
-#
-# The pipeline is happy to take the whole book in one call and would allocate
-# one padded batch for it; a three-hundred-page book is tens of thousands of
-# sentences and that allocation is measured in gigabytes on a card that is also
-# holding the weights. Thirty-two is small enough that the peak is a function of
-# the LONGEST SENTENCE rather than of the book's length, and large enough that
-# the per-call overhead is not the cost. Nothing is streamed back per chunk: one
-# request is one response, so the chunking is invisible on the wire.
-CHUNK = 32
-
-# How many (text, hypothesis) PAIRS the model reads per forward pass.
-#
-# This is a different number from CHUNK and the one that actually feeds the
-# GPU. The transformers pipeline defaults to batch_size=1 \u2014 every pair is its
-# own forward pass \u2014 which starves a GPU into spending its time on launch
-# overhead: a book is CHUNK texts x 25 hypotheses = 800 pairs per pipeline
-# call, and at batch 1 the first real run was pacing toward 45 minutes of rank
-# on a card that was mostly waiting (Owen, 2026-08-25: "i would have expected
-# it to take less time than that"). The pairs are short \u2014 a sentence and a
-# one-line hypothesis \u2014 so 64 of them padded together is still a small tensor
-# for a base-size encoder. Every sequence keeps its own attention mask and the
-# padding is masked out, so the answers are the same TO FLOAT PRECISION \u2014
-# measured: the worst |batch-64 minus batch-1| over a probe matrix was 1.2e-4,
-# reduction-order noise, three orders of magnitude under the smallest gap any
-# threshold in this pipeline cares about (rescue floor 0.15 to capture 0.2).
-PAIR_BATCH = 64
-
-
-def fail(message):
-    """Die the way foundry dies: one line naming the thing, nonzero exit."""
-    sys.stderr.write('nli_worker: %s\\n' % message)
-    sys.exit(1)
-
-
-def emit(obj):
-    _protocol.write(json.dumps(obj, ensure_ascii=False) + '\\n')
-    _protocol.flush()
-
-
-def pick_device():
-    """The processor. Always, on every platform, whatever else is installed.
-
-    IT USED TO PICK cuda, THEN mps, THEN cpu \u2014 the first accelerator the machine
-    actually had. Owen retired that on 2026-09-17, deciding where work belongs:
-    "crucible is a gpu orchestrator that does steps atomically, which sometimes
-    leads to cpu steps going to the other system, but if it's fully a cpu step,
-    it can stay local." The boundary is the CARD, not the machine. Anything
-    wanting a GPU goes to Crucible; what stays here stays here BECAUSE it is
-    fully CPU \u2014 and a worker that reached for a card whenever it saw one was the
-    single exception to that rule, living inside the thing the rule is about.
-
-    IT WAS ALREADY TRUE ON EVERY SHIPPED ENVIRONMENT. The Windows analysis pack
-    pins \`torch==2.9.1+cpu\` deliberately (tools/env/build-env.sh: "the GPU on a
-    machine running foundry is holding the reading model or the LLM"), so this
-    function has answered 'cpu' on every machine that installed one. What changes
-    is the hand-provisioned interpreter \u2014 a --nli-python with a CUDA torch in it
-    \u2014 which used to quietly take the card from whatever Crucible had on it.
-
-    AND IT IS WHAT MAKES THE MAC PACK SAFE TO BUILD. There is no CPU-only macOS
-    wheel to pin: PyPI's darwin-arm64 torch is the Metal-capable one, so an
-    Apple-silicon environment would have landed on 'mps' and scored in the same
-    unified memory as that machine's own Crucible. Deciding it here rather than
-    in the build is one rule in one place, instead of a per-target pin that the
-    next target forgets.
-
-    Still reported on the ready line. It is a constant now rather than news, and
-    it stays because the host prints it \u2014 a line that vanished would read as a
-    worker that had stopped answering the question.
-    """
-    return 'cpu'
-
-
-def load(device):
-    """The pipeline, or a refusal naming the model and where it was looked for.
-
-    OFFLINE IS THE NORMAL STATE. The host sets HF_HUB_OFFLINE and
-    TRANSFORMERS_OFFLINE, so a missing model fails HERE, in a second, instead of
-    the run blocking on a network fetch somewhere inside an analysis that has
-    already been going for an hour. The sentence names the flag that lifts the
-    offline vars for one run so the weights can be pulled once.
-    """
-    try:
-        from transformers import pipeline
-    except Exception as error:  # noqa: BLE001 - the message is the product
-        fail(
-            'this interpreter (%s) cannot import transformers: %s. The analysis worker needs '
-            'torch and transformers; name an interpreter that has them with --nli-python or '
-            'FOUNDRY_NLI_PYTHON.' % (sys.executable, error)
-        )
-    try:
-        return pipeline(
-            'zero-shot-classification',
-            model=MODEL_ID,
-            device=device,
-        )
-    except Exception as error:  # noqa: BLE001 - the message is the product
-        fail(
-            'could not load %s from %s: %s. Nothing here downloads a model during an analysis. '
-            'Pass --fetch-nli-model (or set FOUNDRY_NLI_FETCH=1) once to let this worker pull the '
-            'weights, and every run after that is offline.'
-            % (MODEL_ID, os.environ.get('HF_HOME', '(the default Hugging Face cache)'), error)
-        )
-
-
-def score(classifier, texts, hypotheses, request_id):
-    """One request's matrix: len(texts) rows, len(hypotheses) columns.
-
-    The re-map is the whole of this function's risk \u2014 see the module docstring.
-    Duplicates are refused here rather than deduplicated, because a caller that
-    sent the same hypothesis twice believes it is asking two questions and would
-    be handed one answer twice with nothing saying so.
-
-    A PROGRESS LINE PER CHUNK, because one request is a whole pass of a book
-    and a pass is minutes. The host draws its bar from these \u2014 without them the
-    queue showed one number at the start of a pass and one at the end, and a
-    person watching several minutes of stillness kills a job that is working
-    (Owen, 2026-08-25: "anything at all to indicate its actually working").
-    They also tell the host the worker is ALIVE, which is what lets its
-    response timeout measure silence rather than the length of the book.
-    """
-    if len(set(hypotheses)) != len(hypotheses):
-        raise ValueError('two hypotheses in this request are the same string, so their scores '
-                         'could not be told apart')
-
-    rows = []
-    for start in range(0, len(texts), CHUNK):
-        chunk = texts[start:start + CHUNK]
-        # \`multi_label=True\`: each hypothesis is scored on its own against the
-        # text, so the row does not sum to 1. No hypothesis_template argument:
-        # the pipeline's default wrapper is the calibrated configuration \u2014 the
-        # module docstring carries the incident.
-        results = classifier(
-            chunk,
-            candidate_labels=hypotheses,
-            multi_label=True,
-            batch_size=PAIR_BATCH,
-        )
-        # A one-element list still comes back as a list from this pipeline, but
-        # a bare dict is what it returns for a bare string \u2014 handled so a future
-        # transformers that normalises differently cannot corrupt a row.
-        if isinstance(results, dict):
-            results = [results]
-        for result in results:
-            by_label = dict(zip(result['labels'], result['scores']))
-            rows.append([float(by_label[hypothesis]) for hypothesis in hypotheses])
-        emit({'id': request_id, 'progress': min(start + CHUNK, len(texts))})
-    return rows
-
-
-def revision_of(classifier):
-    """WHICH BUILD OF THE MODEL THIS IS \u2014 the commit it was resolved from.
-
-    A model id is a NAME and a Hugging Face repo is mutable: the same name can
-    serve different weights next month. The host caches a score under the
-    question it answers, and until 2026-09-17 that question said "deberta-v3-
-    base-zeroshot-v2.0" and nothing about which one \u2014 so weights moving under
-    the name would have had old scores reused as if the new model had produced
-    them. The host compares this against what the report recorded and re-scores
-    when it differs.
-
-    \`_commit_hash\` is what transformers stamps on a config it resolved from a
-    cache or the Hub. It is private, hence the getattr rather than an attribute
-    read: a version that stops setting it returns None, the host treats that as
-    "unknown" and says so, and nothing here raises over provenance.
-    """
-    config = getattr(getattr(classifier, 'model', None), 'config', None)
-    value = getattr(config, '_commit_hash', None)
-    return value if isinstance(value, str) and value else None
-
-
-def main():
-    device = pick_device()
-    classifier = load(device)
-    emit({'ready': True, 'device': device, 'model': MODEL_ID,
-          'revision': revision_of(classifier)})
-
-    for line in sys.stdin:
-        line = line.strip()
-        if not line:
-            continue
-        # A request that cannot even be parsed has no id to answer under, so it
-        # is reported on stderr and skipped. The host's per-request timeout is
-        # what turns that into a named failure on its side; inventing an id here
-        # would answer somebody else's question.
-        try:
-            request = json.loads(line)
-        except Exception as error:  # noqa: BLE001
-            sys.stderr.write('nli_worker: ignoring a line that is not JSON: %s\\n' % error)
-            continue
-        request_id = request.get('id')
-        try:
-            texts = request['texts']
-            hypotheses = request['hypotheses']
-            if not isinstance(texts, list) or not isinstance(hypotheses, list):
-                raise ValueError('a request carries texts and hypotheses, both lists')
-            if len(texts) == 0 or len(hypotheses) == 0:
-                emit({'id': request_id, 'scores': []})
-                continue
-            emit({'id': request_id, 'scores': score(classifier, texts, hypotheses, request_id)})
-        except Exception as error:  # noqa: BLE001 - one bad request must not end the worker
-            # The traceback rides IN the response rather than on stderr, because
-            # the host echoes stderr only while the model is loading; an error
-            # whose only explanation went to a swallowed channel cost an evening
-            # of bisecting (2026-08-25, the lone-surrogate hunt) before anyone
-            # could see which line of library code had refused. The tail is
-            # enough: the deepest frames are where the refusal is named.
-            import traceback
-            trace = traceback.format_exc()
-            emit({
-                'id': request_id,
-                'error': '%s: %s' % (type(error).__name__, error),
-                'trace': trace[-1200:],
-            })
-
-    # EOF on stdin is the documented shutdown. Returning normally is the whole
-    # of it; the host's SIGKILL exists only for an interpreter that has wedged.
-    return 0
-
-
-if __name__ == '__main__':
-    sys.exit(main())
-`;
-
-// src/analyze/nli-bridge.ts
-init_fsdirs();
-var NLI_MODEL_ID = "MoritzLaurer/deberta-v3-base-zeroshot-v2.0";
-var NliWorkerError = class extends Error {
-  constructor(message) {
-    super(message);
-    this.name = "NliWorkerError";
-  }
-};
-var NliRequestError = class extends Error {
-  constructor(message) {
-    super(message);
-    this.name = "NliRequestError";
-  }
-};
-var READY_TIMEOUT_MS = 18e4;
-var SCORE_TIMEOUT_MS = 6e5;
-var SHUTDOWN_GRACE_MS = 2e3;
-function scriptPath2() {
-  const override = process.env["FOUNDRY_NLI_SCRIPT"];
-  if (override) {
-    if (!fs16.existsSync(override)) {
-      throw new NliWorkerError(`FOUNDRY_NLI_SCRIPT points at ${override}, which does not exist`);
-    }
-    return override;
-  }
-  const here = path13.dirname((0, import_node_url2.fileURLToPath)(__foundryEngineUrl));
-  const beside = path13.join(here, "nli_worker.py");
-  if (fs16.existsSync(beside)) return beside;
-  const digest = (0, import_node_crypto3.createHash)("sha256").update(nli_worker_default).digest("hex").slice(0, 16);
-  const dir = path13.join(os5.tmpdir(), "foundry-nli");
-  const materialised = path13.join(dir, `nli_worker-${digest}.py`);
-  if (!fs16.existsSync(materialised)) {
-    ensureDir(dir);
-    const partial = `${materialised}.${process.pid}.part`;
-    fs16.writeFileSync(partial, nli_worker_default, "utf8");
-    fs16.renameSync(partial, materialised);
-  }
-  return materialised;
-}
-function defaultNliPythonCandidates() {
-  const home = os5.homedir();
-  const roots = [
-    ...process.platform === "darwin" ? ["/opt/homebrew/Caskroom/miniconda/base"] : [],
-    path13.join(home, "miniconda3"),
-    path13.join(home, "miniforge3"),
-    path13.join(home, "anaconda3")
-  ];
-  const conda = roots.map((root) => process.platform === "win32" ? path13.join(root, "envs", "nli", "python.exe") : path13.join(root, "envs", "nli", "bin", "python"));
-  const bookforgeRuntime = process.platform === "win32" ? path13.join(
-    process.env["APPDATA"] ?? path13.join(home, "AppData", "Roaming"),
-    "bookforge",
-    "runtime",
-    "e2a-env",
-    "python.exe"
-  ) : process.platform === "darwin" ? path13.join(home, "Library", "Application Support", "bookforge", "runtime", "e2a-env", "bin", "python") : path13.join(home, ".config", "bookforge", "runtime", "e2a-env", "bin", "python");
-  const e2aCheckout = process.platform === "win32" ? path13.join(home, "Projects", "ebook2audiobook", "python_env", "python.exe") : path13.join(home, "Projects", "ebook2audiobook", "python_env", "bin", "python");
-  const appEnv = process.platform === "win32" ? [path13.join(
-    process.env["LOCALAPPDATA"] ?? path13.join(home, "AppData", "Local"),
-    "foundry",
-    "envs",
-    "nli-windows-x64",
-    "python",
-    "python.exe"
-  )] : process.platform === "darwin" ? [path13.join(
-    home,
-    "Library",
-    "Application Support",
-    "foundry",
-    "envs",
-    "nli-mac-arm64",
-    "python",
-    "bin",
-    "python3"
-  )] : [];
-  return [...appEnv, ...conda, bookforgeRuntime, e2aCheckout];
-}
-function resolveNliPython(explicit) {
-  const named = explicit ?? process.env["FOUNDRY_NLI_PYTHON"];
-  if (named) {
-    if (!fs16.existsSync(named)) {
-      throw new NliWorkerError(
-        `${explicit ? "--nli-python" : "FOUNDRY_NLI_PYTHON"} ${named} does not exist`
-      );
-    }
-    return named;
-  }
-  const candidates = defaultNliPythonCandidates();
-  for (const candidate of candidates) {
-    if (fs16.existsSync(candidate)) return candidate;
-  }
-  throw new NliWorkerError(
-    `no Python for the analysis worker was found. It needs torch and transformers, plus the ${NLI_MODEL_ID} weights; name the interpreter with --nli-python or FOUNDRY_NLI_PYTHON. Tried:
-` + candidates.map((c) => `  ${c}`).join("\n")
-  );
-}
-function nliHome(explicit) {
-  const named = explicit ?? process.env["FOUNDRY_NLI_HOME"] ?? process.env["HF_HOME"];
-  if (named && named.trim().length > 0) return named;
-  return path13.join(configDirForCache(), "nli");
-}
-function configDirForCache() {
-  const override = process.env["FOUNDRY_CONFIG_DIR"];
-  if (override) return override;
-  switch (process.platform) {
-    case "win32":
-      return path13.join(
-        process.env["APPDATA"] ?? path13.join(os5.homedir(), "AppData", "Roaming"),
-        "foundry"
-      );
-    case "darwin":
-      return path13.join(os5.homedir(), "Library", "Application Support", "foundry");
-    default:
-      return path13.join(process.env["XDG_CONFIG_HOME"] ?? path13.join(os5.homedir(), ".config"), "foundry");
-  }
-}
-function scorableText(text) {
-  return text.replace(
-    /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g,
-    "\uFFFD"
-  );
-}
-var NliWorker = class _NliWorker {
-  constructor(python, script, log2) {
-    this.python = python;
-    this.script = script;
-    this.log = log2;
-  }
-  python;
-  script;
-  log;
-  child = null;
-  buffer = "";
-  nextId = 1;
-  pending = /* @__PURE__ */ new Map();
-  /** Set the moment the process is gone. Every later call refuses with it. */
-  dead = null;
-  /** True while `stop()` is tearing it down, so the exit is not a fault. */
-  stopping = false;
-  /** The last 40 lines the worker wrote to stderr — the error message's body. */
-  stderrTail = [];
-  ready = false;
-  /** Which device the worker reported. Read for the log line, once. */
-  device = "unknown";
-  /**
-   * WHICH BUILD OF THE MODEL ANSWERED — the commit it was resolved from, or
-   * null when the worker could not say.
-   *
-   * A model id is a NAME and a Hugging Face repo is mutable, so the id alone
-   * does not identify the weights that produced a score. The report records
-   * this beside the model, and a re-run whose worker reports a DIFFERENT
-   * revision re-scores rather than reusing answers the old weights gave
-   * (src/analyze/run.ts).
-   *
-   * NULL IS A REAL ANSWER and is not an error: `_commit_hash` is private to
-   * transformers and a version that stops setting it leaves provenance unknown,
-   * which is worth saying rather than worth failing over.
-   */
-  revision = null;
-  /**
-   * Spawn the worker and wait for its ready line.
-   *
-   * The environment is the parent's plus four variables:
-   *
-   *  - `HF_HOME` — where the weights are (see `nliHome`);
-   *  - `HF_HUB_OFFLINE` and `TRANSFORMERS_OFFLINE` — an analysis NEVER blocks on
-   *    a network fetch, so a missing model refuses in a second instead of an
-   *    hour into a run. Both are lifted, and only both, by `--fetch-nli-model`,
-   *    whose entire purpose is to make the one download that this rule
-   *    otherwise forbids;
-   *  - `TOKENIZERS_PARALLELISM=false` — briefcase's, and it silences the fork
-   *    warning that tokenizers prints on every request.
-   */
-  static async start(options) {
-    const python = resolveNliPython(options.python);
-    const script = scriptPath2();
-    const home = nliHome(options.home);
-    ensureDir(home);
-    const worker = new _NliWorker(python, script, options.log);
-    const offline = options.fetch === true ? {} : { HF_HUB_OFFLINE: "1", TRANSFORMERS_OFFLINE: "1" };
-    if (options.fetch === true) {
-      options.log(
-        `analyze: --fetch-nli-model \u2014 the worker may download ${NLI_MODEL_ID} into ${home} this once. Every run without the flag is offline and refuses rather than fetching.`
-      );
-    }
-    let child;
-    try {
-      child = (0, import_node_child_process3.spawn)(python, ["-u", script], {
-        env: { ...process.env, HF_HOME: home, TOKENIZERS_PARALLELISM: "false", ...offline },
-        stdio: ["pipe", "pipe", "pipe"]
-      });
-    } catch (error) {
-      throw new NliWorkerError(`could not start ${python}: ${error.message}`);
-    }
-    worker.child = child;
-    worker.attach(child);
-    await worker.waitForReady(home);
-    return worker;
-  }
-  /** Wire the two streams up. Everything below is driven by these two handlers. */
-  attach(child) {
-    child.stdout.setEncoding("utf8");
-    child.stdout.on("data", (chunk) => {
-      this.buffer += chunk;
-      for (; ; ) {
-        const newline = this.buffer.indexOf("\n");
-        if (newline < 0) break;
-        const line = this.buffer.slice(0, newline).trim();
-        this.buffer = this.buffer.slice(newline + 1);
-        if (line.length === 0) continue;
-        let message;
-        try {
-          message = JSON.parse(line);
-        } catch {
-          this.log(`analyze: the analysis worker sent a line that is not JSON: ${line.slice(0, 200)}`);
-          continue;
-        }
-        this.deliver(message);
-      }
-    });
-    child.stderr.setEncoding("utf8");
-    let stderr = "";
-    child.stderr.on("data", (chunk) => {
-      stderr += chunk;
-      let newline = stderr.indexOf("\n");
-      while (newline !== -1) {
-        const line = stderr.slice(0, newline);
-        stderr = stderr.slice(newline + 1);
-        newline = stderr.indexOf("\n");
-        this.stderrTail.push(line);
-        if (this.stderrTail.length > 40) this.stderrTail.shift();
-        if (!this.ready && line.trim().length > 0) this.log(`analyze: [nli] ${line.trim()}`);
-      }
-    });
-    child.on("error", (error) => this.die(`worker process error: ${error.message}`));
-    child.on("exit", (code, signal) => {
-      this.child = null;
-      if (this.stopping) return;
-      const detail = this.stderrTail.map((l) => l.trim()).filter((l) => l.length > 0).slice(-5);
-      this.die(
-        `the analysis worker exited (code=${code}, signal=${signal})` + (detail.length > 0 ? `. Its last output:
-${detail.map((l) => `  ${l}`).join("\n")}` : "")
-      );
-    });
-  }
-  /**
-   * The ready line, or a refusal.
-   *
-   * The MODEL CHECK is here rather than trusted: the report header names the
-   * NLI model as the provenance of every score in the file, and this is the one
-   * moment the claim can be tested against what actually loaded.
-   */
-  async waitForReady(home) {
-    await new Promise((resolve19, reject) => {
-      const timer = setTimeout(() => {
-        this.readyWaiter = null;
-        reject(new NliWorkerError(
-          `the analysis worker did not load ${NLI_MODEL_ID} within ${READY_TIMEOUT_MS / 1e3}s. It was run as ${this.python} with its model cache at ${home}.`
-        ));
-      }, READY_TIMEOUT_MS);
-      this.readyWaiter = {
-        resolve: (message) => {
-          clearTimeout(timer);
-          this.readyWaiter = null;
-          if (typeof message.model === "string" && message.model !== NLI_MODEL_ID) {
-            reject(new NliWorkerError(
-              `the analysis worker loaded ${message.model} and this foundry writes reports that name ${NLI_MODEL_ID}. A report claiming one model for scores another produced is a false record of how the book was read.`
-            ));
-            return;
-          }
-          this.ready = true;
-          this.device = message.device ?? "unknown";
-          this.revision = message.revision ?? null;
-          resolve19();
-        },
-        reject: (error) => {
-          clearTimeout(timer);
-          this.readyWaiter = null;
-          reject(error);
-        }
-      };
-    });
-    this.log(
-      `analyze: ${NLI_MODEL_ID}${this.revision === null ? "" : `@${this.revision.slice(0, 12)}`} is loaded on ${this.device} (${this.python})` + (this.device === "cpu" ? " \u2014 no GPU was offered to it, so ranking will take minutes rather than seconds" : "")
-    );
-  }
-  readyWaiter = null;
-  /** One response line: the ready handshake, or an answer to a pending request. */
-  deliver(message) {
-    if (message.ready === true) {
-      this.readyWaiter?.resolve(message);
-      return;
-    }
-    const entry = typeof message.id === "number" ? this.pending.get(message.id) : void 0;
-    if (entry === void 0) return;
-    if (typeof message.progress === "number") {
-      entry.progress(message.progress);
-      return;
-    }
-    clearTimeout(entry.timer);
-    this.pending.delete(message.id);
-    if (typeof message.error === "string") {
-      const trace = typeof message.trace === "string" && message.trace.trim().length > 0 ? `
-${message.trace.trim().split("\n").map((l) => `  ${l}`).join("\n")}` : "";
-      entry.reject(new NliRequestError(message.error + trace));
-      return;
-    }
-    entry.resolve(message.scores ?? []);
-  }
-  /**
-   * The worker is gone. Everything waiting on it fails with the same sentence,
-   * and every later call fails with it too — there is no second attempt, because
-   * a worker that died once on a machine will die the same way on the retry and
-   * the second minute of waiting buys nothing.
-   */
-  die(reason) {
-    if (this.dead === null) this.dead = reason;
-    const error = new NliWorkerError(this.dead);
-    this.readyWaiter?.reject(error);
-    for (const [id, entry] of this.pending) {
-      clearTimeout(entry.timer);
-      this.pending.delete(id);
-      entry.reject(error);
-    }
-  }
-  /**
-   * One request/response round trip: `texts` x `hypotheses`, row-major.
-   *
-   * A per-request refusal from the worker arrives as `NliRequestError`; a dead
-   * worker as `NliWorkerError`. See the header for why the caller must be able
-   * to tell them apart.
-   *
-   * `onProgress` is called with the count of texts the worker has scored so far
-   * IN THIS REQUEST, once per worker chunk. Each such line also RE-ARMS the
-   * response timeout: the deadline measures SILENCE, not the length of the
-   * book. Without that the timeout was a cap on how big a request could be —
-   * a slow card working honestly through a long pass would have been killed as
-   * hung at the ten-minute mark while its progress lines were still arriving.
-   */
-  async score(texts, hypotheses, onProgress) {
-    if (this.dead !== null) throw new NliWorkerError(this.dead);
-    const child = this.child;
-    if (child === null) throw new NliWorkerError("the analysis worker is not running");
-    if (texts.length === 0 || hypotheses.length === 0) return [];
-    const sane = texts.map(scorableText);
-    const id = this.nextId++;
-    return new Promise((resolve19, reject) => {
-      const expire = () => {
-        this.pending.delete(id);
-        reject(new NliWorkerError(
-          `the analysis worker went ${SCORE_TIMEOUT_MS / 1e3}s without answering or reporting progress on a ${texts.length}-text request`
-        ));
-      };
-      const entry = {
-        resolve: resolve19,
-        reject,
-        timer: setTimeout(expire, SCORE_TIMEOUT_MS),
-        progress: (done) => {
-          clearTimeout(entry.timer);
-          entry.timer = setTimeout(expire, SCORE_TIMEOUT_MS);
-          onProgress?.(done);
-        }
-      };
-      this.pending.set(id, entry);
-      try {
-        child.stdin.write(`${JSON.stringify({ id, texts: sane, hypotheses })}
-`);
-      } catch (error) {
-        clearTimeout(entry.timer);
-        this.pending.delete(id);
-        reject(new NliWorkerError(`could not write to the analysis worker: ${error.message}`));
-      }
-    });
-  }
-  /**
-   * Give the memory back.
-   *
-   * EOF is the documented exit and SIGKILL is only the backstop for a wedged
-   * interpreter. Best-effort and never throwing, for `unloadModel`'s reason: it
-   * runs after the report has been written, and a run that produced everything
-   * it was asked for must not be reported as failed because a subprocess was
-   * slow to close.
-   */
-  stop() {
-    const child = this.child;
-    if (child === null) return;
-    this.stopping = true;
-    this.child = null;
-    try {
-      child.stdin.end();
-    } catch {
-    }
-    const killer = setTimeout(() => {
-      try {
-        child.kill("SIGKILL");
-      } catch {
-      }
-    }, SHUTDOWN_GRACE_MS);
-    killer.unref?.();
-    child.once("exit", () => clearTimeout(killer));
-  }
-};
-
-// src/analyze/plan.ts
-init_engine_import_meta_url();
-var import_node_crypto4 = require("node:crypto");
-var AnalysisPlanError = class extends Error {
-  constructor(message) {
-    super(message);
-    this.name = "AnalysisPlanError";
-  }
-};
-var HYPOTHESES = {
-  "political-demonization": "The author asserts that political opponents are communists, Marxists, or enemies of the country.",
-  hate: "The author expresses hostility or mockery toward a group based on race, religion, or identity.",
-  conspiracy: "The author promotes a conspiracy theory as true.",
-  /*
-   * MEASURED IN BRIEFCASE, `dh-probe.js` on both reference videos. The single
-   * hypothesis below scored a MAXIMUM of 0.172 over the 12-minute political
-   * video and 0.016 over the 60-minute one — including 0.150 on "With a whole
-   * army of commies, zombies behind him", a sentence containing the literal
-   * word 'zombies'. It is phrased as a DESCRIPTION OF THE ACT ("describes
-   * people as subhuman"), which is what an analyst would write in a report; it
-   * is not how the thing is ever said out loud. So, as with
-   * christian-nationalism, the category carries several propositions and takes
-   * the max.
-   *
-   * WHAT WAS TRIED AND REJECTED IN BRIEFCASE, because a loose proposition here
-   * costs precision on ordinary political insult:
-   *
-   *   'compares a group of people to zombies, animals, or insects'  — scored
-   *     0.958 on "That's 323 death rattlers there here in San Diego" (a Marine
-   *     squadron nickname) and 0.908 on "we need those wildcatters out there"
-   *     (oil drilling). It matched animal NOUNS, not the dehumanizing move.
-   *   'refers to a group as a horde, a swarm, or a mindless mass'  — scored
-   *     0.999 on "They have pack of fools" and 0.780 on the neutral sentence
-   *     "The communists have proven they can win in coastal cities".
-   *   'attributes opponents' politics to psychological damage, guilt,
-   *     resentment, or family problems'  — scored 0.973 on "Do you blame the
-   *     parents?" in a passage about the fentanyl crisis. Naming POLITICAL
-   *     BELIEF explicitly (the surviving form below) drops that to 0.062.
-   *
-   * All five kept propositions together score, on the reference video with no
-   * dehumanizing content at all, ZERO sentences above 0.5 and ZERO windows
-   * above 0.7.
-   */
-  dehumanization: [
-    "The author describes people as subhuman, as vermin, disease, or zombies, or as mentally ill because of their politics.",
-    "The author describes a group of people as an infestation, a plague, a fever, or something spreading through the country.",
-    "The author calls a crowd of political supporters zombies or mindless followers.",
-    "The author explains opponents' politics as mental illness, derangement, or personal damage rather than sincere belief.",
-    "The author says opponents hold their political beliefs because of psychological damage, guilt, or resentment rather than reason."
-  ],
-  violence: "The author calls for, threatens, or glorifies violence.",
-  "false-prophecy": "The author claims to receive communication or prophecy from God.",
-  /*
-   * MEASURED IN BRIEFCASE, `cn-probe.js` on the 60-minute reference video: the
-   * single hypothesis "Christianity should control politics or government"
-   * scored a MAXIMUM of 0.457 over 801 sentences — zero candidates at any
-   * sensitivity — on a video whose subject is prayer ministries operating
-   * inside the White House and God-ordained regime change. It reads as a claim
-   * about doctrine, and nobody says it that way out loud; what they say is
-   * "there are Christians in the White House" and "God is determined to see
-   * this happen".
-   *
-   * A category may therefore carry SEVERAL hypotheses and takes the MAX across
-   * them. These three were picked against the reference videos: on the
-   * 60-minute video they lift the category from 0 to real candidates (0.961
-   * sentence / 0.989 window), and on the 12-minute political video, which has
-   * no Christian-nationalist content at all, they score 0.025 and 0.089 max —
-   * so they do not leak into unrelated material.
-   */
-  "christian-nationalism": [
-    "The author argues that Christianity should control politics or government.",
-    "The author says Christians or the church should take authority in government or public life.",
-    "The author says God is directing the nation, its government, or its leaders."
-  ],
-  "prosperity-gospel": "The author asks followers for money as a religious duty.",
-  extremism: "The author defends oppression, supremacy, or authoritarian rule.",
-  "political-violence": "The author defends or downplays political violence."
-};
-var PROPOSITIONS = {
-  hate: "a group of people deserves hostility, contempt, or mockery because of their race, ethnicity, religion, national origin, immigration status, gender, or sexuality",
-  conspiracy: "a conspiracy theory is true \u2014 a secret coordinated plot by a hidden group (election fraud, deep state, globalists, New World Order, and the like)",
-  "false-prophecy": "God has spoken to the author or to someone they cite, or a divine revelation or prophecy has been received",
-  violence: "violence against people is justified, deserved, or something to look forward to",
-  "christian-nationalism": "Christianity should direct government, law, or politics",
-  "prosperity-gospel": "followers should give money to a religious leader or ministry in order to receive blessing or wealth",
-  extremism: "oppression, supremacy, ethnic cleansing, or authoritarian rule is justified",
-  "political-violence": "a political attack, riot, or insurrection was justified, was staged, or was not a serious wrong",
-  "political-demonization": "political opponents are communists, Marxists, socialists, or enemies within \u2014 a label applied to the people themselves rather than a critique of a specific policy",
-  dehumanization: "a group of people is vermin, disease, infestation, zombies, animals, or otherwise less than human \u2014 or that opponents' politics are the product of mental illness or personal damage rather than sincere belief"
-};
-var UNTUNED_BOOK_CATEGORIES = [
-  {
-    category: "anti-evolution",
-    label: "Anti-evolution and science denial",
-    hypotheses: [
-      "The author asserts that evolution is false, a lie, or a deception.",
-      "The author asserts that living things were created in their present forms rather than evolving from earlier ones.",
-      "The author asserts that the earth or life on it is only a few thousand years old.",
-      "The author says that the teaching of evolution comes from Satan or leads people away from God.",
-      "The author says that scientists who accept evolution are dishonest, deceived, or serving an agenda."
-    ],
-    proposition: "evolution is false and living things were created in their present forms \u2014 that the scientific account of origins is a lie, a deception, or satanic, and that a young earth or a special creation is the fact",
-    tuned: false
-  },
-  {
-    category: "authoritarian-blueprint",
-    label: "Authoritarian blueprint",
-    hypotheses: [
-      "The author argues that career civil servants should be removed and replaced with people loyal to the leader.",
-      "The author argues that the executive should take direct control of the agencies, the courts, or criminal prosecutions.",
-      "The author argues that the checks and limits on executive power should be dismantled, ignored, or overridden.",
-      "The author says a new administration should seize control of the government immediately and remove those who resist it."
-    ],
-    proposition: "the executive should be staffed with loyalists in place of career civil servants, should hold direct control over the agencies and prosecutions, and should not be restrained by the checks that limit it",
-    tuned: false
-  }
-];
-var MISINFORMATION_EXCLUSION = 'misinformation is not rankable by entailment \u2014 it degenerates to "makes a factual assertion", and whether an assertion is false is world knowledge an entailment model does not have. Measured in briefcase against its reference videos: 169 of 205 candidates and 19 of 20 verified false positives were this one category.';
-var EXCLUDED_CATEGORY = "misinformation";
-function describedHypothesis(description) {
-  return `The author's statement matches this description: ${description}`;
-}
-function builtInCategories() {
-  return [...Object.keys(HYPOTHESES), ...UNTUNED_BOOK_CATEGORIES.map((c) => c.category)];
-}
-function buildPlan(requested, log2) {
-  const requests = requested === null ? builtInCategories().map((name) => ({ name })) : [...requested];
-  const plan = [];
-  const seen = /* @__PURE__ */ new Set();
-  for (const request of requests) {
-    const name = request.name.trim();
-    if (seen.has(name)) {
-      throw new AnalysisPlanError(
-        `the category "${name}" was asked for twice. Two plans for one name would score it twice and put it in the report twice, and there is no rule here for which of the two wins.`
-      );
-    }
-    seen.add(name);
-    if (request.enabled === false) continue;
-    if (name === EXCLUDED_CATEGORY) {
-      log2(`analyze: the category "${EXCLUDED_CATEGORY}" is not ranked \u2014 ${MISINFORMATION_EXCLUSION}`);
-      continue;
-    }
-    const asked = request.hypotheses?.map((one) => one.trim()).filter((one) => one.length > 0);
-    const tunedHypotheses = HYPOTHESES[name];
-    const untunedBuiltIn = UNTUNED_BOOK_CATEGORIES.find((one) => one.category === name);
-    const description = (request.description ?? "").replace(/\s+/g, " ").trim();
-    const label = (request.label ?? "").trim() || CATEGORY_NAMES[name] || name;
-    if (asked !== void 0 && asked.length > 0) {
-      plan.push({
-        category: name,
-        label,
-        hypotheses: asked,
-        proposition: description.length > 0 ? description : untunedBuiltIn?.proposition ?? PROPOSITIONS[name] ?? describedHypothesis(name),
-        tuned: false
-      });
-      continue;
-    }
-    if (tunedHypotheses !== void 0) {
-      plan.push({
-        category: name,
-        label,
-        hypotheses: Array.isArray(tunedHypotheses) ? tunedHypotheses : [tunedHypotheses],
-        proposition: PROPOSITIONS[name],
-        tuned: true
-      });
-      continue;
-    }
-    if (untunedBuiltIn !== void 0) {
-      plan.push({ ...untunedBuiltIn, hypotheses: [...untunedBuiltIn.hypotheses], label });
-      continue;
-    }
-    if (description.length === 0) {
-      throw new AnalysisPlanError(
-        `the category "${name}" is not one this program has hypotheses for, and it was given neither a description nor hypotheses of its own. There is nothing to score a sentence against, and a category that scored nothing would sit in the report reading as "nothing in this book matched it".`
-      );
-    }
-    plan.push({
-      category: name,
-      label,
-      hypotheses: [describedHypothesis(description)],
-      proposition: description,
-      tuned: false
-    });
-  }
-  if (plan.length === 0) {
-    throw new AnalysisPlanError(
-      "no category is enabled, so this run has nothing to look for. A report with no categories in it would say the book is clean, which is a claim nothing measured."
-    );
-  }
-  const owner = /* @__PURE__ */ new Map();
-  for (const entry of plan) {
-    for (const hypothesis of entry.hypotheses) {
-      const already = owner.get(hypothesis);
-      if (already !== void 0) {
-        throw new AnalysisPlanError(
-          `the categories "${already}" and "${entry.category}" are asking the same question, word for word: "${hypothesis}". The scorer answers one question once, so the two would share a score and one of them would be reported for the other's evidence.`
-        );
-      }
-      owner.set(hypothesis, entry.category);
-    }
-  }
-  return plan;
-}
-function parseCategoriesJson(text, where) {
-  let parsed;
-  try {
-    parsed = JSON.parse(text);
-  } catch (err) {
-    throw new AnalysisPlanError(`${where} is not JSON (${err.message})`);
-  }
-  if (!Array.isArray(parsed)) {
-    throw new AnalysisPlanError(
-      `${where} holds ${parsed === null ? "null" : typeof parsed} and a categories file is a LIST of categories: [{"name":"hate"}, {"name":"my-topic","description":"\u2026"}]`
-    );
-  }
-  const known = /* @__PURE__ */ new Set(["name", "enabled", "description", "hypotheses", "label"]);
-  const out = [];
-  for (const [index, raw] of parsed.entries()) {
-    const at = `${where}, category ${index + 1}`;
-    if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
-      throw new AnalysisPlanError(`${at} is not an object`);
-    }
-    const entry = raw;
-    for (const key of Object.keys(entry)) {
-      if (!known.has(key)) {
-        throw new AnalysisPlanError(
-          `${at} carries a field called "${key}", and a category is made of ${[...known].join(", ")}. A field this program does not read would do nothing, silently, for the whole run.`
-        );
-      }
-    }
-    if (typeof entry["name"] !== "string" || entry["name"].trim().length === 0) {
-      throw new AnalysisPlanError(`${at} has no name`);
-    }
-    if (entry["enabled"] !== void 0 && typeof entry["enabled"] !== "boolean") {
-      throw new AnalysisPlanError(`${at}: "enabled" is true or false`);
-    }
-    if (entry["description"] !== void 0 && typeof entry["description"] !== "string") {
-      throw new AnalysisPlanError(`${at}: "description" is a string`);
-    }
-    if (entry["label"] !== void 0 && typeof entry["label"] !== "string") {
-      throw new AnalysisPlanError(`${at}: "label" is a string \u2014 the display name a reader sees`);
-    }
-    const hypotheses = entry["hypotheses"];
-    if (hypotheses !== void 0) {
-      if (!Array.isArray(hypotheses) || hypotheses.some((one) => typeof one !== "string")) {
-        throw new AnalysisPlanError(`${at}: "hypotheses" is a list of strings`);
-      }
-    }
-    out.push({
-      name: entry["name"],
-      ...entry["enabled"] !== void 0 ? { enabled: entry["enabled"] } : {},
-      ...entry["description"] !== void 0 ? { description: entry["description"] } : {},
-      ...hypotheses !== void 0 ? { hypotheses } : {},
-      ...entry["label"] !== void 0 ? { label: entry["label"] } : {}
-    });
-  }
-  return out;
-}
-function hypothesisSetVersion(plan) {
-  const NUL7 = String.fromCharCode(0);
-  const fields = ["foundry-analysis-hypotheses-1"];
-  for (const entry of plan) {
-    fields.push(entry.category, entry.tuned ? "tuned" : "untuned", entry.proposition, ...entry.hypotheses);
-  }
-  return (0, import_node_crypto4.createHash)("sha256").update(fields.join(NUL7), "utf8").digest("hex").slice(0, 16);
-}
-function untunedNames(plan) {
-  return plan.filter((entry) => !entry.tuned).map((entry) => entry.category);
-}
-var CATEGORY_NAMES = {
-  "political-demonization": "Political demonization",
-  "hate": "Hate",
-  "conspiracy": "Conspiracy",
-  "dehumanization": "Dehumanization",
-  "violence": "Violence",
-  "false-prophecy": "False prophecy",
-  "christian-nationalism": "Christian nationalism",
-  "prosperity-gospel": "Prosperity gospel",
-  "extremism": "Extremism",
-  "political-violence": "Political violence",
-  "anti-evolution": "Anti-evolution and science denial",
-  "authoritarian-blueprint": "Authoritarian blueprint"
-};
-var CATEGORY_HUES = {
-  "political-demonization": 352,
-  "hate": 130,
-  "conspiracy": 264,
-  "dehumanization": 68,
-  "violence": 210,
-  "false-prophecy": 20,
-  "christian-nationalism": 158,
-  "prosperity-gospel": 300,
-  "extremism": 96,
-  "political-violence": 236,
-  "anti-evolution": 44,
-  "authoritarian-blueprint": 186
-};
-function categoryHue(category) {
-  const known = CATEGORY_HUES[category];
-  if (known !== void 0) return known;
-  let hash = 2166136261;
-  for (let i = 0; i < category.length; i += 1) {
-    hash ^= category.charCodeAt(i);
-    hash = Math.imul(hash, 16777619) >>> 0;
-  }
-  return hash % 360;
-}
-function planHues(plan) {
-  const hues = {};
-  for (const entry of plan) hues[entry.category] = categoryHue(entry.category);
-  return hues;
-}
-function planNames(plan) {
-  const names = {};
-  for (const entry of plan) names[entry.category] = entry.label;
-  return names;
-}
-
-// src/analyze/rank.ts
-init_engine_import_meta_url();
-
-// src/analyze/sentences.ts
-init_engine_import_meta_url();
-var BOUNDARY = /[.!?]+["')\]]*(?=\s|$)/g;
-function splitSentences(text) {
-  const bounds = [];
-  BOUNDARY.lastIndex = 0;
-  let match;
-  while ((match = BOUNDARY.exec(text)) !== null) bounds.push(match.index + match[0].length);
-  if (bounds.length === 0 || bounds[bounds.length - 1] < text.length) bounds.push(text.length);
-  const out = [];
-  let cursor = 0;
-  for (const bound of bounds) {
-    let start = cursor;
-    let end = bound;
-    while (start < end && isSpace(text.charCodeAt(start))) start += 1;
-    while (end > start && isSpace(text.charCodeAt(end - 1))) end -= 1;
-    if (end > start) out.push({ start, end, text: text.slice(start, end) });
-    cursor = bound;
-  }
-  return out;
-}
-function isSpace(code) {
-  return code === 32 || code === 9 || code === 10 || code === 13 || code === 11 || code === 12 || code === 160;
-}
-function wordCount4(text) {
-  const trimmed = text.trim();
-  if (trimmed.length === 0) return 0;
-  return trimmed.split(/\s+/).length;
-}
-
-// src/analyze/rank.ts
-function bookSentence(row, start, end, text) {
-  return { row, start, end, text, words: wordCount4(text) };
-}
-var CAPTURE_THRESHOLD = 0.2;
-var RESCUE_MARGIN = 0.25;
-var RESCUE_MIN_SCORE = 0.15;
-var RESCUE_MIN_CATEGORIES = 2;
-var RESCUE_FLOOR = Math.max(CAPTURE_THRESHOLD - RESCUE_MARGIN, RESCUE_MIN_SCORE);
-var WORDS_PER_SECOND = 3.25;
-var WINDOW_CONTEXT_SENTENCES = 2;
-var WINDOW_MAX_CONTEXT_WORDS = Math.round(25 * WORDS_PER_SECOND);
-var WINDOW_MERGE_GAP_SENTENCES = 1;
-var WINDOW_MERGE_GAP_WORDS = Math.round(5 * WORDS_PER_SECOND);
-var WINDOW_MAX_MERGED_WORDS = Math.round(40 * WORDS_PER_SECOND);
-var SLIDING_WINDOW_SENTENCES = 3;
-function flattenHypotheses(plan) {
-  const texts = [];
-  const owner = [];
-  for (let p = 0; p < plan.length; p += 1) {
-    for (const hypothesis of plan[p].hypotheses) {
-      texts.push(hypothesis);
-      owner.push(p);
-    }
-  }
-  return { texts, owner };
-}
-function collapseRow(row, owner, planCount) {
-  const out = new Array(planCount).fill(0);
-  for (let column = 0; column < owner.length; column += 1) {
-    const score = row[column] ?? 0;
-    const at = owner[column];
-    if (score > out[at]) out[at] = score;
-  }
-  return out;
-}
-function wordPrefix(sentences) {
-  const prefix = new Array(sentences.length + 1).fill(0);
-  for (let i = 0; i < sentences.length; i += 1) prefix[i + 1] = prefix[i] + sentences[i].words;
-  return prefix;
-}
-function words(prefix, from, to) {
-  if (to < from) return 0;
-  return prefix[to + 1] - prefix[from];
-}
-async function scoreSentenceLevel(sentences, plan, score, log2) {
-  const scores = await score(sentences.map((s) => s.text));
-  const candidates = [];
-  let rescuedSentences = 0;
-  const make = (i, c, value, rescued) => ({
-    sentenceIndex: i,
-    spanFrom: i,
-    spanTo: i,
-    text: sentences[i].text,
-    category: plan[c].category,
-    score: value,
-    proposition: plan[c].proposition,
-    source: "sentence",
-    rescued
-  });
-  for (let i = 0; i < sentences.length && i < scores.length; i += 1) {
-    const row = scores[i];
-    const hits = [];
-    for (let c = 0; c < plan.length; c += 1) {
-      const value = row[c] ?? 0;
-      if (value >= CAPTURE_THRESHOLD) hits.push(make(i, c, value, false));
-    }
-    if (hits.length === 0) {
-      const near = [];
-      for (let c = 0; c < plan.length; c += 1) {
-        const value = row[c] ?? 0;
-        if (value >= RESCUE_FLOOR) near.push(make(i, c, value, true));
-      }
-      if (near.length >= RESCUE_MIN_CATEGORIES) {
-        near.sort((a, b) => b.score - a.score);
-        hits.push(...near);
-        rescuedSentences += 1;
-      }
-    }
-    hits.sort((a, b) => b.score - a.score);
-    candidates.push(...hits);
-  }
-  log2(
-    `analyze: sentence pass \u2014 ${sentences.length} sentence(s) x ${plan.length} categor(ies) at ${CAPTURE_THRESHOLD} gave ${candidates.length} candidate(s); ${rescuedSentences} sentence(s) were rescued on ${RESCUE_MIN_CATEGORIES}+ corroborating categories at or above ${RESCUE_FLOOR}`
-  );
-  return candidates;
-}
-async function scoreWindowLevel(sentences, plan, sentenceLevel, score, log2) {
-  const size = SLIDING_WINDOW_SENTENCES;
-  if (sentences.length < size) return [];
-  const texts = [];
-  for (let i = 0; i + size <= sentences.length; i += 1) {
-    texts.push(sentences.slice(i, i + size).map((s) => s.text).join(" "));
-  }
-  const scores = await score(texts);
-  const raw = [];
-  for (let w = 0; w < texts.length && w < scores.length; w += 1) {
-    const row = scores[w];
-    for (let c = 0; c < plan.length; c += 1) {
-      const value = row[c] ?? 0;
-      if (value < CAPTURE_THRESHOLD) continue;
-      raw.push({
-        // Representative sentence = the middle of the window; used for logs,
-        // never for the span, which is the whole window.
-        sentenceIndex: w + Math.floor(size / 2),
-        spanFrom: w,
-        spanTo: w + size - 1,
-        text: texts[w],
-        category: plan[c].category,
-        score: value,
-        proposition: plan[c].proposition,
-        source: "window",
-        rescued: false
-      });
-    }
-  }
-  const alreadyHot = /* @__PURE__ */ new Map();
-  for (const candidate of sentenceLevel) {
-    const list = alreadyHot.get(candidate.category);
-    if (list) list.push(candidate.sentenceIndex);
-    else alreadyHot.set(candidate.category, [candidate.sentenceIndex]);
-  }
-  const keptSpans = /* @__PURE__ */ new Map();
-  const kept = [];
-  for (const candidate of [...raw].sort((a, b) => b.score - a.score)) {
-    const hotHere = alreadyHot.get(candidate.category) ?? [];
-    if (hotHere.some((i) => i >= candidate.spanFrom && i <= candidate.spanTo)) continue;
-    const spans = keptSpans.get(candidate.category) ?? [];
-    if (spans.some(([from, to]) => from <= candidate.spanTo && to >= candidate.spanFrom)) continue;
-    spans.push([candidate.spanFrom, candidate.spanTo]);
-    keptSpans.set(candidate.category, spans);
-    kept.push(candidate);
-  }
-  kept.sort((a, b) => a.spanFrom - b.spanFrom);
-  log2(
-    `analyze: window pass \u2014 ${texts.length} sliding ${size}-sentence window(s) gave ${raw.length} raw hit(s) and ${kept.length} new candidate(s); ${raw.length - kept.length} were the sentence pass or a stronger overlapping window saying the same thing`
-  );
-  return kept;
-}
-function categoriesFromSpan(candidates) {
-  return candidates.map((candidate) => ({
-    category: candidate.category,
-    proposition: candidate.proposition,
-    score: candidate.score,
-    sentenceIndex: candidate.sentenceIndex,
-    sentenceIndices: Array.from(
-      { length: candidate.spanTo - candidate.spanFrom + 1 },
-      (_unused, offset) => candidate.spanFrom + offset
-    ),
-    rescued: candidate.rescued
-  }));
-}
-function mergeWindowCategories(a, b) {
-  const out = /* @__PURE__ */ new Map();
-  for (const entry of [...a, ...b]) {
-    const existing = out.get(entry.category);
-    if (!existing) {
-      out.set(entry.category, { ...entry, sentenceIndices: [...entry.sentenceIndices] });
-      continue;
-    }
-    const best = entry.score > existing.score ? entry : existing;
-    const indices = /* @__PURE__ */ new Set([...existing.sentenceIndices, ...entry.sentenceIndices]);
-    out.set(entry.category, {
-      ...best,
-      sentenceIndices: [...indices].sort((x, y) => x - y),
-      // One floor-clearing firing anywhere in the window means the category is
-      // not resting on the rescue rule.
-      rescued: existing.rescued && entry.rescued
-    });
-  }
-  return [...out.values()];
-}
-function buildWindows(sentences, candidates) {
-  if (candidates.length === 0 || sentences.length === 0) return [];
-  const prefix = wordPrefix(sentences);
-  const bySpan = /* @__PURE__ */ new Map();
-  for (const candidate of candidates) {
-    const key = `${candidate.spanFrom}:${candidate.spanTo}`;
-    const list = bySpan.get(key);
-    if (list) list.push(candidate);
-    else bySpan.set(key, [candidate]);
-  }
-  const hot = [...bySpan.values()].sort(
-    (a, b) => a[0].spanFrom - b[0].spanFrom || a[0].spanTo - b[0].spanTo
-  );
-  const expanded = hot.map((group) => {
-    let from = group[0].spanFrom;
-    let to = group[0].spanTo;
-    for (let step = 0; step < WINDOW_CONTEXT_SENTENCES; step += 1) {
-      if (from > 0 && words(prefix, from - 1, to) <= WINDOW_MAX_CONTEXT_WORDS) from -= 1;
-      if (to + 1 < sentences.length && words(prefix, from, to + 1) <= WINDOW_MAX_CONTEXT_WORDS) to += 1;
-    }
-    return {
-      contextFrom: from,
-      contextTo: to,
-      firedFrom: group[0].spanFrom,
-      firedTo: group[0].spanTo,
-      categories: categoriesFromSpan(group),
-      score: 0
-    };
-  });
-  const merged = [];
-  for (const window2 of expanded) {
-    const previous = merged[merged.length - 1];
-    if (previous) {
-      const sentenceGap = window2.contextFrom - previous.contextTo - 1;
-      const wordGap = words(prefix, previous.contextTo + 1, window2.contextFrom - 1);
-      const joinedFrom = Math.min(previous.contextFrom, window2.contextFrom);
-      const joinedTo = Math.max(previous.contextTo, window2.contextTo);
-      const joinedWords = words(prefix, joinedFrom, joinedTo);
-      const close = sentenceGap <= WINDOW_MERGE_GAP_SENTENCES || wordGap <= WINDOW_MERGE_GAP_WORDS;
-      if (close && joinedWords <= WINDOW_MAX_MERGED_WORDS) {
-        previous.contextFrom = joinedFrom;
-        previous.contextTo = joinedTo;
-        previous.firedFrom = Math.min(previous.firedFrom, window2.firedFrom);
-        previous.firedTo = Math.max(previous.firedTo, window2.firedTo);
-        previous.categories = mergeWindowCategories(previous.categories, window2.categories);
-        continue;
-      }
-    }
-    merged.push({ ...window2, categories: [...window2.categories] });
-  }
-  for (const window2 of merged) {
-    window2.categories.sort((x, y) => y.score - x.score);
-    window2.score = 1 - window2.categories.reduce((product, c) => product * (1 - c.score), 1);
-  }
-  return merged;
-}
-function windowStrength(window2) {
-  return window2.categories.reduce(
-    (sum, c) => sum + Math.log(Math.max(1 - c.score, Number.MIN_VALUE)),
-    0
-  );
-}
-async function rankWindows(sentences, plan, score, log2) {
-  if (plan.length === 0 || sentences.length === 0) return [];
-  const sentenceLevel = await scoreSentenceLevel(sentences, plan, score, log2);
-  const windowLevel = await scoreWindowLevel(sentences, plan, sentenceLevel, score, log2);
-  const candidates = [...sentenceLevel, ...windowLevel].sort(
-    (a, b) => a.spanFrom - b.spanFrom || a.spanTo - b.spanTo
-  );
-  const windows = buildWindows(sentences, candidates);
-  windows.sort((a, b) => windowStrength(a) - windowStrength(b) || a.contextFrom - b.contextFrom);
-  const calls = windows.reduce((total, window2) => total + window2.categories.length, 0);
-  log2(
-    `analyze: ${candidates.length} candidate(s) (${sentenceLevel.length} sentence + ${windowLevel.length} window) became ${windows.length} passage(s) and ${calls} verify call(s) \u2014 one call per candidate would have been ${candidates.length}`
-  );
-  return windows;
-}
+init_plan();
+init_prose();
 
 // src/analyze/report.ts
 init_engine_import_meta_url();
-var import_node_crypto5 = require("node:crypto");
+var import_node_crypto4 = require("node:crypto");
 var fs17 = __toESM(require("node:fs"), 1);
-var path14 = __toESM(require("node:path"), 1);
+var path13 = __toESM(require("node:path"), 1);
 init_bom();
 init_fsdirs();
 init_version();
@@ -96687,16 +96221,10 @@ var AnalysisReportError = class extends Error {
     this.name = "AnalysisReportError";
   }
 };
-var ANALYSIS_FILE_VERSION = 1;
+var ANALYSIS_FILE_VERSION = 2;
 var NUL2 = String.fromCharCode(0);
-function rankKey(text, nliModel, hypothesisVersion, threshold) {
-  return (0, import_node_crypto5.createHash)("sha256").update(["foundry-analysis-rank-2", nliModel, hypothesisVersion, threshold.toFixed(4), text].join(NUL2), "utf8").digest("hex");
-}
 function verdictKey(passage, category, verifyModel, prompt) {
-  return (0, import_node_crypto5.createHash)("sha256").update(["foundry-analysis-verdict-1", verifyModel, category, passage, prompt].join(NUL2), "utf8").digest("hex");
-}
-function round4(value) {
-  return Math.round(value * 1e4) / 1e4;
+  return (0, import_node_crypto4.createHash)("sha256").update(["foundry-analysis-verdict-2", verifyModel, category, passage, prompt].join(NUL2), "utf8").digest("hex");
 }
 var AnalysisReport = class _AnalysisReport {
   constructor(outPath, appendPath) {
@@ -96705,34 +96233,12 @@ var AnalysisReport = class _AnalysisReport {
   }
   outPath;
   appendPath;
-  ranks = /* @__PURE__ */ new Map();
   verdicts = /* @__PURE__ */ new Map();
   prior = null;
   rows = 0;
   /** The header that was already there, for the sentence the caller prints. */
   get priorHeader() {
     return this.prior;
-  }
-  /**
-   * THROW AWAY EVERY CACHED RANK SCORE, keeping the verdicts.
-   *
-   * Called when the entailment model that answered them turns out not to be the
-   * one about to answer now (`run.ts`). The two halves are separable on purpose:
-   * a rank score is an answer from the NLI model and a verdict is an answer from
-   * the LLM, and a new build of one says nothing about the other — discarding
-   * both would re-pay an hour of verification to fix a minute of scoring.
-   *
-   * The rows on DISK are untouched and do not need to be: `finish` writes the
-   * cache from what is held here, so a row that is forgotten is a row the next
-   * file does not carry.
-   */
-  forgetRanks() {
-    this.ranks.clear();
-  }
-  /** How many sentence scores were read off the disk — for the sentence that
-   *  says how many are being paid for again. */
-  get rankCount() {
-    return this.ranks.size;
   }
   /**
    * Read whatever is in a report file.
@@ -96773,19 +96279,12 @@ var AnalysisReport = class _AnalysisReport {
         continue;
       }
       switch (row["kind"]) {
-        case "rank": {
-          const key = row["key"];
-          const scores = row["scores"];
-          if (typeof key !== "string" || !Array.isArray(scores)) break;
-          this.ranks.set(key, scores.map((one) => Number(one)));
-          this.rows += 1;
-          break;
-        }
         case "verdict": {
           const key = row["key"];
           const verdict = row["verdict"];
-          if (typeof key !== "string" || verdict !== "flag" && verdict !== "skip") break;
-          this.verdicts.set(key, verdict);
+          const reason = row["reason"];
+          if (typeof key !== "string" || verdict !== "flag" && verdict !== "skip" || typeof reason !== "string") break;
+          this.verdicts.set(key, { verdict, reason });
           this.rows += 1;
           break;
         }
@@ -96803,15 +96302,11 @@ var AnalysisReport = class _AnalysisReport {
   get size() {
     return this.rows;
   }
-  /** How many verdicts — the expensive half — are already paid for. */
+  /** How many verdicts are already paid for. */
   get verdictCount() {
     return this.verdicts.size;
   }
-  /** The stored scores for this question, or undefined. */
-  rank(key) {
-    return this.ranks.get(key);
-  }
-  /** The stored verdict for this question, or undefined. */
+  /** The stored verdict and reason for this question, or undefined. */
   verdict(key) {
     return this.verdicts.get(key);
   }
@@ -96820,7 +96315,7 @@ var AnalysisReport = class _AnalysisReport {
    * to close, so nothing can interleave a line into the middle of another.
    */
   append(row) {
-    ensureDir(path14.dirname(this.appendPath));
+    ensureDir(path13.dirname(this.appendPath));
     const handle = fs17.openSync(this.appendPath, "a");
     try {
       fs17.writeSync(handle, `${JSON.stringify(row)}
@@ -96831,14 +96326,9 @@ var AnalysisReport = class _AnalysisReport {
     }
     this.rows += 1;
   }
-  addRank(key, scores) {
-    const rounded = scores.map(round4);
-    this.ranks.set(key, rounded);
-    this.append({ kind: "rank", key, scores: rounded });
-  }
-  addVerdict(key, verdict) {
-    this.verdicts.set(key, verdict);
-    this.append({ kind: "verdict", key, verdict });
+  addVerdict(key, answer) {
+    this.verdicts.set(key, answer);
+    this.append({ kind: "verdict", key, verdict: answer.verdict, reason: answer.reason });
   }
   /**
    * Compose the finished report and put it where the caller asked for it.
@@ -96852,9 +96342,10 @@ var AnalysisReport = class _AnalysisReport {
   finish(header, findings) {
     const lines = [JSON.stringify({ analysis: ANALYSIS_FILE_VERSION, ...header })];
     for (const finding of findings) lines.push(JSON.stringify(finding));
-    for (const [key, scores] of this.ranks) lines.push(JSON.stringify({ kind: "rank", key, scores }));
-    for (const [key, verdict] of this.verdicts) lines.push(JSON.stringify({ kind: "verdict", key, verdict }));
-    ensureDir(path14.dirname(this.outPath));
+    for (const [key, answer] of this.verdicts) {
+      lines.push(JSON.stringify({ kind: "verdict", key, verdict: answer.verdict, reason: answer.reason }));
+    }
+    ensureDir(path13.dirname(this.outPath));
     const part = `${this.outPath}.${process.pid}.part`;
     const handle = fs17.openSync(part, "w");
     try {
@@ -96877,19 +96368,19 @@ var AnalysisReport = class _AnalysisReport {
   }
 };
 function pendingReportPath(outPath) {
-  return `${path14.resolve(outPath)}.pending`;
+  return `${path13.resolve(outPath)}.pending`;
 }
 function openAnalysisReport(request) {
-  const outPath = path14.resolve(request.outPath);
+  const outPath = path13.resolve(request.outPath);
   const pending = pendingReportPath(outPath);
   if (request.freshRequested) {
-    ensureDir(path14.dirname(pending));
+    ensureDir(path13.dirname(pending));
     const report2 = AnalysisReport.openFor(outPath, pending, [pending]);
     fs17.closeSync(fs17.openSync(pending, "a"));
     return {
       report: report2,
       pendingPath: pending,
-      sentence: report2.size === 0 ? `analyze: a fresh analysis was asked for, so every sentence and every passage is asked again \u2014 whatever is in ${outPath} is left exactly as it is, and the new answers go to ${pending}, which replaces it only when this run finishes.` : `analyze: a fresh analysis was asked for and one was already begun \u2014 ${report2.size} answer(s) are in ${pending} (${report2.verdictCount} of them verdicts), nothing whose exact question is in there is asked again, and it replaces ${outPath} only when this run finishes.`
+      sentence: report2.size === 0 ? `analyze: a fresh analysis was asked for, so every passage is asked again \u2014 whatever is in ${outPath} is left exactly as it is, and the new answers go to ${pending}, which replaces it only when this run finishes.` : `analyze: a fresh analysis was asked for and one was already begun \u2014 ${report2.size} answer(s) are in ${pending}, nothing whose exact question is in there is asked again, and it replaces ${outPath} only when this run finishes.`
     };
   }
   const report = AnalysisReport.openFor(outPath, outPath, [outPath]);
@@ -96898,11 +96389,256 @@ function openAnalysisReport(request) {
   return {
     report,
     pendingPath: null,
-    sentence: report.size === 0 ? `analyze: nothing is answered in ${outPath}, so every sentence is scored and every passage is verified, and each answer is recorded there as it lands.` : `analyze: ${report.size} answer(s) are already in ${outPath}, ${report.verdictCount} of them verdicts \u2014 nothing whose exact question is in there is asked again, and every new answer is added to it.${banked}`
+    sentence: report.size === 0 ? `analyze: nothing is answered in ${outPath}, so every passage is verified, and each answer is recorded there as it lands.` : `analyze: ${report.size} verdict(s) are already in ${outPath} \u2014 nothing whose exact question is in there is asked again, and every new answer is added to it.${banked}`
   };
 }
 function analysisHeader(fields) {
   return { engine: VERSION, ...fields };
+}
+
+// src/analyze/run.ts
+init_snap();
+
+// src/analyze/spans.ts
+init_engine_import_meta_url();
+init_rank();
+function viterbi(logProbs, switchCost) {
+  const n = logProbs.length;
+  if (n === 0) return [];
+  const m = logProbs[0].length;
+  if (m === 0) throw new Error("viterbi: rows must have at least one state");
+  let dp = logProbs[0].slice();
+  const back = [];
+  for (let i = 1; i < n; i += 1) {
+    const row = logProbs[i];
+    if (row.length !== m) throw new Error(`viterbi: row ${i} has ${row.length} states, expected ${m}`);
+    const bestJ = argmax(dp);
+    const bestV = dp[bestJ] - switchCost;
+    const next = new Array(m);
+    const from = new Int32Array(m);
+    for (let j2 = 0; j2 < m; j2 += 1) {
+      if (dp[j2] >= bestV) {
+        next[j2] = dp[j2] + row[j2];
+        from[j2] = j2;
+      } else {
+        next[j2] = bestV + row[j2];
+        from[j2] = bestJ;
+      }
+    }
+    dp = next;
+    back.push(from);
+  }
+  const path26 = new Array(n);
+  let j = argmax(dp);
+  path26[n - 1] = j;
+  for (let i = n - 2; i >= 0; i -= 1) {
+    j = back[i][j];
+    path26[i] = j;
+  }
+  return path26;
+}
+function runsOf(path26, state) {
+  const out = [];
+  let i = 0;
+  while (i < path26.length) {
+    if (path26[i] === state) {
+      let k = i;
+      while (k < path26.length && path26[k] === state) k += 1;
+      out.push([i, k]);
+      i = k;
+    } else {
+      i += 1;
+    }
+  }
+  return out;
+}
+function argmax(xs) {
+  let best = 0;
+  for (let i = 1; i < xs.length; i += 1) if (xs[i] > xs[best]) best = i;
+  return best;
+}
+var DEFAULT_SPAN_PARAMS = {
+  switchCost: 0.5,
+  tau: -1,
+  baselineQuantile: 0.5,
+  baselineMax: 0.5,
+  mergeGapUnits: 1,
+  mergeGapWords: Math.round(5 * WORDS_PER_SECOND),
+  categoryFloor: 0.34,
+  maxSectionWords: Math.round(90 * WORDS_PER_SECOND),
+  minSectionWords: Math.round(20 * WORDS_PER_SECOND)
+};
+function spanParamsVersion(params = DEFAULT_SPAN_PARAMS) {
+  return [
+    `\u03BB${params.switchCost}`,
+    `\u03C4${params.tau}`,
+    `q${params.baselineQuantile}`,
+    `b${params.baselineMax}`,
+    `gap${params.mergeGapUnits}u/${params.mergeGapWords}w`,
+    `floor${params.categoryFloor}`,
+    `sec${params.minSectionWords}-${params.maxSectionWords}w`
+  ].join(" ");
+}
+function quantile(values, q) {
+  if (values.length === 0) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const at = Math.min(Math.max(q, 0), 1) * (sorted.length - 1);
+  const lo = Math.floor(at);
+  const hi = Math.ceil(at);
+  return sorted[lo] + (sorted[hi] - sorted[lo]) * (at - lo);
+}
+function clamp01(x) {
+  return x < 0 ? 0 : x > 1 ? 1 : x;
+}
+var evidenceCache = /* @__PURE__ */ new WeakMap();
+function evidence(map, params = DEFAULT_SPAN_PARAMS) {
+  const key = `${params.baselineQuantile}/${params.baselineMax}`;
+  const cached = evidenceCache.get(map.p1);
+  if (cached && cached.key === key) return cached.e;
+  const k = map.categories.length;
+  const baseline = Array.from({ length: k }, (_unused, j) => Math.min(params.baselineMax, quantile(map.p1.map((row) => row[j]), params.baselineQuantile)));
+  const e = map.p1.map((row) => baseline.map((b, j) => clamp01(Math.max(0, row[j] - b) / Math.max(1 - b, 1e-6))));
+  evidenceCache.set(map.p1, { key, e });
+  return e;
+}
+function hotness(map, params = DEFAULT_SPAN_PARAMS) {
+  return evidence(map, params).map((row) => row.reduce((m, x) => Math.max(m, x), 0));
+}
+var LOG_FLOOR2 = 1e-12;
+function onOffPath(hot, params) {
+  const rows = hot.map((h) => [Math.log(Math.max(1 - h, LOG_FLOOR2)), Math.log(Math.max(h, LOG_FLOOR2)) - params.tau]);
+  return viterbi(rows, params.switchCost);
+}
+function mergedRuns(path26, units, params) {
+  const out = [];
+  for (const [a, bEx] of runsOf(path26, 1)) {
+    const b = bEx - 1;
+    const prev = out[out.length - 1];
+    if (prev) {
+      const gapUnits = a - prev[1] - 1;
+      const gapWords = units[a].start - units[prev[1]].end;
+      if (gapUnits <= params.mergeGapUnits || gapWords <= params.mergeGapWords) {
+        prev[1] = b;
+        continue;
+      }
+    }
+    out.push([a, b]);
+  }
+  return out;
+}
+function scoreRange(map, from, to, params = DEFAULT_SPAN_PARAMS) {
+  const e = evidence(map, params);
+  const out = [];
+  for (let j = 0; j < map.categories.length; j += 1) {
+    let best = -1;
+    let bestUnit = from;
+    for (let i = from; i <= to; i += 1) {
+      const s = e[i][j];
+      if (s > best) {
+        best = s;
+        bestUnit = i;
+      }
+    }
+    out.push({ category: map.categories[j], score: Math.max(best, 0), unit: bestUnit });
+  }
+  return out.sort((a, b) => b.score - a.score || a.category.localeCompare(b.category));
+}
+function coFireStrength(scores) {
+  return scores.reduce((sum, s) => sum + Math.log(Math.max(1 - s, Number.MIN_VALUE)), 0);
+}
+function compareSpans(a, b) {
+  return a.strength - b.strength || b.heat - a.heat || a.start - b.start;
+}
+function keepCategories(all, floor) {
+  const top = all[0]?.score ?? 0;
+  const kept = all.filter((c) => c.score > 0 && c.score >= floor * top);
+  return kept.length ? kept : all.slice(0, 1);
+}
+function makeSpan(id, from, to, categories, units, hot) {
+  let heat = 0;
+  for (let i = from; i <= to; i += 1) heat += hot[i];
+  return {
+    id,
+    unitFrom: from,
+    unitTo: to,
+    sentenceFrom: units[from].sentenceFrom,
+    sentenceTo: units[to].sentenceTo,
+    start: units[from].start,
+    end: units[to].end,
+    categories,
+    strength: coFireStrength(categories.map((c) => c.score)),
+    heat
+  };
+}
+function buildSpans(map, params = DEFAULT_SPAN_PARAMS) {
+  if (map.units.length === 0 || map.categories.length === 0) return [];
+  const hot = hotness(map, params);
+  const path26 = onOffPath(hot, params);
+  const ranges = mergedRuns(path26, map.units, params);
+  const spans = ranges.map(([a, b], id) => makeSpan(id, a, b, keepCategories(scoreRange(map, a, b, params), params.categoryFloor), map.units, hot));
+  return spans.sort(compareSpans);
+}
+function valleyCuts(from, to, units, hot, params) {
+  if (units[to].end - units[from].start <= params.maxSectionWords) return [[from, to]];
+  const mid = (units[from].start + units[to].end) / 2;
+  let best = -1;
+  let bestQuiet = Infinity;
+  let bestOff = Infinity;
+  for (let k = from + 1; k <= to; k += 1) {
+    if (units[k].sentenceFrom <= units[k - 1].sentenceTo) continue;
+    if (units[k - 1].end - units[from].start < params.minSectionWords) continue;
+    if (units[to].end - units[k].start < params.minSectionWords) continue;
+    const quiet = hot[k - 1] + hot[k];
+    const off = Math.abs(units[k].start - mid);
+    if (quiet < bestQuiet - 1e-9 || Math.abs(quiet - bestQuiet) <= 1e-9 && off < bestOff) {
+      best = k;
+      bestQuiet = quiet;
+      bestOff = off;
+    }
+  }
+  if (best < 0) return [[from, to]];
+  return [...valleyCuts(from, best - 1, units, hot, params), ...valleyCuts(best, to, units, hot, params)];
+}
+function splitSpan(span, map, hot, params = DEFAULT_SPAN_PARAMS) {
+  const pieces = valleyCuts(span.unitFrom, span.unitTo, map.units, hot, params);
+  if (pieces.length === 1) return [span];
+  const wanted = new Map(span.categories.map((c) => [c.category, params.categoryFloor * c.score]));
+  const out = [];
+  for (const [a, b] of pieces) {
+    const cats = scoreRange(map, a, b, params).filter(
+      (c) => wanted.has(c.category) && c.score > 0 && c.score >= wanted.get(c.category)
+    );
+    if (cats.length) out.push(makeSpan(span.id, a, b, cats, map.units, hot));
+  }
+  return out.length ? out : [span];
+}
+function spansToWindows(spans, sentences, units, plan) {
+  const proposition = new Map(plan.map((p) => [p.category, p.proposition]));
+  const passages = [...spans].sort((a, b) => a.sentenceFrom - b.sentenceFrom || a.sentenceTo - b.sentenceTo);
+  const candidates = [];
+  for (const p of passages) {
+    for (const c of p.categories) {
+      const s = Math.min(Math.max(units[c.unit].sentenceFrom, p.sentenceFrom), p.sentenceTo);
+      candidates.push({
+        sentenceIndex: s,
+        spanFrom: p.sentenceFrom,
+        spanTo: p.sentenceTo,
+        text: sentences[s]?.text ?? "",
+        category: c.category,
+        score: c.score,
+        proposition: proposition.get(c.category) ?? c.category
+      });
+    }
+  }
+  const heatOf = (w) => passages.filter((p) => p.sentenceFrom >= w.firedFrom && p.sentenceTo <= w.firedTo).reduce((sum, p) => sum + p.heat, 0);
+  return buildWindows(sentences, candidates).map((window2) => ({ window: window2, strength: windowStrength(window2), heat: heatOf(window2) })).sort((a, b) => a.strength - b.strength || b.heat - a.heat || a.window.contextFrom - b.window.contextFrom).map((entry) => entry.window);
+}
+function rankFromRatingMap(map, sentences, plan, params = DEFAULT_SPAN_PARAMS) {
+  const spans = buildSpans(map, params);
+  const hot = hotness(map, params);
+  const passages = spans.flatMap((sp) => splitSpan(sp, map, hot, params)).sort(compareSpans);
+  const windows = spansToWindows(passages, sentences, map.units, plan);
+  return { spans, passages, windows };
 }
 
 // src/analyze/verify.ts
@@ -96913,12 +96649,14 @@ init_anthropic();
 var VERDICT_SCHEMA = {
   type: "object",
   properties: {
-    verdict: { type: "string", enum: ["flag", "skip"] }
+    verdict: { type: "string", enum: ["flag", "skip"] },
+    reason: { type: "string" }
   },
-  required: ["verdict"],
+  required: ["verdict", "reason"],
   additionalProperties: false
 };
-var VERDICT_PREDICT_TOKENS = 128;
+var VERIFY_PROMPT_VERSION = "foundry-verify/v4-justified-2026-09-25";
+var VERDICT_PREDICT_TOKENS = 512;
 var VERIFY_OUTPUT_BUDGET_TOKENS = 2048;
 function numCtxMaxForModel(model) {
   const moe = /(\d+)x(\d+(?:\.\d+)?)b/i.exec(model);
@@ -96950,17 +96688,31 @@ Question: anywhere in this passage, is the author asserting or promoting that cl
 Answer "flag" if the author asserts it, endorses it, or repeats it approvingly as true.
 Answer "skip" if the author is reporting that other people make that claim, quoting it neutrally, asking about it, arguing against it, or if the passage does not make that claim at all.
 
-Respond with JSON only: {"verdict":"flag"} or {"verdict":"skip"}`;
+Then give the reason in one or two sentences: what the author says in this passage, and why that is or is not asserting the claim. Name the author's own words where they settle it.
+
+Respond with JSON only: {"verdict":"flag" or "skip","reason":"..."}`;
 }
-function parseVerdict(text) {
+function parseVerification(text) {
   if (!text) return null;
   const json = /"verdict"\s*:\s*"(flag|skip)"/i.exec(text);
-  if (json) return json[1].toLowerCase();
-  const lower = text.trim().toLowerCase();
+  if (json) {
+    let reason = "";
+    try {
+      const parsed = JSON.parse(text.slice(text.indexOf("{"), text.lastIndexOf("}") + 1));
+      if (typeof parsed.reason === "string") reason = parsed.reason.trim();
+    } catch {
+      const quoted = /"reason"\s*:\s*"((?:[^"\\]|\\.)*)"/i.exec(text);
+      if (quoted) reason = quoted[1].replace(/\\"/g, '"').trim();
+    }
+    return { verdict: json[1].toLowerCase(), reason };
+  }
+  const trimmed = text.trim();
+  const lower = trimmed.toLowerCase();
   const hasFlag = lower.includes("flag");
   const hasSkip = lower.includes("skip");
-  if (hasFlag && !hasSkip) return "flag";
-  if (hasSkip && !hasFlag) return "skip";
+  const prose = trimmed.length > 12 ? trimmed : "";
+  if (hasFlag && !hasSkip) return { verdict: "flag", reason: prose };
+  if (hasSkip && !hasFlag) return { verdict: "skip", reason: prose };
   return null;
 }
 async function askConstrained(transport, server, prompt, numCtx, schema, predictTokens) {
@@ -97006,91 +96758,65 @@ async function askVerdict(transport, server, prompt, numCtx) {
     VERDICT_SCHEMA,
     VERDICT_PREDICT_TOKENS
   );
-  if (answer.text === null) return { verdict: null, degraded: answer.degraded ?? "no answer" };
-  const verdict = parseVerdict(answer.text);
-  if (verdict === null) {
+  if (answer.text === null) return { verification: null, degraded: answer.degraded ?? "no answer" };
+  const verification = parseVerification(answer.text);
+  if (verification === null) {
     return {
-      verdict: null,
+      verification: null,
       degraded: `no verdict in the answer: ${answer.text.trim().slice(0, 120) || "(empty)"}`
     };
   }
-  return { verdict };
+  return { verification };
 }
-function windowFinding(window2, flagged) {
-  const ranked = [...flagged.length > 0 ? flagged : window2.categories].sort((a, b) => b.score - a.score);
+function windowFinding(flagged) {
+  if (flagged.length === 0) return null;
+  const ranked = [...flagged].sort((a, b) => b.category.score - a.category.score);
   const primary = ranked[0];
-  const fired = ranked.flatMap((c) => c.sentenceIndices);
+  const fired = ranked.flatMap((one) => one.category.sentenceIndices);
   return {
-    category: primary.category,
-    also: flagged.length > 0 ? ranked.slice(1).map((c) => c.category) : [],
-    score: primary.score,
-    verdict: flagged.length > 0 ? "flag" : "skip",
+    category: primary.category.category,
+    reason: primary.reason,
+    also: ranked.slice(1).map((one) => one.category.category),
+    alsoReasons: ranked.slice(1).map((one) => one.reason),
+    score: primary.category.score,
     from: Math.min(...fired),
     to: Math.max(...fired)
   };
 }
 
 // src/analyze/run.ts
-var AnalyzeError = class extends Error {
-  constructor(message) {
-    super(message);
-    this.name = "AnalyzeError";
-  }
-};
-var PROSE = /* @__PURE__ */ new Set([
-  "Caption",
-  "Footnote",
-  "List-item",
-  "Quote",
-  "Section-header",
-  "Text",
-  "Title"
-]);
-var SCORE_BATCH = 500;
 var DEFAULT_ANALYZE_CONCURRENCY = DEFAULT_TEXT_CONCURRENCY;
-function readSentences(bookPath, log2) {
-  if (!fs18.existsSync(bookPath)) throw new AnalyzeError(`no such book file: ${bookPath}`);
-  const book = parseBookFile(stripBom(fs18.readFileSync(bookPath, "utf8")));
-  const sentences = [];
-  let rows = 0;
-  for (const row of book.rows) {
-    if (row.shelf !== void 0) continue;
-    if (!PROSE.has(row.category)) continue;
-    rows += 1;
-    for (const sentence of splitSentences(row.text)) {
-      sentences.push(bookSentence(row.id, sentence.start, sentence.end, sentence.text));
-    }
-  }
-  log2(
-    `analyze: ${book.rows.length} row(s) in the book, ${rows} of them prose in the flow, cut into ${sentences.length} sentence(s)`
-  );
-  if (sentences.length === 0) {
+function checkRankFile(file, ranksPath, sentences, bankSha2, plan) {
+  if (file.bankSha !== bankSha2) {
     throw new AnalyzeError(
-      `${bookPath} has no prose to analyse. Its rows are all shelved, or all figures, formulae and tables \u2014 there is nothing here for an entailment model to read.`
+      `${ranksPath} ranked the book from bank ${file.bankSha}, and this book comes from ${bankSha2}. Rank this book, then verify it.`
     );
   }
-  return { sentences, bankSha: book.source.bankSha, generation: book.source.generation };
-}
-function readPlan(categoriesPath, log2) {
-  let requested = null;
-  if (categoriesPath) {
-    if (!fs18.existsSync(categoriesPath)) {
-      throw new AnalyzeError(`no such categories file: ${categoriesPath}`);
-    }
-    requested = parseCategoriesJson(stripBom(fs18.readFileSync(categoriesPath, "utf8")), categoriesPath);
+  const options = optionSetVersion(plan);
+  if (file.options !== options) {
+    throw new AnalyzeError(
+      `${ranksPath} was ranked against a different set of categories (${file.options}; these are ${options}). The rank and the verify must be given the same --categories.`
+    );
   }
-  const plan = buildPlan(requested, log2);
-  const untuned = untunedNames(plan);
-  log2(
-    `analyze: ${plan.length} categor(ies) \u2014 ${plan.map((one) => one.category).join(", ")}` + (untuned.length > 0 ? `. Nothing has calibrated ${untuned.join(", ")}, so their counts may be high or low and the report says so in its header.` : "")
-  );
-  return plan;
+  const units = buildUnits(sentences);
+  const same = units.length === file.units.length && units.every((unit, i) => unit.text === file.units[i].text && unit.sentenceFrom === file.units[i].sentenceFrom && unit.sentenceTo === file.units[i].sentenceTo);
+  if (!same) {
+    throw new AnalyzeError(
+      `${ranksPath} was ranked from ${file.units.length} unit(s) and this book cuts into ${units.length} that do not match them \u2014 the book was read differently by the build that ranked it. Rank it again.`
+    );
+  }
 }
 async function analyzeBook(opts) {
   const { log: log2 } = opts;
-  const { sentences, bankSha: bankSha2, generation } = readSentences(opts.bookPath, log2);
+  const { sentences, bankSha: bankSha2, generation } = readProse(opts.bookPath, "analyze", log2);
   const plan = readPlan(opts.categoriesPath ?? null, log2);
-  const hypotheses = hypothesisSetVersion(plan);
+  const ranks = readRankFile(opts.ranksPath);
+  checkRankFile(ranks, opts.ranksPath, sentences, bankSha2, plan);
+  const ranked = rankFromRatingMap(ranks, sentences, plan);
+  const calls = ranked.windows.reduce((n, w) => n + w.categories.length, 0);
+  log2(
+    `analyze: the ranking by ${ranks.model.id} made ${ranked.spans.length} span(s), ${ranked.passages.length} section(s) and ${ranked.windows.length} passage(s) to verify \u2014 ${calls} question(s)` + (ranks.gated > 0 ? `; ${ranks.gated} of its answers were read as no evidence` : "")
+  );
   const opened = openAnalysisReport({ outPath: opts.outPath, freshRequested: opts.fresh, bankSha: bankSha2 });
   log2(opened.sentence);
   const report = opened.report;
@@ -97111,88 +96837,26 @@ async function analyzeBook(opts) {
     log: log2,
     ...opts.model === void 0 ? {} : { model: opts.model }
   });
-  let worker = null;
-  const ensureWorker = async () => {
-    if (worker !== null) return worker;
-    worker = await NliWorker.start({ ...opts.nli, log: log2 });
-    const before = report.priorHeader?.nliRevision ?? null;
-    const now = worker.revision;
-    if (before !== now || now === null) {
-      const had = report.rankCount;
-      if (had > 0) {
-        report.forgetRanks();
-        log2(
-          `analyze: the ${had} stored sentence score(s) were produced by ${before === null ? "an unrecorded build" : before.slice(0, 12)} of ${NLI_MODEL_ID} and this run has ${now === null ? "a build it cannot identify" : now.slice(0, 12)}. They are being scored again \u2014 a score is an answer to a configuration.`
-        );
-      }
-    }
-    return worker;
-  };
-  const startedWorker = () => worker;
-  let result;
   try {
-    const flat = flattenHypotheses(plan);
-    const slidingWindows = sentences.length < SLIDING_WINDOW_SENTENCES ? 0 : sentences.length - SLIDING_WINDOW_SENTENCES + 1;
-    const total = sentences.length + slidingWindows;
-    let finished = 0;
-    log2(
-      `analyze: ${sentences.length} sentence(s) and ${slidingWindows} sliding window(s) are scored against ${flat.texts.length} hypothes(es) \u2014 the rank progress line counts all ${total} of them, because each is one text the model has to read`
-    );
-    const scoreTexts = async (texts) => {
-      const keys = texts.map((text) => rankKey(text, NLI_MODEL_ID, hypotheses, CAPTURE_THRESHOLD));
-      const wanted = /* @__PURE__ */ new Map();
-      for (const [index, key] of keys.entries()) {
-        if (report.rank(key) === void 0 && !wanted.has(key)) wanted.set(key, texts[index]);
-      }
-      const misses = [...wanted.entries()];
-      for (let at = 0; at < misses.length; at += SCORE_BATCH) {
-        const batch = misses.slice(at, at + SCORE_BATCH);
-        const raw = await (await ensureWorker()).score(
-          batch.map(([, text]) => text),
-          flat.texts,
-          (done) => log2(`analyze: rank ${Math.min(total, finished + done)}/${total} sentences`)
-        );
-        if (raw.length !== batch.length) {
-          throw new AnalyzeError(
-            `the analysis worker was asked to score ${batch.length} text(s) and answered for ${raw.length}. A matrix that does not line up with the texts it is about would file every score under the wrong sentence.`
-          );
-        }
-        for (const [offset, [key]] of batch.entries()) {
-          report.addRank(key, collapseRow(raw[offset], flat.owner, plan.length));
-        }
-        finished = Math.min(total, finished + batch.length);
-        log2(`analyze: rank ${finished}/${total} sentences`);
-      }
-      const free = texts.length - misses.length;
-      if (free > 0) {
-        finished = Math.min(total, finished + free);
-        log2(`analyze: rank ${finished}/${total} sentences`);
-      }
-      return keys.map((key) => report.rank(key) ?? new Array(plan.length).fill(0));
-    };
-    const windows = await rankWindows(sentences, plan, scoreTexts, log2);
-    result = await verifyStage({
-      windows,
+    return await verifyStage({
+      windows: ranked.windows,
       sentences,
       plan,
       report,
       transport,
       server,
       concurrency,
-      hypotheses,
+      ranks,
       bankSha: bankSha2,
       generation,
-      log: log2,
-      nliRevision: startedWorker()?.revision ?? report.priorHeader?.nliRevision ?? null
+      log: log2
     });
   } finally {
-    startedWorker()?.stop();
     const outcome = await releaseModel(transport, kind, server.endpoint, server.model);
     log2(outcome === "not-ours" ? "analyze: nothing to unload \u2014 this run never loaded a model, and nothing on the other end is this job's to take down (translate/model-server.ts)." : outcome === "released" ? `analyze: asked ollama to unload "${server.model}" \u2014 the card is free for the next job.` : `analyze: ollama did not acknowledge unloading "${server.model}". If it is still resident it will fall out on its own idle timer.`);
     const spent = usageLine("analyze");
     if (spent !== null) log2(spent);
   }
-  return result;
 }
 async function verifyStage(args) {
   const { windows, sentences, report, log: log2 } = args;
@@ -97205,7 +96869,6 @@ async function verifyStage(args) {
       jobs.push({
         window: window2,
         category,
-        passage: joined,
         prompt,
         key: verdictKey(joined, category.category, args.server.model, prompt)
       });
@@ -97222,22 +96885,21 @@ async function verifyStage(args) {
   let next = 0;
   const answers = /* @__PURE__ */ new Map();
   const judge = async (job) => {
-    let verdict = report.verdict(job.key);
-    if (verdict === void 0) {
+    let answer = report.verdict(job.key);
+    if (answer === void 0) {
       asked += 1;
       const outcome = await askVerdict(args.transport, args.server, job.prompt, numCtx);
-      if (outcome.verdict === null) {
+      if (outcome.verification === null) {
         degraded += 1;
         log2(
-          `analyze: no verdict for ${job.category.category} at ${sentences[job.window.firedFrom].row} \u2014 ${outcome.degraded}; this passage is recorded as a skip`
+          `analyze: no verdict for ${job.category.category} at ${sentences[job.window.firedFrom].row} \u2014 ${outcome.degraded}; it is not a finding, and the next run asks again`
         );
-        verdict = "skip";
       } else {
-        verdict = outcome.verdict;
-        report.addVerdict(job.key, verdict);
+        answer = outcome.verification;
+        report.addVerdict(job.key, answer);
       }
     }
-    answers.set(job, verdict);
+    if (answer !== void 0) answers.set(job, answer);
     finished += 1;
     log2(`analyze: verify ${finished}/${jobs.length} (${job.category.category})`);
   };
@@ -97249,35 +96911,34 @@ async function verifyStage(args) {
     }
   };
   await Promise.all(Array.from({ length: workers }, pull));
-  const flaggedByWindow = /* @__PURE__ */ new Map();
-  for (const job of jobs) {
-    if (answers.get(job) !== "flag") continue;
-    const list = flaggedByWindow.get(job.window);
-    if (list) list.push(job.category);
-    else flaggedByWindow.set(job.window, [job.category]);
-  }
   if (jobs.length > 0 && degraded === jobs.length) {
     throw new AnalyzeError(
-      `not one of the ${jobs.length} verification call(s) produced a usable verdict. The ranking is recorded and costs nothing to redo; the verdicts are what this run could not get, and a report saying every passage was rejected would be indistinguishable from a clean book.`
+      `not one of the ${jobs.length} verification call(s) produced a usable verdict. The ranking is in the rank file and costs nothing to redo; the verdicts are what this run could not get, and a report with nothing in it would be indistinguishable from a clean book.`
     );
   }
-  const findings = windows.map((window2) => ({ finding: windowFinding(window2, flaggedByWindow.get(window2) ?? []), window: window2 })).sort((a, b) => a.finding.from - b.finding.from || a.finding.to - b.finding.to);
+  const flaggedByWindow = /* @__PURE__ */ new Map();
+  for (const job of jobs) {
+    const answer = answers.get(job);
+    if (answer?.verdict !== "flag") continue;
+    const list = flaggedByWindow.get(job.window) ?? [];
+    list.push({ category: job.category, reason: answer.reason });
+    flaggedByWindow.set(job.window, list);
+  }
+  const findings = windows.map((window2) => windowFinding(flaggedByWindow.get(window2) ?? [])).filter((finding) => finding !== null).sort((a, b) => a.from - b.from || a.to - b.to);
   const rows = [];
-  for (const [index, entry] of findings.entries()) {
-    rows.push(...findingRows(entry.finding, sentences, index + 1));
+  for (const [index, finding] of findings.entries()) {
+    rows.push(...findingRows(finding, sentences, index + 1));
   }
   report.finish(
     analysisHeader({
       bankSha: args.bankSha,
       ...args.generation !== void 0 ? { generation: args.generation } : {},
-      nli: NLI_MODEL_ID,
-      // The build those scores came from, when it is known. Absent stays absent:
-      // a header that invented a revision would be the false provenance this
-      // field exists to prevent.
-      ...args.nliRevision !== null ? { nliRevision: args.nliRevision } : {},
-      hypotheses: args.hypotheses,
+      ranker: "snap-v1",
+      decide: args.ranks.model.id,
+      options: optionSetVersion(args.plan),
+      spans: spanParamsVersion(),
       verify: args.server.model,
-      capture: { threshold: CAPTURE_THRESHOLD, rescue: RESCUE_FLOOR },
+      prompt: VERIFY_PROMPT_VERSION,
       categories: args.plan.map((one) => one.category),
       untuned: untunedNames(args.plan),
       hues: planHues(args.plan),
@@ -97285,9 +96946,9 @@ async function verifyStage(args) {
     }),
     rows
   );
-  const flagged = findings.filter((one) => one.finding.verdict === "flag").length;
+  const answered = windows.filter((window2) => jobs.some((job) => job.window === window2 && answers.has(job)));
   log2(
-    `analyze: ${flagged} passage(s) flagged and ${findings.length - flagged} rejected, written as ${rows.length} row(s) across the blocks they touch` + (degraded > 0 ? `; ${degraded} call(s) produced no usable answer and were recorded as skips` : "")
+    `analyze: ${findings.length} passage(s) flagged and ${answered.length - findings.length} rejected, written as ${rows.length} row(s) across the blocks they touch` + (degraded > 0 ? `; ${degraded} call(s) produced no usable answer and are not findings` : "")
   );
   return {
     outPath: report.outPath,
@@ -97295,8 +96956,8 @@ async function verifyStage(args) {
     passages: windows.length,
     asked,
     degraded,
-    flagged,
-    skipped: findings.length - flagged
+    flagged: findings.length,
+    skipped: answered.length - findings.length
   };
 }
 function findingRows(finding, sentences, hit) {
@@ -97319,9 +96980,10 @@ function findingRows(finding, sentences, hit) {
       start,
       end,
       category: finding.category,
+      reason: finding.reason,
       also: finding.also,
+      alsoReasons: finding.alsoReasons,
       score: Math.round(finding.score * 1e4) / 1e4,
-      verdict: finding.verdict,
       sentences: count
     });
   }
@@ -98065,7 +97727,7 @@ function compileBook(opts) {
 init_engine_import_meta_url();
 var crypto2 = __toESM(require("node:crypto"), 1);
 var fs22 = __toESM(require("node:fs"), 1);
-var os6 = __toESM(require("node:os"), 1);
+var os5 = __toESM(require("node:os"), 1);
 var path17 = __toESM(require("node:path"), 1);
 init_stamp();
 init_fsdirs();
@@ -99065,7 +98727,7 @@ async function vlmConvert(opts) {
     viaEndpoint ? `vlm-convert: ${model.id} via ${opts.endpoint}, which publishes the page contract` : `vlm-convert: ${model.id} (${model.repo}), pages rendered at ${VLM_DPI} dpi${localBudget === void 0 ? "" : `, ${localBudget.toLocaleString("en-US")} pixel budget for any page this run reads`}`
   );
   const keepRenders = opts.rendersDir !== void 0;
-  const rendersDir = opts.rendersDir !== void 0 ? path17.resolve(opts.rendersDir) : fs22.mkdtempSync(path17.join(os6.tmpdir(), "foundry-vlm-"));
+  const rendersDir = opts.rendersDir !== void 0 ? path17.resolve(opts.rendersDir) : fs22.mkdtempSync(path17.join(os5.tmpdir(), "foundry-vlm-"));
   try {
     const phase = await readPagesIntoBank({
       label: "vlm-convert",
@@ -101096,7 +100758,7 @@ function cutToBudget(items, weigh) {
   if (run.length > 0) runs.push(run);
   return runs;
 }
-function planChunks(groupKind, rowSizes, parts, act, log2) {
+function planChunks2(groupKind, rowSizes, parts, act, log2) {
   const documentPath = parts[0].documentPath;
   const alone = (part) => ({
     kind: "single",
@@ -101370,7 +101032,7 @@ async function runTranslation(opts) {
         pending.push(block);
         return block;
       });
-      chunks.push(...planChunks(group.kind, group.rowSizes, parts, act, opts.log));
+      chunks.push(...planChunks2(group.kind, group.rowSizes, parts, act, opts.log));
     }
     const spine = bookTitlePlan(bookFile2);
     if (opts.rewrite !== void 0 && spine.length > 0) {
@@ -101416,7 +101078,7 @@ async function runTranslation(opts) {
       titleParts.push(block);
     }
     titleCount = titleParts.length;
-    if (titleParts.length > 0) chunks.push(...planChunks("titles", [], titleParts, act, opts.log));
+    if (titleParts.length > 0) chunks.push(...planChunks2("titles", [], titleParts, act, opts.log));
   }
   for (const document of book?.documents ?? []) {
     if (!document.stamped) continue;
@@ -101498,7 +101160,7 @@ async function runTranslation(opts) {
         pending.push(block);
         return block;
       });
-      chunks.push(...planChunks(group.kind, group.rowSizes, parts, act, opts.log));
+      chunks.push(...planChunks2(group.kind, group.rowSizes, parts, act, opts.log));
     }
   }
   if (pending.length === 0) {
@@ -101673,7 +101335,7 @@ async function runTranslation(opts) {
     }
     accept(block, accepted, "model");
   };
-  const askGroup2 = async (chunk) => {
+  const askGroup = async (chunk) => {
     const payload = renderChunk(chunk.kind, chunk.parts.map((p) => p.masked.text), chunk.rowSizes);
     const system = systemPrompt(
       from,
@@ -101727,7 +101389,7 @@ async function runTranslation(opts) {
       await askOne(missing[0]);
       return;
     }
-    const answers = await askGroup2(chunk);
+    const answers = await askGroup(chunk);
     if (answers === null) {
       for (const part of missing) await askOne(part);
       return;
@@ -102457,22 +102119,17 @@ var AN_MODEL = {
   describe: "The model that answers the questions. Default on openai: the one the server holds. Required on ollama and anthropic."
 };
 var AN_ENDPOINT = TR_ENDPOINT;
-var AN_NLI_PYTHON = {
-  name: "nli-python",
+var AN_RANKS = {
+  name: "ranks",
   type: "string",
-  placeholder: "<path>",
-  describe: "The interpreter with torch and transformers in it. Also FOUNDRY_NLI_PYTHON."
+  placeholder: "<ranks.json>",
+  describe: "The rank file analyze-rank wrote for this book, with the same --categories. Required."
 };
-var AN_NLI_HOME = {
-  name: "nli-home",
+var AR_OUT = {
+  name: "out",
   type: "string",
-  placeholder: "<dir>",
-  describe: "Where the entailment model's weights live (HF_HOME). Also FOUNDRY_NLI_HOME."
-};
-var AN_FETCH = {
-  name: "fetch-nli-model",
-  type: "boolean",
-  describe: "Let the worker download the entailment model this once. Also FOUNDRY_NLI_FETCH=1."
+  placeholder: "<ranks.json>",
+  describe: "Where the rank file is written \u2014 the file analyze --ranks reads. Required."
 };
 var AN_CONCURRENCY = {
   name: "concurrency",
@@ -102949,28 +102606,22 @@ async function runVlmCompile(args) {
 async function runVlmAnalyze(args) {
   const server = textServer(args);
   const bookPath = requireString(args, "book", "the book file to analyse");
+  const ranksPath = requireString(args, "ranks", "the rank file analyze-rank wrote for this book");
   const outPath = requireString(args, "out", "where the report is written");
   const categoriesPath = optionalString(args, "categories");
-  const nliPython = optionalString(args, "nli-python");
-  const nliHome2 = optionalString(args, "nli-home");
-  const fetch2 = flag(args, "fetch-nli-model") || process.env["FOUNDRY_NLI_FETCH"] === "1";
   const concurrency = optionalString(args, "concurrency");
   if (concurrency !== void 0 && !/^[1-9]\d*$/.test(concurrency)) {
     throw new UsageError(`--concurrency takes a positive whole number, not "${concurrency}"`);
   }
   const result = await analyzeBook({
     bookPath,
+    ranksPath,
     outPath,
     ...categoriesPath !== void 0 ? { categoriesPath } : {},
     ...server.model === void 0 ? {} : { model: server.model },
     endpoint: server.endpoint,
     server: server.kind,
     ...concurrency !== void 0 ? { concurrency: Number(concurrency) } : {},
-    nli: {
-      ...nliPython !== void 0 ? { python: nliPython } : {},
-      ...nliHome2 !== void 0 ? { home: nliHome2 } : {},
-      ...fetch2 ? { fetch: true } : {}
-    },
     fresh: flag(args, "fresh"),
     log
   });
@@ -102978,6 +102629,21 @@ async function runVlmAnalyze(args) {
     `analyze: ${result.sentences} sentence(s), ${result.passages} candidate passage(s), ${result.asked} verify call(s) paid for, ${result.flagged} flagged and ${result.skipped} rejected.`
   );
   process.stdout.write(`${result.outPath}
+`);
+}
+async function runAnalyzeRankCommand(args) {
+  const categoriesPath = optionalString(args, "categories");
+  const outPath = requireString(args, "out", "where the rank file is written");
+  const { runAnalyzeRank: runAnalyzeRank2 } = await Promise.resolve().then(() => (init_snap(), snap_exports));
+  await runAnalyzeRank2({
+    bookPath: requireString(args, "book", "the book file to rank"),
+    outPath,
+    ...categoriesPath !== void 0 ? { categoriesPath } : {},
+    endpoint: requireString(args, "endpoint", "the Crucible whose decide door is asked"),
+    model: requireString(args, "model", "the resident decide model"),
+    log
+  });
+  process.stdout.write(`${path25.resolve(outPath)}
 `);
 }
 function defaultTranslationOut(epubPath, to) {
@@ -104089,85 +103755,95 @@ var COMMANDS = [
     run: runVlmBlocks
   },
   {
-    name: "analyze",
-    summary: "Read a book against the categories: entailment ranks it, a model judges stance.",
-    usage: "--book <book.jsonl> --out <report.jsonl> [--categories <cats.json>] [--model <name>] [--endpoint <url>] [--server <openai|ollama|anthropic>] [--concurrency <n>] [--nli-python <path>] [--nli-home <dir>] [--fresh]",
+    name: "analyze-rank",
+    summary: "Rank a book for analysis: every sentence, asked of a Crucible decide model against the categories.",
+    usage: "--book <book.jsonl> --out <ranks.json> --endpoint <crucible url> --model <decide model> [--categories <cats.json>]",
     detail: [
-      "THE BOOK, READ AGAINST THE CATEGORIES. Every sentence of every prose block",
-      "is scored against every category's stance hypotheses by a zero-shot",
-      "entailment model; the sentences that survive are grown into",
-      "paragraph-sized passages; and each passage is put to a model with",
-      "exactly one question \u2014 is the AUTHOR asserting this claim as their own",
-      "position, or reporting, quoting, questioning or arguing against it?",
+      "THE FIRST HALF OF AN ANALYSIS. The book's prose is cut into sentences, a",
+      "sentence under four words is read with the one after it, and every three",
+      "consecutive units \u2014 each three sharing one unit with the next \u2014 are QUOTED",
+      'in one multiple-choice question over the categories and "none": which of',
+      "these does the author do in this passage? The book is the state the",
+      "questions are asked over, one unit per line with the categories written",
+      "once after it, so a Crucible's decide door reads each stretch of it once.",
+      "The answers are probabilities, never generated text, and every unit's is",
+      "the mean of its groups'. They are written to --out as a rank file.",
       "",
-      'THAT LAST STAGE IS THE POINT. "These people are vermin" and "he called',
-      'them vermin, which is monstrous" score identically on the same hypothesis,',
-      "because both passages are about the same proposition. Nothing upstream can",
-      "tell them apart, and without the question a history of propaganda is",
-      "flagged as propaganda.",
+      "analyze --ranks <that file> is the second half: it turns the scores into",
+      "passages and puts each one to a model. The two must be given the same book",
+      "and the same --categories; analyze refuses a rank file that was not.",
+      "",
+      "PORTED FROM BRIEFCASE'S SNAP FLAG RANKER, which replaced the entailment",
+      "ranker there and replaced it here (2026-09-25). The book is cut into chunks",
+      "that fit the context the model is loaded at, read off the server.",
+      "",
+      "The model must already be resident: the app places this run on the decide",
+      "act, loaded and leased, and releases it after. This never loads a model.",
+      "A busy door (chat_queue_full) is waited out; a model that is not resident is",
+      "refused by name."
+    ].join("\n"),
+    options: [AN_BOOK, AR_OUT, AN_CATEGORIES, CTR_ENDPOINT, CTR_MODEL],
+    run: runAnalyzeRankCommand
+  },
+  {
+    name: "analyze",
+    summary: "Verify a ranked book against the categories: a model judges each passage's stance and says why.",
+    usage: "--book <book.jsonl> --ranks <ranks.json> --out <report.jsonl> [--categories <cats.json>] [--model <name>] [--endpoint <url>] [--server <openai|ollama|anthropic>] [--concurrency <n>] [--fresh]",
+    detail: [
+      "THE SECOND HALF OF AN ANALYSIS. analyze-rank scored every sentence of the",
+      "book against the categories; this reads its rank file, grows the hot",
+      "stretches into paragraph-sized passages \u2014 each category measured against",
+      "its own usual level in this book, so a book about a subject does not light",
+      "up from end to end \u2014 and puts each passage to a model with exactly one",
+      "question: is the AUTHOR asserting this claim as their own position, or",
+      "reporting, quoting, questioning or arguing against it? The model answers",
+      "with a verdict and one or two sentences saying why.",
+      "",
+      'THAT QUESTION IS THE POINT. "These people are vermin" and "he called them',
+      'vermin, which is monstrous" are about the same proposition, and nothing',
+      "that only ranks can tell them apart; without the question a history of",
+      "propaganda is flagged as propaganda.",
       "",
       "NOTHING MATCHES A QUOTATION TO ANYTHING. Every finding is a block name and",
       "a pair of character offsets into that block's own text, measured from the",
       "book file. No model ever emits a location, and a report is only meaningful",
       "against the bank that minted the names, which the header records.",
       "",
-      "THE VERDICT IS THE WHOLE ANSWER. There is no generated explanation and no",
-      "severity: the passage IS the finding, and a rationale invented for it",
-      "would be a fabrication. The ranker's score is the only ordering.",
-      "",
-      "THERE IS NO SENSITIVITY DIAL, and that is a decision rather than an",
-      "omission. The run captures once at the widest calibrated net \u2014 anything",
-      "that could possibly match \u2014 and every candidate is verified and every",
-      "verdict stored, the rejections included. Strictness is a filter applied",
-      "when the report is READ, so changing your mind about it costs a click",
-      "rather than an hour.",
-      "",
-      "WHAT IT NEEDS. A server at --endpoint holding the model, which foundry",
-      "never starts, stops or pulls \u2014 on --server openai the operator makes it",
-      "resident first, on --server ollama it is a tag that has to be pulled",
-      "already, and on --server anthropic it is a model name the key can reach;",
-      "and a Python with torch, transformers and the",
-      "MoritzLaurer/deberta-v3-base-zeroshot-v2.0 weights, named with",
-      "--nli-python or FOUNDRY_NLI_PYTHON. There is no PATH search: a miss prints",
-      "every path that was tried. The weights live under --nli-home (or",
-      "FOUNDRY_NLI_HOME, or an HF_HOME you have already set, or foundry's own",
-      "config directory), and the worker runs OFFLINE \u2014 an analysis never blocks",
-      "on a network fetch, so a missing model refuses in a second rather than an",
-      "hour in. Pass --fetch-nli-model ONCE to let it download them; every run",
-      "after that is offline again.",
+      "CONFIRMED FINDINGS ONLY. Every passage is verified and every verdict is",
+      "stored, but a passage the verifier rejected is not a finding: the report",
+      "holds the flags, each with the verifier's reason.",
       "",
       "WHICH ROWS. The flowing prose: text, title, section-header, quote,",
       "footnote, caption and list-item. Shelved rows are out \u2014 a running head is",
       "not in the book the reader sees \u2014 and so are figures, formulae and tables,",
       "which have no sentences in them.",
       "",
-      "WHICH CATEGORIES. Ten tuned against reference material, plus two book",
+      "WHICH CATEGORIES. Ten with briefcase's measured lines, plus two book",
       "categories that are FIRST DRAFTS and say so: anti-evolution and",
       "authoritarian-blueprint. The report names every untuned category in its",
       "header, because their counts may be high or low and a reader deciding what",
       "to trust needs to know which is which. `misinformation` is refused",
       "outright and the refusal explains itself: whether an assertion is FALSE is",
-      "world knowledge, which an entailment model does not have.",
+      "world knowledge, which a ranker reading for what a book says does not have.",
       "",
       "--categories takes a JSON list that REPLACES the built-in set:",
-      '[{"name":"hate"},{"name":"my-topic","description":"\u2026","hypotheses":["The',
-      'author asserts that \u2026"]}]. A hypothesis is a PROPOSITION a sentence can',
-      "entail, never an instruction to a reader and never a list of words to",
-      "match. A field this program does not read is an error rather than",
-      "something ignored.",
+      '[{"name":"hate"},{"name":"my-topic","description":"\u2026"}]. A category of',
+      "your own is ranked by the first sentence of its description and verified",
+      "against the whole of it. A field this program does not read is an error",
+      "rather than something ignored.",
       "",
       "IT REMEMBERS WHAT IT PAID FOR. The report is its own cost cache: every",
-      "score and every verdict is filed under a hash of the question that",
-      "produced it, appended and fsynced as it lands, so a run that is killed",
-      "keeps everything but the call in flight and a re-run against an edited",
-      "book pays only for the edited blocks. The findings are replaced whole at",
-      "the end, by a rename, so nothing anybody paid for is destroyed until its",
-      "replacement is on the disk. --fresh asks everything again into a file that",
-      "takes the report's place only when the run finishes.",
+      "verdict is filed under a hash of the question that produced it, appended",
+      "and fsynced as it lands, so a run that is killed keeps everything but the",
+      "call in flight and a re-run against an edited book pays only for the edited",
+      "passages. The findings are replaced whole at the end, by a rename, so",
+      "nothing anybody paid for is destroyed until its replacement is on the",
+      "disk. --fresh asks everything again into a file that takes the report's",
+      "place only when the run finishes.",
       "",
-      "RUNTIME HONESTY: ranking is minutes and verification can be an hour on a",
-      "hot book. Passages are verified STRONGEST FIRST, so a run you interrupt",
-      "has already finished the findings most worth trusting.",
+      "RUNTIME HONESTY: verification can be an hour on a hot book. Passages are",
+      "verified STRONGEST FIRST, so a run you interrupt has already finished the",
+      "findings most worth trusting.",
       "",
       "THREE KINDS OF SERVER. --server openai (the default) asks each verdict of an",
       "OpenAI-compatible server with the schema as response_format, and that",
@@ -104187,20 +103863,18 @@ var COMMANDS = [
       "single FORCED TOOL CALL whose input_schema is that same schema \u2014 the same",
       "grammar-constrained decode in a third spelling \u2014 with --model REQUIRED,",
       `${DEFAULT_CLOUD_CONCURRENCY} in flight, and a 429 or a 529 waited out rather than`,
-      "read as a dead server. The NLI ranker is a Python worker and is untouched",
-      "by any of this."
+      "read as a dead server. The ranking is analyze-rank's and is untouched by",
+      "any of this."
     ].join("\n"),
     options: [
       AN_BOOK,
+      AN_RANKS,
       AN_OUT,
       AN_CATEGORIES,
       AN_MODEL,
       AN_ENDPOINT,
       LLM_SERVER,
       AN_CONCURRENCY,
-      AN_NLI_PYTHON,
-      AN_NLI_HOME,
-      AN_FETCH,
       AN_FRESH
     ],
     run: runVlmAnalyze

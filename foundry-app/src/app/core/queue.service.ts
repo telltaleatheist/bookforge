@@ -167,8 +167,17 @@ export class QueueService {
    */
   async enqueueAnalysisNamed(
     request: AnalyzeRequest,
-  ): Promise<{ outcome: 'added' | 'already'; id: string | null }> {
-    return this.identify(() => api?.queue.enqueueAnalysis(request));
+  ): Promise<{ outcome: 'added' | 'already'; id: string | null; rankId: string | null }> {
+    // `enqueueCleanTriaged`'s arithmetic: the pair comes back, and the ANALYSIS
+    // row is the one whose presence before the call says "already".
+    const before = new Set(this.all().map((job) => job.id));
+    const made = await api?.queue.enqueueAnalysis(request);
+    if (!made) return { outcome: 'added', id: null, rankId: null };
+    return {
+      outcome: before.has(made.analysis.id) ? 'already' : 'added',
+      id: made.analysis.id,
+      rankId: made.rank?.id ?? null,
+    };
   }
 
   /**

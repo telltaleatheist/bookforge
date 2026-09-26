@@ -178,6 +178,7 @@ import { foundryHost, type FoundryHostQueue, hostMintMeta } from './host';
 import {
   bookAtPosition,
   cleanTriageFileFor,
+  analysisRankFileFor,
   generatedRoleFor,
   completionMarkerFor,
   imagesDirFor,
@@ -227,7 +228,7 @@ import {
   CPU_LANE_SLOTS, JOB_RESOURCE, computeLanes, localLane, type ComputeLane, type JobResource,
 } from '../shared/queue-board';
 import type {
-  AnalyzeRequest, CleanRequest, CleanTriageRequest, ConversionKind, DeferredPlan, EnvInstallRequest,
+  AnalysisRankRequest, AnalyzeRequest, CleanRequest, CleanTriageRequest, ConversionKind, DeferredPlan, EnvInstallRequest,
   ExportLanding, ExportMintMetadata, FoundryJobRow, Job, JobKind, JobRequest, RunOutcome,
   RunPlacement, RunVenue, SimplifyRequest, TextPassRequest, TranslateRequest,
 } from '../shared/types';
@@ -257,8 +258,12 @@ import { ANY_SLOT } from '../shared/slots';
  * at all. It is not a text pass — it writes no records and names no step — so it
  * is its own member rather than a fourth arm of `TextPassRequest`, whose every
  * reader wants a records file and a step id this shape does not have.
+ *
+ * AND A FIFTH, the analysis's ranking (`AnalysisRankRequest`), which is to the
+ * analysis what the triage is to the cleanup: a decide-model pass that writes one
+ * file the row behind it reads.
  */
-type EngineRequest = JobRequest | TextPassRequest | AnalyzeRequest | CleanTriageRequest;
+type EngineRequest = JobRequest | TextPassRequest | AnalyzeRequest | CleanTriageRequest | AnalysisRankRequest;
 
 /**
  * IS THIS ONE OF THE THREE TEXT PASSES — the queue's own half of
@@ -392,7 +397,8 @@ function mintsOf(request: EngineRequest): string | undefined {
   if (isTextPassRequest(request)) return request.stepId;
   // A TRIAGE MINTS NOTHING: the cleanup behind it is the step, and a grayed card
   // for the question in front of the answer would be two cards for one act.
-  if (request.kind === 'read' || request.kind === 'analysis' || request.kind === 'clean-triage') {
+  if (request.kind === 'read' || request.kind === 'analysis' || request.kind === 'clean-triage'
+    || request.kind === 'analysis-rank') {
     return undefined;
   }
   if (request.export !== true) return undefined;
@@ -405,7 +411,7 @@ function mintsOf(request: EngineRequest): string | undefined {
  * rather than at every reader.
  */
 function deferralOf(request: EngineRequest): DeferredPlan | undefined {
-  if (request.kind === 'read' || request.kind === 'analysis') return undefined;
+  if (request.kind === 'read' || request.kind === 'analysis' || request.kind === 'analysis-rank') return undefined;
   return request.deferred;
 }
 
@@ -814,10 +820,13 @@ async function materializeAtSpawn(
     }
     return next;
   }
-  if (request.kind === 'analysis') {
+  if (request.kind === 'analysis' || request.kind === 'analysis-rank') {
     // AN ANALYSIS IS NEVER DEFERRED — `analysis` has no `deferred` field at all
     // (`AnalyzeRequest`), because no tile in this app chains one behind a promise.
-    // So the copy is a plain one and the row's name never moves.
+    // So the copy is a plain one and the row's name never moves. ITS RANKING
+    // MAKES THE SAME BOOK FROM THE SAME ROW (`at` is copied at the press), so the
+    // rank file and the report are about one content — the engine checks it, unit
+    // by unit, before it verifies anything (src/analyze/run.ts).
     const next = { ...request };
     next.bookPath = (await materializeAnalysis(dir, step)).bookPath;
     return next;
@@ -1639,6 +1648,9 @@ const NEVER_ROUTED: Readonly<Record<JobKind, boolean>> = {
   // The cleanup's triage, on the cleanup's own clause: ordered in a hosted window
   // with its cleanup behind it, and filed by whoever is scheduling the pair.
   'clean-triage': false,
+  // The analysis's ranking, on the analysis's clause — which today means it is
+  // never ordered hosted at all (`enqueueAnalysis`).
+  'analysis-rank': false,
   // A precondition of the engine running rather than GPU work (16e).
   'env-install': true,
   // Renderer-driven and interactive. It never entered the host’s queue and
@@ -2129,6 +2141,12 @@ function titleForTextPass(request: TextPassRequest): { title: string } | Record<
 const CLEAN_TRIAGE_TITLE = 'Clean text — triage';
 
 /**
+ * WHAT THE SHELF CALLS AN ANALYSIS'S RANKING ROW — `CLEAN_TRIAGE_TITLE`'s rule:
+ * the act somebody pressed, then which half of it this row is.
+ */
+const ANALYSIS_RANK_TITLE = 'Analysis — ranking';
+
+/**
  * Put a TEXT PASS in the queue — a translation, a rewrite or a narration cleanup.
  *
  * Behind whatever is already running, always. The engine holds an Ollama model
@@ -2380,8 +2398,8 @@ export function enqueueTriagedCleanup(
  *   deciding. A second, unrouted door would be a name nobody could prove the need
  *   for.
  *
- *   IT IS HELD, like everything expensive. An analysis is minutes of entailment
- *   over every sentence in the book followed by one Ollama call per surviving
+ *   IT IS HELD, like everything expensive. An analysis is a ranking of every
+ *   sentence in the book on a decide model followed by one model call per ranked
  *   passage; a person who queued one and a translation wants to look them both
  *   over and press Start once (docs/ANALYSIS.md §7).
  *
@@ -2397,7 +2415,7 @@ export function enqueueAnalysis(
   request: AnalyzeRequest,
   /** The position at the press. See `enqueue` above and `Job.parentStep`. */
   parentStep: string | null = null,
-): Job {
+): { rank: Job | null; analysis: Job } {
   /*
    * ── IT DOES NOT ROUTE, AND THAT IS SAID HERE RATHER THAN HALF-WIRED ───────
    *
@@ -2422,7 +2440,55 @@ export function enqueueAnalysis(
    */
   const outputPath = productOf(request);
   const already = pendingFor(outputPath);
-  if (already) return already;
+  if (already) {
+    // The pair that is already waiting, both halves — `enqueueTriagedCleanup`'s
+    // answer to a second press, so the dialog can pin and release the two rows it
+    // would have made.
+    const behind = already.after === undefined
+      ? undefined
+      : jobs.find((row) => row.id === already.after && row.kind === 'analysis-rank');
+    return { rank: behind ?? null, analysis: already };
+  }
+
+  /*
+   * ── THE RANKING GOES IN FRONT, AS THE TRIAGE GOES IN FRONT OF A CLEANUP ────
+   *
+   * Owen, 2026-09-25: briefcase's snap ranker replaces the entailment worker,
+   * and *"9b for triage"* — so the ranking is its own row on the decide act (the
+   * server's clean model, `placeJob`), and the analysis waits behind it on the
+   * analysis class. Two rows, each on its own model, one gesture: the press makes
+   * both, held, so Start commits to the pair.
+   *
+   * THE RANK FILE IS NAMED FROM THE REPORT (`analysisRankFileFor`), so the two
+   * rows agree on it without asking each other, and the categories file both
+   * read is named from the report too (`categoriesFileFor`). A ranking that
+   * fails takes the analysis with it (`cascadeFrom`), which is the honest ending:
+   * there would be nothing to verify.
+   */
+  const ranksPath = analysisRankFileFor(outputPath);
+  const rankRequest: AnalysisRankRequest = {
+    kind: 'analysis-rank',
+    inputPath: request.inputPath,
+    outputPath: ranksPath,
+    reportPath: outputPath,
+    categories: request.categories,
+    ...(request.at !== undefined ? { at: request.at } : {}),
+  };
+  const rank: Job = {
+    id: randomUUID(),
+    inputPath: request.inputPath,
+    outputPath: ranksPath,
+    kind: 'analysis-rank',
+    state: 'held',
+    progress: null,
+    title: ANALYSIS_RANK_TITLE,
+    parentStep,
+    ...placedBy('analysis-rank'),
+    createdAt: Date.now(),
+  };
+  jobs.push(rank);
+  requests.set(rank.id, rankRequest);
+  request = { ...request, ranksPath, after: rank.id };
 
   const job: Job = {
     id: randomUUID(),
@@ -2451,12 +2517,14 @@ export function enqueueAnalysis(
     // AND WHICH SLOT IT WILL WAIT FOR, resolved at the press for the same
     // reason `parentStep` is — see `placedBy`.
     ...placedBy('analysis'),
+    // Behind its ranking — the one link this pair has, spelled on the row.
+    after: rank.id,
     createdAt: Date.now(),
   };
   jobs.push(job);
   requests.set(job.id, request);
   changed();
-  return job;
+  return { rank, analysis: job };
 }
 
 /**
@@ -3354,8 +3422,9 @@ const releasing = new Set<Promise<void>>();
  * collide with a real file the day somebody's report is called something else,
  * and appending cannot.
  */
-function categoriesFileFor(request: AnalyzeRequest): string {
-  return `${path.resolve(request.outputPath)}.categories.json`;
+function categoriesFileFor(request: AnalyzeRequest | AnalysisRankRequest): string {
+  const report = request.kind === 'analysis-rank' ? request.reportPath : request.outputPath;
+  return `${path.resolve(report)}.categories.json`;
 }
 
 /**
@@ -3389,6 +3458,21 @@ function categoriesFileFor(request: AnalyzeRequest): string {
  * IT THROWS, AND THE CALLER TURNS THAT INTO A FAILED ROW with this sentence on it
  * — the same ending every unmakeable plan in this app has always had.
  */
+/**
+ * THE RANK FILE ON AN ANALYSIS'S COMMAND LINE, or a refusal — `bookOf`'s twin.
+ * A request filed before the ranking existed has none, and an analysis without
+ * one has nothing to verify.
+ */
+function ranksOf(request: AnalyzeRequest): string {
+  if (request.ranksPath === undefined) {
+    throw new Error(
+      'This analysis was queued by an older Foundry, before an analysis ranked the book on a Crucible '
+      + 'first, so there is no ranking for it to read. Remove it and analyse again.',
+    );
+  }
+  return request.ranksPath;
+}
+
 function bookOf(request: { bookPath?: string }): string {
   if (request.bookPath === undefined) {
     throw new Error(
@@ -3570,25 +3654,19 @@ export function argsFor(
 ): string[] {
   if (request.kind === 'analysis') {
     /*
-     * ── READING THE BOOK AGAINST THE CATEGORIES ───────────────────────────────
+     * ── VERIFYING THE RANKED BOOK AGAINST THE CATEGORIES ─────────────────────
      *
-     * `foundry analyze --book X --out Y [--categories C] [--model M]
+     * `foundry analyze --book X --ranks R --out Y [--categories C] [--model M]
      * [--endpoint U]`. It writes a report and no document at all — a header, one
-     * row per candidate passage, and its own question-keyed cache of every rank
-     * score and every verdict it paid for (docs/ANALYSIS.md §6).
+     * row per flagged passage with the verifier's reason, and its own
+     * question-keyed cache of every verdict it paid for (docs/ANALYSIS.md §6).
+     * `--ranks` is the file the `analysis-rank` row in front of it wrote.
      *
      * `--endpoint`, `--model` and `--server` ARE ALL `doorArgs`' NOW, and the
      * reason they moved is that they are one answer: where this run's compute
      * goes (docs/SLOTS.md §3). The engine's own settings fallback must never be
      * what decides which machine a job runs on, which is why the flag is always
      * on the line whichever slot won.
-     *
-     * NO `--nli-python`, AND IT IS AN OMISSION THIS APP CHOSE. The interpreter
-     * the entailment worker runs under is resolved by the engine from its own
-     * named candidates and `FOUNDRY_NLI_PYTHON`, and a miss ends the run naming
-     * every path it tried — which the shelf already shows as the job's error, in
-     * the engine's own words. A flag here would be a second place to configure a
-     * machine (docs/ANALYSIS.md §9).
      *
      * NO `--fresh`. It exists to throw away answers somebody has already paid
      * for, and there is no gesture in this app that means that: a re-analysis
@@ -3605,6 +3683,7 @@ export function argsFor(
        * panel draws them over.
        */
       '--book', bookOf(request),
+      '--ranks', ranksOf(request),
       '--out', request.outputPath,
       ...doorArgs(request, placement),
     ];
@@ -3621,6 +3700,34 @@ export function argsFor(
      */
     if (request.categories.length > 0) args.push('--categories', categoriesFileFor(request));
     return args;
+  }
+  if (request.kind === 'analysis-rank') {
+    /*
+     * ── EVERY SENTENCE, SCORED AGAINST THE CATEGORIES ───────────────────────
+     *
+     *   foundry analyze-rank --book X --out R --endpoint <crucible> --model M
+     *                        [--categories C]
+     *
+     * The triage's branch below, for every one of its reasons: the decide door
+     * needs the ENGINE'S BASE ADDRESS and the model the placement made resident,
+     * there is no dialect and no default, and an unplaced ranking is refused by
+     * name. `--categories` is the SAME file the analysis behind it reads.
+     */
+    if (placement.origin === null || placement.model === null) {
+      throw new Error(
+        'The ranking in front of this analysis was not placed on a Crucible server, so there is no '
+        + 'model to ask. It runs only on a Crucible that can make decisions; add or switch on one under '
+        + 'Settings › Crucible Servers.',
+      );
+    }
+    return [
+      'analyze-rank',
+      '--book', bookOf(request),
+      '--out', request.outputPath,
+      '--endpoint', placement.origin,
+      '--model', placement.model,
+      ...(request.categories.length > 0 ? ['--categories', categoriesFileFor(request)] : []),
+    ];
   }
   if (request.kind === 'clean-triage') {
     /*
@@ -5332,8 +5439,10 @@ async function carry(
     // rotated aside for it.
     && request.kind !== 'analysis'
     // NOR A CLEANUP'S TRIAGE, on the analysis's argument exactly: its verdicts
-    // file is not a document, and nothing about it belongs in the tray.
+    // file is not a document, and nothing about it belongs in the tray. Nor an
+    // analysis's ranking, for the same reason.
     && request.kind !== 'clean-triage'
+    && request.kind !== 'analysis-rank'
     && request.export === true
     ? request.kind
     : null;
@@ -5705,7 +5814,8 @@ async function carry(
      * that reached `exporting`, `rotateFinal` — asked to move a file that means
      * something else in a folder this run never writes.
      */
-    if (request.kind !== 'read' && !isTextPassRequest(request) && request.kind !== 'clean-triage') {
+    if (request.kind !== 'read' && !isTextPassRequest(request) && request.kind !== 'clean-triage'
+      && request.kind !== 'analysis-rank') {
       const projectDir = projectDirOf(request.outputPath);
       if (projectDir !== null) {
         rotatedIn = projectDir;
@@ -5793,14 +5903,14 @@ async function carry(
      * THE ENTRY IS REBUILT FIELD BY FIELD rather than spread, and that is the one
      * detail this write cannot get wrong. `parseCategoriesJson` (src/analyze/plan.ts)
      * REFUSES an entry carrying a field it does not read — deliberately, because a
-     * typo accepted in silence is a hand-written hypothesis that never reached the
+     * typo accepted in silence is a hand-written line that never reached the
      * model and an hour spent looking fine — so anything this app grows on its own
      * request shape would end the run the day it was added. Three fields are
      * spelled here because three are the ones over there: `name`, `enabled`, and
      * `description` where the category has one (a user's own; a built-in never
      * does, and an empty one is omitted rather than written as "").
      */
-    if (request.kind === 'analysis' && request.categories.length > 0) {
+    if ((request.kind === 'analysis' || request.kind === 'analysis-rank') && request.categories.length > 0) {
       const where = categoriesFileFor(request);
       const asked = request.categories.map((one) => {
         const description = (one.description ?? '').trim();
@@ -6257,7 +6367,26 @@ async function carry(
         settle();
         return null;
       }
+      /*
+       * A RANKING LANDS NOTHING, on the triage's clause above: its rank file is
+       * on disk where the press named it, and the analysis behind it reads it when
+       * the pump lets it start.
+       */
+      if (request.kind === 'analysis-rank') {
+        next.message = `Ranked ${path.basename(next.inputPath)} for analysis — the check follows.`;
+        changed();
+        settle();
+        return null;
+      }
       if (request.kind === 'analysis') {
+        // The rank file was the pair's scratch; the report is the payload
+        // (`analysisRankFileFor`). Kept on every other ending, so a Retry of this
+        // row does not pay the card for the ranking again.
+        if (request.ranksPath !== undefined) {
+          await fsp.rm(request.ranksPath, { force: true }).catch((err: unknown) => {
+            console.error(`[job] the analysis ranking could not be removed: ${String(err)}`);
+          });
+        }
         await recordAnalysis(next.outputPath, {
           parentStep: next.parentStep ?? null,
           categories: request.categories.filter((one) => one.enabled).map((one) => one.name),
@@ -6962,8 +7091,9 @@ async function runDetached(
     // `titleForTextPass`, where the rule and its exception live.
     ...(isTextPassRequest(request) ? titleForTextPass(request) : {}),
     ...(request.kind === 'clean-triage' ? { title: CLEAN_TRIAGE_TITLE } : {}),
+    ...(request.kind === 'analysis-rank' ? { title: ANALYSIS_RANK_TITLE } : {}),
     ...(request.kind !== 'read' && !isTextPassRequest(request) && request.kind !== 'analysis'
-      && request.kind !== 'clean-triage'
+      && request.kind !== 'clean-triage' && request.kind !== 'analysis-rank'
       && request.forStep !== undefined
       ? { forStep: request.forStep }
       : {}),

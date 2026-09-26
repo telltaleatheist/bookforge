@@ -208,14 +208,12 @@ interface Piece {
    * WHETHER AN ANALYSIS LIT THESE CHARACTERS, and how brightly.
    *
    * `null` on every run of every book with no report open over it, which is
-   * nearly all of them — and `'lit'` or `'ghost'` where a finding covers the run.
-   * Ghost is a passage the VERIFIER REJECTED, shown only under the loosest tier
-   * and drawn the shown-but-inert way a struck row is drawn (docs/ANALYSIS.md §8).
+   * nearly all of them — and `'lit'` where a finding covers the run. (A second
+   * value, `'ghost'`, drew the passages the verifier rejected under the loosest
+   * tier; the tiers went on 2026-09-25 and a report holds the flags alone.)
    *
-   * IT SAYS HOW BRIGHTLY AND NOT WHICH COLOUR — `hitInk` below is the colour.
-   * The two are separate because they answer different questions: this one is
-   * about the VERDICT (a flag or a rejection, which is the same distinction on
-   * every category) and that one is about the CATEGORY.
+   * IT SAYS THAT IT IS LIT AND NOT WHICH COLOUR — `hitInk` below is the colour,
+   * which is about the CATEGORY.
    *
    * ── AND THE COMPARISON'S TWO INKS RIDE THE SAME FIELD (2026-09-08) ─────────
    *
@@ -232,7 +230,7 @@ interface Piece {
    * change run: the change inks are two tokens, not twelve, and the stylesheet
    * knows them by class.
    */
-  hit: 'lit' | 'ghost' | 'added' | 'removed' | null;
+  hit: 'lit' | 'added' | 'removed' | null;
   /**
    * THE TINT THIS RUN IS WASHED IN — the category's own colour, or null where the
    * run is not lit.
@@ -586,11 +584,6 @@ const OP_GESTURE: Gesture = { kind: 'op' };
             closed the run wherever the light changes, so a lit stretch IS a run
             and wearing the class is the whole of drawing it.
 
-            \`ghost\` IS A PASSAGE THE VERIFIER THREW BACK, drawn only under the
-            loosest tier and drawn faint: docs/ANALYSIS.md §8 asks for the net's
-            whole contents, told honestly which of it was rejected, in the same
-            shown-but-inert register a struck row wears.
-
             \`data-hit\` IS THE FINDING'S NAME AND NOT A LISTENER. Owen's
             2026-08-25 sentence — *"as i scroll/click highlighted text, it should
             jump to that spot in the analysis"* — needs a click on these words to
@@ -625,8 +618,7 @@ const OP_GESTURE: Gesture = { kind: 'op' };
             class="run"
             [class.bold]="piece.strong"
             [class.italic]="piece.italic"
-            [class.hit]="piece.hit === 'lit' || piece.hit === 'ghost'"
-            [class.hit-ghost]="piece.hit === 'ghost'"
+            [class.hit]="piece.hit === 'lit'"
             [class.added]="piece.hit === 'added'"
             [class.removed]="piece.hit === 'removed'"
             [class.on]="piece.hitKey !== null && chosenHit() === piece.hitKey"
@@ -2668,28 +2660,13 @@ const OP_GESTURE: Gesture = { kind: 'op' };
       transition: background var(--t-fast) var(--ease),
                   box-shadow var(--t-fast) var(--ease);
     }
-    /*
-      AND THE VERIFIER'S REJECTIONS, FAINTER. Loose shows the passages the
-      verifier threw back — reported speech, quotation, argument against — and
-      they are the net's contents rather than findings, so they wear the same
-      shown-but-inert treatment a struck row does: present, legible, and visibly
-      not a claim about the author. The faintness is in the tint's own alpha
-      (\`tintOf\`); what is declared here is the dotted underline that says WHY it
-      is faint — and it stays NEUTRAL, because the ghosting is about the verdict
-      and the tint is about the category, and colouring it would put two facts on
-      one mark.
-    */
-    .run.hit-ghost {
-      text-decoration: underline dotted color-mix(in srgb, var(--ink-muted) 55%, transparent);
-      text-underline-offset: 0.22em;
-    }
     /* A struck block is never lit at the source (\`litRanges\` skips it), so the
        tint on a struck paragraph is not a thing this rule has to undo — there is
        none to undo. What is said here is the underline, and the reason is worth
        one line: a strike is a decision to remove and a highlight is an
        observation, and two marks arguing about one paragraph is the outcome
        neither of them is worth. */
-    .block.struck .run.hit, .block.struck .run.hit-ghost { text-decoration: none; }
+    .block.struck .run.hit { text-decoration: none; }
 
     /*
       ── THE SELECTED FINDING, PULSING ────────────────────────────────────────
@@ -7502,7 +7479,7 @@ function cut(
     while (nextChange < changes.length && changes[nextChange]!.end <= i) nextChange += 1;
     const change = changes[nextChange];
     const changed = change !== undefined && change.start <= i ? change.kind : null;
-    const hit: Piece['hit'] = covering === null ? changed : (covering.solid ? 'lit' : 'ghost');
+    const hit: Piece['hit'] = covering === null ? changed : 'lit';
     /*
      * AND WHICH FINDING IT IS, off the same range. `litRanges` put the earliest
      * covering finding's key on the merged run and made the key a thing two
@@ -7517,8 +7494,8 @@ function cut(
      * exactly where the key does, so the run closes at the same characters it
      * already closed at and nothing new has to be compared.
      */
-    const hitInk = covering === null ? null : tintOf(covering.category, covering.solid);
-    const hitDeep = covering === null ? null : deepTintOf(covering.category, covering.solid);
+    const hitInk = covering === null ? null : tintOf(covering.category);
+    const hitDeep = covering === null ? null : deepTintOf(covering.category);
     const code = codes?.[i] ?? 0;
     /*
      * THE FOUR ASTERISKS OF A MATCHED PAIR ARE NOT ON THE PAGE. They are still
@@ -7599,24 +7576,17 @@ const NO_ALIGNED_DIFF: {
  *     Owen sent it back for exactly the reason the numbers moved: a mid-tone at
  *     low alpha reads as a coloured patch, and a pastel at moderate alpha reads
  *     as a highlighter.
- *   * 14% for a verdict the verifier threw back — a shade under half the flag's
- *     alpha, which is the ratio the one-ink cut used (20 → 8) carried across. The
- *     dotted underline that says WHY it is faint is untouched and stays neutral:
- *     the ghosting is about the VERDICT and the tint is about the CATEGORY, and
- *     colouring the underline would be the one place two facts really did compete
- *     for one mark.
  *
  * MEMOISED, because `cut()` asks per run per repaint and a report names three or
  * four categories: the map is a handful of entries for the life of the window and
  * saves composing the same string a thousand times down a four-hundred-page book.
  */
 const TINTS = new Map<string, string>();
-function tintOf(category: string, solid: boolean): string {
-  const at = `${category}#${solid ? 1 : 0}`;
-  const held = TINTS.get(at);
+function tintOf(category: string): string {
+  const held = TINTS.get(category);
   if (held !== undefined) return held;
-  const made = `hsl(${analysisCategoryHue(category)} 75% 68% / ${solid ? 0.32 : 0.14})`;
-  TINTS.set(at, made);
+  const made = `hsl(${analysisCategoryHue(category)} 75% 68% / 0.32)`;
+  TINTS.set(category, made);
   return made;
 }
 
@@ -7631,11 +7601,11 @@ function tintOf(category: string, solid: boolean): string {
  * only the marker stroke behind them deepens, which keeps the one discipline
  * every ruling here has preserved.
  */
-function deepTintOf(category: string, solid: boolean): string {
-  const at = `${category}#deep${solid ? 1 : 0}`;
+function deepTintOf(category: string): string {
+  const at = `${category}#deep`;
   const held = TINTS.get(at);
   if (held !== undefined) return held;
-  const made = `hsl(${analysisCategoryHue(category)} 70% 58% / ${solid ? 0.52 : 0.3})`;
+  const made = `hsl(${analysisCategoryHue(category)} 70% 58% / 0.52)`;
   TINTS.set(at, made);
   return made;
 }

@@ -11,16 +11,14 @@ import {
   litRanges,
   onlyCategories,
   place,
-  tiered,
   type AnalysisHit,
   type AnalysisLegendEntry,
-  type AnalysisTier,
   type LitRange,
 } from './analysis';
 
 /**
- * THE ANALYSIS BEING LOOKED AT — the report, the tier, and the one placement both
- * surfaces draw from.
+ * THE ANALYSIS BEING LOOKED AT — the report, and the one placement both surfaces
+ * draw from.
  *
  * ── Why this is a service and not state on the panel ────────────────────────
  *
@@ -31,16 +29,11 @@ import {
  * mapped by two calls to `place()` against two reads of the rows — and the first
  * symptom of a drift would be a highlighted paragraph with no row beside it.
  *
- * So there is ONE load, ONE placement and ONE tier, here, and both surfaces read
- * computeds off them. `core/analysis.ts` is the arithmetic; this is the sitting.
+ * So there is ONE load and ONE placement, here, and both surfaces read computeds
+ * off them. `core/analysis.ts` is the arithmetic; this is the sitting.
  *
- * ── The tier is session state and is deliberately not persisted ─────────────
- *
- * *"The tier is session display state, not persisted, not a param of the step —
- * the report is the same file under every button."* (docs/ANALYSIS.md §8.) It
- * opens on MODERATE, which is briefcase's calibrated default and therefore the
- * set a plain run of that pipeline would have produced: the honest middle, from
- * which Strict is one click narrower and Loose one click wider.
+ * THERE IS NO TIER any more (Owen, 2026-09-25, *"confirmed only"*): the report
+ * holds the flagged passages alone, so every finding placed is a finding shown.
  *
  * ── WHAT DRIVES THE LOAD IS THE STAGE, WHICH IS WHAT KEEPS IT HONEST ────────
  *
@@ -64,14 +57,11 @@ export class AnalysisViewService {
    */
   private readonly stacks = inject(BookStacksService);
 
-  /** Which of the three buttons is pressed. See the class docblock. */
-  readonly tier = signal<AnalysisTier>('moderate');
-
   /**
    * THE CATEGORIES SWITCHED OFF IN THE LEGEND — hidden, never "the shown ones".
    *
-   * Session state beside the tier and for the tier's own reason: the report is
-   * the same file whatever is switched off, and a filter remembered across
+   * Session state, and not persisted: the report is the same file whatever is
+   * switched off, and a filter remembered across
    * closings would be a report that opens missing findings nobody can see are
    * missing. It is cleared when the panel moves to another analysis (below),
    * because a category name switched off in one report may not exist in the next.
@@ -210,29 +200,21 @@ export class AnalysisViewService {
     return place(this.rows(), reading.findings);
   });
 
-  /** Every finding this book can place, before the tier — for the panel's counts. */
+  /** Every finding this book can place — for the panel's counts. */
   readonly found = computed<readonly AnalysisHit[]>(() => this.placement().hits);
 
   /** The findings this book has nowhere to put, as sentences. Never a refusal. */
   readonly unplaced = computed<readonly string[]>(() => this.placement().unplaced);
 
   /**
-   * What the tier lets through, BEFORE the legend's switches — what the legend
-   * counts, and nothing else reads.
-   *
-   * It is a step of its own so that a category switched off keeps its own count
-   * beside its switch. See `legendOf`.
+   * The categories present, counted BEFORE the legend's switches — so a category
+   * switched off keeps its own count beside its switch. See `legendOf`.
    */
-  private readonly atTier = computed<readonly AnalysisHit[]>(
-    () => tiered(this.placement().hits, this.tier()),
-  );
+  readonly legend = computed<readonly AnalysisLegendEntry[]>(() => legendOf(this.found()));
 
-  /** The categories present at this tier, counted — the legend's rows. */
-  readonly legend = computed<readonly AnalysisLegendEntry[]>(() => legendOf(this.atTier()));
-
-  /** What the tier AND the legend let through — the cards, and the light on the paper. */
+  /** What the legend lets through — the cards, and the light on the paper. */
   readonly hits = computed<readonly AnalysisHit[]>(
-    () => onlyCategories(this.atTier(), this.hidden()),
+    () => onlyCategories(this.found(), this.hidden()),
   );
 
   /** Switch one category's cards — and its highlights — off, or back on. */

@@ -3347,6 +3347,25 @@ export function narrationStampFileFor(records: string): string {
 }
 
 /**
+ * WHERE THE RANKING IN FRONT OF AN ANALYSIS WRITES — `<report>.rank.json`.
+ *
+ * `cleanTriageFileFor`'s arrangement, for its reason: two rows have to agree
+ * about this path — the `analysis-rank` row that writes it (`--out`) and the
+ * `analysis` row behind it that reads it (`--ranks`) — and the one thing both
+ * certainly hold is the report's path. So it is named FROM the report, here,
+ * and composed nowhere else (`enqueueAnalysis`, electron/job-queue.ts). The
+ * engine names it the same way (`rankFileFor`, src/analyze/snap.ts).
+ *
+ * IT IS NOT A PAYLOAD. It sits beside the report for the length of the pair and
+ * is removed when the analysis lands (`executeJob`), so a finished analysis
+ * leaves only its report in `analysis/`. A pair that fails keeps it, so Retry on
+ * the analysis row does not have to pay the card for the ranking again.
+ */
+export function analysisRankFileFor(report: string): string {
+  return `${path.resolve(report)}.rank.json`;
+}
+
+/**
  * WHERE A CLEANUP'S TRIAGE VERDICTS LIVE — `<key>.clean[.<id8>].triage.json`,
  * beside the answers they decide the asking of.
  *
@@ -5048,6 +5067,20 @@ export async function readAnalysisReport(
   if (typeof header['analysis'] !== 'number') {
     return { ok: false, reason: 'That file is not an analysis report — it declares no format.' };
   }
+  /*
+   * FORMAT 1 IS THE ENTAILMENT RANKER'S, and it is refused rather than drawn.
+   * Its findings carry no reason for the panel to show, and half of them are the
+   * rejections the display tiers used to ghost — a report of a different kind
+   * from every one written since 2026-09-25 (src/analyze/report.ts,
+   * `ANALYSIS_FILE_VERSION`). The engine refuses to extend one for the same reason.
+   */
+  if (header['analysis'] !== 2) {
+    return {
+      ok: false,
+      reason: 'This report was made by the analysis Foundry used to run, and it has no reasons in it '
+        + 'to show. Analyse again from the step it was run against to read this book the current way.',
+    };
+  }
 
   const findings: AnalysisFindingRow[] = [];
   for (const line of lines.slice(1)) {
@@ -5070,21 +5103,24 @@ export async function readAnalysisReport(
     const hit = row['hit'];
     const category = row['category'];
     const score = row['score'];
-    const verdict = row['verdict'];
+    const reason = row['reason'];
     if (typeof id !== 'string' || typeof start !== 'number' || typeof end !== 'number'
       || typeof hit !== 'number' || typeof category !== 'string' || typeof score !== 'number'
-      || (verdict !== 'flag' && verdict !== 'skip')) {
+      || typeof reason !== 'string') {
       continue;
     }
+    const strings = (value: unknown): string[] =>
+      Array.isArray(value) ? value.filter((one): one is string => typeof one === 'string') : [];
     findings.push({
       hit,
       id,
       start,
       end,
       category,
-      also: Array.isArray(row['also']) ? row['also'].filter((one): one is string => typeof one === 'string') : [],
+      reason,
+      also: strings(row['also']),
+      alsoReasons: strings(row['alsoReasons']),
       score,
-      verdict,
       sentences: typeof row['sentences'] === 'number' ? row['sentences'] : 1,
     });
   }
@@ -5102,8 +5138,8 @@ export async function readAnalysisReport(
     ok: true,
     reading: {
       engine: typeof header['engine'] === 'string' ? header['engine'] : '',
-      nli: typeof header['nli'] === 'string' ? header['nli'] : '',
-      hypotheses: typeof header['hypotheses'] === 'string' ? header['hypotheses'] : '',
+      decide: typeof header['decide'] === 'string' ? header['decide'] : '',
+      options: typeof header['options'] === 'string' ? header['options'] : '',
       verify: typeof header['verify'] === 'string' ? header['verify'] : '',
       categories: Array.isArray(header['categories'])
         ? header['categories'].filter((one): one is string => typeof one === 'string')

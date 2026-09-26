@@ -133,11 +133,12 @@ const CAPABILITY_WORDS: Record<CapabilityClass, { verb: string; noun: string }> 
   simplify: { verb: 'simplify text', noun: 'simplification' },
   analysis: { verb: 'analyse text', noun: 'analysis' },
   /*
-   * THE CLEANUP'S TRIAGE, in the words its row and its dialog use: a server that
-   * "can't judge which blocks need cleaning" is the true sentence, where "can't
-   * decide" is the engine's own word for its door and says nothing to a person.
+   * THE CLEANUP'S TRIAGE AND THE ANALYSIS'S RANKING, the two acts that ask the
+   * decide door, in words a person would say: a server that "can't judge text
+   * for a cleanup or an analysis" is the true sentence, where "can't decide" is
+   * the engine's own word for its door and says nothing to anybody.
    */
-  decide: { verb: 'judge which blocks need cleaning', noun: 'cleanup-triage' },
+  decide: { verb: 'judge text for a cleanup or an analysis', noun: 'triage-and-ranking' },
 };
 
 /**
@@ -163,6 +164,10 @@ export function capabilityClassOf(kind: JobKind): CapabilityClass | null {
     // `decide` class, which is what a server files the small yes/no model under
     // and the word Crucible's `X-Crucible-Act` knows (PHASE22).
     case 'clean-triage': return 'decide';
+    // AND THE ANALYSIS'S RANKING, on the triage's terms and on its model: Owen,
+    // 2026-09-25, *"9b for triage"* — the decide act, the clean row's model
+    // (`placeJob`), briefcase's snap ranker in place of the entailment worker.
+    case 'analysis-rank': return 'decide';
     default: return null;
   }
 }
@@ -1231,6 +1236,10 @@ async function placeOnCrucible(
    * never swaps models between its two rows. Owen: "go ahead and use that for
    * cleanup triage if its best for it". The shared `decide` setting is left
    * alone — Briefcase and snap choose it for their own work.
+   *
+   * THE ANALYSIS'S RANKING TAKES THE SAME ROW (Owen, 2026-09-25: *"9b for
+   * triage"*), which is why this reads the act rather than the job kind: every
+   * decide job Foundry places is asked of the model its server cleans with.
    */
   const modelClass = capability === 'decide' ? 'clean' : capability;
   const row = record.classes.find((entry_) => entry_.capability === modelClass);

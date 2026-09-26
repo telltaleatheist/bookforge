@@ -2101,7 +2101,7 @@ export async function materializeCleanTriage(
  * WHAT IT DOES NOT DO IS REFUSE ANYTHING ABOUT LANGUAGE. An analysis is not a
  * transformation of the book — it measures whatever words are at this position,
  * in whatever language they are in — so there is no same-language trap to guard
- * and no chain to work out. The hypotheses are English and the untuned ones say
+ * and no chain to work out. The ranker's lines are English and the untuned ones say
  * so in the report; that is a fact about the method, argued in docs/ANALYSIS.md
  * §5, and not a decision this plan gets to make.
  *

@@ -1775,7 +1775,7 @@ export function registerIpc(): void {
    *
    * Owen's *"maybe the user can add more categories"* means free text now DOES
    * become a category name, so the sentence this comment used to carry — no free
-   * text ever reaches a hypothesis — needed a new true form rather than a quiet
+   * text ever reaches a model's question — needed a new true form rather than a quiet
    * deletion. It is this: free text becomes a category ONLY by being written
    * into the user's own settings file through the door below, where it is
    * slugged into `customCategoryId`'s shape, length-capped and collision-checked

@@ -10,8 +10,8 @@ import { SENTENCE_REACH, quoteAround, type SweepQuote } from './sweep';
  *
  * `sweep.ts` next door, deliberately and for the same three reasons. Everything
  * here is a pure function of a list of rows and a list of report rows; the panel
- * holds the sitting — which tier is pressed, which row the pointer is over — and
- * nothing else. Keeping the mapping out of the component is what makes the
+ * holds the sitting — which categories are switched off, which row the pointer
+ * is over — and nothing else. Keeping the mapping out of the component is what makes the
  * unplaced rule readable as a rule rather than as a branch inside a template, and
  * it is what lets ONE answer feed two surfaces: the rows in the second column and
  * the lit runs on the paper are the same list, so they can never disagree about
@@ -51,33 +51,13 @@ import { SENTENCE_REACH, quoteAround, type SweepQuote } from './sweep';
 /** The quotation a row draws, cut at the span so the middle can be lit. */
 export type AnalysisQuote = SweepQuote;
 
-/** Which of the three buttons the panel is standing on. Exactly one, always. */
-export type AnalysisTier = 'strict' | 'moderate' | 'loose';
-
-/**
- * THE TIERS, AS NUMBERS — Owen's ruling (docs/ANALYSIS.md §2 and §8) in one table.
- *
- * *"it flags absolutely anything that could possibly match and then we have a
- * button that displays things that match strictly (only turn up a few options), a
- * moderate filter, or a very loose filter."*
- *
- * The run captured ONCE, at the widest calibrated net, so these are a slice over
- * stored numbers and nothing re-runs. 0.9 and 0.7 are briefcase's own measured
- * ladder: 0.7 is the calibrated default a plain briefcase run would have
- * produced, and 0.9 is the near-certain entailments — the few options.
- *
- * LOOSE HAS NO FLOOR HERE, and that is not an omission: the floor is the CAPTURE
- * floor, 0.2, applied by the run itself, so a score below the loosest tier is a
- * score nobody stored. What Loose adds instead is the skips — the passages the
- * verifier threw back — which is the half of the ruling that matters most: *"a
- * person hunting for 'almost everything' is owed the net's whole contents, told
- * honestly which fish the verifier threw back."*
+/*
+ * THE TIERS ARE GONE (Owen, 2026-09-25): *"we wont have two separate categories
+ * in this. confirmed only."* Strict, Moderate and Loose sliced a report that
+ * stored every verdict and a score per finding; the report now holds the flags
+ * alone, each with the verifier's reason (src/analyze/report.ts, format 2), so
+ * there is nothing left to slice and no rejected passage to draw ghosted.
  */
-const TIER_FLOOR: Readonly<Record<AnalysisTier, number>> = {
-  strict: 0.9,
-  moderate: 0.7,
-  loose: 0,
-};
 
 /** One block's share of one finding — where on the paper it is, and what it says. */
 export interface AnalysisSpan {
@@ -98,7 +78,7 @@ export interface AnalysisSpan {
   struck: boolean;
 }
 
-/** One finding: one candidate passage, however many blocks it touches. */
+/** One finding: one flagged passage, however many blocks it touches. */
 export interface AnalysisHit {
   /**
    * THE NAME A ROW IS TRACKED BY, minted here rather than derived at the row.
@@ -113,12 +93,12 @@ export interface AnalysisHit {
   hit: number;
   /** The primary category: the strongest one the verifier flagged. */
   category: string;
-  /** The other categories flagged on this passage, strongest first. */
+  /** Why the verifier flagged it — its own one or two sentences, shown on the card. */
+  reason: string;
+  /** The other categories flagged on this passage, strongest first... */
   also: readonly string[];
-  /** The primary category's own score. The tiers slice on this. */
-  score: number;
-  /** The verifier's answer. A skip is drawn ghosted, under Loose only. */
-  verdict: 'flag' | 'skip';
+  /** ...and the verifier's reason for each, in the same order. */
+  alsoReasons: readonly string[];
   /** Every block this passage touches, in reading order. */
   spans: readonly AnalysisSpan[];
   /** The sentence around the first span, for the row's ordinary state. */
@@ -292,10 +272,10 @@ export function place(
     spans.sort((a, b) => (a.at === b.at ? a.span.start - b.span.start : a.at - b.at));
     const first = spans[0]!;
     /*
-     * THE PRIMARY CATEGORY AND THE SCORE COME OFF THE FIRST ROW, and every row of
-     * a passage carries the same pair — the engine writes one finding per block
-     * with the window's own category, `also` and score repeated (docs/ANALYSIS.md
-     * §6). Reading them from the first placed row rather than from the first
+     * THE PRIMARY CATEGORY AND THE REASONS COME OFF THE FIRST ROW, and every row
+     * of a passage carries the same ones — the engine writes one finding per
+     * block with the window's own category, reasons and `also` repeated
+     * (docs/ANALYSIS.md §6). Reading them from the first placed row rather than from the first
      * REPORTED one is deliberate: if the report's leading block came loose, the
      * facts about the passage are still true and are still on every other row.
      */
@@ -306,9 +286,9 @@ export function place(
         key: `${first.span.id}#${first.span.start}`,
         hit: ordinal,
         category: lead.category,
+        reason: lead.reason,
         also: lead.also,
-        score: lead.score,
-        verdict: lead.verdict,
+        alsoReasons: lead.alsoReasons,
         spans: spans.map((one) => one.span),
         quote: quoteAround(first.row.text, first.span.start, first.span.end, SENTENCE_REACH),
         struck: spans.every((one) => one.span.struck),
@@ -323,34 +303,6 @@ export function place(
     hits: placed.length === 0 ? NO_HITS : placed.map((one) => one.hit),
     unplaced: unplaced.length === 0 ? NO_SENTENCES : unplaced,
   };
-}
-
-/**
- * THE TIER FILTER — a pure function of (findings, tier), and nothing re-runs.
- *
- * *"it should light up/highlight text that matches the categories… a button that
- * displays things that match strictly, a moderate filter, or a very loose
- * filter."* (Owen, 2026-08-25.) The report is the same file under every button:
- * the run captured once at the widest net and the strictness lives here, which is
- * why changing your mind costs a click rather than an hour (docs/ANALYSIS.md §2).
- *
- *   STRICT     the verifier flagged it AND the score is 0.9 or better.
- *   MODERATE   the verifier flagged it AND the score is 0.7 or better —
- *              briefcase's calibrated default, the set a plain run would produce.
- *   LOOSE      everything the net caught, verdict included: the flags AND the
- *              skips, down to the run's own capture floor.
- *
- * A SKIP IS NEVER IN THE FIRST TWO, and it is not a matter of its score. The
- * verifier's answer is the whole of what distinguishes "the author asserts this"
- * from "the author is quoting somebody who asserts this", and a passage it threw
- * back is not a finding at either strictness — it is the net's contents, shown
- * under Loose, ghosted and labelled as the rejection it is.
- */
-export function tiered(hits: readonly AnalysisHit[], tier: AnalysisTier): readonly AnalysisHit[] {
-  if (tier === 'loose') return hits;
-  const floor = TIER_FLOOR[tier];
-  const kept = hits.filter((one) => one.verdict === 'flag' && one.score >= floor);
-  return kept.length === 0 ? NO_HITS : kept;
 }
 
 /**
@@ -422,17 +374,6 @@ export interface LitRange {
    * primary category, so two neighbours agreeing about the key agree about this.
    */
   category: string;
-  /**
-   * False where every finding covering this stretch is a verdict the verifier
-   * REJECTED — drawn as the ghosted variant, the same shown-but-inert treatment a
-   * struck row gets. True where at least one flagged finding covers it.
-   *
-   * ANY FLAG WINS OVER EVERY SKIP, and that is the only reading that is not a
-   * lie: a stretch a flagged passage covers IS flagged, whatever else also
-   * happens to overlap it, and drawing it ghosted because a rejected passage
-   * shares two of its words would understate the strongest thing said about it.
-   */
-  solid: boolean;
 }
 
 const NO_LIT: ReadonlyMap<string, readonly LitRange[]> = new Map();
@@ -443,8 +384,8 @@ const NO_LIT: ReadonlyMap<string, readonly LitRange[]> = new Map();
  *
  * ── One source of truth, two surfaces ───────────────────────────────────────
  *
- * The panel's rows and the paper's lit stretches come out of one `place()` and
- * one `tiered()`, and this is the last step of the second road. Nothing in the
+ * The panel's rows and the paper's lit stretches come out of one `place()`, and
+ * this is the last step of the second road. Nothing in the
  * book view decides what is flagged; it is handed ranges and draws them.
  *
  * ── Why the ranges are MERGED and not one per finding ───────────────────────
@@ -455,8 +396,8 @@ const NO_LIT: ReadonlyMap<string, readonly LitRange[]> = new Map();
  * a character two of them claim, and the honest answer is that the question is
  * not about findings at all: the paper draws ONE highlight ink (docs/ANALYSIS.md
  * §8 — *"the page must not turn into confetti"*), so what a character needs to
- * know is whether it is lit and whether the light is solid. Merging here answers
- * exactly that and leaves the walk with nothing to decide.
+ * know is whether it is lit, and by which card. Merging here answers exactly
+ * that and leaves the walk with nothing to decide.
  *
  * A STRUCK BLOCK IS NEVER LIT. It is drawn cancelled and it is absent from every
  * edition; painting a highlight over the cancel would be two marks arguing about
@@ -467,14 +408,12 @@ export function litRanges(hits: readonly AnalysisHit[]): ReadonlyMap<string, rea
   if (hits.length === 0) return NO_LIT;
   const raw = new Map<string, LitRange[]>();
   for (const hit of hits) {
-    const solid = hit.verdict === 'flag';
     for (const span of hit.spans) {
       if (span.struck) continue;
       const held = raw.get(span.id);
       const one = {
         start: span.start,
         end: span.end,
-        solid,
         key: hit.key,
         category: hit.category,
       };
@@ -496,12 +435,12 @@ export function litRanges(hits: readonly AnalysisHit[]): ReadonlyMap<string, rea
  *
  * A sweep line over every boundary either span mentions: between two consecutive
  * boundaries the covering set cannot change, so each segment has one answer to
- * "is anything covering this" and one to "is any of it solid". Segments nothing
+ * "is anything covering this" and one to "which finding first". Segments nothing
  * covers are dropped and neighbours that agree are joined, which is what keeps
  * the walk in `cut()` closing a run only where the paper actually changes.
  *
- * THE KEY IS THE FIRST COVERING SPAN'S, and it joins `solid` as a thing two
- * neighbours must AGREE ABOUT before they merge — see `LitRange.key`. That makes
+ * THE KEY IS THE FIRST COVERING SPAN'S, and it is the thing two neighbours must
+ * AGREE ABOUT before they merge — see `LitRange.key`. That makes
  * the runs slightly finer than they were: two findings that abut inside one block
  * used to become one run and are now two, which is one more `<span>` on one
  * paragraph and the price of a click knowing what it clicked.
@@ -517,11 +456,9 @@ function mergeLit(spans: readonly LitRange[]): LitRange[] {
   for (let i = 0; i + 1 < points.length; i += 1) {
     const from = points[i]!;
     const to = points[i + 1]!;
-    let solid = false;
     let owner: LitRange | null = null;
     for (const span of spans) {
       if (span.start <= from && span.end >= to) {
-        if (span.solid) solid = true;
         // The spans arrive in the hits' own order, which is the book's, so the
         // first one to claim this segment is the earliest finding covering it.
         owner ??= span;
@@ -529,10 +466,10 @@ function mergeLit(spans: readonly LitRange[]): LitRange[] {
     }
     if (owner === null) continue;
     const last = out[out.length - 1];
-    if (last !== undefined && last.end === from && last.solid === solid && last.key === owner.key) {
+    if (last !== undefined && last.end === from && last.key === owner.key) {
       last.end = to;
     } else {
-      out.push({ start: from, end: to, solid, key: owner.key, category: owner.category });
+      out.push({ start: from, end: to, key: owner.key, category: owner.category });
     }
   }
   return out;
@@ -541,7 +478,7 @@ function mergeLit(spans: readonly LitRange[]): LitRange[] {
 /** One row of the panel's legend: a category present in this report, and how much. */
 export interface AnalysisLegendEntry {
   category: string;
-  /** How many findings the tier lets through carry this as their primary. */
+  /** How many findings carry this as their primary. */
   count: number;
 }
 
@@ -558,12 +495,7 @@ export interface AnalysisLegendEntry {
  * so the grouping is gone and what it carried is here instead: the category names
  * and their counts, in one header, each one a switch.
  *
- * IT IS COUNTED OVER THE TIER'S FINDINGS AND NOT OVER THE WHOLE REPORT, because
- * the number beside a switch has to mean "this many cards below" — a legend
- * saying 14 over a list holding 3 would be counting a set the buttons above it
- * have already excluded.
- *
- * AND IT IS COUNTED BEFORE THE CATEGORY FILTER ITSELF (see `onlyCategories`), so
+ * IT IS COUNTED BEFORE THE CATEGORY FILTER ITSELF (see `onlyCategories`), so
  * that switching one off leaves its own count legible. A row whose count went to
  * zero the moment you pressed it would be a switch that erased the label telling
  * you what pressing it again would bring back.
@@ -572,8 +504,8 @@ export interface AnalysisLegendEntry {
  * hits arrive in and therefore needs no comparator. The alternative considered
  * was strongest-first, and it is the wrong order for the same reason the hits
  * themselves are in reading order: a list beside a book is read against the book,
- * and a row that jumps to the top because one passage in it scored well moves
- * under the reader between one tier and the next.
+ * and a row that jumps to the top because one passage in it scored well would
+ * move under the reader every time the report was read again.
  */
 export function legendOf(hits: readonly AnalysisHit[]): readonly AnalysisLegendEntry[] {
   const counts = new Map<string, number>();

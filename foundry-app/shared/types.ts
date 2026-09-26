@@ -71,10 +71,16 @@ export type { MintContributor, MintMeta };
  *
  * `analysis` IS THE SECOND KIND THAT PRODUCES NO DOCUMENT, after `read`, and it
  * is on the board for `translate`'s reason rather than for its own: the verify
- * stage is one schema-constrained Ollama call per surviving (window, category),
- * so it holds a model on the card for as long as a translation does
+ * stage is one schema-constrained model call per ranked (passage, category), so
+ * it holds a model on the card for as long as a translation does
  * (docs/ANALYSIS.md §5). What it writes is a REPORT — a file of findings about
  * the book, which nothing is ever made from.
+ *
+ * `analysis-rank` IS THE ANALYSIS'S `clean-triage`: the row in front of it, on
+ * a small `decide` model, that scores every sentence of the book against the
+ * categories and writes a rank file the analysis reads with `--ranks` (Owen,
+ * 2026-09-25, briefcase's snap ranker in place of the entailment worker). It
+ * lands no step, for the triage's reason — the report is the step.
  *
  * `simplify` AND `clean` ARE THE TWO KINDS THAT SPAWN THE SAME COMMANDS AS THEIR
  * SIBLING AND ARE STILL NOT IT. A simplify spawns `foundry translate --rewrite`
@@ -98,7 +104,7 @@ export type { MintContributor, MintMeta };
  */
 export type JobKind =
   ConversionKind | 'read' | 'env-install' | 'translate' | 'simplify' | 'clean' | 'mint' | 'analysis'
-  | 'clean-triage';
+  | 'clean-triage' | 'analysis-rank';
 
 /**
  * What the OCR panel can ask for. An env install is never enqueued this way.
@@ -240,11 +246,12 @@ export interface JobProgress {
    * pages. The field is still `page` because it is the same quantity to every
    * bar that draws it — a count of finished things out of a known total.
    *
-   * `rank` AND `verify` ARE ONE RUN'S TWO STAGES, and they are two members here
-   * rather than one because they count two unrelated things. An analysis ranks
-   * every sentence in the book with the small entailment model and then verifies
-   * every surviving passage against the large one (docs/ANALYSIS.md §2) — 141
-   * sentences becoming 20 verify calls is an ordinary book.
+   * `rank` AND `verify` ARE AN ANALYSIS'S TWO STAGES, and they are two members
+   * here rather than one because they count two unrelated things. An analysis
+   * ranks every sentence in the book on a small decide model (the `analysis-rank`
+   * row) and then verifies every ranked passage against the large one (the
+   * `analysis` row, docs/ANALYSIS.md §2) — 141 sentences becoming 20 verify calls
+   * is an ordinary book.
    *
    * ── Why the stage reaches this field, when it used not to ───────────────────
    *
@@ -1339,6 +1346,48 @@ export interface CleanTriageRequest {
 }
 
 /**
+ * THE RANKING IN FRONT OF AN ANALYSIS — every sentence scored against the
+ * categories on a Crucible's decide door.
+ *
+ *   foundry analyze-rank --book <book.jsonl> --out <ranks.json> [--categories <c>]
+ *                        --endpoint <crucible base url> --model <decide model>
+ *
+ * ── The ruling (Owen, 2026-09-25) ───────────────────────────────────────────
+ *
+ * *"full replacement … we're replacing the logic — the way it works. not the
+ * ui"*: briefcase's snap ranker in place of the entailment worker, and *"9b for
+ * triage"* — it runs on the model a cleanup's triage runs on, the server's clean
+ * row, leased as decide (`placeJob`, electron/crucible-dispatch.ts).
+ *
+ * `CleanTriageRequest`'S SHAPE, FOR ITS REASONS: a model pass over the
+ * materialised book that writes one file which is neither a document nor a step.
+ * `outputPath` is the rank file and the identity, `at` pins the row the book is
+ * made from — the SAME row the analysis behind it carries, so the two read one
+ * content — and there is no model and no endpoint, because the decide door is
+ * Crucible's alone. An unplaced rank is refused by name at the spawn.
+ *
+ * `categories` IS THE ANALYSIS'S LIST, VERBATIM, and it is written to the SAME
+ * file the analysis reads (`categoriesFileFor`, electron/job-queue.ts): the rank
+ * file records which questions were asked, and the analysis refuses one asked
+ * about a different list.
+ */
+export interface AnalysisRankRequest {
+  kind: 'analysis-rank';
+  /** The document the person had open — identity, not input. `AnalyzeRequest.inputPath`. */
+  inputPath: string;
+  /** `--book`: made at the spawn from `at`, as the analysis behind it makes its own. */
+  bookPath?: string;
+  /** THE LEDGER ROW THE BOOK IS MADE FROM — the analysis's own `at`. */
+  at?: string | null;
+  /** `--out`: THE RANK FILE, the whole product of this row and its identity. */
+  outputPath: string;
+  /** The analysis's report — the categories file is named from it, so both rows read one. */
+  reportPath: string;
+  /** `AnalyzeRequest.categories`, verbatim. */
+  categories: AnalyzeRequest['categories'];
+}
+
+/**
  * THE THREE TEXT PASSES AS ONE WIRE SHAPE — what `queue:enqueue-translate` takes
  * and what `enqueueTextPass` files.
  *
@@ -1361,23 +1410,10 @@ export type TextPassRequest = TranslateRequest | SimplifyRequest | CleanRequest;
  *
  * ── NO SENSITIVITY FIELD, AND THAT IS A RULING RATHER THAN AN OMISSION ──────
  *
- * Owen, 2026-08-25: *"it flags absolutely anything that could possibly match and
- * then we have a button that displays things that match strictly (only turn up a
- * few options), a moderate filter, or a very loose filter."* The run captures
- * ONCE at the widest calibrated net; strictness is a filter over the stored
- * scores, applied by the panel at display time (docs/ANALYSIS.md §2 and §8). So
- * changing your mind about how strict to be costs a click and never an hour, and
- * a field here would be a knob whose good value is known.
- *
- * ── AND NO `--nli-python`, WHICH IS A DIFFERENT KIND OF ABSENCE ─────────────
- *
- * The interpreter the entailment worker runs under is named by
- * `FOUNDRY_NLI_PYTHON` or by a candidate the engine resolves for itself, and a
- * miss ends the run with a message naming every path it tried — which the shelf
- * already shows as the job's error, in the engine's own words. A text box here
- * would be a second place to configure a machine, offered to the person least
- * able to answer it (docs/ANALYSIS.md §9: no shipped NLI env yet, and that is
- * indexed follow-up work rather than a hole in this dialog).
+ * The run ranks every sentence, verifies every ranked passage and reports the
+ * ones the verifier flagged (Owen, 2026-09-25: *"confirmed only"*). There is no
+ * strictness to choose and no display tier to slice with, so a field here would
+ * be a knob with nothing behind it.
  */
 export interface AnalyzeRequest {
   kind: 'analysis';
@@ -1452,12 +1488,21 @@ export interface AnalyzeRequest {
    * Two analyses of one book against one checklist from one step are one job, and
    * the file they would both write is what says so.
    *
-   * AND IT IS ITS OWN CACHE. Every rank score and every verdict is filed in there
-   * under a hash of the question that produced it, appended and fsynced as it
-   * lands, so a run killed at 400 of 456 keeps 399 and a re-run pays only for what
-   * changed (`AnalysisReport`, src/analyze/report.ts).
+   * AND IT IS ITS OWN CACHE. Every verdict is filed in there under a hash of the
+   * question that produced it, appended and fsynced as it lands, so a run killed
+   * at 400 of 456 keeps 399 and a re-run pays only for what changed
+   * (`AnalysisReport`, src/analyze/report.ts).
    */
   outputPath: string;
+  /**
+   * `--ranks`: THE RANK FILE THE ROW IN FRONT OF THIS ONE WRITES — named from the
+   * report by main at the enqueue (`analysisRankFileFor`), so the two rows agree
+   * on it without either asking the other. Absent on a request built before the
+   * pair existed, which the spawn refuses by name.
+   */
+  ranksPath?: string;
+  /** The `analysis-rank` row this one waits behind — `Job.after`. Composed by main at the enqueue. */
+  after?: string;
   /**
    * `--categories`: the checklist, as a file main writes beside the report.
    *
@@ -1474,15 +1519,15 @@ export interface AnalyzeRequest {
    * category this user saved, slugged and collision-checked on the way into
    * `app-settings.json` (`clampAnalysisCategories`) and re-checked against that
    * file by `workspace:plan-analysis`. Nothing typed into a text box reaches a
-   * hypothesis, a prompt or a filename without passing through that saving act.
+   * question, a prompt or a filename without passing through that saving act.
    *
    * `description` RIDES ONLY ON THE USER'S OWN CATEGORIES, and it is what makes
-   * one of them mean anything: the engine has no hypotheses for a name it has
-   * never heard of, so `buildPlan` wraps this sentence into the category's one
-   * hypothesis (`describedHypothesis`, src/analyze/plan.ts) and marks the whole
-   * category untuned. A built-in never carries one — its hypotheses are the
-   * measured ones, and a description beside them would be a second opinion about
-   * a calibrated question.
+   * one of them mean anything: the engine has no line for a name it has never
+   * heard of, so `buildPlan` ranks by the description's first sentence
+   * (`customOptionText`, src/analyze/plan.ts), verifies against the whole of it,
+   * and marks the category untuned. A built-in never carries one — its line is
+   * the measured one, and a description beside it would be a second opinion
+   * about a calibrated question.
    */
   categories: readonly { name: string; enabled: boolean; description?: string; label?: string }[];
   /** `--model`: the model the verifier is asked of. Empty under vLLM means "what it serves". */
@@ -1557,10 +1602,10 @@ export interface AnalysisPlan {
 export interface AnalysisReading {
   /** The engine that wrote it, for provenance. */
   engine: string;
-  /** Which entailment model produced the scores, and which questions they answer. */
-  nli: string;
-  hypotheses: string;
-  /** Which Ollama model produced the verdicts. */
+  /** Which decide model ranked the book, and which questions it was asked. */
+  decide: string;
+  options: string;
+  /** Which model produced the verdicts. */
   verify: string;
   /** Every category in the plan, in plan order. */
   categories: string[];
@@ -1594,7 +1639,7 @@ export interface AnalysisReading {
 }
 
 /**
- * One row of a report — one block's share of one candidate passage.
+ * One row of a report — one block's share of one flagged passage.
  *
  * MIRRORED FROM `AnalysisFinding` (src/analyze/report.ts) rather than imported:
  * `app/shared` is compiled by the electron program and by the renderer, and
@@ -1616,12 +1661,14 @@ export interface AnalysisFindingRow {
   end: number;
   /** The primary category — the highest-scoring one the verifier flagged. */
   category: string;
-  /** The other categories flagged on this passage, strongest first. */
+  /** Why the verifier flagged it, in its own one or two sentences. */
+  reason: string;
+  /** The other categories flagged on this passage, strongest first... */
   also: string[];
-  /** The primary category's own best score. The display tiers slice on this. */
+  /** ...and its reason for each, in the same order. */
+  alsoReasons: string[];
+  /** The primary category's evidence in the passage, the ranker's. Recorded, not shown. */
   score: number;
-  /** The verifier's answer. Skips are stored and shown ghosted under Loose. */
-  verdict: 'flag' | 'skip';
   /** How many sentences of the passage fall in THIS row. */
   sentences: number;
 }
@@ -2285,12 +2332,9 @@ export interface PageReaderState {
 /**
  * One environment on the release.
  *
- * The `nli-` pair are the analysis worker's Pythons — torch, transformers and
- * the DeBERTa weights baked in. They are separate entries rather than packages
- * added to the reading environments because the two are wanted at different
- * times by different people: somebody who only ever converts books should not
- * download a gigabyte of NLI to rasterise a PDF, and the Windows reading
- * environment (62 MB of PyMuPDF) would grow twenty-fold if it carried them.
+ * The `nli-` pair — the analysis ranker's entailment worker, torch and the
+ * DeBERTa weights baked in — went on 2026-09-25 with the worker: analysis ranks
+ * on a Crucible's decide door now (src/analyze/snap.ts).
  *
  * `wsl-x64` — vLLM inside a WSL distro — was a sixth and is gone
  * (docs/SLOTS.md §6, package B). Every target left is a plain directory on this
@@ -2298,9 +2342,7 @@ export interface PageReaderState {
  */
 export type EnvTarget =
   | 'windows-x64'
-  | 'mac-arm64'
-  | 'nli-windows-x64'
-  | 'nli-mac-arm64';
+  | 'mac-arm64';
 
 /**
  * The four things an install does, in order. Only `download` has a meaningful
@@ -4605,8 +4647,8 @@ export const STEP_ACTIONS = [
    * What it retains is a report — `analysis/<stepId>.jsonl`, header plus one row
    * per candidate passage, keyed by block id and character offsets. `expensive`
    * on the retention rule's model-pass clause and nothing sharper: a machine can
-   * make it again, at a price of minutes of NLI plus an Ollama call per surviving
-   * (window, category), which on a hot book is an hour.
+   * make it again, at a price of a ranking of every sentence plus a model call per
+   * ranked (window, category), which on a hot book is an hour.
    *
    * IT CHANGES NOTHING ABOUT THE BOOK, which is what decides every one of the
    * tables in shared/ledger.ts that this line makes the compiler ask about. The
@@ -4913,9 +4955,9 @@ export interface LedgerParams {
    * report's own question-keyed cache means the ranking is not re-paid, only the
    * verdicts the new model has never answered.
    *
-   * The NLI model is deliberately not recorded here: nothing in this app offers a
-   * choice of it, so a param would be a copy of a constant. The report's header
-   * carries it, which is where a reader who needs it looks.
+   * The ranking's decide model is deliberately not recorded here: nothing in this
+   * app offers a choice of it, so a param would be a copy of a server's setting.
+   * The report's header carries it, which is where a reader who needs it looks.
    */
   model?: string;
 }

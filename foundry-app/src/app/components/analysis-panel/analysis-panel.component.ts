@@ -14,7 +14,7 @@ import { analysisCategoryHue, analysisCategoryName } from '@shared/analysis-cate
 import { AnalysisViewService } from '../../core/analysis-view.service';
 import { BookStacksService } from '../../core/book-stacks.service';
 import { StageService } from '../../core/stage.service';
-import type { AnalysisHit, AnalysisTier } from '../../core/analysis';
+import type { AnalysisHit } from '../../core/analysis';
 
 /**
  * THE HITS PANEL — what the analysis found, in the slot Compare would have had.
@@ -82,10 +82,9 @@ import type { AnalysisHit, AnalysisTier } from '../../core/analysis';
  *
  *   **NO TOOLTIP THAT REPEATS THE CARD.** What was on hover is on the card, in
  *   words, or it is not there at all: the categories a passage ALSO matched are
- *   named instead of counted, and the verifier's rejection is a sentence under
- *   the quotation instead of a two-word chip with the sentence hidden behind it.
- *   The three that remain each say something the surface does not — what a tier
- *   means, and that the score is not a severity.
+ *   named instead of counted, and the verifier's reason for each is a sentence
+ *   on the card. (The tier buttons and the score, the two that carried a hover
+ *   sentence of their own, went with the tiers on 2026-09-25.)
  *
  *   **THE GLANCE IS CUT, and that is a judgement rather than an omission.** It
  *   was the one hover on this panel that showed MORE than the row did (the fuller
@@ -159,30 +158,10 @@ import type { AnalysisHit, AnalysisTier } from '../../core/analysis';
     </header>
 
     <!--
-      THE STRICTNESS, AS THREE BUTTONS AND NOT A SLIDER. They are named rather
-      than numbered because the numbers are measured constants a person has no
-      way to reason about (0.9 and 0.7 came out of briefcase's calibration), and
-      what somebody actually wants to say is "only the certain ones" or "show me
-      everything". The counts under each are what make the choice legible.
-
-      THE TOOLTIP HERE SURVIVED THE CULL because it does not repeat the button:
-      the button says "Strict" and the sentence says what strict MEANS, which is
-      the one fact this control cannot fit on itself.
+      THERE ARE NO STRICTNESS BUTTONS any more (Owen, 2026-09-25: *"we wont have
+      two separate categories in this. confirmed only."*). Every card below is a
+      passage the verifier flagged, with its reason; the legend is the only filter.
     -->
-    <div class="tiers" role="group" aria-label="How strict to be">
-      @for (one of tiers; track one.tier) {
-        <button
-          type="button"
-          class="tier"
-          [class.on]="analysis.tier() === one.tier"
-          [title]="one.why"
-          (click)="analysis.tier.set(one.tier)"
-        >
-          <span class="tier-name">{{ one.name }}</span>
-          <span class="tier-count">{{ countFor(one.tier) }}</span>
-        </button>
-      }
-    </div>
 
     <!--
       THE LEGEND, WHICH IS ALSO THE FILTER — what the category headings used to
@@ -237,7 +216,6 @@ import type { AnalysisHit, AnalysisTier } from '../../core/analysis';
           type="button"
           class="card"
           [class.ghost]="card.found.struck"
-          [class.rejected]="card.found.verdict === 'skip'"
           [class.on]="analysis.selected() === card.key"
           [style.--card-ink]="card.ink"
           [style.--card-rest]="card.washRest"
@@ -251,14 +229,6 @@ import type { AnalysisHit, AnalysisTier } from '../../core/analysis';
             @if (card.page > 0) {
               <span class="at">≈ {{ card.page }}</span>
             }
-            <!--
-              THE SCORE KEEPS ITS ONE SENTENCE. It is the only thing on the card
-              that can be READ AS A SEVERITY, and docs/ANALYSIS.md §1 rules that
-              there is no severity — the passage IS the finding. A number with no
-              explanation beside it invites exactly the misreading the design
-              spent a section refusing.
-            -->
-            <span class="score" [title]="scoreWhy">{{ card.score }}</span>
           </span>
           <span class="quote">
             <span class="q-side">{{ card.found.quote.before }}</span><span
@@ -268,23 +238,23 @@ import type { AnalysisHit, AnalysisTier } from '../../core/analysis';
             >{{ card.found.quote.after }}</span>
           </span>
           <!--
-            THE OTHER CATEGORIES, NAMED RATHER THAN COUNTED. It was "+2" with the
-            names on a tooltip; the names are two short words and the tooltip was
-            a door in front of them.
+            THE VERIFIER'S REASON — its own one or two sentences about what the
+            author says here and why that is the claim (Owen, 2026-09-25: *"the
+            side panel should show the reasoning"*). Under the quotation, because
+            the quotation is what it is a reason about.
           -->
-          @if (card.also.length > 0) {
-            <span class="also">also {{ card.also }}</span>
+          @if (card.found.reason.length > 0) {
+            <span class="why">{{ card.found.reason }}</span>
           }
           <!--
-            THE VERIFIER'S REJECTION, AS THE SENTENCE IT ALWAYS WAS.
-            docs/ANALYSIS.md §8: the loosest tier shows the skips *"ghosted and
-            labelled as the verifier's rejection (reported speech, quotation,
-            argument against)"*. It was a two-word chip with that sentence hidden
-            on a tooltip; on a card there is room to simply say it.
+            THE OTHER CATEGORIES, NAMED RATHER THAN COUNTED, and each with the
+            verifier's reason for it — it flagged the passage for each of them
+            separately, so each has its own account.
           -->
-          @if (card.found.verdict === 'skip') {
-            <span class="threw-back">
-              Not the author asserting this — reported, quoted, or argued against.
+          @for (other of card.also; track other.name) {
+            <span class="also">
+              <span class="also-name" [style.color]="other.ink">Also {{ other.name }}</span>
+              @if (other.reason.length > 0) { — {{ other.reason }} }
             </span>
           }
         </button>
@@ -367,35 +337,6 @@ import type { AnalysisHit, AnalysisTier } from '../../core/analysis';
     }
     .x:hover { background: var(--bg-hover); color: var(--text-primary); }
 
-    /* ── The three buttons ──────────────────────────────────────────────────── */
-    .tiers {
-      flex: 0 0 auto;
-      display: grid;
-      grid-template-columns: 1fr 1fr 1fr;
-      gap: 6px;
-      padding: 8px 10px 6px;
-    }
-    .tier {
-      display: flex; flex-direction: column; align-items: center; gap: 1px;
-      padding: 5px 4px;
-      border-radius: var(--radius-md);
-      border: 1px solid var(--border-default);
-      background: var(--bg-input);
-      color: var(--text-secondary);
-      cursor: pointer;
-      transition: background-color 100ms cubic-bezier(0, 0, 0.2, 1),
-                  border-color 100ms cubic-bezier(0, 0, 0.2, 1),
-                  color 100ms cubic-bezier(0, 0, 0.2, 1);
-    }
-    .tier:hover { background: var(--bg-hover); border-color: var(--border-strong); }
-    .tier.on {
-      background: var(--accent-faint);
-      border-color: var(--accent-strong);
-      color: var(--accent);
-    }
-    .tier-name { font-size: 11px; line-height: 1.2; }
-    .tier-count { font-size: 10px; font-variant-numeric: tabular-nums; opacity: 0.75; }
-
     /*
       ── The legend, which is the filter ──────────────────────────────────────
 
@@ -427,7 +368,7 @@ import type { AnalysisHit, AnalysisTier } from '../../core/analysis';
     /*
       SWITCHED OFF IS FADED AND STILL READABLE, which is the shown-but-inert
       register this app uses everywhere for a thing that is present and not
-      counting (a struck row, a rejected verdict). A chip that vanished would take
+      counting (a struck row). A chip that vanished would take
       its own count and its own way back with it.
     */
     .key.off { opacity: 0.4; }
@@ -458,10 +399,10 @@ import type { AnalysisHit, AnalysisTier } from '../../core/analysis';
 
     /*
       THE CARD. A rail in the category's colour down the left edge — the block
-      chrome's own idiom, one surface over — then the category, the page and the
-      score on one line, then the quotation as the body. It reads in that order
-      because that is the order somebody scans it: what kind of thing, where, then
-      what it says.
+      chrome's own idiom, one surface over — then the category and the page on one
+      line, then the quotation as the body, then the verifier's reason. It reads
+      in that order because that is the order somebody scans it: what kind of
+      thing, where, what it says, and why it was flagged.
     */
     .card {
       position: relative;
@@ -502,11 +443,6 @@ import type { AnalysisHit, AnalysisTier } from '../../core/analysis';
     /* A struck block's findings are listed and are inert: seeing that a passage
        the analysis found is one you already cancelled is half of trusting it. */
     .card.ghost { opacity: 0.45; }
-    /* And a verdict the verifier REJECTED is shown-but-inert in the same way —
-       the treatment a struck row gets, for the reason docs/ANALYSIS.md §8 gives:
-       it is the net's contents, honestly labelled, not a finding. */
-    .card.rejected { background: var(--bg-sunken); }
-    .card.rejected .q-hit { color: var(--text-secondary); font-weight: 400; }
 
     /*
       ── THE SELECTED CARD, PULSING ──────────────────────────────────────────
@@ -601,12 +537,6 @@ import type { AnalysisHit, AnalysisTier } from '../../core/analysis';
       font-size: 9.5px; color: var(--text-tertiary);
       font-variant-numeric: tabular-nums;
     }
-    .score {
-      flex: 0 0 auto;
-      font-family: var(--font-mono); font-size: 9.5px;
-      color: var(--text-tertiary);
-      font-variant-numeric: tabular-nums;
-    }
 
     /*
       THE PASSAGE AS PLAIN PROSE — Owen's ruling: *"they shouldnt be highlighted
@@ -625,16 +555,19 @@ import type { AnalysisHit, AnalysisTier } from '../../core/analysis';
     .q-side { color: var(--text-tertiary); }
     .q-hit { color: var(--text-primary); font-weight: 500; }
 
+    /* The verifier's reason: the card's second voice, quieter than the book's. */
+    .why {
+      display: block;
+      margin-top: 6px;
+      font-size: 11px; line-height: 1.5;
+      color: var(--text-secondary);
+    }
     .also {
       display: block;
       margin-top: 4px;
-      font-size: 9.5px; color: var(--text-tertiary);
+      font-size: 10.5px; line-height: 1.45; color: var(--text-tertiary);
     }
-    .threw-back {
-      display: block;
-      margin-top: 4px;
-      font-size: 9.5px; line-height: 1.45; color: var(--warn);
-    }
+    .also-name { font-weight: 500; }
 
     /* ── The caveats, at the foot ───────────────────────────────────────────── */
     .foot {
@@ -653,32 +586,7 @@ export class AnalysisPanelComponent {
   private readonly stacks = inject(BookStacksService);
   private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
 
-  /** The three buttons, with the sentence each one is owed on hover. */
-  protected readonly tiers: readonly { tier: AnalysisTier; name: string; why: string }[] = [
-    {
-      tier: 'strict',
-      name: 'Strict',
-      why: 'Only what the verifier flagged, at the near-certain end — the few options.',
-    },
-    {
-      tier: 'moderate',
-      name: 'Moderate',
-      why: 'What the verifier flagged, at the calibrated default — the ordinary answer.',
-    },
-    {
-      tier: 'loose',
-      name: 'Loose',
-      why: 'Everything the net caught, including the passages the verifier threw back — '
-        + 'shown greyed and labelled.',
-    },
-  ];
-
   protected readonly named = analysisCategoryName;
-
-  /** The one sentence the score is owed. See the template. */
-  protected readonly scoreWhy =
-    'How strongly the passage matches this category\'s claim, as the ranker measured it. '
-    + 'Not a severity: the passage is the finding.';
 
 
   /**
@@ -801,10 +709,10 @@ export class AnalysisPanelComponent {
    * `closest`: a click on a card bubbles here too, finds itself, and is left
    * alone — the card's own handler has already selected it. A click on the air
    * between cards, on the foot, or on the empty state finds nothing and clears.
-   * The head, the tiers and the legend are outside this element, so pressing a
-   * tier button or a legend chip is not "somewhere else": changing what is shown
-   * is not the same act as looking away from a finding, and a filter that dropped
-   * the selection would make the two controls fight.
+   * The head and the legend are outside this element, so pressing a legend chip
+   * is not "somewhere else": changing what is shown is not the same act as
+   * looking away from a finding, and a filter that dropped the selection would
+   * make the two controls fight.
    */
   protected clearOnBackdrop(event: Event): void {
     const under = event.target instanceof HTMLElement ? event.target.closest('.card') : null;
@@ -835,8 +743,11 @@ export class AnalysisPanelComponent {
     washRest: this.wash(found.category, false),
     washDeep: this.wash(found.category, true),
     page: found.spans[0]?.page ?? 0,
-    score: found.score.toFixed(2),
-    also: listed(found.also.map(analysisCategoryName)),
+    also: found.also.map((other, index) => ({
+      name: analysisCategoryName(other),
+      ink: this.ink(other),
+      reason: found.alsoReasons[index] ?? '',
+    })),
   })));
 
   /** The header's line: how many of how many, in words rather than a fraction. */
@@ -875,12 +786,7 @@ export class AnalysisPanelComponent {
     if (this.analysis.found().length === 0) {
       return 'This analysis found nothing in the book at this position.';
     }
-    if (this.analysis.hidden().size > 0 && this.analysis.legend().length > 0) {
-      return 'Every category is switched off. Turn one back on above.';
-    }
-    return this.analysis.tier() === 'strict'
-      ? 'Nothing is certain enough for Strict. Try Moderate.'
-      : 'Nothing at this strictness. Try Loose to see everything the net caught.';
+    return 'Every category is switched off. Turn one back on above.';
   });
 
   /**
@@ -913,14 +819,6 @@ export class AnalysisPanelComponent {
    */
   protected wash(category: string, deep: boolean): string {
     return `hsl(${analysisCategoryHue(category)} ${deep ? 48 : 34}% ${deep ? 33 : 24}%)`;
-  }
-
-  /** How many findings a tier would show — the number under each button. */
-  protected countFor(tier: AnalysisTier): number {
-    const all = this.analysis.found();
-    if (tier === 'loose') return all.length;
-    const floor = tier === 'strict' ? 0.9 : 0.7;
-    return all.filter((one) => one.verdict === 'flag' && one.score >= floor).length;
   }
 
   /**

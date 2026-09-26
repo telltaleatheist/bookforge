@@ -246,11 +246,11 @@ export const RETENTION_OF: Readonly<Record<StepAction, LedgerStep['retention']>>
   /*
    * A MODEL PASS, so `expensive` — the same clause `read` and `translate` sit on,
    * and the whole of the reason it is not sharper. Nobody's judgement is in a
-   * report: every row of it was measured by an entailment model and answered by
-   * a verifier, and a machine will measure the same book the same way again. The
-   * price is real — minutes of NLI over every sentence, then one Ollama call per
-   * surviving (window, category), which is an hour on a hot book — and that is
-   * exactly what this state means.
+   * report: every row of it was ranked by a decide model and answered by a
+   * verifier, and a machine will measure the same book the same way again. The
+   * price is real — a ranking of every sentence, then one model call per ranked
+   * (window, category), which is an hour on a hot book — and that is exactly
+   * what this state means.
    */
   analysis: 'expensive',
 };
@@ -2886,8 +2886,8 @@ export function deleteCost(step: LedgerStep): string {
       /*
        * AN ANALYSIS IS EXPENSIVE FOR A DIFFERENT REASON THAN A READING IS, and
        * `WHY_MODEL_PASS` says the reading's. "A model read every page of it" is
-       * false about a report: nothing looked at a page, an entailment model scored
-       * every SENTENCE and a second model judged the passages that survived. The
+       * false about a report: nothing looked at a page, a decide model scored
+       * every SENTENCE and a second model judged the passages that ranked. The
        * shared phrase is kept for the two steps it is true of, and this row gets
        * the sentence that is true of it — including the part somebody deciding
        * whether to discard actually wants, which is that the file is also the

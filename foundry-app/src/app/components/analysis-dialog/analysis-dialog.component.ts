@@ -55,24 +55,22 @@ import { api, hosted } from '../../core/foundry';
  *   and therefore whether a second run refreshes the row you have or files a new
  *   one beside it (`PARAMS_OF.analysis`, shared/ledger.ts). So the run is ordered
  *   from a list of CHECKBOXES and never from a text field: every name that leaves
- *   here is one the engine has a calibrated hypothesis, a first-draft hypothesis,
- *   or a saved description for.
+ *   here is one the engine has a measured line, a first-draft line, or a saved
+ *   description for.
  *
  *   **AND THE LIST CAN BE ADDED TO.** Owen, 2026-08-25: *"maybe the user can add
  *   more categories - even one-sentence descriptive ones. and they check off which
  *   ones they want to search for in this document."* Engine-side this is not a new
  *   door: `buildPlan` (src/analyze/plan.ts) has always taken a description-backed
- *   category and wrapped the sentence into its one hypothesis, and the two
- *   built-ins Owen named himself — anti-evolution, authoritarian-blueprint — came
- *   in through exactly that shape. What was missing was a way to say one from the
- *   app.
+ *   category. What was missing was a way to say one from the app.
  *
- *   THE SENTENCE IS THE HYPOTHESIS, WHICH IS WHY THE FIELD ASKS FOR A CLAIM. It
- *   is scored against every sentence in the book as *"The author's statement
- *   matches this description: …"*, so "conscription" finds nothing and "the author
- *   argues that military service should be compulsory" finds something. The dialog
- *   says so, and every category made this way is marked untuned in the report,
- *   because nothing has calibrated a sentence somebody typed this afternoon.
+ *   THE SENTENCE IS THE QUESTION, WHICH IS WHY THE FIELD ASKS FOR A CLAIM. Its
+ *   first sentence is the line the ranker offers for the category and the whole
+ *   of it is what the verifier tests, so "conscription" finds nothing and "the
+ *   author argues that military service should be compulsory" finds something.
+ *   The dialog says so, and every category made this way is marked untuned in the
+ *   report, because nothing has calibrated a sentence somebody typed this
+ *   afternoon.
  *
  *   ADDING ONE IS A SAVE AND NOT A KEYSTROKE, and that is what keeps the old
  *   sentence about free text true in its new form. A typed name becomes a category
@@ -124,7 +122,7 @@ import { api, hosted } from '../../core/foundry';
           handed over at the press.
         -->
         @if (watched(); as job) {
-          <app-run-progress [job]="job" verb="Analysing" />
+          <app-run-progress [job]="job" [verb]="job.kind === 'analysis-rank' ? 'Scoring the sentences' : 'Checking the passages'" />
         } @else {
           <!-- WHERE IT WILL RUN, AND WHAT WILL RUN IT. The child draws the one
                real choice and states the rest — run-target.component.ts carries
@@ -157,14 +155,14 @@ import { api, hosted } from '../../core/foundry';
                   <span class="check-name">{{ one.name }}</span>
                   <!--
                     UNTUNED SAID QUIETLY AND BEFORE THE RUN. docs/ANALYSIS.md §5:
-                    these two have no calibrated hypothesis yet, so they may turn
+                    these two have no measured line yet, so they may turn
                     up too much or too little, and the report names them as
                     untuned. The person deciding whether to spend an hour is the
                     person who wants to know which half of this list has been
                     measured — which is why it is here and not only afterwards.
                   -->
                   @if (!one.tuned) {
-                    <span class="check-note" title="No calibrated hypothesis yet — a first draft">draft</span>
+                    <span class="check-note" title="Not measured yet — a first draft">draft</span>
                   }
                 </label>
               }
@@ -627,19 +625,32 @@ export class AnalysisDialogComponent {
   /** May this act run on that engine at all — the child's verdict. */
   protected readonly canRun = signal(false);
   /**
-   * THE ROW THIS CARD IS WATCHING, or null when it is a form. An id rather than
-   * the job: the job is re-pushed whole on every change, and a held copy would
-   * be a snapshot going stale under a progress bar.
+   * THE ROWS THIS CARD IS WATCHING, or null when it is a form — the ranking and
+   * the check behind it. Ids rather than jobs: a job is re-pushed whole on every
+   * change, and a held copy would be a snapshot going stale under a progress bar.
+   * `rank` is null when a second press found the pair with its ranking done.
    */
-  private readonly watching = signal<string | null>(null);
+  private readonly watching = signal<{ analysis: string; rank: string | null } | null>(null);
   /**
-   * That row as it stands now. NULL the moment it leaves the list, which is what
-   * makes Send to background and a finished run one code path.
+   * THE ROW TO DRAW NOW — the ranking while it is still to come or running, and
+   * the check after it: the Clean dialog's rule, so a person sees "Scoring…" and
+   * then "Checking…" rather than a check reading "waiting" for the length of a
+   * ranking they asked for. NULL the moment the check leaves the list, which is
+   * what makes Send to background and a finished run one code path.
    */
   protected readonly watched = computed(() => {
-    const id = this.watching();
-    if (id === null) return null;
-    return this.queue.jobs().find((job) => job.id === id) ?? null;
+    const ids = this.watching();
+    if (ids === null) return null;
+    const jobs = this.queue.jobs();
+    const rank = ids.rank === null ? undefined : jobs.find((job) => job.id === ids.rank);
+    if (rank !== undefined
+      && (rank.state === 'held' || rank.state === 'queued' || rank.state === 'running'
+        || rank.state === 'failed' || rank.state === 'cancelled')) {
+      // A ranking that FAILED is drawn too: the check behind it was taken with
+      // it, and the reason is on this row.
+      return rank;
+    }
+    return jobs.find((job) => job.id === ids.analysis) ?? null;
   });
 
   /**
@@ -741,7 +752,7 @@ export class AnalysisDialogComponent {
     }
     if (ANALYSIS_CATEGORY_IDS.includes(id)) {
       this.addProblem.set(
-        `Foundry already looks for something it calls “${name}”, with hypotheses that were `
+        `Foundry already looks for something it calls “${name}”, with a line that was `
         + 'measured. It is on the list above.',
       );
       return;
@@ -849,11 +860,10 @@ export class AnalysisDialogComponent {
          * thirteenth, a shortened list would silently turn it off.
          *
          * THE USER'S OWN CARRY THEIR SENTENCE, and they have to: the engine has no
-         * hypotheses for a name it has never heard of, so `buildPlan` refuses
-         * outright a category given neither a description nor hypotheses of its
-         * own. A built-in never carries one — its hypotheses are the measured
-         * ones, and a description beside them would be a second opinion about a
-         * calibrated question.
+         * line for a name it has never heard of, so `buildPlan` refuses outright a
+         * category given no description. A built-in never carries one — its line
+         * is the measured one, and a description beside it would be a second
+         * opinion about a calibrated question.
          */
         categories: this.all().map((one) => ({
           name: one.id,
@@ -906,8 +916,14 @@ export class AnalysisDialogComponent {
        * door owns it. A blank server means nothing was chosen and the row keeps
        * the default it was admitted with.
        */
-      const { outcome, id } = await this.queue.enqueueAnalysisNamed(request);
+      const { outcome, id, rankId } = await this.queue.enqueueAnalysisNamed(request);
+      /*
+       * BOTH ROWS GO WHERE THE CARD SAID — the ranking on that server's decide
+       * model and the check on its analysis model — as the Clean dialog pins its
+       * triage and its cleanup together.
+       */
       if (id !== null && this.server().length > 0) {
+        if (rankId !== null) await this.queue.setWaitFor(rankId, this.server());
         await this.queue.setWaitFor(id, this.server());
       }
       if (outcome === 'already') {
@@ -918,8 +934,8 @@ export class AnalysisDialogComponent {
          * sentence, because there the news IS that the shelf did not grow.
          */
         if (release && id !== null) {
-          await this.queue.release(id);
-          this.watching.set(id);
+          await this.releasePair(id, rankId);
+          this.watching.set({ analysis: id, rank: rankId });
           return;
         }
         this.problem.set(
@@ -933,8 +949,8 @@ export class AnalysisDialogComponent {
        * `queue:start`, which lets go of every row somebody parked deliberately.
        */
       if (release && id !== null) {
-        await this.queue.release(id);
-        this.watching.set(id);
+        await this.releasePair(id, rankId);
+        this.watching.set({ analysis: id, rank: rankId });
         return;
       }
       /*
@@ -951,5 +967,11 @@ export class AnalysisDialogComponent {
     } finally {
       this.busy.set(null);
     }
+  }
+
+  /** Start commits to the pair and nothing else — the ranking, then the check behind it. */
+  private async releasePair(analysis: string, rank: string | null): Promise<void> {
+    if (rank !== null) await this.queue.release(rank);
+    await this.queue.release(analysis);
   }
 }

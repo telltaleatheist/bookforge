@@ -1286,6 +1286,12 @@ export class QueuePageComponent {
        * row does is find the paragraphs the cleanup behind it will work on.
        */
       case 'clean-triage': return 'Finding the text that needs cleaning';
+      /*
+       * THE ANALYSIS'S RANKING, on the triage's argument: what this row does is
+       * score every sentence of the book against the checklist, so the check
+       * behind it knows which passages to read.
+       */
+      case 'analysis-rank': return 'Scoring the sentences against the categories';
       case 'epub': return 'Casting the book';
       case 'pdf': return 'Reprinting';
       case 'txt': return 'Plain text';
@@ -1320,6 +1326,7 @@ export class QueuePageComponent {
     if (job.kind === 'simplify') return 'Simplified · the book follows';
     if (job.kind === 'clean') return 'Cleaned · the book follows';
     if (job.kind === 'clean-triage') return 'Checked · the cleanup follows';
+    if (job.kind === 'analysis-rank') return 'Ranked · the check follows';
     return this.view.made(job);
   }
 

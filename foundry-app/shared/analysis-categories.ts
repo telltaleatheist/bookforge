@@ -3,7 +3,7 @@
  *
  * ── Where these come from, and why the app keeps a copy at all ──────────────
  *
- * The ORIGIN is `src/analyze/plan.ts` — `HYPOTHESES` and `UNTUNED_BOOK_CATEGORIES`,
+ * The ORIGIN is `src/analyze/plan.ts` — `OPTION_TEXTS` and `UNTUNED_BOOK_CATEGORIES`,
  * in the order `builtInCategories()` returns them, which is the order a default
  * run plans them and therefore the order the report's header lists them in. That
  * file is the engine's, compiled into the `foundry` binary; `app/shared` is
@@ -13,11 +13,11 @@
  * of them gains an entry the other is a line behind.
  *
  * WHAT THE MIRROR IS ALLOWED TO CARRY IS THE NAME AND NOTHING ELSE. The
- * hypotheses, the propositions, the capture floors and the whole measured axis
- * stay on the engine's side, where they were calibrated and where they are
- * argued. A checklist needs an id to send and a phrase to draw beside a checkbox;
- * copying a stance hypothesis into a renderer would put a prompt in a window and
- * invite the next person to edit it there.
+ * ranker's lines, the propositions and the whole measured axis stay on the
+ * engine's side, where they were calibrated and where they are argued. A
+ * checklist needs an id to send and a phrase to draw beside a checkbox; copying
+ * a ranker's line into a renderer would put a prompt in a window and invite the
+ * next person to edit it there.
  *
  * A NAME THIS BUILD DOES NOT KNOW IS STILL LEGIBLE. The panel groups findings by
  * the category the report names, and a report made by a newer engine can carry
@@ -29,9 +29,9 @@
  * ── `misinformation` IS NOT HERE, AND ITS ABSENCE IS MEASURED ───────────────
  *
  * The engine refuses to rank it and says why (`MISINFORMATION_EXCLUSION`,
- * src/analyze/plan.ts): every stance hypothesis for it degenerates to "the author
- * makes a factual assertion", and whether an assertion is FALSE is world
- * knowledge an entailment model does not have. briefcase measured the cost —
+ * src/analyze/plan.ts): reading for what a book says, it degenerates to "the
+ * author makes a factual assertion", and whether an assertion is FALSE is world
+ * knowledge a ranker does not have. briefcase measured the cost —
  * 169 of 205 candidates and 19 of 20 verified false positives were that one
  * category. So it is not on the checklist, because a checkbox whose only possible
  * outcome is a line in the log saying the category was skipped is a checkbox that
@@ -42,7 +42,7 @@
 export interface AnalysisCategory {
   /** The engine's own id — what travels on the wire and what a report row says. */
   id: string;
-  /** What the checkbox says. The reader's words, not the hypothesis's. */
+  /** What the checkbox says. The reader's words, not the ranker's line. */
   name: string;
   /**
    * THE HUE THIS CATEGORY IS KNOWN BY IN THE PANEL — 0–359, and a NAME rather
@@ -81,8 +81,8 @@ export interface AnalysisCategory {
    */
   hue: number;
   /**
-   * True where the hypotheses behind it were calibrated against reference
-   * material, false for the ones that are first drafts.
+   * True where the ranker's line for it is briefcase's measured one, false for
+   * the ones that are first drafts.
    *
    * IT IS DRAWN, and quietly. docs/ANALYSIS.md §5 rules that an untuned category
    * may produce too many candidates or too few and that the report says which
@@ -100,8 +100,8 @@ export interface AnalysisCategory {
  *
  * *"jehovahs witness anti evolution material, christian nationalist books,
  * project 2025, etc."* Christian nationalism was already tuned in briefcase and
- * sits with the other nine. The other two have no calibrated hypothesis anywhere
- * and enter description-backed and saying so, which is why they carry
+ * sits with the other nine. The other two have no measured line anywhere and
+ * enter as first drafts and saying so, which is why they carry
  * `tuned: false` and why the report names them in its `untuned` list. Tuning them
  * against reference books is follow-up work indexed in docs/PLAN.md.
  */
@@ -192,22 +192,20 @@ export function analysisCategoryHue(id: string): number {
 
 /**
  * ONE CATEGORY A PERSON WROTE — the name they gave it and the sentence that IS
- * its hypothesis.
+ * its claim.
  *
  * Owen, 2026-08-25: *"maybe the user can add more categories - even
  * one-sentence descriptive ones."* Engine-side this is not a new door and not a
  * concession: `buildPlan` (src/analyze/plan.ts) has always accepted a
- * description-backed category and wrapped it into a hypothesis
- * (`describedHypothesis`), and the two built-ins Owen asked for by name —
- * anti-evolution, authoritarian-blueprint — came in through that very shape.
- * What was missing was a way to SAY one from the app.
+ * description-backed category. What was missing was a way to SAY one from the
+ * app.
  *
- * THE DESCRIPTION IS THE HYPOTHESIS SEED AND IS NOT DECORATION. It is wrapped
- * as *"The author's statement matches this description: …"* and scored against
- * every sentence in the book, which is why the dialog asks for a claim in a
- * sentence rather than a topic in a word — and why the report marks every one of
- * these untuned, because nothing has calibrated a sentence somebody typed this
- * afternoon.
+ * THE DESCRIPTION IS THE QUESTION AND IS NOT DECORATION. Its first sentence is
+ * the line the ranker offers beside the category's letter (`customOptionText`)
+ * and the whole of it is the claim the verifier tests, which is why the dialog
+ * asks for a claim in a sentence rather than a topic in a word — and why the
+ * report marks every one of these untuned, because nothing has calibrated a
+ * sentence somebody typed this afternoon.
  *
  * IT IS THE USER'S AND NOT ONE PROJECT'S, which is why it persists in
  * `app-settings.json` (electron/app-settings.ts) beside the library folder
@@ -220,7 +218,7 @@ export interface CustomAnalysisCategory {
   id: string;
   /** What the checkbox and the legend say. */
   name: string;
-  /** One sentence. The engine wraps it into this category's only hypothesis. */
+  /** One sentence: the ranker reads it and the verifier tests it. */
   description: string;
 }
 
