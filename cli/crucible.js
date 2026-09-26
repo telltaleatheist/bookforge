@@ -299,7 +299,9 @@ async function run(args) {
   const serverName = required(args, 'server', 'which registered crucible to call');
   // Resolved BEFORE the call, so an unknown server is a registry refusal rather
   // than a network one, and every later error line can name the server.
-  const client = servers.crucibleClientFor(serverName, CLIENT_NAME);
+  // crucibleClientFor is async (it reads the registry and the engine address); without the await every
+  // remote verb here called methods on a Promise ("client.loadModel is not a function", 2026-09-25).
+  const client = await servers.crucibleClientFor(serverName, CLIENT_NAME);
   inFlightServer = serverName;
 
   // ── --ping ────────────────────────────────────────────────────────────────

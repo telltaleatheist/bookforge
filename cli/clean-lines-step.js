@@ -359,7 +359,11 @@ async function runCleanLines(opts, deps) {
       } else {
         const headers = JSON.parse(crucible.env.FOUNDRY_ENDPOINT_HEADERS);
         for (const k of Object.keys(headers)) if (k.toLowerCase() === 'x-crucible-act') headers[k] = 'decide';
-        const triageEngine = { ...crucible, act: 'decide', env: { FOUNDRY_ENDPOINT_HEADERS: JSON.stringify(headers) } };
+        // clean-triage asks the Crucible's DECIDE door, which it addresses itself from the server's BASE
+        // url (`--endpoint http://host:port`, foundry-engine CTR_ENDPOINT) - not the chat endpoint, whose
+        // /openai suffix sent the first run to .../openai/v1/decide and a 404 (2026-09-25).
+        const base = crucible.endpoint.replace(/\/openai\/?$/, '');
+        const triageEngine = { ...crucible, endpoint: base, act: 'decide', env: { FOUNDRY_ENDPOINT_HEADERS: JSON.stringify(headers) } };
         const triageArgs = [
           'clean-triage', '--book', bookPath, '--out', verdictsPath,
           '--endpoint', triageEngine.endpoint, '--model', triageEngine.model,
