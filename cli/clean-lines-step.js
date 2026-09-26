@@ -354,8 +354,21 @@ async function runCleanLines(opts, deps) {
      * changed since, so a stale verdict can only cause MORE cleaning, never less.
      */
     if (opts.triage === true) {
-      if (fs.existsSync(verdictsPath)) {
-        log(`[clean-lines] triage: reusing ${verdictsPath} (verdicts carry the digest of the text they judged)`);
+      /*
+       * VERDICTS ARE REUSED ONLY FOR THE BOOK FILE THEY WERE MADE FOR (2026-09-25). They are keyed by block POSITION,
+       * so verdicts from an earlier input (WoA's VTT, re-aligned in between) left 1,208 lines with no answer and the
+       * run refused to write. The book file's digest is stored beside them; a different input is triaged again (the
+       * cleaner's own answers are still cached by text, so re-cleaning costs only what changed).
+       */
+      const bookDigest = crypto.createHash('sha256').update(fs.readFileSync(bookPath)).digest('hex');
+      const digestPath = `${verdictsPath}.book-sha256`;
+      const reuse = fs.existsSync(verdictsPath) && fs.existsSync(digestPath) && fs.readFileSync(digestPath, 'utf8').trim() === bookDigest;
+      if (!reuse && fs.existsSync(verdictsPath)) {
+        log(`[clean-lines] triage: ${verdictsPath} was made for a different input - triaging again`);
+        fs.rmSync(verdictsPath, { force: true });
+      }
+      if (reuse) {
+        log(`[clean-lines] triage: reusing ${verdictsPath} (same input, digest ${bookDigest.slice(0, 12)})`);
       } else {
         const headers = JSON.parse(crucible.env.FOUNDRY_ENDPOINT_HEADERS);
         for (const k of Object.keys(headers)) if (k.toLowerCase() === 'x-crucible-act') headers[k] = 'decide';
@@ -381,6 +394,7 @@ async function runCleanLines(opts, deps) {
           throw new Error(`foundry clean-triage exited ${tri.code}. What it said:\n${(tri.stderr || '').slice(-4000)}`);
         }
         if (!fs.existsSync(verdictsPath)) throw new Error(`foundry clean-triage exited 0 and wrote no verdicts at ${verdictsPath}.`);
+        fs.writeFileSync(digestPath, `${bookDigest}\n`, 'utf8');
       }
     }
     /*
