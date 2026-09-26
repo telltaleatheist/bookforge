@@ -2374,9 +2374,10 @@ async function runBookText(args) {
 
   // 3. strict dialogue, on the cleaned text
   const dlg = P(`${name}_dialogue_strict_ids.txt`);
-  const code = await spawnTraining(python, path.join(root, 'pipeline', 'enhance', 'dialogue_cues_strict.py'),
+  // spawnTraining throws on a non-zero exit and returns nothing on success
+  await spawnTraining(python, path.join(root, 'pipeline', 'enhance', 'dialogue_cues_strict.py'),
     [P(`${name}_clean.vtt`), dlg], path.join(root, 'pipeline', 'enhance'), 'book-text dialogue');
-  if (code !== 0 || !fs.existsSync(dlg)) throw new Error('book-text: dialogue_cues_strict.py failed');
+  if (!fs.existsSync(dlg)) throw new Error('book-text: dialogue_cues_strict.py wrote no ids file');
 
   // 4. exclusions
   const disc = JSON.parse(fs.readFileSync(P('discrepancies.json'), 'utf8'));
