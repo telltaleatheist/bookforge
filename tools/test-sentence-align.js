@@ -112,5 +112,41 @@ check('a run-on edge is flagged, never passed off as a pause', () => {
   assert.strictEqual(e.inSilence, false);
 });
 
+// 2026-09-25, the first live run: partial audio with long silent gaps between passages.
+check('a disputed run with no heard words across a long silent gap is reported, never windowed', () => {
+  const S2 = [{ text: 'Wax walked in.' }, { text: 'Miles snapped.' }, { text: 'The door closed behind them.' }];
+  const H2 = []; let t2 = 0;
+  for (const w of 'Wax walked in.'.split(' ')) { H2.push({ word: w, start: t2, end: t2 + 0.3 }); t2 += 0.4; }
+  t2 += 90;   // 90 s of silence: the middle sentence was never read here
+  for (const w of 'The door closed behind them.'.split(' ')) { H2.push({ word: w, start: t2, end: t2 + 0.3 }); t2 += 0.4; }
+  const d2 = D.diffBookAgainstHeard(S2, H2);
+  const p2 = D.planAlignWindows(d2, S2, t2 + 1);
+  assert.ok(!p2.windows.some((w) => w.sentences.includes(1)), JSON.stringify(p2.windows));
+});
+check("a run's stray own matches far away do not stretch its window: it hugs the densest cluster", () => {
+  const diff = { sentences: [
+    { index: 0, status: 'placed', start: 0, end: 2, coverage: 1, words: [] },
+    { index: 1, status: 'disputed', start: null, end: null, coverage: 0.5, words: [
+      { norm: 'where', start: 10, end: 10.3, match: 'exact' }, { norm: 'did', start: 10.4, end: 10.6, match: 'exact' },
+      { norm: 'he', start: 10.7, end: 10.8, match: 'fuzzy' }, { norm: 'come', start: 150, end: 150.3, match: 'exact' }] },
+    { index: 2, status: 'placed', start: 170, end: 172, coverage: 1, words: [] }], extraAudio: [], stats: {} };
+  const p3 = D.planAlignWindows(diff, [{ text: 'a' }, { text: 'Where did he come from?' }, { text: 'b' }], 180);
+  assert.strictEqual(p3.windows.length, 1);
+  assert.ok(p3.windows[0].end - p3.windows[0].start < 10, `window ${p3.windows[0].start}-${p3.windows[0].end}`);
+});
+check('placeWindow refuses a sentence the aligner stretched far past any reading of it', () => {
+  const w = { index: 0, start: 0, end: 150, sentences: [0], text: 'Miles snapped.' };
+  const out = D.placeWindow(w, [{ text: 'Miles snapped.' }], [{ text: 'Miles', start: 1, end: 1.4 }, { text: 'snapped', start: 140, end: 141 }]);
+  assert.strictEqual(out[0].status, 'disputed'); assert.ok(/stretched/.test(out[0].reason));
+});
+
+check('a sentence heard in two halves across a long silence is not placed from the ASR', () => {
+  const S3 = [{ text: 'Where did he come from?' }];
+  const H3 = [{ word: 'Where', start: 1, end: 1.3 }, { word: 'did', start: 1.4, end: 1.6 }, { word: 'he', start: 1.7, end: 1.8 },
+    { word: 'come', start: 150, end: 150.3 }, { word: 'from?', start: 150.4, end: 150.7 }];
+  const d3 = D.diffBookAgainstHeard(S3, H3);
+  assert.strictEqual(d3.sentences[0].status, 'disputed', JSON.stringify(d3.sentences[0].reason));
+});
+
 console.log(`\nsentence-align: ${passed} passed, ${failed.length} failed${failed.length ? ': ' + failed.join('; ') : ''}`);
 process.exit(failed.length ? 1 : 0);

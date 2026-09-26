@@ -47,6 +47,7 @@ import {
   type BookSentence, type HeardWord, type SentencePlacement,
 } from '../../shared/sentence-align/book-diff';
 import { endEdge, FRAME_S, startEdge, type LevelEnvelope } from '../../shared/sentence-align/cue-edges';
+import { findDiscrepancies } from '../../shared/sentence-align/discrepancies';
 
 export const SENTENCE_ASR_MODEL = 'qwen3-asr-1.7b';
 export const SENTENCE_ALIGN_MODEL = 'qwen3-aligner';
@@ -345,6 +346,18 @@ export async function runSentenceAlign(o: RunSentenceAlignOptions): Promise<Sent
       words: placements.map((p) => ({ index: p.index, status: p.status, words: p.words })),
     };
     fs.writeFileSync(o.reportPath, JSON.stringify(report));
+
+    // WHERE THE AUDIO AND THE BOOK DISAGREE (Owen 2026-09-25): audio the text does not hold,
+    // text the audio does not hold, paraphrase, pace outliers, loud non-speech, a bed under the
+    // voice - one file a person reads after the run, beside the report.
+    const discrepancies = findDiscrepancies({
+      sentences: o.sentences, placements,
+      placedByDiff: new Set(diff.sentences.filter((p) => p.status === 'placed').map((p) => p.index)),
+      cues, heard: asr.words, extraAudio: diff.extraAudio, env,
+    });
+    const discrepanciesPath = path.join(path.dirname(o.reportPath), 'discrepancies.json');
+    fs.writeFileSync(discrepanciesPath, JSON.stringify({ audio: o.audioPath, ...discrepancies }, null, 1));
+    log(`discrepancies: ${Object.entries(discrepancies.summary).map(([k, v]) => `${k} ${v.count} (${v.seconds} s)`).join(', ') || 'none'} -> ${discrepanciesPath}`);
     log(`wrote ${cues.length} cue(s) to ${o.outVttPath}; ${stats.notPlaced} sentence(s) not placed, `
       + `${noPause} edge(s) without a pause, ${collapsed} collapsed; report ${o.reportPath}`);
     progress('write', 1, 'Done');

@@ -280,6 +280,9 @@ export interface SentencePlacement {
   readonly reason?: string;
 }
 
+/** Longest silence between two words of one read sentence; longer means two passages, not one. */
+export const MAX_INTRA_GAP_S = 3.0;
+
 /** A sentence is `placed` from the ASR alone when this much of it was heard. */
 export const PLACED_MIN_COVERAGE = 0.6;
 /** Below this it is `unspoken`: too little heard to put the text anywhere. */
@@ -355,8 +358,18 @@ export function diffBookAgainstHeard(sentences: readonly BookSentence[], heard: 
     if (contiguous) {
       const s0 = heardTok[match[a]!.heard].start;
       const e0 = heardTok[match[b - 1]!.heard].end;
-      if (e0 > s0) return { index: si, status: 'placed', start: s0, end: e0, coverage, words };
-      return { index: si, status: 'disputed', start: null, end: null, coverage, words, reason: 'its heard words run backwards or have no length' };
+      if (e0 <= s0) return { index: si, status: 'disputed', start: null, end: null, coverage, words, reason: 'its heard words run backwards or have no length' };
+      // CONSECUTIVE IN THE HEARD STREAM IS NOT CONSECUTIVE IN TIME (2026-09-25): in a partial
+      // recording the stream jumps a silent stretch, so "Where did he" at the end of one passage
+      // and "come from?" at the start of the next, 150 s later, are neighbours. A sentence is not
+      // read with a minutes-long hole in it.
+      let maxGap = 0;
+      for (let t = a + 1; t < b; t++) maxGap = Math.max(maxGap, heardTok[match[t]!.heard].start - heardTok[match[t - 1]!.heard].end);
+      if (maxGap > MAX_INTRA_GAP_S || e0 - s0 > MAX_S_PER_WORD * n + 2) {
+        return { index: si, status: 'disputed', start: null, end: null, coverage, words,
+          reason: `its words were heard ${(e0 - s0).toFixed(1)} s apart end to end (largest gap ${maxGap.toFixed(1)} s)` };
+      }
+      return { index: si, status: 'placed', start: s0, end: e0, coverage, words };
     }
     if (coverage <= UNSPOKEN_MAX_COVERAGE && n >= 3) {
       return { index: si, status: 'unspoken', start: null, end: null, coverage, words, reason: `only ${Math.round(coverage * 100)}% of its words were heard` };
@@ -417,6 +430,20 @@ export interface AlignWindowPlan {
 export const WINDOW_MAX_S = 180;
 /** How far past its own first/last heard word a window reaches (bounded by placed neighbours). */
 export const WINDOW_MARGIN_S = 2.0;
+/**
+ * A run's own heard words further apart than this are separate clusters, and only the
+ * densest is the run (2026-09-25, the first live run: in a long gap the word match can
+ * pair a common word here with another 150 s later, and a window hugging both handed
+ * the aligner 150 s of mostly silence for one sentence).
+ */
+export const OWN_CLUSTER_GAP_S = 5.0;
+/**
+ * A disputed run with NO heard word of its own is aligned only into a gap this short.
+ * Longer, nothing it contains was heard there - a partial recording's silent stretch
+ * between two passages, where the aligner would smear the text across silence (the
+ * first live run placed 187 such cues, one of them 151 s long). Reported instead.
+ */
+export const NO_OWN_MAX_GAP_S = 20.0;
 
 /**
  * Every run of consecutive disputed sentences becomes one window, bounded by the
@@ -441,7 +468,22 @@ export function planAlignWindows(
     // Hug the run's OWN heard words when it has any: the audio between the placed
     // neighbours can also hold a skipped passage or an ad, and the aligner places
     // whatever text it is given — told one sentence over an ad, it puts it on the ad.
-    const own = run.flatMap((s) => P[s].words).filter((w) => (w.match === 'exact' || w.match === 'fuzzy') && w.start !== null);
+    const ownAll = run.flatMap((s) => P[s].words).filter((w) => (w.match === 'exact' || w.match === 'fuzzy') && w.start !== null)
+      .sort((a, b) => a.start! - b.start!);
+    // the densest cluster of them: stray matches far from the rest are not the run
+    let own = ownAll;
+    if (ownAll.length > 1) {
+      const clusters: typeof ownAll[] = [[ownAll[0]]];
+      for (let t = 1; t < ownAll.length; t++) {
+        if (ownAll[t].start! - clusters[clusters.length - 1][clusters[clusters.length - 1].length - 1].end! > OWN_CLUSTER_GAP_S) clusters.push([]);
+        clusters[clusters.length - 1].push(ownAll[t]);
+      }
+      own = clusters.reduce((a, b) => (b.length > a.length ? b : a));
+    }
+    if (own.length === 0 && after - before > NO_OWN_MAX_GAP_S) {
+      tooLong.push({ sentences: run, start: before, end: after });
+      i = k; continue;
+    }
     if (own.length > 0) {
       const first = Math.min(...own.map((w) => w.start!)); const last = Math.max(...own.map((w) => w.end!));
       before = Math.max(before, first - WINDOW_MARGIN_S);
@@ -461,6 +503,9 @@ export function planAlignWindows(
   }
   return { windows, tooLong };
 }
+
+/** A placed sentence longer than this per word (+2 s) was stretched by the aligner, not read. */
+export const MAX_S_PER_WORD = 1.0;
 
 /** One aligner item, window-relative seconds (the SDK's `AlignItem`). */
 export interface AlignedItem {
@@ -498,6 +543,12 @@ export function placeWindow(
       return { index: si, status: 'disputed', start: null, end: null, coverage: 0, words, reason: 'the aligner placed none of its words' };
     }
     const heardShare = words.filter((w) => w.match === 'exact' || w.match === 'fuzzy').length / Math.max(1, words.length);
+    // A forced aligner places whatever it is told. A sentence stretched far past any reading
+    // of its words was put where it was not said; report it, never pass it off as placed.
+    if (last.end! - first.start! > MAX_S_PER_WORD * words.length + 2) {
+      return { index: si, status: 'disputed', start: null, end: null, coverage: heardShare, words,
+        reason: `the aligner stretched it over ${(last.end! - first.start!).toFixed(1)} s for ${words.length} word(s)` };
+    }
     return { index: si, status: 'placed', start: first.start, end: last.end, coverage: heardShare, words };
   });
 }
