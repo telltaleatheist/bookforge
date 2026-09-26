@@ -388,7 +388,13 @@ async function main() {
     vttSource = r.vttPath;
     cues = r.cues;
     warning = r.warning;
-    if (reportPath) printCoverageSummary(reportPath);
+    // The Crucible pipeline writes its own report (stats, notPlaced, extraAudio, flaggedCues), not the
+    // WhisperX coverage report printCoverageSummary reads.
+    if (reportPath && crucibleServer) {
+      const st = JSON.parse(fs.readFileSync(reportPath, 'utf-8')).stats || {};
+      console.log(`[sentences] report -> ${reportPath}`);
+      console.log(`[sentences]   ${JSON.stringify(st)}`);
+    } else if (reportPath) printCoverageSummary(reportPath);
   } else {
     // WHISPER: pure transcription through the app's transcribe pipeline.
     const modelId = args['whisper-model'] || 'small';
