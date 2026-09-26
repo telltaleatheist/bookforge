@@ -1870,7 +1870,7 @@ function printUsage() {
     '  merge/split  Adobe Podcast round-trip for CLIPS (keyed on a .mergemap.json)',
     '  sentences    per-clip transcripts from the epub (Crucible way: generate-sentences --clips)',
     '  cleanup      AI cleanup of a VTT/lines as the app does it: triage, then clean the flagged (--no-triage: all)',
-    '  book-text    audio + EPUB -> training text: generate-sentences (Qwen, corrected to the reader) + AI cleanup + exclusions',
+    '  book-text    audio + EPUB -> training text: generate-sentences (Qwen, corrected to the reader) + AI cleanup + exclusions [--dialogue keep|exclude]',
     '',
     'TRAINING TOOLS (corpus in, corpus out) - wrappers over the orpheus-finetune scripts',
     '  slice        cut a book master into training clips        (slice_vtt.py)',
@@ -2331,10 +2331,16 @@ async function runCleanup(args) {
  *   2. the render's AI cleanup, triaged (runCleanup; the model is made resident per act and unloaded after) -
  *      NOT optional: the text a voice trains on must be the text it will be handed -> <name>_clean.vtt, changes.tsv
  *   3. strict dialogue on the cleaned VTT (dialogue_cues_strict.py: quotes, their sentence, attributions, lead-ins)
- *   4. <name>_exclude_ids.txt: dialogue + cues the ASR barely matched (misplaced) + high-severity pace outliers +
+ *   4. <name>_exclude_ids.txt: dialogue (only with --dialogue exclude) + cues the ASR barely matched (misplaced) + high-severity pace outliers +
  *      cues overlapping non-speech audio or music under the voice. Slice with --exclude-cue-ids @<that file>.
  *   5. book-text.json: what every step produced.
  * Re-runs are cheap: the ASR transcript and the cleaner's answers are cached in --out-dir.
+ *
+ * --dialogue keep|exclude (2026-09-26, Owen: "keep dialogue in cod and McKinley. They're nonfiction" / "we aren't
+ * removing dialogue from any third Reich or from leadership pipeline"). Dialogue is a PER-VOICE policy: fiction
+ * narrators (Mistborn, Marked Man) exclude it, nonfiction keeps it whole. `keep` still writes the strict-dialogue
+ * ids file (a record), but leaves those cues out of the exclusion list. The default stays `exclude` - the policy
+ * every fiction corpus runs on.
  */
 async function runBookText(args) {
   for (const k of ['audio', 'epub', 'out-dir', 'crucible-server']) {
@@ -2346,6 +2352,8 @@ async function runBookText(args) {
   const server = String(args['crucible-server']); const language = args.language && args.language !== true ? String(args.language) : 'en';
   const name = args.name && args.name !== true ? String(args.name) : path.basename(audio).replace(/\.[^.]+$/, '');
   const root = resolveTrainingRoot(args); const python = resolveTrainingPython(args, 'book-text (dialogue_cues_strict.py)');
+  const dialogue = args.dialogue && args.dialogue !== true ? String(args.dialogue) : 'exclude';
+  if (!['keep', 'exclude'].includes(dialogue)) throw new Error(`book-text: --dialogue must be keep or exclude (got ${dialogue})`);
   fs.mkdirSync(out, { recursive: true });
   const P = (f) => path.join(out, f);
   const runNode = (argv, label) => new Promise((resolve, reject) => {
@@ -2390,7 +2398,7 @@ async function runBookText(args) {
   }
   const why = new Map();
   const add = (id, reason) => { if (!why.has(id)) why.set(id, reason); };
-  for (const id of fs.readFileSync(dlg, 'utf8').split(/\s+/).filter(Boolean)) add(id, 'dialogue');
+  if (dialogue === 'exclude') for (const id of fs.readFileSync(dlg, 'utf8').split(/\s+/).filter(Boolean)) add(id, 'dialogue');
   for (const i of (disc.barelyMatched && disc.barelyMatched.sentences) || []) add(String(i + 1), 'barely matched (likely misplaced)');
   for (const x of disc.items || []) {
     if (x.kind === 'pace_outlier' && x.severity === 'high') for (const i of x.sentences || []) add(String(i + 1), 'pace outlier (high)');
@@ -2404,11 +2412,11 @@ async function runBookText(args) {
 
   // 5. summary
   const summary = { verb: 'book-text', ranAt: new Date().toISOString(), seconds: Math.round((Date.now() - t0) / 1000),
-    audio, epub, server, cues: cues.length, corrected: disc.corrections ? disc.corrections.count : null,
+    audio, epub, server, dialogue, cues: cues.length, corrected: disc.corrections ? disc.corrections.count : null,
     excluded: why.size, excludedBy: byReason, discrepancies: disc.summary,
     files: { vtt: P(`${name}.vtt`), clean: P(`${name}_clean.vtt`), exclude: excl, dialogue: dlg, discrepancies: P('discrepancies.json'), report: P('align-report.json') } };
   fs.writeFileSync(P('book-text.json'), JSON.stringify(summary, null, 1));
-  console.log(`[book-text] ${cues.length} cue(s), ${summary.corrected} corrected to the reader, ${why.size} excluded ${JSON.stringify(byReason)}`);
+  console.log(`[book-text] ${cues.length} cue(s), ${summary.corrected} corrected to the reader, ${why.size} excluded ${JSON.stringify(byReason)} (dialogue ${dialogue === 'keep' ? 'KEPT' : 'excluded'})`);
   console.log(`[book-text] training text: ${P(`${name}_clean.vtt`)}  exclusions: ${excl}`);
   process.exitCode = 0;
 }
