@@ -433,16 +433,23 @@ export async function runSentenceAlign(o: RunSentenceAlignOptions): Promise<Sent
       cueText.set(c.index, r.changed ? r.text : book);
       if (r.changed) corrections.push({ index: c.index, start: c.start, end: c.end, book, heard: heard.join(' '), text: r.text, agreement: +r.agreement.toFixed(3), edits: r.edits as unknown[] });
     }
-    log(`corrected ${corrections.length} of ${cues.length} cue(s) to what the reader said; ${barelyMatched} barely matched (left as the book has them)`);
+    log(`corrected ${corrections.length} of ${cues.length} cue(s) to what the reader said; ${barelyMatched} misplaced (heard words agree on < ${Math.round(MIN_AGREEMENT * 100)} %) - not written`);
 
     // 5. WRITE
     progress('write', 0, 'Writing the sentences');
     const lines = ['WEBVTT', ''];
+    // A cue whose heard words agree on < MIN_AGREEMENT of its text is NOT in the audio where it was put: the forced
+    // aligner places whatever it is told (WoA 2026-09-25: the EPUB's review blurbs, "Contents" and "Acknowledgments"
+    // were laid over the spoken title - 707 of 5,631 cues). Such a cue is not written; discrepancies.json lists it.
+    const misplaced = new Set(barelyIdx);
+    let written = 0;
     for (const c of cues) {
+      if (misplaced.has(c.index)) continue;
       lines.push(String(c.index + 1));
       lines.push(`${vttTimestamp(c.start)} --> ${vttTimestamp(c.end)}`);
       lines.push(cueText.get(c.index) ?? o.sentences[c.index].text.replace(/\s+/g, ' ').trim());
       lines.push('');
+      written++;
     }
     const tmp = `${o.outVttPath}.${process.pid}.part`;
     fs.writeFileSync(tmp, lines.join('\n'), 'utf-8'); fs.renameSync(tmp, o.outVttPath);
@@ -480,7 +487,7 @@ export async function runSentenceAlign(o: RunSentenceAlignOptions): Promise<Sent
     fs.writeFileSync(discrepanciesPath, JSON.stringify({ audio: o.audioPath, ...discrepancies,
       corrections: { count: corrections.length, note: 'cue text corrected to the words heard; the book word is kept wherever the reader said it (near-miss spellings included)', items: corrections },
       // cues whose heard words agree on < 30 % of the book's: more likely misplaced than reworded - exclusion candidates
-      barelyMatched: { count: barelyIdx.length, sentences: barelyIdx } }, null, 1));
+      barelyMatched: { count: barelyIdx.length, note: 'misplaced: the heard words in the span agree on < 30 % of the text - not written to the VTT', sentences: barelyIdx } }, null, 1));
     log(`discrepancies: ${Object.entries(discrepancies.summary).map(([k, v]) => `${k} ${v.count} (${v.seconds} s)`).join(', ') || 'none'} -> ${discrepanciesPath}`);
     log(`wrote ${cues.length} cue(s) to ${o.outVttPath}; ${stats.notPlaced} sentence(s) not placed, `
       + `${noPause} edge(s) without a pause, ${collapsed} collapsed; report ${o.reportPath}`);
