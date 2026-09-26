@@ -1510,7 +1510,7 @@ async function runSlice(args) {
   const cwd = path.join(root, 'pipeline', 'untreated');
   const python = resolveTrainingPython(args, 'slice');
   const pass = ['raw', 'vtt', 'build', 'rows', 'prefix', 'speaker', 'min-start', 'max-end',
-    'run-median-s', 'run-sigma', 'long-min-s', 'long-max-s', 'gap-s', 'tail-s', 'tiers',
+    'run-median-s', 'run-sigma', 'long-min-s', 'long-max-s', 'long-max-chars', 'gap-s', 'tail-s', 'tiers',
     'micro-min-s', 'micro-max-s', 'micro-min-words', 'micro-max-words', 'micro-max-rows',
     'micro-weights', 'max-hours', 'exclude-cue-ids',
     // Missing until 2026-09-23: every clipforge slice since 09-12 logged "0 excluded by --exclude-text-regex" while
