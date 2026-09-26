@@ -53,6 +53,7 @@ export const NONSPEECH_OVER_FLOOR_DB = 25;
 export const BED_MIN_PAUSES = 5;
 export const BED_OVER_FLOOR_DB = 15;
 export const BED_MIN_GAP_S = 0.25;
+export const BED_MAX_GAP_S = 10;
 
 export interface DiscrepancyCue { readonly index: number; readonly start: number; readonly end: number }
 
@@ -204,15 +205,17 @@ export function findDiscrepancies(o: {
     const closeBed = (): void => {
       if (bed && bed.n >= BED_MIN_PAUSES) items.push({ kind: 'music_under_speech', what: 'no_silent_pauses', start: bed.a, end: bed.b,
         severity: bed.n >= 15 ? 'high' : 'medium',
-        detail: `${bed.n} consecutive sentence pauses never fell within ${BED_OVER_FLOOR_DB} dB of the floor (quietest ${Math.min(...bed.lift).toFixed(0)} dB over it): a bed under the voice` });
+        detail: `${bed.n} consecutive sentence pauses never fell within ${BED_OVER_FLOOR_DB} dB of the floor (quietest ${bed.lift.reduce((a, b) => Math.min(a, b), Infinity).toFixed(0)} dB over it): a bed under the voice` });
       bed = null;
     };
     for (let i = 1; i < read.length; i++) {
       const g0 = read[i - 1].end!; const g1 = read[i].start!;
       if (g1 - g0 < BED_MIN_GAP_S) continue;
+      if (g1 - g0 > BED_MAX_GAP_S) { closeBed(); continue; }   // a seam between passages, not a sentence pause
       const f0 = Math.max(0, Math.floor(g0 / FRAME_S)); const f1 = Math.min(db.length, Math.ceil(g1 / FRAME_S));
       if (f1 <= f0) continue;
-      const q = Math.min(...db.slice(f0, f1));
+      // a loop, never Math.min(...): a partial recording's gap can be hours of frames (WoA, 2026-09-25: stack overflow)
+      let q = Infinity; for (let f = f0; f < f1; f++) if (db[f] < q) q = db[f];
       if (q <= -150) { closeBed(); continue; }                 // digital silence: a seam, not a pause
       const lift = q - floor;
       if (lift > BED_OVER_FLOOR_DB) {

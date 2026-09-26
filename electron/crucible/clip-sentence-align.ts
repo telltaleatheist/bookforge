@@ -319,8 +319,8 @@ export async function runClipSentenceAlign(o: RunClipSentenceAlignOptions): Prom
         const heardW = p.words.filter((x) => x.start !== null);
         return { index: w.from + p.index, text: w.sub[p.index].text.replace(/\s+/g, ' ').trim(), coverage: +p.coverage.toFixed(3),
           status: p.status, reason: p.reason ?? null,
-          start: heardW.length ? Math.min(...heardW.map((x) => x.start!)) : null,
-          end: heardW.length ? Math.max(...heardW.map((x) => x.end!)) : null };
+          start: heardW.length ? heardW.reduce((m, x) => Math.min(m, x.start!), Infinity) : null,
+          end: heardW.length ? heardW.reduce((m, x) => Math.max(m, x.end!), -Infinity) : null };
       });
       const status: ClipStatus = partial.length === 0 && w.extra.length === 0 && sentences.length > 0 ? 'complete' : 'partial';
       results.push({ id: c.id, path: c.path, duration: dur, status, text: sentences.map((s) => s.text).join(' '),

@@ -485,7 +485,7 @@ export function planAlignWindows(
       i = k; continue;
     }
     if (own.length > 0) {
-      const first = Math.min(...own.map((w) => w.start!)); const last = Math.max(...own.map((w) => w.end!));
+      const first = own.reduce((m, w) => Math.min(m, w.start!), Infinity); const last = own.reduce((m, w) => Math.max(m, w.end!), -Infinity);
       before = Math.max(before, first - WINDOW_MARGIN_S);
       after = Math.min(after, last + WINDOW_MARGIN_S);
       // ... and never into audio the book does not contain (an ad ending just before it).
