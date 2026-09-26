@@ -213,6 +213,39 @@ async function runCleanLines(opts, deps) {
   fs.writeFileSync(bookPath, bookFileFor(parsed.items, { engine: installed.version, language }), 'utf8');
 
   /*
+   * CACHED ANSWERS FOLLOW THEIR TEXT, NOT THEIR LINE (2026-09-25). The engine caches an answer by the text's key and,
+   * finding one, writes NO new row - but a row names the POSITION it was first answered at (`e-<line>`). So when the
+   * input changes (WoA's VTT was re-aligned: the same sentence one line further on), the reused answer sat under its
+   * old line and the new line came back unanswered (1,132 of them). After every successful run `lines.inputs.jsonl`
+   * records which input text each position held; before a run on a changed input the records are re-pointed to the
+   * lines that now hold that text. Records with no such map are moved aside (a clean start beats a refusal).
+   */
+  const inputsPath = path.join(workDir, 'lines.inputs.jsonl');
+  if (fs.existsSync(recordsPath)) {
+    if (fs.existsSync(inputsPath)) {
+      const oldText = new Map();
+      for (const l of fs.readFileSync(inputsPath, 'utf8').split(/\r?\n/)) { if (l.trim()) { const r = JSON.parse(l); oldText.set(r.parts, r.text); } }
+      const linesOf = new Map();
+      for (const it of parsed.items) { const k = idForLine(it.line); (linesOf.get(it.text) || linesOf.set(it.text, []).get(it.text)).push(k); }
+      const out = []; let moved = 0; let dropped = 0;
+      for (const l of fs.readFileSync(recordsPath, 'utf8').split(/\r?\n/)) {
+        if (!l.trim()) continue;
+        const row = JSON.parse(l);
+        const t = oldText.get(row.parts);
+        const targets = t === undefined ? null : linesOf.get(t);
+        if (!targets) { dropped++; continue; }
+        for (const k of targets) { out.push(JSON.stringify({ ...row, parts: k })); if (k !== row.parts) moved++; }
+      }
+      fs.writeFileSync(recordsPath, out.length ? `${out.join('\n')}\n` : '', 'utf8');
+      log(`[clean-lines] cached answers re-pointed to the current lines: ${out.length} kept (${moved} moved), ${dropped} for text no longer present`);
+    } else {
+      const aside = `${recordsPath}.${Date.now()}.unmapped`;
+      fs.renameSync(recordsPath, aside);
+      log(`[clean-lines] ${recordsPath} has no record of which input each answer was for - moved aside to ${path.basename(aside)}; starting clean`);
+    }
+  }
+
+  /*
    * ONE DOOR, THREE FLAGS. Foundry `646e8a1` (v1.3.0, tag `engine-one-door`)
    * deleted the Ollama dialect and every flag that only existed to choose it:
    * `--server`, `--ollama` and `--keep-model` are all `unknown option` now.
@@ -445,6 +478,7 @@ async function runCleanLines(opts, deps) {
   }
 
   const zipped = zipRecords(parsed, fs.readFileSync(recordsPath, 'utf8'));
+  fs.writeFileSync(inputsPath, `${parsed.items.map((it) => JSON.stringify({ parts: idForLine(it.line), text: it.text })).join('\n')}\n`, 'utf8');
   fs.writeFileSync(outputPath, zipped.lines.join('\n') + '\n', 'utf8');
 
   let receipt = null;
