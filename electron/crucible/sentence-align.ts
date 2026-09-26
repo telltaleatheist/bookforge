@@ -51,6 +51,8 @@ import { findDiscrepancies } from '../../shared/sentence-align/discrepancies';
 
 export const SENTENCE_ASR_MODEL = 'qwen3-asr-1.7b';
 export const SENTENCE_ALIGN_MODEL = 'qwen3-aligner';
+/** A heard word whose 20 ms frames never exceed this (dBFS) was heard in digital silence: a hallucination. */
+export const SILENT_WORD_DB = -80;
 
 export const SENTENCE_ALIGN_STAGES = ['transcribe', 'diff', 'align', 'edges', 'write'] as const;
 export type SentenceAlignStage = (typeof SENTENCE_ALIGN_STAGES)[number];
@@ -236,11 +238,25 @@ export async function runSentenceAlign(o: RunSentenceAlignOptions): Promise<Sent
     // still being submitted, leaving it running with nothing holding its cancel.
     const envP = levelEnvelope(o.ffmpegPath, o.audioPath, envStop.signal)
       .then((v) => ({ v, e: null as Error | null }), (e: Error) => ({ v: null as LevelEnvelope | null, e }));
-    const asr = await transcribe(o, scratch);
+    const asr: { words: HeardWord[]; durationS: number } = await transcribe(o, scratch);
     const envR = await envP;
     if (envR.e) throw envR.e;
     const env = envR.v!;
     const audioS = Math.max(asr.durationS, env.db.length * FRAME_S);
+    /*
+     * WORDS HEARD IN DIGITAL SILENCE ARE NOT WORDS (2026-09-25). Qwen3-ASR runs with no VAD (Crucible refuses
+     * vad_filter for it) and, handed a partial recording's silent stretches, it transcribes them: WoA's website
+     * master gave 83 minutes of "The first thing that you need to do is to get a good quality of light" on repeat.
+     * A heard word whose audio never rises above SILENT_WORD_DB is dropped before anything reads it; a real
+     * recording's room tone sits far above that, so this only ever removes words over true silence.
+     */
+    const heardAll = asr.words.length;
+    asr.words = asr.words.filter((w) => {
+      const f0 = Math.max(0, Math.floor(w.start / FRAME_S)); const f1 = Math.min(env.db.length, Math.ceil(w.end / FRAME_S) + 1);
+      for (let f = f0; f < f1; f++) if (env.db[f] > SILENT_WORD_DB) return true;
+      return false;
+    });
+    if (asr.words.length < heardAll) log(`dropped ${heardAll - asr.words.length} heard word(s) over digital silence (ASR hallucination)`);
 
     // 2. DIFF
     progress('diff', 0, 'Matching the book to what was heard');

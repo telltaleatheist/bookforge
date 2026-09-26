@@ -58,7 +58,7 @@ export const BED_MAX_GAP_S = 10;
 export interface DiscrepancyCue { readonly index: number; readonly start: number; readonly end: number }
 
 export interface Discrepancy {
-  readonly kind: 'audio_not_in_text' | 'text_not_in_audio' | 'paraphrase' | 'pace_outlier' | 'non_speech_audio' | 'music_under_speech';
+  readonly kind: 'audio_not_in_text' | 'text_not_in_audio' | 'not_in_recording' | 'paraphrase' | 'pace_outlier' | 'non_speech_audio' | 'music_under_speech';
   readonly what: string;               // insert / extra_run / omission / unplaced_run / ...
   readonly start: number | null;
   readonly end: number | null;
@@ -151,9 +151,20 @@ export function findDiscrepancies(o: {
     const prev = i > 0 ? P[i - 1] : null; const next = k < P.length ? P[k] : null;
     const run = Array.from({ length: k - i }, (_, t) => i + t);
     const words = run.reduce((n, s) => n + normalizeWords(o.sentences[s].text).length, 0);
-    items.push({ kind: 'text_not_in_audio', what: 'unplaced_run', start: prev?.end ?? null, end: next?.start ?? null,
-      severity: words >= 40 ? 'high' : words >= 8 ? 'medium' : 'low', sentences: run,
-      book: run.map(text).join(' ').slice(0, 400), detail: `${run.length} sentence(s), ${words} word(s): ${P[i].reason ?? P[i].status}` });
+    // A PARTIAL RECORDING (website spans on a silent timeline): if the audio between the placed neighbours is
+    // mostly digital silence, these sentences are simply not in this recording - not an omission by the reader.
+    const a0 = prev?.end ?? null; const a1 = next?.start ?? null;
+    let silentShare = 0;
+    if (o.env && a0 !== null && a1 !== null && a1 > a0) {
+      const f0 = Math.floor(a0 / FRAME_S); const f1 = Math.min(o.env.db.length, Math.ceil(a1 / FRAME_S));
+      let quiet = 0; for (let f = f0; f < f1; f++) if (o.env.db[f] <= -80) quiet++;
+      silentShare = f1 > f0 ? quiet / (f1 - f0) : 0;
+    }
+    const outside = silentShare >= 0.5;
+    items.push({ kind: outside ? 'not_in_recording' : 'text_not_in_audio', what: 'unplaced_run', start: a0, end: a1,
+      severity: outside ? 'low' : words >= 40 ? 'high' : words >= 8 ? 'medium' : 'low', sentences: run,
+      book: run.map(text).join(' ').slice(0, 400),
+      detail: `${run.length} sentence(s), ${words} word(s): ${outside ? `the audio between its neighbours is ${Math.round(silentShare * 100)}% silence - not in this recording` : P[i].reason ?? P[i].status}` });
     i = k;
   }
   // pace_outlier: chars per second of the READ span (word times, not the pause-centred edges)
