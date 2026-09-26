@@ -50,6 +50,7 @@ import { endEdge, FRAME_S, startEdge, type LevelEnvelope } from '../../shared/se
 import { findDiscrepancies } from '../../shared/sentence-align/discrepancies';
 import { compactedLength, keepPieces, mapWordsBack, type KeptPiece } from '../../shared/sentence-align/silence-compact';
 import { correctToHeard, MIN_AGREEMENT } from '../../shared/sentence-align/correct-to-heard';
+import { recheckPieces } from '../../shared/sentence-align/recheck';
 
 export const SENTENCE_ASR_MODEL = 'qwen3-asr-1.7b';
 export const SENTENCE_ALIGN_MODEL = 'qwen3-aligner';
@@ -481,18 +482,58 @@ export async function runSentenceAlign(o: RunSentenceAlignOptions): Promise<Sent
       return out;
     };
     const cueText = new Map<number, string>();
-    const corrections: { index: number; start: number; end: number; book: string; heard: string; text: string; agreement: number; edits: unknown[] }[] = [];
+    const corrections: { index: number; start: number; end: number; book: string; heard: string; heardLong?: string; text: string; agreement: number; edits: unknown[] }[] = [];
     let barelyMatched = 0; const barelyIdx: number[] = [];
+    // First pass on the book-length transcript: which cues the correction WOULD change (or finds barely matching).
+    const first = new Map<number, { book: string; heard: string[]; r: ReturnType<typeof correctToHeard> }>();
     for (const c of cues) {
       const book = o.sentences[c.index].text.replace(/\s+/g, ' ').trim();
       const p = placements[c.index];
-      if (!p || p.start === null || p.end === null) { cueText.set(c.index, book); continue; }
+      if (!p || p.start === null || p.end === null) continue;
       const heard = heardIn(p.start, p.end);
-      const r = correctToHeard(book, heard);
-      if (r.agreement < MIN_AGREEMENT) { barelyMatched++; barelyIdx.push(c.index); }
-      cueText.set(c.index, r.changed ? r.text : book);
-      if (r.changed) corrections.push({ index: c.index, start: c.start, end: c.end, book, heard: heard.join(' '), text: r.text, agreement: +r.agreement.toFixed(3), edits: r.edits as unknown[] });
+      first.set(c.index, { book, heard, r: correctToHeard(book, heard) });
     }
+    // RE-HEAR every such cue on its own audio (shared/sentence-align/recheck.ts): the long pass drops a sentence's
+    // opening words at its piece boundaries, and a correction built on that absence deletes words the clip contains.
+    const suspects = cues.filter((c) => { const f = first.get(c.index); return f && (f.r.changed || f.r.agreement < MIN_AGREEMENT); });
+    const reheard = new Map<number, string[]>();
+    if (suspects.length > 0) {
+      progress('write', 0, `Re-hearing ${suspects.length} corrected cue(s) on their own audio`);
+      const rp = recheckPieces(suspects.map((c) => ({ start: c.start, end: c.end })), audioS);
+      const rwav = o.transcriptCachePath ? `${o.transcriptCachePath}.recheck.wav` : path.join(scratch, 'recheck.wav');
+      const rsig = JSON.stringify(rp); const rsigPath = `${rwav}.pieces.json`;
+      if (!fs.existsSync(rwav) || !fs.existsSync(rsigPath) || fs.readFileSync(rsigPath, 'utf-8') !== rsig) {
+        await writeCompacted(o.ffmpegPath, o.audioPath, rp, rwav, envStop.signal);
+        fs.writeFileSync(rsigPath, rsig);
+      }
+      const rdir = path.join(scratch, 'recheck'); fs.mkdirSync(rdir, { recursive: true });
+      const rh = await transcribe({ ...o, audioPath: rwav, transcriptCachePath: o.transcriptCachePath ? `${o.transcriptCachePath}.recheck.json` : undefined }, rdir);
+      const back = mapWordsBack(rh.words, rp).words.filter((w) => {
+        const f0 = Math.max(0, Math.floor(w.start / FRAME_S)); const f1 = Math.min(env.db.length, Math.ceil(w.end / FRAME_S) + 1);
+        for (let f = f0; f < f1; f++) if (env.db[f] > SILENT_WORD_DB) return true;
+        return false;
+      }).sort((a, b) => a.start - b.start);
+      // the cue's own EDGES (pause centres, the audio a slicer cuts), not the placement: that is the clip's audio
+      for (const c of suspects) {
+        const ws: string[] = [];
+        for (const w of back) { const m = (w.start + w.end) / 2; if (m < c.start) continue; if (m > c.end) break; ws.push(w.word); }
+        reheard.set(c.index, ws);
+      }
+    }
+    let withdrawn = 0; let recovered = 0;
+    for (const c of cues) {
+      const f = first.get(c.index);
+      if (!f) { cueText.set(c.index, o.sentences[c.index].text.replace(/\s+/g, ' ').trim()); continue; }
+      const again = reheard.get(c.index);
+      const r = again ? correctToHeard(f.book, again) : f.r;
+      if (again && f.r.changed && !r.changed) withdrawn++;
+      if (again && f.r.agreement < MIN_AGREEMENT && r.agreement >= MIN_AGREEMENT) recovered++;
+      if (r.agreement < MIN_AGREEMENT) { barelyMatched++; barelyIdx.push(c.index); }
+      cueText.set(c.index, r.changed ? r.text : f.book);
+      if (r.changed) corrections.push({ index: c.index, start: c.start, end: c.end, book: f.book, heard: (again ?? f.heard).join(' '),
+        ...(again ? { heardLong: f.heard.join(' ') } : {}), text: r.text, agreement: +r.agreement.toFixed(3), edits: r.edits as unknown[] });
+    }
+    if (suspects.length > 0) log(`re-heard ${suspects.length} cue(s) on their own audio: ${withdrawn} correction(s) withdrawn (the long pass had missed words the clip holds), ${recovered} misplaced cue(s) recovered`);
     log(`corrected ${corrections.length} of ${cues.length} cue(s) to what the reader said; ${barelyMatched} misplaced (heard words agree on < ${Math.round(MIN_AGREEMENT * 100)} %) - not written`);
 
     // 5. WRITE

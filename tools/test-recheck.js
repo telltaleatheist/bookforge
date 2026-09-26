@@ -1,0 +1,48 @@
+#!/usr/bin/env node
+/**
+ * RE-HEAR A CORRECTED CUE ON ITS OWN AUDIO — shared/sentence-align/recheck.ts
+ *
+ *   npx tsc -p tsconfig.electron.json && node tools/test-recheck.js
+ *
+ *  1. every span is padded by RECHECK_PAD_S of real audio on both sides, and pieces sit end to end with KEEP_GAP_S
+ *     of silence between them;
+ *  2. spans whose padding overlaps are merged into one piece (never the same audio twice);
+ *  3. padding is clamped to the recording, and a zero-length span is skipped;
+ *  4. mapWordsBack returns re-heard words to the original timeline - a word inside a cue lands inside the cue.
+ */
+'use strict';
+const assert = require('assert');
+const R = require('../dist/shared/sentence-align/recheck.js');
+const S = require('../dist/shared/sentence-align/silence-compact.js');
+
+let passed = 0; const failed = [];
+function check(name, fn) { try { fn(); passed++; console.log(`  ok  ${name}`); } catch (e) { failed.push(name); console.log(`  FAIL ${name}\n       ${e.message}`); } }
+const near = (a, b) => Math.abs(a - b) < 1e-9;
+
+check('1. padded, laid end to end with the gap', () => {
+  const p = R.recheckPieces([{ start: 100, end: 110 }, { start: 200, end: 205 }], 1000, 1.5, 1.0);
+  assert.strictEqual(p.length, 2);
+  assert.ok(near(p[0].srcStart, 98.5) && near(p[0].srcEnd, 111.5) && near(p[0].dstStart, 0));
+  assert.ok(near(p[1].srcStart, 198.5) && near(p[1].srcEnd, 206.5) && near(p[1].dstStart, 13 + 1.0));
+});
+check('2. overlapping padding merges (and input order does not matter)', () => {
+  const p = R.recheckPieces([{ start: 112, end: 120 }, { start: 100, end: 110 }], 1000, 1.5, 1.0);
+  assert.strictEqual(p.length, 1);
+  assert.ok(near(p[0].srcStart, 98.5) && near(p[0].srcEnd, 121.5));
+});
+check('3. clamped to the recording; empty spans skipped', () => {
+  const p = R.recheckPieces([{ start: 0.5, end: 3 }, { start: 998, end: 1000 }, { start: 50, end: 50 }], 1000, 1.5, 1.0);
+  assert.strictEqual(p.length, 2);
+  assert.ok(near(p[0].srcStart, 0) && near(p[1].srcEnd, 1000));
+});
+check('4. a re-heard word maps back inside its cue', () => {
+  const p = R.recheckPieces([{ start: 100, end: 110 }, { start: 200, end: 205 }], 1000, 1.5, 1.0);
+  // "The" at 1.9 s of the compact audio = 100.4 s; "since" at 14.6 s = second piece (dst 14) + 0.6 = 199.1 s
+  const back = S.mapWordsBack([{ word: 'The', start: 1.8, end: 2.0 }, { word: 'since', start: 14.5, end: 14.7 }, { word: 'gap', start: 13.4, end: 13.6 }], p);
+  assert.strictEqual(back.dropped, 1, 'the word heard in the silent gap is dropped');
+  assert.ok(near(back.words[0].start, 100.3) && back.words[0].start >= 100 && back.words[0].end <= 110);
+  assert.ok(near(back.words[1].start, 199.0));
+});
+
+console.log(`recheck: ${passed} passed, ${failed.length} failed`);
+process.exit(failed.length ? 1 : 0);
