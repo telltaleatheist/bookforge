@@ -209,6 +209,68 @@ export function cutWindow(ffmpeg: string, audio: string, start: number, end: num
 }
 
 /**
+ * EVERY window's audio from ONE streaming 16 kHz mono decode (2026-09-26), written as 16-bit WAV.
+ *
+ * This replaced one ffmpeg per window (cutWindow in a loop - 955 for HoA, 1,434 for The Coming of the Third Reich).
+ * Twice in a day one of those processes finished writing its file and then WEDGED AT EXIT on Windows: 0 CPU, one
+ * thread in Wait, 96 handles held, Stop-Process could not make node see `close` - and the whole book stopped with
+ * no log line. A book's window cuts are now one child process, as the level envelope and the compaction already
+ * were, and the windows are sliced out of the stream in memory. Windows may overlap and arrive in any order; only
+ * the windows currently open are held (each ~15 s = ~0.5 MB), never the book.
+ */
+export function cutWindowsStreamed(ffmpeg: string, audio: string, windows: readonly { index: number; start: number; end: number }[],
+  dir: string, signal?: AbortSignal): Promise<Record<string, string>> {
+  const SR = 16000;
+  type Open = { name: string; s0: number; s1: number; buf: Buffer };
+  const todo = windows.map((w) => ({ name: `${w.index}.wav`, s0: Math.max(0, Math.round(w.start * SR)), s1: Math.max(0, Math.round(w.end * SR)) }))
+    .filter((w) => w.s1 > w.s0).sort((a, b) => a.s0 - b.s0);
+  const inputs: Record<string, string> = {};
+  const writeWav = (w: Open): void => {
+    const n = w.s1 - w.s0;
+    const hdr = Buffer.alloc(44);
+    hdr.write('RIFF', 0); hdr.writeUInt32LE(36 + n * 2, 4); hdr.write('WAVE', 8); hdr.write('fmt ', 12);
+    hdr.writeUInt32LE(16, 16); hdr.writeUInt16LE(1, 20); hdr.writeUInt16LE(1, 22); hdr.writeUInt32LE(SR, 24);
+    hdr.writeUInt32LE(SR * 2, 28); hdr.writeUInt16LE(2, 32); hdr.writeUInt16LE(16, 34); hdr.write('data', 36); hdr.writeUInt32LE(n * 2, 40);
+    const f = path.join(dir, w.name);
+    fs.writeFileSync(f, Buffer.concat([hdr, w.buf]));
+    inputs[w.name] = f;
+  };
+  return new Promise((resolve, reject) => {
+    const p = spawn(ffmpeg, ['-v', 'error', '-nostdin', '-i', audio, '-ac', '1', '-ar', String(SR), '-f', 's16le', '-'], { stdio: ['ignore', 'pipe', 'pipe'] });
+    const onAbort = (): void => { p.kill(); };
+    signal?.addEventListener('abort', onAbort, { once: true });
+    let n = 0; let next = 0; let open: Open[] = []; let carry: Buffer | null = null; let err = '';
+    p.stdout.on('data', (chunk: Buffer) => {
+      const b = carry ? Buffer.concat([carry, chunk]) : chunk;
+      const whole = b.length - (b.length % 2);
+      const hi = n + whole / 2;                            // this chunk holds samples [n, hi)
+      while (next < todo.length && todo[next].s0 < hi) {
+        const t = todo[next++]; open.push({ ...t, buf: Buffer.alloc((t.s1 - t.s0) * 2) });
+      }
+      const still: Open[] = [];
+      for (const w of open) {
+        const from = Math.max(n, w.s0); const to = Math.min(hi, w.s1);
+        if (to > from) b.copy(w.buf, (from - w.s0) * 2, (from - n) * 2, (to - n) * 2);
+        if (w.s1 <= hi) writeWav(w); else still.push(w);
+      }
+      open = still; n = hi;
+      carry = whole < b.length ? b.subarray(whole) : null;
+    });
+    p.stderr.on('data', (d: Buffer) => { err += d.toString(); });
+    p.on('error', reject);
+    p.on('close', (code) => {
+      signal?.removeEventListener('abort', onAbort);
+      if (signal?.aborted) return reject(new Error('cancelled'));
+      if (code !== 0) return reject(new Error(`ffmpeg could not decode ${audio} for the aligner windows (exit ${code}): ${err.trim().slice(-400)}`));
+      // a window running past the decoded end keeps its zero tail; one that never opened lies wholly past the end
+      for (const w of open) writeWav(w);
+      while (next < todo.length) { const t = todo[next++]; writeWav({ ...t, buf: Buffer.alloc((t.s1 - t.s0) * 2) }); }
+      resolve(inputs);
+    });
+  });
+}
+
+/**
  * The audio with its digital silence cut out: one streaming 16 kHz mono decode, only the samples inside `pieces`
  * written, KEEP_GAP_S of silence between them (their dstStart already carries it). 16-bit WAV.
  */
@@ -348,12 +410,10 @@ export async function runSentenceAlign(o: RunSentenceAlignOptions): Promise<Sent
     if (windows.length > 0) {
       progress('align', 0, `Cutting ${windows.length} window(s) for the aligner`);
       const wdir = path.join(scratch, 'windows'); fs.mkdirSync(wdir);
-      const inputs: Record<string, string> = {};
-      for (const w of windows) {
-        if (o.signal?.aborted) throw new Error('cancelled');
-        const f = path.join(wdir, `${w.index}.flac`);
-        await cutWindow(o.ffmpegPath, o.audioPath, w.start, w.end, f, o.signal);
-        inputs[`${w.index}.flac`] = f;
+      // one streaming decode for every window (never one ffmpeg per window - see cutWindowsStreamed)
+      const inputs = await cutWindowsStreamed(o.ffmpegPath, o.audioPath, windows, wdir, o.signal);
+      if (Object.keys(inputs).length !== windows.length) {
+        throw new Error(`cut ${Object.keys(inputs).length} aligner window(s) of ${windows.length} (a window with no length?)`);
       }
       const client = await crucibleClientFor(o.server, CRUCIBLE_CLIENT_NAME);
       await assertCrucibleModelOffered(client, o.server, 'align', SENTENCE_ALIGN_MODEL);
