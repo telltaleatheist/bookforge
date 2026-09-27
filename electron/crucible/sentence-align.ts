@@ -56,8 +56,10 @@ export const SENTENCE_ASR_MODEL = 'qwen3-asr-1.7b';
 export const SENTENCE_ALIGN_MODEL = 'qwen3-aligner';
 /**
  * THE SECOND OPINION (Owen 2026-09-27: "Have whisper large turbo or something run on the problematic spots"). A
- * different ASR family re-hears every cue the correction would still change; an edit stands only where both models
- * make it (correct-to-heard.ts CorrectOptions.secondOpinion). Same-model re-hearing shares the model's biases.
+ * different ASR family re-hears every cue the correction would still change, and votes REGION by region: a run of
+ * Qwen's changes stands when the second listen sides with Qwen (sim to Qwen >= sim to the book), else the book keeps it
+ * (correct-to-heard.ts CorrectOptions.secondOpinion). Names and the book's unusual words are never replaced at all -
+ * "this will really be about finding paraphrasing, not superseding the book" (Owen).
  */
 export const SECOND_OPINION_MODEL = 'whisper-large-v3-turbo';
 /** A heard word whose 20 ms frames never exceed this (dBFS) was heard in digital silence: a hallucination. */
@@ -531,6 +533,16 @@ export async function runSentenceAlign(o: RunSentenceAlignOptions): Promise<Sent
       });
     }
     for (const k of lower) properNouns.delete(k);
+    // THE BOOK'S UNUSUAL WORDS (Owen 2026-09-27: "the books proper nouns and unusual words should be trusted"): lower-case
+    // words of >= 6 letters the whole book uses at most twice. Trusted like names (correct-to-heard CorrectOptions.rareWords).
+    const wordCount = new Map<string, number>();
+    for (const snt of o.sentences) for (const w of snt.text.split(/\s+/)) {
+      const core = w.replace(/^[^\p{L}]+|[^\p{L}]+$/gu, '');
+      if (!/^\p{Ll}/u.test(core)) continue;
+      const kk = core.toLowerCase().replace(/[‘’ʼ'`]/g, '').replace(/[^a-z0-9]/g, '');
+      if (kk.length >= 6) wordCount.set(kk, (wordCount.get(kk) ?? 0) + 1);
+    }
+    const rareWords = new Set<string>([...wordCount].filter(([, n]) => n <= 2).map(([k]) => k));
     // First pass on the book-length transcript: which cues the correction WOULD change (or finds barely matching).
     const first = new Map<number, { book: string; heard: string[]; r: ReturnType<typeof correctToHeard> }>();
     for (const c of cues) {
@@ -538,7 +550,7 @@ export async function runSentenceAlign(o: RunSentenceAlignOptions): Promise<Sent
       const p = placements[c.index];
       if (!p || p.start === null || p.end === null) continue;
       const heard = heardIn(p.start, Math.max(p.end, c.heardEnd));
-      first.set(c.index, { book, heard, r: correctToHeard(book, heard, { properNouns }) });
+      first.set(c.index, { book, heard, r: correctToHeard(book, heard, { properNouns, rareWords }) });
     }
     // RE-HEAR every such cue on its own audio (shared/sentence-align/recheck.ts): the long pass drops a sentence's
     // opening words at its piece boundaries, and a correction built on that absence deletes words the clip contains.
@@ -573,7 +585,7 @@ export async function runSentenceAlign(o: RunSentenceAlignOptions): Promise<Sent
     for (const c of cues) {
       const f = first.get(c.index); if (!f) continue;
       const again = reheard.get(c.index);
-      const r = again ? correctToHeard(f.book, again, { properNouns }) : f.r;
+      const r = again ? correctToHeard(f.book, again, { properNouns, rareWords }) : f.r;
       if (again && f.r.changed && !r.changed) withdrawn++;
       if (again && f.r.agreement < MIN_AGREEMENT && r.agreement >= MIN_AGREEMENT) recovered++;
       qwen.set(c.index, { heard: again ?? f.heard, r });
@@ -608,7 +620,7 @@ export async function runSentenceAlign(o: RunSentenceAlignOptions): Promise<Sent
       const f = first.get(c.index); const q = qwen.get(c.index);
       if (!f || !q) { cueText.set(c.index, o.sentences[c.index].text.replace(/\s+/g, ' ').trim()); continue; }
       const two = secondHeard.get(c.index);
-      const r = two ? correctToHeard(f.book, q.heard, { properNouns, secondOpinion: two }) : q.r;
+      const r = two ? correctToHeard(f.book, q.heard, { properNouns, rareWords, secondOpinion: two }) : q.r;
       if (two && r.disputed && r.disputed.length > 0) {
         vetoed += r.disputed.length;
         disputedCues.push({ index: c.index, start: c.start, end: c.end, book: f.book, qwen: q.heard.join(' '), second: two.join(' '), disputed: r.disputed as unknown[] });

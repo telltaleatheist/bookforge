@@ -82,7 +82,7 @@ check('round 2 #01: one model\'s mishearing ("to" -> "the") is vetoed by a secon
   const r = correctToHeard(book, words('They kept moving knowing that the stop was to concede defeat'),
     { secondOpinion: words('They kept moving knowing that to stop was to concede defeat') });
   assert.strictEqual(r.text, book); assert.strictEqual(r.changed, false);
-  assert.strictEqual(r.disputed.length, 1); assert.strictEqual(r.disputed[0].op, 'replace');
+  assert.strictEqual(r.disputed.length, 1); assert.strictEqual(r.disputed[0].decision, 'book'); assert.ok(r.disputed[0].margin < 0);
 });
 check('round 2 #04: two models hearing DIFFERENT words both lose to the book ("is" -> "as" vs "is")', () => {
   const book = 'Jesus, the Lamb of God, is our Commander-in-Chief.';
@@ -99,6 +99,28 @@ check('a dropped clause both models agree on is removed', () => {
   const r = correctToHeard('Waxillium raised an eyebrow as Wayne stepped forward.', words('Wayne stepped forward'),
     { secondOpinion: words('Wayne stepped forward') });
   assert.strictEqual(r.text, 'Wayne stepped forward.');
+});
+check('Owen\'s example: both models depart from the book but differently -> Qwen\'s version, whole ("the back of the book")', () => {
+  const r = correctToHeard('Check table 21 for more information.', words('check the back of the book for more information'),
+    { secondOpinion: words('check the back of a book for more information') });
+  assert.strictEqual(r.text, 'Check the back of the book for more information.');
+  assert.strictEqual(r.regions.length, 1); assert.strictEqual(r.regions[0].decision, 'qwen'); assert.ok(r.regions[0].margin > 0);
+});
+check('both models share a near-homophone the book lacks ("in" for "and") -> Qwen (a defensible ASR choice)', () => {
+  const r = correctToHeard('the night and the alley throbbing', words('the night in the alley throbbing'),
+    { secondOpinion: words('the night in the alley throbbing') });
+  assert.strictEqual(r.text, 'the night in the alley throbbing');
+});
+check('the second listen hears nothing near either side (a tie) -> Qwen', () => {
+  const r = correctToHeard('the brown gloop had eased the pain', words('the brown gloop eased the pain'),
+    { secondOpinion: words('the brown gloop soothed the pain') });
+  assert.strictEqual(r.regions[0].decision, 'qwen');
+});
+check('Owen: the book\'s names and unusual words are trusted ("Lukashenko", "fluttered")', () => {
+  const r = correctToHeard('Mr. Lukashenko met them at the border.', words('Mister Lupavenko met them at the border'), { properNouns: new Set(['lukashenko']) });
+  assert.ok(r.text.includes('Lukashenko'), r.text);
+  const f = correctToHeard('LINDA MCGUIRK\'S EYES FLUTTERED OPEN IN THE DARK.', words('Linda McGuirk\'s eyes flooded open in the dark'), { rareWords: new Set(['fluttered']) });
+  assert.ok(f.text.includes('FLUTTERED'), f.text);
 });
 console.log(`\ncorrect-to-heard: ${passed} passed, ${failed.length} failed${failed.length ? ': ' + failed.join('; ') : ''}`);
 process.exit(failed.length ? 1 : 0);
