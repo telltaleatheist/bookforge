@@ -104,9 +104,31 @@ export interface SentenceAlignOutcome {
 
 interface CachedTranscript {
   readonly model: string;
-  readonly audio: { readonly size: number; readonly mtimeMs: number };
+  /** `fp` = audioFingerprint(): present since 2026-09-27; a cache without it matches on size + mtime only */
+  readonly audio: { readonly size: number; readonly mtimeMs: number; readonly fp?: string };
   readonly durationS: number;
   readonly words: HeardWord[];
+}
+
+/**
+ * THE AUDIO BY CONTENT (2026-09-27). The cache was valid for the same size + mtime, and a COPY resets mtime: a copied
+ * 3000 Degrees compact wav re-ran its whole ASR pass on the Mac. A content fingerprint - SHA-256 over the size and 64
+ * 1 MB slices spread through the file - matches a copy, and still never a different recording. Cheap on any size
+ * (64 MB read at most); computed only when size matches but mtime does not, and when a transcript is written.
+ */
+export function audioFingerprint(file: string): string {
+  const crypto = require('crypto') as typeof import('crypto');
+  const size = fs.statSync(file).size; const h = crypto.createHash('sha256').update(String(size));
+  const SLICES = 64; const SLICE = 1 << 20; const buf = Buffer.alloc(SLICE);
+  const fd = fs.openSync(file, 'r');
+  try {
+    for (let k = 0; k < SLICES; k++) {
+      const at = size <= SLICE ? 0 : Math.floor(((size - SLICE) * k) / (SLICES - 1));
+      const n = fs.readSync(fd, buf, 0, Math.min(SLICE, size), at); h.update(buf.subarray(0, n));
+      if (size <= SLICE) break;
+    }
+  } finally { fs.closeSync(fd); }
+  return h.digest('hex');
 }
 
 /** What the transcription reads of a run's options — shared with the clips run (clip-sentence-align.ts). */
@@ -119,7 +141,9 @@ export async function transcribe(o: TranscribeOptions, scratch: string, model: s
   if (o.transcriptCachePath && fs.existsSync(o.transcriptCachePath)) {
     try {
       const c = JSON.parse(fs.readFileSync(o.transcriptCachePath, 'utf-8')) as CachedTranscript;
-      if (c.model === model && c.audio.size === st.size && c.audio.mtimeMs === st.mtimeMs && c.words.length > 0) {
+      const same = c.audio.size === st.size
+        && (c.audio.mtimeMs === st.mtimeMs || (c.audio.fp !== undefined && c.audio.fp === audioFingerprint(o.audioPath)));
+      if (c.model === model && same && c.words.length > 0) {
         log(`transcript reused from ${o.transcriptCachePath} (${c.words.length} words)`);
         return { words: c.words, durationS: c.durationS };
       }
@@ -156,7 +180,7 @@ export async function transcribe(o: TranscribeOptions, scratch: string, model: s
   }
   words.sort((a, b) => a.start - b.start);
   if (o.transcriptCachePath) {
-    const c: CachedTranscript = { model, audio: { size: st.size, mtimeMs: st.mtimeMs }, durationS: t.duration_s, words };
+    const c: CachedTranscript = { model, audio: { size: st.size, mtimeMs: st.mtimeMs, fp: audioFingerprint(o.audioPath) }, durationS: t.duration_s, words };
     fs.writeFileSync(o.transcriptCachePath, JSON.stringify(c));
   }
   log(`transcribed ${path.basename(o.audioPath)}: ${words.length} words over ${t.duration_s.toFixed(0)} s (job ${outcome.jobId})`);
