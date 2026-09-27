@@ -135,7 +135,7 @@ export interface Correction {
   readonly edits: readonly { readonly op: 'replace' | 'insert' | 'delete'; readonly book?: string; readonly heard?: string }[];
 }
 
-type Op = 'match' | 'join2' | 'split2' | 'sub' | 'ins' | 'del' | 'keep';
+type Op = 'match' | 'join2' | 'split2' | 'splitN' | 'sub' | 'ins' | 'del' | 'keep';
 
 export interface RegionVote {
   /** the book's words over the region, Qwen's, and the second listen's */
@@ -160,7 +160,7 @@ function wordSim(a: readonly string[], b: readonly string[]): number {
   return 1 - d[m] / Math.max(n, m);
 }
 
-type Path = { op: Op; i: number; j: number }[];
+type Path = { op: Op; i: number; j: number; n?: number }[];
 
 /** The book-vs-heard alignment: an edit-distance DP with free compound joins either way, then the edge rule. */
 function alignPath(B: Tok[], H: Tok[], opts: CorrectOptions): Path {
@@ -179,6 +179,7 @@ function alignPath(B: Tok[], H: Tok[], opts: CorrectOptions): Path {
   const INF = 1e9;
   const cost: number[][] = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(INF));
   const back: Op[][] = Array.from({ length: n + 1 }, () => new Array(m + 1).fill('match'));
+  const backN: number[][] = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
   cost[0][0] = 0;
   for (let i = 0; i <= n; i++) {
     for (let j = 0; j <= m; j++) {
@@ -186,6 +187,15 @@ function alignPath(B: Tok[], H: Tok[], opts: CorrectOptions): Path {
       const relax = (a: number, b: number, v: number, op: Op): void => { if (v < cost[a][b]) { cost[a][b] = v; back[a][b] = op; } };
       if (i < n && j < m) { const eq = sameTok(B[i], H[j]); relax(i + 1, j + 1, c + (eq ? 0 : 1), eq ? 'match' : 'sub'); }
       if (i < n && j + 1 < m && joins([H[j].k, H[j + 1].k], B[i].k)) relax(i + 1, j + 2, c, 'split2');   // book one = heard two
+      // book one = heard 3..6, EXACT only ("two-and-a-half-inch" / "two and a half inch")
+      if (i < n && B[i].k.length >= 6) {
+        let acc = H[j] ? H[j].k : '';
+        for (let t = 2; t <= 6 && j + t <= m; t++) {
+          acc += H[j + t - 1].k;
+          if (acc.length > B[i].k.length) break;
+          if (t >= 3 && acc === B[i].k && c < cost[i + 1][j + t]) { cost[i + 1][j + t] = c; back[i + 1][j + t] = 'splitN'; backN[i + 1][j + t] = t; }
+        }
+      }
       if (i + 1 < n && j < m && joins([B[i].k, B[i + 1].k], H[j].k)) relax(i + 2, j + 1, c, 'join2');    // book two = heard one
       if (i < n) relax(i + 1, j, c + 1, 'del');
       if (j < m) relax(i, j + 1, c + 1, 'ins');
@@ -194,8 +204,9 @@ function alignPath(B: Tok[], H: Tok[], opts: CorrectOptions): Path {
   const path: Path = [];
   let i = n; let j = m;
   while (i > 0 || j > 0) {
-    const op = back[i][j]; path.push({ op, i, j });
-    if (op === 'match' || op === 'sub') { i--; j--; } else if (op === 'split2') { i--; j -= 2; } else if (op === 'join2') { i -= 2; j--; }
+    const op = back[i][j]; const nn = backN[i][j]; path.push(op === 'splitN' ? { op, i, j, n: nn } : { op, i, j });
+    if (op === 'match' || op === 'sub') { i--; j--; } else if (op === 'split2') { i--; j -= 2; } else if (op === 'splitN') { i--; j -= nn; }
+    else if (op === 'join2') { i -= 2; j--; }
     else if (op === 'del') i--; else j--;
   }
   path.reverse();
@@ -207,7 +218,7 @@ function alignPath(B: Tok[], H: Tok[], opts: CorrectOptions): Path {
     }
     return idx;
   };
-  const anyHeard = path.some((q) => q.op === 'match' || q.op === 'sub' || q.op === 'split2' || q.op === 'join2');
+  const anyHeard = path.some((q) => q.op === 'match' || q.op === 'sub' || q.op === 'split2' || q.op === 'splitN' || q.op === 'join2');
   for (const run of [edgeRun(0, 1), edgeRun(path.length - 1, -1)]) {
     if (anyHeard && run.length > 0 && run.length <= MAX_EDGE_DELETE) for (const k of run) path[k] = { ...path[k], op: 'keep' };
   }
@@ -239,6 +250,7 @@ export function correctToHeard(bookText: string, heard: readonly string[], opts:
         if (q.op === 'match' || q.op === 'sub') { bi++; hj++; }
         else if (q.op === 'keep' || q.op === 'del') bi++;
         else if (q.op === 'split2') { bi++; hj += 2; }
+        else if (q.op === 'splitN') { bi++; hj += q.n ?? 3; }
         else if (q.op === 'join2') { at(bi + 1); bi += 2; hj++; }
       }
       h2At[B.length] = H2.length;
@@ -253,7 +265,8 @@ export function correctToHeard(bookText: string, heard: readonly string[], opts:
       if (!edit && r >= 0) { spans[r].b1 = bi; spans[r].q1 = hj; r = -1; }
       if (edit) regionOf[k] = spans.length - 1;
       if (op === 'match' || op === 'sub') { bi++; hj++; } else if (op === 'keep' || op === 'del') bi++;
-      else if (op === 'split2') { bi++; hj += 2; } else if (op === 'join2') { bi += 2; hj++; } else hj++;
+      else if (op === 'split2') { bi++; hj += 2; } else if (op === 'splitN') { bi++; hj += path[k].n ?? 3; }
+      else if (op === 'join2') { bi += 2; hj++; } else hj++;
     }
     if (r >= 0) { spans[r].b1 = bi; spans[r].q1 = hj; }
     spans.forEach((sp, idx) => {
@@ -274,7 +287,7 @@ export function correctToHeard(bookText: string, heard: readonly string[], opts:
     });
   }
   const vetoed = (k: number): boolean => regionOf[k] >= 0 && bookWins.has(regionOf[k]);
-  const kept = path.reduce((a, p) => a + (p.op === 'match' ? 1 : p.op === 'split2' ? 1 : p.op === 'join2' ? 2 : 0), 0);
+  const kept = path.reduce((a, p) => a + (p.op === 'match' ? 1 : p.op === 'split2' || p.op === 'splitN' ? 1 : p.op === 'join2' ? 2 : 0), 0);
   const agreement = kept / n;
   if (agreement < MIN_AGREEMENT) return { text: bookText, changed: false, agreement, edits: [] };
 
@@ -292,6 +305,7 @@ export function correctToHeard(bookText: string, heard: readonly string[], opts:
     else if (p.op === 'match') { out.push(B[bi].surface); bi++; hj++; }
     else if (p.op === 'keep') { out.push(B[bi].surface); bi++; }
     else if (p.op === 'split2') { out.push(B[bi].surface); bi++; hj += 2; }
+    else if (p.op === 'splitN') { out.push(B[bi].surface); bi++; hj += p.n ?? 3; }
     else if (p.op === 'join2') { out.push(B[bi].surface, B[bi + 1].surface); bi += 2; hj++; }
     else if (p.op === 'sub') {
       const b = B[bi]; const h = H[hj];

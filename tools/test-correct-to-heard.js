@@ -122,5 +122,11 @@ check('Owen: the book\'s names and unusual words are trusted ("Lukashenko", "flu
   const f = correctToHeard('LINDA MCGUIRK\'S EYES FLUTTERED OPEN IN THE DARK.', words('Linda McGuirk\'s eyes flooded open in the dark'), { rareWords: new Set(['fluttered']) });
   assert.ok(f.text.includes('FLUTTERED'), f.text);
 });
+check('the second-opinion test: a multi-word hyphenated compound is the book\'s word ("two-and-a-half-inch")', () => {
+  const book = 'Lt. Robin Huard was next to him, manning a two-and-a-half-inch.';
+  const r = correctToHeard(book, words('Lieutenant Robin Huard was next to him manning a two and a half inch'),
+    { secondOpinion: words('Lieutenant Robin Heward was next to him, manning a 2 1\u20442 inch.') });
+  assert.ok(r.text.includes('manning a two-and-a-half-inch'), r.text);
+});
 console.log(`\ncorrect-to-heard: ${passed} passed, ${failed.length} failed${failed.length ? ': ' + failed.join('; ') : ''}`);
 process.exit(failed.length ? 1 : 0);
