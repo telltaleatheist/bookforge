@@ -54,6 +54,12 @@ import { recheckPieces } from '../../shared/sentence-align/recheck';
 
 export const SENTENCE_ASR_MODEL = 'qwen3-asr-1.7b';
 export const SENTENCE_ALIGN_MODEL = 'qwen3-aligner';
+/**
+ * THE SECOND OPINION (Owen 2026-09-27: "Have whisper large turbo or something run on the problematic spots"). A
+ * different ASR family re-hears every cue the correction would still change; an edit stands only where both models
+ * make it (correct-to-heard.ts CorrectOptions.secondOpinion). Same-model re-hearing shares the model's biases.
+ */
+export const SECOND_OPINION_MODEL = 'whisper-large-v3-turbo';
 /** A heard word whose 20 ms frames never exceed this (dBFS) was heard in digital silence: a hallucination. */
 export const SILENT_WORD_DB = -80;
 
@@ -105,13 +111,13 @@ interface CachedTranscript {
 export type TranscribeOptions = Pick<RunSentenceAlignOptions,
   'server' | 'audioPath' | 'language' | 'transcriptCachePath' | 'signal' | 'onProgress' | 'onLog'>;
 
-export async function transcribe(o: TranscribeOptions, scratch: string): Promise<{ words: HeardWord[]; durationS: number }> {
+export async function transcribe(o: TranscribeOptions, scratch: string, model: string = SENTENCE_ASR_MODEL): Promise<{ words: HeardWord[]; durationS: number }> {
   const log = o.onLog ?? (() => undefined);
   const st = fs.statSync(o.audioPath);
   if (o.transcriptCachePath && fs.existsSync(o.transcriptCachePath)) {
     try {
       const c = JSON.parse(fs.readFileSync(o.transcriptCachePath, 'utf-8')) as CachedTranscript;
-      if (c.model === SENTENCE_ASR_MODEL && c.audio.size === st.size && c.audio.mtimeMs === st.mtimeMs && c.words.length > 0) {
+      if (c.model === model && c.audio.size === st.size && c.audio.mtimeMs === st.mtimeMs && c.words.length > 0) {
         log(`transcript reused from ${o.transcriptCachePath} (${c.words.length} words)`);
         return { words: c.words, durationS: c.durationS };
       }
@@ -121,14 +127,14 @@ export async function transcribe(o: TranscribeOptions, scratch: string): Promise
     }
   }
   const client = await crucibleClientFor(o.server, CRUCIBLE_CLIENT_NAME);
-  await assertCrucibleModelOffered(client, o.server, 'asr', SENTENCE_ASR_MODEL);
-  const dir = path.join(scratch, 'asr'); fs.mkdirSync(dir);
+  await assertCrucibleModelOffered(client, o.server, 'asr', model);
+  const dir = path.join(scratch, 'asr'); fs.mkdirSync(dir, { recursive: true });
   const outcome = await runCrucibleJob({
     server: o.server,
     type: 'asr',
-    model: SENTENCE_ASR_MODEL,
-    // Qwen has no VAD (true is refused by name) and no auto-detect.
-    params: { language: o.language, vad_filter: false, word_timestamps: true },
+    model,
+    // Qwen has no VAD (true is refused by name) and no auto-detect; Whisper's VAD stops it inventing words in silence.
+    params: { language: o.language, vad_filter: model.startsWith('whisper'), word_timestamps: true },
     inputs: { [path.basename(o.audioPath)]: o.audioPath },
     artifactsTo: dir,
     ...(o.signal ? { signal: o.signal } : {}),
@@ -148,7 +154,7 @@ export async function transcribe(o: TranscribeOptions, scratch: string): Promise
   }
   words.sort((a, b) => a.start - b.start);
   if (o.transcriptCachePath) {
-    const c: CachedTranscript = { model: SENTENCE_ASR_MODEL, audio: { size: st.size, mtimeMs: st.mtimeMs }, durationS: t.duration_s, words };
+    const c: CachedTranscript = { model, audio: { size: st.size, mtimeMs: st.mtimeMs }, durationS: t.duration_s, words };
     fs.writeFileSync(o.transcriptCachePath, JSON.stringify(c));
   }
   log(`transcribed ${path.basename(o.audioPath)}: ${words.length} words over ${t.duration_s.toFixed(0)} s (job ${outcome.jobId})`);
@@ -562,19 +568,58 @@ export async function runSentenceAlign(o: RunSentenceAlignOptions): Promise<Sent
       }
     }
     let withdrawn = 0; let recovered = 0;
+    // Qwen's verdict per cue: the long pass, or its own-audio re-hear where there was one
+    const qwen = new Map<number, { heard: string[]; r: ReturnType<typeof correctToHeard> }>();
     for (const c of cues) {
-      const f = first.get(c.index);
-      if (!f) { cueText.set(c.index, o.sentences[c.index].text.replace(/\s+/g, ' ').trim()); continue; }
+      const f = first.get(c.index); if (!f) continue;
       const again = reheard.get(c.index);
       const r = again ? correctToHeard(f.book, again, { properNouns }) : f.r;
       if (again && f.r.changed && !r.changed) withdrawn++;
       if (again && f.r.agreement < MIN_AGREEMENT && r.agreement >= MIN_AGREEMENT) recovered++;
-      if (r.agreement < MIN_AGREEMENT) { barelyMatched++; barelyIdx.push(c.index); }
-      cueText.set(c.index, r.changed ? r.text : f.book);
-      if (r.changed) corrections.push({ index: c.index, start: c.start, end: c.end, book: f.book, heard: (again ?? f.heard).join(' '),
-        ...(again ? { heardLong: f.heard.join(' ') } : {}), text: r.text, agreement: +r.agreement.toFixed(3), edits: r.edits as unknown[] });
+      qwen.set(c.index, { heard: again ?? f.heard, r });
     }
     if (suspects.length > 0) log(`re-heard ${suspects.length} cue(s) on their own audio: ${withdrawn} correction(s) withdrawn (the long pass had missed words the clip holds), ${recovered} misplaced cue(s) recovered`);
+
+    // THE SECOND OPINION (SECOND_OPINION_MODEL): every cue Qwen would still change is heard by a different ASR family on
+    // its own audio (padded like the re-hear); an edit stands only where both make it. Disagreements keep the book's
+    // word and are listed in discrepancies.json `disputed` for a human.
+    const contested = cues.filter((c) => qwen.get(c.index)?.r.changed);
+    const secondHeard = new Map<number, string[]>();
+    if (contested.length > 0) {
+      progress('write', 0, `Second opinion: ${SECOND_OPINION_MODEL} on ${contested.length} corrected cue(s)`);
+      const sp = recheckPieces(contested.map((c) => ({ start: c.start, end: c.end })), audioS);
+      const swav = o.transcriptCachePath ? `${o.transcriptCachePath}.second.wav` : path.join(scratch, 'second.wav');
+      const ssig = JSON.stringify(sp); const ssigPath = `${swav}.pieces.json`;
+      if (!fs.existsSync(swav) || !fs.existsSync(ssigPath) || fs.readFileSync(ssigPath, 'utf-8') !== ssig) {
+        await writeCompacted(o.ffmpegPath, o.audioPath, sp, swav, envStop.signal);
+        fs.writeFileSync(ssigPath, ssig);
+      }
+      const sdir = path.join(scratch, 'second'); fs.mkdirSync(sdir, { recursive: true });
+      const sh = await transcribe({ ...o, audioPath: swav, transcriptCachePath: o.transcriptCachePath ? `${o.transcriptCachePath}.second.json` : undefined }, sdir, SECOND_OPINION_MODEL);
+      const back = mapWordsBack(sh.words, sp).words.sort((a, b) => a.start - b.start);
+      for (const c of contested) {
+        const ws: string[] = [];
+        for (const w of back) { const m = (w.start + w.end) / 2; if (m < c.start) continue; if (m > c.end) break; ws.push(w.word); }
+        secondHeard.set(c.index, ws);
+      }
+    }
+    let vetoed = 0; const disputedCues: { index: number; start: number; end: number; book: string; qwen: string; second: string; disputed: unknown[] }[] = [];
+    for (const c of cues) {
+      const f = first.get(c.index); const q = qwen.get(c.index);
+      if (!f || !q) { cueText.set(c.index, o.sentences[c.index].text.replace(/\s+/g, ' ').trim()); continue; }
+      const two = secondHeard.get(c.index);
+      const r = two ? correctToHeard(f.book, q.heard, { properNouns, secondOpinion: two }) : q.r;
+      if (two && r.disputed && r.disputed.length > 0) {
+        vetoed += r.disputed.length;
+        disputedCues.push({ index: c.index, start: c.start, end: c.end, book: f.book, qwen: q.heard.join(' '), second: two.join(' '), disputed: r.disputed as unknown[] });
+      }
+      if (r.agreement < MIN_AGREEMENT) { barelyMatched++; barelyIdx.push(c.index); }
+      cueText.set(c.index, r.changed ? r.text : f.book);
+      if (r.changed) corrections.push({ index: c.index, start: c.start, end: c.end, book: f.book, heard: q.heard.join(' '),
+        ...(reheard.has(c.index) ? { heardLong: f.heard.join(' ') } : {}), ...(two ? { second: two.join(' ') } : {}),
+        text: r.text, agreement: +r.agreement.toFixed(3), edits: r.edits as unknown[] });
+    }
+    if (contested.length > 0) log(`second opinion (${SECOND_OPINION_MODEL}) on ${contested.length} cue(s): ${vetoed} edit(s) the two models did not share kept the book's word; ${disputedCues.length} cue(s) listed for review`);
     log(`corrected ${corrections.length} of ${cues.length} cue(s) to what the reader said; ${barelyMatched} misplaced (heard words agree on < ${Math.round(MIN_AGREEMENT * 100)} %) - not written`);
 
     // 5. WRITE
@@ -628,6 +673,7 @@ export async function runSentenceAlign(o: RunSentenceAlignOptions): Promise<Sent
     const discrepanciesPath = path.join(path.dirname(o.reportPath), 'discrepancies.json');
     fs.writeFileSync(discrepanciesPath, JSON.stringify({ audio: o.audioPath, ...discrepancies,
       corrections: { count: corrections.length, note: 'cue text corrected to the words heard; the book word is kept wherever the reader said it (near-miss spellings included)', items: corrections },
+      disputed: { count: disputedCues.length, model: SECOND_OPINION_MODEL, note: 'edits qwen made that the second opinion did not share: the book kept its word; listed for a human (book / qwen / second heard, and each disputed edit)', items: disputedCues },
       // cues whose heard words agree on < 30 % of the book's: more likely misplaced than reworded - exclusion candidates
       barelyMatched: { count: barelyIdx.length, note: 'misplaced: the heard words in the span agree on < 30 % of the text - not written to the VTT', sentences: barelyIdx } }, null, 1));
     log(`discrepancies: ${Object.entries(discrepancies.summary).map(([k, v]) => `${k} ${v.count} (${v.seconds} s)`).join(', ') || 'none'} -> ${discrepanciesPath}`);

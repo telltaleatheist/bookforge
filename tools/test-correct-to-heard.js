@@ -76,5 +76,29 @@ check('spot check 4/6: the reader\'s trailing words are inserted ("verse 21")', 
   const r = correctToHeard('Both were to be subordinate (Eph. 5:21).', words('Both were to be subordinate Ephesians 5 verse 21'));
   assert.ok(/verse/.test(r.text) && /\(Ephesians/.test(r.text), r.text);
 });
+// ── The second opinion (Owen 2026-09-27: "Have whisper large turbo or something run on the problematic spots") ──
+check('round 2 #01: one model\'s mishearing ("to" -> "the") is vetoed by a second listen that hears the book', () => {
+  const book = 'They kept moving, knowing that to stop was to concede defeat.';
+  const r = correctToHeard(book, words('They kept moving knowing that the stop was to concede defeat'),
+    { secondOpinion: words('They kept moving knowing that to stop was to concede defeat') });
+  assert.strictEqual(r.text, book); assert.strictEqual(r.changed, false);
+  assert.strictEqual(r.disputed.length, 1); assert.strictEqual(r.disputed[0].op, 'replace');
+});
+check('round 2 #04: two models hearing DIFFERENT words both lose to the book ("is" -> "as" vs "is")', () => {
+  const book = 'Jesus, the Lamb of God, is our Commander-in-Chief.';
+  const r = correctToHeard(book, words('Jesus the Lamb of God as our commander in chief'),
+    { secondOpinion: words('Jesus the Lamb of God is our commander in chief') });
+  assert.ok(r.text.includes(', is our'), r.text);
+});
+check('an edit BOTH models make is applied (a real reader departure: "verse 21")', () => {
+  const r = correctToHeard('Both were to be subordinate (Eph. 5:21).', words('Both were to be subordinate Ephesians 5 verse 21'),
+    { secondOpinion: words('Both were to be subordinate Ephesians five verse twenty one') });
+  assert.ok(/verse/.test(r.text) && /\(Ephesians/.test(r.text), r.text);
+});
+check('a dropped clause both models agree on is removed', () => {
+  const r = correctToHeard('Waxillium raised an eyebrow as Wayne stepped forward.', words('Wayne stepped forward'),
+    { secondOpinion: words('Wayne stepped forward') });
+  assert.strictEqual(r.text, 'Wayne stepped forward.');
+});
 console.log(`\ncorrect-to-heard: ${passed} passed, ${failed.length} failed${failed.length ? ': ' + failed.join('; ') : ''}`);
 process.exit(failed.length ? 1 : 0);

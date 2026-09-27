@@ -33,6 +33,14 @@ export const MIN_AGREEMENT = 0.3;
 export interface CorrectOptions {
   /** Lower-cased names from the whole book: never replaced by a heard word. */
   readonly properNouns?: ReadonlySet<string>;
+  /**
+   * A SECOND, INDEPENDENT LISTEN (a different ASR family - whisper-large-v3-turbo beside qwen3-asr; Owen 2026-09-27:
+   * "Have whisper large turbo or something run on the problematic spots"). When given, an edit is applied only if the
+   * second listen makes the SAME edit at the SAME book position; otherwise the book keeps its word there and the edit
+   * is returned in `disputed` for a human. The re-check used the SAME model twice, which shares its biases - Owen's
+   * spot check 2 found 7 of 15 corrections were one model's consistent mishearing ("to"->"the", "and"->"in").
+   */
+  readonly secondOpinion?: readonly string[];
 }
 
 /** Edge deletions of at most this many words are not applied (the ASR's weak spot). */
@@ -106,6 +114,8 @@ function abbreviates(b: Tok, h: Tok): boolean {
 export interface Correction {
   readonly text: string;
   readonly changed: boolean;
+  /** Edits the second opinion did not share - the book kept its word; listed for review. */
+  readonly disputed?: readonly { readonly op: 'replace' | 'insert' | 'delete'; readonly book?: string; readonly heard?: string; readonly alt?: string }[];
   /** Share of the book's words the reader said (exact / near-miss / compound), in order. */
   readonly agreement: number;
   readonly edits: readonly { readonly op: 'replace' | 'insert' | 'delete'; readonly book?: string; readonly heard?: string }[];
@@ -113,12 +123,11 @@ export interface Correction {
 
 type Op = 'match' | 'join2' | 'split2' | 'sub' | 'ins' | 'del' | 'keep';
 
-/** Correct `bookText` to the words heard in its span. `heard` is the heard words in order. */
-export function correctToHeard(bookText: string, heard: readonly string[], opts: CorrectOptions = {}): Correction {
-  const B = mergeNumbers(tokens(bookText).filter((t) => t.k.length > 0));
-  const H = mergeNumbers(heard.map((w) => tokens(w)).flat().filter((t) => t.k.length > 0));
+type Path = { op: Op; i: number; j: number }[];
+
+/** The book-vs-heard alignment: an edit-distance DP with free compound joins either way, then the edge rule. */
+function alignPath(B: Tok[], H: Tok[], opts: CorrectOptions): Path {
   const n = B.length; const m = H.length;
-  if (n === 0) return { text: bookText, changed: false, agreement: 1, edits: [] };
   const names = opts.properNouns;
   const sameTok = (b: Tok, h: Tok): boolean => b.k === h.k || isNearMiss(b.k, h.k) || abbreviates(b, h)
     || (names !== undefined && names.has(b.k) && /^[A-Z]/.test(b.core) && !/^\d/.test(h.k));
@@ -127,7 +136,6 @@ export function correctToHeard(bookText: string, heard: readonly string[], opts:
   const joins = (parts: string[], whole: string): boolean => parts.join('') === whole
     || (parts.every((x) => x.length >= 3) && Math.abs(parts.join('').length - whole.length) <= 2
         && isNearMiss(parts.join(''), whole));   // and near in LENGTH: "wayne"+"stepped" is 5 edits off "stepped" but a whole word longer
-  // edit-distance DP, with free compound joins either way
   const INF = 1e9;
   const cost: number[][] = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(INF));
   const back: Op[][] = Array.from({ length: n + 1 }, () => new Array(m + 1).fill('match'));
@@ -138,13 +146,12 @@ export function correctToHeard(bookText: string, heard: readonly string[], opts:
       const relax = (a: number, b: number, v: number, op: Op): void => { if (v < cost[a][b]) { cost[a][b] = v; back[a][b] = op; } };
       if (i < n && j < m) { const eq = sameTok(B[i], H[j]); relax(i + 1, j + 1, c + (eq ? 0 : 1), eq ? 'match' : 'sub'); }
       if (i < n && j + 1 < m && joins([H[j].k, H[j + 1].k], B[i].k)) relax(i + 1, j + 2, c, 'split2');   // book one = heard two
-      if (i + 1 < n && j < m && joins([B[i].k, B[i + 1].k], H[j].k)) relax(i + 2, j + 1, c, 'join2');    // book two = heard one (near-miss: "bubble had" / "bubblehead")
+      if (i + 1 < n && j < m && joins([B[i].k, B[i + 1].k], H[j].k)) relax(i + 2, j + 1, c, 'join2');    // book two = heard one
       if (i < n) relax(i + 1, j, c + 1, 'del');
       if (j < m) relax(i, j + 1, c + 1, 'ins');
     }
   }
-  // walk back
-  const path: { op: Op; i: number; j: number }[] = [];
+  const path: Path = [];
   let i = n; let j = m;
   while (i > 0 || j > 0) {
     const op = back[i][j]; path.push({ op, i, j });
@@ -160,10 +167,40 @@ export function correctToHeard(bookText: string, heard: readonly string[], opts:
     }
     return idx;
   };
-  const anyHeard = path.some((p) => p.op === 'match' || p.op === 'sub' || p.op === 'split2' || p.op === 'join2');
+  const anyHeard = path.some((q) => q.op === 'match' || q.op === 'sub' || q.op === 'split2' || q.op === 'join2');
   for (const run of [edgeRun(0, 1), edgeRun(path.length - 1, -1)]) {
     if (anyHeard && run.length > 0 && run.length <= MAX_EDGE_DELETE) for (const k of run) path[k] = { ...path[k], op: 'keep' };
   }
+  return path;
+}
+
+/** Each edit a path makes, keyed by where it lands in the BOOK and what it says ("s:12:the", "d:4", "i:7:verse"). */
+function editSignatures(path: Path, B: Tok[], H: Tok[]): Map<string, string> {
+  const sig = new Map<string, string>(); let bi = 0; let hj = 0;
+  for (const q of path) {
+    if (q.op === 'sub') { sig.set(`s:${bi}:${H[hj].k}`, H[hj].core); bi++; hj++; }
+    else if (q.op === 'ins') { sig.set(`i:${bi}:${H[hj].k}`, H[hj].core); hj++; }
+    else if (q.op === 'del') { sig.set(`d:${bi}`, ''); bi++; }
+    else if (q.op === 'match') { bi++; hj++; } else if (q.op === 'keep') { bi++; }
+    else if (q.op === 'split2') { bi++; hj += 2; } else if (q.op === 'join2') { bi += 2; hj++; }
+  }
+  return sig;
+}
+
+/** Correct `bookText` to the words heard in its span. `heard` is the heard words in order. */
+export function correctToHeard(bookText: string, heard: readonly string[], opts: CorrectOptions = {}): Correction {
+  const B = mergeNumbers(tokens(bookText).filter((t) => t.k.length > 0));
+  const H = mergeNumbers(heard.map((w) => tokens(w)).flat().filter((t) => t.k.length > 0));
+  const n = B.length;
+  if (n === 0) return { text: bookText, changed: false, agreement: 1, edits: [] };
+  const path = alignPath(B, H, opts);
+  // the second listen's edits, by book position (see CorrectOptions.secondOpinion)
+  let second: Map<string, string> | null = null;
+  if (opts.secondOpinion) {
+    const H2 = mergeNumbers(opts.secondOpinion.map((w) => tokens(w)).flat().filter((t) => t.k.length > 0));
+    second = editSignatures(alignPath(B, H2, opts), B, H2);
+  }
+  const disputed: NonNullable<Correction['disputed']>[number][] = [];
   const kept = path.reduce((a, p) => a + (p.op === 'match' ? 1 : p.op === 'split2' ? 1 : p.op === 'join2' ? 2 : 0), 0);
   const agreement = kept / n;
   if (agreement < MIN_AGREEMENT) return { text: bookText, changed: false, agreement, edits: [] };
@@ -183,9 +220,17 @@ export function correctToHeard(bookText: string, heard: readonly string[], opts:
     else if (p.op === 'split2') { out.push(B[bi].surface); bi++; hj += 2; }
     else if (p.op === 'join2') { out.push(B[bi].surface, B[bi + 1].surface); bi += 2; hj++; }
     else if (p.op === 'sub') {
-      const b = B[bi]; const h = H[hj];
-      out.push(b.lead + h.core + b.trail); edits.push({ op: 'replace', book: b.surface, heard: h.core }); bi++; hj++;
-    } else if (p.op === 'ins') { out.push(H[hj].core); edits.push({ op: 'insert', heard: H[hj].core }); hj++; }
+      const b = B[bi]; const h = H[hj]; const key = `s:${bi}:${h.k}`;
+      if (second && !second.has(key)) {
+        disputed.push({ op: 'replace', book: b.surface, heard: h.core, alt: second.get(`s:${bi}:${h.k}`) ?? altAt(second, 's', bi) });
+        out.push(b.surface); bi++; hj++;
+      } else { out.push(b.lead + h.core + b.trail); edits.push({ op: 'replace', book: b.surface, heard: h.core }); bi++; hj++; }
+    } else if (p.op === 'ins') {
+      const key = `i:${bi}:${H[hj].k}`;
+      if (second && !second.has(key)) { disputed.push({ op: 'insert', heard: H[hj].core }); hj++; }
+      else { out.push(H[hj].core); edits.push({ op: 'insert', heard: H[hj].core }); hj++; }
+    }
+    else if (second && !second.has(`d:${bi}`)) { disputed.push({ op: 'delete', book: B[bi].surface }); out.push(B[bi].surface); bi++; }
     else {
       const b = B[bi];
       // keep sentence punctuation the dropped word carried (".", "?", "!", closing quote)
@@ -195,5 +240,11 @@ export function correctToHeard(bookText: string, heard: readonly string[], opts:
   }
   let text = out.join(' ').replace(/\s+/g, ' ').trim();
   if (text && /^[a-z]/.test(text) && /^[A-Z]/.test(bookText.trim())) text = text[0].toUpperCase() + text.slice(1);
-  return { text, changed: edits.length > 0, agreement, edits };
+  return { text, changed: edits.length > 0, agreement, edits, ...(second ? { disputed } : {}) };
+}
+
+/** What the second listen did at book position `bi` instead (for the review list), if anything. */
+function altAt(second: Map<string, string>, op: string, bi: number): string | undefined {
+  for (const [k, v] of second) if (k.startsWith(`${op}:${bi}:`)) return v;
+  return undefined;
 }
