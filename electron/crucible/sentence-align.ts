@@ -450,22 +450,43 @@ export async function runSentenceAlign(o: RunSentenceAlignOptions): Promise<Sent
     progress('edges', 0, 'Putting every cue edge in a pause');
     const placed = placements.filter((p) => p.status === 'placed' && p.start !== null && p.end !== null)
       .sort((a, b) => a.start! - b.start!);
-    const cues: { index: number; start: number; end: number; flagged: string[] }[] = [];
-    let noPause = 0; let collapsed = 0; let prevEdgeEnd = 0;
+    const cues: { index: number; start: number; end: number; flagged: string[]; heardEnd: number }[] = [];
+    let noPause = 0; let collapsed = 0; let prevEdgeEnd = 0; let absorbed = 0;
+    // TRAILING ADDITIONS ARE THE CUE'S OWN WORDS (Owen's spot check, 2026-09-26: the reader says "Ephesians 5 verse 21"
+    // where the book prints "(Eph. 5:21)"). Words heard between a sentence's last word and the next sentence's first
+    // belonged to NO cue: the edge landed in the pause before "verse", the clip ended on "ver-", and a long row that
+    // joined the two cues carried "verse 21" as audio with no text. Up to MAX_TRAILING_WORDS such words, starting within
+    // TRAILING_GAP_S of the sentence's end, are the reader's own addition: the sentence is heard through them, its end
+    // edge moves past them, and the correction inserts them. A longer run is an unplaced passage, left alone.
+    const MAX_TRAILING_WORDS = 4; const TRAILING_GAP_S = 1.5;
+    const heardByTime = asr.words.slice().sort((a, b) => a.start - b.start);
+    const heardFrom = (t: number): number => { let lo = 0; let hi = heardByTime.length; while (lo < hi) { const m = (lo + hi) >> 1; if ((heardByTime[m].start + heardByTime[m].end) / 2 <= t) lo = m + 1; else hi = m; } return lo; };
     for (let i = 0; i < placed.length; i++) {
       const p = placed[i];
       const prevEnd = i > 0 ? placed[i - 1].end! : null;
       const nextStart = i + 1 < placed.length ? placed[i + 1].start! : null;
+      let pEnd = p.end!;
+      {
+        const gap: HeardWord[] = [];
+        for (let k = heardFrom(p.end!); k < heardByTime.length; k++) {
+          const w = heardByTime[k]; const mid = (w.start + w.end) / 2;
+          if (nextStart !== null && mid >= nextStart) break;
+          gap.push(w); if (gap.length > MAX_TRAILING_WORDS) break;
+        }
+        if (gap.length > 0 && gap.length <= MAX_TRAILING_WORDS && gap[0].start - p.end! <= TRAILING_GAP_S
+            && (nextStart === null || gap[gap.length - 1].end < nextStart)) { pEnd = gap[gap.length - 1].end; absorbed++; }
+      }
       const s = startEdge(env, p.start!, prevEnd !== null && prevEnd <= p.start! ? prevEnd : null);
-      const e = endEdge(env, p.end!, nextStart !== null && nextStart >= p.end! ? nextStart : null);
+      const e = endEdge(env, pEnd, nextStart !== null && nextStart >= pEnd ? nextStart : null);
       const flagged: string[] = [];
       if (!s.inSilence) { flagged.push('start-not-in-a-pause'); noPause++; }
       if (!e.inSilence) { flagged.push('end-not-in-a-pause'); noPause++; }
       let a = Math.max(s.t, prevEdgeEnd); let b = e.t;
       if (b <= a) { collapsed++; flagged.push('collapsed-to-word-times'); a = Math.max(p.start!, prevEdgeEnd); b = Math.max(p.end!, a + 0.05); }
-      cues.push({ index: p.index, start: a, end: b, flagged });
+      cues.push({ index: p.index, start: a, end: b, flagged, heardEnd: pEnd });
       prevEdgeEnd = b;
     }
+    if (absorbed) log(`${absorbed} sentence(s) carry the reader's trailing addition (<= ${MAX_TRAILING_WORDS} words heard before the next sentence)`);
 
     // 4b. THE CUE SAYS WHAT THE READER SAID (Owen 2026-09-25: "correct the vtt so it reflects the real audio so we
     // arent losing training data" - and "a normal part of the process of prepping a book"). Word by word against the
@@ -484,14 +505,27 @@ export async function runSentenceAlign(o: RunSentenceAlignOptions): Promise<Sent
     const cueText = new Map<number, string>();
     const corrections: { index: number; start: number; end: number; book: string; heard: string; heardLong?: string; text: string; agreement: number; edits: unknown[] }[] = [];
     let barelyMatched = 0; const barelyIdx: number[] = [];
+    // THE BOOK'S NAMES (Owen's spot check: "Chantal" became "Gentile"): a word the book capitalises mid-sentence and
+    // never writes lower-case is a name, and the correction never replaces it.
+    const properNouns = new Set<string>(); const lower = new Set<string>();
+    for (const snt of o.sentences) {
+      const ws = snt.text.split(/\s+/).filter(Boolean);
+      ws.forEach((w, k) => {
+        const core = w.replace(/^[^\p{L}]+|[^\p{L}]+$/gu, ''); if (!core) return;
+        const kk = core.toLowerCase().replace(/[‘’ʼ'`]/g, '').replace(/[^a-z0-9]/g, '');
+        if (/^\p{Ll}/u.test(core)) lower.add(kk);
+        else if (k > 0 && /^\p{Lu}\p{Ll}/u.test(core) && !/[.!?:"“”]$/.test(ws[k - 1])) properNouns.add(kk);
+      });
+    }
+    for (const k of lower) properNouns.delete(k);
     // First pass on the book-length transcript: which cues the correction WOULD change (or finds barely matching).
     const first = new Map<number, { book: string; heard: string[]; r: ReturnType<typeof correctToHeard> }>();
     for (const c of cues) {
       const book = o.sentences[c.index].text.replace(/\s+/g, ' ').trim();
       const p = placements[c.index];
       if (!p || p.start === null || p.end === null) continue;
-      const heard = heardIn(p.start, p.end);
-      first.set(c.index, { book, heard, r: correctToHeard(book, heard) });
+      const heard = heardIn(p.start, Math.max(p.end, c.heardEnd));
+      first.set(c.index, { book, heard, r: correctToHeard(book, heard, { properNouns }) });
     }
     // RE-HEAR every such cue on its own audio (shared/sentence-align/recheck.ts): the long pass drops a sentence's
     // opening words at its piece boundaries, and a correction built on that absence deletes words the clip contains.
@@ -525,7 +559,7 @@ export async function runSentenceAlign(o: RunSentenceAlignOptions): Promise<Sent
       const f = first.get(c.index);
       if (!f) { cueText.set(c.index, o.sentences[c.index].text.replace(/\s+/g, ' ').trim()); continue; }
       const again = reheard.get(c.index);
-      const r = again ? correctToHeard(f.book, again) : f.r;
+      const r = again ? correctToHeard(f.book, again, { properNouns }) : f.r;
       if (again && f.r.changed && !r.changed) withdrawn++;
       if (again && f.r.agreement < MIN_AGREEMENT && r.agreement >= MIN_AGREEMENT) recovered++;
       if (r.agreement < MIN_AGREEMENT) { barelyMatched++; barelyIdx.push(c.index); }

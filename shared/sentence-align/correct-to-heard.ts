@@ -21,6 +21,39 @@ import { isNearMiss } from './book-diff';
 
 export const MIN_AGREEMENT = 0.3;
 
+/** Owen's spot check, 2026-09-26 - five rules, each from a clip he heard:
+ *   "Lt." / "St." / "Eph." heard as "Lieutenant" / "Saint" / "Ephesians": an ABBREVIATION of the heard word is the same
+ *     word - the book keeps "Lt." and the render's cleanup expands it (the old replace left "Saint. Stephen's": a
+ *     period mid-sentence);
+ *   "Chantal" heard as "Gentile": a NAME (capitalised mid-sentence somewhere in the book) is never replaced;
+ *   "nine thousand" heard as "9000": numbers compare by VALUE;
+ *   "If neither explanation..." with "If" unheard by both listens: a 1-2 word deletion at the sentence's START or END is
+ *     not applied - the ASR is weakest there (a dropped CLAUSE still defaults to the reader);
+ *   trailing additions ("Ephesians 5 verse 21") are the cue's own words - see absorbGapWords in sentence-align.ts. */
+export interface CorrectOptions {
+  /** Lower-cased names from the whole book: never replaced by a heard word. */
+  readonly properNouns?: ReadonlySet<string>;
+}
+
+/** Edge deletions of at most this many words are not applied (the ASR's weak spot). */
+export const MAX_EDGE_DELETE = 2;
+
+const UNITS: Record<string, number> = { zero: 0, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9,
+  ten: 10, eleven: 11, twelve: 12, thirteen: 13, fourteen: 14, fifteen: 15, sixteen: 16, seventeen: 17, eighteen: 18, nineteen: 19 };
+const TENS: Record<string, number> = { twenty: 20, thirty: 30, forty: 40, fifty: 50, sixty: 60, seventy: 70, eighty: 80, ninety: 90 };
+const SCALES: Record<string, number> = { hundred: 100, thousand: 1000, million: 1000000, billion: 1000000000 };
+/** "twentythree" (the hyphen keyed away) -> 23; a plain number word -> its value; anything else -> null. */
+function wordValue(k: string): number | null {
+  if (k in UNITS) return UNITS[k];
+  if (k in TENS) return TENS[k];
+  for (const t of Object.keys(TENS)) {
+    const rest = k.slice(t.length);
+    if (k.startsWith(t) && rest in UNITS && UNITS[rest] < 10) return TENS[t] + UNITS[rest];
+  }
+  return null;
+}
+const isNumberWord = (k: string): boolean => wordValue(k) !== null || k in SCALES;
+
 const key = (t: string): string => t.toLowerCase()
   .replace(/[‘’ʼ'`]/g, '').replace(/[‐-―-]/g, '').replace(/[^a-z0-9]/g, '');
 
@@ -33,6 +66,43 @@ function tokens(text: string): Tok[] {
   }).filter((t) => t.k.length > 0 || t.surface.length > 0);
 }
 
+/**
+ * A run of number words becomes ONE token keyed by its value ("nine thousand" -> k "9000", surface kept), so it lines
+ * up with an ASR numeral; a digits token already keys to its digits ("9,000" -> "9000"). A lone small number word
+ * ("one", "nine") stays a word - it is more often "one of them" than a count.
+ */
+function mergeNumbers(ts: Tok[]): Tok[] {
+  const out: Tok[] = [];
+  for (let i = 0; i < ts.length;) {
+    if (!isNumberWord(ts[i].k) || ts[i].k in SCALES) { out.push(ts[i]); i++; continue; }
+    let total = 0; let cur = 0; let j = i; let last = i;
+    while (j < ts.length) {
+      const k = ts[j].k;
+      if (k === 'and' && j > i && j + 1 < ts.length && isNumberWord(ts[j + 1].k)) { j++; continue; }
+      if (k in SCALES) { const sc = SCALES[k]; if (sc === 100) cur = (cur || 1) * 100; else { total += (cur || 1) * sc; cur = 0; } }
+      else { const v = wordValue(k); if (v === null) break; cur += v; }
+      last = j; j++;
+      if (/[.,;:!?)”"]$/.test(ts[last].surface)) break;   // a run ends at punctuation
+    }
+    const single = last === i;
+    if (single && (wordValue(ts[i].k) ?? 99) < 10) { out.push(ts[i]); i++; continue; }
+    const span = ts.slice(i, last + 1);
+    out.push({ surface: span.map((t) => t.surface).join(' '), lead: span[0].lead, core: span.map((t) => t.core).join(' '),
+      trail: span[span.length - 1].trail, k: String(total + cur) });
+    i = last + 1;
+  }
+  return out;
+}
+
+/** "Lt." against "lieutenant", "St." against "saint", "Eph." against "ephesians": a period-marked abbreviation of it. */
+function abbreviates(b: Tok, h: Tok): boolean {
+  if (!b.trail.startsWith('.') || b.k.length === 0 || b.k.length > 5 || h.k.length <= b.k.length) return false;
+  if (!/^[A-Z]/.test(b.core) || h.k[0] !== b.k[0]) return false;
+  let at = 0;   // the abbreviation's letters appear in order in the heard word
+  for (const ch of h.k) if (at < b.k.length && ch === b.k[at]) at++;
+  return at === b.k.length;
+}
+
 export interface Correction {
   readonly text: string;
   readonly changed: boolean;
@@ -41,15 +111,17 @@ export interface Correction {
   readonly edits: readonly { readonly op: 'replace' | 'insert' | 'delete'; readonly book?: string; readonly heard?: string }[];
 }
 
-type Op = 'match' | 'join2' | 'split2' | 'sub' | 'ins' | 'del';
+type Op = 'match' | 'join2' | 'split2' | 'sub' | 'ins' | 'del' | 'keep';
 
 /** Correct `bookText` to the words heard in its span. `heard` is the heard words in order. */
-export function correctToHeard(bookText: string, heard: readonly string[]): Correction {
-  const B = tokens(bookText).filter((t) => t.k.length > 0);
-  const H = heard.map((w) => tokens(w)).flat().filter((t) => t.k.length > 0);
+export function correctToHeard(bookText: string, heard: readonly string[], opts: CorrectOptions = {}): Correction {
+  const B = mergeNumbers(tokens(bookText).filter((t) => t.k.length > 0));
+  const H = mergeNumbers(heard.map((w) => tokens(w)).flat().filter((t) => t.k.length > 0));
   const n = B.length; const m = H.length;
   if (n === 0) return { text: bookText, changed: false, agreement: 1, edits: [] };
-  const same = (a: string, b: string): boolean => a === b || isNearMiss(a, b);
+  const names = opts.properNouns;
+  const sameTok = (b: Tok, h: Tok): boolean => b.k === h.k || isNearMiss(b.k, h.k) || abbreviates(b, h)
+    || (names !== undefined && names.has(b.k) && /^[A-Z]/.test(b.core) && !/^\d/.test(h.k));
   // A compound is the same word when it joins EXACTLY ("steel"+"jacketed"), or by a near-miss only when every part
   // is a real word (>= 3 letters): "with"+"a" is one letter off "with", and "as"+"wayne" two off "wayne".
   const joins = (parts: string[], whole: string): boolean => parts.join('') === whole
@@ -64,7 +136,7 @@ export function correctToHeard(bookText: string, heard: readonly string[]): Corr
     for (let j = 0; j <= m; j++) {
       const c = cost[i][j]; if (c >= INF) continue;
       const relax = (a: number, b: number, v: number, op: Op): void => { if (v < cost[a][b]) { cost[a][b] = v; back[a][b] = op; } };
-      if (i < n && j < m) relax(i + 1, j + 1, c + (same(B[i].k, H[j].k) ? 0 : 1), same(B[i].k, H[j].k) ? 'match' : 'sub');
+      if (i < n && j < m) { const eq = sameTok(B[i], H[j]); relax(i + 1, j + 1, c + (eq ? 0 : 1), eq ? 'match' : 'sub'); }
       if (i < n && j + 1 < m && joins([H[j].k, H[j + 1].k], B[i].k)) relax(i + 1, j + 2, c, 'split2');   // book one = heard two
       if (i + 1 < n && j < m && joins([B[i].k, B[i + 1].k], H[j].k)) relax(i + 2, j + 1, c, 'join2');    // book two = heard one (near-miss: "bubble had" / "bubblehead")
       if (i < n) relax(i + 1, j, c + 1, 'del');
@@ -80,6 +152,18 @@ export function correctToHeard(bookText: string, heard: readonly string[]): Corr
     else if (op === 'del') i--; else j--;
   }
   path.reverse();
+  // THE EDGES ARE THE ASR'S WEAK SPOT: a sentence's first or last word or two, unheard, stay as the book has them.
+  const edgeRun = (from: number, step: number): number[] => {
+    const idx: number[] = [];
+    for (let k = from; k >= 0 && k < path.length; k += step) {
+      if (path[k].op === 'del') idx.push(k); else if (path[k].op !== 'ins') break;
+    }
+    return idx;
+  };
+  const anyHeard = path.some((p) => p.op === 'match' || p.op === 'sub' || p.op === 'split2' || p.op === 'join2');
+  for (const run of [edgeRun(0, 1), edgeRun(path.length - 1, -1)]) {
+    if (anyHeard && run.length > 0 && run.length <= MAX_EDGE_DELETE) for (const k of run) path[k] = { ...path[k], op: 'keep' };
+  }
   const kept = path.reduce((a, p) => a + (p.op === 'match' ? 1 : p.op === 'split2' ? 1 : p.op === 'join2' ? 2 : 0), 0);
   const agreement = kept / n;
   if (agreement < MIN_AGREEMENT) return { text: bookText, changed: false, agreement, edits: [] };
@@ -88,6 +172,7 @@ export function correctToHeard(bookText: string, heard: readonly string[]): Corr
   let bi = 0; let hj = 0;
   for (const p of path) {
     if (p.op === 'match') { out.push(B[bi].surface); bi++; hj++; }
+    else if (p.op === 'keep') { out.push(B[bi].surface); bi++; }
     else if (p.op === 'split2') { out.push(B[bi].surface); bi++; hj += 2; }
     else if (p.op === 'join2') { out.push(B[bi].surface, B[bi + 1].surface); bi += 2; hj++; }
     else if (p.op === 'sub') {

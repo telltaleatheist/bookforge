@@ -44,5 +44,35 @@ check('a cue that barely matches is left alone (more likely misplaced than rewor
   assert.strictEqual(r.changed, false); assert.ok(r.agreement < 0.3);
 });
 
+// ── Owen's spot check, 2026-09-26: every case below is a clip he listened to ──────────────────────────────────
+check('spot check 1/8: an abbreviation the reader expands stays the book\'s ("Lt." - no "Lieutenant." mid-sentence)', () => {
+  const r = correctToHeard('Lt. Robin Huard from Engine 12 was next to him.', words('Lieutenant Robin Huard from Engine twelve was next to him'));
+  assert.ok(r.text.startsWith('Lt. Robin Huard'), r.text);
+  const s2 = correctToHeard('ferry the three of them to St. Stephen\'s.', words('ferry the three of them to Saint Stephen\'s'));
+  assert.strictEqual(s2.text, 'ferry the three of them to St. Stephen\'s.');
+});
+check('spot check 5: a NAME is never replaced by a mishearing ("Chantal" heard as "Gentile")', () => {
+  const r = correctToHeard('Chantal leaned forward toward Skink.', words('Gentile leaned forward toward Skink'), { properNouns: new Set(['chantal', 'skink']) });
+  assert.strictEqual(r.text, 'Chantal leaned forward toward Skink.');
+  assert.strictEqual(r.changed, false);
+});
+check('spot check 15: numbers compare by value ("nine thousand" heard as "9000" keeps the book)', () => {
+  const r = correctToHeard('firemen were dumping nine thousand gallons onto the building every minute.', words('firemen were dumping 9000 gallons onto the building every minute'));
+  assert.strictEqual(r.text, 'firemen were dumping nine thousand gallons onto the building every minute.');
+  assert.strictEqual(r.changed, false);
+});
+check('spot check 14: a sentence\'s first word, unheard, is kept ("If neither...")', () => {
+  const r = correctToHeard('If neither explanation of the downturn seems sufficient, most voters had broader reasons.',
+    words('neither explanation of the downturn seems sufficient most voters had broader reasons'));
+  assert.ok(r.text.startsWith('If neither'), r.text);
+});
+check('a dropped opening CLAUSE (more than two words) still follows the reader', () => {
+  const r = correctToHeard('Striking Box 1575 for a reported structure fire.', words('a reported structure fire'));
+  assert.strictEqual(r.text, 'A reported structure fire.');
+});
+check('spot check 4/6: the reader\'s trailing words are inserted ("verse 21")', () => {
+  const r = correctToHeard('Both were to be subordinate (Eph. 5:21).', words('Both were to be subordinate Ephesians 5 verse 21'));
+  assert.ok(/verse/.test(r.text) && /Eph\./.test(r.text), r.text);
+});
 console.log(`\ncorrect-to-heard: ${passed} passed, ${failed.length} failed${failed.length ? ': ' + failed.join('; ') : ''}`);
 process.exit(failed.length ? 1 : 0);
