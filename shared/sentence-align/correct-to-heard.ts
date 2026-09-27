@@ -171,7 +171,14 @@ export function correctToHeard(bookText: string, heard: readonly string[], opts:
   const out: string[] = []; const edits: Correction['edits'][number][] = [];
   let bi = 0; let hj = 0;
   for (const p of path) {
-    if (p.op === 'match') { out.push(B[bi].surface); bi++; hj++; }
+    if (p.op === 'match' && abbreviates(B[bi], H[hj])) {
+      // THE SPOKEN WORD, NO PERIOD (Owen, spot check 2: "Matt." should read "Matthew"; "Lieutenant Robin Huard - its a
+      // title. theres no period there"). The book's case, the reader's word, the book's other trailing punctuation.
+      const b = B[bi]; const h = H[hj];
+      const word = /^[A-Z]/.test(b.core) ? h.core[0].toUpperCase() + h.core.slice(1) : h.core;
+      out.push(b.lead + word + b.trail.replace(/^\./, '')); edits.push({ op: 'replace', book: b.surface, heard: h.core }); bi++; hj++;
+    }
+    else if (p.op === 'match') { out.push(B[bi].surface); bi++; hj++; }
     else if (p.op === 'keep') { out.push(B[bi].surface); bi++; }
     else if (p.op === 'split2') { out.push(B[bi].surface); bi++; hj += 2; }
     else if (p.op === 'join2') { out.push(B[bi].surface, B[bi + 1].surface); bi += 2; hj++; }

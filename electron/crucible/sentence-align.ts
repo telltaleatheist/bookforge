@@ -473,7 +473,14 @@ export async function runSentenceAlign(o: RunSentenceAlignOptions): Promise<Sent
           if (nextStart !== null && mid >= nextStart) break;
           gap.push(w); if (gap.length > MAX_TRAILING_WORDS) break;
         }
-        if (gap.length > 0 && gap.length <= MAX_TRAILING_WORDS && gap[0].start - p.end! <= TRAILING_GAP_S
+        // NOT THE NEXT SENTENCE'S OPENING (Owen, spot check 2: "...replaced in 1994. He", "Hurry. I", "I said. Why"):
+        // when the next sentence's placement starts a word late, its first word sits in this gap - that word is not
+        // this sentence's addition. Any gap word that the next sentence's first three book words hold stops the take.
+        const norm = (t: string): string => t.toLowerCase().replace(/[‘’ʼ'`]/g, '').replace(/[^a-z0-9]/g, '');
+        const nextOpen = i + 1 < placed.length
+          ? new Set(o.sentences[placed[i + 1].index].text.split(/\s+/).slice(0, 3).map(norm).filter(Boolean)) : new Set<string>();
+        const opensNext = gap.some((w) => nextOpen.has(norm(w.word)));
+        if (gap.length > 0 && gap.length <= MAX_TRAILING_WORDS && gap[0].start - p.end! <= TRAILING_GAP_S && !opensNext
             && (nextStart === null || gap[gap.length - 1].end < nextStart)) { pEnd = gap[gap.length - 1].end; absorbed++; }
       }
       const s = startEdge(env, p.start!, prevEnd !== null && prevEnd <= p.start! ? prevEnd : null);
