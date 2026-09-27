@@ -227,14 +227,24 @@ async function runCleanLines(opts, deps) {
       for (const l of fs.readFileSync(inputsPath, 'utf8').split(/\r?\n/)) { if (l.trim()) { const r = JSON.parse(l); oldText.set(r.parts, r.text); } }
       const linesOf = new Map();
       for (const it of parsed.items) { const k = idForLine(it.line); (linesOf.get(it.text) || linesOf.set(it.text, []).get(it.text)).push(k); }
-      const out = []; let moved = 0; let dropped = 0;
+      /*
+       * ONE ANSWER PER TEXT, ONE RECORD PER LINE (2026-09-26). The first version copied EVERY old record to EVERY line
+       * holding its text, and its own copies were copied again on the next run: a text on N lines went N -> N^2 ->
+       * N^3 records. Marked Man, whose dialogue repeats short lines, reached 33,958 records for 4,870 lines, and the
+       * next re-point built a string past V8's limit ("Invalid string length") and failed the book. Now the latest
+       * answer for each text is kept once and written once for each line that holds that text.
+       */
+      const byText = new Map(); let dropped = 0;
       for (const l of fs.readFileSync(recordsPath, 'utf8').split(/\r?\n/)) {
         if (!l.trim()) continue;
         const row = JSON.parse(l);
         const t = oldText.get(row.parts);
-        const targets = t === undefined ? null : linesOf.get(t);
-        if (!targets) { dropped++; continue; }
-        for (const k of targets) { out.push(JSON.stringify({ ...row, parts: k })); if (k !== row.parts) moved++; }
+        if (t === undefined || !linesOf.has(t)) { dropped++; continue; }
+        byText.set(t, row);
+      }
+      const out = []; let moved = 0;
+      for (const [t, row] of byText) {
+        for (const k of linesOf.get(t)) { out.push(JSON.stringify({ ...row, parts: k })); if (k !== row.parts) moved++; }
       }
       fs.writeFileSync(recordsPath, out.length ? `${out.join('\n')}\n` : '', 'utf8');
       log(`[clean-lines] cached answers re-pointed to the current lines: ${out.length} kept (${moved} moved), ${dropped} for text no longer present`);
