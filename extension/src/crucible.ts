@@ -36,7 +36,7 @@ import type {
   VoiceInfo,
   VoiceReference,
 } from '@crucible/client';
-import type { ServerEntry } from './servers';
+import { CLIENT_NAME, type ServerEntry } from './servers';
 
 /** What `Test` shows for one server: is it there, and what is on its card. */
 export interface ServerProbe {
@@ -381,9 +381,27 @@ export async function loadVoice(
    * checkpoint is `reference_not_allowed`. Whether a voice wants one is the
    * ROW's to say (`needsReference`), never this function's to guess.
    */
-  const jobId = reference === null
-    ? await client.loadVoice(voice)
-    : await client.loadVoice(voice, { reference });
+  let jobId: string;
+  try {
+    jobId = reference === null
+      ? await client.loadVoice(voice)
+      : await client.loadVoice(voice, { reference });
+  } catch (err) {
+    /*
+     * BUSY WITH OUR OWN LOAD OF THIS VOICE is not a refusal: it is the load we
+     * asked for, submitted a moment earlier by another trigger (the Load
+     * button, Play, the prewarm) or by a previous instance of this document
+     * that a reload threw away. Follow THAT job to its end instead of failing
+     * — a load takes ~45 s and every press in that window used to die here
+     * with a 409 and leave the player spinning (2026-09-27).
+     */
+    if (!(err instanceof CrucibleBusy) || err.jobId === null
+        || err.jobType !== 'load-voice' || err.model !== voice || err.holder !== CLIENT_NAME) {
+      throw err;
+    }
+    jobId = err.jobId;
+    onProgress?.(`waiting for the load of ${voice} already running`);
+  }
   // Ours, from the moment it exists until it ends — see `ownJobs`.
   ownJobs.add(jobId);
   try {

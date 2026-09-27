@@ -1819,6 +1819,9 @@ function prefetchConcurrency(): number {
   return CRUCIBLE_STREAM_IN_FLIGHT;
 }
 
+/** Blocks whose text has nothing to speak; read-ahead never retries them. */
+const unspeakableItems = new Set<string>();
+
 function isPrefetchingItem(id: string): boolean {
   if (startingItems.has(id)) return true;
   for (const { item } of prefetches.values()) if (item.id === id) return true;
@@ -1869,6 +1872,7 @@ function fillPrefetch(): void {
     if (aheadSeconds >= PREFETCH_LOOKAHEAD_SECONDS) break;
     const rendered = renderedByItem.get(item.id);
     if (rendered?.complete) { aheadSeconds += rendered.seconds; continue; }
+    if (unspeakableItems.has(item.id)) continue; // nothing to say — never asked again
     if (isPrefetchingItem(item.id)) continue; // already generating — don't double-start
     void startPrefetch(item);
   }
@@ -1902,6 +1906,13 @@ function rowsFor(text: string, band: ListenChunkBand): string[] {
 async function startPrefetch(item: QueueItem): Promise<void> {
   const seq = playSeq;
   startingItems.add(item.id); // synchronous reservation (closed in finally)
+  // REFILL ONLY ON PROGRESS. The `finally` used to call fillPrefetch() on every
+  // exit, and fillPrefetch picks the first upcoming block that is not rendered
+  // and not in flight — which, after an early return, is THIS block again. A
+  // block with nothing speakable, or no open session (a voice still loading),
+  // spun that pair forever: a SHA-256 and a segmentation per turn, 150% CPU,
+  // the popup starved and never opened (2026-09-27, 181-block page).
+  let refill = false;
   try {
     // A read-ahead block is spoken by the SAME session as the playing one, so
     // it needs the session open before it can be keyed or sent.
@@ -1913,12 +1924,12 @@ async function startPrefetch(item: QueueItem): Promise<void> {
     // queued, and not already cached or in flight on another session.
     if (seq !== playSeq) return;
     const hit = cacheGet(key);
-    if (hit?.complete) { markRendered(item, key, hit.bytes / BYTES_PER_SECOND, true); return; }
+    if (hit?.complete) { markRendered(item, key, hit.bytes / BYTES_PER_SECOND, true); refill = true; return; }
     if (!upcoming.some((u) => u.id === item.id)) return;
     if ([...prefetches.values()].some((p) => p.item.id === item.id)) return;
 
     const rows = rowsFor(item.text, open.band);
-    if (rows.length === 0) return;
+    if (rows.length === 0) { unspeakableItems.add(item.id); refill = true; return; }
     // A partial hit means an earlier pass rendered part of this block. Pick up
     // where it stopped rather than paying for those sentences twice — and only
     // when the split it was rendered against is the one we just computed,
@@ -1942,9 +1953,10 @@ async function startPrefetch(item: QueueItem): Promise<void> {
       preempt: false,
       priority: false,
     });
+    refill = true;
   } finally {
     startingItems.delete(item.id);
-    fillPrefetch(); // settle: a cache hit / abort frees the slot for the next block
+    if (refill) fillPrefetch(); // a slot freed by real progress goes to the next block
   }
 }
 
@@ -2555,15 +2567,34 @@ async function handleEngine(op: 'load' | 'unload', requested?: string): Promise<
  * the session opener, and a load that opened the session back would be a
  * promise awaiting itself.
  */
+/**
+ * ONE LOAD AT A TIME. The Load button, Play and the prewarm all come here, and
+ * `loading` is only set after a server read or two, so two triggers inside that
+ * window each submitted a load and the second died `409 server_busy` against
+ * the first (2026-09-27: the player spun forever). Queued behind the one in
+ * flight, the second finds the voice already on the card and just opens.
+ */
+let loadQueue: Promise<void> = Promise.resolve();
 async function loadPickedVoice(voice: string | null, opts: { open?: boolean } = {}): Promise<void> {
-  if (!(await refreshServer())) { broadcast(); return; }
+  const turn = loadQueue.then(() => loadPickedVoiceNow(voice));
+  loadQueue = turn.then(() => undefined, () => { /* said by the call that failed */ });
+  // The session opens AFTER the turn, outside the queue: `ensureStream` may be
+  // a Play that is itself waiting in this queue, and awaiting it from inside a
+  // turn would wait on ourselves forever.
+  if (await turn && opts.open !== false) await ensureStream();
+  broadcast();
+}
+
+/** Resolves true when the voice was already on the card and the caller should just open. */
+async function loadPickedVoiceNow(voice: string | null): Promise<boolean> {
+  if (!(await refreshServer())) { broadcast(); return false; }
   const bound = client;
   const named = server;
-  if (bound === null || named === null) { broadcast(); return; }
+  if (bound === null || named === null) { broadcast(); return false; }
   if (!voice) {
     engineNote = 'Pick a voice first — this extension will not choose one for you.';
     broadcast();
-    return;
+    return false;
   }
   /*
    * THE CLIP, IF THIS VOICE IS CLONED FROM ONE (PHASE3-TTS.md §5's
@@ -2583,7 +2614,7 @@ async function loadPickedVoice(voice: string | null, opts: { open?: boolean } = 
         + 'weights with no reference are the model\'s OWN speaker, which is not the voice you '
         + 'chose.';
       broadcast();
-      return;
+      return false;
     }
     const stored = await findClip(chosenClipId);
     if (stored === null) {
@@ -2591,7 +2622,7 @@ async function loadPickedVoice(voice: string | null, opts: { open?: boolean } = 
         + 'is no longer in its clip store. Pick another under the voice, or add it again in '
         + 'Options → Zero-shot clips.';
       broadcast();
-      return;
+      return false;
     }
     chosenClip = { name: stored.name, seconds: stored.seconds };
     try {
@@ -2603,16 +2634,14 @@ async function loadPickedVoice(voice: string | null, opts: { open?: boolean } = 
         ? err.message
         : `The clip could not be read: ${err instanceof Error ? err.message : String(err)}`;
       broadcast();
-      return;
+      return false;
     }
   }
   if (sameVoice(voice, serverVoice) && residentKind === 'tts'
       && (chosenClip === null || residentClipIsTheChosenOne(chosenClip))) {
     // Already on the card — and for a cloned voice, cloned from the SAME clip.
     // Opening the session is the rest of what Load means.
-    if (opts.open !== false) await ensureStream();
-    broadcast();
-    return;
+    return true;
   }
   // Our own session holds the resident voice's claim, so it has to go before
   // the card can be re-pointed — otherwise the load is refused by our own
@@ -2645,11 +2674,12 @@ async function loadPickedVoice(voice: string | null, opts: { open?: boolean } = 
   try {
     await inFlight;
   } catch {
-    return;   // said in engineNote by the catch above
+    return false;   // said in engineNote by the catch above
   } finally {
     if (loading === inFlight) loading = null;
   }
   noteReadActivity();
+  return false;
 }
 
 async function unloadResidentVoice(): Promise<void> {
