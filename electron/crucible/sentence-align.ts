@@ -159,8 +159,11 @@ export async function transcribe(o: TranscribeOptions, scratch: string, model: s
     server: o.server,
     type: 'asr',
     model,
-    // Qwen has no VAD (true is refused by name) and no auto-detect; Whisper's VAD stops it inventing words in silence.
-    params: { language: o.language, vad_filter: model.startsWith('whisper'), word_timestamps: true },
+    // No VAD for any model: Qwen refuses it by name, and the Mac's whisper (mlx-whisper) has none either
+    // (vad_unsupported_by_engine, 2026-09-27). Silence is handled here instead: no silence is sent to the long pass,
+    // re-hear/second-opinion words heard in the gaps between cues are dropped by mapWordsBack, and every word heard over
+    // digital silence is dropped by the SILENT_WORD_DB check.
+    params: { language: o.language, vad_filter: false, word_timestamps: true },
     inputs: { [path.basename(o.audioPath)]: o.audioPath },
     artifactsTo: dir,
     ...(o.signal ? { signal: o.signal } : {}),
@@ -632,7 +635,11 @@ export async function runSentenceAlign(o: RunSentenceAlignOptions): Promise<Sent
       }
       const sdir = path.join(scratch, 'second'); fs.mkdirSync(sdir, { recursive: true });
       const sh = await transcribe({ ...o, audioPath: swav, transcriptCachePath: o.transcriptCachePath ? `${o.transcriptCachePath}.second.json` : undefined }, sdir, SECOND_OPINION_MODEL);
-      const back = mapWordsBack(sh.words, sp).words.sort((a, b) => a.start - b.start);
+      const back = mapWordsBack(sh.words, sp).words.filter((w) => {
+        const f0 = Math.max(0, Math.floor(w.start / FRAME_S)); const f1 = Math.min(env.db.length, Math.ceil(w.end / FRAME_S) + 1);
+        for (let f = f0; f < f1; f++) if (env.db[f] > SILENT_WORD_DB) return true;
+        return false;   // heard over digital silence: a hallucination (Whisper with no VAD)
+      }).sort((a, b) => a.start - b.start);
       for (const c of contested) {
         const ws: string[] = [];
         for (const w of back) { const m = (w.start + w.end) / 2; if (m < c.start) continue; if (m > c.end) break; ws.push(w.word); }
