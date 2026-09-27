@@ -311,6 +311,14 @@ export async function activityOf(
             }
           : null,
         chatInFlight: activity.chat === null ? null : activity.chat.inFlight,
+        lease: activity.lease === null
+          ? null
+          : {
+              leaseId: activity.lease.leaseId,
+              act: activity.lease.act,
+              client: activity.lease.client,
+              since: activity.lease.since,
+            },
         slot: {
           busy: activity.slots.accelerated.busy,
           of: activity.slots.accelerated.of,
@@ -346,6 +354,7 @@ function jobRow(job: Activity['running'][number]) {
     progress: job.progress,
     message: job.message,
     client: job.client,
+    started: job.started,
   };
 }
 

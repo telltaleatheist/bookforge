@@ -151,7 +151,7 @@
  * two.
  */
 
-import { Component, computed, inject, signal } from '@angular/core';
+import { Component, DestroyRef, computed, inject, signal } from '@angular/core';
 import { DatePipe, DecimalPipe, NgTemplateOutlet } from '@angular/common';
 import {
   CdkDrag, CdkDragHandle, CdkDropList, CdkDropListGroup, moveItemInArray,
@@ -161,7 +161,7 @@ import { CdkScrollable } from '@angular/cdk/scrolling';
 
 import { prepFraction, prepLabel } from '@shared/queue/bench';
 import type { BookPlan, FinishedRun, PlannedStep, StillReason } from '@shared/queue/bench';
-import type { JobType, ServerReach, StepStatus } from '@shared/queue/engine-types';
+import type { JobType, ServerReach, ServerShadow, StepStatus } from '@shared/queue/engine-types';
 import { LOCAL_WORK_SET, LONGFORM_ALIGN_SET } from '@shared/queue/slot-sets';
 import {
   QUEUE_STATE_CONTROL, SERVER_STATE_CONTROL, serverHeldByMaster,
@@ -176,7 +176,7 @@ import { JobDetailsComponent } from './components/job-details/job-details.compon
 import { JobStepComponent } from './components/job-step/job-step.component';
 import { StageBarsComponent } from './components/stage-bars/stage-bars.component';
 import { stagesFor } from './models/job-stages';
-import { JobEtaService } from './services/job-eta.service';
+import { JobEtaService, formatDuration } from './services/job-eta.service';
 import { QueueService } from './services/queue.service';
 import { QueueTrayService } from './services/queue-tray.service';
 import type { BenchSectionView, BookPlanView, LaneView } from './services/queue-tray.service';
@@ -1255,6 +1255,43 @@ interface ChainRung {
               <div class="k">ETA</div>
               <div class="v">{{ lane.eta ?? 'not timed yet' }}</div>
             </div>
+          </div>
+        } @else if (lane.shadow; as sh) {
+          <!-- SOMEBODY ELSE'S WORK ON THIS CARD (Owen, 2026-09-26: "poll
+               crucible to see if something is holding a lease. if it is, show
+               it as a shadow in the bookforge queue with a progress bar").
+               Drawn where our own occupant would be, ghosted, with no Stop:
+               it is not ours to stop. A job has a denominator and gets a
+               real bar; a lease or a stream has none, and its bar moves
+               without claiming a number. Our own book waiting behind it says
+               so underneath. -->
+          <div class="shadow-card" title="Not a BookForge queue row: another client is using this card. The queue takes it as soon as they let go.">
+            <div class="lcard-book">
+              <span class="cover lg blank shadow-cover" aria-hidden="true"></span>
+              <div class="min grow">
+                <div class="act">{{ shadowVerb(sh) }} <span>· {{ sh.holder ?? 'another client' }}</span></div>
+                <div class="sub">{{ sh.what }}</div>
+              </div>
+              <div class="right">
+                @if (sh.progress !== null) {
+                  <div class="pct">{{ sh.progress * 100 | number:'1.0-0' }}%</div>
+                }
+              </div>
+            </div>
+            <div class="bar" [class.sweep]="sh.progress === null">
+              <i [style.width.%]="sh.progress === null ? 30 : sh.progress * 100"></i>
+            </div>
+            @if (sh.message) {
+              <div class="detail">{{ sh.message }}</div>
+            }
+            @if (shadowElapsed(sh); as elapsed) {
+              <div class="measures">
+                <div class="ro"><div class="k">Elapsed</div><div class="v">{{ elapsed }}</div></div>
+              </div>
+            }
+            @if (lane.hold) {
+              <p class="why-long">{{ lane.hold }}</p>
+            }
           </div>
         } @else if (lane.hold) {
           <div class="held-off">
@@ -2801,6 +2838,28 @@ interface ChainRung {
 
     .held-off { padding: 4px 0 2px; }
 
+    /* ── A shadow: somebody else's work on this card ─────────────────────
+       Ghosted and dashed so it can never be mistaken for one of our own
+       books: the same shape as an occupant, at half the presence. */
+    .shadow-card {
+      opacity: 0.62;
+      border: 1px dashed var(--border-subtle);
+      border-radius: 6px;
+      padding: 8px;
+    }
+    .shadow-card .pct { color: var(--text-secondary); }
+    .shadow-cover { border-style: dashed; }
+    .shadow-card .bar i { background: var(--text-tertiary); }
+    .bar.sweep { position: relative; }
+    .bar.sweep i {
+      position: absolute;
+      animation: shadow-sweep 1.8s ease-in-out infinite;
+    }
+    @keyframes shadow-sweep {
+      from { left: -30%; }
+      to { left: 100%; }
+    }
+
     .why-long {
       margin: 6px 0 0;
       font-size: 0.6875rem;
@@ -3292,6 +3351,7 @@ interface ChainRung {
     @media (prefers-reduced-motion: reduce) {
       .sdot.run::after { animation: none; opacity: 1; }
       .bar i { transition: none; }
+      .bar.sweep i { animation: none; left: 0; }
       .ctl, .grip { transition: none; }
       /* The drawer still opens and closes — it just stops sliding there. */
       .fin-body, .chev { transition: none; }
@@ -3305,6 +3365,28 @@ export class QueueComponent {
   private readonly eta = inject(JobEtaService);
   private readonly toasts = inject(ToastService);
   private readonly dialog = inject(DialogService);
+
+  constructor() {
+    /*
+     * THIS PAGE BEING OPEN IS WHAT SETS THE POLL (Owen, 2026-09-26: *"if theres
+     * something in the queue, and the user is on the queue page, it should poll
+     * crucible"*). A hidden window is not being looked at, so it counts as
+     * closed. A failed report is logged, not thrown: the page still draws, and
+     * the poll simply stays on its slower tier.
+     */
+    const say = (on: boolean): void => {
+      this.queueService.watchPage(on).catch((err: unknown) => {
+        console.error('[QUEUE] could not tell main whether the queue page is open:', err);
+      });
+    };
+    const onVisibility = (): void => say(document.visibilityState === 'visible');
+    say(document.visibilityState === 'visible');
+    document.addEventListener('visibilitychange', onVisibility);
+    inject(DestroyRef).onDestroy(() => {
+      document.removeEventListener('visibilitychange', onVisibility);
+      say(false);
+    });
+  }
 
   /** Steps whose full readout the user has opened. Closed is the default. */
   readonly expanded = signal<ReadonlySet<string>>(new Set());
@@ -3673,8 +3755,28 @@ export class QueueComponent {
       return { word: assembling ? 'assembling' : 'rendering', tone: 'live' };
     }
     if (lane.retiring) return { word: 'finishing', tone: 'warn' };
+    if (lane.shadow) return { word: `in use by ${lane.shadow.holder ?? 'another client'}`, tone: 'warn' };
     if (lane.hold) return { word: 'waiting for the card', tone: 'warn' };
     return { word: 'idle', tone: 'off' };
+  }
+
+  /** The shadow's headline verb: what kind of hold it is. */
+  shadowVerb(shadow: ServerShadow): string {
+    switch (shadow.kind) {
+      case 'job': return 'Running';
+      case 'lease': return 'Holding the card';
+      case 'streaming': return 'Streaming';
+      case 'claim': return 'Holding the card';
+    }
+  }
+
+  /** How long the shadow's holder has had the card, ticking; null when the server did not say. */
+  shadowElapsed(shadow: ServerShadow): string | null {
+    this.eta.tick();
+    if (shadow.since === null) return null;
+    const started = Date.parse(shadow.since);
+    if (Number.isNaN(started)) return null;
+    return formatDuration((Date.now() - started) / 1000);
   }
 
   // ── Which books belong to which lane ─────────────────────────────────────

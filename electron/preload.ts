@@ -1823,6 +1823,8 @@ export interface ElectronAPI {
      * for a run that is already in the queue.
      */
     sendToQueue: (jobId: string) => Promise<{ success: boolean; error?: string }>;
+    /** The queue page opened (true) or closed / went hidden (false) in this window. */
+    watch: (on: boolean) => Promise<{ success: boolean; error?: string }>;
     /**
      * The reverse press: take a book back out of the queue and into Pending,
      * stopping it first if it is running. Its settings are kept exactly and its
@@ -3223,6 +3225,8 @@ const electronAPI: ElectronAPI = {
     release: (target?: QueueTarget) => ipcRenderer.invoke('jobs:release', target),
     start: (target?: QueueTarget) => ipcRenderer.invoke('jobs:start', target),
     pause: () => ipcRenderer.invoke('jobs:pause'),
+    /** The queue page opened (true) or closed / went hidden (false) in this window. */
+    watch: (on: boolean) => ipcRenderer.invoke('jobs:watch', on),
     cancel: (target: QueueTarget, reason?: string, opts?: { resumable?: boolean }) =>
       ipcRenderer.invoke('jobs:cancel', target, reason, opts),
     retry: (target: QueueTarget) => ipcRenderer.invoke('jobs:retry', target),

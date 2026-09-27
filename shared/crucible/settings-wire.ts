@@ -311,6 +311,21 @@ export interface ActivityJobRow {
   message: string | null;
   /** The submitting client's User-Agent, or null when it did not say. */
   client: string | null;
+  /** When it started running (ISO 8601), or null when the server did not say. */
+  started: string | null;
+}
+
+/**
+ * The open lease on whatever is resident. At most one per server: Crucible's
+ * lease door refuses a second while this one is open (`crucible/leases.py`).
+ */
+export interface ActivityLeaseRow {
+  leaseId: string;
+  /** The capability class it was taken for: `clean`, `simplify`, … */
+  act: string | null;
+  /** The holder's User-Agent, or null when it did not say. */
+  client: string | null;
+  since: string | null;
 }
 
 /**
@@ -343,6 +358,8 @@ export interface CrucibleActivityView {
   claimedBy: string | null;
   streaming: ActivityStreamRow | null;
   chatInFlight: number | null;
+  /** The open lease, or null. */
+  lease: ActivityLeaseRow | null;
   slot: {
     busy: number | null;
     of: number | null;

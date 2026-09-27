@@ -599,6 +599,38 @@ export async function releaseAllCrucibleLeases(): Promise<void> {
   await Promise.all([...openLeases].map((lease) => lease.release()));
 }
 
+/**
+ * Leases this process gave back, by id, until the server can no longer be
+ * showing them: the release's DELETE may still be in flight, or may have failed
+ * and left the lease to lapse on its ttl.
+ */
+const releasedLeases = new Map<string, { server: string; until: number }>();
+
+function rememberReleased(server: string, id: string, ttlSeconds: number): void {
+  releasedLeases.set(id, { server, until: Date.now() + ttlSeconds * 1000 + 30_000 });
+}
+
+/**
+ * EVERY LEASE ID ON `server` THAT IS THIS PROCESS'S: open ones, and released
+ * ones the server may still be reporting.
+ *
+ * What the queue's card read uses to tell our own lease from somebody else's
+ * (`card-shadow.ts`). By id and never by client name: the Mac's BookForge sends
+ * the same `bookforge` User-Agent, and its lease on this card is foreign.
+ */
+export function ownCrucibleLeaseIds(server: string): Set<string> {
+  const now = Date.now();
+  const ids = new Set<string>();
+  for (const lease of openLeases) {
+    if (lease.server === server) ids.add(lease.id);
+  }
+  for (const [id, entry] of releasedLeases) {
+    if (entry.until <= now) { releasedLeases.delete(id); continue; }
+    if (entry.server === server) ids.add(id);
+  }
+  return ids;
+}
+
 /** How many leases are open right now — for a keeper, and for a log line. */
 export function openCrucibleLeaseCount(): number {
   return openLeases.size;
@@ -830,6 +862,7 @@ export async function takeCrucibleLease(options: CrucibleLeaseOptions): Promise<
       released = true;
       clearInterval(timer);
       openLeases.delete(lease);
+      rememberReleased(server, id, ttlSeconds);
       /*
        * A heartbeat may already be replacing a lease forgotten by a restarted
        * engine, and the id it takes is the id this release must name. So it is

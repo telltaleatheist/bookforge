@@ -974,6 +974,46 @@ export interface ServerReach {
    * is refused on a fresh launch (Owen's pages-refused report, 2026-09-21).
    */
   readonly servedClasses: Readonly<Record<string, boolean>>;
+  /**
+   * WHAT SOMEBODY ELSE HAS ON THIS CARD, as the last poll saw it, or `null`
+   * when nothing foreign holds it (Owen, 2026-09-26: *"poll crucible to see if
+   * something is holding a lease. if it is, show it as a shadow in the
+   * bookforge queue with a progress bar"*).
+   *
+   * FOREIGN ONLY. This app's own jobs and leases are drawn as its own rows and
+   * are never a shadow. `electron/crucible/card-shadow.ts` tells the two apart
+   * by id, not by client name, because the Mac's BookForge calls itself
+   * `bookforge` too and IS somebody else on this card.
+   */
+  readonly shadow: ServerShadow | null;
+}
+
+/**
+ * ONE FOREIGN HOLDER OF A CRUCIBLE CARD: drawn, never scheduled on.
+ *
+ * Its progress belongs to somebody else's work, which is why it lives on the
+ * SERVER and never on a row: a number beside our row would be drawn on our
+ * row's bar.
+ */
+export interface ServerShadow {
+  /**
+   * What held it: a job on the lane, an open lease, a streaming session, or a
+   * load/claim the server could only name by its holder.
+   */
+  readonly kind: 'job' | 'lease' | 'streaming' | 'claim';
+  /** The holder's own name for itself (its User-Agent's product), or null when it did not say. */
+  readonly holder: string | null;
+  /** What it is doing, in words: `tts higgs-deathstalker`, `clean on qwen3.5-9b`. */
+  readonly what: string;
+  /**
+   * 0..1 for a job, which HAS a denominator; null for a lease or a stream, which
+   * do not, so the bar is drawn indeterminate rather than at a made-up number.
+   */
+  readonly progress: number | null;
+  /** The job's own latest message, or null. */
+  readonly message: string | null;
+  /** When it started (ISO 8601), or null when the server did not say. */
+  readonly since: string | null;
 }
 
 /** The engine's whole published state. */

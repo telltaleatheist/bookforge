@@ -43,6 +43,7 @@ import {
   type QueueJob,
   type QueueSnapshot,
   type QueueStep,
+  type ServerShadow,
   type StepResource,
   type StepStatus,
 } from './engine-types';
@@ -522,6 +523,29 @@ export interface BenchLane {
    * from the outside before this existed.
    */
   thermal: GpuThermalReading | null;
+  /**
+   * SOMEBODY ELSE'S WORK ON THIS CARD, drawn as a shadow where our own occupant
+   * would be (Owen, 2026-09-26). Only on a server's first GPU slot, only while
+   * nothing of ours occupies it, and never on a disabled or unreachable lane,
+   * which is not being read.
+   */
+  shadow: ServerShadow | null;
+}
+
+/** The foreign holder for a lane's machine, or null. See {@link BenchLane.shadow}. */
+function laneShadow(
+  snapshot: QueueSnapshot,
+  setId: string,
+  resource: StepResource,
+  disabled: boolean,
+  occupied: boolean,
+): ServerShadow | null {
+  if (resource !== 'gpu' || disabled || occupied) return null;
+  if (setId === LOCAL_WORK_SET || setId === LONGFORM_ALIGN_SET) return null;
+  const row = snapshot.servers.find((s) => s.name === setId);
+  if (row === undefined || row.reach === 'unreachable') return null;
+  // `?? null`: a snapshot from before this field existed carries none.
+  return row.shadow ?? null;
 }
 
 /**
@@ -691,6 +715,9 @@ export function benchLanes(snapshot: QueueSnapshot): BenchLane[] {
            */
           thermal: resource === 'gpu' && isThisMachine(set.id)
             ? (snapshot.gpuThermal ?? null)
+            : null,
+          shadow: index === 1
+            ? laneShadow(snapshot, set.id, resource, set.disabled, occupant !== null)
             : null,
         });
       }

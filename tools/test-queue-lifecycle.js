@@ -209,10 +209,14 @@ test('PK7: a run sent back to Pending resumes NOTHING', async () => {
   await settle();
   assert.ok(tts.runs[0], 'precondition: the narration is on the card');
 
-  // The exact state the hunt found live: a resumable Stop, which is what sets
+  // The exact state the hunt found live: a resumable stop, which is what sets
   // the resume flag AND (P6) parks the runner's last words in `lastError`.
-  await engine.cancel({ stepId: stepAt(job.id, 1).id }, 'Foundry stopped this job.',
-    { resumable: true });
+  // The APP CLOSING, not the user's Stop: since 2026-09-25 a user Stop sends
+  // the run to Pending itself, keeping its resume on purpose (Owen: "if i hit
+  // stop it should give up the lease and move to pending again"), so the only
+  // road left to a queued run that says "interrupted" is a close.
+  await engine.cancel({ stepId: stepAt(job.id, 1).id }, 'BookForge is closing.',
+    { resumable: true, stopReason: 'closed' });
   await settle();
   assert.strictEqual(stepAt(job.id, 1).wasInterrupted, true,
     'precondition: a resumable stop is exactly what promises a resume');

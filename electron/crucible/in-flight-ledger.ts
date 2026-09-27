@@ -301,6 +301,32 @@ export function noteInFlightEvent(server: string, jobId: string, lastEventId: nu
   writeInFlightLedger(after);
 }
 
+/** How long a settled id is still counted as ours while the server catches up. */
+const RECENTLY_SETTLED_MS = 90_000;
+const recentlySettled = new Map<string, number>();
+
+/**
+ * EVERY JOB ID ON `server` THAT IS THIS APP'S: what the ledger holds (jobs,
+ * and the hosted Foundry's leases under `foundry-lease`), plus what settled in
+ * the last {@link RECENTLY_SETTLED_MS}.
+ *
+ * What the queue's card read uses to tell our own work from somebody else's
+ * (`card-shadow.ts`).
+ */
+export function ownCrucibleJobIds(server: string): Set<string> {
+  const ids = new Set<string>();
+  for (const entry of readInFlightLedger()) {
+    if (entry.server === server) ids.add(entry.jobId);
+  }
+  const now = Date.now();
+  const prefix = `${server}\n`;
+  for (const [key, until] of recentlySettled) {
+    if (until <= now) { recentlySettled.delete(key); continue; }
+    if (key.startsWith(prefix)) ids.add(key.slice(prefix.length));
+  }
+  return ids;
+}
+
 /**
  * Forget a job: it is done, failed, or cancelled.
  *
@@ -309,6 +335,9 @@ export function noteInFlightEvent(server: string, jobId: string, lastEventId: nu
  * because "already gone" is the correct end state either way.
  */
 export function settleInFlight(server: string, jobId: string): void {
+  // Settled HERE is not yet gone THERE: a cancelled job stops at its next
+  // checkpoint, and a released lease's DELETE may still be on the wire.
+  recentlySettled.set(`${server}\n${jobId}`, Date.now() + RECENTLY_SETTLED_MS);
   const before = readInFlightLedger();
   const after = ledgerWithout(before, server, jobId);
   if (after.length === before.length) return;

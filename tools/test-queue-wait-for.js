@@ -610,6 +610,82 @@ test('the busy hold expires and the queue tries again on its own tick', async ()
   assert.strictEqual(gpu.runs.length, 2, 'the recheck tried the door again');
 });
 
+/*
+ * ── THE SHADOW AND THE RE-READ (Owen, 2026-09-26) ─────────────────────────
+ *
+ * "when it finishes, bookforge tries to take the lease if the queue is active
+ * and something is waiting in line ... if it fails to take a lease because
+ * something else beat it by taking the lease first, it updates with the new
+ * item in the gpu." A 409 re-reads the card at once; a read that SAW it free
+ * lifts the cool-off, and one that could not see it does not.
+ */
+test('a 409 re-reads the card, and a read that SAW it free lifts the cool-off at once', async () => {
+  const gpu = fakeModule('tts-conversion', { travels: true });
+  const host = fakeHost({
+    ranked: TWO_SERVERS, defaultWaitFor: 'mac',
+    reach: { mac: { reachable: true, busy: null, shadow: null } },
+  });
+  // A sweep far in the future: only the re-read the 409 asks for can land here.
+  await fresh('busy-lifted', [gpu], host, { admissionRecheckMs: 1_000, reachSweepMs: 60_000 });
+
+  const job = enqueueSent(narrate('Lifted'));
+  engine.start();
+  await settle();
+  const askedBefore = host.asked.length;
+  gpu.runs[0].reject(Object.assign(new Error('server_busy'), { busyLine: 'GPU busy: foundry.' }));
+  await settle();
+  assert.ok(host.asked.length > askedBefore, 'the refusal re-read the card straight away');
+  assert.strictEqual(gpu.runs.length, 2,
+    'the holder had already gone, so the book went on without sitting out the cool-off');
+  assert.strictEqual(firstStep(job.id).status, 'running');
+});
+
+test('a read that could NOT see the card leaves the cool-off standing', async () => {
+  const gpu = fakeModule('tts-conversion', { travels: true });
+  // No `shadow` key: an old server, or an activity read that was refused.
+  const host = fakeHost({
+    ranked: TWO_SERVERS, defaultWaitFor: 'mac', reach: { mac: { reachable: true, busy: null } },
+  });
+  await fresh('busy-unseen', [gpu], host, { admissionRecheckMs: 1_000, reachSweepMs: 60_000 });
+
+  enqueueSent(narrate('Unseen'));
+  engine.start();
+  await settle();
+  gpu.runs[0].reject(Object.assign(new Error('server_busy'), { busyLine: 'GPU busy: foundry.' }));
+  await settle(4);
+  assert.strictEqual(gpu.runs.length, 1, 'not seeing the holder is not seeing it gone');
+});
+
+test('somebody else\'s work is on the snapshot as a shadow, and its progress moves it', async () => {
+  const gpu = fakeModule('tts-conversion', { travels: true });
+  const shadowAt = (progress) => ({
+    kind: 'job', holder: 'foundry', what: 'tts higgs', progress, message: null,
+    since: '2026-09-26T10:00:00Z',
+  });
+  const host = fakeHost({
+    ranked: [{ name: 'mac', enabled: true }], defaultWaitFor: 'any',
+    reach: { mac: { reachable: true, busy: { line: 'busy: foundry' }, shadow: shadowAt(0.4) } },
+  });
+  await fresh('shadow', [gpu], host, { admissionRecheckMs: 100, reachSweepMs: 30 });
+  await settle();
+  assert.deepStrictEqual(engine.snapshot().servers[0].shadow, shadowAt(0.4));
+
+  const seen = [];
+  const off = engine.onQueueChanged((snap) => { seen.push(snap.servers[0].shadow); });
+  host.reach = { mac: { reachable: true, busy: { line: 'busy: foundry' }, shadow: shadowAt(0.5) } };
+  await wait(150);
+  await settle();
+  off();
+  assert.ok(seen.some((s) => s !== null && s.progress === 0.5),
+    'a moved bar is a change the page hears about, with nothing queued');
+
+  host.reach = { mac: { reachable: false, detail: 'Nothing answered.' } };
+  await wait(150);
+  await settle();
+  assert.strictEqual(engine.snapshot().servers[0].shadow, null,
+    'a machine that stopped answering is not drawn as still holding anything');
+});
+
 // ── The record changing under queued rows ───────────────────────────────────
 
 test('a queued row does NOT move when the drag-order changes', async () => {
@@ -1440,9 +1516,9 @@ test('the snapshot carries what each server said, beside the switch', async () =
   assert.deepStrictEqual(rows.map((r) => r.name), ['local', 'mac'],
     'in rank order, so the rows line up with the lanes the bench builds');
   assert.deepStrictEqual(rows.find((r) => r.name === 'local'),
-    { name: 'local', enabled: true, reach: 'ready', detail: null, servedClasses: {} });
+    { name: 'local', enabled: true, reach: 'ready', detail: null, servedClasses: {}, shadow: null });
   assert.deepStrictEqual(rows.find((r) => r.name === 'mac'),
-    { name: 'mac', enabled: true, reach: 'unreachable', detail: 'Nothing answered at http://mac:7100.', servedClasses: {} },
+    { name: 'mac', enabled: true, reach: 'unreachable', detail: 'Nothing answered at http://mac:7100.', servedClasses: {}, shadow: null },
     "the transport's own sentence travels with the answer — the lane has nothing to say without it");
 });
 
@@ -1462,7 +1538,7 @@ test('a disabled server is REPORTED, as `unknown` — off is not a diagnosis', a
   await settle();
 
   assert.deepStrictEqual(engine.snapshot().servers,
-    [{ name: 'mac', enabled: false, reach: 'unknown', detail: null, servedClasses: {} }],
+    [{ name: 'mac', enabled: false, reach: 'unknown', detail: null, servedClasses: {}, shadow: null }],
     'a machine the operator owns never vanishes from the list they reason with');
 });
 

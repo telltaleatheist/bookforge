@@ -347,9 +347,18 @@ async function seamChecks() {
       await settle();
 
       assert.strictEqual(stepOf(first.id).status, 'queued', 'the first book parked');
-      assert.strictEqual(mod.runs.length, 2,
-        'and the machine was NOT held off: the freed slot went straight to the next book');
-      assert.strictEqual(mod.runs[1].ctx.jobId, second.id);
+      /*
+       * ORDER IS RESPECTED (Owen, 2026-09-25: "order should be respected"), so
+       * the book behind does not jump ahead while the first waits out a reset
+       * socket. It used to, and this check read the jump as the proof. The
+       * proof now is WHY it waits: behind the first book, not behind a machine
+       * the queue has written off as busy.
+       */
+      assert.strictEqual(mod.runs.length, 1, 'the second book keeps its place behind the first');
+      assert.match(stepOf(second.id).progress.admissionHold ?? '', /ahead of it/,
+        'and it says it is behind the first book, not that the machine is occupied');
+      const mac = engine.snapshot().servers.find((s) => s.name === 'mac');
+      assert.notStrictEqual(mac.reach, 'busy', 'the machine itself was NOT held off');
     });
 
   await check('a transient refusal of a step whose BOOK holds the card keeps the venue',

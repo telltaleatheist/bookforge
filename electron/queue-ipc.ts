@@ -32,10 +32,12 @@ import { registerAllStepModules } from './queue-steps';
 import type { AppendStepSpec, JobSpec } from './queue-engine';
 import { readRouting } from './crucible/routing';
 import { activityOf, pingServer } from './crucible/probe';
-import { crucibleLeaseSeam } from './crucible/lease';
+import { crucibleLeaseSeam, ownCrucibleLeaseIds } from './crucible/lease';
+import { readCard } from './crucible/card-shadow';
+import { ownCrucibleJobIds } from './crucible/in-flight-ledger';
 import { readCrucibleRoutes } from './crucible/route-read';
 import { getMainLogger } from './rolling-logger';
-import { busyLineFor, WAIT_FOR_ANY, type WaitForServer } from '../shared/queue/wait-for';
+import { WAIT_FOR_ANY, type WaitForServer } from '../shared/queue/wait-for';
 
 let registered = false;
 
@@ -100,11 +102,30 @@ function crucibleRoutingHost(): engine.CrucibleRoutingHost {
       return top === undefined ? null : top.name;
     },
     async reach(server: string) {
+      /*
+       * ACTIVITY FIRST, THE PING ONLY WHEN IT FAILS. An answered
+       * `/v1/activity` proves the machine is there, so the ping beside it was a
+       * second request per poll for nothing (Owen, 2026-09-26: *"i dont want
+       * to bog down the server with constant polling"*). When activity does
+       * not answer, the ping says whether the machine is down or merely
+       * cannot say what is on its card.
+       */
+      const seen = await activityOf(server);
+      if (seen.outcome === 'ok') {
+        const reading = readCard(seen.activity, {
+          jobs: ownCrucibleJobIds(server),
+          leases: ownCrucibleLeaseIds(server),
+        });
+        return { reachable: true as const, busy: reading.busy, shadow: reading.shadow };
+      }
       const pong = await pingServer(server);
       if (pong.outcome !== 'ok') {
         return { reachable: false as const, detail: pong.message };
       }
-      return { reachable: true as const, busy: await busyAt(server) };
+      reportActivityGap(server, seen.message);
+      // No `shadow` at all, not `null`: this read cannot see the card, which
+      // is a different fact from seeing it empty (`CrucibleRoutingHost.reach`).
+      return { reachable: true as const, busy: null };
     },
   };
 }
@@ -114,91 +135,34 @@ function crucibleRoutingHost(): engine.CrucibleRoutingHost {
  *
  * Owen, 2026-09-19: *"Poll the server to see if it's available. If it isn't, it
  * just waits in the queue until it's available."* This is that poll, and it
- * rides the reach sweep the bench already runs — one `GET /v1/activity` per
- * enabled server per 15 s, beside the ping that is already going.
+ * rides the reach sweep the bench already runs. What it reads, and why a
+ * foreign LEASE now counts as busy (Owen, 2026-09-26), is `crucible/card-shadow.ts`.
  *
- * ── The question it asks is the door's own question ────────────────────────
- *
- * `slots.accelerated.acceptsWork` is exactly what `POST /v1/jobs` will answer
- * with: false means the lane is held and a submit comes back `409 server_busy`.
- * Asking anything else here — chats in flight, a resident model, a lease held
- * by somebody — would park rows over facts that do not refuse a job (a vLLM
- * engine batches chats and really will take more, and a held LEASE is refused
- * on the lease door, which is where the reserve meets it).
- *
- * ── Null when it cannot say, and the backstop that covers it ───────────────
+ * ── When it cannot say, and the backstop that covers it ────────────────────
  *
  * `/v1/activity` arrived in Crucible 0.5.0, so an older server has no such
- * route and answers 404; a machine can also answer `ping` and then drop the
- * second call. Neither is evidence that the card is free, and neither is
- * evidence that it is held — so this answers `null`, the row is admitted, and
- * the `409` backstop does what it has always done. That is not a silent
- * fallback: it is the documented order with its first step unavailable, and it
- * is said out loud in the log, once per machine per run of the app.
+ * route and answers 404; a machine can also answer `ping` and refuse the
+ * activity read. Neither is evidence that the card is free, and neither is
+ * evidence that it is held, so the row is admitted and the `409` backstop
+ * does what it has always done. That is not a silent fallback: it is the
+ * documented order with its first step unavailable, and it is said out loud in
+ * the log, once per machine per run of the app.
  */
 const activityGapReported = new Set<string>();
 
-async function busyAt(server: string): Promise<{ line: string } | null> {
-  const seen = await activityOf(server);
-  if (seen.outcome !== 'ok') {
-    if (!activityGapReported.has(server)) {
-      activityGapReported.add(server);
-      console.warn(
-        `[QUEUE-IPC] crucible "${server}" answers its ping but not /v1/activity, so the queue `
-        + `cannot see whether its card is free before it sends work there — it will learn from a `
-        + `409 instead (${seen.message})`,
-      );
-    }
-    return null;
-  }
-  const { activity } = seen;
-  if (activity.slot.acceptsWork) return null;
+/** Windows whose queue page is open and visible, by webContents id. */
+const pageWatchers = new Set<number>();
+/** Windows already listened to for `destroyed`, so each is listened to once. */
+const watchedSenders = new Set<number>();
 
-  /*
-   * WHO IS IN THE WAY, in the order the server can name them. A job is the
-   * ordinary case; a streaming session holds the engine's exclusive claim and
-   * has NO denominator by contract (`ActivityStreaming.progress`), which is why
-   * the line composer takes a nullable progress rather than printing `0% done`
-   * for a reader who has said nothing yet.
-   */
-  const job = activity.running[0];
-  if (job !== undefined) {
-    return {
-      line: busyLineFor({
-        holder: job.client,
-        what: job.model === null ? job.type : `${job.type} ${job.model}`,
-        progress: job.progress,
-        message: job.message,
-      }),
-    };
-  }
-  const streaming = activity.streaming;
-  if (streaming !== null) {
-    return {
-      line: busyLineFor({
-        holder: streaming.client,
-        what: `a streaming session (${streaming.voice})`,
-        progress: null,
-        message: null,
-      }),
-    };
-  }
-  /*
-   * THE LANE IS SHUT AND THE SERVER NAMED NOBODY — a claim with no session yet,
-   * a model being warmed, a shutdown in progress. The holder is reported as
-   * what it is rather than guessed at, because a bench must never be
-   * confidently wrong about whose render is on the card (PHASE7-LANES §5).
-   */
-  return {
-    line: busyLineFor({
-      holder: activity.claimedBy,
-      what: activity.warming === null
-        ? 'its accelerated slot is not taking work'
-        : `loading ${activity.warming}`,
-      progress: null,
-      message: null,
-    }),
-  };
+function reportActivityGap(server: string, message: string): void {
+  if (activityGapReported.has(server)) return;
+  activityGapReported.add(server);
+  console.warn(
+    `[QUEUE-IPC] crucible "${server}" answers its ping but not /v1/activity, so the queue `
+    + 'cannot see whether its card is free before it sends work there. It will learn from a '
+    + `409 instead (${message})`,
+  );
 }
 
 /**
@@ -296,6 +260,33 @@ export function registerQueueIpc(): void {
 
   ipcMain.handle('jobs:pause', () => {
     engine.pause();
+    return { success: true };
+  });
+
+  /*
+   * THE QUEUE PAGE IS OPEN IN THIS WINDOW, OR NO LONGER IS. It sets how often
+   * the Crucible servers are polled (`reachSweepTier` in the engine): Owen,
+   * 2026-09-26, *"if theres something in the queue, and the user is on the
+   * queue page, it should poll crucible"*. Counted per window, and a window
+   * that closes without saying so is forgotten when its contents go.
+   */
+  ipcMain.handle('jobs:watch', (event, on: boolean) => {
+    const sender = event.sender;
+    const id = sender.id;
+    if (on) {
+      pageWatchers.add(id);
+      if (!watchedSenders.has(id)) {
+        watchedSenders.add(id);
+        sender.once('destroyed', () => {
+          watchedSenders.delete(id);
+          pageWatchers.delete(id);
+          engine.setQueueWatched(pageWatchers.size > 0);
+        });
+      }
+    } else {
+      pageWatchers.delete(id);
+    }
+    engine.setQueueWatched(pageWatchers.size > 0);
     return { success: true };
   });
 

@@ -100,6 +100,8 @@ interface QueueBridge {
   release(target?: { jobId?: string; stepId?: string }): Promise<{ success: boolean; error?: string }>;
   start(target?: { jobId?: string; stepId?: string }): Promise<{ success: boolean; error?: string }>;
   pause(): Promise<{ success: boolean; error?: string }>;
+  /** The queue page is open and visible in this window, or no longer is. */
+  watch(on: boolean): Promise<{ success: boolean; error?: string }>;
   cancel(target: { jobId?: string; stepId?: string }, reason?: string,
     opts?: { resumable?: boolean }): Promise<{ success: boolean; error?: string }>;
   retry(target: { jobId?: string; stepId?: string }): Promise<{ success: boolean; error?: string }>;
@@ -768,6 +770,18 @@ export class QueueService {
     QueueService.settle(
       await this.requireBridge().setWaitFor(jobId, value),
       'Choosing a server for this book',
+    );
+  }
+
+  /**
+   * Tell main the queue page is open and visible here, or no longer is. It
+   * sets how often the Crucible servers are polled for somebody else's work
+   * on their cards (the lane's shadow).
+   */
+  async watchPage(on: boolean): Promise<void> {
+    QueueService.settle(
+      await this.requireBridge().watch(on),
+      on ? 'Telling the queue this page is open' : 'Telling the queue this page closed',
     );
   }
 

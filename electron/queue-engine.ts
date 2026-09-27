@@ -78,6 +78,7 @@ import {
   type QueueSnapshot,
   type QueueStep,
   type ServerReach,
+  type ServerShadow,
   type StepMetrics,
   type StepProgress,
   type StepResource,
@@ -770,7 +771,10 @@ function currentServerReach(): ServerReach[] {
     // refusal. Empty until coordination reads it, so nothing is refused on a
     // fresh launch (`crucible/routes.ts`, `crucibleServedClassesOf`).
     const served = crucibleServedClassesOf(row.name);
-    const base = { name: row.name, enabled: row.enabled, servedClasses: served };
+    // The last shadow the poll saw, while the server is enabled. A disabled
+    // server is not polled, so anything remembered about it is stale.
+    const shadow = row.enabled ? (lastShadows.get(row.name) ?? null) : null;
+    const base = { name: row.name, enabled: row.enabled, servedClasses: served, shadow };
     switch (state.kind) {
       case 'ready': return { ...base, reach: 'ready' as const, detail: null };
       case 'unreachable':
@@ -927,6 +931,8 @@ export function publishSnapshot(): void {
 }
 
 function publish(): void {
+  // Whatever just changed may have moved the queue between polling tiers.
+  retuneReachSweep();
   const snap = snapshot();
   for (const listener of listeners) {
     try {
@@ -2858,9 +2864,18 @@ export interface CrucibleRoutingHost {
    * The PROGRESS is inside the line and is deliberately not a second field: it
    * belongs to somebody else's job, and a number handed to the scheduler beside
    * our row would be drawn on our row's bar.
+   *
+   * ── The shadow (Owen, 2026-09-26) ─────────────────────────────────────────
+   *
+   * `shadow` is somebody else's work on that card, for the page to draw on
+   * the server's lane: never scheduled on and never put on a row. `null`
+   * means the read saw the card and nothing foreign is on it. ABSENT means
+   * this read could not see the card at all (an old server, a refused activity
+   * read), which is not evidence that it is empty, so an absent shadow never
+   * lifts a 409's cool-off early.
    */
   reach(server: string): Promise<
-    { reachable: true; busy: { line: string } | null }
+    { reachable: true; busy: { line: string } | null; shadow?: ServerShadow | null }
     | { reachable: false; detail: string }
   >;
 }
@@ -3042,11 +3057,30 @@ const reachCache = new Map<string, ReachEntry>();
 /** One server's 409, held for a cool-off so the queue does not hammer the door. */
 interface BusyHold {
   line: string;
+  /** When the refusal landed: only a read ASKED after this may lift it early. */
+  since: number;
   until: number;
 }
 const busyHolds = new Map<string, BusyHold>();
 
+/**
+ * The last FOREIGN holder each server's poll saw ({@link ServerShadow}), or
+ * `null` when it saw the card and nothing foreign on it. No entry when the poll
+ * could not see the card, or has not asked yet.
+ *
+ * Kept apart from {@link reachCache} because that entry is emptied while a
+ * probe is in flight, and the page would blink the shadow off on every poll.
+ */
+const lastShadows = new Map<string, ServerShadow | null>();
+
 function reachTtlMs(): number {
+  /*
+   * On the tiered cadence an answer lives no longer than one sweep, or a
+   * stepped-up sweep would find every answer still fresh and ask nothing. It
+   * never lives LONGER than the admission tick, so a book queued while the
+   * sweep is idle is not routed on a minute-old answer.
+   */
+  if (reachSweepMs === null) return Math.min(admissionRecheckMs, reachSweepTierMs());
   return admissionRecheckMs;
 }
 
@@ -3088,9 +3122,39 @@ function sameReachAnswer(a: ReachEntry['answer'], b: ReachEntry['answer']): bool
     // A machine that became busy, or stopped being, is a CHANGE the page must
     // hear about — it is the difference between a row that is about to start
     // and one that is waiting on somebody else's book.
-    return b.reachable && (a.busy?.line ?? null) === (b.busy?.line ?? null);
+    // The shadow too: its progress moving is what makes its bar move.
+    return b.reachable && (a.busy?.line ?? null) === (b.busy?.line ?? null)
+      && sameShadow(a.shadow, b.shadow);
   }
   return !b.reachable && a.detail === b.detail;
+}
+
+function sameShadow(a: ServerShadow | null | undefined, b: ServerShadow | null | undefined): boolean {
+  if (a === undefined || a === null || b === undefined || b === null) return (a ?? null) === (b ?? null);
+  return a.kind === b.kind && a.holder === b.holder && a.what === b.what
+    && a.progress === b.progress && a.message === b.message && a.since === b.since;
+}
+
+/**
+ * What one answer says about the card's foreign holder, into
+ * {@link lastShadows}, and whether it lifts a 409's cool-off.
+ *
+ * A read that SAW the card empty (`shadow: null`, nothing busy), asked after
+ * the refusal landed, supersedes the cool-off: the holder is gone, and waiting
+ * out the rest of the tick is the "when it finishes, bookforge tries" Owen
+ * asked for arriving late. A read that could not see (no `shadow` at all) says
+ * nothing about it either way.
+ */
+function noteShadow(name: string, answer: ReachAnswer, askedAt: number): void {
+  if (!answer.reachable || answer.shadow === undefined) {
+    lastShadows.delete(name);
+    return;
+  }
+  lastShadows.set(name, answer.shadow);
+  const hold = busyHolds.get(name);
+  if (hold !== undefined && answer.shadow === null && answer.busy === null && askedAt >= hold.since) {
+    busyHolds.delete(name);
+  }
 }
 
 /** Ask one server whether it answers, once, and pump again when it says. */
@@ -3108,12 +3172,17 @@ function askReach(name: string): void {
    * a redraw a second for a fact that did not move.
    */
   const prior = entry?.answer ?? null;
-  reachCache.set(name, { at: Date.now(), answer: null });
+  const askedAt = Date.now();
+  reachCache.set(name, { at: askedAt, answer: null });
   void host.reach(name)
-    .then((answer) => { reachCache.set(name, { at: Date.now(), answer }); })
+    .then((answer) => {
+      reachCache.set(name, { at: Date.now(), answer });
+      noteShadow(name, answer, askedAt);
+    })
     .catch((err) => {
       // A prober that THREW is not a reachable server, and it is not silence
       // either: the throw is the detail.
+      lastShadows.delete(name);
       reachCache.set(name, {
         at: Date.now(),
         answer: { reachable: false, detail: `${(err as Error)?.message || String(err)}.` },
@@ -3141,10 +3210,11 @@ function askReach(name: string): void {
  *
  * ── What it costs ──────────────────────────────────────────────────────────
  *
- * ONE UNAUTHENTICATED `GET /v1/ping` PER ENABLED SERVER PER TTL, with the SDK's
- * own connect timeout and nothing else — the same call admission already makes,
- * through the same seam, landing in the same cache. Two engines on a 15 s
- * cadence is eight requests a minute to machines on the operator's own network.
+ * ONE `GET /v1/activity` PER ENABLED SERVER PER TICK (a `GET /v1/ping` only
+ * when that fails), the same call admission already makes, through the same
+ * seam, landing in the same cache. The tick is 60 s when nobody is looking,
+ * 15 s with the queue page open and work queued, and 5 s while a book waits on
+ * a card somebody else holds ({@link reachSweepTierMs}, Owen 2026-09-26).
  *
  * ── The rules ──────────────────────────────────────────────────────────────
  *
@@ -3161,10 +3231,9 @@ function askReach(name: string): void {
 let reachSweepTimer: ReturnType<typeof setInterval> | null = null;
 
 /**
- * How often the sweep runs. `null` means "follow {@link reachTtlMs}", which is
- * the only cadence that makes sense by default: asking faster than the answer
- * expires is traffic for nothing, and slower leaves the page reading a stale
- * `unknown`.
+ * How often the sweep runs. `null` means the TIERED cadence below
+ * ({@link reachSweepTierMs}), with {@link reachTtlMs} following it so that
+ * every tick finds the last answer expired and asks again.
  *
  * `0` turns the sweep OFF, and it is a real setting rather than a way of saying
  * nothing: `tools/test-queue-wait-for.js` drives the router with a scripted
@@ -3173,8 +3242,81 @@ let reachSweepTimer: ReturnType<typeof setInterval> | null = null;
  */
 let reachSweepMs: number | null = null;
 
+/*
+ * THE TIERED CADENCE, the default when nothing set {@link reachSweepMs}. Owen,
+ * 2026-09-26: *"it can poll at a reasonable rate. we dont need to hit it every
+ * 500 ms or anything. i dont want to bog down the server with constant
+ * polling. but polling can step up a little bit if theres something in the
+ * queue and its waiting to take the gpu"*.
+ *
+ * One `GET /v1/activity` per enabled server per tick (the ping only when that
+ * fails), so the waiting tier is twelve requests a minute to one machine.
+ */
+/** A book is waiting for a card somebody else holds: step up. */
+const REACH_WAITING_MS = 5_000;
+/** The queue page is open and something is in the queue. */
+const REACH_WATCHED_MS = 15_000;
+/** Nobody is looking and nothing is waiting on a stranger. */
+const REACH_IDLE_MS = 60_000;
+
+/** Whether a window has the queue page open and visible (`queue-ipc.ts`, `jobs:watch`). */
+let queueWatched = false;
+
+/** main tells the engine when the queue page opens or closes, in any window. */
+export function setQueueWatched(on: boolean): void {
+  if (queueWatched === on) return;
+  queueWatched = on;
+  retuneReachSweep();
+}
+
+/**
+ * Which tier the sweep is on now.
+ *
+ * WAITING needs both halves: a released book with a travelling GPU step ready
+ * to go while the queue runs, AND a server that somebody else is holding (a
+ * shadow, a busy answer, or a 409 cool-off). A book waiting behind this app's
+ * OWN render needs no polling at all, because that render landing pumps the
+ * queue itself, and a nine-hour render must not be polled at 5 s for nine hours.
+ */
+function reachSweepTierMs(): number {
+  if (running && heldByOthersSomewhere() && jobs.some((job) => job.pending !== true
+    && job.steps.some((s) => s.status === 'queued' && s.resource === 'gpu' && s.travels === true))) {
+    return REACH_WAITING_MS;
+  }
+  if (queueWatched && jobs.some((job) => job.steps.some((s) => !TERMINAL_STEP_STATUSES.has(s.status)))) {
+    return REACH_WATCHED_MS;
+  }
+  return REACH_IDLE_MS;
+}
+
+/*
+ * A stranger's shadow, or a stranger's 409 still cooling off. NOT a busy reach
+ * answer on its own: the lane reads busy under our OWN render too, and that is
+ * exactly the case that must not step the poll up.
+ */
+function heldByOthersSomewhere(): boolean {
+  const now = Date.now();
+  for (const hold of busyHolds.values()) if (hold.until > now) return true;
+  for (const shadow of lastShadows.values()) if (shadow !== null) return true;
+  return false;
+}
+
 function reachSweepCadenceMs(): number {
-  return reachSweepMs ?? reachTtlMs();
+  return reachSweepMs ?? reachSweepTierMs();
+}
+
+/** The cadence the running timer was armed on, so a retune re-arms only on a change. */
+let armedSweepMs: number | null = null;
+
+/**
+ * Move the sweep to the tier the queue is in now. Called after every pump and
+ * when the page opens or closes; re-arms only when the tier CHANGED, so it is
+ * free to call. A cadence someone set explicitly (the keepers) is never retuned.
+ */
+function retuneReachSweep(): void {
+  if (reachSweepMs !== null || crucibleHost === null) return;
+  if (reachSweepTimer !== null && armedSweepMs === reachSweepTierMs()) return;
+  armReachSweep();
 }
 
 function armReachSweep(): void {
@@ -3182,6 +3324,7 @@ function armReachSweep(): void {
   if (crucibleHost === null) return;
   const every = reachSweepCadenceMs();
   if (every <= 0) return;
+  armedSweepMs = every;
   // Now, and then on the cadence: a window opened at boot should not spend the
   // first TTL unable to say whether the machines are up.
   sweepReach();
@@ -3191,6 +3334,7 @@ function armReachSweep(): void {
 }
 
 function stopReachSweep(): void {
+  armedSweepMs = null;
   if (reachSweepTimer === null) return;
   clearInterval(reachSweepTimer);
   reachSweepTimer = null;
@@ -3247,7 +3391,23 @@ function holdServerBusy(job: QueueJob, busyLine: string): void {
  * server at once.
  */
 function holdServerBusyAt(server: string, busyLine: string): void {
-  busyHolds.set(server, { line: busyLine, until: Date.now() + admissionRecheckMs });
+  const now = Date.now();
+  busyHolds.set(server, { line: busyLine, since: now, until: now + admissionRecheckMs });
+  /*
+   * SOMETHING ELSE TOOK IT FIRST, so look at who (Owen, 2026-09-26: *"if it
+   * fails to take a lease because something else beat it by taking the lease
+   * first, it updates with the new item in the gpu"*). The last read is older
+   * than this refusal, so it is dropped and the card re-read now rather than on
+   * the next tick. Only while the sweep is on: with it off, nothing asks in the
+   * background, which is what the routing keeper counts on.
+   */
+  if (reachSweepCadenceMs() > 0) {
+    const entry = reachCache.get(server);
+    if (entry === undefined || entry.answer !== null) {
+      reachCache.delete(server);
+      askReach(server);
+    }
+  }
 }
 
 /**
@@ -5329,6 +5489,7 @@ export async function configure(options: ConfigureOptions): Promise<void> {
   // unreachable now.
   reachCache.clear();
   busyHolds.clear();
+  lastShadows.clear();
   // A reserve belongs to a pass of the scheduler that no longer exists. The
   // LEASE, if one landed, is given back by the row's own doors and by
   // `before-quit`; this map is only the in-flight guard.
@@ -5340,10 +5501,11 @@ export async function configure(options: ConfigureOptions): Promise<void> {
   heldTailParks.clear();
   transientParks.clear();
   // ...so the sweep starts again from nothing, on whatever cadence this
-  // configuration asked for. THE ONE PLACE IT IS ARMED, and it re-arms rather
-  // than adds, for the same reason the record watcher does: a second
-  // `configure` in one process (the keepers) must leave exactly one timer
-  // behind, not two.
+  // configuration asked for. It re-arms rather than adds, for the same reason
+  // the record watcher does: a second `configure` in one process (the keepers)
+  // must leave exactly one timer behind, not two. On the tiered cadence
+  // `retuneReachSweep` re-arms it again as the queue changes tier, through the
+  // same function, so there is still only ever one timer.
   armReachSweep();
   // The bench redraws when the Crucible record learns something. Armed here
   // rather than at import so a second `configure` in one process (the keepers)
