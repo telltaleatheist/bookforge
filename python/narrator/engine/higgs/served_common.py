@@ -597,6 +597,13 @@ print(pgid)
             port = int(row['port'])
             if port == asked or not self._answers_health(port):
                 continue
+            # TAKE IT DOWN BEFORE REFUSING. It carries OUR marker (this is what
+            # `_bound_ports` scans for), so it is ours, and raising first left it
+            # orphaned: `_record_server` had never run, `stop()` had no pid to
+            # signal, and a setsid'd sgl-omni sat on 13.4 GB of VRAM until the
+            # next job came back accelerator_busy (Crucible 1.0.43, owens-pc,
+            # 2026-09-27).
+            self._stop_misbound(int(row['pid']), port)
             raise HiggsServerError(
                 f'Higgs: the server narrator launched (pid {row["pid"]}) is '
                 f'answering {self.HEALTH_PATH} on port {port}, NOT on port '
@@ -607,6 +614,27 @@ print(pgid)
                 '57877, then 34529). Waiting is pointless, because the server is '
                 'already up and can never appear on the port that was asked for. '
                 f'Free port {asked} - something else is on it - and start again.')
+
+    def _stop_misbound(self, pid: int, port: int, timeout: float = 180.0) -> None:
+        """SIGTERM the group of our own server that came up on `port` rather
+        than the port it was asked for, and wait for that port to stop answering.
+
+        `_verify_gone` cannot do the waiting: it polls OUR port, where nothing
+        ever answered. TERM only, never KILL, for `_verify_gone`'s reason: a KILL
+        to a GPU holder inside WSL wedges the VM. A survivor is reported by pid,
+        and it keeps our marker, so the watchdog and the next start can still
+        recognise it."""
+        log(f'{self.LOG_TAG} our server (pid {pid}) came up on port {port}, not '
+            'the port it was asked for; stopping it before refusing', flush=True)
+        self._signal_guest(pid, 'TERM')
+        deadline = time.time() + float(timeout)
+        while time.time() < deadline:
+            if not self._answers_health(port):
+                return
+            time.sleep(1.0)
+        log(f'{self.LOG_TAG} WARNING: our misbound server (pid {pid}) is still '
+            f'answering on port {port} {timeout:.0f}s after SIGTERM. NOT killing '
+            'it - a KILL on a GPU holder inside WSL wedges the VM.', flush=True)
 
     def _server_on_port(self):
         """The server listening on our port that carries OUR marker (any
@@ -629,6 +657,25 @@ print(pgid)
         self._guest_pid = int(row['pid'])
         log(f'{self.LOG_TAG} server pid {row["pid"]} (group {row["pgid"]}, owner '
             f'{row["owner"]})', flush=True)
+
+    def _record_unhealthy_own_server(self) -> None:
+        """`_record_server` for a server that never answered health: the
+        listener on our port whose marker is THIS process's owner id. A scan
+        that cannot run is logged, not raised - this is a teardown, and the
+        watchdog still stands behind it."""
+        try:
+            rows = self._own_servers_on_port()
+        except HiggsServerError as exc:
+            log(f'{self.LOG_TAG} WARNING: could not look for our own unhealthy '
+                f'server on {self.base_url} ({exc}); the watchdog is what stops '
+                'it now.', flush=True)
+            return
+        mine = [r for r in rows if r.get('owner') == self.owner_id()]
+        if not mine:
+            return
+        self._guest_pid = int(mine[0]['pid'])
+        log(f'{self.LOG_TAG} our server (pid {mine[0]["pid"]}) is on '
+            f'{self.base_url} but never became healthy; stopping it', flush=True)
 
     def _signal_guest(self, pid: int, signame: str) -> None:
         """SIGTERM the process GROUP of `pid`, inside the distro, the group read
@@ -866,6 +913,12 @@ print(pgid)
             # before health, say). Find it now by its marker rather than leave it
             # running.
             self._record_server()
+        elif self._guest_pid is None and proc is not None:
+            # Launched and NEVER healthy (a wait_ready timeout): it may still be
+            # listening on our port mid-load, holding the card, with nothing to
+            # ping. Ours only if its marker names THIS process, since no health
+            # answer says whose checkpoint it is.
+            self._record_unhealthy_own_server()
         # THE SERVER FIRST, BY GROUP. Signalling the wrapper shell was the orphan
         # bug: bash does not forward SIGTERM to a backgrounded child, so the
         # shell died, `proc.poll()` reported a tidy exit, and the server ran on

@@ -1194,7 +1194,18 @@ class LifecycleTest(V3TestCase):
                                        serve_script=a_launcher(self))
         self.addCleanup(backend._close_log)
         backend._bound_ports = lambda: list(bound)
-        backend._answers_health = lambda port: port in healthy_ports
+        # A live set: a TERM to a misbound pid takes its port off it, which is
+        # what the real server does when it shuts down.
+        live = set(healthy_ports)
+        by_pid = {int(r['pid']): int(r['port']) for r in bound}
+        backend._answers_health = lambda port: port in live
+        backend.signalled = []
+
+        def signal(pid, signame):
+            backend.signalled.append((int(pid), signame))
+            live.discard(by_pid.get(int(pid)))
+
+        backend._signal_guest = signal
         return backend, int(dead.base_url.rsplit(':', 1)[-1])
 
     def test_a_server_answering_on_ANOTHER_port_is_refused_BY_NAME(self):
@@ -1210,6 +1221,18 @@ class LifecycleTest(V3TestCase):
         self.assertIn('57877', message)
         self.assertIn(str(asked), message)
         self.assertIn('4242', message)
+
+    def test_a_misbound_server_is_TERMINATED_before_the_refusal(self):
+        """MEASURED 2026-09-27 (Crucible 1.0.43, job c0cc1107): the refusal
+        raised before `_record_server`, so `stop()` had no pid, and the setsid'd
+        sgl-omni was orphaned holding 13.4 GB until the next job came back
+        accelerator_busy. It carries our marker, so it is ours to stop - by
+        group, with TERM, and never KILL."""
+        backend, _ = self.misbound_backend(
+            bound=[{'pid': 4242, 'port': 34527}], healthy_ports={34527})
+        with self.assertRaises(HiggsV3ServerError):
+            backend._refuse_if_misbound()
+        self.assertEqual(backend.signalled, [(4242, 'TERM')])
 
     def test_an_INTERNAL_socket_on_another_port_is_NOT_a_misbind(self):
         """vLLM's engine-core and SGLang's schedulers are separate processes that
