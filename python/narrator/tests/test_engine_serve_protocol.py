@@ -655,6 +655,21 @@ class ServeProtocolTest(_WorkerCase):
         self.w.proc.stdin.close()
         self.assertEqual(self.w.proc.wait(timeout=20), 0)
 
+    def test_quit_STOPS_the_loaded_engine_before_the_process_ends(self):
+        """MEASURED 2026-09-27 (Crucible 1.0.43, narrator 689446): 'quit' broke
+        the loop and the process exited with no stop lines at all, so a served
+        Higgs engine's launched server was left for the setsid watchdog to TERM
+        later, while it still held its port. The engine's own cleanup must run,
+        and be waited for, before the process ends."""
+        self._ready()
+        self._load()
+        self.w.send(action='quit')
+        self.w.proc.stdin.close()
+        self.assertEqual(self.w.proc.wait(timeout=20), 0)
+        err = self.w.proc.stderr.read()
+        self.assertIn('exiting: stopping the loaded engine', err)
+        self.assertIn('engine stopped', err)
+
 
 class GuardedBatchTest(_WorkerCase):
     """THE SERVE WORLD'S BATCH NOW RUNS THE RETAKE LADDER, and says what it did.

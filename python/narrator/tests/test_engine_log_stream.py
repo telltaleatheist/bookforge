@@ -95,8 +95,8 @@ _LOG_HELPER = os.path.join(_ENGINE, 'log.py')
 #: script is this": a path under site-packages and a path under a campaign
 #: directory look alike in a log, and the difference is which flags a 19 GB
 #: server came up with.
-LOG_CALLS_BY_PACKAGE = {'orpheus': 111, 'higgs': 33}
-LOG_CALLS_TOTAL = sum(LOG_CALLS_BY_PACKAGE.values())          # 144
+LOG_CALLS_BY_PACKAGE = {'orpheus': 111, 'higgs': 37}
+LOG_CALLS_TOTAL = sum(LOG_CALLS_BY_PACKAGE.values())          # 148
 
 
 def _engine_modules():

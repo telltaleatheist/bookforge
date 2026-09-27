@@ -2974,6 +2974,41 @@ class OrpheusStreamServer:
                                   name='orpheus-stdin', daemon=True)
         reader.start()
 
+        # EVERY WAY OUT RELEASES THE ENGINE: a stdin 'quit', stdin closing, and
+        # SIGTERM/SIGINT (`_graceful_exit` raises SystemExit out of the loop).
+        # Until 2026-09-27 a 'quit' just broke the loop and the process exited
+        # without stopping a SERVED engine's server: only Orpheus has an atexit
+        # hook, so a launched Higgs server was left to the setsid watchdog, which
+        # TERMed it later and asynchronously while it still held its port
+        # (Crucible 1.0.43, narrator 689446).
+        try:
+            self._serve_inbox(inbox)
+        finally:
+            self._release_engine_at_exit()
+
+    def _release_engine_at_exit(self):
+        """Stop the loaded engine and WAIT for it, as the process ends.
+
+        `cleanup()` is the engine's own teardown: for a served Higgs engine it is
+        `server.stop()`, which signals the server's group and waits for its port
+        to go quiet. A failure is logged, never raised: the process is ending
+        either way, and the exit must not mask whatever ended it."""
+        if self.orph is None:
+            return
+        print(f'[narrator.serve] exiting: stopping the loaded engine '
+            f'({type(self.orph).__name__})', file=sys.stderr, flush=True)
+        try:
+            self.orph.cleanup()
+        except Exception as exc:
+            print(f'[narrator.serve] WARNING: the engine\'s cleanup failed on exit '
+                f'({type(exc).__name__}: {exc}); anything it launched is left to '
+                'its watchdog.', file=sys.stderr, flush=True)
+        else:
+            print('[narrator.serve] engine stopped', file=sys.stderr, flush=True)
+        self.orph = None
+
+    def _serve_inbox(self, inbox):
+        """The request loop, until 'quit' or stdin closes."""
         while True:
             kind, payload = inbox.get()
             if kind == 'eof':
