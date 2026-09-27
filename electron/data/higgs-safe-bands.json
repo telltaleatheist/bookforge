@@ -43,8 +43,8 @@
     "_note": "MEASURED 2026-09-15 11:01 by the length ladder (rungs 100-1600, 8 prompts x 4 seeds each): in-band 9/192 = 4.7% (95% hi 8.7%). Winner mb_ha_rvcbed1_5368 -- TIE-BREAK ON LOSS: band.py margin 2.5 renders is INSIDE NOISE (<5), so the lower holdout loss wins.  BAND SET BY RULING to 400-700, not by the failure curve.. Previous band 200-800. Run: /mnt/e/training/_campaigns/2026-09-13-mistborn-ha-rvcbed/screen_mb_ha_rvcbed1/ladder/mb_ha_rvcbed1_5803"
   },
   "sigma": {
-    "min": 500,
-    "max": 1100,
-    "_note": "MEASURED 2026-09-11 00:32 by the length ladder (rungs 100-1600, 8 prompts x 4 seeds each): in-band 0/160 = 0.0% (95% hi 2.3%). Winner sigma_1426 -- band winner: fewest in-band failures, margin 0.0 renders. Previous band None-None. Run: /mnt/e/training/_campaigns/2026-09-01-cod-full-rebuild/higgs/night4/runs/sigma_ladder/ds_sigma_prod"
+    "min": 400,
+    "max": 800,
+    "_note": "MEASURED 2026-09-27 by the length ladder of sigma_v2 ckpt-4092 (rungs 100-1000, 8 prompts x 4 seeds, direct SGLang): in-band 400-800 1.2% (95% hi 4.4%). 4092 over 3828 INSIDE NOISE -> latest clean (pausing 95/100 vs 71). Pace 15.94. Previous band 500-1100 (sigma_1426). HF owenmorgan/sigma-higgs-v3@8f6b3ca2. Run: E:/training/_campaigns/2026-09-27-sigma-v2/ladder_sigma_v2"
   }
 }
