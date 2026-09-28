@@ -49,7 +49,7 @@ import {
 import { endEdge, FRAME_S, startEdge, type LevelEnvelope } from '../../shared/sentence-align/cue-edges';
 import { findDiscrepancies } from '../../shared/sentence-align/discrepancies';
 import { compactedLength, keepPieces, mapWordsBack, type KeptPiece } from '../../shared/sentence-align/silence-compact';
-import { correctToHeard, MIN_AGREEMENT } from '../../shared/sentence-align/correct-to-heard';
+import { correctToHeard, MIN_AGREEMENT, wordKey } from '../../shared/sentence-align/correct-to-heard';
 import { recheckPieces } from '../../shared/sentence-align/recheck';
 
 export const SENTENCE_ASR_MODEL = 'qwen3-asr-1.7b';
@@ -559,7 +559,7 @@ export async function runSentenceAlign(o: RunSentenceAlignOptions): Promise<Sent
       const ws = snt.text.split(/\s+/).filter(Boolean);
       ws.forEach((w, k) => {
         const core = w.replace(/^[^\p{L}]+|[^\p{L}]+$/gu, ''); if (!core) return;
-        const kk = core.toLowerCase().replace(/[‘’ʼ'`]/g, '').replace(/[^a-z0-9]/g, '');
+        const kk = wordKey(core);
         if (/^\p{Ll}/u.test(core)) lower.add(kk);
         else if (k > 0 && /^\p{Lu}\p{Ll}/u.test(core) && !/[.!?:"“”]$/.test(ws[k - 1])) properNouns.add(kk);
       });
@@ -571,7 +571,7 @@ export async function runSentenceAlign(o: RunSentenceAlignOptions): Promise<Sent
     for (const snt of o.sentences) for (const w of snt.text.split(/\s+/)) {
       const core = w.replace(/^[^\p{L}]+|[^\p{L}]+$/gu, '');
       if (!/^\p{Ll}/u.test(core)) continue;
-      const kk = core.toLowerCase().replace(/[‘’ʼ'`]/g, '').replace(/[^a-z0-9]/g, '');
+      const kk = wordKey(core);
       if (kk.length >= 6) wordCount.set(kk, (wordCount.get(kk) ?? 0) + 1);
     }
     const rareWords = new Set<string>([...wordCount].filter(([, n]) => n <= 2).map(([k]) => k));

@@ -170,6 +170,52 @@ check('a spoken year pairs: "nineteen thirty-three" is 1933, so the book\'s digi
   assert.strictEqual(r.text, 'By 1933 the party had won.');
   assert.strictEqual(r.changed, false);
 });
+/*
+ * A HEARD WORD IS NEVER WRITTEN TWICE (2026-09-28, training-pc-1): about 25 doubled words across Deathstalker and
+ * Mistborn, the same defect as the dates. A name "matched" any heard word for free, so wherever the book had a token
+ * the reader did not voice ("&", an initial) the name slid onto the neighbouring heard word and the heard copy of the
+ * name was inserted beside it. Every case below is a real cue, with the book-wide name set the pipeline builds.
+ */
+check('"Harper & Row" read "Harper and Row" is never "Harper Harper Row"', () => {
+  const r = correctToHeard('I paid full tuition for a ten-minute interview with a representative from Harper & Row.',
+    words('I paid full tuition for a tenminute interview with a representative from Harper and Row'),
+    { properNouns: new Set(['harper', 'row']) });
+  assert.strictEqual(r.text, 'I paid full tuition for a ten-minute interview with a representative from Harper and Row.');
+});
+check('a name beside a word the reader added is never doubled ("Peter Peter Drucker", "Libby Owens Libby-Owens-Ford")', () => {
+  const r = correctToHeard('Peter Drucker said that people entering corporations now must understand that they may outlive these corporations.',
+    words('Peter Drucker has said that people entering corporations now must understand that they may outlive these corporations'),
+    { properNouns: new Set(['peter', 'drucker']) });
+  assert.strictEqual(r.text, 'Peter Drucker has said that people entering corporations now must understand that they may outlive these corporations.');
+  const l = correctToHeard('whose inventions and local company, Libby-Owens-Ford, revolutionized the glass business.',
+    words('whose inventions and local company Libby Owens Ford revolutionized the glass business'),
+    { properNouns: new Set(['libbyowensford']) });
+  assert.ok(!/Libby Owens Libby/.test(l.text) && /Libby-Owens-Ford/.test(l.text), l.text);
+});
+check('an identical word wins a tie: "This book" read "This audiobook" is never "This This book"', () => {
+  const r = correctToHeard('This book begins at that moment, the moment when it ended.', words('This audiobook begins at that moment the moment when it ended'));
+  assert.ok(!/This This/.test(r.text), r.text);
+});
+check('a heard part of a hyphenated name is the name: "Reich Reich-Ranicki" is never written', () => {
+  const r = correctToHeard('Every time he ventured out, Reich-Ranicki felt himself in danger.',
+    words('Every time he ventured out Reich Riki felt himself in danger'), { properNouns: new Set(['reichranicki']) });
+  assert.ok(!/Reich Reich/.test(r.text) && /Reich-Ranicki/.test(r.text), r.text);
+});
+check('a contraction either way: "I had" read "I\'d" is "I\'d", and "I\'ve" read "I have" is never "I I\'ve"', () => {
+  assert.strictEqual(correctToHeard('I had never seen it before.', words("I'd never seen it before")).text, "I'd never seen it before.");
+  const r = correctToHeard('Hitler replied: ‘In my life, I’ve always put my whole stake on the table.’',
+    words('Hitler replied In my life I have always put my whole stake on the table'));
+  assert.ok(!/\bI I/.test(r.text), r.text);
+});
+check('accents fold: "Mers-el-Kébir" read "Mers El Kebir" keeps the book\'s spelling', () => {
+  const r = correctToHeard('British ships attacked the French naval base at Mers-el-Kébir, near Oran.',
+    words('British ships attacked the French naval base at Mers El Kebir near Oran'));
+  assert.strictEqual(r.text, 'British ships attacked the French naval base at Mers-el-Kébir, near Oran.');
+});
+check('the BOOK\'s own repetition is never touched ("Mama, Mama")', () => {
+  const r = correctToHeard('‘Mama, Mama, what am I going to do?’', words('Mama Mama what am I going to do'));
+  assert.strictEqual(r.text, '‘Mama, Mama, what am I going to do?’');
+});
 check('"may" and "march" as verbs are not dates', () => {
   const r = correctToHeard('The first may seem strange.', words('The first may seem strange'));
   assert.strictEqual(r.text, 'The first may seem strange.');

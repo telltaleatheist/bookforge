@@ -55,6 +55,11 @@ export interface CorrectOptions {
   readonly secondOpinion?: readonly string[];
 }
 
+/** What keeping a name against a different heard word costs the alignment: more than a match, less than a sub. */
+const KEPT_COST = 0.5;
+/** A tie-breaker only: small enough that no number of them can outweigh a single edit in any cue. */
+const EXACT_BONUS = 0.0001;
+
 /** Edge deletions of at most this many words are not applied (the ASR's weak spot). */
 export const MAX_EDGE_DELETE = 2;
 
@@ -74,8 +79,14 @@ function wordValue(k: string): number | null {
 }
 const isNumberWord = (k: string): boolean => wordValue(k) !== null || k in SCALES;
 
-const key = (t: string): string => t.toLowerCase()
+/**
+ * A word's comparison key. ACCENTS ARE FOLDED, not dropped (2026-09-28): "Kébir" keyed "kbir" and never met the
+ * reader's "Kebir". Exported because the caller builds the book's name and rare-word sets and must key them the
+ * same way (`electron/crucible/sentence-align.ts`).
+ */
+export const wordKey = (t: string): string => t.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase()
   .replace(/[‘’ʼ'`]/g, '').replace(/[‐-―-]/g, '').replace(/[^a-z0-9]/g, '');
+const key = wordKey;
 
 interface Tok {
   readonly surface: string; readonly lead: string; readonly core: string; readonly trail: string; readonly k: string;
@@ -300,9 +311,20 @@ function alignPath(B: Tok[], H: Tok[], opts: CorrectOptions): Path {
   const n = B.length; const m = H.length;
   const names = opts.properNouns; const rare = opts.rareWords;
   // A DATE matches only the same date: its key is a value, and a near-miss of "date:12-1-1933" is another day.
-  const sameTok = (b: Tok, h: Tok): boolean => (b.date !== undefined || h.date !== undefined) ? b.k === h.k : b.k === h.k || isNearMiss(b.k, h.k) || abbreviates(b, h)
-    || (names !== undefined && names.has(b.k) && /^[A-Z]/.test(b.core) && !/^\d/.test(h.k))
-    || (rare !== undefined && rare.has(b.k) && /^\p{L}/u.test(h.core));
+  const sameTok = (b: Tok, h: Tok): boolean => (b.date !== undefined || h.date !== undefined) ? b.k === h.k
+    : b.k === h.k || isNearMiss(b.k, h.k) || abbreviates(b, h);
+  /*
+   * A NAME OR RARE WORD IS KEPT against a heard word that is NOT it ("Chantal" heard as "Gentile"), but that pairing
+   * is NOT A MATCH, and it costs (2026-09-28). It used to cost nothing, exactly like a real match, so a name could
+   * pair with ANY heard word for free. Wherever the book has a token the reader did not voice ("&", an initial, a
+   * day number) beside a name, the aligner tied: the name took the neighbouring heard word, and the heard copy of the
+   * name was inserted beside it. That gave "Harper Harper Row", "Peter Peter Drucker", "let Vin Vin defeat", "on
+   * December December 1918" (training-pc-1, about 1,060 cues). Cheaper than a substitution, so the name still wins
+   * over the reader's word; dearer than a real match, so a real match always wins over it.
+   */
+  const kept = (b: Tok, h: Tok): boolean => b.date === undefined && h.date === undefined && (
+    (names !== undefined && names.has(b.k) && /^[A-Z]/.test(b.core) && !/^\d/.test(h.k))
+    || (rare !== undefined && rare.has(b.k) && /^\p{L}/u.test(h.core)));
   // A compound is the same word when it joins EXACTLY ("steel"+"jacketed"), or by a near-miss only when every part
   // is a real word (>= 3 letters): "with"+"a" is one letter off "with", and "as"+"wayne" two off "wayne".
   const joins = (parts: string[], whole: string): boolean => parts.join('') === whole
@@ -319,7 +341,15 @@ function alignPath(B: Tok[], H: Tok[], opts: CorrectOptions): Path {
     for (let j = 0; j <= m; j++) {
       const c = cost[i][j]; if (c >= INF) continue;
       const relax = (a: number, b: number, v: number, op: Op): void => { if (v < cost[a][b]) { cost[a][b] = v; back[a][b] = op; } };
-      if (i < n && j < m) { const eq = sameTok(B[i], H[j]); relax(i + 1, j + 1, c + (eq ? 0 : 1), eq ? 'match' : 'sub'); }
+      if (i < n && j < m) {
+        // An IDENTICAL word earns a hair off, which only ever breaks a tie: "This book" / "This audiobook" could pair
+        // "This" with "This", or insert the heard "This" and join the book's two words loosely - equal costs, and the
+        // second printed "This This book".
+        if (B[i].k === H[j].k) relax(i + 1, j + 1, c - EXACT_BONUS, 'match');
+        else if (sameTok(B[i], H[j])) relax(i + 1, j + 1, c, 'match');
+        else if (kept(B[i], H[j])) relax(i + 1, j + 1, c + KEPT_COST, 'match');
+        else relax(i + 1, j + 1, c + 1, 'sub');
+      }
       if (i < n && j + 1 < m && joins([H[j].k, H[j + 1].k], B[i].k)) relax(i + 1, j + 2, c, 'split2');   // book one = heard two
       // book one = heard 3..6, EXACT only ("two-and-a-half-inch" / "two and a half inch")
       if (i < n && B[i].k.length >= 6) {
@@ -357,6 +387,24 @@ function alignPath(B: Tok[], H: Tok[], opts: CorrectOptions): Path {
     if (anyHeard && run.length > 0 && run.length <= MAX_EDGE_DELETE) for (const k of run) path[k] = { ...path[k], op: 'keep' };
   }
   return path;
+}
+
+/**
+ * The key of a word, and of each of its parts: its hyphen or space parts ("Reich-Ranicki" -> reichranicki, reich,
+ * ranicki) and a contraction's base ("I’ve" -> ive, i).
+ */
+function partKeys(core: string): Set<string> {
+  const keys = new Set<string>([key(core)]);
+  for (const part of core.split(/[\s‐-―-]+/)) if (key(part)) keys.add(key(part));
+  const base = contractionBase(core); if (base !== null) keys.add(base);
+  keys.delete('');
+  return keys;
+}
+
+/** A contraction's base word's key ("I'd" -> "i", "Jose's" -> "jose"), or null for a word with no apostrophe. */
+function contractionBase(core: string): string | null {
+  const m = /^(.+?)[’'ʼ]\p{L}{1,3}$/u.exec(core);
+  return m === null ? null : key(m[1]) || null;
 }
 
 /** Correct `bookText` to the words heard in its span. `heard` is the heard words in order. */
@@ -426,6 +474,12 @@ export function correctToHeard(bookText: string, heard: readonly string[], opts:
   if (agreement < MIN_AGREEMENT) return { text: bookText, changed: false, agreement, edits: [] };
 
   const out: string[] = []; const edits: Correction['edits'][number][] = [];
+  /** Per emitted word: did it come from the READER (an insert or a replace), its keys, and its edit's index. */
+  const meta: { heard: boolean; full: string; keys: Set<string>; base: string | null; edit: number }[] = [];
+  const put = (text: string, heard: boolean, src: string): void => {
+    out.push(text);
+    meta.push({ heard, full: key(src), keys: partKeys(src), base: contractionBase(src), edit: heard ? edits.length - 1 : -1 });
+  };
   let bi = 0; let hj = 0;
   for (let k = 0; k < path.length; k++) {
     const p = path[k];
@@ -434,27 +488,27 @@ export function correctToHeard(bookText: string, heard: readonly string[], opts:
       // title. theres no period there"). The book's case, the reader's word, the book's other trailing punctuation.
       const b = B[bi]; const h = H[hj];
       const word = /^[A-Z]/.test(b.core) ? h.core[0].toUpperCase() + h.core.slice(1) : h.core;
-      out.push(b.lead + word + b.trail.replace(/^\./, '')); edits.push({ op: 'replace', book: b.surface, heard: h.core }); bi++; hj++;
+      edits.push({ op: 'replace', book: b.surface, heard: h.core }); put(b.lead + word + b.trail.replace(/^\./, ''), false, b.core); bi++; hj++;
     }
     else if (p.op === 'match' && B[bi].date !== undefined && H[hj].date !== undefined && B[bi].date !== H[hj].date) {
       // THE SAME DATE, SAID THE OTHER WAY ROUND: the cue follows the reader ("1 December 1933" read as "December first
       // nineteen thirty-three"), since a transcript whose order is not the audio's is not the audio's transcript.
-      out.push(readerDate(B[bi], H[hj])); edits.push({ op: 'replace', book: B[bi].surface, heard: H[hj].core }); bi++; hj++;
+      edits.push({ op: 'replace', book: B[bi].surface, heard: H[hj].core }); put(readerDate(B[bi], H[hj]), false, B[bi].core); bi++; hj++;
     }
-    else if (p.op === 'match') { out.push(B[bi].surface); bi++; hj++; }
-    else if (p.op === 'keep') { out.push(B[bi].surface); bi++; }
-    else if (p.op === 'split2') { out.push(B[bi].surface); bi++; hj += 2; }
-    else if (p.op === 'splitN') { out.push(B[bi].surface); bi++; hj += p.n ?? 3; }
-    else if (p.op === 'join2') { out.push(B[bi].surface, B[bi + 1].surface); bi += 2; hj++; }
+    else if (p.op === 'match') { put(B[bi].surface, false, B[bi].core); bi++; hj++; }
+    else if (p.op === 'keep') { put(B[bi].surface, false, B[bi].core); bi++; }
+    else if (p.op === 'split2') { put(B[bi].surface, false, B[bi].core); bi++; hj += 2; }
+    else if (p.op === 'splitN') { put(B[bi].surface, false, B[bi].core); bi++; hj += p.n ?? 3; }
+    else if (p.op === 'join2') { put(B[bi].surface, false, B[bi].core); put(B[bi + 1].surface, false, B[bi + 1].core); bi += 2; hj++; }
     else if (p.op === 'sub') {
       const b = B[bi]; const h = H[hj];
-      if (vetoed(k)) { out.push(b.surface); bi++; hj++; }
-      else { out.push(b.lead + h.core + b.trail); edits.push({ op: 'replace', book: b.surface, heard: h.core }); bi++; hj++; }
+      if (vetoed(k)) { put(b.surface, false, b.core); bi++; hj++; }
+      else { edits.push({ op: 'replace', book: b.surface, heard: h.core }); put(b.lead + h.core + b.trail, true, h.core); bi++; hj++; }
     } else if (p.op === 'ins') {
       if (vetoed(k)) hj++;
-      else { out.push(H[hj].core); edits.push({ op: 'insert', heard: H[hj].core }); hj++; }
+      else { edits.push({ op: 'insert', heard: H[hj].core }); put(H[hj].core, true, H[hj].core); hj++; }
     }
-    else if (vetoed(k)) { out.push(B[bi].surface); bi++; }
+    else if (vetoed(k)) { put(B[bi].surface, false, B[bi].core); bi++; }
     else {
       const b = B[bi];
       // keep sentence punctuation the dropped word carried (".", "?", "!", closing quote)
@@ -462,8 +516,46 @@ export function correctToHeard(bookText: string, heard: readonly string[], opts:
       edits.push({ op: 'delete', book: b.surface }); bi++;
     }
   }
+  /*
+   * A HEARD WORD IS NEVER WRITTEN TWICE (2026-09-28). A word taken from the reader (inserted, or replacing a book word)
+   * that is the same word as the BOOK word right beside it - or one part of it ("Reich" beside "Reich-Ranicki") - is
+   * the alignment spending one heard word twice: the book's token already says it. So it is dropped, and its edit
+   * with it, keeping any sentence punctuation it carried. A book that repeats a word itself ("Mama, Mama") is never
+   * touched: only a word the READER supplied can be dropped.
+   *
+   * The other direction is a CONTRACTION: the reader's "I'd" or "Jose's" beside the book's own "I" / "Jose" is the
+   * reader saying that word and the next as one ("I had" -> "I'd"), so the reader's contraction stands and the book
+   * word it already contains goes.
+   *
+   * Neighbours are the nearest words still standing, and the pass repeats until nothing changes: dropping "El" from
+   * "Mers El Mers-el-Kébir" is what puts "Mers" beside the book's word.
+   */
+  const droppedEdits = new Set<number>(); const extraEdits: Correction['edits'][number][] = [];
+  const near = (i: number, step: number): number => {
+    for (let j = i + step; j >= 0 && j < out.length; j += step) if (out[j] !== '') return j;
+    return -1;
+  };
+  const isBook = (j: number): boolean => j >= 0 && !meta[j].heard;
+  for (let again = true; again;) {
+    again = false;
+    for (let i = 0; i < out.length; i++) {
+      const m = meta[i]; if (out[i] === '' || !m.heard) continue;
+      const L = near(i, -1); const R = near(i, 1);
+      if ([L, R].some((j) => isBook(j) && meta[j].keys.has(m.full))) {
+        const trail = /[^\p{L}\p{N}]*$/u.exec(out[i])![0];
+        if (/[.?!”"]/.test(trail) && L >= 0) out[L] = out[L].replace(/[^\p{L}\p{N}]*$/u, '') + trail;
+        out[i] = ''; if (m.edit >= 0) droppedEdits.add(m.edit); again = true; continue;
+      }
+      if (m.base !== null && isBook(L) && meta[L].full === m.base) {
+        const lead = /^[^\p{L}\p{N}]*/u.exec(out[L])![0];
+        extraEdits.push({ op: 'delete', book: out[L] });
+        out[i] = lead + out[i]; out[L] = ''; again = true;
+      }
+    }
+  }
+  const keptEdits = [...edits.filter((_, i) => !droppedEdits.has(i)), ...extraEdits];
   let text = out.join(' ').replace(/\s+/g, ' ').trim();
   if (text && /^[a-z]/.test(text) && /^[A-Z]/.test(bookText.trim())) text = text[0].toUpperCase() + text.slice(1);
-  return { text, changed: edits.length > 0, agreement, edits,
+  return { text, changed: keptEdits.length > 0, agreement, edits: keptEdits,
     ...(opts.secondOpinion ? { regions: votes, disputed: votes.filter((v) => v.decision === 'book') } : {}) };
 }
