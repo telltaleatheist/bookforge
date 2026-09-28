@@ -38,9 +38,9 @@
     "_note": "PREDICTED, not swept. owen_gp2w corpus p50 793. Sweep it and replace these."
   },
   "mistborn": {
-    "min": 400,
+    "min": 500,
     "max": 700,
-    "_note": "MEASURED 2026-09-15 11:01 by the length ladder (rungs 100-1600, 8 prompts x 4 seeds each): in-band 9/192 = 4.7% (95% hi 8.7%). Winner mb_ha_rvcbed1_5368 -- TIE-BREAK ON LOSS: band.py margin 2.5 renders is INSIDE NOISE (<5), so the lower holdout loss wins.  BAND SET BY RULING to 400-700, not by the failure curve.. Previous band 200-800. Run: /mnt/e/training/_campaigns/2026-09-13-mistborn-ha-rvcbed/screen_mb_ha_rvcbed1/ladder/mb_ha_rvcbed1_5803"
+    "_note": "MEASURED 2026-09-28 by the length ladder of mb_v17 ckpt-3213 (rungs 100-1000, 8 prompts x 4 seeds, direct SGLang): in-band 500-700 2.1% (95% hi 7.3%). 3213 over 2601 INSIDE NOISE -> latest clean. Pace 13.25. Previous band 300-800 (v16 3375). HF owenmorgan/mistborn-higgs-v3@c2e7488d. Run: E:/training/_campaigns/2026-09-27-mb-v17/ladder_mb_v17"
   },
   "sigma": {
     "min": 400,
