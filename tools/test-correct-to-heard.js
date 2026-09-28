@@ -216,6 +216,26 @@ check('the BOOK\'s own repetition is never touched ("Mama, Mama")', () => {
   const r = correctToHeard('‘Mama, Mama, what am I going to do?’', words('Mama Mama what am I going to do'));
   assert.strictEqual(r.text, '‘Mama, Mama, what am I going to do?’');
 });
+check('a number beside an em dash merges: "army—three hundred thousand" is never "three three hundred"', () => {
+  // HoA (training-pc-1, 2026-09-28): "army—three" was one token, so "three" never met "hundred thousand".
+  const r = correctToHeard('The koloss army—three hundred thousand strong—hadn\'t moved in weeks.',
+    words('The coloss army three hundred thousand strong hadn\'t moved in weeks'),
+    { secondOpinion: words('The Koloss army, 300,000 strong, hadn\'t moved in weeks.') });
+  assert.strictEqual(r.text, 'The koloss army—three hundred thousand strong—hadn\'t moved in weeks.');
+});
+check('a dash the reader said as a word becomes that word ("May–June" read "May to June"), and number ranges are left alone', () => {
+  const r = correctToHeard('The western campaign of May–June 1940 seemed eminently successful.',
+    words('The western campaign of May to June 1940 seemed eminently successful'));
+  assert.strictEqual(r.text, 'The western campaign of May to June 1940 seemed eminently successful.');
+  const n = correctToHeard('Sherman were old—sixty-three and sixty-nine—and falling by the wayside.',
+    words('Sherman were old sixtythree and sixtynine and falling by the wayside'));
+  assert.strictEqual(n.text, 'Sherman were old—sixty-three and sixty-nine—and falling by the wayside.');
+});
+check('a digit inside a book word is a typo, and the reader\'s word takes it ("al1one" read "alone")', () => {
+  const r = correctToHeard('He fought on, al1one, his clothing long since stained from white to red.',
+    words('He fought on alone his clothing long since stained from white to red'));
+  assert.strictEqual(r.text, 'He fought on, alone, his clothing long since stained from white to red.');
+});
 check('"may" and "march" as verbs are not dates', () => {
   const r = correctToHeard('The first may seem strange.', words('The first may seem strange'));
   assert.strictEqual(r.text, 'The first may seem strange.');

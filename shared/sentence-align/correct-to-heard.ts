@@ -57,6 +57,8 @@ export interface CorrectOptions {
 
 /** What keeping a name against a different heard word costs the alignment: more than a match, less than a sub. */
 const KEPT_COST = 0.5;
+/** Marks an emitted word written against the one before it (a `glued` token): the space before it is taken out. */
+const GLUE = '\u0000';
 /** A tie-breaker only: small enough that no number of them can outweigh a single edit in any cue. */
 const EXACT_BONUS = 0.0001;
 
@@ -92,13 +94,27 @@ interface Tok {
   readonly surface: string; readonly lead: string; readonly core: string; readonly trail: string; readonly k: string;
   /** A merged DATE (`mergeDates`): which order it was written or said in - day first, or month first. */
   readonly date?: 'dm' | 'md';
+  /** Written against the word before it with no space: the far side of an em or en dash ("army—three"). */
+  readonly glued?: boolean;
 }
 
+/**
+ * The words of `text`. AN EM OR EN DASH BETWEEN TWO WORDS SEPARATES THEM (2026-09-28): "army—three" was one token,
+ * so "three" never met the number words after it, and "three hundred thousand" heard came back "three three hundred
+ * thousand". The far word is marked `glued` and written back against the dash, with no space.
+ */
 function tokens(text: string): Tok[] {
-  return text.split(/\s+/).filter(Boolean).map((surface) => {
-    const m = /^([^\p{L}\p{N}]*)(.*?)([^\p{L}\p{N}]*)$/u.exec(surface)!;
-    return { surface, lead: m[1], core: m[2], trail: m[3], k: key(surface) };
-  }).filter((t) => t.k.length > 0 || t.surface.length > 0);
+  return text.split(/\s+/).filter(Boolean)
+    .flatMap((word) => word.split(/(?<=\p{L}[—–])(?=\p{L})/u).map((surface, i) => ({ surface, glued: i > 0 })))
+    .map(({ surface, glued }) => {
+      const m = /^([^\p{L}\p{N}]*)(.*?)([^\p{L}\p{N}]*)$/u.exec(surface)!;
+      return { surface, lead: m[1], core: m[2], trail: m[3], k: key(surface), ...(glued ? { glued: true } : {}) };
+    }).filter((t) => t.k.length > 0 || t.surface.length > 0);
+}
+
+/** A merged span's surface: its words' own, with a space only where the text had one. */
+function joinSurfaces(span: readonly Tok[]): string {
+  return span.map((t, i) => (i > 0 && !t.glued ? ' ' : '') + t.surface).join('');
 }
 
 /**
@@ -127,7 +143,7 @@ function mergeNumbers(ts: Tok[]): Tok[] {
     const single = last === i;
     if (single && (wordValue(ts[i].k) ?? 99) < 10) { out.push(ts[i]); i++; continue; }
     const span = ts.slice(i, last + 1);
-    out.push({ surface: span.map((t) => t.surface).join(' '), lead: span[0].lead, core: span.map((t) => t.core).join(' '),
+    out.push({ surface: joinSurfaces(span), lead: span[0].lead, core: span.map((t) => t.core).join(' '), ...(span[0].glued ? { glued: true } : {}),
       trail: span[span.length - 1].trail, k: String(total + cur) });
     i = last + 1;
   }
@@ -241,7 +257,7 @@ function mergeDates(ts: Tok[]): Tok[] {
     }
     if (hit === null) { out.push(ts[i]); i++; continue; }
     const span = ts.slice(i, i + hit.len);
-    out.push({ surface: span.map((t) => t.surface).join(' '), lead: span[0].lead, core: span.map((t) => t.core).join(' '),
+    out.push({ surface: joinSurfaces(span), lead: span[0].lead, core: span.map((t) => t.core).join(' '), ...(span[0].glued ? { glued: true } : {}),
       trail: span[span.length - 1].trail, k: `date:${hit.month}-${hit.day}${hit.year === null ? '' : `-${hit.year}`}`, date: hit.order });
     i += hit.len;
   }
@@ -311,7 +327,10 @@ function alignPath(B: Tok[], H: Tok[], opts: CorrectOptions): Path {
   const n = B.length; const m = H.length;
   const names = opts.properNouns; const rare = opts.rareWords;
   // A DATE matches only the same date: its key is a value, and a near-miss of "date:12-1-1933" is another day.
-  const sameTok = (b: Tok, h: Tok): boolean => (b.date !== undefined || h.date !== undefined) ? b.k === h.k
+  // A DIGIT INSIDE A BOOK WORD is a typo, not a spelling to trust over the reader (2026-09-28): the EPUB's "al1one" was
+  // kept as a near-miss of the heard "alone", and the text cleanup later read its 1 as "one" - "al one one".
+  const typo = (b: Tok): boolean => /\p{L}\d+\p{L}/u.test(b.core);
+  const sameTok = (b: Tok, h: Tok): boolean => (b.date !== undefined || h.date !== undefined || typo(b)) ? b.k === h.k
     : b.k === h.k || isNearMiss(b.k, h.k) || abbreviates(b, h);
   /*
    * A NAME OR RARE WORD IS KEPT against a heard word that is NOT it ("Chantal" heard as "Gentile"), but that pairing
@@ -476,8 +495,8 @@ export function correctToHeard(bookText: string, heard: readonly string[], opts:
   const out: string[] = []; const edits: Correction['edits'][number][] = [];
   /** Per emitted word: did it come from the READER (an insert or a replace), its keys, and its edit's index. */
   const meta: { heard: boolean; full: string; keys: Set<string>; base: string | null; edit: number }[] = [];
-  const put = (text: string, heard: boolean, src: string): void => {
-    out.push(text);
+  const put = (text: string, heard: boolean, src: string, glued = false): void => {
+    out.push((glued ? GLUE : '') + text);
     meta.push({ heard, full: key(src), keys: partKeys(src), base: contractionBase(src), edit: heard ? edits.length - 1 : -1 });
   };
   let bi = 0; let hj = 0;
@@ -488,27 +507,27 @@ export function correctToHeard(bookText: string, heard: readonly string[], opts:
       // title. theres no period there"). The book's case, the reader's word, the book's other trailing punctuation.
       const b = B[bi]; const h = H[hj];
       const word = /^[A-Z]/.test(b.core) ? h.core[0].toUpperCase() + h.core.slice(1) : h.core;
-      edits.push({ op: 'replace', book: b.surface, heard: h.core }); put(b.lead + word + b.trail.replace(/^\./, ''), false, b.core); bi++; hj++;
+      edits.push({ op: 'replace', book: b.surface, heard: h.core }); put(b.lead + word + b.trail.replace(/^\./, ''), false, b.core, b.glued); bi++; hj++;
     }
     else if (p.op === 'match' && B[bi].date !== undefined && H[hj].date !== undefined && B[bi].date !== H[hj].date) {
       // THE SAME DATE, SAID THE OTHER WAY ROUND: the cue follows the reader ("1 December 1933" read as "December first
       // nineteen thirty-three"), since a transcript whose order is not the audio's is not the audio's transcript.
-      edits.push({ op: 'replace', book: B[bi].surface, heard: H[hj].core }); put(readerDate(B[bi], H[hj]), false, B[bi].core); bi++; hj++;
+      edits.push({ op: 'replace', book: B[bi].surface, heard: H[hj].core }); put(readerDate(B[bi], H[hj]), false, B[bi].core, B[bi].glued); bi++; hj++;
     }
-    else if (p.op === 'match') { put(B[bi].surface, false, B[bi].core); bi++; hj++; }
-    else if (p.op === 'keep') { put(B[bi].surface, false, B[bi].core); bi++; }
-    else if (p.op === 'split2') { put(B[bi].surface, false, B[bi].core); bi++; hj += 2; }
-    else if (p.op === 'splitN') { put(B[bi].surface, false, B[bi].core); bi++; hj += p.n ?? 3; }
-    else if (p.op === 'join2') { put(B[bi].surface, false, B[bi].core); put(B[bi + 1].surface, false, B[bi + 1].core); bi += 2; hj++; }
+    else if (p.op === 'match') { put(B[bi].surface, false, B[bi].core, B[bi].glued); bi++; hj++; }
+    else if (p.op === 'keep') { put(B[bi].surface, false, B[bi].core, B[bi].glued); bi++; }
+    else if (p.op === 'split2') { put(B[bi].surface, false, B[bi].core, B[bi].glued); bi++; hj += 2; }
+    else if (p.op === 'splitN') { put(B[bi].surface, false, B[bi].core, B[bi].glued); bi++; hj += p.n ?? 3; }
+    else if (p.op === 'join2') { put(B[bi].surface, false, B[bi].core, B[bi].glued); put(B[bi + 1].surface, false, B[bi + 1].core, B[bi + 1].glued); bi += 2; hj++; }
     else if (p.op === 'sub') {
       const b = B[bi]; const h = H[hj];
-      if (vetoed(k)) { put(b.surface, false, b.core); bi++; hj++; }
-      else { edits.push({ op: 'replace', book: b.surface, heard: h.core }); put(b.lead + h.core + b.trail, true, h.core); bi++; hj++; }
+      if (vetoed(k)) { put(b.surface, false, b.core, b.glued); bi++; hj++; }
+      else { edits.push({ op: 'replace', book: b.surface, heard: h.core }); put(b.lead + h.core + b.trail, true, h.core, b.glued); bi++; hj++; }
     } else if (p.op === 'ins') {
       if (vetoed(k)) hj++;
       else { edits.push({ op: 'insert', heard: H[hj].core }); put(H[hj].core, true, H[hj].core); hj++; }
     }
-    else if (vetoed(k)) { put(B[bi].surface, false, B[bi].core); bi++; }
+    else if (vetoed(k)) { put(B[bi].surface, false, B[bi].core, B[bi].glued); bi++; }
     else {
       const b = B[bi];
       // keep sentence punctuation the dropped word carried (".", "?", "!", closing quote)
@@ -554,7 +573,19 @@ export function correctToHeard(bookText: string, heard: readonly string[], opts:
     }
   }
   const keptEdits = [...edits.filter((_, i) => !droppedEdits.has(i)), ...extraEdits];
-  let text = out.join(' ').replace(/\s+/g, ' ').trim();
+  // A glued word goes against the word before it only when that word still ENDS IN THE DASH; after a word the reader
+  // inserted or supplied, it gets its space back.
+  // And a word the READER put between a dash and its glued word is the dash said aloud ("May–June" read "May to
+  // June"), so the dash goes and the word stands.
+  let text = '';
+  const next = (i: number): string | undefined => out.slice(i + 1).find((x) => x !== '' && x !== GLUE);
+  out.forEach((w, i) => {
+    if (w === '' || w === GLUE) return;
+    if (w.startsWith(GLUE)) { text += (/[—–]$/.test(text) ? '' : ' ') + w.slice(GLUE.length); return; }
+    if (meta[i].heard && /[—–]$/.test(text) && next(i)?.startsWith(GLUE)) text = text.replace(/[—–]$/, '');
+    text += ' ' + w;
+  });
+  text = text.replace(/\s+/g, ' ').trim();
   if (text && /^[a-z]/.test(text) && /^[A-Z]/.test(bookText.trim())) text = text[0].toUpperCase() + text.slice(1);
   return { text, changed: keptEdits.length > 0, agreement, edits: keptEdits,
     ...(opts.secondOpinion ? { regions: votes, disputed: votes.filter((v) => v.decision === 'book') } : {}) };
