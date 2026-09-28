@@ -104,8 +104,15 @@ interface Tok {
  * thousand". The far word is marked `glued` and written back against the dash, with no space.
  */
 function tokens(text: string): Tok[] {
-  return text.split(/\s+/).filter(Boolean)
-    .flatMap((word) => word.split(/(?<=\p{L}[—–])(?=\p{L})/u).map((surface, i) => ({ surface, glued: i > 0 })))
+  // A "&" opening a word is its own token ("Telegram &Gazette's", a typo): as a lead it was written back in front
+  // of the reader's "and". Standalone, it keys to nothing and drops out, as "Harper & Row" always has.
+  return text.replace(/(^|\s)&(?=\p{L})/gu, '$1& ').split(/\s+/).filter(Boolean)
+    // Split at every dash between two words or numbers: "army—three", "2—what", and a range "1861–65", which a reader
+    // says "1861 to 65" (the writer turns a dash said aloud into that "to"). NOT a citation's range ("6:9–18",
+    // "3.1–4"): its numbers are one reference, and split, the reader's words landed on the wrong half.
+    .flatMap((word) => word.split(/\d[:.]\d/.test(word)
+      ? /(?<=\p{L}[—–])(?=[\p{L}\p{N}])|(?<=\p{N}[—–])(?=\p{L})/u
+      : /(?<=[\p{L}\p{N}][—–])(?=[\p{L}\p{N}])/u).map((surface, i) => ({ surface, glued: i > 0 })))
     .map(({ surface, glued }) => {
       const m = /^([^\p{L}\p{N}]*)(.*?)([^\p{L}\p{N}]*)$/u.exec(surface)!;
       return { surface, lead: m[1], core: m[2], trail: m[3], k: key(surface), ...(glued ? { glued: true } : {}) };
@@ -115,6 +122,30 @@ function tokens(text: string): Tok[] {
 /** A merged span's surface: its words' own, with a space only where the text had one. */
 function joinSurfaces(span: readonly Tok[]): string {
   return span.map((t, i) => (i > 0 && !t.glued ? ' ' : '') + t.surface).join('');
+}
+
+/**
+ * A DIGIT INSIDE A BOOK WORD is a typo, not a spelling to trust over the reader (2026-09-28): the EPUB's "al1one" was
+ * kept as a near-miss of the heard "alone", and the text cleanup later read its 1 as "one" - "al one one".
+ */
+function typo(b: Tok): boolean {
+  return /\p{L}\d+\p{L}/u.test(b.core);
+}
+
+/** A word's value as a number word or an ordinal word ("eight", "seventeenth"), or null. */
+function valueOf(t: Tok): number | null {
+  const day = /^\d/.test(t.k) ? null : readDay([t], 0);
+  return wordValue(t.k) ?? (day !== null && day.len === 1 ? day.value : null);
+}
+
+/**
+ * A LONE number word and the same digits are the same number (2026-09-28): "8–15" read "eight to fifteen", "17–18 May"
+ * read "the seventeenth and eighteenth". `mergeNumbers` leaves a lone small word unmerged ("one of them"), so without
+ * this the book's "8–" tied between the heard "eight" and the heard "to", took "to", and wrote "eight to–15". The
+ * ALIGNMENT pairs them; the writer keeps the reader's spoken form ("Engine one", "First John"), as it always did.
+ */
+function sameValue(b: Tok, h: Tok): boolean {
+  return (/^\d+$/.test(b.k) && valueOf(h) === Number(b.k)) || (/^\d+$/.test(h.k) && valueOf(b) === Number(h.k));
 }
 
 /**
@@ -327,11 +358,8 @@ function alignPath(B: Tok[], H: Tok[], opts: CorrectOptions): Path {
   const n = B.length; const m = H.length;
   const names = opts.properNouns; const rare = opts.rareWords;
   // A DATE matches only the same date: its key is a value, and a near-miss of "date:12-1-1933" is another day.
-  // A DIGIT INSIDE A BOOK WORD is a typo, not a spelling to trust over the reader (2026-09-28): the EPUB's "al1one" was
-  // kept as a near-miss of the heard "alone", and the text cleanup later read its 1 as "one" - "al one one".
-  const typo = (b: Tok): boolean => /\p{L}\d+\p{L}/u.test(b.core);
   const sameTok = (b: Tok, h: Tok): boolean => (b.date !== undefined || h.date !== undefined || typo(b)) ? b.k === h.k
-    : b.k === h.k || isNearMiss(b.k, h.k) || abbreviates(b, h);
+    : b.k === h.k || sameValue(b, h) || isNearMiss(b.k, h.k) || abbreviates(b, h);
   /*
    * A NAME OR RARE WORD IS KEPT against a heard word that is NOT it ("Chantal" heard as "Gentile"), but that pairing
    * is NOT A MATCH, and it costs (2026-09-28). It used to cost nothing, exactly like a real match, so a name could
@@ -496,11 +524,13 @@ export function correctToHeard(bookText: string, heard: readonly string[], opts:
 
   const out: string[] = []; const edits: Correction['edits'][number][] = [];
   /** Per emitted word: did it come from the READER (an insert or a replace), its keys, and its edit's index. */
-  const meta: { heard: boolean; full: string; keys: Set<string>; base: string | null; edit: number }[] = [];
-  const put = (text: string, heard: boolean, src: string, glued = false): void => {
+  /** `inner`: this word ends in a dash that joined its BOOK token to the next one ("army—" before "three"). */
+  const meta: { heard: boolean; full: string; keys: Set<string>; base: string | null; edit: number; inner: boolean }[] = [];
+  const put = (text: string, heard: boolean, src: string, glued = false, inner = false): void => {
     out.push((glued ? GLUE : '') + text);
-    meta.push({ heard, full: key(src), keys: partKeys(src), base: contractionBase(src), edit: heard ? edits.length - 1 : -1 });
+    meta.push({ heard, full: key(src), keys: partKeys(src), base: contractionBase(src), edit: heard ? edits.length - 1 : -1, inner });
   };
+  const innerAt = (i: number): boolean => B[i + 1]?.glued === true;
   let bi = 0; let hj = 0;
   for (let k = 0; k < path.length; k++) {
     const p = path[k];
@@ -516,20 +546,32 @@ export function correctToHeard(bookText: string, heard: readonly string[], opts:
       // nineteen thirty-three"), since a transcript whose order is not the audio's is not the audio's transcript.
       edits.push({ op: 'replace', book: B[bi].surface, heard: H[hj].core }); put(readerDate(B[bi], H[hj]), false, B[bi].core, B[bi].glued); bi++; hj++;
     }
-    else if (p.op === 'match') { put(B[bi].surface, false, B[bi].core, B[bi].glued); bi++; hj++; }
-    else if (p.op === 'keep') { put(B[bi].surface, false, B[bi].core, B[bi].glued); bi++; }
-    else if (p.op === 'split2') { put(B[bi].surface, false, B[bi].core, B[bi].glued); bi++; hj += 2; }
-    else if (p.op === 'splitN') { put(B[bi].surface, false, B[bi].core, B[bi].glued); bi++; hj += p.n ?? 3; }
-    else if (p.op === 'join2') { put(B[bi].surface, false, B[bi].core, B[bi].glued); put(B[bi + 1].surface, false, B[bi + 1].core, B[bi + 1].glued); bi += 2; hj++; }
+    else if (p.op === 'match' && B[bi].k !== H[hj].k && /^\d/.test(B[bi].k) && sameValue(B[bi], H[hj])) {
+      // PAIRED BY VALUE, WRITTEN AS SAID: the reader's spoken number in the book's punctuation ("Engine one").
+      const b = B[bi]; const h = H[hj];
+      edits.push({ op: 'replace', book: b.surface, heard: h.core });
+      put(b.lead + h.core + b.trail, false, b.core, b.glued, innerAt(bi)); bi++; hj++;
+    }
+    else if (p.op === 'match') { put(B[bi].surface, false, B[bi].core, B[bi].glued, innerAt(bi)); bi++; hj++; }
+    else if (p.op === 'keep') { put(B[bi].surface, false, B[bi].core, B[bi].glued, innerAt(bi)); bi++; }
+    else if (p.op === 'split2') { put(B[bi].surface, false, B[bi].core, B[bi].glued, innerAt(bi)); bi++; hj += 2; }
+    else if (p.op === 'splitN') { put(B[bi].surface, false, B[bi].core, B[bi].glued, innerAt(bi)); bi++; hj += p.n ?? 3; }
+    else if (p.op === 'join2') { put(B[bi].surface, false, B[bi].core, B[bi].glued, innerAt(bi)); put(B[bi + 1].surface, false, B[bi + 1].core, B[bi + 1].glued, innerAt(bi + 1)); bi += 2; hj++; }
     else if (p.op === 'sub') {
       const b = B[bi]; const h = H[hj];
       if (vetoed(k)) { put(b.surface, false, b.core, b.glued); bi++; hj++; }
-      else { edits.push({ op: 'replace', book: b.surface, heard: h.core }); put(b.lead + h.core + b.trail, true, h.core, b.glued); bi++; hj++; }
+      else {
+        // The reader's word REPAIRING the book's own word (a typo: "spe1ar" read "spear") is that book word, and keeps
+        // its place against a dash ("spear—the weapon"); any other replacement is the reader's (see the writer).
+        const repair = typo(b);
+        edits.push({ op: 'replace', book: b.surface, heard: h.core });
+        put(b.lead + h.core + b.trail, !repair, h.core, repair && b.glued === true, innerAt(bi)); bi++; hj++;
+      }
     } else if (p.op === 'ins') {
       if (vetoed(k)) hj++;
       else { edits.push({ op: 'insert', heard: H[hj].core }); put(H[hj].core, true, H[hj].core); hj++; }
     }
-    else if (vetoed(k)) { put(B[bi].surface, false, B[bi].core, B[bi].glued); bi++; }
+    else if (vetoed(k)) { put(B[bi].surface, false, B[bi].core, B[bi].glued, innerAt(bi)); bi++; }
     else {
       const b = B[bi];
       // keep sentence punctuation the dropped word carried (".", "?", "!", closing quote)
@@ -579,13 +621,23 @@ export function correctToHeard(bookText: string, heard: readonly string[], opts:
   // inserted or supplied, it gets its space back.
   // And a word the READER put between a dash and its glued word is the dash said aloud ("May–June" read "May to
   // June"), so the dash goes and the word stands.
-  let text = '';
+  //
+  // Two more, about the book's joining dash once the reader has changed one side of it. A word glued to the word
+  // before it is never glued to a word the READER supplied: the dash joined two book words, and the reader replaced
+  // one ("on the seventeenth and–18 May"). And a joining dash whose partner is gone - deleted, or replaced - goes
+  // with it ("in 1942– and stayed").
+  let text = ''; let last = -1;
   const next = (i: number): string | undefined => out.slice(i + 1).find((x) => x !== '' && x !== GLUE);
   out.forEach((w, i) => {
     if (w === '' || w === GLUE) return;
-    if (w.startsWith(GLUE)) { text += (/[—–]$/.test(text) ? '' : ' ') + w.slice(GLUE.length); return; }
+    const afterReader = last >= 0 && meta[last].heard;
+    if (w.startsWith(GLUE) && !afterReader) {
+      text += (/[—–]$/.test(text) ? '' : ' ') + w.slice(GLUE.length); last = i; return;
+    }
+    const word = w.startsWith(GLUE) ? w.slice(GLUE.length) : w;
+    if (last >= 0 && meta[last].inner && /[—–]$/.test(text)) text = text.replace(/[—–]$/, '');
     if (meta[i].heard && /[—–]$/.test(text) && next(i)?.startsWith(GLUE)) text = text.replace(/[—–]$/, '');
-    text += ' ' + w;
+    text += ' ' + word; last = i;
   });
   text = text.replace(/\s+/g, ' ').trim();
   if (text && /^[a-z]/.test(text) && /^[A-Z]/.test(bookText.trim())) text = text[0].toUpperCase() + text.slice(1);

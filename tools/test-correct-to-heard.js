@@ -231,6 +231,23 @@ check('a dash the reader said as a word becomes that word ("May–June" read "Ma
     words('Sherman were old sixtythree and sixtynine and falling by the wayside'));
   assert.strictEqual(n.text, 'Sherman were old—sixty-three and sixty-nine—and falling by the wayside.');
 });
+check('d3k: a number before a dash lines up with the spoken number ("Ladder 2—what" is never "Ladder two 2—what")', () => {
+  const r = correctToHeard('Sully had been so focused on finding Paul and Jerry and then leading Ladder 2—what he thought was Ladder 4—to safety that he\'d let his own men get away from him.',
+    words('So he had been so focused on finding Paul and Jerry and then leading ladder two what he thought was ladder four to safety that he let his own men get away from him'),
+    { properNouns: new Set(['sully', 'paul', 'jerry', 'ladder']),
+      secondOpinion: words('Sully had been so focused on finding Paul and Jerry and then leading ladder two, what he thought was ladder four, to safety, that he let his own men get away from him.') });
+  // Paired by value, written as the reader said it, in the book's punctuation.
+  assert.strictEqual(r.text, 'Sully had been so focused on finding Paul and Jerry and then leading Ladder two—what he thought was Ladder four—to safety that he let his own men get away from him.');
+});
+check('d3k: a "&" stuck to the next word ("Telegram &Gazette\'s", a typo) read "and" is never "and &Gazette\'s"', () => {
+  const r = correctToHeard('almost a million dollars already to the Telegram &Gazette\'s fund.',
+    words('almost a million dollars already to the Telegram and Gazettes Fund'), { properNouns: new Set(['telegram', 'gazettes']) });
+  assert.strictEqual(r.text, 'almost a million dollars already to the Telegram and Gazette\'s fund.');
+});
+check('a range read with "to" follows the reader ("1861–65" read "1861 to 65"), and a citation stays one reference', () => {
+  assert.strictEqual(correctToHeard('memories of the 1861–65 strife', words('memories of the 1861 to 65 strife')).text, 'memories of the 1861 to 65 strife');
+  assert.strictEqual(correctToHeard('(Luke 6:9–18)', words('Luke six verses nine to eighteen')).text, '(Luke six verses nine to eighteen)');
+});
 check('a digit inside a book word is a typo, and the reader\'s word takes it ("al1one" read "alone")', () => {
   // WITH the book's rare-word set, as the pipeline builds it: "al1one" is lower-case, six characters and used once,
   // so it is in there - and a trusted rare word used to be kept against the heard "alone" (HoA re-run on a83d8cd7).
