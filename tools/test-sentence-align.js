@@ -148,5 +148,12 @@ check('a sentence heard in two halves across a long silence is not placed from t
   assert.strictEqual(d3.sentences[0].status, 'disputed', JSON.stringify(d3.sentences[0].reason));
 });
 
+check('the book-length transcribe says speech_only: false, so Crucible 1.0.52 does not switch its silence detector on', () => {
+  // From 1.0.52 an unset speech_only resolves to `not vad_filter`, and this call sends vad_filter: false. The
+  // detector is to be adopted after a comparison run, not by a server default (2026-09-27).
+  const src = require('fs').readFileSync(require('path').join(__dirname, '..', 'electron', 'crucible', 'sentence-align.ts'), 'utf8');
+  assert.match(src, /params: \{ language: o\.language, vad_filter: false, speech_only: false, word_timestamps: true \}/);
+});
+
 console.log(`\nsentence-align: ${passed} passed, ${failed.length} failed${failed.length ? ': ' + failed.join('; ') : ''}`);
 process.exit(failed.length ? 1 : 0);

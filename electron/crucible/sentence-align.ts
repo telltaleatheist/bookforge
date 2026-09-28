@@ -163,7 +163,12 @@ export async function transcribe(o: TranscribeOptions, scratch: string, model: s
     // (vad_unsupported_by_engine, 2026-09-27). Silence is handled here instead: no silence is sent to the long pass,
     // re-hear/second-opinion words heard in the gaps between cues are dropped by mapWordsBack, and every word heard over
     // digital silence is dropped by the SILENT_WORD_DB check.
-    params: { language: o.language, vad_filter: false, word_timestamps: true },
+    //
+    // `speech_only: false` SAID OUT LOUD (2026-09-27). From Crucible 1.0.52 an unset speech_only resolves to
+    // `not vad_filter`, so this call would silently switch to Crucible's own silence detector while the corpora it
+    // must match were all transcribed without it. Owen's plan is to adopt that detector deliberately, after a
+    // comparison run, not by default. Every registered server accepts the field (it arrived in 1.0.50).
+    params: { language: o.language, vad_filter: false, speech_only: false, word_timestamps: true },
     inputs: { [path.basename(o.audioPath)]: o.audioPath },
     artifactsTo: dir,
     ...(o.signal ? { signal: o.signal } : {}),
