@@ -38,9 +38,9 @@
     "_note": "PREDICTED, not swept. owen_gp2w corpus p50 793. Sweep it and replace these."
   },
   "mistborn": {
-    "min": 500,
-    "max": 700,
-    "_note": "MEASURED 2026-09-28 by the length ladder of mb_v17 ckpt-3213 (rungs 100-1000, 8 prompts x 4 seeds, direct SGLang): in-band 500-700 2.1% (95% hi 7.3%). 3213 over 2601 INSIDE NOISE -> latest clean. Pace 13.25. Previous band 300-800 (v16 3375). HF owenmorgan/mistborn-higgs-v3@c2e7488d. Run: E:/training/_campaigns/2026-09-27-mb-v17/ladder_mb_v17"
+    "min": 300,
+    "max": 800,
+    "_note": "REDEPLOYED 2026-09-28: mb_v16 ckpt-3375 back in service (Owen: v16's prosody significantly better than v17's). Its own ladder 2026-09-26: band 300-800 Wilson-ranked, 5/192 in band; pace 13.56. HF owenmorgan/mistborn-higgs-v3@8a8d1bf3 (same weights as the 09-26 deploy, sha256 abb1e35e). v17 (3213, 500-700) retired."
   },
   "sigma": {
     "min": 400,
