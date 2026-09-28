@@ -128,5 +128,53 @@ check('the second-opinion test: a multi-word hyphenated compound is the book\'s 
     { secondOpinion: words('Lieutenant Robin Heward was next to him, manning a 2 1\u20442 inch.') });
   assert.ok(r.text.includes('manning a two-and-a-half-inch'), r.text);
 });
+/*
+ * DATES SAID THE OTHER WAY ROUND (2026-09-28, Owen's spot check via training-pc-1): Evans writes "1 December 1933", the
+ * reader says "December first nineteen thirty-three", and the cue came back "December December 1933" - 1,039 cues
+ * across the three Third Reich books. The same date in either order is one token; a reordered one follows the reader.
+ */
+check('a day-month date read month-first follows the reader, never a doubled month', () => {
+  const r = correctToHeard('Then, on 1 December 1933, he appointed him to a cabinet post.',
+    words('Then on December first nineteen thirty-three he appointed him to a cabinet post'));
+  assert.strictEqual(r.text, 'Then, on December first nineteen thirty-three, he appointed him to a cabinet post.');
+  const r2 = correctToHeard('The law was passed on 4 April 1933.', words('The law was passed on April fourth nineteen thirtythree'));
+  assert.strictEqual(r2.text, 'The law was passed on April fourth nineteen thirtythree.');
+  assert.ok(!/(\b\w+\b) \1/.test(r2.text), r2.text);
+});
+check('the real cue: a month is a NAME (capitalised mid-sentence), and a name used to "match" the heard day', () => {
+  // tc cue 1053. With "december" among the book's proper nouns, "10"->"December" was a substitution and
+  // "December"->"tenth" a protected name: "on December December 1918".
+  const names = new Set(['december', 'berlin', 'friedrich', 'ebert']);
+  const r = correctToHeard(
+    'As the returning troops streamed into Berlin on 10 December 1918, the party leader Friedrich Ebert told them: ‘No enemy has overcome you!’',
+    words('as the returning troops streamed into Berlin on December tenth nineteen eighteen the party leader Friedrich Ebert told them No enemy has overcome you'),
+    { properNouns: names, secondOpinion: words('As the returning troops streamed into Berlin on December 10, 1918, the party leader Friedrich Ebert told them, No enemy has overcome you.') });
+  assert.strictEqual(r.text, 'As the returning troops streamed into Berlin on December tenth nineteen eighteen, the party leader Friedrich Ebert told them: ‘No enemy has overcome you!’');
+  const noYear = correctToHeard('Soon Brüning, who issued another emergency decree on 8 December requiring wages to be reduced.',
+    words('Soon Bruning who issued another emergency decree on December eighth requiring wages to be reduced'), { properNouns: names });
+  assert.ok(!/December December/.test(noYear.text), noYear.text);
+});
+check('the same date in the book\'s own order keeps the book, as numbers do', () => {
+  const r = correctToHeard('Then, on 1 December 1933, he left.', words('Then on the first of December nineteen thirty three he left'));
+  assert.strictEqual(r.text, 'Then, on 1 December 1933, he left.');
+  assert.strictEqual(r.changed, false);
+  const us = correctToHeard('It began on December 1, 1933.', words('It began on December first nineteen thirty-three'));
+  assert.strictEqual(us.text, 'It began on December 1, 1933.');
+});
+check('a DIFFERENT date is the reader\'s, and a date is never a near-miss of another', () => {
+  const r = correctToHeard('It began on 1 December 1933.', words('It began on December seventh nineteen thirty-three'));
+  assert.strictEqual(r.text, 'It began on December seventh nineteen thirty-three.');
+});
+check('a spoken year pairs: "nineteen thirty-three" is 1933, so the book\'s digits stand', () => {
+  const r = correctToHeard('By 1933 the party had won.', words('By nineteen thirty-three the party had won'));
+  assert.strictEqual(r.text, 'By 1933 the party had won.');
+  assert.strictEqual(r.changed, false);
+});
+check('"may" and "march" as verbs are not dates', () => {
+  const r = correctToHeard('The first may seem strange.', words('The first may seem strange'));
+  assert.strictEqual(r.text, 'The first may seem strange.');
+  assert.strictEqual(correctToHeard('In May twenty people came.', words('In May twenty people came')).changed, false);
+});
+
 console.log(`\ncorrect-to-heard: ${passed} passed, ${failed.length} failed${failed.length ? ': ' + failed.join('; ') : ''}`);
 process.exit(failed.length ? 1 : 0);

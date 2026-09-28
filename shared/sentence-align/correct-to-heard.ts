@@ -77,7 +77,11 @@ const isNumberWord = (k: string): boolean => wordValue(k) !== null || k in SCALE
 const key = (t: string): string => t.toLowerCase()
   .replace(/[‘’ʼ'`]/g, '').replace(/[‐-―-]/g, '').replace(/[^a-z0-9]/g, '');
 
-interface Tok { readonly surface: string; readonly lead: string; readonly core: string; readonly trail: string; readonly k: string }
+interface Tok {
+  readonly surface: string; readonly lead: string; readonly core: string; readonly trail: string; readonly k: string;
+  /** A merged DATE (`mergeDates`): which order it was written or said in - day first, or month first. */
+  readonly date?: 'dm' | 'md';
+}
 
 function tokens(text: string): Tok[] {
   return text.split(/\s+/).filter(Boolean).map((surface) => {
@@ -100,7 +104,12 @@ function mergeNumbers(ts: Tok[]): Tok[] {
       const k = ts[j].k;
       if (k === 'and' && j > i && j + 1 < ts.length && isNumberWord(ts[j + 1].k)) { j++; continue; }
       if (k in SCALES) { const sc = SCALES[k]; if (sc === 100) cur = (cur || 1) * 100; else { total += (cur || 1) * sc; cur = 0; } }
-      else { const v = wordValue(k); if (v === null) break; cur += v; }
+      else {
+        const v = wordValue(k); if (v === null) break;
+        // A YEAR IS SAID IN PAIRS (2026-09-28): "nineteen thirty-three" is 1933, not 19 + 33. Two two-digit values in a
+        // row are never a sum in speech ("twenty five" is a ten and a unit, and stays one).
+        if (cur >= 10 && cur <= 99 && v >= 10 && j > i) cur = cur * 100 + v; else cur += v;
+      }
       last = j; j++;
       if (/[.,;:!?)”"]$/.test(ts[last].surface)) break;   // a run ends at punctuation
     }
@@ -112,6 +121,130 @@ function mergeNumbers(ts: Tok[]): Tok[] {
     i = last + 1;
   }
   return out;
+}
+
+const MONTHS: Record<string, number> = { january: 1, february: 2, march: 3, april: 4, may: 5, june: 6, july: 7,
+  august: 8, september: 9, october: 10, november: 11, december: 12 };
+const ORDINAL_UNITS: Record<string, number> = { first: 1, second: 2, third: 3, fourth: 4, fifth: 5, sixth: 6, seventh: 7,
+  eighth: 8, ninth: 9, tenth: 10, eleventh: 11, twelfth: 12, thirteenth: 13, fourteenth: 14, fifteenth: 15,
+  sixteenth: 16, seventeenth: 17, eighteenth: 18, nineteenth: 19, twentieth: 20, thirtieth: 30 };
+
+/** A day of the month at `ts[i]` - "1", "1st", "first", "twenty-first", "twenty first" - as { value, len }, or null. */
+function readDay(ts: Tok[], i: number): { value: number; len: number } | null {
+  const k = ts[i]?.k; if (k === undefined) return null;
+  const digits = /^(\d{1,2})(st|nd|rd|th)?$/.exec(k);
+  if (digits) { const v = Number(digits[1]); return v >= 1 && v <= 31 ? { value: v, len: 1 } : null; }
+  if (k in ORDINAL_UNITS) return { value: ORDINAL_UNITS[k], len: 1 };
+  for (const t of ['twenty', 'thirty']) {
+    const rest = k.slice(t.length);
+    if (k.startsWith(t) && rest in ORDINAL_UNITS && ORDINAL_UNITS[rest] < 10) return { value: TENS[t] + ORDINAL_UNITS[rest], len: 1 };
+    const next = ts[i + 1]?.k;
+    if (k === t && next !== undefined && next in ORDINAL_UNITS && ORDINAL_UNITS[next] < 10) {
+      return { value: TENS[t] + ORDINAL_UNITS[next], len: 2 };
+    }
+  }
+  return null;
+}
+
+/** A value of 10..99 said in one or two words ("nineteen", "thirtythree", "thirty three"), or null. */
+function readTwoDigit(ts: Tok[], i: number): { value: number; len: number } | null {
+  const v = ts[i] === undefined ? null : wordValue(ts[i].k);
+  if (v === null || v < 10) return null;
+  const u = ts[i + 1] === undefined ? null : wordValue(ts[i + 1].k);
+  if (ts[i].k in TENS && u !== null && u >= 1 && u <= 9) return { value: v + u, len: 2 };
+  return { value: v, len: 1 };
+}
+
+/** A year at `ts[i]`: "1933", "nineteen thirty-three", "nineteen oh five", "nineteen hundred", "two thousand (and) five". */
+function readYear(ts: Tok[], i: number): { value: number; len: number } | null {
+  const k = ts[i]?.k; if (k === undefined) return null;
+  if (/^\d{4}$/.test(k)) { const v = Number(k); return v >= 1000 && v <= 2099 ? { value: v, len: 1 } : null; }
+  if (k === 'two' && ts[i + 1]?.k === 'thousand') {
+    let j = i + 2; if (ts[j]?.k === 'and') j++;
+    const rest = readTwoDigit(ts, j) ?? (ts[j] && wordValue(ts[j].k) !== null && wordValue(ts[j].k)! < 10 ? { value: wordValue(ts[j].k)!, len: 1 } : null);
+    return rest === null ? { value: 2000, len: 2 } : { value: 2000 + rest.value, len: j - i + rest.len };
+  }
+  const hi = readTwoDigit(ts, i); if (hi === null) return null;
+  const j = i + hi.len; const nk = ts[j]?.k;
+  if (nk === 'hundred') return { value: hi.value * 100, len: hi.len + 1 };
+  if ((nk === 'oh' || nk === 'o') && ts[j + 1] && (wordValue(ts[j + 1].k) ?? 99) < 10) {
+    return { value: hi.value * 100 + wordValue(ts[j + 1].k)!, len: hi.len + 2 };
+  }
+  const lo = readTwoDigit(ts, j); if (lo === null) return null;
+  const v = hi.value * 100 + lo.value;
+  return v >= 1000 && v <= 2099 ? { value: v, len: hi.len + lo.len } : null;
+}
+
+/**
+ * A DATE IS ONE TOKEN, KEYED BY ITS VALUE, IN EITHER ORDER (2026-09-28). Evans writes "1 December 1933" and the reader
+ * says "December first nineteen thirty-three"; token by token the two cannot line up (an ordinal is not a number word,
+ * and the month has moved), and the alignment paid for it with "December December 1933" on 1,039 Third Reich cues. So
+ * a day next to a month - day first ("1 December", "the first of December") or month first ("December 1,", "December
+ * the first") - with a year after it if there is one, becomes one token keyed `date:<month>-<day>[-<year>]`, which
+ * matches the same date said the other way round. A month with no day beside it stays a word ("in May").
+ */
+/** Months that are also everyday words: "the first may seem", "we march first". */
+const VERB_MONTHS = new Set(['may', 'march']);
+
+/**
+ * Is this month-and-day really a date? Always, unless the month is also a verb. Then it needs one more sign: a capital
+ * on the month, a day in digits, "of" between them, or a year after.
+ */
+function unambiguous(month: Tok, day: Tok, of: boolean, year: boolean): boolean {
+  if (!VERB_MONTHS.has(month.k)) return true;
+  return /^[A-Z]/.test(month.core) || /^\d/.test(day.k) || of || year;
+}
+
+function mergeDates(ts: Tok[]): Tok[] {
+  const out: Tok[] = [];
+  // Nothing reaches across punctuation, except the comma before a year ("December 1, 1933"); no year across a sentence end.
+  const bare = (t: Tok | undefined): boolean => t !== undefined && t.trail.length === 0;
+  const yearAfter = (j: number): { value: number; len: number } | null =>
+    (j > 0 && /[.;:!?]/.test(ts[j - 1].trail) ? null : readYear(ts, j));
+  for (let i = 0; i < ts.length;) {
+    let hit: { len: number; month: number; day: number; year: number | null; order: 'dm' | 'md' } | null = null;
+    // day first: [the] DAY [of] MONTH [YEAR]
+    {
+      let j = i; if (ts[j]?.k === 'the') j++;
+      const day = readDay(ts, j);
+      if (day !== null) {
+        let m = j + day.len; const of = ts[m]?.k === 'of'; if (of) m++;
+        const month = ts[m] === undefined ? undefined : MONTHS[ts[m].k];
+        const y = month === undefined ? null : yearAfter(m + 1);
+        const joined = ts.slice(j, m).every(bare);
+        if (month !== undefined && joined && unambiguous(ts[m], ts[j], of, y !== null)) {
+          hit = { len: m + 1 - i + (y?.len ?? 0), month, day: day.value, year: y?.value ?? null, order: 'dm' };
+        }
+      }
+    }
+    // month first: MONTH [the] DAY [YEAR]
+    if (hit === null && ts[i] !== undefined && MONTHS[ts[i].k] !== undefined) {
+      let j = i + 1; if (ts[j]?.k === 'the') j++;
+      const day = readDay(ts, j);
+      // A day, and not the head of a bigger number: "May 2" is a date, "May two thousand" is not.
+      const y = day === null ? null : yearAfter(j + day.len);
+      const joined = ts.slice(i, j).every(bare) && (day === null || ts.slice(j, j + day.len - 1).every(bare));
+      if (day !== null && joined && !(ts[j + day.len] && ts[j + day.len].k in SCALES) && unambiguous(ts[i], ts[j], false, y !== null)) {
+        hit = { len: j + day.len - i + (y?.len ?? 0), month: MONTHS[ts[i].k], day: day.value, year: y?.value ?? null, order: 'md' };
+      }
+    }
+    if (hit === null) { out.push(ts[i]); i++; continue; }
+    const span = ts.slice(i, i + hit.len);
+    out.push({ surface: span.map((t) => t.surface).join(' '), lead: span[0].lead, core: span.map((t) => t.core).join(' '),
+      trail: span[span.length - 1].trail, k: `date:${hit.month}-${hit.day}${hit.year === null ? '' : `-${hit.year}`}`, date: hit.order });
+    i += hit.len;
+  }
+  return out;
+}
+
+/**
+ * THE READER'S ORDER FOR A DATE THE BOOK WROTE THE OTHER WAY ROUND: the heard words, with the month spelled as the book
+ * spells it (the ASR's case is not the book's), and the book's punctuation around the whole.
+ */
+function readerDate(b: Tok, h: Tok): string {
+  const bookMonth = b.core.split(' ').find((w) => MONTHS[key(w)] !== undefined);
+  const words = h.core.split(' ').map((w) => (bookMonth !== undefined && MONTHS[key(w)] !== undefined ? bookMonth : w));
+  return b.lead + words.join(' ') + b.trail;
 }
 
 /** "Lt." against "lieutenant", "St." against "saint", "Eph." against "ephesians": a period-marked abbreviation of it. */
@@ -166,7 +299,8 @@ type Path = { op: Op; i: number; j: number; n?: number }[];
 function alignPath(B: Tok[], H: Tok[], opts: CorrectOptions): Path {
   const n = B.length; const m = H.length;
   const names = opts.properNouns; const rare = opts.rareWords;
-  const sameTok = (b: Tok, h: Tok): boolean => b.k === h.k || isNearMiss(b.k, h.k) || abbreviates(b, h)
+  // A DATE matches only the same date: its key is a value, and a near-miss of "date:12-1-1933" is another day.
+  const sameTok = (b: Tok, h: Tok): boolean => (b.date !== undefined || h.date !== undefined) ? b.k === h.k : b.k === h.k || isNearMiss(b.k, h.k) || abbreviates(b, h)
     || (names !== undefined && names.has(b.k) && /^[A-Z]/.test(b.core) && !/^\d/.test(h.k))
     || (rare !== undefined && rare.has(b.k) && /^\p{L}/u.test(h.core));
   // A compound is the same word when it joins EXACTLY ("steel"+"jacketed"), or by a near-miss only when every part
@@ -227,8 +361,8 @@ function alignPath(B: Tok[], H: Tok[], opts: CorrectOptions): Path {
 
 /** Correct `bookText` to the words heard in its span. `heard` is the heard words in order. */
 export function correctToHeard(bookText: string, heard: readonly string[], opts: CorrectOptions = {}): Correction {
-  const B = mergeNumbers(tokens(bookText).filter((t) => t.k.length > 0));
-  const H = mergeNumbers(heard.map((w) => tokens(w)).flat().filter((t) => t.k.length > 0));
+  const B = mergeNumbers(mergeDates(tokens(bookText).filter((t) => t.k.length > 0)));
+  const H = mergeNumbers(mergeDates(heard.map((w) => tokens(w)).flat().filter((t) => t.k.length > 0)));
   const n = B.length;
   if (n === 0) return { text: bookText, changed: false, agreement: 1, edits: [] };
   const path = alignPath(B, H, opts);
@@ -237,7 +371,7 @@ export function correctToHeard(bookText: string, heard: readonly string[], opts:
   const votes: RegionVote[] = [];
   const bookWins = new Set<number>();
   if (opts.secondOpinion) {
-    const H2 = mergeNumbers(opts.secondOpinion.map((w) => tokens(w)).flat().filter((t) => t.k.length > 0));
+    const H2 = mergeNumbers(mergeDates(opts.secondOpinion.map((w) => tokens(w)).flat().filter((t) => t.k.length > 0)));
     const path2 = alignPath(B, H2, opts);
     // h2At[i] = where the second listen stands when book word i is reached (its insertions BEFORE book word i come
     // before h2At[i]); h2At[n] = the end. So H2[h2At[lo] .. h2At[hi]) is what it heard over book words [lo, hi).
@@ -301,6 +435,11 @@ export function correctToHeard(bookText: string, heard: readonly string[], opts:
       const b = B[bi]; const h = H[hj];
       const word = /^[A-Z]/.test(b.core) ? h.core[0].toUpperCase() + h.core.slice(1) : h.core;
       out.push(b.lead + word + b.trail.replace(/^\./, '')); edits.push({ op: 'replace', book: b.surface, heard: h.core }); bi++; hj++;
+    }
+    else if (p.op === 'match' && B[bi].date !== undefined && H[hj].date !== undefined && B[bi].date !== H[hj].date) {
+      // THE SAME DATE, SAID THE OTHER WAY ROUND: the cue follows the reader ("1 December 1933" read as "December first
+      // nineteen thirty-three"), since a transcript whose order is not the audio's is not the audio's transcript.
+      out.push(readerDate(B[bi], H[hj])); edits.push({ op: 'replace', book: B[bi].surface, heard: H[hj].core }); bi++; hj++;
     }
     else if (p.op === 'match') { out.push(B[bi].surface); bi++; hj++; }
     else if (p.op === 'keep') { out.push(B[bi].surface); bi++; }
