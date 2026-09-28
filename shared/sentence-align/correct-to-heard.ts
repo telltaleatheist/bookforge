@@ -341,7 +341,9 @@ function alignPath(B: Tok[], H: Tok[], opts: CorrectOptions): Path {
    * December December 1918" (training-pc-1, about 1,060 cues). Cheaper than a substitution, so the name still wins
    * over the reader's word; dearer than a real match, so a real match always wins over it.
    */
-  const kept = (b: Tok, h: Tok): boolean => b.date === undefined && h.date === undefined && (
+  // A typo is never a trusted rare word or name either: "al1one" is lower-case, six characters and used once, so the
+  // book's rare-word set held it and kept it against the heard "alone" (HoA, a83d8cd7).
+  const kept = (b: Tok, h: Tok): boolean => b.date === undefined && h.date === undefined && !typo(b) && (
     (names !== undefined && names.has(b.k) && /^[A-Z]/.test(b.core) && !/^\d/.test(h.k))
     || (rare !== undefined && rare.has(b.k) && /^\p{L}/u.test(h.core)));
   // A compound is the same word when it joins EXACTLY ("steel"+"jacketed"), or by a near-miss only when every part

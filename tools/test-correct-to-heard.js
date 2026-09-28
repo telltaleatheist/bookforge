@@ -232,8 +232,10 @@ check('a dash the reader said as a word becomes that word ("May–June" read "Ma
   assert.strictEqual(n.text, 'Sherman were old—sixty-three and sixty-nine—and falling by the wayside.');
 });
 check('a digit inside a book word is a typo, and the reader\'s word takes it ("al1one" read "alone")', () => {
+  // WITH the book's rare-word set, as the pipeline builds it: "al1one" is lower-case, six characters and used once,
+  // so it is in there - and a trusted rare word used to be kept against the heard "alone" (HoA re-run on a83d8cd7).
   const r = correctToHeard('He fought on, al1one, his clothing long since stained from white to red.',
-    words('He fought on alone his clothing long since stained from white to red'));
+    words('He fought on alone his clothing long since stained from white to red'), { rareWords: new Set(['al1one']) });
   assert.strictEqual(r.text, 'He fought on, alone, his clothing long since stained from white to red.');
 });
 check('"may" and "march" as verbs are not dates', () => {
