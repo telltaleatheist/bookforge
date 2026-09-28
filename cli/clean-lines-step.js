@@ -234,11 +234,25 @@ async function runCleanLines(opts, deps) {
        * next re-point built a string past V8's limit ("Invalid string length") and failed the book. Now the latest
        * answer for each text is kept once and written once for each line that holds that text.
        */
-      const byText = new Map(); let dropped = 0;
+      /*
+       * ONLY THE NEWEST ROW AT EACH POSITION IS ABOUT THAT POSITION'S TEXT (2026-09-27). A row carries its own
+       * question hash (`key`), and the engine's cache answers by that hash, not by position. An OLDER row at a
+       * position may answer text the position held before, and relabelling it onto the position's current text
+       * put a hash for text X on the lines holding text Y. The engine then saw X "already answered" and wrote no
+       * row for the lines that hold X, so the zip refused 660 lines of The Coming of the Third Reich
+       * (training-pc-1, 2026-09-27). The newest row per position is the one the last zip wrote back, so it is the
+       * one that answers `oldText` there.
+       */
+      const newestAt = new Map(); let superseded = 0;
       for (const l of fs.readFileSync(recordsPath, 'utf8').split(/\r?\n/)) {
         if (!l.trim()) continue;
         const row = JSON.parse(l);
-        const t = oldText.get(row.parts);
+        if (newestAt.has(row.parts)) superseded++;
+        newestAt.set(row.parts, row);
+      }
+      const byText = new Map(); let dropped = superseded;
+      for (const [parts, row] of newestAt) {
+        const t = oldText.get(parts);
         if (t === undefined || !linesOf.has(t)) { dropped++; continue; }
         byText.set(t, row);
       }
@@ -254,6 +268,14 @@ async function runCleanLines(opts, deps) {
       log(`[clean-lines] ${recordsPath} has no record of which input each answer was for - moved aside to ${path.basename(aside)}; starting clean`);
     }
   }
+  /*
+   * THE MAP IS WRITTEN NOW, NOT AFTER A SUCCESSFUL ZIP (2026-09-27). From here on, every row in the records file
+   * (the re-pointed ones, and whatever the engine appends) is at a position of THIS input. Writing the map only
+   * after success left it describing the PREVIOUS input whenever a run failed after re-pointing, and the next run
+   * re-pointed current-position rows through that stale map.
+   */
+  fs.writeFileSync(inputsPath,
+    `${parsed.items.map((it) => JSON.stringify({ parts: idForLine(it.line), text: it.text })).join('\n')}\n`, 'utf8');
 
   /*
    * ONE DOOR, THREE FLAGS. Foundry `646e8a1` (v1.3.0, tag `engine-one-door`)
@@ -488,7 +510,6 @@ async function runCleanLines(opts, deps) {
   }
 
   const zipped = zipRecords(parsed, fs.readFileSync(recordsPath, 'utf8'));
-  fs.writeFileSync(inputsPath, `${parsed.items.map((it) => JSON.stringify({ parts: idForLine(it.line), text: it.text })).join('\n')}\n`, 'utf8');
   fs.writeFileSync(outputPath, zipped.lines.join('\n') + '\n', 'utf8');
 
   let receipt = null;

@@ -161,6 +161,51 @@ const fresh = () => fs.mkdtempSync(path.join(os.tmpdir(), 'bf-clean-lines-'));
     assert.strictEqual(again.resumed, true);
   });
   /*
+   * A RUN THAT FAILS AFTER RE-POINTING MUST NOT POISON THE NEXT ONE (2026-09-27). The engine's cache answers by the
+   * row's question hash, not by position. The inputs map used to be written only after a successful zip, so after a
+   * failed run it still described the PREVIOUS input, and the next re-point relabelled current-position rows onto the
+   * wrong text. One line got another line's answer, and the line whose text was "already answered" got no row at all
+   * (660 lines of The Coming of the Third Reich, training-pc-1). The fake engine here keeps that cache by key.
+   */
+  await check('a re-run after a FAILED run on changed input answers every line with its own text', async () => {
+    const dir = fresh();
+    const input = path.join(dir, 'lines.txt');
+    const output = path.join(dir, 'lines.cleaned.txt');
+    let failNext = false;
+    const deps = {
+      foundryVersion: async () => ({ version: '1.4.0', path: 'C:\\fake\\foundry.exe' }),
+      cleanTextEngineSettings: async () => ({ model: 'm', endpoint: 'http://x:1', source: 'the test' }),
+      processTextVenueHost: () => ({}),
+      decideWhereTextActRuns: async () => ({ where: 'legacy-local-engines' }),
+      resolveCrucibleTextEngine: async () => { throw new Error('local venue'); },
+      textServerRoute: () => ({ manage: false, note: 'not ours' }),
+      parseCleanTextProgress: () => null,
+      runFoundry: async (args) => {
+        const at = (flag) => args[args.indexOf(flag) + 1];
+        const records = at('--records');
+        const have = new Set();
+        if (fs.existsSync(records)) {
+          for (const l of fs.readFileSync(records, 'utf8').split('\n')) if (l.trim()) have.add(JSON.parse(l).key);
+        }
+        const book = fs.readFileSync(at('--book'), 'utf8').trim().split('\n').slice(1).map((l) => JSON.parse(l));
+        const rows = book.filter((b) => !have.has(`k:${b.text}`))
+          .map((b) => JSON.stringify({ key: `k:${b.text}`, parts: b.id, text: b.text.toUpperCase() }));
+        if (rows.length) fs.appendFileSync(records, `${rows.join('\n')}\n`, 'utf8');
+        if (failNext) { failNext = false; return { code: 1, stdout: '', stderr: 'killed' }; }
+        return { code: 0, stdout: '', stderr: '' };
+      },
+    };
+    const run = () => step.runCleanLines({ inputPath: input, outputPath: output, language: 'en', log: () => {} }, deps);
+    fs.writeFileSync(input, 'alpha\nbeta\n', 'utf8');
+    await run();
+    // The same sentences one line further on, and the run dies after the engine wrote its rows.
+    fs.writeFileSync(input, 'gamma\nalpha\nbeta\n', 'utf8');
+    failNext = true;
+    await assert.rejects(run(), /exited 1/);
+    await run();
+    assert.strictEqual(fs.readFileSync(output, 'utf8'), 'GAMMA\nALPHA\nBETA\n');
+  });
+  /*
    * NO ENGINE-VERSION GATE (2026-09-24). This used to refuse an engine older than
    * `clean-text --book`. The engine is vendored with foundry-app now, so it
    * always has the command — whatever number it reports is asked only for the
