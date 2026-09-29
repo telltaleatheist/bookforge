@@ -319,7 +319,13 @@ function mergeDates(ts: Tok[]): Tok[] {
         const month = ts[m] === undefined ? undefined : MONTHS[ts[m].k];
         const y = month === undefined ? null : yearAfter(m + 1);
         const joined = ts.slice(j, m).every(bare);
-        if (month !== undefined && joined && unambiguous(ts[m], ts[j], of, y !== null)) {
+        // A SPOKEN ordinal before a month is a date only with "the" or "of" around it, or a year after it ("the
+        // second of August", "fourteenth August 1914"): "a second August miracle" is an adjective and a name, and read
+        // as 2 August it replaced the book's "second" and doubled the month (tc, 2026-09-28). A digit day ("2 August")
+        // is a date as written.
+        const spokenDay = !/^\d/.test(ts[j].k);
+        const framed = !spokenDay || j > i || of || y !== null;
+        if (month !== undefined && joined && framed && unambiguous(ts[m], ts[j], of, y !== null)) {
           hit = { len: m + 1 - i + (y?.len ?? 0), month, day: day.value, year: y?.value ?? null, order: 'dm' };
         }
       }

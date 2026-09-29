@@ -273,6 +273,18 @@ check('a digit inside a book word is a typo, and the reader\'s word takes it ("a
     words('He fought on alone his clothing long since stained from white to red'), { rareWords: new Set(['al1one']) });
   assert.strictEqual(r.text, 'He fought on, alone, his clothing long since stained from white to red.');
 });
+check('tc: "a second August-miracle" read "second August miracle" is not a date, and the month is never doubled', () => {
+  // The heard "second August" merged into 2 August, replaced the book's "second", and the book's name-headed compound
+  // "August-miracle" was kept beside it: "second August August-miracle" (tc, 2026-09-28).
+  const r = correctToHeard('Germany, as one Nationalist paper declared, was witnessing a ‘second August-miracle’.',
+    words('Germany as one nationalist paper declared was witnessing a second August miracle'),
+    { properNouns: new Set(['august', 'augustmiracle', 'germany', 'nationalist']),
+      secondOpinion: words('Germany, as one nationalist paper declared, was witnessing a second August miracle.') });
+  assert.strictEqual(r.text, 'Germany, as one Nationalist paper declared, was witnessing a ‘second August-miracle’.');
+  // A spoken ordinal still makes a date with "the"/"of" or a year.
+  const d = correctToHeard('He died on 2 August 1934.', words('He died on the second of August nineteen thirtyfour'));
+  assert.strictEqual(d.text, 'He died on 2 August 1934.');
+});
 check('"may" and "march" as verbs are not dates', () => {
   const r = correctToHeard('The first may seem strange.', words('The first may seem strange'));
   assert.strictEqual(r.text, 'The first may seem strange.');
