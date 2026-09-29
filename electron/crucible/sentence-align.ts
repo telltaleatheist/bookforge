@@ -51,6 +51,7 @@ import { findDiscrepancies } from '../../shared/sentence-align/discrepancies';
 import { compactedLength, keepPieces, mapSpansBack, mapWordsBack, type KeptPiece } from '../../shared/sentence-align/silence-compact';
 import { correctToHeard, MIN_AGREEMENT, wordKey } from '../../shared/sentence-align/correct-to-heard';
 import { recheckPieces, touchesDecodeLoop } from '../../shared/sentence-align/recheck';
+import { repeatedRuns } from '../../shared/sentence-align/repeat-loops';
 
 export const SENTENCE_ASR_MODEL = 'qwen3-asr-1.7b';
 export const SENTENCE_ALIGN_MODEL = 'qwen3-aligner';
@@ -153,8 +154,18 @@ export async function transcribe(o: TranscribeOptions, scratch: string, model: s
       const same = c.audio.size === st.size
         && (c.audio.mtimeMs === st.mtimeMs || (c.audio.fp !== undefined && c.audio.fp === audioFingerprint(o.audioPath)));
       if (c.model === model && same && c.words.length > 0) {
-        log(`transcript reused from ${o.transcriptCachePath} (${c.words.length} words${c.loops === undefined ? ', written before decode_loop was kept' : `, ${c.loops.length} decode loop(s)`})`);
-        return { words: c.words, durationS: c.durationS, loops: c.loops ?? [] };
+        /*
+         * A CACHE FROM BEFORE `decode_loop` WAS KEPT has no loop list. Before Crucible 1.0.57 there was no loop guard
+         * and a loop came back as repeated text, so its loops are found by their repetition (`repeatedRuns`) and
+         * treated exactly like the ones a 1.0.58 server reports.
+         */
+        const loops = c.loops ?? repeatedRuns(c.words);
+        log(`transcript reused from ${o.transcriptCachePath} (${c.words.length} words, ${loops.length} loop(s)`
+          + `${c.loops === undefined ? ' found by repetition in a cache from before decode_loop' : ' as the server reported'})`);
+        for (const l of c.loops === undefined ? loops : []) log(`  repeated-text loop at ${l.start.toFixed(1)}-${l.end.toFixed(1)} s: no words there are trusted`);
+        const trusted = c.loops === undefined && loops.length > 0
+          ? c.words.filter((w) => !loops.some((l) => w.start >= l.start && w.end <= l.end)) : c.words;
+        return { words: trusted, durationS: c.durationS, loops };
       }
       log(`transcript cache ${o.transcriptCachePath} is for other audio or another model; transcribing`);
     } catch (err) {

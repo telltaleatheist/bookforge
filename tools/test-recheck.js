@@ -66,5 +66,23 @@ check('a loop in the re-hear audio maps back to the cue it covered, and that cue
   assert.strictEqual(R.touchesDecodeLoop({ start: 200, end: 203 }, [{ start: 203.5, end: 204 }], 0), false);
 });
 
+check('an OLD cache\'s loop is found by its repetition, and real repetition in a book is left alone', () => {
+  const L = require('../dist/shared/sentence-align/repeat-loops.js');
+  let t = 0; const say = (s) => s.split(' ').map((word) => { const w = { word, start: t, end: t + 0.3 }; t += 0.4; return w; });
+  // WoA's shape: one sentence over and over
+  const looped = [...say('he walked out'), ...say('the first thing that you need to do'.repeat(1)),
+    ...say('the first thing that you need to do'), ...say('the first thing that you need to do'),
+    ...say('the first thing that you need to do'), ...say('and then')];
+  const runs = L.repeatedRuns(looped);
+  assert.strictEqual(runs.length, 1, JSON.stringify(runs));
+  assert.ok(runs[0].start >= looped[3].start - 1e-9 && runs[0].end <= looped[looped.length - 3].end + 1e-9);
+  // One word, eight times
+  t = 0; assert.strictEqual(L.repeatedRuns(say('no no no no no no no no')).length, 1);
+  // Real repetition: a salute three times, "no" five times, ordinary prose
+  t = 0; assert.deepStrictEqual(L.repeatedRuns(say('Heil Hitler! Heil Hitler! Heil Hitler! the crowd roared')), []);
+  t = 0; assert.deepStrictEqual(L.repeatedRuns(say('no, no, no, no, no she said')), []);
+  t = 0; assert.deepStrictEqual(L.repeatedRuns(say('it was the best of times it was the worst of times')), []);
+});
+
 console.log(`recheck: ${passed} passed, ${failed.length} failed`);
 process.exit(failed.length ? 1 : 0);
