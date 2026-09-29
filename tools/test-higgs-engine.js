@@ -116,6 +116,15 @@ function onArm(arm, fn) {
 const WSL_DOC = { arm: 'wsl' };
 const MAC_USER_DATA = fs.mkdtempSync(path.join(HOST_TMP, 'bf-higgs-userdata-'));
 const MAC_DOC = { arm: 'darwin', userDataDir: MAC_USER_DATA };
+/**
+ * A FINE-TUNE'S DOCUMENT NEEDS THE VENUE'S NUMBERS (2026-09-28): its cap, band and pace are the
+ * server's, from GET /v1/voices, and a fine-tune document without them is refused by name. Prep
+ * always passes one in the app (`venueBandForPrep`); these are the keeper's.
+ */
+const VENUE = { server: 'keeper', voice: 'probe', maxChars: 900, ceilingChars: 800, floorChars: 500,
+  targetChars: null, paceCharsPerSec: 16, maxCharsPerSec: 20.8, minCharsPerSec: 12.31 };
+const FT_WSL_DOC = { ...WSL_DOC, venueBand: VENUE };
+const FT_MAC_DOC = { ...MAC_DOC, venueBand: VENUE };
 
 // THE PICKER'S userData. `higgsVoiceUnavailableReason` and the two lists over it
 // check the DISK for what the host owns the location of — darwin checkpoints
@@ -491,74 +500,23 @@ check('the shape must match the kind — all six malformed pairings refused', ()
   }
 });
 
-check('the deathstalker served cap is 800 BY RULING — and both older records stay on the page', () => {
-  // Owen, 2026-09-09: 800 chars is where renders start truncating. That
-  // supersedes the training ceiling (1764), which superseded the ckpt-1080
-  // certificate (1200); each stays written where it happened. Provenance is a
-  // wire value from narrator's closed set, so a ruling is 'catalog' and the
-  // reason lives in _maxCharsNote.
-  const m = higgs.listHiggsModels().find((v) => v.id === 'deathstalker');
-  assert.strictEqual(m.backends.served.maxChars, 800);
-  assert.strictEqual(m.backends.served.maxCharsSource, 'catalog');
-  const src = m.backends.served._maxCharsSourceNote;
-  assert.match(src, /max chunk is what we trained on/, 'the note does not quote the rule the number comes from');
-  assert.match(src, /MAX 1764/, 'the note does not give the training ceiling the number is');
-  assert.match(src, /ds_v5/, 'the note does not name the corpus the ceiling was read from');
-  // Owen, 2026-09-09: "I dont think we need a target anymore. Just a safe range."
-  // A fine-tune declares a BAND; the point target is gone from every fine-tune arm.
-  assert.strictEqual(m.backends.served.targetChars, undefined,
-    'a fine-tune must not carry a point target any more - it declares a safe band');
-  // FLOOR 500 from 2026-09-15 (was 600). The 600 came from the ds_v5 corpus's INTERQUARTILE RANGE, which is
-  // the one method higgs-safe-bands' own README forbids ("a rule derived from the corpus p25 was wrong in
-  // production within a day"). 500 is measured from a 512-render sweep of the checkpoint that ships.
-  assert.strictEqual(m.backends.served.safeMinChars, 500, 'deathstalker floor');
-  assert.strictEqual(m.backends.served.safeMaxChars, 800, 'deathstalker cap');
-  const note = m.backends.served._maxCharsNote;
-  assert.match(note, /OWEN'S RULING \(2026-09-09\)/, 'the note does not say the cap is a ruling');
-  assert.match(note, /truncations/, 'the note does not give the reason the cap came down');
-  assert.match(note, /PREVIOUS:/, 'the superseded note was overwritten instead of kept');
-  assert.match(note, /SUPERSEDED DIRECTORY/, 'the old certificate is not marked as belonging to the deleted directory');
-  assert.match(note, /97\.3/, 'the certified length\'s coverage is not recorded');
-  assert.match(note, /86\.1/, 'the note does not say what stopped the ladder');
-  assert.match(note, /0b36f6507dd11653/,
-    'the note does not bind the cap to the server build it was measured on');
-  assert.match(note, /max_chars_certificate_ckpt1080\.json/,
-    'the note does not name the certificate file');
-});
-
-check("EVERY kind:'checkpoint' voice states its cap — measured, or null", () => {
-  // The catalog-wide rule the loader refuses on, asserted over the shipped file
-  // rather than over a synthesised entry, so a voice added later cannot ship
-  // without its own sweep. Two legal states and no third: a RENDERABLE fine-tune
-  // carries a positive integer with a source narrator's vocabulary knows; a
-  // PENDING one declares null/null, which is "unmeasured", not "unspecified".
-  const KNOWN_SOURCES = ['catalog', 'placeholder', 'length-sweep'];
+check('NO fine-tune states its cap, band, target or pace here — the server that serves it does', () => {
+  // Owen, 2026-09-28: "single source of truth. that source should be where the models are served."
+  // A fine-tune's cap, band and pace are its pinned crucible-voice.toml's, stated per server by
+  // GET /v1/voices (electron/crucible/voice-band.ts). The rulings and certificates these checks used
+  // to pin (the 800 ruling, the ckpt-1080 certificates, each arm's evidence) are in git history and
+  // in electron/data/higgs-safe-bands-evidence.md; tools/test-one-fact-one-owner.js keeps the copies out.
   const fineTunes = higgs.listHiggsModels().filter((m) => m.kind === 'checkpoint');
   assert.ok(fineTunes.length > 0, 'no fine-tune in the catalog to check');
   for (const m of fineTunes) {
-    const served = m.backends.served;
-    if (m._pendingNote) {
-      assert.strictEqual(served.maxChars, null,
-        `${m.id}: pending, so its cap must be a DECLARED null`);
-      assert.strictEqual(served.maxCharsSource, null,
-        `${m.id}: pending, so it can name no source`);
-      continue;
+    assert.strictEqual(m.pace, undefined, `${m.id}: a pace in the catalog`);
+    for (const [backend, caps] of Object.entries(m.backends)) {
+      for (const f of ['maxChars', 'maxCharsSource', 'safeMinChars', 'safeMaxChars', 'targetChars']) {
+        assert.strictEqual(caps[f], undefined, `${m.id}/${backend}: ${f} in the catalog`);
+      }
     }
-    assert.ok(Number.isInteger(served.maxChars) && served.maxChars > 0,
-      `${m.id}: maxChars is ${JSON.stringify(served.maxChars)}, not a positive integer`);
-    assert.ok(typeof served.maxCharsSource === 'string' && served.maxCharsSource.trim(),
-      `${m.id}: maxChars ${served.maxChars} with no maxCharsSource`);
-    // narrator VALIDATES this vocabulary (protocol.MAX_CHARS_SOURCES) and the
-    // value travels in the voice document, so a prose provenance string here is
-    // a render refused at load_voices. The prose belongs in _maxCharsNote.
-    assert.ok(KNOWN_SOURCES.includes(served.maxCharsSource),
-      `${m.id}: maxCharsSource ${JSON.stringify(served.maxCharsSource)} is not one of ` +
-      KNOWN_SOURCES.join(' | ') + " — narrator's load_voices refuses it by name");
   }
 });
-
-
-
 
 check('ONE engine-level sampling - 0.8 / 0.95 / 50 - reaches EVERY Higgs voice on BOTH arms', () => {
   // 0.8 SINCE 2026-09-12, Owen's ruling after the pause-map work ("Let's set temp
@@ -685,27 +643,6 @@ check('resolveHiggsModel RESOLVES the certified deathstalker — no refusal left
     'the certified voice cannot build a spawn env');
 });
 
-check('MUTATION: null the certified cap and the refusal comes straight back', () => {
-  // The guard is only real if removing the measurement restores the refusal.
-  // Driven on CLONES of the SHIPPED row, so the rule is asserted against the
-  // catalog's own entry rather than a synthesised one.
-  const shipped = higgs.listHiggsModels().find((v) => v.id === 'deathstalker');
-  const nulled = JSON.parse(JSON.stringify(shipped));
-  nulled.backends.served.maxChars = null;
-  nulled.backends.served.maxCharsSource = null;
-  let threw = null;
-  try { higgs.higgsSpawnEnv(nulled, PROMOTED_ENV_OPTS); } catch (err) { threw = err; }
-  assert.ok(threw, 'a fine-tune with a nulled cap was accepted');
-  assert.match(threw.message, /MEASURED maxChars/);
-  assert.match(threw.message, /length sweep/);
-
-  // The number alone is not evidence either — that is the shape an INHERITED
-  // cap would take, a figure copied across with no method beside it.
-  const noSource = JSON.parse(JSON.stringify(shipped));
-  delete noSource.backends.served.maxCharsSource;
-  assert.throws(() => higgs.higgsSpawnEnv(noSource, PROMOTED_ENV_OPTS), /MEASURED maxChars/);
-});
-
 check('resolveHiggsModel REFUSES an empty voice rather than picking one', () => {
   assert.throws(() => higgs.resolveHiggsModel(''), /No Higgs voice was selected/);
   assert.throws(() => higgs.resolveHiggsModel(null), /No Higgs voice was selected/);
@@ -801,29 +738,6 @@ check('a 27 s single joined reference PASSES', () => {
   assert.strictEqual(e.NARRATOR_HIGGS_VOICES, DOC_PATH);
 });
 
-check('a checkpoint with NO measured maxChars is REFUSED, and the message says why', () => {
-  const m = probeVoice({
-    kind: 'checkpoint',
-    voice: { checkpoint: { wsl: '/home/x/higgs-models/probe' } },
-    backends: { served: { maxChars: null, maxCharsSource: null } },
-  });
-  let threw = null;
-  try { higgs.higgsSpawnEnv(m, envOpts); } catch (err) { threw = err; }
-  assert.ok(threw, 'an unmeasured fine-tune was accepted');
-  assert.match(threw.message, /TRAINING CLIP LENGTH/);
-  assert.match(threw.message, /length sweep/);
-});
-
-check('a checkpoint inheriting the zero-shot 600 with no source is still REFUSED', () => {
-  // The number alone is not evidence; maxCharsSource is what makes it one.
-  const m = probeVoice({
-    kind: 'checkpoint',
-    voice: { checkpoint: { wsl: '/home/x/higgs-models/probe' } },
-    backends: { served: { maxChars: 600 } },
-  });
-  assert.throws(() => higgs.higgsSpawnEnv(m, envOpts), /MEASURED maxChars/);
-});
-
 check('a checkpoint WITH a measured cap and its source passes', () => {
   const m = probeVoice({
     kind: 'checkpoint',
@@ -899,12 +813,12 @@ function stagedVoice(checkpoint, extra) {
 check('a WSL-only fine-tune is REFUSED ON DARWIN, by name, and loads on WSL', () => {
   const m = stagedVoice({ wsl: '/home/<user>/higgs_v3_merged/ds' });
 
-  const doc = onArm('wsl', () => higgs.higgsVoicesDocument(m, WSL_DOC));
+  const doc = onArm('wsl', () => higgs.higgsVoicesDocument(m, FT_WSL_DOC));
   assert.strictEqual(doc.ft.checkpointDir, '/home/<user>/higgs_v3_merged/ds',
     'the arm that HAS the weights did not get them');
 
   let threw = null;
-  try { onArm('darwin', () => higgs.higgsVoicesDocument(m, MAC_DOC)); } catch (err) { threw = err; }
+  try { onArm('darwin', () => higgs.higgsVoicesDocument(m, FT_MAC_DOC)); } catch (err) { threw = err; }
   assert.ok(threw, "darwin was handed a document for a voice that machine has no copy of");
   // BY NAME: the voice, the arm, and what to do — never the other arm's path and
   // never a search of the disk.
@@ -935,12 +849,12 @@ check('staged on BOTH arms: each arm gets ITS path, absolute and arm-shaped', ()
     darwin: 'runtime/higgs-models/ds_ad4lm_prod_ckpt1080',
   });
 
-  const wsl = onArm('wsl', () => higgs.higgsVoicesDocument(m, WSL_DOC));
+  const wsl = onArm('wsl', () => higgs.higgsVoicesDocument(m, FT_WSL_DOC));
   assert.strictEqual(wsl.ft.checkpointDir,
     '/home/<user>/higgs_v3_merged/ds_ad4lm_prod_ckpt1080',
     'the WSL document does not carry the GUEST path');
 
-  const mac = onArm('darwin', () => higgs.higgsVoicesDocument(m, MAC_DOC));
+  const mac = onArm('darwin', () => higgs.higgsVoicesDocument(m, FT_MAC_DOC));
   // RESOLVED TO ABSOLUTE against the fixture userData, because that is what
   // narrator's MLX backend opens — `require_generation_config` does
   // os.path.isdir on this exact string, and a relative one would resolve against
@@ -1074,112 +988,18 @@ check('caps come from the ARM\'s own block, and never from the other one', () =>
   });
   assert.strictEqual(higgs.higgsVoiceCapsForModel(m, 'wsl').maxChars, 1200);
   assert.strictEqual(higgs.higgsVoiceCapsForModel(m, 'darwin').maxChars, 800);
-  // And the document carries the arm's own number, because that is what sizes the
-  // prep packer for the render this document describes.
-  assert.strictEqual(higgs.higgsVoicesDocument(m, WSL_DOC).twoarm.maxChars, 1200);
-  assert.strictEqual(higgs.higgsVoicesDocument(m, MAC_DOC).twoarm.maxChars, 800);
-});
-
-check('a null MLX cap REFUSES on darwin while the served cap still loads on WSL', () => {
-  // The shape deathstalker ships in the moment its served sweep lands: staged on
-  // both arms, certified on one. The refusal must be per arm, or the Mac renders
-  // a book packed for a cap nobody measured on its sampler.
-  const m = probeVoice({
-    id: 'halfway', kind: 'checkpoint',
-    voice: { checkpoint: { wsl: '/home/t/merged', darwin: 'runtime/higgs-models/merged' } },
-    backends: {
-      served: { maxChars: 1200, maxCharsSource: 'length-sweep' },
-      mlx: { maxChars: null, maxCharsSource: null },
-    },
-  });
-
-  const doc = onArm('wsl', () => higgs.higgsVoicesDocument(m, WSL_DOC));
-  assert.strictEqual(doc.halfway.maxChars, 1200, 'the CERTIFIED arm was refused');
-  assert.ok(onArm('wsl', () => higgs.higgsSpawnEnv(m, { voicesPath: DOC_PATH })));
-
-  let threw = null;
-  try { onArm('darwin', () => higgs.higgsSpawnEnv(m, { voicesPath: DOC_PATH })); }
-  catch (err) { threw = err; }
-  assert.ok(threw, 'an unmeasured MLX arm was accepted because the served arm was measured');
-  assert.match(threw.message, /no MEASURED maxChars on the mlx backend/);
-  assert.match(threw.message, /backends\.mlx/);
-  assert.match(threw.message, /CERTIFICATE IS PER \(DIRECTORY, BACKEND\)/);
-  assert.match(threw.message, /does not transfer/);
-
-  // And the picker agrees: offered on WSL, greyed on the Mac, same reason text.
-  assert.strictEqual(onArm('wsl', () => higgs.higgsVoiceUnavailableReason(m, PICKER_USER_DATA)), null);
-  assert.match(onArm('darwin', () => higgs.higgsVoiceUnavailableReason(m, PICKER_USER_DATA)),
-    /no MEASURED maxChars on the mlx backend/);
-
-  // A MISSING mlx BLOCK is the same answer as a null one — "this backend has no
-  // certificate" — and never the served block by default.
-  const noBlock = probeVoice({
-    id: 'halfway', kind: 'checkpoint',
-    voice: { checkpoint: { wsl: '/home/t/merged', darwin: 'runtime/higgs-models/merged' } },
-    backends: { served: { maxChars: 1200, maxCharsSource: 'length-sweep' } },
-  });
-  assert.throws(() => onArm('darwin', () => higgs.higgsSpawnEnv(noBlock, { voicesPath: DOC_PATH })),
-    /no MEASURED maxChars on the mlx backend/,
-    'an absent mlx block silently inherited the served certificate');
-});
-
-check('the shipped deathstalker caps BOTH arms at the ruling, each keeping its own evidence', () => {
-  // This row used to REQUIRE the arms to differ: two sweeps of identical
-  // weights measured 1200 and 900, so an equal pair meant a number copied
-  // across. Owen's ruling makes them equal on purpose, and that refusal cannot
-  // tell a ruling from a copy, so what is checked now is that each arm states
-  // its provenance and keeps its own superseded evidence.
-  const m = higgs.listHiggsModels().find((v) => v.id === 'deathstalker');
-  for (const backend of ['served', 'mlx']) {
-    const caps = m.backends[backend];
-    assert.strictEqual(caps.maxChars, 800,
-      `${backend}: the ruling is 800 on both arms`);
-    assert.strictEqual(caps.targetChars, undefined,
-      `${backend}: the point target is retired - a fine-tune declares a safe band`);
-    assert.ok(Number.isInteger(caps.safeMinChars) && Number.isInteger(caps.safeMaxChars),
-      `${backend}: a fine-tune must declare safeMinChars and safeMaxChars`);
-    assert.ok(caps.safeMinChars < caps.safeMaxChars,
-      `${backend}: the floor must sit below the cap`);
-    assert.ok(caps.safeMaxChars <= caps.maxChars,
-      `${backend}: the band may sit inside maxChars, never past it`);
-    assert.strictEqual(caps.maxCharsSource, 'catalog',
-      `${backend}: a declared ruling is 'catalog' in narrator's vocabulary`);
-    assert.match(caps._maxCharsNote, /OWEN'S RULING \(2026-09-09\)/,
-      `${backend}: the note does not say where the 800 came from`);
-    assert.match(caps._maxCharsNote, /PREVIOUS:/,
-      `${backend}: the superseded certificate was overwritten rather than kept`);
-  }
-
-  // Each note must carry the evidence for ITS OWN arm: the rule, the scorer, the
-  // ladder including the length that FAILED, and the artifact it came from.
-  const served = m.backends.served._maxCharsNote;
-  assert.match(served, /ASR alignment/, 'the served note does not name the scorer');
-  assert.match(served, /never by duration ratio/i,
-    'the served note does not refuse duration ratio — a v3 render measured 0.99 while dropping '
-    + '22 % of its text');
-  assert.match(served, /1500 FAILS/, 'the served note does not give the length that failed');
-  assert.match(served, /max_chars_certificate_ckpt1080\.json/,
-    'the served note does not name its certificate');
-  assert.match(served, /max-num-seqs 64/,
-    'the served note no longer records that the certifying server ran at a different batch '
-    + 'width from the catalog\'s maxNumSeqs — the one observation that would matter if batch '
-    + 'width moved the safe chunk length');
-
-  const mlx = m.backends.mlx._maxCharsNote;
-  assert.match(mlx, /faster-whisper/, 'the MLX note does not name the scorer');
-  assert.match(mlx, /1200 FAILS/, 'the MLX note does not give the length that failed');
-  assert.match(mlx, /max_chars_certificate_mlx_ckpt1080\.json/,
-    'the MLX note does not name its certificate');
-  assert.match(mlx, /ds_ad4lm_prod_ckpt1080/, 'the MLX note does not name the directory swept');
-  assert.match(mlx, /NOT the served number|per \(directory, backend\)/i,
-    'nothing says this number is not the served one');
+  // But a fine-tune's DOCUMENT carries the VENUE's number on either arm (2026-09-28): the cap is
+  // the server's, and this arm's block is not consulted for it.
+  assert.strictEqual(higgs.higgsVoicesDocument(m, FT_WSL_DOC).twoarm.maxChars, VENUE.maxChars);
+  assert.strictEqual(higgs.higgsVoicesDocument(m, FT_MAC_DOC).twoarm.maxChars, VENUE.maxChars);
 });
 
 check("EVERY backend block states its cap — measured, or null, with a KNOWN source", () => {
   // The catalog-wide rule, over every block of every fine-tune, so a voice added
   // later cannot ship one arm certified and the other silently blank.
   const KNOWN_SOURCES = ['catalog', 'placeholder', 'length-sweep'];
-  for (const m of higgs.listHiggsModels()) {
+  // ZERO-SHOT voices only: a fine-tune's cap is the server's (see the check above).
+  for (const m of higgs.listHiggsModels().filter((x) => x.kind !== 'checkpoint')) {
     for (const [backend, caps] of Object.entries(m.backends)) {
       if (m.kind === 'checkpoint' && caps.maxChars === null) {
         assert.strictEqual(caps.maxCharsSource, null,
@@ -1234,7 +1054,7 @@ check('the SAMPLING MIRROR equals the checkpoint dir\'s generation_config.json',
 });
 
 
-check('a checkpoint document carries checkpointDir AND its measured cap AND kind', () => {
+check('a checkpoint document carries checkpointDir AND the venue cap AND kind', () => {
   // THE CAP MUST TRAVEL. narrator's load_voices raises for a fine-tune entry with
   // no `maxChars` — so `refuseUnmeasuredAdapter` was guarding a number that never
   // reached the engine, and the day deathstalker is promoted with its length
@@ -1246,13 +1066,14 @@ check('a checkpoint document carries checkpointDir AND its measured cap AND kind
     voice: { checkpoint: { wsl: '/home/x/higgs-models/ft' } },
     backends: { served: { maxChars: 1350, maxCharsSource: 'length-sweep' } },
   });
-  const doc = higgs.higgsVoicesDocument(m, WSL_DOC);
+  const doc = higgs.higgsVoicesDocument(m, FT_WSL_DOC);
   assert.strictEqual(doc.ft.checkpointDir, '/home/x/higgs-models/ft');
   assert.ok(!('clips' in doc.ft), 'a fine-tune is TEXT-ONLY — no clips key');
   assert.ok(!('adapterDir' in doc.ft), 'the old adapterDir key is still emitted');
   assert.strictEqual(doc.ft.kind, 'checkpoint');
-  assert.strictEqual(doc.ft.maxChars, 1350);
-  assert.strictEqual(doc.ft.maxCharsSource, 'length-sweep');
+  // The cap that travels is the VENUE's (2026-09-28), under narrator's closed source word 'catalog'.
+  assert.strictEqual(doc.ft.maxChars, VENUE.maxChars);
+  assert.strictEqual(doc.ft.maxCharsSource, 'catalog');
 });
 
 check('the default document carries its cap too, so nothing is inferred', () => {
@@ -2062,7 +1883,7 @@ check('a chunkGap whose inject is the TARGET, not net of the tail, is refused', 
     backends: { served: { maxChars: 1100, maxCharsSource: 'length-sweep' } }, chunkGap: wrong,
   });
   let threw = null;
-  try { higgs.higgsVoicesDocument(m, WSL_DOC); } catch (e) { threw = e; }
+  try { higgs.higgsVoicesDocument(m, FT_WSL_DOC); } catch (e) { threw = e; }
   assert.ok(threw, 'an inject that ignores the model tail was accepted');
   assert.match(threw.message, /NET of the tail/);
   // And the well-formed one passes, so the check is not simply rejecting every gap.
@@ -2072,70 +1893,40 @@ check('a chunkGap whose inject is the TARGET, not net of the tail, is refused', 
     chunkGap: { injectS: 0.62, targetJoinS: 0.84, modelSelfTailS: 0.22, rule: 'match-reader',
       method: 'm', source: 's', measuredOn: '2026-09-11' },
   });
-  higgs.higgsVoicesDocument(right, WSL_DOC);
+  higgs.higgsVoicesDocument(right, FT_WSL_DOC);
 });
-check('a measured pace becomes the length band in the document; a malformed pace is refused', () => {
-  // Owen, 2026-09-06: the guard uses the voice's recorded chars-per-second.
-  // 2026-09-08: the band is SEEDED FROM THE MEDIAN (× 1.2 short, ÷ 1.3 long)
-  // and the median RIDES ALONG as `paceCharsPerSec`, because narrator keeps
-  // only the ratios and re-centres them on the book's own running median
-  // (`truncation.PaceTracker`) — measured on Shift, where the ladder's tails
-  // (p99 × 1.15) sat 1.37× off the book's own pace.
-  const pace = { median: 17.2, mean: 17.1, p05: 15.6, p95: 18.3, p99: 18.9, n: 42,
-    method: 'spoken chars / chunk flac seconds', source: 'ladder night-4', measuredOn: '2026-09-06' };
+check('the VENUE\'s pace becomes the length band in the document, on both arms', () => {
+  // The guard's band is centred on the pace the machine that renders measured: since 2026-09-28
+  // (Owen: "single source of truth. that source should be where the models are served") that pace
+  // is the server's, stated on GET /v1/voices with all three rates, and the catalog keeps none.
+  // narrator still keeps only the ratios and re-centres them on the book's own running median
+  // (`truncation.PaceTracker`); only where the seed comes from moved.
   const m = probeVoice({
     kind: 'checkpoint', voice: { checkpoint: { wsl: '/home/x/merged', darwin: 'runtime/higgs-models/x' } },
-    backends: { served: { maxChars: 1200, maxCharsSource: 'catalog' },
-                mlx: { maxChars: 900, maxCharsSource: 'catalog' } }, pace,
+    backends: { served: {}, mlx: {} },
   });
-  const doc = higgs.higgsVoicesDocument(m, WSL_DOC).probe;
-  // THE DOCUMENT'S PACE IS THE MEDIAN — the reference the two edges are ratios
-  // of, and the number narrator's tracker starts centred on.
-  assert.strictEqual(doc.paceCharsPerSec, 17.2);
-  assert.strictEqual(higgs.PACE_GUARD_SHORT_FACTOR, 1.3);
-  assert.strictEqual(higgs.PACE_GUARD_LONG_FACTOR, 1.3);
-  assert.strictEqual(doc.maxCharsPerSec, Math.round(17.2 * 1.3 * 100) / 100);
-  assert.strictEqual(doc.minCharsPerSec, Math.round(17.2 / 1.3 * 100) / 100);
-  assert.deepStrictEqual(higgs.higgsLengthBand(pace), {
-    paceCharsPerSec: doc.paceCharsPerSec,
-    maxCharsPerSec: doc.maxCharsPerSec,
-    minCharsPerSec: doc.minCharsPerSec,
-  });
-  // No pace: no band in the document (the engine default applies).
-  const bare = probeVoice({ kind: 'checkpoint', voice: { checkpoint: { wsl: '/home/x/merged' } },
-    backends: { served: { maxChars: 1200, maxCharsSource: 'catalog' } } });
-  const bareDoc = higgs.higgsVoicesDocument(bare, WSL_DOC).probe;
-  assert.ok(!('maxCharsPerSec' in bareDoc) && !('minCharsPerSec' in bareDoc)
-    && !('paceCharsPerSec' in bareDoc));
+  const doc = higgs.higgsVoicesDocument(m, FT_WSL_DOC).probe;
+  assert.strictEqual(doc.paceCharsPerSec, VENUE.paceCharsPerSec);
+  assert.strictEqual(doc.maxCharsPerSec, VENUE.maxCharsPerSec);
+  assert.strictEqual(doc.minCharsPerSec, VENUE.minCharsPerSec);
+  // The Mac's document carries the same venue band.
+  const mac = higgs.higgsVoicesDocument(m, FT_MAC_DOC).probe;
+  assert.strictEqual(mac.maxCharsPerSec, doc.maxCharsPerSec);
+  assert.strictEqual(mac.minCharsPerSec, doc.minCharsPerSec);
   // SAMPLING RIDES IN THE DOCUMENT, per arm: a block's own (with its reason)
   // for that arm, the ENGINE-LEVEL one for a block that states none - so no
   // document is ever written without the number that renders.
   const sampled = probeVoice({ kind: 'checkpoint', voice: { checkpoint: { wsl: '/home/x/merged', darwin: 'runtime/higgs-models/x' } },
-    backends: { served: { maxChars: 600, maxCharsSource: 'catalog', sampling: { temperature: 1, topP: 0.95, topK: 50 }, _samplingNote: 'REASON: fixture' },
-                mlx: { maxChars: 600, maxCharsSource: 'catalog', sampling: { temperature: 0.7, topP: 0.95, topK: 50 }, _samplingNote: 'REASON: fixture' } } });
-  assert.deepStrictEqual(higgs.higgsVoicesDocument(sampled, MAC_DOC).probe.sampling, { temperature: 0.7, topP: 0.95, topK: 50 });
-  assert.deepStrictEqual(higgs.higgsVoicesDocument(sampled, WSL_DOC).probe.sampling, { temperature: 1, topP: 0.95, topK: 50 });
-  assert.deepStrictEqual(bareDoc.sampling, higgs.higgsEngineSampling(), 'a block with no sampling writes the engine-level one');
-  // Malformed: out of order, or missing provenance.
-  for (const [why, bad] of [
-    ['out of order', { ...pace, p05: 19 }],
-    ['no method', { ...pace, method: '' }],
-    ['no n', { ...pace, n: 0 }],
-  ]) {
-    const mm = probeVoice({ kind: 'checkpoint', voice: { checkpoint: { wsl: '/home/x/merged' } },
-      backends: { served: { maxChars: 1200, maxCharsSource: 'catalog' } }, pace: bad });
-    assert.match(higgs.higgsVoiceUnavailableReason(mm, PICKER_USER_DATA) || '', /pace/, `${why} was accepted`);
-  }
-  // ONE PER VOICE: a pace on a backend block is refused, not read.
+    backends: { served: { sampling: { temperature: 1, topP: 0.95, topK: 50 }, _samplingNote: 'REASON: fixture' },
+                mlx: { sampling: { temperature: 0.7, topP: 0.95, topK: 50 }, _samplingNote: 'REASON: fixture' } } });
+  assert.deepStrictEqual(higgs.higgsVoicesDocument(sampled, FT_MAC_DOC).probe.sampling, { temperature: 0.7, topP: 0.95, topK: 50 });
+  assert.deepStrictEqual(higgs.higgsVoicesDocument(sampled, FT_WSL_DOC).probe.sampling, { temperature: 1, topP: 0.95, topK: 50 });
+  assert.deepStrictEqual(doc.sampling, higgs.higgsEngineSampling(), 'a block with no sampling writes the engine-level one');
+  // A pace on a backend block is refused by name, not read: the pace is the server's.
   const perArm = probeVoice({ kind: 'checkpoint', voice: { checkpoint: { wsl: '/home/x/merged' } },
-    backends: { served: { maxChars: 1200, maxCharsSource: 'catalog', pace } } });
-  assert.match(higgs.higgsVoiceUnavailableReason(perArm, PICKER_USER_DATA) || '', /ONE PER VOICE/);
-  // The Mac's document carries the same band as the WSL one.
-  const mac = higgs.higgsVoicesDocument(m, MAC_DOC).probe;
-  assert.strictEqual(mac.maxCharsPerSec, doc.maxCharsPerSec);
-  assert.strictEqual(mac.minCharsPerSec, doc.minCharsPerSec);
+    backends: { served: { pace: { median: 16 } } } });
+  assert.match(higgs.higgsVoiceUnavailableReason(perArm, PICKER_USER_DATA) || '', /A voice's pace is the server's/);
 });
-
 check('the certified voice is offered SELECTABLE, with no warning attached', () => {
   // Finding 11 was the opposite state: a pending voice offered label-only and
   // fully selectable, so it queued a run that died at preflight. Now that
@@ -2267,7 +2058,7 @@ if (skipWhy) {
     assert.strictEqual(got.source, 'catalog');
   });
 
-  check('narrator ACCEPTS a checkpoint voice WITH a measured cap', () => {
+  check('narrator ACCEPTS a checkpoint voice WITH the venue cap', () => {
     const m = probeVoice({
       id: 'ft', kind: 'checkpoint',
       // A GUEST path, not CROSS: the wsl entry is the directory the launch
@@ -2277,12 +2068,13 @@ if (skipWhy) {
       voice: { checkpoint: { wsl: '/home/<user>/higgs_v3_merged/ft' } },
       backends: { served: { maxChars: 1350, maxCharsSource: 'length-sweep', referenceSecondsCap: 30, allowedControls: [] } },
     });
-    const r = runLoad(higgs.higgsVoicesDocument(m, WSL_DOC));
+    const r = runLoad(higgs.higgsVoicesDocument(m, FT_WSL_DOC));
     assert.strictEqual(r.status, 0, 'narrator refused it:\n' + (r.stderr || '').trim());
     const got = JSON.parse(r.stdout.trim().split('\n').pop());
     assert.strictEqual(got.checkpoint, '/home/<user>/higgs_v3_merged/ft');
-    assert.strictEqual(got.max_chars, 1350);
-    assert.strictEqual(got.source, 'length-sweep');
+    // The VENUE's cap (2026-09-28), under narrator's closed source word.
+    assert.strictEqual(got.max_chars, VENUE.maxChars);
+    assert.strictEqual(got.source, 'catalog');
   });
 
   check('narrator ACCEPTS the SHIPPED deathstalker document, cap and all', () => {
@@ -2298,23 +2090,23 @@ if (skipWhy) {
     // guest's and the Mac's cannot see each other, so there is no armless answer
     // to "which directory does deathstalker load from".
     const m = higgs.resolveHiggsModel('deathstalker');
-    const r = runLoad(higgs.higgsVoicesDocument(m, WSL_DOC));
+    const r = runLoad(higgs.higgsVoicesDocument(m, FT_WSL_DOC));
     assert.strictEqual(r.status, 0, 'narrator refused it:\n' + (r.stderr || '').trim());
     const got = JSON.parse(r.stdout.trim().split('\n').pop());
     assert.strictEqual(got.name, 'deathstalker');
     assert.strictEqual(got.cls, 'DefaultVoice', 'a fine-tune is prompted TEXT-ONLY');
     assert.strictEqual(got.checkpoint,
       '/home/telltale/higgs_v3_merged/ds_v8_rvcbed1_3658_prod');
-    assert.strictEqual(got.max_chars, 800, "narrator did not get Owen's 2026-09-09 ceiling");
+    // The cap and band that land are the VENUE's (2026-09-28): the catalog keeps none.
+    assert.strictEqual(got.max_chars, VENUE.maxChars, 'narrator did not get the venue cap');
     // Owen, 2026-09-09: the point target is retired; a fine-tune ships a BAND, and
     // this asserts the packer's floor and cap where they LAND, not only where they
     // are written.
     assert.strictEqual(got.target_chars, null,
       'a fine-tune must no longer carry a point target');
-    assert.strictEqual(got.safe_min_chars, 500,   // 2026-09-15: floor 600 -> 500 with the ds_v8 promotion
-
+    assert.strictEqual(got.safe_min_chars, VENUE.floorChars,
       'narrator did not get the packer FLOOR that rides beside the cap');
-    assert.strictEqual(got.safe_max_chars, 800,
+    assert.strictEqual(got.safe_max_chars, VENUE.ceilingChars,
       'narrator did not get the packer CAP');
     assert.strictEqual(got.source, 'catalog');
 
@@ -2324,7 +2116,7 @@ if (skipWhy) {
     // arm whose number is the smaller one: that is the arm where inheriting the
     // other's cap would silently lose text.
     const macDoc = higgs.higgsVoicesDocument(m, {
-      arm: 'darwin', userDataDir: '/Users/fake/Library/Application Support/BookForge',
+      arm: 'darwin', userDataDir: '/Users/fake/Library/Application Support/BookForge', venueBand: VENUE,
     });
     const rm = runLoad(macDoc);
     assert.strictEqual(rm.status, 0, 'narrator refused the Mac document:\n' + (rm.stderr || '').trim());
@@ -2334,10 +2126,9 @@ if (skipWhy) {
     // which slash the machine running it prefers.
     assert.strictEqual(macGot.checkpoint.replace(/\\/g, '/'),
       '/Users/fake/Library/Application Support/BookForge/runtime/higgs-models/ds_v8_rvcbed1_3658_prod');
-    // Both arms carry 800 by the ruling, not by inheritance; the checkpoint
-    // asserted above is what proves this is the darwin document.
-    assert.strictEqual(macGot.max_chars, 800,
-      "the Mac document does not carry the ruling's ceiling");
+    // The Mac document carries the venue's cap too; the checkpoint asserted above is what
+    // proves this is the darwin document.
+    assert.strictEqual(macGot.max_chars, VENUE.maxChars, 'the Mac document does not carry the venue cap');
   });
 
   check('narrator ACCEPTS the SHIPPED zero-shot documents, clip and cap', () => {
@@ -2371,7 +2162,7 @@ if (skipWhy) {
       sampling: { temperature: 0.8 },
       note: 'keeper: the override document must load in narrator',
     });
-    const r = runLoad(higgs.higgsVoicesDocument(m, WSL_DOC));
+    const r = runLoad(higgs.higgsVoicesDocument(m, FT_WSL_DOC));
     assert.strictEqual(r.status, 0, 'narrator refused the override document:\n' + (r.stderr || '').trim());
     const got = JSON.parse(r.stdout.trim().split('\n').pop());
     assert.strictEqual(got.name, 'deathstalker+ds_v8_1200_test');
@@ -2381,13 +2172,13 @@ if (skipWhy) {
     // leaves the rest at the checkpoint's generation_config.json (1.0, which
     // nobody chose), so the override must arrive complete.
     assert.deepStrictEqual(got.sampling, { temperature: 0.8, top_p: 0.95, top_k: 50 });
-    assert.strictEqual(got.max_chars, 800, "the base voice's certificate must travel unchanged");
+    assert.strictEqual(got.max_chars, VENUE.maxChars, 'the venue cap must travel with an override too');
   });
 
   check('narrator REFUSES a checkpoint with no cap — the refusal we mirror', () => {
-    // BookForge refuses this first (refuseUnmeasuredAdapter), so the document can
-    // only be built by going round it. Doing so proves the two refusals are the
-    // same rule rather than two rules that happen to agree today.
+    // BookForge never builds this: a fine-tune document with no venue band is refused by name
+    // (the cap is the server's, 2026-09-28). So the document is built by hand, which proves
+    // narrator refuses it too.
     const doc = { ft: { kind: 'checkpoint', checkpointDir: CROSS } };
     const r = runLoad(doc);
     assert.notStrictEqual(r.status, 0, 'narrator accepted an unmeasured fine-tune');
@@ -2502,11 +2293,11 @@ onArm('darwin', () => {
     // directory inside Application Support that has never held these weights.
     assert.strictEqual(higgs.higgsCheckpointDirFor(m, 'darwin', MAC_USER_DATA), OVERRIDE_DIR);
     // And the document — the only thing narrator reads — carries the same string.
-    const doc = higgs.higgsVoicesDocument(m, { arm: 'darwin', userDataDir: MAC_USER_DATA });
+    const doc = higgs.higgsVoicesDocument(m, FT_MAC_DOC);
     assert.strictEqual(doc[m.id].checkpointDir, OVERRIDE_DIR);
     assert.match(doc[m.id]._overrideNote, /merged checkpoint on this Mac/);
-    // The base voice's certificate travels unchanged — that is the point.
-    assert.strictEqual(doc[m.id].maxChars, 800);
+    // The cap is the venue's, override or not (2026-09-28).
+    assert.strictEqual(doc[m.id].maxChars, VENUE.maxChars);
   });
 
   check('a relative override, and a directory that does not exist, are REFUSED', () => {
@@ -2549,23 +2340,15 @@ onArm('darwin', () => {
     // is closed, so claiming 'length-sweep' would be a lie the protocol accepts.
     assert.strictEqual(caps.maxCharsSource, 'catalog');
     assert.ok(higgs.HIGGS_MAX_CHARS_SOURCES.includes(caps.maxCharsSource));
-    const doc = higgs.higgsVoicesDocument(m, { arm: 'darwin', userDataDir: MAC_USER_DATA });
-    assert.strictEqual(doc[m.id].maxChars, 1200);
-    assert.strictEqual(doc[m.id].safeMaxChars, 1100);
+    // BUT IT DOES NOT REACH A RENDER'S DOCUMENT, and has not since 2026-09-15: a Crucible render
+    // packs to the VENUE's cap and band, whole, and since 2026-09-28 a fine-tune has no other kind
+    // of render. The patch changes only these local caps.
+    const doc = higgs.higgsVoicesDocument(m, FT_MAC_DOC);
+    assert.strictEqual(doc[m.id].maxChars, VENUE.maxChars);
+    assert.strictEqual(doc[m.id].safeMaxChars, VENUE.ceilingChars);
   });
 
-  check('a band OUTSIDE the cap is refused — by the document, for override and catalog alike', () => {
-    // The relational rules are NOT restated in the override path: one check, one
-    // message, narrator's wording. This proves the override reaches it.
-    const m = higgs.higgsModelForRender('deathstalker', {
-      checkpointDir: OVERRIDE_DIR, safeMaxChars: 1200, note: 'keeper',
-    });
-    assert.throws(
-      () => higgs.higgsVoicesDocument(m, { arm: 'darwin', userDataDir: MAC_USER_DATA }),
-      /safeMaxChars 1200 above its darwin cap of 800/);
-  });
-
-  check('a non-integer cap is refused by name', () => {
+    check('a non-integer cap is refused by name', () => {
     const err = overrideThrows('deathstalker', {
       checkpointDir: OVERRIDE_DIR, maxChars: 900.5, note: 'keeper',
     });
@@ -2588,7 +2371,7 @@ onArm('darwin', () => {
     // that deviates — BY CONSTRUCTION, not by being exempt from it.
     assert.match(m.backends.mlx._samplingNote, /reason/i);
     assert.match(m.backends.mlx._samplingNote, /0\.8 control/);
-    const doc = higgs.higgsVoicesDocument(m, { arm: 'darwin', userDataDir: MAC_USER_DATA });
+    const doc = higgs.higgsVoicesDocument(m, FT_MAC_DOC);
     assert.deepStrictEqual(doc[m.id].sampling, { temperature: 0.8, topP: 0.95, topK: 50 });
   });
 

@@ -413,11 +413,12 @@ async function main() {
       'the document says WHOSE numbers these are, so a post-mortem can tell');
   });
 
-  await check('with no venue the document is the local catalog\'s, unchanged', () => {
-    const doc = higgs.higgsVoicesDocument(LOCAL_900, { arm: 'wsl' });
-    assert.strictEqual(doc.deathstalker.maxChars, 900,
-      'a LOCAL render is the local engine, and the catalog is how it was configured');
-    assert.strictEqual(doc.deathstalker.safeMaxChars, 900);
+  await check('with no venue a fine-tune\'s document is REFUSED, never the local catalog\'s', () => {
+    // 2026-09-28 (Owen: "single source of truth. that source should be where the models are
+    // served"): a fine-tune's cap, band and pace are the server's only. The local render this case
+    // used to cover is deleted (docs/LEGACY-REMOVAL.md), so there is no second answer to fall to.
+    assert.throws(() => higgs.higgsVoicesDocument(LOCAL_900, { arm: 'wsl' }),
+      /no Crucible server has stated its cap, band and pace/);
   });
 
   // ── 5. what the Listen packer does with the two answers ────────────────────

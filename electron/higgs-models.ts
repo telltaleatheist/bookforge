@@ -317,7 +317,7 @@ export type HiggsCheckpointArm = 'wsl' | 'darwin';
  * AND A COPY IS A NEW CERTIFICATE. The same merged directory on both machines is
  * the same weights, but a cap is measured against (directory, backend), so
  * staging deathstalker on the Mac does not carry the served arm's number across
- * — see `backends` and `refuseUnmeasuredAdapter`.
+ * — and since 2026-09-28 the number itself is the serving machine's, on GET /v1/voices.
  */
 export interface HiggsCheckpointLocations {
   /** The WSL guest's own absolute path. */
@@ -347,139 +347,16 @@ export interface HiggsVoiceRef {
   scene?: string;
 }
 
-/**
- * The measured knobs a Higgs voice declares for ONE BACKEND.
- *
- * Absent means absent — there is no invented default here, exactly as
- * `OrpheusVoiceCaps` documents. The one difference in spirit: on Orpheus an
- * absent cap means "let e2a apply its own documented default", while here an
- * absent cap means "that backend's own shipped default applies", and both are
- * real answers rather than a fallback.
- *
- * ── A CERTIFICATE IS PER (DIRECTORY, BACKEND) ───────────────────────────────
- *
- * There is one of these per backend and they do NOT share numbers, because a cap
- * is produced by RENDERING: the served figure was measured by driving vllm-omni
- * on one merged directory with one patched stage processor, and the MLX arm is a
- * different sampler over a different runtime — mlx-audio's top-k/top-p and
- * vLLM's are different implementations, so feeding both the same three numbers
- * makes the CONFIGURATION identical and not the draws (PORT_NOTES 13.11).
- * Nothing has yet compared a Mac render against a WSL one at all, and their seeds
- * are not even comparable (`mx.random.seed` vs vLLM's).
- *
- * So copying the merged directory to the Mac copies the weights and NOT the
- * certificate. Until the MLX arm's own length sweep runs, `mlx.maxChars` is
- * `null` — a DECLARED absence — and `refuseUnmeasuredAdapter` refuses the voice
- * on darwin exactly as the served `null` refuses it on WSL.
+/*
+ * A VOICE'S PACE AND ITS GUARD BAND ARE THE SERVER'S (2026-09-28). This file kept a fine-tune's measured
+ * pace ({median, p05, p99, ...}) and derived the guard band from it here - pace x 1.3 above (a take that
+ * stopped early), pace / 1.3 below (one that ran on); the 1.3s were MEASURED on Shift, 2026-09-08. Owen
+ * ruled the voice's facts have one owner, the machine that serves it: the pinned crucible-voice.toml's
+ * pace block, which `GET /v1/voices` states with all three rates, and which every render already sends
+ * back as its band (`renderBandFor`, `electron/crucible/voice-band.ts`). The seed-and-retrack rule
+ * (narrator's PaceTracker re-centres on the book's own running median after ten guarded takes) is
+ * unchanged; only where the seed comes from moved.
  */
-export interface HiggsPace {
-  /** Chars of text per second of audio over the clean renders. */
-  median: number;
-  mean?: number;
-  p05: number;
-  p95?: number;
-  p99: number;
-  /** Chunks the numbers came from. */
-  n: number;
-  /** How chars and seconds were counted — stated, so two paces can be compared. */
-  method: string;
-  /** The renders / ladder run the numbers came from. */
-  source: string;
-  measuredOn: string;
-}
-
-/**
- * THE SHORT EDGE: above `pace × 1.2` a take is too short — it stopped before
- * the end of its text.
- *
- * MEASURED on Shift (mistborn, served arm, 1,313 chunks, 16.38 h, 2026-09-08).
- * A CPU spot-alignment of the 14 FASTEST shipped chunks found 8 real
- * truncations (13–52 % of the words dropped), and every one of them sat at
- * ≥ 1.23× the book's own pace (17.3–18.6 chars/s against a book median of
- * 14.09); the 8 SLOWEST shipped chunks (11.1–11.9 chars/s) all aligned clean
- * (ratio ≥ 0.99). So 1.2 sits under every measured truncation with a margin
- * and over every clean take. The rule this replaces — the ladder's p99 × 1.15 —
- * put mistborn's short edge at 19.27, which is 1.37× Shift's own pace: it
- * missed all 8 and shipped takes at 0.76× of their expected length.
- *
- * RAISED 1.2 → 1.3 (Owen, 2026-09-08, "loosen it to a reasonable number").
- * MEASURED on the Mac, Shift (mistborn, MLX arm, batches of 32): the run's
- * TRACKED pace settled at 13.1 chars/s — 7 % under the book's shipped median of
- * 14.09, because the slow opening chunks seed it — so the 1.2 edge landed at
- * 15.7 and re-rolled healthy brisk prose at 15.75–16.15 chars/s (four of ~28
- * chunks in one slice, each a serial solo render; the re-rolled takes came back
- * only 3–8 % longer with the same words — fast speech, not a truncation). Every
- * REAL truncation measured above sat at ≥ 17.3 chars/s absolute. 1.3 × 13.1 =
- * 17.0: still under the mildest real truncation, clear of every false alarm.
- * A tracked pace that converges to the book's median (14.09 × 1.3 = 18.3)
- * would sit ABOVE the 17.3–18.6 truncation band — so this edge now leans on
- * the tracker starting low; if the tracker is ever re-seeded from the shipped
- * median, revisit the factor with the numbers above.
- */
-export const PACE_GUARD_SHORT_FACTOR = 1.3;
-
-/**
- * THE LONG EDGE: below `pace ÷ 1.3` a take ran on — it kept talking past the
- * end of its text. LOOSER than the short edge on purpose, because a healthy
- * chunk is far more often slow than fast: on Shift the clean dialogue chunks
- * ran down to 0.79× of the book's pace (11.0–11.75 chars/s against 14.09) and
- * every one of them aligned clean, so an edge at 1/1.2 = 0.83× would have
- * re-rolled them for nothing — which is exactly what the old fixed long edge
- * (11.97) did to 340 healthy chunks at take 0.
- *
- * THE COST IS STATED: the run-on tails measured on Working Towards The Fuhrer
- * (2026-09-06) ran 1.24×–1.54× of expectation, so 1.3 catches the 1.42× and
- * 1.54× tails and LEAVES THE 1.24× CLASS to the ASR coverage audit (`align/`),
- * which is the sensor that can see inside a chunk. A cheap duration guard that
- * fires on a quarter of the healthy chunks to catch the mildest run-on is a bad
- * trade; the audit names that chunk without re-rendering the book.
- */
-export const PACE_GUARD_LONG_FACTOR = 1.3;
-
-/**
- * The SEED length band a measured pace derives — from the MEDIAN, not from the
- * ladder's tails.
- *
- * Narrator keeps only the RATIOS of this band (`truncation.PaceTracker`) and
- * re-centres them on the running median of the book's own shipped takes once
- * ten guarded takes are in, so these three numbers are a SEED and not a
- * ceiling. That is why `paceCharsPerSec` travels with the two edges: the pace
- * is what the seed band is centred on, and without it narrator cannot tell a
- * band's tolerated deviation from its reference.
- */
-export function higgsLengthBand(
-  pace: HiggsPace,
-): { paceCharsPerSec: number; maxCharsPerSec: number; minCharsPerSec: number } {
-  const round2 = (v: number) => Math.round(v * 100) / 100;
-  return {
-    paceCharsPerSec: pace.median,
-    maxCharsPerSec: round2(pace.median * PACE_GUARD_SHORT_FACTOR),
-    minCharsPerSec: round2(pace.median / PACE_GUARD_LONG_FACTOR),
-  };
-}
-
-/** A pace is well-formed or absent — numbers positive, p05 ≤ median ≤ p99. */
-function refuseMalformedPace(model: HiggsModel, arm: string, pace: unknown): void {
-  if (pace === undefined) return;
-  const p = pace as Partial<HiggsPace> | null;
-  const num = (v: unknown) => typeof v === 'number' && Number.isFinite(v) && v > 0;
-  if (!p || typeof p !== 'object' || !num(p.median) || !num(p.p05) || !num(p.p99)
-      || !Number.isInteger(p.n) || (p.n as number) <= 0
-      || typeof p.method !== 'string' || !p.method.trim()
-      || typeof p.source !== 'string' || !p.source.trim()
-      || typeof p.measuredOn !== 'string' || !p.measuredOn.trim()) {
-    throw new Error(
-      `Higgs voice "${model.id}" (${arm}) has a malformed pace ${JSON.stringify(pace)}. The shape ` +
-        'is {median, p05, p99, n, method, source, measuredOn} (mean, p95 optional), all positive.',
-    );
-  }
-  if (!((p.p05 as number) <= (p.median as number) && (p.median as number) <= (p.p99 as number))) {
-    throw new Error(
-      `Higgs voice "${model.id}" (${arm}) declares a pace with p05 ${p.p05}, median ${p.median}, ` +
-        `p99 ${p.p99} out of order.`,
-    );
-  }
-}
 
 /**
  * THE SILENCE INSERTED AFTER EVERY CHUNK, in seconds — this voice's own number.
@@ -562,6 +439,32 @@ export const HIGGS_MAX_CHARS_SOURCES: readonly HiggsMaxCharsSource[] = [
   'catalog', 'placeholder', 'length-sweep',
 ];
 
+/**
+ * The measured knobs a Higgs voice declares for ONE BACKEND.
+ *
+ * Absent means absent — there is no invented default here, exactly as
+ * `OrpheusVoiceCaps` documents. The one difference in spirit: on Orpheus an
+ * absent cap means "let e2a apply its own documented default", while here an
+ * absent cap means "that backend's own shipped default applies", and both are
+ * real answers rather than a fallback.
+ *
+ * ── A CERTIFICATE IS PER (DIRECTORY, BACKEND) ───────────────────────────────
+ *
+ * There is one of these per backend and they do NOT share numbers, because a cap
+ * is produced by RENDERING: the served figure was measured by driving vllm-omni
+ * on one merged directory with one patched stage processor, and the MLX arm is a
+ * different sampler over a different runtime — mlx-audio's top-k/top-p and
+ * vLLM's are different implementations, so feeding both the same three numbers
+ * makes the CONFIGURATION identical and not the draws (PORT_NOTES 13.11).
+ * Nothing has yet compared a Mac render against a WSL one at all, and their seeds
+ * are not even comparable (`mx.random.seed` vs vLLM's).
+ *
+ * So copying the merged directory to the Mac copies the weights and NOT the
+ * certificate. A FINE-TUNE's cap and band are no longer declared here at all (2026-09-28): they are
+ * the server's, per arm, on `GET /v1/voices`. What remains here per arm is what this machine does
+ * with the audio and the reference - edge fades, the reference cap, the allowed controls - and a
+ * zero-shot voice's cap and target.
+ */
 export interface HiggsBackendCaps {
   /**
    * The PREP packing cap, in characters. Consumed by BookForge, never sent to
@@ -571,7 +474,8 @@ export interface HiggsBackendCaps {
    * have one yet" — and it is the reason this is `number | null | undefined`
    * rather than an optional number. `undefined` says the voice declares nothing
    * (fine for a zero-shot voice); `null` says it declares that it is UNMEASURED,
-   * which for an adapter is a refusal. See `refuseUnmeasuredAdapter`.
+   * which for an adapter WAS a refusal here. A fine-tune declares no cap here at all since
+   * 2026-09-28: it is the server's, and a row with none is refused as crucible_voice_states_no_cap.
    */
   maxChars?: number | null;
   /**
@@ -936,39 +840,7 @@ export interface HiggsModel {
   note?: string;
   /** A model may declare its own serving block, used INSTEAD of the shared one. */
   serving?: HiggsServingSpec;
-  /**
-   * THE VOICE'S MEASURED PACE, chars of text per second of audio. ONE PER
-   * VOICE, shared by both arms — Owen, 2026-09-06: "it can be the same setting
-   * for both mac and windows since theyre the same voice and theyre pretty
-   * close" (deathstalker measured 17.11 served / 17.05 mlx). Recorded here as
-   * part of the normal ladder, the way Orpheus voices are, and THE LENGTH GUARD
-   * USES IT: the voice document carries the pace AND the band seeded from it,
-   * all three rules stated:
-   *   paceCharsPerSec = median                     (what the band is centred on)
-   *   maxCharsPerSec  = median × PACE_GUARD_SHORT_FACTOR  (above it: too SHORT)
-   *   minCharsPerSec  = median / PACE_GUARD_LONG_FACTOR   (below it: ran ON)
-   *
-   * A SEED, NOT A CEILING (2026-09-08). narrator keeps only the RATIOS of that
-   * band and re-centres them on the running median of the book's own shipped
-   * takes after ten guarded chunks (`truncation.PaceTracker`), which is what
-   * actually answers Owen's worry — "if its set to 17.11 chars/s, and one book
-   * averages 17.6/s, it shouldnt split and re-render everything over 17.11":
-   * a book that paces 17.6 BECOMES the reference, so the edges move with it
-   * instead of the ladder's bank deciding for every book. The old rule (the
-   * ladder's p99 × 1.15 / p05 ÷ 1.15) could not do that, and MEASURED on Shift
-   * — a fiction book whose clean chunks ran 7 % slower than mistborn's uniform
-   * nonfiction ladder bank (14.09 vs 15.12 chars/s) — it fired on 340 healthy
-   * chunks while missing 8 real truncations. The recorded pace must therefore
-   * travel to narrator: it is what the seed band is centred on.
-   *
-   * Orpheus keeps only the derived guard in its catalog and the pace in prose;
-   * Higgs keeps the pace as data. Measured by the training ladder on clean renders
-   * (coverage ≥ 0.95, no early stop, no run-on). Absent = unmeasured:
-   * narrator's default band applies (20 / 14.5, the Fuhrer whole-book
-   * measurement on deathstalker).
-   */
-  pace?: HiggsPace;
-  /** The silence inserted after every chunk. ONE PER VOICE, like the pace. */
+  /** The silence inserted after every chunk. ONE PER VOICE, shared by both arms. */
   chunkGap?: HiggsChunkGap;
   /**
    * WHERE A MACHINE CAN DOWNLOAD A `checkpoint` VOICE FROM — a HuggingFace repo,
@@ -1037,98 +909,18 @@ function loadCatalog(): HiggsCatalog {
   if (!cat.serving || typeof cat.serving !== 'object') {
     throw new Error(`Higgs voice catalog is malformed (missing the shared 'serving' block): ${dataPath}`);
   }
-  applySafeBands(cat as HiggsCatalog);
   return cat as HiggsCatalog;
 }
 
-/**
- * THE SAFE BAND OVERLAY — `electron/data/higgs-safe-bands.json`, the file a human edits.
- *
- * Owen, 2026-09-09: "lets make the bookforge config a lot more straightforward to edit, so we can
- * easily find the file and set the min/max safe band per model." `higgs-models.json` is 100 KB of
- * evidence notes and the two numbers that matter were buried in it, per arm, twice per voice. They
- * now live in one flat file of four lines, and this merges them over the catalog on every read.
- *
- * `{ "<voice>": { "min": 600, "max": 1000 } }`, optionally with a `served` or `mlx` block when one
- * arm needs its own pair. Absent file, or a voice it does not name, changes nothing — the catalog's
- * own `safeMinChars`/`safeMaxChars` stand, so this is additive and removable.
- *
- * Refused BY NAME here, before a spawn, on the same rules narrator applies at load: a band whose max
- * exceeds that arm's `maxChars`, or whose min is not below its max.
- *
- * ── AND A CATALOG BAND THAT DISAGREES IS REFUSED, NOT OVERWRITTEN (2026-09-13) ──────────────
- *
- * This merge used to assign over whatever the catalog said, silently. `thirdreich` is what that
- * cost: its band was corrected to 500-700 on 2026-09-09 in the overlay and left at 600-1000 in
- * `higgs-models.json` — a range the same ladder measured at 12.5% and 18.8% early stops — where it
- * sat for four days, describing the wrong thing to every person and every other repo that read it
- * (Crucible's voice manifest was written from that text). Nothing rendered wrong, and that is
- * exactly why it survived: the override made the disagreement unobservable.
- *
- * So the copies must AGREE. The overlay owns the VALUE and the catalog keeps the EVIDENCE NOTE
- * beside it; a voice the overlay does not name keeps its catalog band untouched, as before, and a
- * catalog that declares no band takes the overlay's. Only a stated disagreement is refused — by
- * name, at catalog load, in the same style as the two rules above, because a band is the one
- * number in this file that decides how a book is cut.
+/*
+ * THE SAFE BAND OVERLAY (`electron/data/higgs-safe-bands.json`) IS GONE, and so are a fine-tune's
+ * band, pace and cap in this catalog (Owen, 2026-09-28: "single source of truth. that source should
+ * be where the models are served"). A voice's band lived in five places; three redeploys in one day
+ * updated the overlay and not this catalog, the overlay's consistency check threw, and the Narrate
+ * picker listed no voices. The voice's truth is its pinned revision's crucible-voice.toml, surfaced
+ * per server by `GET /v1/voices` (`electron/crucible/voice-band.ts`), and every door that packs or
+ * guards already reads it there. `tools/test-one-fact-one-owner.js` keeps the copies from coming back.
  */
-function applySafeBands(cat: HiggsCatalog): void {
-  const bandPath = path.join(__dirname, 'data', 'higgs-safe-bands.json');
-  let bands: Record<string, unknown>;
-  try {
-    bands = JSON.parse(fs.readFileSync(bandPath, 'utf-8')) as Record<string, unknown>;
-  } catch {
-    return;                       // no overlay file is a valid state: the catalog stands alone
-  }
-  for (const model of cat.models ?? []) {
-    const entry = bands[model.id] as Record<string, unknown> | undefined;
-    if (!entry || typeof entry !== 'object') continue;
-    for (const arm of ['served', 'mlx'] as const) {
-      const caps = (model.backends as Record<string, HiggsBackendCaps> | undefined)?.[arm];
-      if (!caps) continue;
-      const per = entry[arm] as Record<string, unknown> | undefined;
-      const min = (per && typeof per.min === 'number') ? per.min : entry.min;
-      const max = (per && typeof per.max === 'number') ? per.max : entry.max;
-      if (typeof min !== 'number' || typeof max !== 'number') continue;
-      if (!Number.isInteger(min) || !Number.isInteger(max) || min <= 0 || max <= 0) {
-        throw new Error(
-          `higgs-safe-bands.json: '${model.id}' (${arm}) band ${min}-${max} is not a pair of `
-          + 'positive whole numbers of characters.',
-        );
-      }
-      if (min >= max) {
-        throw new Error(
-          `higgs-safe-bands.json: '${model.id}' (${arm}) has min ${min} at or above max ${max}, `
-          + 'which is not a band.',
-        );
-      }
-      if (typeof caps.maxChars === 'number' && max > caps.maxChars) {
-        throw new Error(
-          `higgs-safe-bands.json: '${model.id}' (${arm}) max ${max} is above that arm's maxChars `
-          + `${caps.maxChars}. Raise the cap in higgs-models.json with the evidence, or lower this.`,
-        );
-      }
-      for (const [field, overlayValue, overlayKey] of [
-        ['safeMinChars', min, 'min'], ['safeMaxChars', max, 'max'],
-      ] as const) {
-        const declared = caps[field];
-        if (declared === undefined || declared === null) continue;
-        if (declared !== overlayValue) {
-          throw new Error(
-            `Higgs voice '${model.id}' (${arm}) declares ${field} ${declared} in `
-            + `electron/data/higgs-models.json and ${overlayValue} as '${overlayKey}' in `
-            + 'electron/data/higgs-safe-bands.json. The overlay owns the value and the catalog '
-            + 'keeps the evidence note beside it, so the two must state the same number — this '
-            + 'used to be overwritten in silence, which is how thirdreich described a 600-1000 '
-            + 'band for four days after it was measured at 500-700. Correct the catalog, or '
-            + 'remove its pair to let the overlay stand alone.',
-          );
-        }
-      }
-      caps.safeMinChars = min;
-      caps.safeMaxChars = max;
-    }
-  }
-}
 
 /**
  * Every voice in the catalog, offerable or not.
@@ -1239,7 +1031,6 @@ export function higgsVoiceUnavailableReason(model: HiggsModel, userDataDir: stri
     refuseUntranscribedClips(model);
     const arm = thisMachineArm();
     refuseUnstagedCheckpoint(model);
-    refuseUnmeasuredAdapter(model, arm);
     refuseOversizedReference(model, arm);
     refuseAbsentArtifact(model, arm, userDataDir);
     return null;
@@ -1347,7 +1138,6 @@ export function resolveHiggsModel(id: string | undefined | null): HiggsModel {
   refuseUntranscribedClips(model);
   refuseUnstagedCheckpoint(model);
   const arm = thisMachineArm();
-  refuseUnmeasuredAdapter(model, arm);
   refuseOversizedReference(model, arm);
   return model;
 }
@@ -1401,14 +1191,14 @@ function refuseUnstagedCheckpoint(model: HiggsModel): void {
  */
 function refuseMalformedVoice(model: HiggsModel): void {
   refuseMalformedSource(model);
-  if (model.pace !== undefined) refuseMalformedPace(model, 'voice', model.pace);
   if (model.chunkGap !== undefined) refuseMalformedChunkGap(model, model.chunkGap);
   for (const arm of ['served', 'mlx'] as const) {
     if (model.backends?.[arm] && 'pace' in (model.backends[arm] as object)) {
       throw new Error(
-        `Higgs voice "${model.id}" puts a pace on backends.${arm}. The pace is ONE PER VOICE ` +
-          '(Owen, 2026-09-06: the same setting for both Mac and Windows) — move it to the ' +
-          "entry's top-level `pace`.",
+        `Higgs voice "${model.id}" puts a pace on backends.${arm}. A voice's pace is the ` +
+          "server's (Owen, 2026-09-28: single source of truth, where the models are served): it " +
+          "lives in the voice's crucible-voice.toml and reaches BookForge on GET /v1/voices. " +
+          'Remove it from electron/data/higgs-models.json.',
       );
     }
   }
@@ -1810,42 +1600,15 @@ function refuseOversizedReference(model: HiggsModel, arm: HiggsCheckpointArm): v
   }
 }
 
-/**
- * A FINE-TUNE MUST CARRY ITS OWN MEASURED `maxChars`. No default, and nothing
- * inherited from the zero-shot figure.
- *
- * This is not tidiness. A fine-tuned Higgs checkpoint's stop length tracks its
- * TRAINING CLIP LENGTH rather than the length of the text it is given: the
- * training side measured a 30-minute adapter trained on 8-22 s clips stopping
- * after ~6-10 s of audio on ANY prompt over ~150 characters. So the zero-shot
- * 600 is not merely imprecise for an adapter — it is wrong by roughly a factor
- * of four, in the direction that LOSES TEXT, and it loses it while every
- * duration check still looks plausible.
- *
- * Hence: the cap comes from THAT model's own length sweep, and `maxCharsSource`
- * is required beside it, because the number without its method is not evidence.
- * A duration ratio in particular is not a coverage proxy on this family — a v3
- * render measured ratio 0.99 while dropping 22 % of its text.
+/*
+ * A FINE-TUNE MUST CARRY ITS OWN MEASURED CAP - still the rule, no longer this file's to enforce
+ * (2026-09-28). A fine-tuned Higgs checkpoint's stop length tracks its training clip length, so the
+ * zero-shot 600 would silently lose most of every chunk; the cap has to come from that model's own
+ * length sweep. It lives in the voice's crucible-voice.toml now, and `GET /v1/voices` states it per
+ * server: `bandFromVoiceRow` (`electron/crucible/voice-band.ts`) refuses a row with no cap as
+ * `crucible_voice_states_no_cap`, by name, before anything is packed. The local check that stood here
+ * (`refuseUnmeasuredAdapter`) read this catalog's copy of the number, and gated the picker on it.
  */
-function refuseUnmeasuredAdapter(model: HiggsModel, arm: HiggsCheckpointArm): void {
-  if (model.kind !== 'checkpoint') return;
-  const backend = BACKEND_FOR_ARM[arm];
-  const caps = higgsVoiceCapsForModel(model, arm);
-  if (typeof caps.maxChars === 'number' && caps.maxChars > 0 && caps.maxCharsSource) return;
-  throw new Error(
-    `Higgs fine-tune "${model.id}" has no MEASURED maxChars on the ${backend} backend (got ` +
-      `${JSON.stringify(caps.maxChars ?? null)}, source ${JSON.stringify(caps.maxCharsSource ?? null)}, ` +
-      `from backends.${backend}). A CERTIFICATE IS PER (DIRECTORY, BACKEND): the number measured ` +
-      `on the other backend does not transfer, because the two arms sample through different ` +
-      `implementations of top-k/top-p over different runtimes — the same three numbers make the ` +
-      `configuration identical, not the draws. ` +
-      `A fine-tune's stop length follows its TRAINING CLIP LENGTH, not the text — one trained ` +
-      `on 8-22 s clips stops after ~6-10 s on any prompt over ~150 chars — so the zero-shot ` +
-      `600 would silently lose most of every chunk. Run a length sweep on this model, verify ` +
-      `it by ASR alignment (never by duration ratio), and record the number with its ` +
-      `maxCharsSource in electron/data/higgs-models.json.`,
-  );
-}
 
 /** The serving stack this model runs on: its own block, else the shared one. */
 export function higgsServingFor(model: HiggsModel): HiggsServingSpec {
@@ -2430,6 +2193,18 @@ export function higgsVoicesDocument(
   // not used to fill a gap. Anything else is two numbers for one fact, which is
   // the shape the whole cap-certificate discipline exists to avoid.
   const venue = target.venueBand;
+  // A FINE-TUNE'S CAP, BAND AND PACE EXIST ONLY ON THE SERVER THAT RENDERS IT (Owen, 2026-09-28:
+  // "single source of truth. that source should be where the models are served"). This catalog no
+  // longer carries them, so a fine-tune document with no venue band has nothing to pack to, and is
+  // refused by name rather than written without its numbers.
+  if (model.kind === 'checkpoint' && venue === undefined) {
+    throw new Error(
+      `Higgs fine-tune "${model.id}": no Crucible server has stated its cap, band and pace for this `
+      + 'prep. They live in the voice\'s crucible-voice.toml and reach BookForge only through GET '
+      + '/v1/voices on the server that will render (electron/crucible/voice-band.ts); this catalog '
+      + 'does not keep a copy. Prep the book for a Crucible venue.',
+    );
+  }
   const caps: HiggsBackendCaps = venue === undefined ? localCaps : {
     ...localCaps,
     maxChars: venue.maxChars,
@@ -2444,7 +2219,7 @@ export function higgsVoicesDocument(
   };
   // THE CAP TRAVELS IN THE DOCUMENT, and this is the fix for the branch's worst
   // near-miss. narrator's `load_voices` raises for an adapter entry with no
-  // `maxChars`, so `refuseUnmeasuredAdapter` was guarding a number that never
+  // `maxChars`, so the old local cap check was guarding a number that never
   // reached the engine — and the day deathstalker is promoted with its length
   // sweep the render would have been refused while the measurement sat in a JSON
   // file nobody read.
@@ -2539,12 +2314,6 @@ export function higgsVoicesDocument(
     entry.paceCharsPerSec = venue.paceCharsPerSec;
     entry.maxCharsPerSec = venue.maxCharsPerSec;
     entry.minCharsPerSec = venue.minCharsPerSec;
-  } else if (model.pace !== undefined) {
-    refuseMalformedPace(model, 'voice', model.pace);
-    const band = higgsLengthBand(model.pace);
-    entry.paceCharsPerSec = band.paceCharsPerSec;
-    entry.maxCharsPerSec = band.maxCharsPerSec;
-    entry.minCharsPerSec = band.minCharsPerSec;
   }
   return { [model.id]: entry };
 }
@@ -2757,7 +2526,6 @@ export function higgsSpawnEnv(
   // which are about the weights and audio of whichever machine this is.
   const spawnArm = thisMachineArm();
   refuseOversizedReference(model, spawnArm);
-  refuseUnmeasuredAdapter(model, spawnArm);
 
   const serving = higgsServingFor(model);
   const stack = higgsServingStack(serving);

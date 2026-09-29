@@ -31,14 +31,10 @@
  *    its vowel test sees the `I`, and "WWII" was folded to **"Wwii" in the
  *    audiobook**. Both tokens are in the JSON now and the private set is gone.
  *
- * 2. THE SAFE CHUNK BAND — `electron/data/higgs-safe-bands.json` (the overlay a
- *    person edits) and `backends.<arm>.safeMinChars/safeMaxChars` in
- *    `electron/data/higgs-models.json` (the block that keeps the evidence note).
- *    `applySafeBands` merged the first over the second SILENTLY, so `thirdreich`
- *    kept describing 600-1000 for four days after the ladder measured 500-700 —
- *    a range whose own note records 12.5% and 18.8% early stops — and that text
- *    is what Crucible's voice manifest was written from. Nothing rendered wrong,
- *    which is exactly why nobody saw it.
+ * 2. A FINE-TUNE'S BAND, PACE AND CAP. They lived in electron/data/higgs-safe-bands.json, in both
+ *    arms of electron/data/higgs-models.json, and on the server. Since 2026-09-28 (Owen: "single
+ *    source of truth. that source should be where the models are served") the server is the only
+ *    owner, and this keeper refuses the BookForge copies coming back.
  *
  * ── What each half asserts, and why that shape ──────────────────────────────
  *
@@ -221,111 +217,82 @@ test('the two implementations fold the same fixtures identically', () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 2. THE SAFE BAND: the overlay and the catalog state one band
+// 2. A FINE-TUNE'S BAND, PACE AND CAP: one owner, the server that serves it
 // ═══════════════════════════════════════════════════════════════════════════
 //
-// Crucible already carries `scripts/check-voice-bands.py`, which compares ITS
-// manifests to this overlay. This is the BookForge-side half that was missing:
-// the overlay against the catalog it silently overrode.
+// Owen, 2026-09-28: "single source of truth. that source should be where the models are served."
+// The band lived in five places; three redeploys in one day updated the overlay and not the
+// catalog, the loader's consistency check threw, and the Narrate picker listed no voices. The
+// voice's truth is its pinned revision's crucible-voice.toml, stated per server by GET /v1/voices
+// (electron/crucible/voice-band.ts). These checks keep the BookForge copies from coming back.
 
-/** The band the overlay states for `(voice, arm)`, or null when it states none. */
-function overlayBand(entry, arm) {
-  const per = entry[arm];
-  const min = (per && typeof per.min === 'number') ? per.min : entry.min;
-  const max = (per && typeof per.max === 'number') ? per.max : entry.max;
-  return (typeof min === 'number' && typeof max === 'number') ? { min, max } : null;
-}
+/** What a fine-tune may no longer declare here, per arm. */
+const SERVER_OWNED_ARM_FIELDS = ['maxChars', 'maxCharsSource', 'safeMinChars', 'safeMaxChars', 'targetChars'];
 
-test('EVERY voice: the catalog band and the overlay band are the same numbers', () => {
-  const bands = readJson(BANDS_JSON);
+test('NO BookForge copy of a fine-tune\'s band, pace or cap', () => {
+  assert.ok(!fs.existsSync(BANDS_JSON),
+    'electron/data/higgs-safe-bands.json is back. A voice\'s band is its crucible-voice.toml\'s, '
+    + 'stated by GET /v1/voices; a second copy here is how the picker went empty on 2026-09-28.');
   const catalog = readJson(CATALOG_JSON);
-  let compared = 0;
-  for (const model of catalog.models) {
-    const entry = bands[model.id];
-    if (!entry || typeof entry !== 'object') continue;
+  const fineTunes = catalog.models.filter((m) => m.kind === 'checkpoint');
+  assert.ok(fineTunes.length > 0, 'the catalog has no fine-tunes, so this guards nothing');
+  for (const m of fineTunes) {
+    assert.ok(!('pace' in m), m.id + ' declares a pace in higgs-models.json; the pace is the server\'s');
     for (const arm of ['served', 'mlx']) {
-      const caps = model.backends && model.backends[arm];
-      if (!caps) continue;
-      const band = overlayBand(entry, arm);
-      if (!band) continue;
-      for (const [field, want] of [['safeMinChars', band.min], ['safeMaxChars', band.max]]) {
-        const declared = caps[field];
-        if (declared === undefined || declared === null) continue;
-        compared++;
-        assert.strictEqual(declared, want,
-          `higgs-models.json says ${model.id} (${arm}) ${field} ${declared}; `
-          + `higgs-safe-bands.json says ${want}. The overlay wins at runtime, so a disagreement `
-          + 'changes NO behaviour and is invisible — which is how thirdreich advertised the '
-          + '600-1000 band for four days after it was measured at 500-700 (12.5% and 18.8% '
-          + 'early stops in the two rungs that range adds). Correct the catalog pair, or delete '
-          + 'it and let the overlay stand alone.');
+      const caps = (m.backends && m.backends[arm]) || {};
+      for (const f of SERVER_OWNED_ARM_FIELDS) {
+        assert.ok(!(f in caps), m.id + ' (' + arm + ') declares ' + f + ' in higgs-models.json; '
+          + 'a fine-tune\'s cap and band are the server\'s, on GET /v1/voices');
       }
     }
   }
-  assert.ok(compared >= 8,
-    `only ${compared} band numbers were compared; the two files no longer overlap, so this `
-    + 'keeper is guarding nothing');
 });
 
 /**
- * Run `fn` against the loader, with THE REPO's two data files staged into dist
- * and `mutate` applied to the catalog first — then put dist back exactly as it
- * was.
- *
- * Through the real files, because that is the loader's only seam (the same
- * mechanism `tools/test-higgs-engine.js` uses). STAGING THE REPO COPIES is what
- * keeps these two tests about the LOADER: `dist/electron/data` is refreshed by
- * `build:electron`, not by `tsc`, so reading whatever is there would make a
- * checkout with a stale dist fail a band check for a build reason.
+ * Run `fn` against the loader with THE REPO's catalog staged into dist (the loader's only
+ * seam), then put dist back exactly as it was.
  */
-function withLoadedCatalog(mutate, fn) {
-  const staged = [[CATALOG_JSON, CATALOG_DIST], [BANDS_JSON, path.join(DIST, 'data', 'higgs-safe-bands.json')]];
-  const shipped = staged.map(([, dest]) => read(dest));
-  const catalog = readJson(CATALOG_JSON);
-  mutate(catalog);
+function withLoadedCatalog(fn) {
+  const shipped = read(CATALOG_DIST);
   try {
-    fs.writeFileSync(CATALOG_DIST, JSON.stringify(catalog, null, 2), 'utf-8');
-    fs.writeFileSync(staged[1][1], read(BANDS_JSON), 'utf-8');
+    fs.writeFileSync(CATALOG_DIST, read(CATALOG_JSON), 'utf-8');
     delete require.cache[require.resolve(HIGGS_MODELS_JS)];
-    return fn(require(HIGGS_MODELS_JS), catalog);
+    return fn(require(HIGGS_MODELS_JS));
   } finally {
-    staged.forEach(([, dest], i) => fs.writeFileSync(dest, shipped[i], 'utf-8'));
+    fs.writeFileSync(CATALOG_DIST, shipped, 'utf-8');
     delete require.cache[require.resolve(HIGGS_MODELS_JS)];
   }
 }
 
-test('the loader REFUSES a disagreement instead of overwriting it', () => {
-  // A catalog band moved off the overlay's used to be swallowed; now it names
-  // both files and both numbers. This is the mutation test for the fix.
-  const bands = readJson(BANDS_JSON);
-  withLoadedCatalog((catalog) => {
-    const target = catalog.models.find((m) => bands[m.id] && m.backends
-      && m.backends.served && typeof m.backends.served.safeMaxChars === 'number');
-    assert.ok(target, 'no overlay-named voice declares a served safeMaxChars to mutate');
-    target.backends.served.safeMaxChars += 100;
-  }, (higgs) => {
-    assert.throws(() => higgs.listHiggsModels(),
-      /declares safeMaxChars \d+ in electron\/data\/higgs-models\.json and \d+ as 'max' in electron\/data\/higgs-safe-bands\.json/,
-      'applySafeBands went back to overwriting a disagreeing catalog band in silence');
+test('the shipped catalog loads with no overlay, and every fine-tune is still listed', () => {
+  const catalog = readJson(CATALOG_JSON);
+  withLoadedCatalog((higgs) => {
+    const loaded = higgs.listHiggsModels().map((m) => m.id);
+    for (const m of catalog.models.filter((x) => x.kind === 'checkpoint')) {
+      assert.ok(loaded.includes(m.id), m.id + ' vanished from the catalog');
+    }
   });
 });
 
-test('the shipped data loads clean, and a voice the overlay does not name keeps its band', () => {
-  // The overlay is additive and removable, and that must stay true: refusing a
-  // disagreement is not the same as requiring an overlay entry. This also loads
-  // the repo's real catalog unmutated, so a shipped disagreement fails here too.
-  const bands = readJson(BANDS_JSON);
-  withLoadedCatalog(() => {}, (higgs, catalog) => {
-    const loaded = higgs.listHiggsModels();
-    const unnamed = catalog.models.filter((m) => !bands[m.id]
-      && m.backends && m.backends.served
-      && typeof m.backends.served.safeMaxChars === 'number');
-    for (const m of unnamed) {
-      const got = loaded.find((x) => x.id === m.id);
-      assert.ok(got, `${m.id} vanished from the catalog`);
-      assert.strictEqual(got.backends.served.safeMaxChars, m.backends.served.safeMaxChars,
-        `${m.id} is not in the overlay, so its catalog band must travel unchanged`);
-    }
+test('a fine-tune\'s voice document with no venue band is REFUSED by name, never packed to local numbers', () => {
+  const catalog = readJson(CATALOG_JSON);
+  const fineTune = catalog.models.find((m) => m.kind === 'checkpoint');
+  withLoadedCatalog((higgs) => {
+    const model = higgs.listHiggsModels().find((m) => m.id === fineTune.id);
+    const userDataDir = fs.mkdtempSync(path.join(require('os').tmpdir(), 'ofoo-'));
+    assert.throws(
+      () => higgs.higgsVoicesDocument(model, { arm: 'wsl', userDataDir, translatePath: (x) => x }),
+      /no Crucible server has stated its cap, band and pace/,
+      'a fine-tune document was written without the venue\'s numbers');
+    // And with the venue's band, the document carries THOSE numbers, whole.
+    const venueBand = { server: 'pc', voice: fineTune.id, maxChars: 800, ceilingChars: 700, floorChars: 400,
+      targetChars: null, paceCharsPerSec: 16.14, maxCharsPerSec: 20.98, minCharsPerSec: 12.42 };
+    const doc = higgs.higgsVoicesDocument(model, { arm: 'wsl', userDataDir, translatePath: (x) => x, venueBand });
+    const entry = doc[fineTune.id];
+    assert.deepStrictEqual(
+      [entry.maxChars, entry.safeMinChars, entry.safeMaxChars, entry.paceCharsPerSec, entry.maxCharsPerSec, entry.minCharsPerSec],
+      [800, 400, 700, 16.14, 20.98, 12.42],
+      'the voice document is not the venue\'s numbers');
   });
 });
 
