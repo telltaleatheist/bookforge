@@ -406,7 +406,8 @@ function wordSim(a: readonly string[], b: readonly string[]): number {
   return 1 - d[m] / Math.max(n, m);
 }
 
-type Path = { op: Op; i: number; j: number; n?: number }[];
+/** `held`: a MATCH step that is a name or rare word KEPT against a different heard word - written like a match, never counted as the reader saying it (`agreement`). */
+type Path = { op: Op; i: number; j: number; n?: number; held?: boolean }[];
 
 /** The book-vs-heard alignment: an edit-distance DP with free compound joins either way, then the edge rule. */
 function alignPath(B: Tok[], H: Tok[], opts: CorrectOptions): Path {
@@ -474,7 +475,9 @@ function alignPath(B: Tok[], H: Tok[], opts: CorrectOptions): Path {
   const path: Path = [];
   let i = n; let j = m;
   while (i > 0 || j > 0) {
-    const op = back[i][j]; const nn = backN[i][j]; path.push(op === 'splitN' ? { op, i, j, n: nn } : { op, i, j });
+    const op = back[i][j]; const nn = backN[i][j];
+    const held = op === 'match' && !(B[i - 1].k === H[j - 1].k || sameTok(B[i - 1], H[j - 1]));
+    path.push(op === 'splitN' ? { op, i, j, n: nn } : held ? { op, i, j, held } : { op, i, j });
     if (op === 'match' || op === 'sub') { i--; j--; } else if (op === 'split2') { i--; j -= 2; } else if (op === 'splitN') { i--; j -= nn; }
     else if (op === 'join2') { i -= 2; j--; }
     else if (op === 'del') i--; else j--;
@@ -575,7 +578,10 @@ export function correctToHeard(bookText: string, heard: readonly string[], opts:
     });
   }
   const vetoed = (k: number): boolean => regionOf[k] >= 0 && bookWins.has(regionOf[k]);
-  const kept = path.reduce((a, p) => a + (p.op === 'match' ? 1 : p.op === 'split2' || p.op === 'splitN' ? 1 : p.op === 'join2' ? 2 : 0), 0);
+  // A KEPT NAME IS NOT AGREEMENT (2026-09-29): a name held against a different heard word says nothing about whether
+  // the reader read this sentence - counted, it lifted a cue placed on another sentence's audio (tp cue 8153: shared
+  // "November 1938", held "Nazi") over MIN_AGREEMENT, and the two sentences were spliced into one.
+  const kept = path.reduce((a, p) => a + (p.op === 'match' && !p.held ? 1 : p.op === 'split2' || p.op === 'splitN' ? 1 : p.op === 'join2' ? 2 : 0), 0);
   const agreement = kept / n;
   if (agreement < MIN_AGREEMENT) return { text: bookText, changed: false, agreement, edits: [] };
 

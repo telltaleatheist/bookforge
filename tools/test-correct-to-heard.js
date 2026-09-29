@@ -285,6 +285,20 @@ check('tc: "a second August-miracle" read "second August miracle" is not a date,
   const d = correctToHeard('He died on 2 August 1934.', words('He died on the second of August nineteen thirtyfour'));
   assert.strictEqual(d.text, 'He died on 2 August 1934.');
 });
+check('tp: a name KEPT against a different word is not agreement, so a cue on another sentence\'s audio is left alone', () => {
+  // tp cue 8153 (2026-09-29): placed on a different sentence's audio, it scored 0.318 because names held against
+  // unrelated heard words counted as agreement, and the two sentences were spliced into one.
+  const names = new Set(['november', 'nazi', 'osteria', 'munich', 'hitler', 'goebbels']);
+  const r = correctToHeard('For many foreign observers, indeed, the events of 9-10 November 1938 came as a turning-point in their estimation of the Nazi regime.',
+    words('Three At their lunchtime meeting in the Osteria restaurant in Munich on November 10 1938 Hitler and Goebbels besides finalizing the draft of the decree bringing the'),
+    { properNouns: names });
+  assert.strictEqual(r.changed, false, r.text);
+  // The shape made plain: three names held against unrelated words would be 5/10 "agreement"; only 2 words match.
+  const s = correctToHeard('Hitler met Goebbels in Munich to plan the coming purge.',
+    words('the weather in the valley was mild that whole season'), { properNouns: new Set(['hitler', 'goebbels', 'munich']) });
+  assert.ok(s.agreement < 0.3, `held names counted as agreement: ${s.agreement}`);
+  assert.strictEqual(s.changed, false, s.text);
+});
 check('"may" and "march" as verbs are not dates', () => {
   const r = correctToHeard('The first may seem strange.', words('The first may seem strange'));
   assert.strictEqual(r.text, 'The first may seem strange.');
