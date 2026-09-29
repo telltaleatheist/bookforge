@@ -711,7 +711,16 @@ export async function runCrucibleRender(
   }
 
   const log = options.onLog ?? (() => undefined);
-  const client = await crucibleClientFor(server, CLIENT_NAME);
+  // Resolving the engine is a request too (`resolveEngine` -> `info()`), so its
+  // refusal is translated like every other: a raw `CrucibleUnreachable` carries
+  // no code and no transient line, and `settleStep` would FAIL the row for a
+  // server that is simply not answering yet.
+  let client: Awaited<ReturnType<typeof crucibleClientFor>>;
+  try {
+    client = await crucibleClientFor(server, CLIENT_NAME);
+  } catch (err) {
+    throw describeCrucibleRefusal(err, server);
+  }
 
   let jobId: string;
   let lastEventId = options.attachTo?.lastEventId ?? 0;

@@ -4167,15 +4167,29 @@ async function venueBandForPrep(
   settings: ParallelTtsSettings,
   server: string,
 ): Promise<CrucibleStatedBand> {
-  const { crucibleVoiceFor } = await import('./crucible/render.js');
+  const { crucibleVoiceFor, describeCrucibleRefusal } = await import('./crucible/render.js');
   const { crucibleVoiceBand, describeVenueBand, statedBandForDocument } =
     await import('./crucible/voice-band.js');
   const { crucibleClientFor, CRUCIBLE_CLIENT_NAME } = await import('./crucible/servers.js');
   const model = higgsModelForJob(settings);
   const voice = crucibleVoiceFor(settings.ttsEngine, model.id);
-  const { band } = await crucibleVoiceBand(
-    await crucibleClientFor(server, CRUCIBLE_CLIENT_NAME), server, voice,
-  );
+  /*
+   * THE CLIENT IS A NETWORK CALL TOO. `crucibleClientFor` resolves the entry's
+   * engine (`resolveEngine` -> `info()`) before `crucibleVoiceBand` asks for the
+   * voices, and until 2026-09-28 a refusal there escaped as the SDK's raw
+   * `CrucibleUnreachable` — no `code`, so `crucible/prep-band.ts` could not see
+   * it was availability and FAILED the prepare row with "crucible at … is
+   * unreachable: fetch failed (other side closed)" (Owen, a book dropped on the
+   * WSL slot while that card was busy with image generation). It takes the same
+   * translation the voices call does, so an unreachable server parks.
+   */
+  let client: Awaited<ReturnType<typeof crucibleClientFor>>;
+  try {
+    client = await crucibleClientFor(server, CRUCIBLE_CLIENT_NAME);
+  } catch (err) {
+    throw describeCrucibleRefusal(err, server);
+  }
+  const { band } = await crucibleVoiceBand(client, server, voice);
   // The local row's TARGET is the one number the catalog may still contribute,
   // and `venuePackingTarget` clamps it to the venue's ceiling. Read from THIS
   // machine's arm because that is the row a local render would have used; it is
