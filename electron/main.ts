@@ -97,7 +97,7 @@ import { parseNarrationElementKey } from '../shared/vlm/narration-deletions';
 import { addVariant, importAudiobookProject, deleteProjectOutput, saveVariantMetadata, setPrimaryVariant, setTtsVariant, setVariantProfessional, saveImageToMedia as saveImageToMediaShared } from './library-actions';
 // The export-landing act, shared with the tray sweep that files the exports no
 // announcement ever caught — see electron/foundry-export-sweep.ts.
-import { FOUNDRY_EXPORT_KINDS, fileFoundryExportAsVersion, foundryStepForExport, sweepFoundryExportTrays } from './foundry-export-sweep';
+import { FOUNDRY_EXPORT_KINDS, fileFoundryExportAsVersion, sweepFoundryExportTrays } from './foundry-export-sweep';
 import { noteFoundryLandingAnnounced, noteImpliedExportOrdered, setImpliedExportOrderer }
   from './foundry-landing-wait';
 // How a Foundry project becomes a book of ours — BOTH doors. The live import
@@ -711,31 +711,17 @@ interface FoundryMountModule {
    */
   setHostOperations(operations: readonly FoundryHostOperation[]): void;
   /**
-   * DROP ONE LEDGER STEP — the other half of an export being one item.
+   * DELETE ONE EXPORT — the file under `<project>/final/` and its row in
+   * Foundry's `manifest.final`, nothing upstream of it.
    *
-   * Owen, 2026-09-17: a Foundry export listed here under its parent book and the
-   * step that cast it are ONE thing, and removing either removes the other. The
-   * tray reconcile does the Foundry→here direction (a row whose file has left
-   * `final/` is withdrawn, electron/foundry-export-sweep.ts); this is here→Foundry.
-   *
-   * OPTIONAL, AND ITS ABSENCE IS THE WHOLE COMPATIBILITY STORY. It landed on
-   * Foundry's side after this vendored subtree was last copied in, so until the
-   * next re-vendor `foundryMount.deleteLedgerStep` is simply undefined — and the
-   * delete below says so in a sentence rather than throwing a TypeError about a
-   * property. This is the same posture `mintMetaFor?` and `onImport?` take, for
-   * the same reason: the seam is declared before the subtree carries it, and a
-   * function that is not there is never called.
-   *
-   * ITS REJECTION IS NOT SWALLOWED. This is a button a person just pressed, and
-   * Foundry's refusals here are whole sentences about a run that is about to
-   * write into the step, a queued job, or a payload its window has open. They are
-   * shown, not paraphrased.
-   *
-   * IT TAKES THE SUBTREE. A step chained behind the named one goes with it —
-   * Owen: *"epubs shouldnt have any sub-steps. theyre final pieces … but if there
-   * do happen to be sub-steps, remove them."*
+   * Owen, 2026-09-28: deleting an EPUB version here deletes THAT EPUB. It
+   * replaced `deleteLedgerStep`, which dropped the step the export was cast
+   * from — an AI-cleanup pass and its history went with a press that only
+   * meant the file, and Foundry's nav kept drawing the export. Its refusals
+   * (a job busy on the project) are whole sentences and are shown, not
+   * paraphrased. Foundry announces `projects:changed` so its windows re-read.
    */
-  deleteLedgerStep?(projectDir: string, stepId: string): Promise<unknown>;
+  deleteExport(filePath: string): Promise<unknown>;
   /**
    * RUN ONE FOUNDRY JOB NOW — the execution half of the centralized queue.
    *
@@ -1436,35 +1422,27 @@ async function reconcileFoundryExportTrays(occasion: string): Promise<void> {
 }
 
 /**
- * ASK FOUNDRY TO DROP THE STEP BEHIND A VERSION — the here→Foundry direction.
+ * DELETE THE FOUNDRY EXPORT BEHIND A VERSION — the here→Foundry direction.
  *
- * Answers NULL when there is nothing to refuse — the row is not a Foundry export,
- * the subtree cannot do this yet, or the step is gone already — and a SENTENCE
- * when the delete must not proceed. Null is therefore "carry on", and every
- * caller treats it that way.
+ * A version that came from Foundry (`foundrySource`) is a copy of a file in that
+ * Foundry project's `final/`. Deleting the version deletes that export too — its
+ * file and its catalogue row — so the two lists cannot disagree about whether the
+ * EPUB exists (Owen, 2026-09-28). NOTHING UPSTREAM GOES: the step it was cast
+ * from, and that step's history, are Foundry's work and stay. (Until today this
+ * dropped the STEP, which took an AI-cleanup pass with it and left Foundry's nav
+ * drawing an export whose file had gone.)
  *
- * ── Why "no step" is not a refusal ─────────────────────────────────────────
- *
- * A row can be a genuine export and still name no step: `stepId` is absent on
- * everything the tray sweep filed, and Foundry's catalogue is the fallback. When
- * NEITHER knows, the honest position is that this app cannot identify a step to
- * drop — and refusing the whole delete over that would trap the user with a row
- * they cannot remove. So the version goes and the step stays, which the next
- * export or a look at Foundry makes obvious, rather than this app guessing at a
- * step id and destroying somebody's history.
- *
- * ── Why an unmounted subtree is not a refusal either ───────────────────────
- *
- * `deleteLedgerStep` is optional on the mount contract until the next re-vendor
- * carries it. Before then the row still deletes, exactly as it did yesterday, and
- * the log says the step was left behind. A feature arriving in two halves must
- * not make the first half worse than no feature at all.
+ * Answers NULL to carry on and a SENTENCE when the delete must not proceed —
+ * Foundry's own refusal (a job busy on the project), shown whole. It runs FIRST,
+ * before a byte of ours moves, so a refusal leaves this project exactly as it was.
+ * An export already gone from `final/` is the goal, not a refusal: Foundry's
+ * delete strikes the stale row and says the file was already gone.
  */
-async function withdrawFoundryStepFor(
+async function withdrawFoundryExportFor(
   projectId: string,
   variantId: string,
 ): Promise<string | null> {
-  let source: { projectKey: string; fileName: string; stepId?: string } | undefined;
+  let source: { projectKey: string; fileName: string } | undefined;
   try {
     const manifest = await manifestService.getManifest(projectId);
     if (!manifest.success || !manifest.manifest) return null;
@@ -1478,45 +1456,15 @@ async function withdrawFoundryStepFor(
   }
   if (source === undefined) return null;
 
-  const foundryProjectDir = path.join(foundryProjectsDir(), source.projectKey);
-  // The record first, the catalogue second. See `foundryStepForExport`.
-  const stepId = source.stepId ?? await foundryStepForExport(foundryProjectDir, source.fileName);
-  if (stepId === undefined) {
-    console.warn(
-      `[foundry-host] "${source.fileName}" is being removed from ${projectId}, but neither its `
-      + `record nor Foundry project "${source.projectKey}" names the step it was cast from. The `
-      + 'version goes; the step stays.');
-    return null;
-  }
-  if (typeof foundryMount.deleteLedgerStep !== 'function') {
-    console.warn(
-      `[foundry-host] "${source.fileName}" is being removed from ${projectId}, but this vendored `
-      + 'Foundry has no `deleteLedgerStep` — step ' + stepId + ' stays until the subtree carrying '
-      + 'it is copied in. The version goes.');
-    return null;
-  }
+  const exportPath = path.join(foundryProjectsDir(), source.projectKey, 'final', source.fileName);
   try {
-    await foundryMount.deleteLedgerStep(foundryProjectDir, stepId);
+    await foundryMount.deleteExport(exportPath);
     console.log(
-      `[foundry-host] Dropped step ${stepId} from Foundry project "${source.projectKey}" with the `
-      + `version "${source.fileName}" of ${projectId}.`);
+      `[foundry-host] Deleted export "${source.fileName}" from Foundry project `
+      + `"${source.projectKey}" with its version of ${projectId}; its step stays.`);
     return null;
   } catch (err) {
-    const said = (err as Error).message;
-    /*
-     * A STEP THAT IS ALREADY GONE IS THE GOAL, NOT A REFUSAL. The user may have
-     * deleted it in the Foundry window a moment ago and be tidying the row this
-     * side; answering "that step does not exist" would then block the one action
-     * that reconciles them. Everything else — a busy run, an open payload — is
-     * Foundry's sentence and is handed back whole.
-     */
-    if (/no such step|not (a )?(deletable |known )?step|does not exist|cannot find/i.test(said)) {
-      console.log(
-        `[foundry-host] Step ${stepId} was already gone from "${source.projectKey}"; removing the `
-        + 'version alone.');
-      return null;
-    }
-    return said;
+    return (err as Error).message;
   }
 }
 
@@ -10281,27 +10229,27 @@ function setupIpcHandlers(): void {
   ipcMain.handle('variant:delete', async (_event, projectId: string, variantId: string) => {
     try {
       /*
-       * ── AN EXPORT ON LOAN TAKES ITS FOUNDRY STEP WITH IT ──────────────────
+       * ── AN EXPORT ON LOAN TAKES ITS FOUNDRY EXPORT WITH IT ────────────────
        *
-       * Owen, 2026-09-17: the nested row and the step that cast it are ONE item,
-       * and deleting either deletes the other. `withdrawFoundryStepFor` is that
-       * half; the tray reconcile is the other.
+       * Owen, 2026-09-28: deleting the EPUB here deletes that EPUB in Foundry
+       * too — its `final/` file and catalogue row — and NOT the step it was cast
+       * from (the 2026-09-17 rule dropped the step, which took an AI-cleanup pass
+       * with it). `withdrawFoundryExportFor` is that half; the tray reconcile,
+       * which withdraws a version whose `final/` file has gone, is the other.
        *
-       * IT RUNS FIRST, BEFORE A BYTE OF OURS MOVES. Foundry refuses a step with a
-       * run about to write into it, and a refusal has to leave this project
-       * exactly as it was — a version deleted here against a step that is still
-       * there would be re-landed by the very next sweep, which is a delete that
-       * undoes itself. The reverse order is safe in the way that matters: if
-       * Foundry drops the step and our own write then fails, the file has left
-       * `final/` and the next reconcile withdraws the row. One order self-heals
-       * and the other churns.
+       * IT RUNS FIRST, BEFORE A BYTE OF OURS MOVES. A refusal (a job busy on the
+       * project) has to leave this project exactly as it was — a version deleted
+       * here against an export that is still in the tray would be re-landed by
+       * the very next sweep, which is a delete that undoes itself. The reverse
+       * order is safe: if Foundry's delete lands and our own write then fails,
+       * the file has left `final/` and the next reconcile withdraws the row.
        *
        * A PROMOTED ROW IS NOT ON LOAN and reaches none of this — the helper keys
        * on `foundrySource`, which promotion clears precisely to say the file is
        * the book's own now.
        */
-      const stepRefusal = await withdrawFoundryStepFor(projectId, variantId);
-      if (stepRefusal !== null) return { success: false, error: stepRefusal };
+      const exportRefusal = await withdrawFoundryExportFor(projectId, variantId);
+      if (exportRefusal !== null) return { success: false, error: exportRefusal };
       let removed: import('./manifest-types').ProjectVariant | null = null;
       // Set true if, after removal, some OTHER surviving reference still points at
       // the deleted variant's file — in which case we must NOT unlink it, or we'd

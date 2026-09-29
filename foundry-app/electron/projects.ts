@@ -6955,6 +6955,14 @@ export async function deleteDocument(filePath: string): Promise<DocumentRemoval>
     } catch { /* already gone, or not readable — either way not ours to force */ }
   }
 
+  /*
+   * Said once the bytes are gone, like every other change to the library. The
+   * window that pressed Delete re-reads on its own; a delete a HOST makes
+   * (BookForge removing an export it lists as a version) reaches no renderer
+   * any other way, and without this the nav went on drawing a row whose file
+   * had just been removed — a click on it errored (2026-09-28).
+   */
+  announceProjects();
   return { title, label, wasMissing, assets: countSweep(sweep) };
 }
 

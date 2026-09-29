@@ -197,6 +197,15 @@ export { setHostOperations } from './host-ops';
  * theyre final pieces … but if there do happen to be sub-steps, remove them."*
  */
 export { deleteLedgerStep } from './ipc';
+/*
+ * DELETING ONE EXPORT, FOR A HOST THAT LISTS IT AS A VERSION. Owen, 2026-09-28:
+ * deleting the EPUB there deletes the EPUB — its file in `final/` and its row in
+ * the catalogue — and NOT the step it was cast from. Hand it the absolute path
+ * of the file under `<project>/final/`. Refusals (a job busy on the project, a
+ * path outside the library) are thrown sentences, as `deleteLedgerStep`'s are.
+ * The windows re-read on the `projects:changed` the delete announces.
+ */
+export { deleteExport } from './ipc';
 export type { HostNode, HostNodeProgress, HostNodeState, HostOperationKind, NodeOutput } from '../shared/types';
 /*
  * HOW A HOST SAYS ITS STOP IS NOT ITS CANCEL — re-exported here because this file

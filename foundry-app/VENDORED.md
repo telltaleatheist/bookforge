@@ -10,10 +10,30 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\<user>\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **6b4bc02** — *Analysis snap port: the engine built from 08176d0* (was ac51646; 22 files moved: the engine, analysis ranked on briefcase's snap ranker with confirmed findings only, the decide door's weather in `src/backend/decide-door.ts`, queue and env-catalog changes; synced from Foundry's git objects, `.gitignore` kept as ours) |
+| Source sha | **1115cea** — *Host export delete: deleting an EPUB version deletes that export, not the step it was cast from* (was 6b4bc02; 3 files moved: `electron/ipc.ts` gains the `deleteExport` door, `electron/mount.ts` re-exports it, `electron/projects.ts` `deleteDocument` announces `projects:changed`; engine unchanged) |
 | Engine | **VENDORED, in `engine/`** since 1927563 (2026-09-24): `engine/foundry-engine.cjs` plus its four fonts, built from Foundry's `src/` by Foundry's `tools/build-engine.mjs` and checked against those sources by Foundry's test suite. Run by BookForge's own Electron as Node (`ELECTRON_RUN_AS_NODE=1`) from BOTH doors — this copy's `electron/engine.ts` and BookForge's `electron/foundry-bridge.ts`. **Ask it: `node foundry-app/engine/foundry-engine.cjs --version`** → `foundry X.Y.Z (src <digest>)`. There is no downloaded engine any more; `FOUNDRY_BIN` still overrides in both doors. |
-| Copied on | 2026-09-19 (five times: 3738c01, 3436fc5, 806d44b, f349771, ca4754c), 2026-09-20 (98a4344, 9e0b27d, dccc144, 7b98004, cc5fc5b, 93010d8, 77e1d6d) 2026-09-21 (753dca8, 3e26e53, f9bebb6, 95593b0, 8ee48b7) and 2026-09-22 (7185764, 7912022, 19fa7a9, df63f9f) and 2026-09-23 (acf63c2, 4835411), 2026-09-24 (b4c7346, 1927563, e2481dc, a1138f6, 72c6b08, b7ba2a8, 0eb12de) |
+| Copied on | 2026-09-19 (five times: 3738c01, 3436fc5, 806d44b, f349771, ca4754c), 2026-09-20 (98a4344, 9e0b27d, dccc144, 7b98004, cc5fc5b, 93010d8, 77e1d6d) 2026-09-21 (753dca8, 3e26e53, f9bebb6, 95593b0, 8ee48b7) and 2026-09-22 (7185764, 7912022, 19fa7a9, df63f9f) and 2026-09-23 (acf63c2, 4835411), 2026-09-24 (b4c7346, 1927563, e2481dc, a1138f6, 72c6b08, b7ba2a8, 0eb12de), 2026-09-28 (1115cea) |
 | Copied by | Mechanical source sync, verified against Foundry `0eb12de:app/` (`git hash-object` per file: clean but for this file, `IPC-CHANNELS.md` and `.gitignore` — see below); details below |
+
+## The `6b4bc02 → 1115cea` re-vendor — deleting an EPUB deletes that export, not its step (2026-09-28)
+
+Owen deleted a Foundry-made EPUB version of *The Mysterious Stranger* on the
+versions page, and Foundry lost the AI-cleanup pass instead: BookForge's
+`variant:delete` asked Foundry to `deleteLedgerStep` the step the export was
+cast from, which took the pass and its history, while the Foundry nav went on
+drawing the export and erroring on a click. Ruling: deleting the EPUB deletes
+the EPUB — its `final/` file and `manifest.final` row — and nothing upstream.
+
+- Foundry gains a `deleteExport(filePath)` mount door, the same body as the
+  window's own `documents:delete` for a `final/` file (busy proof, then
+  `deleteDocument`); `deleteLedgerStep` stays for the ledger's own delete.
+- `deleteDocument` announces `projects:changed`, so a delete a host makes
+  reaches the Foundry windows.
+- BookForge's `withdrawFoundryStepFor` became `withdrawFoundryExportFor`
+  (electron/main.ts), still run before any of its own bytes move.
+
+Built in `.foundry-stage-1115cea/` (electron + renderer, `test:surface` clean);
+`dist` swapped with BookForge down.
 
 ## The `1927563 → e2481dc` re-vendor — Crucible 1.0.25, any server that answers (2026-09-24)
 

@@ -155,6 +155,7 @@ import {
   exportInTray,
   goToStep,
   inspectProject,
+  type DocumentRemoval,
   type ProjectInventory,
   isArchived,
   isManaged,
@@ -466,6 +467,22 @@ export function deleteLedgerStep(projectDir: string, stepId: string): Promise<un
       + '`mountFoundry` must run before a host can drop a step.'));
   }
   return stepDeleteDoor(projectDir, stepId);
+}
+
+/**
+ * DELETE ONE EXPORT FOR A HOST — the file in `final/` and its `manifest.final`
+ * row, nothing else. A holder for the same reason `deleteLedgerStep` is one:
+ * the body's busy proof lives in `registerIpc`'s scope, and this keeps one body.
+ */
+let exportDeleteDoor: ((filePath: string) => Promise<DocumentRemoval>) | null = null;
+
+export function deleteExport(filePath: string): Promise<DocumentRemoval> {
+  if (exportDeleteDoor === null) {
+    return Promise.reject(new Error(
+      'Foundry has not been mounted, so there is no library to delete an export from. '
+      + '`mountFoundry` must run before a host can delete one.'));
+  }
+  return exportDeleteDoor(filePath);
 }
 
 function promisedDeletion(projectDir: string, stepId: string): StepDeletion | null {
@@ -2313,6 +2330,25 @@ export function registerIpc(): void {
     if (parts.length <= 1) return parts[0] ?? '';
     return `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`;
   }
+
+  /*
+   * THE HOST'S DOOR ONTO THE SAME DELETE, for one export in `final/`. Owen,
+   * 2026-09-28: deleting an EPUB on BookForge's screen deletes THAT EPUB —
+   * its file here and its row in `manifest.final` — and nothing upstream of
+   * it. BookForge used to drop the STEP the export was cast from instead,
+   * which took an AI-cleanup pass and its history with it and left the nav
+   * drawing an export whose file was gone.
+   *
+   * The busy proof when the tray still lists it; `deleteDocument` either way,
+   * because a row whose file already left is exactly the one worth striking.
+   */
+  exportDeleteDoor = async (filePath: string) => {
+    const filed = await findExport(filePath);
+    if (filed !== null) refuseBusyJob(filed.project);
+    const removed = await deleteDocument(filePath);
+    forgetRecentsUnder(filePath);
+    return removed;
+  };
 
   ipcMain.handle('documents:delete', async (_event, filePath: string) => {
     /*
