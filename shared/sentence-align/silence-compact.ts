@@ -60,6 +60,29 @@ export function compactedLength(pieces: readonly KeptPiece[]): number {
  * Heard words, compacted timeline -> original timeline. A word whose midpoint falls in a gap between pieces was heard
  * in the inserted silence and is dropped (counted).
  */
+/**
+ * SPANS of the compacted audio, back on the original timeline (2026-09-28): a stretch the ASR
+ * looped on (`decode_loop`, Crucible 1.0.58) is reported in the SUBMITTED audio's time, and a cue
+ * is judged in the book's. A span that crosses a joint between pieces comes back as one span per
+ * piece it touches; the silence between pieces is not part of any of them.
+ */
+export function mapSpansBack(
+  spans: readonly { start: number; end: number }[],
+  pieces: readonly KeptPiece[],
+): { start: number; end: number }[] {
+  const out: { start: number; end: number }[] = [];
+  for (const s of spans) {
+    for (const p of pieces) {
+      const dstEnd = p.dstStart + (p.srcEnd - p.srcStart);
+      const a = Math.max(s.start, p.dstStart); const b = Math.min(s.end, dstEnd);
+      if (b <= a) continue;
+      const shift = p.srcStart - p.dstStart;
+      out.push({ start: a + shift, end: b + shift });
+    }
+  }
+  return out.sort((x, y) => x.start - y.start);
+}
+
 export function mapWordsBack(words: readonly HeardWord[], pieces: readonly KeptPiece[]): { words: HeardWord[]; dropped: number } {
   const out: HeardWord[] = []; let dropped = 0;
   for (const w of words) {

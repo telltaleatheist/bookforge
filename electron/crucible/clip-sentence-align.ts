@@ -224,6 +224,15 @@ export async function runClipSentenceAlign(o: RunClipSentenceAlignOptions): Prom
     }, scratch);
     const { perClip, inGaps } = splitHeardByClip(asr.words, plan);
     if (inGaps > 0) log(`${inGaps} heard word(s) fell in the silence between clips and belong to none`);
+    // A clip the ASR LOOPED on (Crucible 1.0.58 `decode_loop`) came back with a hole, not silence: it is not located
+    // against the book on what is left, and is reported like a clip nothing was heard in.
+    const loopedClips: string[] = [];
+    plan.forEach((p, k) => {
+      if (asr.loops.some((l) => l.end > p.offset && l.start < p.offset + p.duration)) {
+        perClip[k] = []; loopedClips.push(o.clips[k].id);
+      }
+    });
+    if (loopedClips.length > 0) log(`the ASR looped inside ${loopedClips.length} clip(s); they are not located: ${loopedClips.join(', ')}`);
 
     // 3. LOCATE + 4. DIFF, per clip
     progress('locate', 0, 'Finding each clip in the book');

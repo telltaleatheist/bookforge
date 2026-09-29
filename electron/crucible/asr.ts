@@ -175,6 +175,13 @@ export interface CrucibleTranscript {
   readonly language_requested: string;
   readonly duration_s: number;
   readonly segments: readonly TranscriptSegment[];
+  /**
+   * STRETCHES THE MODEL LOOPED ON, in the submitted audio's time (Crucible 1.0.58). Such a piece
+   * comes back with NO words rather than failing the job, so a caller that reads the words alone
+   * sees silence where the reader spoke. Empty when the server reported none - including every
+   * server before 1.0.58, where a loop failed the job instead of arriving here.
+   */
+  readonly decodeLoops: readonly { readonly start: number; readonly end: number; readonly reason: string | null }[];
 }
 
 /** Sentence-final punctuation, with closing quotes/brackets after the mark. Same as the script's. */
@@ -248,7 +255,25 @@ export function readCrucibleTranscript(parsed: unknown): CrucibleTranscript {
     language_requested: str(doc, 'language_requested', 'transcript'),
     duration_s: num(doc, 'duration_s', 'transcript'),
     segments,
+    decodeLoops: readDecodeLoops(doc['decode_loop']),
   };
+}
+
+/** `decode_loop` [{start, end, reason, ...}], or [] when absent. A malformed entry is refused. */
+function readDecodeLoops(raw: unknown): CrucibleTranscript['decodeLoops'] {
+  if (raw === undefined || raw === null) return [];
+  if (!Array.isArray(raw)) {
+    throw new CrucibleAsrRefused('crucible_asr_transcript_unreadable', 'transcript.json decode_loop is not a list');
+  }
+  return raw.map((r, i) => {
+    const where = `decode_loop[${i}]`;
+    if (typeof r !== 'object' || r === null) {
+      throw new CrucibleAsrRefused('crucible_asr_transcript_unreadable', `${where} is not an object`);
+    }
+    const o = r as Record<string, unknown>;
+    return { start: num(o, 'start', where), end: num(o, 'end', where),
+      reason: typeof o['reason'] === 'string' ? o['reason'] as string : null };
+  });
 }
 
 /**

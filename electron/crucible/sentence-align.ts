@@ -48,9 +48,9 @@ import {
 } from '../../shared/sentence-align/book-diff';
 import { endEdge, FRAME_S, startEdge, type LevelEnvelope } from '../../shared/sentence-align/cue-edges';
 import { findDiscrepancies } from '../../shared/sentence-align/discrepancies';
-import { compactedLength, keepPieces, mapWordsBack, type KeptPiece } from '../../shared/sentence-align/silence-compact';
+import { compactedLength, keepPieces, mapSpansBack, mapWordsBack, type KeptPiece } from '../../shared/sentence-align/silence-compact';
 import { correctToHeard, MIN_AGREEMENT, wordKey } from '../../shared/sentence-align/correct-to-heard';
-import { recheckPieces } from '../../shared/sentence-align/recheck';
+import { recheckPieces, touchesDecodeLoop } from '../../shared/sentence-align/recheck';
 
 export const SENTENCE_ASR_MODEL = 'qwen3-asr-1.7b';
 export const SENTENCE_ALIGN_MODEL = 'qwen3-aligner';
@@ -108,7 +108,16 @@ interface CachedTranscript {
   readonly audio: { readonly size: number; readonly mtimeMs: number; readonly fp?: string };
   readonly durationS: number;
   readonly words: HeardWord[];
+  /**
+   * The stretches the ASR looped on, in THIS audio's time (Crucible 1.0.58 `decode_loop`). Absent in a cache
+   * written before 2026-09-28: read as none, because before 1.0.58 a loop failed the job instead of arriving. Only a
+   * cache written by 1.0.58 before this field existed can hide one.
+   */
+  readonly loops?: { start: number; end: number }[];
 }
+
+/** A stretch of audio the ASR looped on: it returned no words there, and silence is not what the reader said. */
+export interface DecodeLoop { readonly start: number; readonly end: number }
 
 /**
  * THE AUDIO BY CONTENT (2026-09-27). The cache was valid for the same size + mtime, and a COPY resets mtime: a copied
@@ -135,7 +144,7 @@ export function audioFingerprint(file: string): string {
 export type TranscribeOptions = Pick<RunSentenceAlignOptions,
   'server' | 'audioPath' | 'language' | 'transcriptCachePath' | 'signal' | 'onProgress' | 'onLog'>;
 
-export async function transcribe(o: TranscribeOptions, scratch: string, model: string = SENTENCE_ASR_MODEL): Promise<{ words: HeardWord[]; durationS: number }> {
+export async function transcribe(o: TranscribeOptions, scratch: string, model: string = SENTENCE_ASR_MODEL): Promise<{ words: HeardWord[]; durationS: number; loops: DecodeLoop[] }> {
   const log = o.onLog ?? (() => undefined);
   const st = fs.statSync(o.audioPath);
   if (o.transcriptCachePath && fs.existsSync(o.transcriptCachePath)) {
@@ -144,8 +153,8 @@ export async function transcribe(o: TranscribeOptions, scratch: string, model: s
       const same = c.audio.size === st.size
         && (c.audio.mtimeMs === st.mtimeMs || (c.audio.fp !== undefined && c.audio.fp === audioFingerprint(o.audioPath)));
       if (c.model === model && same && c.words.length > 0) {
-        log(`transcript reused from ${o.transcriptCachePath} (${c.words.length} words)`);
-        return { words: c.words, durationS: c.durationS };
+        log(`transcript reused from ${o.transcriptCachePath} (${c.words.length} words${c.loops === undefined ? ', written before decode_loop was kept' : `, ${c.loops.length} decode loop(s)`})`);
+        return { words: c.words, durationS: c.durationS, loops: c.loops ?? [] };
       }
       log(`transcript cache ${o.transcriptCachePath} is for other audio or another model; transcribing`);
     } catch (err) {
@@ -187,12 +196,14 @@ export async function transcribe(o: TranscribeOptions, scratch: string, model: s
     for (const w of seg.words) words.push({ word: w.word, start: w.start, end: w.end });
   }
   words.sort((a, b) => a.start - b.start);
+  const loops: DecodeLoop[] = t.decodeLoops.map((l) => ({ start: l.start, end: l.end }));
+  for (const l of t.decodeLoops) log(`asr looped on ${l.start.toFixed(1)}-${l.end.toFixed(1)} s of ${path.basename(o.audioPath)} (${l.reason ?? 'no reason given'}): no words there`);
   if (o.transcriptCachePath) {
-    const c: CachedTranscript = { model, audio: { size: st.size, mtimeMs: st.mtimeMs, fp: audioFingerprint(o.audioPath) }, durationS: t.duration_s, words };
+    const c: CachedTranscript = { model, audio: { size: st.size, mtimeMs: st.mtimeMs, fp: audioFingerprint(o.audioPath) }, durationS: t.duration_s, words, loops };
     fs.writeFileSync(o.transcriptCachePath, JSON.stringify(c));
   }
   log(`transcribed ${path.basename(o.audioPath)}: ${words.length} words over ${t.duration_s.toFixed(0)} s (job ${outcome.jobId})`);
-  return { words, durationS: t.duration_s };
+  return { words, durationS: t.duration_s, loops };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -400,7 +411,7 @@ export async function runSentenceAlign(o: RunSentenceAlignOptions): Promise<Sent
     progress('transcribe', 0, 'Measuring the audio (where the silence is)');
     const env = await levelEnvelope(o.ffmpegPath, o.audioPath, envStop.signal);
     const pieces = keepPieces(env, env.db.length * FRAME_S);
-    let asr: { words: HeardWord[]; durationS: number };
+    let asr: { words: HeardWord[]; durationS: number; loops: DecodeLoop[] };
     if (pieces === null) {
       progress('transcribe', 0, 'Transcribing with Qwen3-ASR on Crucible');
       asr = await transcribe(o, scratch);
@@ -419,7 +430,7 @@ export async function runSentenceAlign(o: RunSentenceAlignOptions): Promise<Sent
       const heard = await transcribe({ ...o, audioPath: compact }, scratch);
       const back = mapWordsBack(heard.words, pieces);
       if (back.dropped) log(`dropped ${back.dropped} word(s) heard in the gaps between kept pieces`);
-      asr = { words: back.words, durationS: whole };
+      asr = { words: back.words, durationS: whole, loops: mapSpansBack(heard.loops, pieces) };
     }
     const audioS = Math.max(asr.durationS, env.db.length * FRAME_S);
     /*
@@ -604,24 +615,36 @@ export async function runSentenceAlign(o: RunSentenceAlignOptions): Promise<Sent
         for (let f = f0; f < f1; f++) if (env.db[f] > SILENT_WORD_DB) return true;
         return false;
       }).sort((a, b) => a.start - b.start);
+      // A cue whose padded audio met a stretch the re-hear LOOPED on gets no re-hear verdict: its missing words are the
+      // model's failure, not the reader's (`touchesDecodeLoop`). Its first-pass verdict stands.
+      const rLoops = mapSpansBack(rh.loops, rp);
+      const loopedRehear: number[] = [];
       // the cue's own EDGES (pause centres, the audio a slicer cuts), not the placement: that is the clip's audio
       for (const c of suspects) {
+        if (touchesDecodeLoop(c, rLoops)) { loopedRehear.push(c.index); continue; }
         const ws: string[] = [];
         for (const w of back) { const m = (w.start + w.end) / 2; if (m < c.start) continue; if (m > c.end) break; ws.push(w.word); }
         reheard.set(c.index, ws);
       }
+      if (loopedRehear.length > 0) log(`re-hear looped on ${rLoops.length} stretch(es); ${loopedRehear.length} cue(s) keep their first-pass verdict: ${loopedRehear.join(', ')}`);
     }
     let withdrawn = 0; let recovered = 0;
     // Qwen's verdict per cue: the long pass, or its own-audio re-hear where there was one
     const qwen = new Map<number, { heard: string[]; r: ReturnType<typeof correctToHeard> }>();
+    const loopedLong: number[] = [];
     for (const c of cues) {
       const f = first.get(c.index); if (!f) continue;
       const again = reheard.get(c.index);
-      const r = again ? correctToHeard(f.book, again, { properNouns, rareWords }) : f.r;
+      // A cue the LONG pass looped on, with no clean re-hear either, has no trustworthy hearing at all: the book stands.
+      const blind = !again && touchesDecodeLoop(c, asr.loops, 0);
+      if (blind) loopedLong.push(c.index);
+      const r = blind ? { text: f.book, changed: false, agreement: 1, edits: [] }
+        : again ? correctToHeard(f.book, again, { properNouns, rareWords }) : f.r;
       if (again && f.r.changed && !r.changed) withdrawn++;
       if (again && f.r.agreement < MIN_AGREEMENT && r.agreement >= MIN_AGREEMENT) recovered++;
       qwen.set(c.index, { heard: again ?? f.heard, r });
     }
+    if (loopedLong.length > 0) log(`the long pass looped over ${loopedLong.length} cue(s) with no clean re-hear; they keep the book's text: ${loopedLong.join(', ')}`);
     if (suspects.length > 0) log(`re-heard ${suspects.length} cue(s) on their own audio: ${withdrawn} correction(s) withdrawn (the long pass had missed words the clip holds), ${recovered} misplaced cue(s) recovered`);
 
     // THE SECOND OPINION (SECOND_OPINION_MODEL): every cue Qwen would still change is heard by a different ASR family on
@@ -645,11 +668,15 @@ export async function runSentenceAlign(o: RunSentenceAlignOptions): Promise<Sent
         for (let f = f0; f < f1; f++) if (env.db[f] > SILENT_WORD_DB) return true;
         return false;   // heard over digital silence: a hallucination (Whisper with no VAD)
       }).sort((a, b) => a.start - b.start);
+      const sLoops = mapSpansBack(sh.loops, sp);
+      const loopedSecond: number[] = [];
       for (const c of contested) {
+        if (touchesDecodeLoop(c, sLoops)) { loopedSecond.push(c.index); continue; }
         const ws: string[] = [];
         for (const w of back) { const m = (w.start + w.end) / 2; if (m < c.start) continue; if (m > c.end) break; ws.push(w.word); }
         secondHeard.set(c.index, ws);
       }
+      if (loopedSecond.length > 0) log(`second opinion looped on ${sLoops.length} stretch(es); ${loopedSecond.length} cue(s) have no second opinion: ${loopedSecond.join(', ')}`);
     }
     let vetoed = 0; const disputedCues: { index: number; start: number; end: number; book: string; qwen: string; second: string; disputed: unknown[] }[] = [];
     for (const c of cues) {

@@ -44,5 +44,27 @@ check('4. a re-heard word maps back inside its cue', () => {
   assert.ok(near(back.words[1].start, 199.0));
 });
 
+/*
+ * DECODE LOOPS (2026-09-28, Crucible 1.0.58): a looped piece comes back with NO words. Mapped back to the book's
+ * timeline, a cue whose padded audio meets one gets no verdict from that listen, so a hole is never read as the
+ * reader leaving words out (Third Reich tc, recheck piece 17395.2-17397.1 s).
+ */
+check('a loop in the re-hear audio maps back to the cue it covered, and that cue gets no re-hear verdict', () => {
+  // two cues re-heard: 100-104 s and 200-203 s of the book
+  const pieces = R.recheckPieces([{ start: 100, end: 104 }, { start: 200, end: 203 }], 1000);
+  // the second piece starts after the first's padded length plus the gap
+  const second = pieces[1];
+  const loopInRecheck = { start: second.dstStart + 2.0, end: second.dstStart + 3.0 };
+  const back = S.mapSpansBack([loopInRecheck], pieces);
+  assert.strictEqual(back.length, 1);
+  assert.ok(Math.abs(back[0].start - (second.srcStart + 2.0)) < 1e-9, JSON.stringify(back));
+  assert.strictEqual(R.touchesDecodeLoop({ start: 200, end: 203 }, back), true, 'the looped cue was not caught');
+  assert.strictEqual(R.touchesDecodeLoop({ start: 100, end: 104 }, back), false, 'a clean cue was caught');
+  // A loop only in the PADDING still touches the cue: its words were heard through that audio.
+  assert.strictEqual(R.touchesDecodeLoop({ start: 200, end: 203 }, [{ start: 203.5, end: 204 }]), true);
+  // And the long pass is judged on the cue itself (pad 0).
+  assert.strictEqual(R.touchesDecodeLoop({ start: 200, end: 203 }, [{ start: 203.5, end: 204 }], 0), false);
+});
+
 console.log(`recheck: ${passed} passed, ${failed.length} failed`);
 process.exit(failed.length ? 1 : 0);

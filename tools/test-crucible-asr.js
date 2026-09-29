@@ -201,6 +201,14 @@ async function tables() {
 }
 
 async function grouping() {
+  await check('decode_loop spans are read (Crucible 1.0.58), and a transcript without them reads as none', () => {
+    const looped = asr.readCrucibleTranscript({ ...TRANSCRIPT,
+      decode_loop: [{ start: 17395.2, end: 17397.1, reason: 'repetition', signal: 'x', detail: 'y' }] });
+    assert.deepStrictEqual(looped.decodeLoops, [{ start: 17395.2, end: 17397.1, reason: 'repetition' }]);
+    assert.deepStrictEqual(asr.readCrucibleTranscript(TRANSCRIPT).decodeLoops, []);
+    assert.throws(() => asr.readCrucibleTranscript({ ...TRANSCRIPT, decode_loop: [{ start: 'x', end: 2 }] }),
+      /decode_loop\[0\]\.start is not a number/);
+  });
   await check('the cue grouping is the local script\'s: punctuation ends a cue, a word-less segment is one, duplicates drop', () => {
     const { vtt, cues } = asr.transcriptToVtt(TRANSCRIPT);
     assert.strictEqual(cues, 4);

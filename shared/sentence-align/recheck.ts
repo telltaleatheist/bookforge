@@ -42,3 +42,21 @@ export function recheckPieces(spans: readonly { start: number; end: number }[], 
   }
   return out;
 }
+
+/**
+ * DOES A CUE'S RE-HEARD AUDIO TOUCH A STRETCH THE ASR LOOPED ON (2026-09-28)?
+ *
+ * Crucible 1.0.58 returns a looped piece with NO words (`decode_loop`) instead of failing the job. Read as words, that
+ * is silence where the reader spoke: the correction would delete book words that were said, or drop the cue as
+ * misplaced (Third Reich tc, recheck piece 17395.2-17397.1 s). So a cue whose PADDED span - the audio its words were
+ * heard through - meets a loop gets no verdict from that listen at all. `loops` are on the book's timeline
+ * (`mapSpansBack`).
+ */
+export function touchesDecodeLoop(
+  cue: { start: number; end: number },
+  loops: readonly { start: number; end: number }[],
+  pad: number = RECHECK_PAD_S,
+): boolean {
+  const a = cue.start - pad; const b = cue.end + pad;
+  return loops.some((l) => l.end > a && l.start < b);
+}
