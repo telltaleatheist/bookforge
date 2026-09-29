@@ -2326,34 +2326,18 @@ onArm('darwin', () => {
     assert.throws(() => higgs.higgsCheckpointDirFor(m, 'darwin', MAC_USER_DATA), /is absolute/);
   });
 
-  check('the cap patch shows up in the caps — and keeps narrator\'s closed source set', () => {
-    const m = higgs.higgsModelForRender('deathstalker', {
-      checkpointDir: OVERRIDE_DIR,
-      maxChars: 1200, safeMinChars: 700, safeMaxChars: 1100,
-      note: 'keeper: sweeping the band the checkpoint was trained at',
-    });
-    const caps = higgs.higgsVoiceCapsForModel(m);
-    assert.strictEqual(caps.maxChars, 1200);
-    assert.strictEqual(caps.safeMinChars, 700);
-    assert.strictEqual(caps.safeMaxChars, 1100);
-    // 'catalog' is the honest source for a number a person chose: narrator's set
-    // is closed, so claiming 'length-sweep' would be a lie the protocol accepts.
-    assert.strictEqual(caps.maxCharsSource, 'catalog');
-    assert.ok(higgs.HIGGS_MAX_CHARS_SOURCES.includes(caps.maxCharsSource));
-    // BUT IT DOES NOT REACH A RENDER'S DOCUMENT, and has not since 2026-09-15: a Crucible render
-    // packs to the VENUE's cap and band, whole, and since 2026-09-28 a fine-tune has no other kind
-    // of render. The patch changes only these local caps.
-    const doc = higgs.higgsVoicesDocument(m, FT_MAC_DOC);
-    assert.strictEqual(doc[m.id].maxChars, VENUE.maxChars);
-    assert.strictEqual(doc[m.id].safeMaxChars, VENUE.ceilingChars);
-  });
-
-    check('a non-integer cap is refused by name', () => {
-    const err = overrideThrows('deathstalker', {
-      checkpointDir: OVERRIDE_DIR, maxChars: 900.5, note: 'keeper',
-    });
-    assert.ok(err, 'a fractional cap was accepted');
-    assert.match(err.message, /maxChars 900\.5 is not a positive whole number/);
+  check('an override CAP or BAND is refused by name: the cap and band are the Crucible server\'s', () => {
+    // Retired 2026-09-28 (Owen: "crucible is now the single source of truth"). A voice's cap and
+    // band are its crucible-voice.toml's, on GET /v1/voices, and a render packs to them whole; an
+    // override's own had not reached a render since 2026-09-15. One refusal, at the parser.
+    const { parseHiggsOverride } = require(path.join(REPO, 'cli', 'higgs-override.js'));
+    for (const field of ['maxChars', 'safeMinChars', 'safeMaxChars']) {
+      assert.throws(() => parseHiggsOverride(JSON.stringify({ [field]: 700, note: 'keeper' })),
+        new RegExp(`${field} is retired.*crucible-voice\.toml`));
+    }
+    // And what an override still carries parses unchanged.
+    assert.deepStrictEqual(parseHiggsOverride(JSON.stringify({ checkpointDir: '/x', note: 'keeper' })),
+      { checkpointDir: '/x', note: 'keeper' });
   });
 
   check('SAMPLING merges over the engine-level block, with its reason attached', () => {

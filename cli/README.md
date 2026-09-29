@@ -270,8 +270,8 @@ the command as typed plus the machine's hostname; `--note` overrides it.
 | `--top-k` | **refused** — Orpheus's worker has no `top_k` seam | `higgsOverride.sampling.topK` |
 | `--min-p` | env `ORPHEUS_MIN_P` | **refused** — narrator's v3 engines have no `min_p` |
 | `--rep-penalty` | env `ORPHEUS_REP_PENALTY` | **refused** — no repetition-penalty knob |
-| `--max-chars` | env `ORPHEUS_MAX_CHARS` | `higgsOverride.maxChars` |
-| `--safe-band MIN-MAX` | **refused** — Orpheus packs to `--max-chars` | `higgsOverride.safeMinChars` / `safeMaxChars` |
+| `--max-chars` | env `ORPHEUS_MAX_CHARS` | **refused** — the cap is the Crucible server's (`crucible-voice.toml`, since 2026-09-28) |
+| `--safe-band MIN-MAX` | **refused** (retired) | **refused** — the band is the Crucible server's (`crucible-voice.toml`, since 2026-09-28) |
 | `--model-dir` | the Orpheus model directory | **refused** — name `--checkpoint-dir` |
 | `--checkpoint-dir` | **refused** — name `--model-dir` | the checkpoint under test |
 
@@ -742,7 +742,8 @@ proposed, and what became of it (`APPLIED_RULE` naming the rule that read it, `A
   Windows: a guest-native `/home/...` path, not stat'd. See **Choosing the model**.
 - `--note <text>` — why this render was run, stamped onto the Higgs override. Default:
   the command as typed plus this machine's hostname.
-- `--safe-band MIN-MAX` — **`--engine higgs`**: the chunk band in characters.
+- `--safe-band MIN-MAX` — **retired 2026-09-28, refused**: a Higgs voice's chunk band is the Crucible
+  server's (its `crucible-voice.toml`, on `GET /v1/voices`). To try another band, change the toml there.
 - `--top-k <n>` — **`--engine higgs`**: `higgsOverride.sampling.topK`.
 - `--batch-width <n>` / `--mem-budget-gb <n>` — **`--engine higgs` on the Mac**: the MLX
   arm's group width and memory budget (`NARRATOR_HIGGS3_MLX_BATCH` /

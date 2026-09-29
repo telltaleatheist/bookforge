@@ -2831,16 +2831,10 @@ export interface ParallelTtsSettings {
 function logHiggsOverride(settings: ParallelTtsSettings, model: HiggsModel): void {
   const o = settings.higgsOverride;
   if (!o) return;
-  const caps = [
-    o.maxChars !== undefined ? `maxChars=${o.maxChars}` : null,
-    o.safeMinChars !== undefined ? `safeMinChars=${o.safeMinChars}` : null,
-    o.safeMaxChars !== undefined ? `safeMaxChars=${o.safeMaxChars}` : null,
-  ].filter(Boolean).join(' ');
   console.log(
     `[HIGGS] override for ${settings.fineTuned}: `
     + `checkpointDir=${o.checkpointDir ?? '(catalog)'} `
     + `sampling=${o.sampling ? JSON.stringify(o.sampling) : '(catalog)'} `
-    + `caps=${caps || '(catalog)'} `
     + `→ voice ${model.id} (${o.note})`,
   );
 }

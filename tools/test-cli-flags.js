@@ -279,20 +279,21 @@ check('an unreadable input format is refused, naming the three it reads', () => 
     '.epub', '.jsonl');
 });
 
-check('--safe-band is the Higgs band and Orpheus refuses it, naming --max-chars', () => {
-  const ok = run('--tts', '--engine', 'higgs', '--voice', 'mistborn', '--safe-band', '200-700',
-    '--input', TXT, '--out', OUT, '--dry-run');
-  expectAccepted('higgs safe band', ok);
-  assert.ok(ok.out.includes('"safeMinChars":200') && ok.out.includes('"safeMaxChars":700'),
-    `the band reaches the override\n${ok.out.slice(0, 700)}`);
+check('--safe-band and a Higgs --max-chars are REFUSED: the cap and band are the Crucible server\'s', () => {
+  // Retired 2026-09-28 (Owen: "crucible is now the single source of truth"). A Higgs voice's cap
+  // and band are its crucible-voice.toml's, on GET /v1/voices, and a render packs to them whole.
+  expectRefused('higgs safe band',
+    run('--tts', '--engine', 'higgs', '--voice', 'mistborn', '--safe-band', '200-700',
+      '--input', TXT, '--out', OUT, '--dry-run'),
+    '--safe-band', 'crucible-voice.toml');
   expectRefused('orpheus safe band',
     run('--tts', '--engine', 'orpheus', '--voice', 'tara', '--safe-band', '200-700',
       '--input', TXT, '--out', OUT, '--dry-run'),
-    '--safe-band', '--max-chars');
-  expectRefused('malformed band',
-    run('--tts', '--engine', 'higgs', '--voice', 'mistborn', '--safe-band', '200',
+    '--safe-band', 'retired');
+  expectRefused('higgs max chars',
+    run('--tts', '--engine', 'higgs', '--voice', 'mistborn', '--max-chars', '700',
       '--input', TXT, '--out', OUT, '--dry-run'),
-    '--safe-band', 'MIN-MAX');
+    '--max-chars', 'crucible-voice.toml');
 });
 
 check('--note is what the override is stamped with when it is given', () => {

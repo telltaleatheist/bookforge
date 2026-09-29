@@ -1855,12 +1855,12 @@ export interface HiggsRenderOverride {
    * checkpoint's own generation_config.json — 1.0, which nobody chose.
    */
   sampling?: Partial<HiggsSampling>;
-  /** This arm's packing cap, in characters. */
-  maxChars?: number;
-  /** This arm's merge floor. */
-  safeMinChars?: number;
-  /** This arm's chunk cap. */
-  safeMaxChars?: number;
+  /*
+   * NO CAP OR BAND (retired 2026-09-28, Owen: "crucible is now the single source of truth"). A
+   * voice's cap and band are its crucible-voice.toml's, on GET /v1/voices, and a Crucible render
+   * packs to those whole; an override's own had not reached a render since 2026-09-15.
+   * `cli/higgs-override.js` refuses the three old fields by name.
+   */
   /** WHO ASKED AND WHY. Required — see the header. */
   note: string;
 }
@@ -1961,26 +1961,6 @@ export function higgsModelForRender(
   const patchedBackends = derived.backends ?? (derived.backends = {});
   const block: HiggsBackendCaps = { ...(patchedBackends[backend] ?? {}) };
 
-  if (override.maxChars !== undefined) {
-    block.maxChars = requirePositiveInt('maxChars', override.maxChars, base.id);
-    // 'catalog' IS THE HONEST SOURCE for a number a person chose: narrator's set
-    // is closed (catalog | placeholder | length-sweep) and it refuses anything
-    // else, so claiming 'length-sweep' for a hand-picked cap would be a lie the
-    // protocol accepts. The reasoning goes in the note, which no protocol reads.
-    block.maxCharsSource = 'catalog';
-    block._maxCharsNote = `per-run override — ${note}`;
-  }
-  if (override.safeMinChars !== undefined) {
-    block.safeMinChars = requirePositiveInt('safeMinChars', override.safeMinChars, base.id);
-  }
-  if (override.safeMaxChars !== undefined) {
-    block.safeMaxChars = requirePositiveInt('safeMaxChars', override.safeMaxChars, base.id);
-  }
-  // The RELATIONAL rules (a band inside the cap, a floor below the ceiling) are
-  // NOT re-stated here: `higgsVoicesDocument` applies them to whatever model it
-  // is handed, by name and with narrator's own wording, before any spawn. One
-  // check, one message, for a catalog voice and an override alike.
-
   if (override.sampling) {
     // THREE LAYERS, IN THE ORDER THE CODEBASE ALREADY STATES THEM: the catalog's
     // engine-level sampling (the number every voice renders at), then this arm's
@@ -2036,17 +2016,6 @@ export function higgsModelForRender(
 
   patchedBackends[backend] = block;
   return derived;
-}
-
-/** A characters figure from a person, or a refusal naming the field. */
-function requirePositiveInt(field: string, value: number, voiceId: string): number {
-  if (!Number.isInteger(value) || value <= 0) {
-    throw new Error(
-      `Higgs render override for "${voiceId}": ${field} ${JSON.stringify(value)} is not a positive `
-      + 'whole number of characters.',
-    );
-  }
-  return value;
 }
 
 /**

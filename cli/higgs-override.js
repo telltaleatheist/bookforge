@@ -5,7 +5,7 @@
  * WHY A JSON ARGUMENT AND WHY ONE PARSER (2026-09-12). Owen wanted the CLI to be
  * able to point a render at any checkpoint — "we should be able to pick any model
  * specifically, including a checkpoint we want to test, and it should allow that"
- * — with its own sampling and its own band. That is five or six values, and the
+ * — with its own sampling. (Its own band too, until 2026-09-28: the band is Crucible's now.) The
  * two adapters must read them IDENTICALLY: two hand-rolled flag blocks would
  * drift the moment a field is added, and then a `--tts` audition and an
  * `--audiobook` build of the same checkpoint would be two different renders with
@@ -23,7 +23,6 @@
  *
  *   { checkpointDir?: string,
  *     sampling?: { temperature?: number, topP?: number, topK?: number },
- *     maxChars?: number, safeMinChars?: number, safeMaxChars?: number,
  *     note: string }
  *
  * `note` is REQUIRED — it is who ran this and why, and it is what a rendered
@@ -35,10 +34,19 @@
 const FIELDS = {
   checkpointDir: 'string',
   sampling: 'object',
-  maxChars: 'number',
-  safeMinChars: 'number',
-  safeMaxChars: 'number',
   note: 'string',
+};
+
+/**
+ * RETIRED 2026-09-28 (Owen: "crucible is now the single source of truth"). A voice's cap and
+ * band are its crucible-voice.toml's, stated per server by GET /v1/voices, and a Crucible render
+ * packs to those numbers whole - an override's cap or band had not reached one since 2026-09-15.
+ * Refused by name rather than silently ignored.
+ */
+const RETIRED = {
+  maxChars: 'the cap',
+  safeMinChars: 'the band floor',
+  safeMaxChars: 'the band ceiling',
 };
 const SAMPLING_FIELDS = ['temperature', 'topP', 'topK'];
 
@@ -63,6 +71,11 @@ function parseHiggsOverride(raw) {
       + (Array.isArray(parsed) ? 'an array' : JSON.stringify(parsed)));
   }
   for (const key of Object.keys(parsed)) {
+    if (RETIRED[key]) {
+      throw new Error(`--higgs-override.${key} is retired: ${RETIRED[key]} of a voice is the Crucible `
+        + "server's (its crucible-voice.toml, on GET /v1/voices), and a render packs to that. "
+        + 'To try another band, change the voice\'s toml on that server.');
+    }
     const want = FIELDS[key];
     if (!want) {
       throw new Error(`--higgs-override: unknown field '${key}' `
@@ -112,7 +125,7 @@ function higgsOverrideFromArgs(args, engine) {
   const raw = args['higgs-override'];
   if (raw === undefined) return undefined;
   if (engine !== 'higgs') {
-    throw new Error('--higgs-override carries a Higgs checkpoint/sampling/band; this run is '
+    throw new Error('--higgs-override carries a Higgs checkpoint/sampling; this run is '
       + (engine ? `--engine ${engine}` : 'not a render and names no engine')
       + '. Orpheus names a model directory with --model-dir.');
   }

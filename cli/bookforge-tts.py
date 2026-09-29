@@ -317,19 +317,17 @@ def _higgs_override(args, door):
              "--top-k is a Higgs sampling field; Orpheus's worker reads ORPHEUS_TEMPERATURE / "
              "ORPHEUS_TOP_P / ORPHEUS_MIN_P / ORPHEUS_REP_PENALTY and has no top_k seam")
 
-    # ── The band ─────────────────────────────────────────────────────────────
-    _require(not (args.safe_band and not higgs),
-             "--safe-band is the Higgs chunk band (safeMinChars/safeMaxChars); Orpheus packs "
-             "to --max-chars")
-    safe_min = safe_max = None
-    if args.safe_band:
-        parts = str(args.safe_band).split("-")
-        _require(len(parts) == 2 and all(p.strip().isdigit() for p in parts),
-                 f"--safe-band takes MIN-MAX in characters, e.g. --safe-band 200-700 "
-                 f"(got '{args.safe_band}')")
-        safe_min, safe_max = int(parts[0]), int(parts[1])
-        _require(safe_min < safe_max,
-                 f"--safe-band MIN must be below MAX (got {safe_min}-{safe_max})")
+    # ── The band and the cap: the voice's, on the Crucible server ────────────
+    # RETIRED 2026-09-28 (Owen: "crucible is now the single source of truth"). A Higgs
+    # voice's cap and band are its crucible-voice.toml's, stated by GET /v1/voices, and
+    # a render packs to them whole - a CLI band had not reached a render since 2026-09-15.
+    _require(not args.safe_band,
+             "--safe-band is retired: a Higgs voice's chunk band is the Crucible server's "
+             "(its crucible-voice.toml, on GET /v1/voices), and a render packs to that. To try "
+             "another band, change the voice's toml on that server")
+    _require(not (args.max_chars and higgs),
+             "--max-chars is not a Higgs knob: a Higgs voice's cap is the Crucible server's "
+             "(its crucible-voice.toml, on GET /v1/voices), and a render packs to that")
 
     if not higgs:
         return None
@@ -368,12 +366,6 @@ def _higgs_override(args, door):
         sampling["topK"] = args.top_k
     if sampling:
         override["sampling"] = sampling
-
-    if args.max_chars:
-        override["maxChars"] = int(args.max_chars)
-    if safe_min is not None:
-        override["safeMinChars"] = safe_min
-        override["safeMaxChars"] = safe_max
 
     if not override:
         return None
@@ -2017,7 +2009,7 @@ the book the app ships.""",
             ("--top-k", "on --engine orpheus: its worker has no top_k seam"),
             ("--min-p", "on --engine higgs: narrator's v3 engines have no min_p knob"),
             ("--rep-penalty", "on --engine higgs: no repetition-penalty knob"),
-            ("--safe-band", "on --engine orpheus: it packs to --max-chars"),
+            ("--safe-band", "retired: a Higgs band is the Crucible server's (crucible-voice.toml)"),
             ("--batch-width", "orpheus sizes its batch from --tier; Windows uses HIGGS_MAX_NUM_SEQS"),
             ("--mem-budget-gb", "same as --batch-width: Higgs on the Mac only"),
             ("--as-chunks", "with an .epub input: the app's own packer chunks a book"),
@@ -2074,7 +2066,7 @@ its canonical project location, so there is no --out. It RESUMES by default —
             ("--top-k", "on --engine orpheus: its worker has no top_k seam"),
             ("--min-p", "on --engine higgs: no min_p knob"),
             ("--rep-penalty", "on --engine higgs: no repetition-penalty knob"),
-            ("--safe-band", "on --engine orpheus: it packs to --max-chars"),
+            ("--safe-band", "retired: a Higgs band is the Crucible server's (crucible-voice.toml)"),
             ("--batch-width", "Higgs on the Mac only (on Windows the width is the server's "
                               "admission width, HIGGS_MAX_NUM_SEQS)"),
             ("--mem-budget-gb", "Higgs on the Mac only, as above"),
@@ -3042,12 +3034,11 @@ def _flag_registry():
                         "higgsOverride.sampling.topK. Orpheus has no top_k seam and refuses it "
                         "by name", metavar="N")
     p.add_argument("--safe-band", dest="safe_band",
-                   help="--engine higgs: the chunk band as MIN-MAX characters, e.g. 200-700 "
-                        "(higgsOverride.safeMinChars/safeMaxChars). The band's WIDTH decides the "
-                        "in-band rate; Orpheus packs to --max-chars instead", metavar="MIN-MAX")
+                   help="RETIRED 2026-09-28 and refused: a Higgs voice's chunk band is the Crucible "
+                        "server's (its crucible-voice.toml, on GET /v1/voices)", metavar="MIN-MAX")
     p.add_argument("--max-chars", dest="max_chars", type=int,
-                   help="the packing cap in chars. --engine higgs: higgsOverride.maxChars, held "
-                        "against the base voice's certificate. --engine orpheus: env "
+                   help="the packing cap in chars. --engine higgs: refused - the cap is the Crucible "
+                        "server's (crucible-voice.toml). --engine orpheus: env "
                         "ORPHEUS_MAX_CHARS (tts path; default 350, no sentence "
                         "cap — ear-validated for EOS-safe ≤20s/2048-recipe voices; 450 "
                         "fails everywhere. The packed-runaway was the long-clip TRAINING "
