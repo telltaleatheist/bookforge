@@ -115,8 +115,36 @@ function tokens(text: string): Tok[] {
       : /(?<=[\p{L}\p{N}][—–])(?=[\p{L}\p{N}])/u).map((surface, i) => ({ surface, glued: i > 0 })))
     .map(({ surface, glued }) => {
       const m = /^([^\p{L}\p{N}]*)(.*?)([^\p{L}\p{N}]*)$/u.exec(surface)!;
-      return { surface, lead: m[1], core: m[2], trail: m[3], k: key(surface), ...(glued ? { glued: true } : {}) };
+      // "&" IS THE WORD "and" (2026-09-28): keyed to nothing, it dropped out on the book side AND on a second listen
+      // that also writes "&", so the vote sided with the book and vetoed the reader's "and" ("Johnson Johnson").
+      if (/^&$/.test(surface.replace(/[^\p{L}\p{N}&]/gu, '')) && !/[\p{L}\p{N}]/u.test(surface)) {
+        return { surface, lead: '', core: '&', trail: '', k: 'and', ...(glued ? { glued: true } : {}) };
+      }
+      return { surface, lead: m[1], core: m[2], trail: m[3], k: decimalKey(m[2]) ?? key(surface), ...(glued ? { glued: true } : {}) };
     }).filter((t) => t.k.length > 0 || t.surface.length > 0);
+}
+
+/**
+ * A decimal's key keeps its point ("$1.488" -> "1.488"), so it meets the same decimal said aloud ("one point four
+ * eight eight", `mergeNumbers`); the plain key dropped the point and made it 1488. Null for anything else.
+ */
+function decimalKey(core: string): string | null {
+  // The digits AS WRITTEN, never re-formatted: "4.30" is not "4.3", and must still meet the ASR's "430".
+  return /^\d[\d,]*\.\d+$/.test(core) ? core.replace(/,/g, '') : null;
+}
+
+/** A number under 100 as words, cardinal or ordinal ("14" -> "fourteen", "14th" -> "fourteenth"), keyed; else null. */
+function spelledKey(k: string): string | null {
+  const m = /^(\d{1,2})(st|nd|rd|th)?$/.exec(k); if (m === null) return null;
+  const n = Number(m[1]); const ordinal = m[2] !== undefined;
+  const unitOrd = Object.keys(ORDINAL_UNITS).find((w) => ORDINAL_UNITS[w] === n);
+  if (ordinal && unitOrd !== undefined) return unitOrd;
+  const card = Object.keys(UNITS).find((w) => UNITS[w] === n) ?? Object.keys(TENS).find((w) => TENS[w] === n);
+  if (card !== undefined) return ordinal ? null : card;
+  const tens = Object.keys(TENS).find((w) => TENS[w] === n - (n % 10)); if (tens === undefined) return null;
+  const unit = n % 10;
+  const tail = ordinal ? Object.keys(ORDINAL_UNITS).find((w) => ORDINAL_UNITS[w] === unit) : Object.keys(UNITS).find((w) => UNITS[w] === unit);
+  return tail === undefined ? null : tens + tail;
 }
 
 /** A merged span's surface: its words' own, with a space only where the text had one. */
@@ -145,6 +173,11 @@ function valueOf(t: Tok): number | null {
  * ALIGNMENT pairs them; the writer keeps the reader's spoken form ("Engine one", "First John"), as it always did.
  */
 function sameValue(b: Tok, h: Tok): boolean {
+  // A decimal against the same digits WITHOUT its point is the same number: the ASR writes "8.1 per cent" as "81",
+  // and the old point-less key matched them, so the book's "8.1" stood.
+  const bare = (k: string): string => k.replace('.', '');
+  if ((b.k.includes('.') || h.k.includes('.')) && /^[\d.]+$/.test(b.k) && /^[\d.]+$/.test(h.k)
+    && (bare(b.k) === bare(h.k) || Number(b.k) === Number(h.k))) return true;   // and "18.0" is 18
   return (/^\d+$/.test(b.k) && valueOf(h) === Number(b.k)) || (/^\d+$/.test(h.k) && valueOf(b) === Number(h.k));
 }
 
@@ -160,7 +193,8 @@ function mergeNumbers(ts: Tok[]): Tok[] {
     let total = 0; let cur = 0; let j = i; let last = i;
     while (j < ts.length) {
       const k = ts[j].k;
-      if (k === 'and' && j > i && j + 1 < ts.length && isNumberWord(ts[j + 1].k)) { j++; continue; }
+      // "and" continues a number only after a scale word ("two hundred and five"); "1934 and 18.9" is two numbers.
+      if (k === 'and' && j > i && ts[j - 1].k in SCALES && j + 1 < ts.length && isNumberWord(ts[j + 1].k)) { j++; continue; }
       if (k in SCALES) { const sc = SCALES[k]; if (sc === 100) cur = (cur || 1) * 100; else { total += (cur || 1) * sc; cur = 0; } }
       else {
         const v = wordValue(k); if (v === null) break;
@@ -171,11 +205,26 @@ function mergeNumbers(ts: Tok[]): Tok[] {
       last = j; j++;
       if (/[.,;:!?)”"]$/.test(ts[last].surface)) break;   // a run ends at punctuation
     }
+    /*
+     * A DECIMAL SAID ALOUD (2026-09-28, mck): "one point four eight eight" is 1.488 - the digits after "point" are
+     * read one by one, never summed ("four eight eight" was 20). Keyed like the book's "$1.488" (`decimalKey`).
+     */
+    let digits = '';
+    if (ts[last + 1]?.k === 'point' && !/[.,;:!?)”"]$/.test(ts[last].surface)) {
+      let d = last + 2;
+      while (d < ts.length) {
+        const v = wordValue(ts[d].k) ?? (/^\d$/.test(ts[d].k) ? Number(ts[d].k) : null);
+        if (v === null || v > 9) break;
+        digits += String(v); d++;
+        if (/[.,;:!?)”"]$/.test(ts[d - 1].surface)) break;
+      }
+      if (digits !== '') last = d - 1;
+    }
     const single = last === i;
     if (single && (wordValue(ts[i].k) ?? 99) < 10) { out.push(ts[i]); i++; continue; }
     const span = ts.slice(i, last + 1);
     out.push({ surface: joinSurfaces(span), lead: span[0].lead, core: span.map((t) => t.core).join(' '), ...(span[0].glued ? { glued: true } : {}),
-      trail: span[span.length - 1].trail, k: String(total + cur) });
+      trail: span[span.length - 1].trail, k: digits === '' ? String(total + cur) : `${total + cur}.${digits}` });
     i = last + 1;
   }
   return out;
@@ -376,7 +425,9 @@ function alignPath(B: Tok[], H: Tok[], opts: CorrectOptions): Path {
     || (rare !== undefined && rare.has(b.k) && /^\p{L}/u.test(h.core)));
   // A compound is the same word when it joins EXACTLY ("steel"+"jacketed"), or by a near-miss only when every part
   // is a real word (>= 3 letters): "with"+"a" is one letter off "with", and "as"+"wayne" two off "wayne".
+  // A number part joins SPELLED: the reader's "14th century" is the book's "fourteenth-century" (cd, 2026-09-28).
   const joins = (parts: string[], whole: string): boolean => parts.join('') === whole
+    || parts.map((x) => spelledKey(x) ?? x).join('') === whole
     || (parts.every((x) => x.length >= 3) && Math.abs(parts.join('').length - whole.length) <= 1
         && isNearMiss(parts.join(''), whole));   // and near in LENGTH: "wayne"+"stepped" is 5 edits off "stepped" but a whole word longer;
         // <= 1, not 2 (2026-09-27): "the"+"back" joined ("theback") passed as a near-miss of "table" and the whole
@@ -546,11 +597,16 @@ export function correctToHeard(bookText: string, heard: readonly string[], opts:
       // nineteen thirty-three"), since a transcript whose order is not the audio's is not the audio's transcript.
       edits.push({ op: 'replace', book: B[bi].surface, heard: H[hj].core }); put(readerDate(B[bi], H[hj]), false, B[bi].core, B[bi].glued); bi++; hj++;
     }
-    else if (p.op === 'match' && B[bi].k !== H[hj].k && /^\d/.test(B[bi].k) && sameValue(B[bi], H[hj])) {
+    else if (p.op === 'match' && B[bi].k !== H[hj].k && /^\d/.test(B[bi].k) && /^\p{L}/u.test(H[hj].core)
+      && sameValue(B[bi], H[hj])) {
       // PAIRED BY VALUE, WRITTEN AS SAID: the reader's spoken number in the book's punctuation ("Engine one").
       const b = B[bi]; const h = H[hj];
       edits.push({ op: 'replace', book: b.surface, heard: h.core });
       put(b.lead + h.core + b.trail, false, b.core, b.glued, innerAt(bi)); bi++; hj++;
+    }
+    else if (p.op === 'match' && B[bi].core === '&') {
+      // THE BOOK'S "&", READ "and": written as said ("Johnson and Johnson").
+      put(H[hj].core, false, 'and', B[bi].glued, innerAt(bi)); bi++; hj++;
     }
     else if (p.op === 'match') { put(B[bi].surface, false, B[bi].core, B[bi].glued, innerAt(bi)); bi++; hj++; }
     else if (p.op === 'keep') { put(B[bi].surface, false, B[bi].core, B[bi].glued, innerAt(bi)); bi++; }

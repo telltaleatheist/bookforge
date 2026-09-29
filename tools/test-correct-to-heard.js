@@ -248,6 +248,24 @@ check('a range read with "to" follows the reader ("1861–65" read "1861 to 65")
   assert.strictEqual(correctToHeard('memories of the 1861–65 strife', words('memories of the 1861 to 65 strife')).text, 'memories of the 1861 to 65 strife');
   assert.strictEqual(correctToHeard('(Luke 6:9–18)', words('Luke six verses nine to eighteen')).text, '(Luke six verses nine to eighteen)');
 });
+check('cd: a number part of a compound joins spelled ("fourteenth-century" read "14th century" is never "14th fourteenth-century")', () => {
+  const r = correctToHeard('The delightful fourteenth-century mystic Richard Rolle favored sitting.',
+    words('The delightful 14th century mystic Risharroll favoured sitting'),
+    { properNouns: new Set(['richard', 'rolle']), secondOpinion: words('The delightful 14th century mystic Rishar Roll favored sitting') });
+  assert.strictEqual(r.text, 'The delightful fourteenth-century mystic Richard Rolle favored sitting.');
+});
+check('lp: "Johnson & Johnson" read "Johnson and Johnson" keeps the "and", even when the second listen writes "&"', () => {
+  const r = correctToHeard('It’s been used in organizations as diverse as General Electric and Johnson & Johnson.',
+    words("It's been used in organizations as diverse as General Electric Arthur Andersen and Johnson and Johnson"),
+    { properNouns: new Set(['general', 'electric', 'johnson']),
+      secondOpinion: words("It's been used in organizations as diverse as General Electric, Arthur Anderson, and Johnson & Johnson.") });
+  assert.ok(/Johnson and Johnson/.test(r.text) && !/Johnson Johnson/.test(r.text), r.text);
+});
+check('mck: a decimal said aloud is that decimal ("$1.488" read "one point four eight eight")', () => {
+  const r = correctToHeard('a near doubling from $833 million in 1896 to $1.488 billion.',
+    words('a near doubling from eight hundred thirtythree million dollars in eighteen ninetysix to one point four eight eight billion'));
+  assert.ok(/\$1\.488 billion/.test(r.text) && !/point four/.test(r.text), r.text);
+});
 check('a digit inside a book word is a typo, and the reader\'s word takes it ("al1one" read "alone")', () => {
   // WITH the book's rare-word set, as the pipeline builds it: "al1one" is lower-case, six characters and used once,
   // so it is in there - and a trusted rare word used to be kept against the heard "alone" (HoA re-run on a83d8cd7).
