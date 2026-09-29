@@ -70,7 +70,10 @@
  *    under "a parked row says what would unblock it", and the switch is the act
  *    that unblocks it;
  *  - the server the book holds, or the one the row named, stopped answering
- *    (`crucible_unreachable`);
+ *    (`crucible_unreachable`) — including while its engine was being resolved,
+ *    which the caller's `band` door translates like the voices call;
+ *  - the server the book holds, or the one the row named, is PAUSED — parked
+ *    without asking it anything (2026-09-28);
  *  - anything carrying a `busyLine` — a held lane or a leased card is already a
  *    wait on the road every other module takes (`queue-steps/runtime.ts`), and
  *    it is re-thrown untouched so the holder's own line reaches the row.
@@ -227,6 +230,16 @@ export function prepBandParkLine(
     + 'nothing is packed until one answers; this row asks again on every queue pass.';
 }
 
+/**
+ * THE SENTENCE A PREPARE ROW BOUND TO A PAUSED SERVER SAYS — a clause, read after
+ * `holdBusy`'s "Waiting for <server>: ", in the words of the server's own switch.
+ */
+export function prepBandPausedLine(voice: string, server: string): string {
+  return `${server} is paused, and this book is bound to it, so it is not asked for the chunk `
+    + `lengths for voice "${voice}". Set it to Running and the book is packed to its numbers; `
+    + 'this row asks again on every queue pass.';
+}
+
 /** The registered servers whose switch is off, in rank order. */
 function switchedOff(roster: readonly RankedServerRow[]): string[] {
   return roster.filter((row) => !row.enabled).map((row) => row.name);
@@ -269,6 +282,18 @@ async function packedFor<V extends { readonly server: string }>(
   because: PrepPackedBecause,
   host: PrepBandHost<V>,
 ): Promise<PrepPacking<V>> {
+  /*
+   * A PAUSED SERVER IS NOT ASKED (Owen, 2026-09-28). A book dropped on a paused
+   * slot waits there until the slot is set Running; it contacts nothing, and
+   * `docs/PENDING-QUEUE-AND-GPU-DIAL.md` says of a switched-off server that it is
+   * "never chosen, never probed". Until this date the named/held rung asked for
+   * the band without looking at the switch, so the drop's prepare row went to a
+   * paused machine that was busy with somebody else's work — and failed on its
+   * answer. The switch is the act that unblocks this, so the row parks naming it.
+   */
+  if (host.roster().some((row) => row.name === server && !row.enabled)) {
+    throw new PrepBandUnavailable(prepBandPausedLine(voice, server));
+  }
   let band: CrucibleStatedBand;
   try {
     band = await host.band(server);

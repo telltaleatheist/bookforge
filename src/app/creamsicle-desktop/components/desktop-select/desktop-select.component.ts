@@ -35,6 +35,13 @@ export interface DesktopSelectOption {
    * change count next to a long, ellipsis-able title.
    */
   badge?: string;
+  /**
+   * What the CLOSED control shows when this option is chosen, in place of
+   * `label`. For a row whose group heading carries half its meaning: under a
+   * "Zero-shot" heading the row can say just "Mistborn", but once chosen the
+   * heading is gone and "Mistborn" alone would read as a different voice.
+   */
+  valueLabel?: string;
 }
 
 /** A labelled group of options (renders like an <optgroup>). */
@@ -52,6 +59,7 @@ interface FlatRow {
   disabled?: boolean;
   title?: string;
   badge?: string;
+  valueLabel?: string;
   /** index into the navigable option list (only for kind === 'option') */
   optionIndex?: number;
 }
@@ -453,10 +461,10 @@ export class DesktopSelectComponent implements ControlValueAccessor {
       if (isGroup(item)) {
         out.push({ kind: 'header', label: item.label });
         for (const opt of item.options) {
-          out.push({ kind: 'option', label: opt.label, value: opt.value, disabled: opt.disabled, title: opt.title, badge: opt.badge, optionIndex: optionIndex++ });
+          out.push({ kind: 'option', label: opt.label, value: opt.value, disabled: opt.disabled, title: opt.title, badge: opt.badge, valueLabel: opt.valueLabel, optionIndex: optionIndex++ });
         }
       } else {
-        out.push({ kind: 'option', label: item.label, value: item.value, disabled: item.disabled, title: item.title, badge: item.badge, optionIndex: optionIndex++ });
+        out.push({ kind: 'option', label: item.label, value: item.value, disabled: item.disabled, title: item.title, badge: item.badge, valueLabel: item.valueLabel, optionIndex: optionIndex++ });
       }
     }
     return out;
@@ -470,7 +478,7 @@ export class DesktopSelectComponent implements ControlValueAccessor {
   readonly selectedLabel = computed<string | null>(() => {
     const v = this.value();
     const match = this.flatOptions().find((o) => o.value === v);
-    return match ? match.label : null;
+    return match ? (match.valueLabel ?? match.label) : null;
   });
 
   readonly selectedBadge = computed<string | null>(() => {

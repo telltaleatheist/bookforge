@@ -386,6 +386,7 @@
     {
       "id": "zeroshot-thirdreich",
       "label": "Zero-shot · Third Reich (reference clip on base Higgs v3)",
+      "speakerName": "Third Reich",
       "kind": "clips",
       "engineVersion": "v3",
       "voice": {
@@ -434,6 +435,7 @@
     {
       "id": "zeroshot-owen-morgan",
       "label": "Zero-shot · Owen Morgan (reference clip on base Higgs v3)",
+      "speakerName": "Owen Morgan",
       "kind": "clips",
       "engineVersion": "v3",
       "voice": {
@@ -482,6 +484,7 @@
     {
       "id": "zeroshot-deathstalker",
       "label": "Zero-shot · Deathstalker (reference clip on base Higgs v3)",
+      "speakerName": "Deathstalker",
       "kind": "clips",
       "engineVersion": "v3",
       "voice": {
@@ -530,6 +533,7 @@
     {
       "id": "zeroshot-mistborn",
       "label": "Zero-shot · Mistborn (reference clip on base Higgs v3)",
+      "speakerName": "Mistborn",
       "kind": "clips",
       "engineVersion": "v3",
       "voice": {

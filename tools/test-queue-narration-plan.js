@@ -723,6 +723,24 @@ function narrationRun(title, epubPath = '/a.epub') {
       assert.match(threw.busyLine, /M1 Ultra did not answer/);
     });
 
+  await check('THE ROW NAMED A PAUSED SERVER → parked, and the server is NOT asked', async () => {
+    // Owen, 2026-09-28: a book dropped on the paused WSL slot, whose card was
+    // busy with image generation, failed its prepare row on that machine's
+    // answer. A paused server is never probed; the switch is what unblocks it.
+    for (const assigned of [NAMED('3090 Ti'), HELD('3090 Ti')]) {
+      const host = prepHost({
+        band: async () => { throw new Error('a paused server must not be asked for the band'); },
+      });
+      const { threw } = await askedFor(host, assigned);
+      assert.ok(threw instanceof PrepBandUnavailable,
+        `a paused server is a wait, not a failure; got: ${threw && threw.message}`);
+      assert.deepStrictEqual(host.asked.filter((a) => a.startsWith('band:')), [],
+        'nothing is asked of a paused server');
+      assert.match(threw.busyLine, /3090 Ti is paused/);
+      assert.match(threw.busyLine, /Set it to Running/);
+    }
+  });
+
   await check('a HELD lane still parks on the holder\'s own line, untouched', async () => {
     const held = 'GPU busy: foundry, tts 62% done';
     const { threw } = await askedFor(prepHost({

@@ -47,6 +47,8 @@ export interface OfferedVoice {
   readonly value: string;
   readonly label: string;
   readonly unavailable: string | null;
+  /** The name without its heading, when `label` needs one (`VoicePickerVoice.chosenLabel`). */
+  readonly chosenLabel?: string;
 }
 
 /**
@@ -97,6 +99,7 @@ export function voiceOffer(
           value: v.value,
           label: v.label,
           unavailable: v.unavailable,
+          ...(v.chosenLabel ? { chosenLabel: v.chosenLabel } : {}),
         })),
       })),
     };
@@ -172,7 +175,7 @@ export function refuseVoiceChoice(
      * is about this disk. Either way it is quoted, not paraphrased, because it
      * is the only thing that says where to go.
      */
-    return `The voice "${cleanVoiceLabel(found.label)}" cannot render yet: `
+    return `The voice "${cleanVoiceLabel(found.chosenLabel ?? found.label)}" cannot render yet: `
       + `${firstSentence(found.unavailable)}. Pick another voice on the Reading tab.`;
   }
   return null;

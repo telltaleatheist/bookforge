@@ -808,6 +808,16 @@ export interface HiggsPatchSpec {
 export interface HiggsModel {
   id: string;
   label: string;
+  /**
+   * THE SPEAKER, WITHOUT THE KIND — "Third Reich", not "Zero-shot · Third Reich
+   * (reference clip on base Higgs v3)". Required on a `clips` voice, where the
+   * Crucible picker (`crucible/voice-picker.ts`) lists the four zero-shot
+   * clones under their own "Zero-shot" heading (Owen, 2026-09-28) and the
+   * heading says what `label` otherwise has to say in every row. `label` keeps
+   * the word for every flat list, which is what the "Zero-shot" check in
+   * `higgsNarrationVoices` still enforces.
+   */
+  speakerName?: string;
   /** Which of BookForge's rule sets applies. See HiggsVoiceKind. */
   kind: HiggsVoiceKind;
   engineVersion: string;

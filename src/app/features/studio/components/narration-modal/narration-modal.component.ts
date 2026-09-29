@@ -1466,9 +1466,10 @@ export class NarrationModalComponent {
      * flat list rather than a group with no heading.
      */
     const offer = this.offer();
-    const asOption = (v: { value: string; label: string; unavailable: string | null }) => ({
+    const asOption = (v: { value: string; label: string; unavailable: string | null; chosenLabel?: string }) => ({
       value: v.value,
       label: v.label,
+      ...(v.chosenLabel ? { valueLabel: v.chosenLabel } : {}),
       ...(v.unavailable ? { disabled: true, title: v.unavailable } : {}),
     });
     if (offer.sections.length === 1 && offer.sections[0]!.label === '') {

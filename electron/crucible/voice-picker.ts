@@ -89,9 +89,60 @@ function carriedVoicesOf(userDataDir: string): CarriedVoice[] {
   return listHiggsModels()
     .filter((m) => m.kind === 'clips' && SELECTABLE_VOICE_KINDS.has(m.kind))
     .map((m) => {
+      /*
+       * THE ROW IS THE SPEAKER; THE HEADING IS THE KIND. These four are drawn
+       * under their own "Zero-shot" section (see `zeroShotSections`), so the
+       * row carries the catalog's `speakerName` rather than the long `label`
+       * that has to say "Zero-shot" on its own in a flat list. Refused by name
+       * when absent: falling back to the long label would draw
+       * "Zero-shot · Mistborn (…)" under a "Zero-shot" heading and nothing
+       * would say why.
+       */
+      const name = m.speakerName?.trim();
+      if (!name) {
+        throw new Error(
+          `Higgs voice "${m.id}" is a zero-shot clone with no "speakerName" in the catalog `
+          + '(electron/data/higgs-models.json). The narration picker lists these under a '
+          + '"Zero-shot" heading by the speaker\'s name alone, and that name is not derived.',
+        );
+      }
       const reason = higgsVoiceUnavailableReason(m, userDataDir);
-      return { id: m.id, display: m.label, clipPresent: reason === null, reason };
+      return { id: m.id, display: name, clipPresent: reason === null, reason };
     });
+}
+
+/** The heading the carried voices are grouped under (Owen, 2026-09-28). */
+const ZERO_SHOT_HEADING = 'Zero-shot';
+
+/**
+ * THE ZERO-SHOT GROUP — the carried voices, sectioned by the same server-set
+ * rule as everything else and then headed "Zero-shot".
+ *
+ * Sectioned SEPARATELY from the fine-tunes, not relabelled afterwards: mixed in,
+ * a zero-shot row would sit under "Every server" beside the fine-tune of the
+ * same name, and the two "Mistborn" rows would differ only by the heading that
+ * no longer says which is which.
+ *
+ * THE ROUTING FACT SURVIVES THE RENAME. `servers` and `locks` are the section's
+ * own, untouched, so choosing one still pins the venue exactly as before. The
+ * server set is dropped from the HEADING only where it says nothing a person
+ * could act on — every answering server, or a one-server setup with no choice
+ * to lose. A set that locks, or no server at all, keeps its words after the
+ * kind ("Zero-shot · 3090 Ti", and the modal still appends "— only this
+ * server"), because that is read before the choice is made.
+ *
+ * Rows are alphabetical by speaker: the catalog's order is the order the clips
+ * were added, which is nothing a person looking for a narrator is asking.
+ */
+function zeroShotSections(sections: readonly VoiceSection[]): VoiceSection[] {
+  return sections.map((section) => {
+    const plain = section.servers.length > 0 && !section.locks;
+    return {
+      ...section,
+      label: plain ? ZERO_SHOT_HEADING : `${ZERO_SHOT_HEADING} · ${section.label}`,
+      voices: [...section.voices].sort((a, b) => a.display.localeCompare(b.display)),
+    };
+  });
 }
 
 /**
@@ -159,12 +210,20 @@ function unavailableSentence(placement: VoicePlacement, inventory: VoiceInventor
  */
 export async function narrationVoicePicker(userDataDir: string): Promise<VoicePickerDto> {
   const inventory = await readVoiceInventory();
-  const placements = [
-    ...reKeyToCatalog(placeVoices(inventory)),
-    ...placeCarriedVoices(inventory, carriedVoicesOf(userDataDir)),
+  /*
+   * Fine-tunes first, widest set first as always; the zero-shot group after
+   * them, under its own heading. See `zeroShotSections`.
+   */
+  const zeroShot = zeroShotSections(
+    sectionVoices(inventory, placeCarriedVoices(inventory, carriedVoicesOf(userDataDir))),
+  );
+  const zeroShotIds = new Set(zeroShot.flatMap((s) => s.voices.map((v) => v.id)));
+  const grouped: VoiceSection[] = [
+    ...sectionVoices(inventory, reKeyToCatalog(placeVoices(inventory))),
+    ...zeroShot,
   ];
 
-  const sections: VoicePickerSection[] = sectionVoices(inventory, placements).map(
+  const sections: VoicePickerSection[] = grouped.map(
     (section: VoiceSection) => ({
       label: section.label,
       /*
@@ -180,6 +239,10 @@ export async function narrationVoicePicker(userDataDir: string): Promise<VoicePi
         label: placement.display,
         servers: [...placement.servedBy],
         unavailable: unavailableSentence(placement, inventory),
+        // Outside the list the heading is gone, and "Mistborn" alone is the fine-tune.
+        ...(zeroShotIds.has(placement.id)
+          ? { chosenLabel: `${ZERO_SHOT_HEADING} · ${placement.display}` }
+          : {}),
       })),
     }),
   );

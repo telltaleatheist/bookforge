@@ -653,8 +653,16 @@ export async function runCrucibleJob(options: RunCrucibleJobOptions): Promise<Cr
     throw new CrucibleJobCancelled(server, null, `the ${type} job was cancelled before it was submitted`);
   }
 
-  const client = await crucibleClientFor(server, CRUCIBLE_CLIENT_NAME);
   const verb = `the ${type} job`;
+  // Resolving the engine is a request too (`resolveEngine` -> `info()`): its
+  // refusal takes the same translation, or an unreachable server FAILS the row
+  // with the SDK's bare sentence instead of parking it.
+  let client: Awaited<ReturnType<typeof crucibleClientFor>>;
+  try {
+    client = await crucibleClientFor(server, CRUCIBLE_CLIENT_NAME);
+  } catch (err) {
+    throw describeCrucibleJobRefusal(err, server, verb);
+  }
 
   let jobId: string;
   let lastEventId = options.attachTo?.lastEventId ?? 0;

@@ -35,6 +35,13 @@ export interface VoicePickerVoice {
    * the Mac" send a person to different places.
    */
   unavailable: string | null;
+  /**
+   * The name that stands WITHOUT its section heading, when `label` does not —
+   * "Zero-shot · Mistborn" for a row drawn as "Mistborn" under "Zero-shot".
+   * Absent means `label` already stands alone. Read wherever the voice is named
+   * outside the list: the closed dropdown, a refusal sentence.
+   */
+  chosenLabel?: string;
 }
 
 /** One section: the set of machines that can render everything inside it. */
