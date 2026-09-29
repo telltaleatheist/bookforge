@@ -970,7 +970,7 @@ TRAINING_HELP['cut-audit'] = [
 TRAINING_HELP.bed = [
   'clipforge bed - put ownbed1 under every clip of a gated tier (bed_mix_tier.py)',
   '',
-  '  --tier <dir>          a MERGED, GATED tier directory (wavs are rewritten IN PLACE; the',
+  '  --tier <dir>          a MERGED tier directory (wavs are rewritten IN PLACE; the',
   '                        _raw_src_ pools keep the originals)',
   '  --bed <wav>           default E:/training/beds/ownbed1/bed_raw_24k.wav - Owen own room tone,',
   '                        2 h at 24 kHz. The corpus own tone or ownbed1, NEVER another source',
@@ -986,7 +986,7 @@ TRAINING_HELP.bed = [
   '  v3 rule in general - clean masters train bed-less (tr_v3, 0/620 runaway, 4f) - and it is not',
   '  the Orpheus SNAC-floor argument, which does not transfer.',
   '',
-  '  ORDER. slice -> merge-tiers -> gate -> bed -> mix. Gate BEFORE bedding: the gate is ASR',
+  '  ORDER. slice -> merge-tiers -> bed -> mix. No gate (Owen 2026-09-29): book-text already checks the text of each cue against its audio. (Was: gate BEFORE bedding: the gate is ASR',
   '  against text and the bed only lowers its coverage. Writes <tier>/bed_mix.json; a tier that',
   '  already has one is skipped by the campaign chains, so delete it to re-bed.',
 ].join('\n');
@@ -1587,9 +1587,9 @@ async function runBed(args) {
   if (!fs.existsSync(path.join(tier, 'metadata_train.csv'))) {
     throw new Error('bed: not a corpus tier (no metadata_train.csv): ' + tier);
   }
-  if (!fs.existsSync(path.join(tier, 'row_gate.json'))) {
-    throw new Error('bed: ' + path.basename(tier) + ' has no row_gate.json - gate it first (the bed lowers ASR coverage)');
-  }
+  // No gate requirement (Owen 2026-09-29: "Drop the gate as part of the process. We already have that worked out and don't
+  // need it"). book-text already checks every cue's text against its own audio (Qwen long pass, re-hear, Whisper second
+  // opinion, misplaced-cue drop), so a second ASR pass over the sliced clips is redundant. Order: slice -> merge -> bed -> mix.
   const root = resolveTrainingRoot(args);
   const cwd = path.join(root, 'pipeline', 'untreated');
   const python = resolveTrainingPython(args, 'bed');
