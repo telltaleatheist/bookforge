@@ -14,6 +14,13 @@ services:
     hostname: nas
     restart: unless-stopped
     mem_limit: 5g
+    # NO SWAP for this container (memory.swap.max = 0 on cgroup v2, where
+    # `mem_swappiness` is ignored). The NAS runs near its 7.5 GB ceiling and
+    # swapped the idle server out (313 MB of 1.1 GB, 2026-09-29): the next book
+    # open paged it back in, the single JS thread stalled ~35 s, and the phone's
+    # AVPlayer gave up on /audio after ~10 s ("Audio failed to load"; the
+    # second try always worked). Equal to mem_limit = no swap at all.
+    memswap_limit: 5g
     ports:
       - "8766:8765"
     volumes:
