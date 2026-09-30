@@ -3,6 +3,7 @@ import { NavigationEnd, Router } from '@angular/router';
 import { Subscription } from 'rxjs';
 import { PlayerService } from '../services/player.service';
 import { IconComponent } from '../shared/icon.component';
+import { TransportPresenceDirective } from './transport-presence.directive';
 import { encodePathId } from '../shared/path-id';
 import { formatTime } from '../shared/format';
 
@@ -15,10 +16,10 @@ import { formatTime } from '../shared/format';
 @Component({
   selector: 'app-mini-player',
   standalone: true,
-  imports: [IconComponent],
+  imports: [IconComponent, TransportPresenceDirective],
   template: `
     @if (visible()) {
-      <div class="mini" [class.dragging]="dragging()"
+      <div class="mini" bfTransport [class.dragging]="dragging()"
            [style.transform]="dragY() ? 'translateY(' + dragY() + 'px)' : null"
            [style.opacity]="dragY() > 0 ? closeOpacity() : 1"
            (touchstart)="onDragStart($event)" (touchmove)="onDragMove($event)"
@@ -31,8 +32,8 @@ import { formatTime } from '../shared/format';
             <div class="mini-title">{{ p.book()!.title }}</div>
             @if (p.book()!.author) { <div class="mini-author">{{ p.book()!.author }}</div> }
           </div>
-          <button class="mini-play" (click)="togglePlay($event)" [title]="p.isPlaying() ? 'Pause' : 'Play'">
-            <app-icon [name]="p.isPlaying() ? 'pause' : 'play'" [size]="20" />
+          <button class="mini-play" (click)="togglePlay($event)" [title]="p.isPlaying() || p.startPending() ? 'Pause' : 'Play'">
+            <app-icon [name]="p.isPlaying() || p.startPending() ? 'pause' : 'play'" [size]="20" />
           </button>
         </div>
         <div class="mini-seek">

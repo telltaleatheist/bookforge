@@ -140,11 +140,24 @@ export class PlayerService {
   // (see toArtworkDataUrl). Distinct from coverSrc, which may be a WebView-scoped
   // blob:/file: URL the media service can't fetch. Null when there's no cover.
   private artworkUrl: string | null = null;
-  // Set in open() so playback starts as soon as metadata loads. Tapping a book is a
-  // user gesture and (when switching from another book) the element is already
-  // unlocked, so play() succeeds; on a cold deep-link with no gesture it's rejected
-  // and we settle as paused.
-  private pendingAutoplay = false;
+  /** A start that has been asked for (an autoplay open, or a play tap made while
+   *  the book was still loading) but not yet released by the start gate — see
+   *  mayStart(). Public so the transport can show it as "playing" and a pause tap
+   *  can cancel it: an eager start must be pausable. Tapping a book is a user
+   *  gesture and (when switching from another book) the element is already
+   *  unlocked, so the deferred play() succeeds; on a cold deep-link with no
+   *  gesture it's rejected and we settle as paused. */
+  readonly startPending = signal(false);
+
+  /** How many transport views (play/pause controls) are mounted AND painted —
+   *  the full player's transport row, the mini-bar. Registered by
+   *  TransportPresenceDirective (player/transport-presence.directive.ts). Audio
+   *  this service starts on its own never starts while this is zero: Owen's rule
+   *  (Sep 29 2026) is that the book never speaks before the controls that can
+   *  pause it are on screen. A backgrounded app keeps its views mounted, so
+   *  lock-screen/route-change playback the user started is unaffected. */
+  private readonly transportViews = signal(0);
+  readonly transportOnScreen = computed(() => this.transportViews() > 0);
   // The user's intent. When true but the element pauses without going through our
   // controls (e.g. AirPods removed → route change), we try to resume on the new
   // output. Real pauses (tap / lock-screen / AirPod tap → media-session handler)
@@ -272,7 +285,8 @@ export class PlayerService {
       // External pause while the user wanted playback (e.g. AirPods removed):
       // resume on the new output instead of going silent. Debounced so a genuine
       // stop (backgrounded/interruption where play() is blocked) can't loop.
-      if (this.wantPlaying && !this.audio.ended && Date.now() - this.lastAutoResume > 1000) {
+      // Through the start gate like every self-initiated start (mayStart).
+      if (this.wantPlaying && !this.audio.ended && this.mayStart() && Date.now() - this.lastAutoResume > 1000) {
         this.lastAutoResume = Date.now();
         this.audio.play().then(() => { /* resumed on the new route */ }, () => {
           // Couldn't resume (backgrounded/interruption) — settle as paused.
@@ -303,7 +317,8 @@ export class PlayerService {
     // never asked for that pause (wantPlaying is still true), pick playback back
     // up the moment the app returns to the foreground. A user pause — tap,
     // lock-screen control, AirPod tap — clears wantPlaying first, so it's never
-    // overridden here.
+    // overridden here. Through the start gate (mayStart): never mid-load, never
+    // without a transport on screen.
     document.addEventListener('visibilitychange', async () => {
       if (document.visibilityState !== 'visible') return;
       if (!this.book()) return;
@@ -317,7 +332,7 @@ export class PlayerService {
       // boundary — so opening the app to catch a word's spelling lands too late.
       this.updateCue(this.currentTime());
       this.resumeTick.update((v) => v + 1);
-      if (this.wantPlaying && this.audio.paused && !this.audio.ended && this.book()) {
+      if (this.wantPlaying && this.audio.paused && !this.audio.ended && this.mayStart()) {
         this.setPlaybackAudioSession();
         this.audio.play().catch(() => { /* stays paused; the transport already shows it */ });
       }
@@ -335,6 +350,7 @@ export class PlayerService {
         ?? '';
       this.error.set(why ? `Audio failed to load: ${why}` : 'Audio failed to load.');
       this.openingStage.set(null);
+      this.startPending.set(false); // a failed load starts nothing on its own
     });
 
     const s = parseFloat(localStorage.getItem('bookshelf-speed') || '1');
@@ -363,17 +379,21 @@ export class PlayerService {
     if (cur?.downloadPath === downloadPath && !!cur.stream === !!book?.stream) return;
     const generation = ++this.openGeneration;
     const autoplay = opts?.autoplay !== false;
-    // A fresh book should start playing. Assert intent now so a stray 'pause' from
-    // swapping src (which fires no 'pause' event but leaves isPlaying stale) can't
-    // leave the transport showing "playing" while silent.
-    this.pendingAutoplay = autoplay;
-    this.wantPlaying = autoplay;
+    // The outgoing book stops NOW, while it is still book(): the new book's
+    // loading overlay replaces the transport, so audio left running here would
+    // play with no pause control on screen (and, before this, its 5 s position
+    // timer wrote the old book's time under the new book's key mid-open). Saved
+    // first, under its own key, exactly as a user pause would.
+    this.stopForSwitch();
+    // Intent to start is HELD, not asserted: wantPlaying stays false until the
+    // start gate releases it (tryStartAfterOpen → play()), so neither the
+    // route-change auto-resume nor the foreground resume can start audio mid-open.
+    this.startPending.set(autoplay);
     // Remember it so a page refresh can bring the mini-player back (see restoreLast).
     localStorage.setItem(PlayerService.LAST_BOOK_KEY, downloadPath);
 
     this.loading.set(true);
     this.error.set(null);
-    this.metadataReady = false;
     this.vttSettled = true; // flips false once a transcript fetch is in flight
     if (autoplay) this.openingStage.set('finding');
     try {
@@ -404,6 +424,9 @@ export class PlayerService {
         return;
       }
 
+      // From here book() is the incoming book and nothing of it is loaded yet:
+      // position saves and time mirroring wait for ITS metadata (onLoadedMetadata).
+      this.metadataReady = false;
       this.book.set(b);
       // Tell the native backend which key to persist this book's position under
       // (no-op on web). The native side keeps saving while the WebView is frozen
@@ -590,7 +613,12 @@ export class PlayerService {
       this.error.set('Failed to load audiobook');
       this.openingStage.set(null);
     } finally {
-      if (generation === this.openGeneration) this.loading.set(false);
+      if (generation === this.openGeneration) {
+        this.loading.set(false);
+        // A failed open starts nothing, later either: the user retries from the
+        // error with a tap.
+        if (this.error()) this.startPending.set(false);
+      }
     }
   }
 
@@ -701,19 +729,37 @@ export class PlayerService {
 
   // ── Transport ──────────────────────────────────────────────────────────────
   togglePlay(): void {
-    if (this.audio.paused) {
-      this.wantPlaying = true;
-      this.setPlaybackAudioSession(); // (re)assert inside the tap so WebKit honors it
-      this.audio.play().catch((e) => console.error('play failed', e));
-    } else {
-      this.wantPlaying = false; // set BEFORE pause() so onPause won't auto-resume
-      this.audio.pause();
-    }
+    // A start is queued (still loading, or waiting for the controls to paint):
+    // the transport shows it as playing, so this tap is the user's pause.
+    if (this.startPending()) { this.startPending.set(false); return; }
+    if (this.audio.paused) this.play();
+    else this.pause();
   }
 
+  /** User pause: cancels a queued start too. */
+  pause(): void {
+    this.startPending.set(false);
+    this.wantPlaying = false; // set BEFORE pause() so onPause won't auto-resume
+    this.audio.pause();
+  }
+
+  /** User-initiated play (the caller is a visible control). Queued, not started,
+   *  while the book is still loading. */
   play(): void {
+    if (!this.book()) return;
+    // A tap IS a visible control, but the book may still be loading — queue it;
+    // tryStartAfterOpen releases it the moment loading finishes.
+    if (!this.bookLoaded()) { this.startPending.set(true); return; }
+    this.startNow();
+  }
+
+  /** The one place playback is actually started. Callers have already passed the
+   *  gate that applies to them: play() (user, loading only) or mayStart()
+   *  (everything the service starts on its own). */
+  private startNow(): void {
+    this.startPending.set(false);
     this.wantPlaying = true;
-    this.setPlaybackAudioSession();
+    this.setPlaybackAudioSession(); // (re)assert inside the tap so WebKit honors it
     this.audio.play().catch((e) => {
       console.error('play failed', e);
       // Rejected (e.g. autoplay blocked on a cold deep-link) — the element is
@@ -733,8 +779,12 @@ export class PlayerService {
     ++this.openGeneration;
     this.loading.set(false);
     this.openingStage.set(null);
+    // Closing the player STOPS it, including a start still queued behind a load:
+    // nothing may bring audio back once the controls are gone.
+    this.startPending.set(false);
     this.wantPlaying = false;
     this.savePosition(true);
+    this.metadataReady = false; // nothing loaded any more; see savePosition()
     this.stopHeartbeat(); // flushes listening time (still needs book())
     this.pendingSeconds = 0;
     this.sessionQualified = false;
@@ -1143,17 +1193,63 @@ export class PlayerService {
    *  onLoadedMetadata and from the transcript's .finally — whichever lands last
    *  releases playback. */
   private tryStartAfterOpen(): void {
-    if (!this.metadataReady || !this.vttSettled) {
+    if (!this.bookLoaded()) {
       // Audio is ready but the transcript isn't — tell the overlay what it's
       // actually waiting for.
       if (this.metadataReady && this.openingStage()) this.openingStage.set('transcript');
       return;
     }
+    // Dropping the overlay is what mounts the full player's transport; the start
+    // itself waits for that transport to be painted (attachTransport re-runs this).
     this.openingStage.set(null);
-    if (this.pendingAutoplay) {
-      this.pendingAutoplay = false;
-      this.play();
-    }
+    if (this.startPending() && this.mayStart()) this.startNow();
+  }
+
+  /** The current book is loaded far enough to be heard: no open in flight, its
+   *  metadata arrived (duration known, resume seek done) and its transcript
+   *  settled. */
+  private bookLoaded(): boolean {
+    // loading() covers the head of an open, before book() switches: the outgoing
+    // book is still book() then, loaded, and must not be what a start plays.
+    return !!this.book() && !this.loading() && this.metadataReady && this.vttSettled;
+  }
+
+  /** THE start gate for every start this service makes on its own — open
+   *  autoplay (tryStartAfterOpen), the route-change resume (the 'pause'
+   *  listener), the foreground resume (visibilitychange), and through them the
+   *  native backend's reacquire. Audio starts only when the book has finished
+   *  loading AND a transport that can pause it is on screen. User taps go
+   *  through play()/togglePlay(), whose caller is a visible control by
+   *  definition; lock-screen play is performed natively and never passes here. */
+  private mayStart(): boolean {
+    return this.bookLoaded() && this.transportOnScreen();
+  }
+
+  /** A transport view (play/pause) has been painted. Returns its detach. A start
+   *  held for want of controls is released the moment the first one appears. */
+  attachTransport(): () => void {
+    this.transportViews.update((n) => n + 1);
+    this.tryStartAfterOpen();
+    let attached = true;
+    return () => {
+      if (!attached) return;
+      attached = false;
+      this.transportViews.update((n) => n - 1);
+    };
+  }
+
+  /** open() of a different book: stop the outgoing one as a user pause would —
+   *  intent cleared before pause() so the route-change resume can't fight it, its
+   *  position and listening time saved under its own key while it is still
+   *  book(). The 'pause' event this raises lands after book() has switched;
+   *  savePosition/onTimeUpdate ignore it until the new book's metadata. */
+  private stopForSwitch(): void {
+    this.startPending.set(false);
+    this.wantPlaying = false;
+    if (this.audio.paused) return;
+    this.savePosition(true);
+    this.stopHeartbeat(); // credit its listening time to IT, not the incoming book
+    this.audio.pause();
   }
 
   /** Auto-bookmark when playback naturally crosses into the next chapter. Seeks
@@ -1172,6 +1268,10 @@ export class PlayerService {
   }
 
   private onTimeUpdate(): void {
+    // Before the current book's metadata there is no position of IT to mirror: a
+    // straggler 'time' from the book open() just stopped would otherwise land its
+    // position (and a heard range) on the incoming book.
+    if (!this.metadataReady) return;
     const t = this.audio.currentTime;
     // A timeupdate means a live, decoding source at a real position — so any error
     // still showing is stale (see the 'play' handler: a transient interruption-
@@ -1343,6 +1443,11 @@ export class PlayerService {
   }
 
   private savePosition(force = false): void {
+    // Position and heard coverage belong to a LOADED book. Mid-open, book() is
+    // already the incoming book but currentTime/heard are still unset (or carry
+    // the outgoing book's values), and the 5 s timer / a late 'pause' from the
+    // switch would write them under the incoming book's key.
+    if (!this.metadataReady) return;
     this.saveHeard(force);
     const t = this.currentTime();
     const b = this.book();
@@ -1703,8 +1808,10 @@ export class PlayerService {
     const set = (action: MediaSessionAction, handler: () => void) => {
       try { navigator.mediaSession.setActionHandler(action, handler); } catch { /* unsupported */ }
     };
-    set('play', () => this.togglePlay());
-    set('pause', () => this.togglePlay());
+    // Explicit, not toggles: a 'pause' key arriving while already paused (or while
+    // a start is queued) must never start audio.
+    set('play', () => this.play());
+    set('pause', () => this.pause());
     set('seekbackward', () => this.skip(-15));
     set('seekforward', () => this.skip(30));
     set('previoustrack', () => this.prevChapter());

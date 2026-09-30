@@ -8,6 +8,7 @@ import { ScrollingModule, CdkVirtualScrollViewport } from '@angular/cdk/scrollin
 import { PlayerService, Bookmark } from '../services/player.service';
 import { BookActionsService } from '../services/book-actions.service';
 import { IconComponent } from '../shared/icon.component';
+import { TransportPresenceDirective } from './transport-presence.directive';
 import { VarVirtualScrollDirective } from '../shared/var-virtual-scroll';
 import { formatTime } from '../shared/format';
 import { decodePathId } from '../shared/path-id';
@@ -61,7 +62,7 @@ type TranscriptRow =
 @Component({
   selector: 'app-player',
   standalone: true,
-  imports: [IconComponent, ScrollingModule, VarVirtualScrollDirective, FocusSelectDirective],
+  imports: [IconComponent, ScrollingModule, VarVirtualScrollDirective, FocusSelectDirective, TransportPresenceDirective],
   template: `
     <div class="scrim" (click)="minimize()" [style.opacity]="expandScrim()"></div>
     <div class="player" [class.dragging]="isDragging() || p.expandDragging()"
@@ -258,15 +259,15 @@ type TranscriptRow =
             <span class="time">{{ fmt(rightTime()) }}</span>
           </div>
 
-          <div class="transport">
+          <div class="transport" bfTransport>
             <button class="t-btn skip-btn min" (click)="p.skipBack(-300)" title="Back 5 min">
               <app-icon name="replay" [size]="30" /><span class="skip-num">5m</span>
             </button>
             <button class="t-btn skip-btn" (click)="p.skipBack(-10)" title="Back 10s">
               <app-icon name="replay" [size]="30" /><span class="skip-num">10</span>
             </button>
-            <button class="t-btn play" (click)="p.togglePlay()" [title]="p.isPlaying() ? 'Pause' : 'Play'">
-              <app-icon [name]="p.isPlaying() ? 'pause' : 'play'" [size]="30" />
+            <button class="t-btn play" (click)="p.togglePlay()" [title]="p.isPlaying() || p.startPending() ? 'Pause' : 'Play'">
+              <app-icon [name]="p.isPlaying() || p.startPending() ? 'pause' : 'play'" [size]="30" />
             </button>
             <button class="t-btn skip-btn fwd" (click)="p.skip(10)" title="Forward 10s">
               <app-icon name="replay" [size]="30" /><span class="skip-num">10</span>
