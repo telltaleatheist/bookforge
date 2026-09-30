@@ -46,10 +46,10 @@ function fixture(options:{loadEnds:'done'|'cancelled';hangRelease?:boolean;lease
   let loadLease:string|null=null;
   const calls:{method:string;path:string}[]=[];
   const revision='a'.repeat(40);
-  const model=(id:string)=>({id,family:'fixture',params_b:9,revision,fingerprint:`${id}@${revision}`,modalities:id==='dots-ocr'?['text','image']:['text'],backend_supported:true,installed:true,resident:resident===id,loadable:true,memory_bytes_estimate:1,context_default:8192,max_model_len:8192});
+  const model=(id:string)=>({id,family:'fixture',params_b:9,revision,fingerprint:`${id}@${revision}`,modalities:id==='dots-ocr'?['text','image']:['text'],backend_supported:true,installed:true,weights_of:null,resident:resident===id,loadable:true,memory_bytes_estimate:1,context_default:8192,max_model_len:8192});
   const models=()=>['dots-ocr','qwen3.5-9b','qwen3.8-27b-4bit'].map(model);
-  const info=()=>({server:{name:'fixture',version:'1.0.10',api_version:1},host:{platform:'win32',arch:'x86_64',backend:'llama-windows',gpu:{vendor:'nvidia',name:'fake',vram_bytes:24e9}},role:'engine',managed_by:null,job_types:['load-model','unload-model'],capabilities:[{job_type:'llm',models:models()}]});
-  const capability=()=>({backend_kind:'llama-windows',total_bytes:24e9,desktop_allowance_bytes:0,classes:classes.map(capability=>({capability,enabled:true,selected:chosen(capability),reason:'fixture',shortfall_bytes:0,route:'local'}))});
+  const info=()=>({server:{name:'fixture',version:'1.0.10',api_version:1},host:{platform:'win32',arch:'x86_64',backend:'llama-windows',gpu:{vendor:'nvidia',name:'fake',vram_bytes:24e9}},role:'engine',managed_by:null,job_types:['load-model','unload-model'],capabilities:[{job_type:'llm',models:models()}],pages_engine:{engine:'llama-cpp',installed:true,detail:'fixture',request:{model:'dots-ocr',dpi:200,max_pixels:11289600,max_tokens:8192,temperature:0,prompt:'fixture',dialect:'dots-json',concurrency:1,truncated_finish_reason:'length'}}});
+  const capability=()=>({backend_kind:'llama-windows',total_bytes:24e9,desktop_allowance_bytes:0,classes:classes.map(capability=>({capability,enabled:true,selected:chosen(capability),reason:'fixture',shortfall_bytes:0,route:'local',work:null,context_ceilings:null}))});
   const frame=(id:number,event:string,data:unknown)=>`id: ${id}\nevent: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
   const sse=(body:string)=>new Response(body,{headers:{'content-type':'text/event-stream'}});
   const server=Bun.serve({port:0,hostname:'127.0.0.1',async fetch(req){
@@ -92,7 +92,7 @@ function fixture(options:{loadEnds:'done'|'cancelled';hangRelease?:boolean;lease
     // `chunks_done` is load-bearing in the SDK (what a resume differences
     // against), so the job record carries it, as every current server's does —
     // a load job's is empty.
-    if(p==='/v1/jobs/load')return Response.json({job_id:'load',type:'load-model',model:'dots-ocr',status:options.loadEnds,progress:1,position:null,error:null,artifacts:[],chunks_done:[],lease_id:loadLease,created:'2026-09-20T18:29:00Z',started:'2026-09-20T18:28:47Z',finished:'2026-09-20T18:29:37Z'});
+    if(p==='/v1/jobs/load')return Response.json({job_id:'load',type:'load-model',model:'dots-ocr',status:options.loadEnds,progress:1,position:null,error:null,artifacts:[],chunks_done:[],lease_id:loadLease,client_ref:null,interrupted_at:null,held_by:null,held_since:null,chunks_total:null,chunk_at:null,resume_id:null,resumed:false,created:'2026-09-20T18:29:00Z',started:'2026-09-20T18:28:47Z',finished:'2026-09-20T18:29:37Z'});
     if(p.endsWith('/lease')&&req.method==='POST')return Response.json({lease_id:'lease',kind:'llm',subject:p.split('/')[3],client:'fixture',act:'pages',since:'2026-09-20T18:29:37Z',expires_at:'2026-09-20T18:31:37Z'},{status:201});
     if(p.startsWith('/v1/leases/')&&req.method==='DELETE'){
       if(options.hangRelease)return await new Promise<Response>(()=>{});

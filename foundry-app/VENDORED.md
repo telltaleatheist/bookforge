@@ -10,10 +10,25 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\<user>\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **0d1891a, PARTIAL** — *Clean text: remove what a narrator would not read* (five files; the 1.0.52/1.0.53 SDK adoptions 4c0d5dc/a57298c held back, see the entry below). Before it: **1115cea** — *Host export delete: deleting an EPUB version deletes that export, not the step it was cast from* (was 6b4bc02; 3 files moved: `electron/ipc.ts` gains the `deleteExport` door, `electron/mount.ts` re-exports it, `electron/projects.ts` `deleteDocument` announces `projects:changed`; engine unchanged) |
+| Source sha | **70d23a4** — *Adopt Crucible 1.0.63* (full sync; see the entry below). Before it: 0d1891a (partial), and before that **1115cea** — *Host export delete: deleting an EPUB version deletes that export, not the step it was cast from* (was 6b4bc02; 3 files moved: `electron/ipc.ts` gains the `deleteExport` door, `electron/mount.ts` re-exports it, `electron/projects.ts` `deleteDocument` announces `projects:changed`; engine unchanged) |
 | Engine | **VENDORED, in `engine/`** since 1927563 (2026-09-24): `engine/foundry-engine.cjs` plus its four fonts, built from Foundry's `src/` by Foundry's `tools/build-engine.mjs` and checked against those sources by Foundry's test suite. Run by BookForge's own Electron as Node (`ELECTRON_RUN_AS_NODE=1`) from BOTH doors — this copy's `electron/engine.ts` and BookForge's `electron/foundry-bridge.ts`. **Ask it: `node foundry-app/engine/foundry-engine.cjs --version`** → `foundry X.Y.Z (src <digest>)`. There is no downloaded engine any more; `FOUNDRY_BIN` still overrides in both doors. |
 | Copied on | 2026-09-19 (five times: 3738c01, 3436fc5, 806d44b, f349771, ca4754c), 2026-09-20 (98a4344, 9e0b27d, dccc144, 7b98004, cc5fc5b, 93010d8, 77e1d6d) 2026-09-21 (753dca8, 3e26e53, f9bebb6, 95593b0, 8ee48b7) and 2026-09-22 (7185764, 7912022, 19fa7a9, df63f9f) and 2026-09-23 (acf63c2, 4835411), 2026-09-24 (b4c7346, 1927563, e2481dc, a1138f6, 72c6b08, b7ba2a8, 0eb12de), 2026-09-28 (1115cea) |
 | Copied by | Mechanical source sync, verified against Foundry `0eb12de:app/` (`git hash-object` per file: clean but for this file, `IPC-CHANNELS.md` and `.gitignore` — see below); details below |
+
+## The `0d1891a → 70d23a4` re-vendor — completed, and Crucible 1.0.63 (2026-09-29)
+
+Owen closed BookForge and asked for the re-vendor; *"crucible is several versions past
+that now"*. So Foundry adopted 1.0.63 first (70d23a4, `tools/adopt-crucible-release.mjs
+1.0.63`: electron and renderer typecheck clean, `app/test/crucible*` 80/80), and this copy
+was then synced WHOLE from `git archive 70d23a4 app`. Every file was checked with
+`git hash-object` against `70d23a4:app/<file>` and all are identical (except this file,
+`IPC-CHANNELS.md` and `.gitignore`). The 1.0.28 tarballs are deleted and the 1.0.63 ones
+added. `npm install` relinked `@crucible/client` and `@crucible/bootstrap` to 1.0.63, and
+`package.json` and the lock file are blob-identical to 70d23a4 afterwards. `npm run build`
+was run IN PLACE with BookForge down (`test:surface` clean); the stage
+`.foundry-stage-0d1891a` was never swapped and is deleted. Root
+`tsc -p tsconfig.electron.json --noEmit` exits 0. This copy's SDK (1.0.63) is now ahead of
+BookForge's own root pin (1.0.38).
 
 ## The `1115cea → 0d1891a` PARTIAL re-vendor — Clean text removes what a narrator would not read (2026-09-29)
 
@@ -43,8 +58,7 @@ a request from before the field as `off`. BookForge's own two doors spell it too
 EPUB failsafe `electron/narration-clean-text.ts` (on, the box as it opens).
 
 Built in `.foundry-stage-0d1891a/` (electron + renderer, `test:surface` clean).
-**NOT SWAPPED at this commit**: BookForge was running. The swap is
-`tools/swap-foundry-dist.sh .foundry-stage-0d1891a --expect "remove-references"`.
+Not swapped: superseded by the full 70d23a4 re-vendor above, built in place.
 The ENGINE is live already (it is source, run per job): a cleanup queued from the
 not-yet-swapped window spells no removal and so gets the engine's default, ON, for the
 triage and the cleanup alike.
