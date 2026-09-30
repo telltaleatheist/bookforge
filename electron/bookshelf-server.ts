@@ -1166,20 +1166,35 @@ export class BookshelfServer {
     if (this.durationEnrichRunning) return; // a pass is already warming the cache
     this.durationEnrichRunning = true;
     try {
-      await Promise.all(entries.map(async (entry) => {
-        if (entry.duration === undefined) {
-          entry.duration = await this.getAudioDuration(entry.downloadPath);
-        }
-        if (entry.versions) {
-          await Promise.all(entry.versions.map(async (v) => {
+      /*
+       * TWO AT A TIME, NOT THE WHOLE SHELF AT ONCE. This was one Promise.all over
+       * every book, so a cold cache started ~190 metadata parses together; on the
+       * NAS mirror that took the JS heap from 11 MB to 3 GB for half a minute
+       * (2026-09-29), pushed the host into swap, and stalled the next book open
+       * past the phone's load timeout. A probe is now an ffprobe child process
+       * (see getAudioDuration), so each is cheap; the cap keeps a cold pass from
+       * turning into a fork storm on a 4-core box either.
+       */
+      const work: Array<() => Promise<void>> = [];
+      for (const entry of entries) {
+        work.push(async () => {
+          if (entry.duration === undefined) {
+            entry.duration = await this.getAudioDuration(entry.downloadPath);
+          }
+          for (const v of entry.versions ?? []) {
             if (v.duration === undefined) {
               v.duration = v.downloadPath === entry.downloadPath
                 ? entry.duration
                 : await this.getAudioDuration(v.downloadPath);
             }
-          }));
-        }
-      }));
+          }
+        });
+      }
+      let next = 0;
+      const lane = async (): Promise<void> => {
+        while (next < work.length) await work[next++]();
+      };
+      await Promise.all([lane(), lane()]);
       await this.saveDurationCache();
     } catch (err) {
       console.error('[BookshelfServer] Background duration enrichment failed:', err);
@@ -1202,10 +1217,16 @@ export class BookshelfServer {
         return cached.duration;
       }
 
-      // Cache miss: parse the file
-      const mm = await getMusicMetadata();
-      const metadata = await mm.parseFile(filePath, { skipCovers: true });
-      const duration = metadata.format.duration;
+      // Cache miss: ask ffprobe, which reads the container header in its own
+      // process. music-metadata's parseFile built the whole sample table of a
+      // long m4b in THIS heap to answer one number — hundreds of MB per book.
+      const { stdout } = await execFileAsync(
+        getFfprobePath(),
+        ['-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', filePath],
+        { timeout: 60_000 },
+      );
+      const parsed = parseFloat(String(stdout).trim());
+      const duration = Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
 
       if (duration !== undefined) {
         this.durationCache.set(filePath, {
@@ -1235,14 +1256,10 @@ export class BookshelfServer {
         return;
       }
 
-      // Refresh is cache-busting by nature: drop the persistent duration cache so
-      // every length is recomputed from source. This is cheap to the user because
-      // durations are recomputed off the request path (enrichDurations) — the list
-      // still returns immediately below.
-      if (forceRefresh) {
-        this.durationCache.clear();
-        this.durationCacheDirty = true;
-      }
+      // A refresh rebuilds the list but does NOT drop the duration cache: every entry is validated
+      // against the file's size + mtime on read (getAudioDuration), so a changed
+      // book is re-measured anyway. Clearing it made each pull-to-refresh re-probe
+      // the whole library.
 
       const entries = await this.getAudiobookProjects();
       this.booksCache = { data: entries, timestamp: Date.now() };
