@@ -120,6 +120,74 @@ public class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
 
     // MARK: - JS API
 
+    // ── Transient load failures are waited out, not reported ────────────────
+    //
+    // A server that is slow to answer the FIRST byte (a NAS paging its idle
+    // bookshelf server back in from swap stalled 35 s on 2026-09-29) fails the
+    // item with NSURLErrorTimedOut after ~10 s, and the second open always
+    // worked. That is weather, not a broken book: the item is rebuilt and asked
+    // again on a stated budget, and only a failure that outlives the budget —
+    // or one that is not a network hiccup at all — reaches JS as "error".
+    private var loadSerial = 0
+    private static let loadRetryDelays: [Double] = [1, 3, 6]
+    private static let transientLoadErrors: Set<Int> = [
+        NSURLErrorTimedOut, NSURLErrorCannotConnectToHost, NSURLErrorNetworkConnectionLost,
+        NSURLErrorCannotFindHost, NSURLErrorDNSLookupFailed,
+    ]
+
+    /// The URL-level error behind an item failure, whether AVFoundation reports
+    /// it directly or wraps it (AVFoundationErrorDomain → NSUnderlyingErrorKey).
+    private static func urlErrorCode(_ error: Error?) -> Int? {
+        guard let e = error as NSError? else { return nil }
+        if e.domain == NSURLErrorDomain { return e.code }
+        if let u = e.userInfo[NSUnderlyingErrorKey] as? NSError, u.domain == NSURLErrorDomain { return u.code }
+        return nil
+    }
+
+    private func observeItem(_ item: AVPlayerItem, url: URL, serial: Int, attempt: Int) {
+        statusObs?.invalidate()
+        statusObs = item.observe(\.status, options: [.new]) { [weak self] it, _ in
+            guard let self = self else { return }
+            if it.status == .readyToPlay {
+                let d = it.duration.seconds
+                self.duration = d.isFinite ? d : 0
+                self.notifyListeners("ready", data: ["duration": self.duration])
+            } else if it.status == .failed {
+                let code = NativeAudioPlugin.urlErrorCode(it.error)
+                if let code = code, NativeAudioPlugin.transientLoadErrors.contains(code),
+                   attempt < NativeAudioPlugin.loadRetryDelays.count {
+                    let delay = NativeAudioPlugin.loadRetryDelays[attempt]
+                    print("[NativeAudio] load failed transiently (NSURLError \(code)); retry \(attempt + 1) in \(delay)s")
+                    DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                        // Only the load that failed is retried: a newer load() or a
+                        // teardown in the meantime supersedes it.
+                        guard let self = self, self.loadSerial == serial, self.item === it,
+                              let player = self.player else { return }
+                        self.replaceItem(on: player, url: url, serial: serial, attempt: attempt + 1)
+                    }
+                    return
+                }
+                let reason = it.error?.localizedDescription ?? "load failed"
+                let suffix = code.map { " (NSURLError \($0))" } ?? ""
+                self.notifyListeners("error", data: ["message": reason + suffix])
+            }
+        }
+    }
+
+    private func replaceItem(on player: AVPlayer, url: URL, serial: Int, attempt: Int) {
+        if let old = item {
+            NotificationCenter.default.removeObserver(self, name: .AVPlayerItemDidPlayToEndTime, object: old)
+        }
+        let next = AVPlayerItem(url: url)
+        next.audioTimePitchAlgorithm = .timeDomain
+        item = next
+        observeItem(next, url: url, serial: serial, attempt: attempt)
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(didEnd),
+            name: .AVPlayerItemDidPlayToEndTime, object: next)
+        player.replaceCurrentItem(with: next)
+    }
+
     @objc func load(_ call: CAPPluginCall) {
         guard let urlStr = call.getString("url"), let url = URL(string: urlStr) else {
             call.reject("load: missing/invalid url"); return
@@ -156,16 +224,8 @@ public class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
             self.item = item
             self.player = player
 
-            self.statusObs = item.observe(\.status, options: [.new]) { [weak self] it, _ in
-                guard let self = self else { return }
-                if it.status == .readyToPlay {
-                    let d = it.duration.seconds
-                    self.duration = d.isFinite ? d : 0
-                    self.notifyListeners("ready", data: ["duration": self.duration])
-                } else if it.status == .failed {
-                    self.notifyListeners("error", data: ["message": it.error?.localizedDescription ?? "load failed"])
-                }
-            }
+            self.loadSerial += 1
+            self.observeItem(item, url: url, serial: self.loadSerial, attempt: 0)
 
             self.installTimeObserver()
             self.wireLifecycle()
@@ -578,6 +638,7 @@ public class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         clearSleepInternal()
         chapterTimes = []
         if let t = timeObserver { player?.removeTimeObserver(t); timeObserver = nil }
+        loadSerial += 1   // a retry pending for the item being torn down must not fire
         statusObs?.invalidate(); statusObs = nil
         stateObs?.invalidate(); stateObs = nil
         lastNotifiedState = ""

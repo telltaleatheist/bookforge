@@ -327,7 +327,13 @@ export class PlayerService {
       // set, and gating on !loading() used to eat them (spinner stops, no
       // message, no playback). A later successful load clears it
       // (see onLoadedMetadata).
-      this.error.set('Audio failed to load.');
+      // The backend's own reason when it has one (native: the plugin's message,
+      // after its bounded retries of a transient network failure; web: the
+      // MediaError), so a real failure is diagnosable from the screen.
+      const why = this.audio.lastErrorMessage
+        ?? (this.audio as unknown as { error?: { message?: string } | null }).error?.message
+        ?? '';
+      this.error.set(why ? `Audio failed to load: ${why}` : 'Audio failed to load.');
       this.openingStage.set(null);
     });
 

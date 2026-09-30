@@ -82,6 +82,10 @@ export interface AudioBackend {
   readonly remote?: RemotePlayback;
   /** Present only on the native backend. */
   readonly nativeControls?: NativeControls;
+  /** Native only: the plugin's own reason for the last 'error' (the web
+   *  element's is `error.message`). Read when surfacing "Audio failed to load",
+   *  so a real failure says why instead of the bare sentence. */
+  readonly lastErrorMessage?: string | null;
 
   // ── Native position persistence (absent on the web <audio> element) ──────────
   // The WebView is frozen while backgrounded, so its JS position saver stops
@@ -199,7 +203,7 @@ function ensureArbiter(plugin: NativePlugin): void {
   plugin.addListener('ready', (d) => currentOwner?.handleReady((d['duration'] as number) ?? 0));
   plugin.addListener('time', (d) => currentOwner?.handleTime((d['currentTime'] as number) ?? 0));
   plugin.addListener('state', (d) => currentOwner?.handleState(d['state'] as string));
-  plugin.addListener('error', () => currentOwner?.handleError());
+  plugin.addListener('error', (d) => currentOwner?.handleError(typeof d['message'] === 'string' ? d['message'] : null));
   plugin.addListener('command', (d) => currentOwner?.handleCommand(d['action'] as string, d['time'] as number | undefined));
   plugin.addListener('seeked', (d) => currentOwner?.handleSeeked((d['time'] as number) ?? 0));
 }
@@ -398,7 +402,9 @@ class NativeAudioBackend implements AudioBackend {
       case 'ended': this._paused = true; this._ended = true; this.emit('ended'); break;
     }
   }
-  handleError(): void {
+  lastErrorMessage: string | null = null;
+  handleError(message: string | null = null): void {
+    this.lastErrorMessage = message;
     this.settleReacquire(new Error('reacquire load failed'));
     this.emit('error');
   }
