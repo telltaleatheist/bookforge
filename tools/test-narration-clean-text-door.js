@@ -466,6 +466,8 @@ test('llmServer still picks the PAIR OF KEYS, and empty is a real model', async 
   assert.deepStrictEqual(argv, [
     'clean-text', '--epub', '/in.epub', '--out', '/out.epub',
     '--endpoint', 'http://localhost:8300/v1',
+    // The Clean text box as it opens (Owen, 2026-09-29), spelled on the line.
+    '--remove-references', 'on',
   ]);
   assert.strictEqual(argv.includes('--model'), false, 'an empty model is OMITTED');
 
@@ -475,8 +477,8 @@ test('llmServer still picks the PAIR OF KEYS, and empty is a real model', async 
   }), 'utf8');
   const named = await door.cleanTextEngineSettingsIn(dir);
   assert.strictEqual(named.model, 'Qwen3.5-9B-bf16');
-  assert.deepStrictEqual(door.cleanTextArgs('/in.epub', '/out.epub', named).slice(-4),
-    ['--endpoint', 'http://localhost:8300/v1', '--model', 'Qwen3.5-9B-bf16']);
+  assert.deepStrictEqual(door.cleanTextArgs('/in.epub', '/out.epub', named).slice(-6),
+    ['--endpoint', 'http://localhost:8300/v1', '--model', 'Qwen3.5-9B-bf16', '--remove-references', 'on']);
 
   // A name with a space in it is a name no server has: `clampServedModel` reads it
   // as empty rather than as a tag default — the one place it must NOT behave like
@@ -507,6 +509,7 @@ test('an absent llmServer reads the ollamaUrl pair, and the argv names one door'
   assert.deepStrictEqual(door.cleanTextArgs('/in.epub', '/out.epub', settings), [
     'clean-text', '--epub', '/in.epub', '--out', '/out.epub',
     '--endpoint', 'http://nas:11434', '--model', 'qwen3.5:9b-bf16',
+    '--remove-references', 'on',
   ]);
 });
 

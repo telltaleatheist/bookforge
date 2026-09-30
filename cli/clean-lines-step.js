@@ -179,6 +179,20 @@ function workDirFor(outputPath) {
  * The run. `deps` exists so a keeper can drive this without the compiled app
  * or a foundry on the machine; the CLI passes nothing and gets the app's doors.
  */
+/**
+ * `--remove-references` / `--remove-also` for the engine (Foundry src/clean/removal.ts):
+ * what the cleanup TAKES OUT, the app's box and field. Owen, 2026-09-29: the box is
+ * "automatically checked", so unsaid is ON here as in the app. Always spelled, so the
+ * logged line says what the run removed; the triage and the cleanup get the same pair,
+ * because the engine refuses a triage asked about a different removal.
+ */
+function removalArgs(opts) {
+  const references = opts.removeReferences === undefined ? true : opts.removeReferences;
+  if (typeof references !== 'boolean') throw new Error(`removeReferences must be true or false, not ${JSON.stringify(references)}`);
+  const also = typeof opts.removeAlso === 'string' ? opts.removeAlso.trim() : '';
+  return ['--remove-references', references ? 'on' : 'off', ...(also.length > 0 ? ['--remove-also', also] : [])];
+}
+
 async function runCleanLines(opts, deps) {
   const inputPath = path.resolve(opts.inputPath);
   if (!fs.existsSync(inputPath)) throw new Error(`input file not found: ${inputPath}`);
@@ -327,6 +341,7 @@ async function runCleanLines(opts, deps) {
       '--stamp', stampPath,
       '--endpoint', settings.endpoint,
       ...(settings.model.length > 0 ? ['--model', settings.model] : []),
+      ...removalArgs(opts),
     ]
     : [
       'clean-text',
@@ -336,6 +351,7 @@ async function runCleanLines(opts, deps) {
       '--endpoint', crucible.endpoint,
       '--model', crucible.model,
       ...(opts.triage === true ? ['--triage', verdictsPath] : []),
+      ...removalArgs(opts),
     ];
   if (opts.triage === true && crucible === null) {
     throw new Error(
@@ -425,11 +441,14 @@ async function runCleanLines(opts, deps) {
        * run refused to write. The book file's digest is stored beside them; a different input is triaged again (the
        * cleaner's own answers are still cached by text, so re-cleaning costs only what changed).
        */
-      const bookDigest = crypto.createHash('sha256').update(fs.readFileSync(bookPath)).digest('hex');
+      // AND FOR THE REMOVAL THEY WERE ASKED ABOUT (2026-09-29): its criteria are part of every verdict, and the
+      // engine refuses verdicts asked about a different one - so a changed removal is triaged again, not refused.
+      const bookDigest = crypto.createHash('sha256').update(fs.readFileSync(bookPath))
+        .update(` ${removalArgs(opts).join(' ')}`).digest('hex');
       const digestPath = `${verdictsPath}.book-sha256`;
       const reuse = fs.existsSync(verdictsPath) && fs.existsSync(digestPath) && fs.readFileSync(digestPath, 'utf8').trim() === bookDigest;
       if (!reuse && fs.existsSync(verdictsPath)) {
-        log(`[clean-lines] triage: ${verdictsPath} was made for a different input - triaging again`);
+        log(`[clean-lines] triage: ${verdictsPath} was made for a different input or removal - triaging again`);
         fs.rmSync(verdictsPath, { force: true });
       }
       if (reuse) {
@@ -445,6 +464,7 @@ async function runCleanLines(opts, deps) {
         const triageArgs = [
           'clean-triage', '--book', bookPath, '--out', verdictsPath,
           '--endpoint', triageEngine.endpoint, '--model', triageEngine.model,
+          ...removalArgs(opts),
         ];
         log(`[clean-lines] triage: ${installed.path} ${triageArgs.join(' ')} (act decide, model ${triageEngine.model})`);
         const tri = await d.withCrucibleTextActLease(triageEngine, () => d.runFoundry(triageArgs, {

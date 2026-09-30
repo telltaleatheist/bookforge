@@ -228,7 +228,7 @@ import {
   CPU_LANE_SLOTS, JOB_RESOURCE, computeLanes, localLane, type ComputeLane, type JobResource,
 } from '../shared/queue-board';
 import type {
-  AnalysisRankRequest, AnalyzeRequest, CleanRequest, CleanTriageRequest, ConversionKind, DeferredPlan, EnvInstallRequest,
+  AnalysisRankRequest, AnalyzeRequest, CleanRemoval, CleanRequest, CleanTriageRequest, ConversionKind, DeferredPlan, EnvInstallRequest,
   ExportLanding, ExportMintMetadata, FoundryJobRow, Job, JobKind, JobRequest, RunOutcome,
   RunPlacement, RunVenue, SimplifyRequest, TextPassRequest, TranslateRequest,
 } from '../shared/types';
@@ -2357,6 +2357,26 @@ function enqueueCleanTriage(request: CleanTriageRequest, parentStep: string | nu
  * it runs the two side by side and the cleanup finds no verdicts file, which the
  * engine refuses by name — docs/BOOKFORGE-HANDOFF.md carries the note.
  */
+/**
+ * THE CHECK IN FRONT OF A CLEANUP, composed from the cleanup's own request — the
+ * one place the pair is made to agree about what they read and what they ask.
+ */
+export function triageRequestFor(request: CleanRequest): CleanTriageRequest {
+  return {
+    kind: 'clean-triage',
+    inputPath: request.inputPath,
+    outputPath: cleanTriageFileFor(request.recordsPath),
+    // THE SAME ROW THE CLEANUP'S BOOK IS MADE FROM, so the two books are one
+    // content. Copied as the request states it: an absent `at` stays absent,
+    // because absence and null are different claims (`CleanRequest.at`).
+    ...(request.at !== undefined ? { at: request.at } : {}),
+    ...(request.deferred !== undefined ? { deferred: request.deferred } : {}),
+    // THE SAME REMOVAL, so the check asks the criteria the cleanup will act on —
+    // clean-text refuses verdicts asked about a different one.
+    ...(request.removal !== undefined ? { removal: request.removal } : {}),
+  };
+}
+
 export function enqueueTriagedCleanup(
   request: CleanRequest,
   /** The position at the press. See `enqueue` above and `Job.parentStep`. */
@@ -2369,21 +2389,9 @@ export function enqueueTriagedCleanup(
       : shelfJobs().find((row) => row.id === standing.after && row.kind === 'clean-triage');
     return { triage: behind ?? null, clean: standing };
   }
-  const verdicts = cleanTriageFileFor(request.recordsPath);
-  const triage = enqueueCleanTriage(
-    {
-      kind: 'clean-triage',
-      inputPath: request.inputPath,
-      outputPath: verdicts,
-      // THE SAME ROW THE CLEANUP'S BOOK IS MADE FROM, so the two books are one
-      // content. Copied as the request states it: an absent `at` stays absent,
-      // because absence and null are different claims (`CleanRequest.at`).
-      ...(request.at !== undefined ? { at: request.at } : {}),
-      ...(request.deferred !== undefined ? { deferred: request.deferred } : {}),
-    },
-    parentStep,
-  );
-  const clean = enqueueTextPass({ ...request, triagePath: verdicts, after: triage.id }, parentStep);
+  const check = triageRequestFor(request);
+  const triage = enqueueCleanTriage(check, parentStep);
+  const clean = enqueueTextPass({ ...request, triagePath: check.outputPath, after: triage.id }, parentStep);
   return { triage, clean };
 }
 
@@ -3601,6 +3609,19 @@ function doorArgs(
  * the line entirely and the engine's own default stands, which is exactly what a
  * `--dry-run` with no server should print.
  */
+/**
+ * `--remove-references` / `--remove-also` for a cleanup and its check
+ * (`CleanRequest.removal`). ALWAYS SPELLED, so the line says what the run removes:
+ * an absent removal is a request from before the field, which asked none, and the
+ * engine's own default is on.
+ */
+function removalArgs(removal: CleanRemoval | undefined): string[] {
+  if (removal === undefined) return ['--remove-references', 'off'];
+  const args = ['--remove-references', removal.references ? 'on' : 'off'];
+  if (removal.also.trim().length > 0) args.push('--remove-also', removal.also.trim());
+  return args;
+}
+
 function concurrencyArgs(
   request: { concurrency?: number },
   placement: Placement,
@@ -3770,6 +3791,7 @@ export function argsFor(
       '--endpoint', placement.origin,
       '--model', placement.model,
       ...concurrencyArgs(request, UNPLACED),
+      ...removalArgs(request.removal),
     ];
   }
   if (request.kind === 'clean') {
@@ -3827,6 +3849,7 @@ export function argsFor(
      * clean. Absent is today's run exactly — every block put to the cleaner.
      */
     if (request.triagePath !== undefined) args.push('--triage', request.triagePath);
+    args.push(...removalArgs(request.removal));
     /*
      * `--concurrency` IS `doorArgs`' NOW, with the endpoint and the model it
      * belongs beside — see `concurrencyArgs`. It was pushed here and on no other

@@ -70,12 +70,22 @@ function triageRemembered(): boolean {
  * typography against the spec, and refuse an edit that changes what the sentence
  * says. Three cards here would be three ways of asking a question with one answer.
  *
- * NO INSTRUCTIONS BOX EITHER, which is the field a reader of the Simplify dialog
- * will look for. Instructions there pin the terms a REWRITE must leave untouched,
- * and they exist because rewriting is a judgement about words. A cleanup makes no
- * such judgement — it is measured against a punctuation spec the engine owns and
- * stamps into the file (`--stamp`) — so a free-text instruction here would be an
- * invitation to move a specification the stamp then claims was followed.
+ * NO INSTRUCTIONS BOX FOR HOW TO READ. Instructions in the Simplify dialog pin the
+ * terms a REWRITE must leave untouched, because rewriting is a judgement about
+ * words; a cleanup's READINGS are measured against a spec the engine owns and
+ * stamps into the file (`--stamp`), and free text there would move it.
+ *
+ * ── BUT ONE FOR WHAT TO TAKE OUT (Owen, 2026-09-29) ─────────────────────────
+ *
+ * *"add a checkbox to ai cleanup that's automatically checked, and will remove
+ * (see: table [x]) or (fig. 1-1) or similar things. the ai should make a decision
+ * about whether it should be removed."* And: *"give me the ability to ask it to
+ * remove other specific patterns i saw in the book. just add to the prompt."* So
+ * the box opens ticked every time, and the field beside it is the person's own
+ * description of what else this book prints that nobody reads aloud. Both go to
+ * the check's question and the cleaner's prompt (the engine's
+ * src/clean/removal.ts); they are part of every block's cache key, so changing
+ * them re-asks rather than reusing answers to a different question.
  *
  * ── AND THE ONE BOX IT DOES ASK, WHICH IS ABOUT COST AND NOT ABOUT WORDS ────
  *
@@ -153,6 +163,23 @@ function triageRemembered(): boolean {
               </p>
             }
           }
+
+          <!--
+            WHAT THE CLEANUP TAKES OUT (Owen, 2026-09-29): the box is ticked every
+            time the card opens, and the field is his own words for anything else
+            this book prints that nobody reads aloud. Both are said to the model,
+            in the check and in the cleanup; it decides each span.
+          -->
+          <label class="check">
+            <input type="checkbox" [checked]="removeReferences()" (change)="setRemoveReferences($event)" />
+            <span>Remove references a narrator would not read <em>(“see table 3”, “fig. 1-1”, “[image]” — the model decides each one)</em></span>
+          </label>
+          <div class="field">
+            <label class="label" for="clean-remove-also">Also remove <em>(optional — describe it in your own words)</em></label>
+            <textarea id="clean-remove-also" class="text" rows="3"
+                      placeholder="e.g. the running header with the book's title, or &quot;Photo courtesy of …&quot; credits"
+                      [ngModel]="removeAlso()" (ngModelChange)="removeAlso.set($event)"></textarea>
+          </div>
 
           <p class="note">
             The cleanup lands as a NEW step, in the same language, and the book you are cleaning
@@ -315,6 +342,13 @@ function triageRemembered(): boolean {
     .check input { margin: 3px 0 0; flex: none; accent-color: var(--accent); }
     .check em { font-style: normal; color: var(--text-tertiary); }
     .note strong { color: var(--text-secondary); font-weight: 600; }
+    .text {
+      width: 100%; box-sizing: border-box; resize: vertical;
+      font: inherit; font-size: 12px; line-height: 1.5; color: var(--text-primary);
+      background: var(--bg-input); border: 1px solid var(--border-default);
+      border-radius: var(--radius-md); padding: 6px 8px;
+    }
+    .text:focus { outline: none; border-color: var(--accent); }
     .problem { margin: 0; font-size: 12px; color: var(--warn); }
 
     .foot {
@@ -425,6 +459,10 @@ export class CleanDialogComponent {
    * ON unless this machine last said otherwise — see the class note.
    */
   protected readonly triaged = signal(triageRemembered());
+  /** THE REMOVAL BOX — ticked whenever the card opens (Owen: "automatically checked"). */
+  protected readonly removeReferences = signal(true);
+  /** The person's own words for anything else to remove. Empty asks for nothing more. */
+  protected readonly removeAlso = signal('');
   /**
    * CAN ANY ENGINE THIS PRESS WOULD GO TO DO THE CHECK — `yes`, `no`, or null
    * while that is still being asked.
@@ -504,6 +542,11 @@ export class CleanDialogComponent {
     effect(() => {
       void this.askTriage(this.server());
     });
+  }
+
+  /** Tick or untick the removal box. For this press only: it opens ticked. */
+  protected setRemoveReferences(event: Event): void {
+    this.removeReferences.set((event.target as HTMLInputElement).checked);
   }
 
   /** Tick or untick the box, and remember it on this machine. */
@@ -612,6 +655,8 @@ export class CleanDialogComponent {
          */
         at: plan.at ?? null,
         stepId: plan.stepId,
+        // WHAT IT TAKES OUT — said to the model in the check and the cleanup alike.
+        removal: { references: this.removeReferences(), also: this.removeAlso().trim() },
       };
 
       // A refusal is not a success: the queue dedupes on the records path and

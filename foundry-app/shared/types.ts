@@ -1270,6 +1270,19 @@ export interface CleanRequest {
    * refused by the engine by name, which is the honest ending.
    */
   triagePath?: string;
+  /**
+   * `--remove-references` / `--remove-also`: WHAT THIS CLEANUP TAKES OUT beside
+   * what it reads (the engine's src/clean/removal.ts). Owen, 2026-09-29: a box
+   * "that's automatically checked" which removes "(see: table [x]) or (fig. 1-1)
+   * or similar things", the model deciding each one — and his own words for
+   * anything else this book prints that nobody would read aloud, added to the
+   * triage question and to the cleaner's prompt alike.
+   *
+   * ABSENT IS A REQUEST COMPOSED BEFORE THE FIELD EXISTED, and such a request
+   * asked for no removal — so absent is spelled `--remove-references off`, never
+   * left to the engine's default, which is on.
+   */
+  removal?: CleanRemoval;
 }
 
 /**
@@ -1304,6 +1317,14 @@ export interface CleanRequest {
  * reaches its command line unplaced is refused by name (`argsFor`,
  * electron/job-queue.ts) rather than spelling an endpoint nobody chose.
  */
+/** What a cleanup removes — the engine's `RemovalRequest`, on this side of the seam. */
+export interface CleanRemoval {
+  /** The box: printed references a narrator would not read aloud. */
+  references: boolean;
+  /** The person's own description of anything else to remove. Empty for none. */
+  also: string;
+}
+
 export interface CleanTriageRequest {
   kind: 'clean-triage';
   /** The document the person had open — identity, not input. `CleanRequest.inputPath`. */
@@ -1343,6 +1364,12 @@ export interface CleanTriageRequest {
   deferred?: DeferredPlan;
   /** The row this one waits behind — `Job.after`. Composed by main at the enqueue. */
   after?: string;
+  /**
+   * The removal the cleanup behind it asks for — `CleanRequest.removal`, copied at
+   * the enqueue, because the criteria are part of every verdict and clean-text
+   * refuses a triage asked about a different removal.
+   */
+  removal?: CleanRemoval;
 }
 
 /**

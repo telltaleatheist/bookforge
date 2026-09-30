@@ -100,10 +100,18 @@ test('argsFor spells clean-triage against the engine address and model the place
     '--out', VERDICTS,
     '--endpoint', 'http://127.0.0.1:7100',
     '--model', 'qwen3.5-0.8b',
+    // A request from before removals asked none — spelled, never the engine's default (on).
+    '--remove-references', 'off',
   ]);
   // The request's own depth is the only one that reaches the line.
-  expect(queue.argsFor({ ...request, concurrency: 3 }, {}, PLACED).slice(-2))
+  const deep = queue.argsFor({ ...request, concurrency: 3 }, {}, PLACED);
+  expect(deep.slice(deep.indexOf('--concurrency'), deep.indexOf('--concurrency') + 2))
     .toEqual(['--concurrency', '3']);
+  // What the cleanup behind it removes is what the check is asked about.
+  expect(queue.argsFor({ ...request, removal: { references: true, also: 'photo credits' } }, {}, PLACED).slice(-4))
+    .toEqual(['--remove-references', 'on', '--remove-also', 'photo credits']);
+  expect(queue.argsFor({ ...request, removal: { references: true, also: '  ' } }, {}, PLACED).slice(-2))
+    .toEqual(['--remove-references', 'on']);
 });
 
 test('argsFor refuses a triage nothing placed, by name, rather than pointing it at nothing', () => {
@@ -127,9 +135,14 @@ test('the cleanup line carries --triage exactly when its request does', () => {
   const plain = queue.argsFor(clean, {}, PLACED);
   expect(plain).not.toContain('--triage');
   const triaged = queue.argsFor({ ...clean, triagePath: VERDICTS }, {}, PLACED);
-  expect(triaged.slice(-2)).toEqual(['--triage', VERDICTS]);
+  const at = triaged.indexOf('--triage');
+  expect(triaged.slice(at, at + 2)).toEqual(['--triage', VERDICTS]);
   // Nothing else about the line moved.
-  expect(triaged.slice(0, -2)).toEqual(plain);
+  expect([...triaged.slice(0, at), ...triaged.slice(at + 2)]).toEqual(plain);
+  // And the removal is spelled on every cleanup line: off for a request from before it.
+  expect(plain.slice(-2)).toEqual(['--remove-references', 'off']);
+  expect(queue.argsFor({ ...clean, removal: { references: true, also: '' } }, {}, PLACED).slice(-2))
+    .toEqual(['--remove-references', 'on']);
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -187,6 +200,13 @@ async function until(done: () => boolean, what: string): Promise<void> {
 function row(id: string): Job | undefined {
   return queue.listJobs().find((job) => job.id === id);
 }
+
+test('the check is asked about the removal its cleanup asks for', () => {
+  const removal = { references: true, also: 'photo credits' };
+  expect(queue.triageRequestFor(cleanRequest('removal', { removal })).removal).toEqual(removal);
+  // A cleanup from before removals makes a check from before them: absent, spelled off.
+  expect('removal' in queue.triageRequestFor(cleanRequest('removal'))).toBe(false);
+});
 
 test('standalone, the cleanup waits behind its triage and goes when the triage is lost', async () => {
   const { triage, clean } = queue.enqueueTriagedCleanup(cleanRequest('chain'), null);
@@ -318,6 +338,7 @@ test('a triage spawns on the cleanup book, never the export path, and lands no s
   expect(spawned).toEqual([
     'clean-triage', '--book', BOOK, '--out', verdicts,
     '--endpoint', 'http://127.0.0.1:7100', '--model', 'qwen3.5-0.8b',
+    '--remove-references', 'off',
   ]);
   expect(release).toHaveBeenCalledTimes(1);
 });

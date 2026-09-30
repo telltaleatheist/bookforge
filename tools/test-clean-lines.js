@@ -305,12 +305,29 @@ const fresh = () => fs.mkdtempSync(path.join(os.tmpdir(), 'bf-clean-lines-'));
     assert.deepStrictEqual(leases, [{ act: 'decide', model: 'qwen3.5-9b' }, { act: 'clean', model: 'qwen3.5-9b' }]);
     const cleanArgs = spawns[1].args;
     assert.strictEqual(cleanArgs[cleanArgs.indexOf('--triage') + 1], result.verdictsPath, 'clean-text reads the verdicts');
+    // THE REMOVAL (2026-09-29): on unless said, as the app's box, and the SAME on both halves.
+    for (const one of spawns) {
+      assert.strictEqual(one.args[one.args.indexOf('--remove-references') + 1], 'on', `${one.cmd} removes references by default`);
+      assert.ok(!one.args.includes('--remove-also'), `${one.cmd}: nothing more was asked`);
+    }
     assert.strictEqual(fs.readFileSync(output, 'utf8'), 'Chapter one begins.\nHe nodded.\n');
     assert.strictEqual(result.triaged, true);
     // a second run reuses the verdicts: no second triage spawn
     spawns.length = 0; leases.length = 0;
     await step.runCleanLines({ inputPath: input, outputPath: output, language: 'en', triage: true, log: () => {} }, deps);
     assert.deepStrictEqual(spawns.map((s) => s.cmd), ['clean-text']);
+    // A different removal is a different question: the verdicts are asked again, and both halves carry it.
+    spawns.length = 0; leases.length = 0;
+    await step.runCleanLines({
+      inputPath: input, outputPath: output, language: 'en', triage: true, log: () => {},
+      removeReferences: false, removeAlso: 'photo credits',
+    }, deps);
+    assert.deepStrictEqual(spawns.map((s) => s.cmd), ['clean-triage', 'clean-text']);
+    for (const one of spawns) {
+      const at = (flag) => one.args[one.args.indexOf(flag) + 1];
+      assert.strictEqual(at('--remove-references'), 'off');
+      assert.strictEqual(at('--remove-also'), 'photo credits');
+    }
   });
   await check('triage without a Crucible is refused by name, before any spawn', async () => {
     const dir = fresh();

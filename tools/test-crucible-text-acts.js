@@ -686,11 +686,11 @@ async function main() {
     assert.deepStrictEqual(
       cleanText.cleanTextArgs('in.epub', 'out.epub', settings),
       ['clean-text', '--epub', 'in.epub', '--out', 'out.epub',
-        '--endpoint', 'http://localhost:11434', '--model', 'qwen3.5:9b-q8_0']);
+        '--endpoint', 'http://localhost:11434', '--model', 'qwen3.5:9b-q8_0', '--remove-references', 'on']);
     assert.deepStrictEqual(
       cleanText.cleanTextArgs('in.epub', 'out.epub', { ...settings, model: '' }),
       ['clean-text', '--epub', 'in.epub', '--out', 'out.epub',
-        '--endpoint', 'http://localhost:11434']);
+        '--endpoint', 'http://localhost:11434', '--remove-references', 'on']);
   });
 
   // ── 10. The hosted credential window, and the one thing it must not do ─────

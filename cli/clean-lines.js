@@ -38,6 +38,22 @@ function parseArgs(argv) {
   return a;
 }
 
+/** `--remove-references <on|off>` and `--remove-also <text>`, refused by name when malformed. */
+function removalOptions(args) {
+  const out = {};
+  if (args['remove-references'] !== undefined) {
+    if (args['remove-references'] !== 'on' && args['remove-references'] !== 'off') {
+      throw new Error(`--remove-references takes on or off, not ${JSON.stringify(args['remove-references'])}`);
+    }
+    out.removeReferences = args['remove-references'] === 'on';
+  }
+  if (args['remove-also'] !== undefined) {
+    if (typeof args['remove-also'] !== 'string') throw new Error('--remove-also needs the text to remove, in your own words');
+    out.removeAlso = args['remove-also'];
+  }
+  return out;
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   // BEFORE the usage check, so `--keep-model` on an otherwise complete line is
@@ -46,7 +62,7 @@ async function main() {
   if (!args.input || args.input === true) {
     throw new Error(
       'usage: clean-lines.js --input <lines.txt> [--output <cleaned.txt>] --language <en> '
-      + '[--crucible-server <name>] [--triage] '
+      + '[--crucible-server <name>] [--triage] [--remove-references <on|off>] [--remove-also <text>] '
       + '[--keep-server]');
   }
   if (!args.language || args.language === true) {
@@ -79,6 +95,8 @@ async function main() {
     // --triage: the app's triaged press - clean-triage first, then the cleaner only
     // on the sentences it flags (clean-lines-step.js). Needs a Crucible.
     triage: args.triage === true,
+    // What the cleanup TAKES OUT - the app's box (on unless said) and its field.
+    ...removalOptions(args),
     /*
      * THE VENUE, and it is the same field the app fills from a queue row.
      * A name (or the reserved `local`) sends this act to that Crucible;

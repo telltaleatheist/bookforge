@@ -4289,6 +4289,19 @@ function hasRegnalSingleNumeral(find) {
   }
   return false;
 }
+function removalSpan(target, find, at, withinOneNode, reserved, accepted) {
+  const end = at + find.length;
+  const free = (start, stop) => withinOneNode(start, stop) && !reserved.some((r) => start < r.end && r.at < stop) && !accepted.some((a) => start < a.at + a.find.length && a.at < stop);
+  const spaceBefore = at > 0 && /\s/.test(target[at - 1]) && !/\s/.test(find[0] ?? "");
+  const spaceAfter = end < target.length && /\s/.test(target[end]) && !/\s/.test(find[find.length - 1] ?? "");
+  if (spaceBefore && free(at - 1, end)) {
+    return { find: target.slice(at - 1, end), replace: "", at: at - 1 };
+  }
+  if (spaceAfter && at === 0 && free(at, end + 1)) {
+    return { find: target.slice(at, end + 1), replace: "", at };
+  }
+  return { find, replace: "", at };
+}
 function isWholeBracketedInsertion(find) {
   return WHOLE_BRACKET.test(find);
 }
@@ -4814,7 +4827,10 @@ function validateNumberEdits(target, segments, edits, reserved = [], policy = NU
         }
       }
     } else {
-      if (isRemoval) {
+      if (isRemoval && policy.removal === true) {
+        recordClass = "removal";
+        provenExact = true;
+      } else if (isRemoval) {
         if (!isWholeBracketedInsertion(find)) {
           reject(
             find,
@@ -4950,7 +4966,8 @@ function validateNumberEdits(target, segments, edits, reserved = [], policy = NU
         continue;
       }
     }
-    if (!inScripture && sitsInCitation(target, find, at)) {
+    const askedRemoval = isRemoval && policy.removal === true;
+    if (!inScripture && !askedRemoval && sitsInCitation(target, find, at)) {
       reject(find, replace, "CITATION_CODE");
       continue;
     }
@@ -4973,6 +4990,18 @@ function validateNumberEdits(target, segments, edits, reserved = [], policy = NU
       }
     }
     if (!isNumber && !provenExact) textBudgetSpent += Math.max(find.length, replace.length);
+    if (askedRemoval) {
+      accepted.push(removalSpan(target, find, at, withinOneNode, reserved, accepted));
+      const whence = said(void 0);
+      records.push({
+        find,
+        replace: "",
+        status: "APPLIED",
+        editClass: "removal",
+        ...whence === void 0 ? {} : { detail: whence }
+      });
+      continue;
+    }
     accepted.push({ find, replace: reading, at });
     const why = said(respelled);
     records.push(why === void 0 ? { find, replace: reading, status: "APPLIED", editClass: recordClass } : { find, replace: reading, status: "APPLIED", editClass: recordClass, detail: why });
@@ -30925,7 +30954,7 @@ var init_version = __esm({
     init_engine_import_meta_url();
     init_package();
     VERSION = package_default.version;
-    GIT_COMMIT = "src 40f4fcdd4541".length > 0 ? "src 40f4fcdd4541" : null;
+    GIT_COMMIT = "src 9c241a50a715".length > 0 ? "src 9c241a50a715" : null;
   }
 });
 
@@ -73038,9 +73067,21 @@ function reassemble(text, spans, cleaned) {
   }
   let out = "";
   let at = 0;
+  let kept = 0;
+  let dropNextGap = false;
   spans.forEach((span, i) => {
-    out += text.slice(at, span.start) + cleaned[i];
+    const gap = text.slice(at, span.start);
     at = span.end;
+    if (cleaned[i].trim().length === 0) {
+      if (kept === 0) {
+        out += gap;
+        dropNextGap = true;
+      }
+      return;
+    }
+    out += (dropNextGap ? "" : gap) + cleaned[i];
+    dropNextGap = false;
+    kept += 1;
   });
   return out + text.slice(at);
 }
@@ -73353,6 +73394,78 @@ var init_blocks2 = __esm({
   }
 });
 
+// src/clean/removal.ts
+function alsoText(request) {
+  return request.also.replace(/\r\n?/g, "\n").trim();
+}
+function removesAnything(request) {
+  return request.references || alsoText(request).length > 0;
+}
+function alsoRule(also) {
+  return [
+    "The reader of this book also asked for the following to be removed, because a narrator would",
+    "not read it. Remove only what their description fits:",
+    also
+  ].join("\n");
+}
+function removalPromptSection(request) {
+  if (!removesAnything(request)) return "";
+  const also = alsoText(request);
+  const lines = ["WHAT YOU REMOVE", ""];
+  if (request.references) lines.push(`- ${REFERENCES_RULE}`);
+  if (also.length > 0) lines.push(`- ${alsoRule(also)}`);
+  lines.push(
+    '- A removal is an edit whose "replace" is empty: "find" is the whole thing removed, with its',
+    "brackets and the space before it, so the sentence reads on without a gap. When it is the whole",
+    "TARGET, the find is the whole TARGET. Nothing else in the sentence changes because of it."
+  );
+  return lines.join("\n");
+}
+function withRemoval(prompt, request) {
+  const section = removalPromptSection(request);
+  return section.length === 0 ? prompt : `${prompt}
+
+${section}`;
+}
+function removalTriageCriteria(request) {
+  if (!removesAnything(request)) return "";
+  const also = alsoText(request);
+  const lines = [];
+  if (request.references) {
+    lines.push("- a printed reference a narrator would not read aloud: a pointer to a figure, table, chart, map, plate, page or note, or a placeholder where an image or a table was;");
+  }
+  if (also.length > 0) {
+    lines.push(`- anything that fits what the reader asked to be removed: ${also.replace(/\s+/g, " ")}`);
+  }
+  return lines.join("\n");
+}
+function removalKeyField(request) {
+  if (!removesAnything(request)) return "";
+  return `removal/v1:${request.references ? "references" : ""}:${alsoText(request)}`;
+}
+function removalRecord(request) {
+  return { references: request.references, also: alsoText(request) };
+}
+function sameRemoval(a, b) {
+  return removalKeyField(a) === removalKeyField(b);
+}
+var NO_REMOVAL, REFERENCES_RULE;
+var init_removal = __esm({
+  "src/clean/removal.ts"() {
+    "use strict";
+    init_engine_import_meta_url();
+    NO_REMOVAL = { references: false, also: "" };
+    REFERENCES_RULE = [
+      "A printed reference that no narrator of a real audiobook would read aloud is removed. That is a",
+      "pointer to something the listener cannot see: a figure, table, chart, map, plate, illustration,",
+      "photograph, page or note of the book, however it is abbreviated or bracketed; and a placeholder",
+      "standing where an image, a chart or a table was. Ask of each one: does it add anything to the",
+      "prose, and would a narrator say it? If it adds nothing and would be skipped, remove it. Words",
+      "that say something about the subject stay, even when they mention a figure or a table."
+    ].join(" ");
+  }
+});
+
 // src/clean/triage.ts
 var triage_exports = {};
 __export(triage_exports, {
@@ -73398,18 +73511,25 @@ function unitLine(unit, asked) {
   const cut = oneLine2.length > CONTEXT_CHARS ? `${oneLine2.slice(0, CONTEXT_CHARS)}\u2026` : oneLine2;
   return `[${unit.parts}] (context) ${cut}`;
 }
-function groupState(units, group, unit = "block") {
+function groupState(units, group, unit = "block", removal = NO_REMOVAL) {
   if (unit === "sentence") return SENTENCE_TRIAGE_STATE;
   const lines = [];
   for (let i = group.from; i < group.to; i += 1) {
     lines.push(unitLine(units[i], i >= group.askFrom && i < group.askTo));
   }
-  return `${TRIAGE_GUIDE}
+  return `${withRemovalCriteria(TRIAGE_GUIDE, removal)}
 
 BLOCKS
 ${lines.join("\n")}`;
 }
-function triageQuestion(parts, unit = "block", text) {
+function withRemovalCriteria(list, removal) {
+  const extra = removalTriageCriteria(removal);
+  if (extra.length === 0) return list;
+  const lines = list.split("\n");
+  const last = lines.map((line) => line.startsWith("- ")).lastIndexOf(true);
+  return [...lines.slice(0, last + 1), extra, ...lines.slice(last + 1)].join("\n");
+}
+function triageQuestion(parts, unit = "block", text, removal = NO_REMOVAL) {
   if (unit === "sentence") {
     if (text === void 0) throw new Error(`triageQuestion: a sentence question needs its sentence (${parts}).`);
     return {
@@ -73419,7 +73539,7 @@ function triageQuestion(parts, unit = "block", text) {
 ${text.replace(/\s+/g, " ").trim()}
 
 Here are the criteria a sentence meets if it needs to be cleaned:
-` + TRIAGE_CRITERIA,
+` + withRemovalCriteria(TRIAGE_CRITERIA, removal),
       options: SENTENCE_OPTIONS
     };
   }
@@ -73454,6 +73574,7 @@ async function runCleanTriage(opts) {
   }
   const punctuated = punctuateAll(blocks);
   const unit = opts.unit ?? DEFAULT_CLEAN_UNIT;
+  const removal = opts.removal ?? NO_REMOVAL;
   const units = triageUnits(blocks, punctuated.text, unit);
   const groups = triageGroups(units, unit);
   opts.log(
@@ -73468,8 +73589,8 @@ async function runCleanTriage(opts) {
     const asked = units.slice(group.askFrom, group.askTo);
     const body = JSON.stringify({
       model: opts.model,
-      state: groupState(units, group, unit),
-      questions: Object.fromEntries(asked.map((one) => [one.parts, triageQuestion(one.parts, unit, one.text)]))
+      state: groupState(units, group, unit, removal),
+      questions: Object.fromEntries(asked.map((one) => [one.parts, triageQuestion(one.parts, unit, one.text, removal)]))
     });
     const reply = await askDecide(transport, url, body, {
       who: "clean-triage",
@@ -73515,6 +73636,7 @@ async function runCleanTriage(opts) {
     flagP: TRIAGE_FLAG_P,
     minLabelMass: TRIAGE_MIN_LABEL_MASS,
     unit,
+    removal: removalRecord(removal),
     // In the book's order, so the file reads alongside it.
     blocks: Object.fromEntries(units.map((unit2) => [unit2.parts, verdicts[unit2.parts]]))
   };
@@ -73570,6 +73692,7 @@ var init_triage = __esm({
     init_punctuate();
     init_tts_number_normalizer();
     init_tts_punctuation();
+    init_removal();
     TRIAGE_FORMAT = "foundry-clean-triage/v1";
     TRIAGE_FLAG_P = 0.2;
     TRIAGE_MIN_LABEL_MASS = 0.9;
@@ -73853,6 +73976,8 @@ function cleanEpubKey(request) {
     PUNCTUATION_SPEC_VERSION,
     ...request.nodes
   ];
+  const removal = request.removal === void 0 ? "" : removalKeyField(request.removal);
+  if (removal.length > 0) fields.push(removal);
   return (0, import_node_crypto6.createHash)("sha256").update(fields.join(NUL5), "utf8").digest("hex");
 }
 function cleanEpubBankPath(outPath) {
@@ -73936,6 +74061,7 @@ async function cleanTextEpub(opts) {
   const at = (/* @__PURE__ */ new Date()).toISOString();
   const endpoint = opts.endpoint;
   const kind = opts.server ?? "openai";
+  const removal = opts.removal ?? NO_REMOVAL;
   const concurrency = await resolveConcurrency({
     asked: opts.concurrency,
     kind,
@@ -74009,7 +74135,7 @@ async function cleanTextEpub(opts) {
   const bank = TranslationBank.open(bankPath);
   const keyOf = /* @__PURE__ */ new Map();
   for (const block of blocks) {
-    keyOf.set(block.position, cleanEpubKey({ nodes: block.nodes.map((n) => n.text), model }));
+    keyOf.set(block.position, cleanEpubKey({ nodes: block.nodes.map((n) => n.text), model, removal }));
   }
   const outstanding = blocks.filter((block) => bank.get(keyOf.get(block.position)) === void 0);
   const reused = blocks.length - outstanding.length;
@@ -74106,12 +74232,12 @@ async function cleanTextEpub(opts) {
     runner,
     // The act's own name — src/clean/run.ts carries the argument.
     "clean-text",
-    narrationTextPrompt(),
+    withRemoval(narrationTextPrompt(), removal),
     (done, total, label) => {
       if (total > 0 && label !== "Releasing model") opts.log(`clean-text: ${done}/${total}`);
     },
     "every-block",
-    EVERY_CLASS,
+    { ...EVERY_CLASS, removal: removesAnything(removal) },
     concurrency,
     bankAnswer
   );
@@ -74294,6 +74420,7 @@ var init_epub2 = __esm({
     init_transport();
     init_digest();
     init_prompt();
+    init_removal();
     init_punctuate();
     init_runner();
     init_stamp();
@@ -74331,6 +74458,8 @@ function cleanKey(request) {
     PUNCTUATION_SPEC_VERSION,
     request.text
   ];
+  const removal = request.removal === void 0 ? "" : removalKeyField(request.removal);
+  if (removal.length > 0) fields.push(removal);
   return (0, import_node_crypto7.createHash)("sha256").update(fields.join(NUL6), "utf8").digest("hex");
 }
 function triageKey(request) {
@@ -74341,6 +74470,8 @@ function triageKey(request) {
     PUNCTUATION_SPEC_VERSION,
     request.text
   ];
+  const removal = request.removal === void 0 ? "" : removalKeyField(request.removal);
+  if (removal.length > 0) fields.push(removal);
   return (0, import_node_crypto7.createHash)("sha256").update(fields.join(NUL6), "utf8").digest("hex");
 }
 function receiptPath(recordsPath) {
@@ -74386,7 +74517,13 @@ async function runCleanText(opts) {
   const transport = opts.transport ?? fetchTransport(deadlineForConcurrency(concurrency));
   const model = opts.model ?? opts.runner?.model ?? (await openModelServer({ kind, transport, endpoint, log: opts.log })).model;
   const unit = opts.unit ?? DEFAULT_CLEAN_UNIT;
+  const removal = opts.removal ?? NO_REMOVAL;
   const triage = opts.triagePath === void 0 ? null : readTriageFile(opts.triagePath);
+  if (triage !== null && !sameRemoval(triage.removal ?? NO_REMOVAL, removal)) {
+    throw new CleanTextError(
+      `--triage ${path24.resolve(opts.triagePath)} was asked about a different removal (${JSON.stringify(removalRecord(triage.removal ?? NO_REMOVAL))}) from this run's (${JSON.stringify(removalRecord(removal))}). Run clean-triage with the same --remove-references and --remove-also as clean-text.`
+    );
+  }
   if (triage !== null && (triage.unit ?? "block") !== unit) {
     throw new CleanTextError(
       `--triage ${path24.resolve(opts.triagePath)} judged ${triage.unit ?? "block"}s, and this run asks about ${unit}s. Its verdicts name positions this run does not have. Run clean-triage with --unit ${unit}, or clean-text with --unit ${triage.unit ?? "block"}.`
@@ -74413,10 +74550,10 @@ async function runCleanText(opts) {
   refuseForeignRecords(records, new Set(blocks.map((b) => b.parts)), recordsPath, where);
   opts.log(records.size === 0 ? `clean-text: nothing is recorded in ${recordsPath}, so every block is asked of the model and recorded there as it lands.` : `clean-text: ${records.size} record(s) covering ${records.positions} position(s) are in ${recordsPath} \u2014 a block whose exact question is in there is not asked again, and every new answer is added to it.`);
   const keyOf = /* @__PURE__ */ new Map();
-  for (const block of blocks) keyOf.set(block.target.key, cleanKey({ text: block.target.text, model, unit }));
+  for (const block of blocks) keyOf.set(block.target.key, cleanKey({ text: block.target.text, model, unit, removal }));
   const tableKey = /* @__PURE__ */ new Map();
-  for (const table of tables) tableKey.set(table.parts, cleanKey({ text: table.source, model, unit }));
-  const answered = (source, key) => records.get(key) !== void 0 || triage !== null && records.get(triageKey({ text: source, triageModel: triage.model.id })) !== void 0;
+  for (const table of tables) tableKey.set(table.parts, cleanKey({ text: table.source, model, unit, removal }));
+  const answered = (source, key) => records.get(key) !== void 0 || triage !== null && records.get(triageKey({ text: source, triageModel: triage.model.id, removal })) !== void 0;
   const bankedTable = /* @__PURE__ */ new Set();
   for (const table of tables) {
     if (answered(table.source, tableKey.get(table.parts))) bankedTable.add(table.parts);
@@ -74551,7 +74688,7 @@ async function runCleanText(opts) {
       const text = cleanText.get(block.target.key);
       if (block.cell === void 0) {
         if (text !== block.target.text) changed += 1;
-        appendRecord(block.parts, triageKey({ text: block.target.text, triageModel: triage.model.id }), text);
+        appendRecord(block.parts, triageKey({ text: block.target.text, triageModel: triage.model.id, removal }), text);
         continue;
       }
       if (keptTables.has(block.parts)) continue;
@@ -74564,7 +74701,7 @@ async function runCleanText(opts) {
         continue;
       }
       if (spliced.text !== table.source) changed += 1;
-      appendRecord(table.parts, triageKey({ text: table.source, triageModel: triage.model.id }), spliced.text);
+      appendRecord(table.parts, triageKey({ text: table.source, triageModel: triage.model.id, removal }), spliced.text);
     }
   }
   const pieceByKey = new Map(askedPieces.map((piece) => [piece.key, piece]));
@@ -74631,12 +74768,12 @@ async function runCleanText(opts) {
     // The act's own name, so a failure names the pass that was running rather
     // than the pass this function was lifted out of (`askForEdits`).
     "clean-text",
-    narrationTextPrompt(),
+    withRemoval(narrationTextPrompt(), removal),
     (done, total, label) => {
       if (total > 0 && label !== "Releasing model") opts.log(`clean-text: ${done}/${total}`);
     },
     "every-block",
-    { ...EVERY_CLASS, gate: opts.gate ?? DEFAULT_CLEAN_GATE },
+    { ...EVERY_CLASS, gate: opts.gate ?? DEFAULT_CLEAN_GATE, removal: removesAnything(removal) },
     concurrency,
     bankAnswer
   );
@@ -74689,7 +74826,8 @@ async function runCleanText(opts) {
     unitsAsked: settled.asked,
     unitsParseFailed: settled.parseFailed,
     server: runner.serverFacts?.() ?? null,
-    ...triageSummary === void 0 ? {} : { triage: triageSummary }
+    ...triageSummary === void 0 ? {} : { triage: triageSummary },
+    removal: removalRecord(removal)
   };
   const receiptOut = receiptPath(recordsPath);
   ensureDir(path24.dirname(receiptOut));
@@ -74773,6 +74911,7 @@ var init_run = __esm({
     init_stamp();
     init_tts_number_normalizer();
     init_tts_punctuation();
+    init_removal();
     KEY_FORMAT = "clean/dialect/v1";
     SENTENCE_KEY_FORMAT = "clean/sentence/v1";
     NUL6 = String.fromCharCode(0);
@@ -102203,6 +102342,25 @@ var CT_GATE = {
   placeholder: "<light|on|off>",
   describe: "light (default): refuse only a reading that changes what is already spoken as printed. on: the strict validators. off: apply every edit that can be spliced. Every setting records what the strict gate would have said."
 };
+var CT_REMOVE_REFERENCES = {
+  name: "remove-references",
+  type: "string",
+  placeholder: "<on|off>",
+  describe: 'on (default): the model removes printed references a narrator would not read \u2014 "(see Table 3)", "(fig. 1-1)", "[image]" \u2014 deciding each one. off: they are left to the other rules of the cleanup.'
+};
+var CT_REMOVE_ALSO = {
+  name: "remove-also",
+  type: "string",
+  placeholder: "<text>",
+  describe: "Anything else this book prints that a narrator would not read, described in your own words. Added to the triage question and to the prompt of the cleaner; the model decides what fits."
+};
+async function cleanRemoval(args) {
+  const references = optionalString(args, "remove-references");
+  if (references !== void 0 && references !== "on" && references !== "off") {
+    throw new UsageError(`--remove-references takes on or off, not "${references}"`);
+  }
+  return { references: references !== "off", also: optionalString(args, "remove-also") ?? "" };
+}
 async function cleanUnit(args) {
   const unit = optionalString(args, "unit");
   if (unit === void 0) return void 0;
@@ -102242,9 +102400,11 @@ async function runCleanTriageCommand(args) {
     throw new UsageError(`--concurrency takes a positive whole number, not "${concurrency}"`);
   }
   const unit = await cleanUnit(args);
+  const removal = await cleanRemoval(args);
   const { runCleanTriage: runCleanTriage2 } = await Promise.resolve().then(() => (init_triage(), triage_exports));
   await runCleanTriage2({
     ...unit === void 0 ? {} : { unit },
+    removal,
     bookPath: requireString(args, "book", "the book file whose blocks are judged"),
     outPath: requireString(args, "out", "where the verdicts are written"),
     endpoint: requireString(args, "endpoint", "the Crucible whose decide door is asked"),
@@ -102260,6 +102420,7 @@ async function runCleanText2(args) {
     throw new UsageError(`--concurrency takes a positive whole number, not "${concurrency}"`);
   }
   const unit = await cleanUnit(args);
+  const removal = await cleanRemoval(args);
   const gateArg = optionalString(args, "gate");
   if (gateArg !== void 0 && gateArg !== "on" && gateArg !== "off" && gateArg !== "light") {
     throw new UsageError(`--gate takes light, on or off, not "${gateArg}"`);
@@ -102282,6 +102443,7 @@ async function runCleanText2(args) {
       server: server.kind,
       ...server.model === void 0 ? {} : { model: server.model },
       ...concurrency !== void 0 ? { concurrency: Number(concurrency) } : {},
+      removal,
       log
     });
     return;
@@ -102307,6 +102469,7 @@ async function runCleanText2(args) {
     ...optionalString(args, "triage") === void 0 ? {} : { triagePath: optionalString(args, "triage") },
     ...unit === void 0 ? {} : { unit },
     ...gate === void 0 ? {} : { gate },
+    removal,
     log
   });
 }
@@ -104200,7 +104363,7 @@ var COMMANDS = [
   {
     name: "clean-text",
     summary: "Clean a book's text for a narrator: punctuation, numbers as words, the model on every block.",
-    usage: "--book <book.jsonl> --records <out.records.jsonl> --stamp <out.stamp.json> [--generation <id>] [--endpoint <url>] [--model <name>] [--server <openai|ollama|anthropic>] [--concurrency <n>] [--triage <verdicts.json>] [--unit <sentence|block>] [--gate <light|on|off>]  |  --epub <in.epub> --out <out.epub> [--endpoint <url>] [--model <name>] [--server <openai|ollama|anthropic>] [--concurrency <n>]",
+    usage: "--book <book.jsonl> --records <out.records.jsonl> --stamp <out.stamp.json> [--generation <id>] [--endpoint <url>] [--model <name>] [--server <openai|ollama|anthropic>] [--concurrency <n>] [--triage <verdicts.json>] [--unit <sentence|block>] [--gate <light|on|off>] [--remove-references <on|off>] [--remove-also <text>]  |  --epub <in.epub> --out <out.epub> [--endpoint <url>] [--model <name>] [--server <openai|ollama|anthropic>] [--concurrency <n>]",
     detail: [
       "THE THIRD TEXT ACT. translate turns a book into another language, --rewrite",
       "turns it into plainer prose, and this turns it into the text a NARRATOR is",
@@ -104405,14 +104568,16 @@ var COMMANDS = [
       TR_GENERATION,
       CT_TRIAGE,
       CT_UNIT,
-      CT_GATE
+      CT_GATE,
+      CT_REMOVE_REFERENCES,
+      CT_REMOVE_ALSO
     ],
     run: runCleanText2
   },
   {
     name: "clean-triage",
     summary: "Judge which blocks of a book need cleaning at all, before clean-text is run.",
-    usage: "--book <book.jsonl> --out <verdicts.json> --endpoint <crucible url> --model <decide model> [--concurrency <n>] [--unit <sentence|block>]",
+    usage: "--book <book.jsonl> --out <verdicts.json> --endpoint <crucible url> --model <decide model> [--concurrency <n>] [--unit <sentence|block>] [--remove-references <on|off>] [--remove-also <text>]",
     detail: [
       'THE FIRST HALF OF A TRIAGED CLEANUP. Owen, 2026-09-23: "we create a list of',
       "blocks that need to be cleaned with snap and then we bring snap down and load",
@@ -104438,7 +104603,7 @@ var COMMANDS = [
       "A busy door (chat_queue_full) is waited out; a model that is not resident is",
       "refused by name."
     ].join("\n"),
-    options: [CT_BOOK_IN, CTR_OUT, CTR_ENDPOINT, CTR_MODEL, CTR_CONCURRENCY, CT_UNIT],
+    options: [CT_BOOK_IN, CTR_OUT, CTR_ENDPOINT, CTR_MODEL, CTR_CONCURRENCY, CT_UNIT, CT_REMOVE_REFERENCES, CT_REMOVE_ALSO],
     run: runCleanTriageCommand
   },
   {

@@ -404,6 +404,16 @@ export function cleanTextArgs(
    * environment (`FOUNDRY_ENDPOINT_HEADERS`), because a command line is the
    * most copied thing a program has.
    */
+  /*
+   * ── WHAT IT TAKES OUT: the Clean text box's default, spelled ─────────────────
+   *
+   * Owen, 2026-09-29: the cleanup removes printed references a narrator would not
+   * read ("see table 3", "fig. 1-1", "[image]"), the model deciding each, behind a
+   * box "that's automatically checked" (Foundry's Clean text dialog). This failsafe
+   * door asks nothing, so it takes the box as it opens — ON — and says so on the
+   * line rather than leaving it to the engine's default.
+   */
+  const removal = ['--remove-references', 'on'];
   if (crucible !== undefined) {
     return [
       'clean-text',
@@ -411,6 +421,7 @@ export function cleanTextArgs(
       '--out', outPath,
       '--endpoint', crucible.endpoint,
       '--model', crucible.model,
+      ...removal,
     ];
   }
   return [
@@ -419,6 +430,7 @@ export function cleanTextArgs(
     '--out', outPath,
     '--endpoint', settings.endpoint,
     ...(settings.model.length > 0 ? ['--model', settings.model] : []),
+    ...removal,
   ];
 }
 

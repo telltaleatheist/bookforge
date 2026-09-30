@@ -10,10 +10,44 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\<user>\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **1115cea** — *Host export delete: deleting an EPUB version deletes that export, not the step it was cast from* (was 6b4bc02; 3 files moved: `electron/ipc.ts` gains the `deleteExport` door, `electron/mount.ts` re-exports it, `electron/projects.ts` `deleteDocument` announces `projects:changed`; engine unchanged) |
+| Source sha | **0d1891a, PARTIAL** — *Clean text: remove what a narrator would not read* (five files; the 1.0.52/1.0.53 SDK adoptions 4c0d5dc/a57298c held back, see the entry below). Before it: **1115cea** — *Host export delete: deleting an EPUB version deletes that export, not the step it was cast from* (was 6b4bc02; 3 files moved: `electron/ipc.ts` gains the `deleteExport` door, `electron/mount.ts` re-exports it, `electron/projects.ts` `deleteDocument` announces `projects:changed`; engine unchanged) |
 | Engine | **VENDORED, in `engine/`** since 1927563 (2026-09-24): `engine/foundry-engine.cjs` plus its four fonts, built from Foundry's `src/` by Foundry's `tools/build-engine.mjs` and checked against those sources by Foundry's test suite. Run by BookForge's own Electron as Node (`ELECTRON_RUN_AS_NODE=1`) from BOTH doors — this copy's `electron/engine.ts` and BookForge's `electron/foundry-bridge.ts`. **Ask it: `node foundry-app/engine/foundry-engine.cjs --version`** → `foundry X.Y.Z (src <digest>)`. There is no downloaded engine any more; `FOUNDRY_BIN` still overrides in both doors. |
 | Copied on | 2026-09-19 (five times: 3738c01, 3436fc5, 806d44b, f349771, ca4754c), 2026-09-20 (98a4344, 9e0b27d, dccc144, 7b98004, cc5fc5b, 93010d8, 77e1d6d) 2026-09-21 (753dca8, 3e26e53, f9bebb6, 95593b0, 8ee48b7) and 2026-09-22 (7185764, 7912022, 19fa7a9, df63f9f) and 2026-09-23 (acf63c2, 4835411), 2026-09-24 (b4c7346, 1927563, e2481dc, a1138f6, 72c6b08, b7ba2a8, 0eb12de), 2026-09-28 (1115cea) |
 | Copied by | Mechanical source sync, verified against Foundry `0eb12de:app/` (`git hash-object` per file: clean but for this file, `IPC-CHANNELS.md` and `.gitignore` — see below); details below |
+
+## The `1115cea → 0d1891a` PARTIAL re-vendor — Clean text removes what a narrator would not read (2026-09-29)
+
+Owen, 2026-09-29: *"add a checkbox to ai cleanup that's automatically checked, and will
+remove (see: table [x]) or (fig. 1-1) or similar things. the ai should make a decision
+about whether it should be removed"* — and *"give me the ability to ask it to remove other
+specific patterns i saw in the book. just add to the prompt. it will add what i request to
+the decide prompt and to the actual cleanup prompt."*
+
+**PARTIAL, ON PURPOSE.** Foundry `main` between 1115cea and 0d1891a also holds 4c0d5dc and
+a57298c, the Crucible SDK adoptions 1.0.28 → 1.0.52 → 1.0.53 (app `package.json`,
+`package-lock.json`, `vendor/*.tgz`, two Crucible tests). BookForge's own repin past 1.0.38
+is waiting on Owen's ruling, so those files were NOT copied: this copy still pins 1.0.28.
+Only 0d1891a's five app files moved, each checked blob-identical to `0d1891a:app/<file>`
+with `git hash-object`: `electron/job-queue.ts`, `shared/types.ts`,
+`src/app/components/clean-dialog/clean-dialog.component.ts`, `test/clean-triage.test.ts`,
+`engine/foundry-engine.cjs` (src 9c241a50a715). None of them is touched by the two SDK
+commits.
+
+What it is: a box on Clean text (ticked whenever the card opens) and an "Also remove"
+field. Both are said to the model in the triage question and the cleaner's prompt
+(engine `src/clean/removal.ts`); a removal it proposes is accepted whole under every gate
+and takes its space with it; the request is in every cache key, the receipt and the
+triage file. The queue always spells `--remove-references on|off` (and `--remove-also`),
+a request from before the field as `off`. BookForge's own two doors spell it too:
+`cli/clean-lines-step.js` (`--remove-references`/`--remove-also`, on unless said) and the
+EPUB failsafe `electron/narration-clean-text.ts` (on, the box as it opens).
+
+Built in `.foundry-stage-0d1891a/` (electron + renderer, `test:surface` clean).
+**NOT SWAPPED at this commit**: BookForge was running. The swap is
+`tools/swap-foundry-dist.sh .foundry-stage-0d1891a --expect "remove-references"`.
+The ENGINE is live already (it is source, run per job): a cleanup queued from the
+not-yet-swapped window spells no removal and so gets the engine's default, ON, for the
+triage and the cleanup alike.
 
 ## The `6b4bc02 → 1115cea` re-vendor — deleting an EPUB deletes that export, not its step (2026-09-28)
 
