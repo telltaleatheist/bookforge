@@ -618,6 +618,27 @@ export interface StepFinished {
 
 let finishListeners: Array<(event: StepFinished) => void> = [];
 
+/** A run that left BookForge because a person removed its job from a Crucible's line. */
+export interface ServerRemoval { jobId: string; title: string; stepLabel: string; line: string }
+
+let serverRemovalListeners: Array<(event: ServerRemoval) => void> = [];
+
+/**
+ * Told when a run is removed because its Crucible job was taken out of the
+ * server's line by a person (see the removed arm in `settleStep`). Main turns it
+ * into a notice; the engine itself knows nothing about windows.
+ */
+export function onRunRemovedByServer(listener: (event: ServerRemoval) => void): () => void {
+  serverRemovalListeners.push(listener);
+  return () => { serverRemovalListeners = serverRemovalListeners.filter((l) => l !== listener); };
+}
+
+function announceServerRemoval(event: ServerRemoval): void {
+  for (const listener of serverRemovalListeners) {
+    try { listener(event); } catch (err) { console.error('[QUEUE-ENGINE] a server-removal listener threw:', err); }
+  }
+}
+
 export function onStepFinished(listener: (event: StepFinished) => void): () => void {
   finishListeners.push(listener);
   return () => { finishListeners = finishListeners.filter((l) => l !== listener); };
@@ -5207,39 +5228,29 @@ function settleStep(job: QueueJob, step: QueueStep, outcome: StepOutcome): void 
   }
 
   /*
-   * REMOVED FROM A CRUCIBLE'S LINE BY A PERSON — back to Pending, NOT resubmitted
-   * (crucible docs/QUEUE.md: "do not resubmit by yourself on operator").
+   * REMOVED FROM A CRUCIBLE'S LINE BY A PERSON — the run leaves BookForge too.
    *
-   * Shaped like the Stop arm that keeps the run (`stopKeepsRun` below): the step
-   * goes back to `held` as if it had not started — a resumable step keeps
-   * `wasInterrupted`, so its next run resumes what is on disk — and the run
-   * moves to Pending with its card and lease given up (`stoppedRunToPending`).
-   * The server's sentence stays on the row so a person sees why. It is not an
-   * error, so it does not idle the queue and does not cascade-cancel the steps
-   * after it. A run that cannot be staged keeps its `held` step on the queue
-   * page, which is where a Resume is pressed.
+   * Owen, 2026-09-30: "if the job is removed, it should be removed from
+   * bookforge as well." An operator took this step's job out of the server's
+   * line (`removed {operator}`, or a reason a newer server invents — crucible
+   * docs/QUEUE.md says never resubmit those by yourself). The run is removed
+   * exactly as the queue's own Remove does it (`remove`: lease closed, parks
+   * forgotten, nothing resubmitted), and the server's sentence is said where a
+   * person will see it (`onRunRemovedByServer` → `jobs:notice`), because a row
+   * vanishing on its own is otherwise indistinguishable from a bug. Files on
+   * disk are untouched — Remove never deletes work.
    *
-   * A Stop pressed while the job was waiting is NOT this arm: our own cancel is
-   * `removed {client}`, which the doors turn into a cancellation and the stop
-   * arms below settle.
+   * Not this arm: `expired` / `server_restart` (nobody removed it — weather,
+   * resubmitted via the park path) and `removed {client}` (our own Stop/Remove,
+   * which the doors turn into a cancellation and the stop arms below settle).
    */
   if (!outcome.ok && removedLine !== undefined && !stopped) {
     takeThermalSummary(step.id);
-    step.status = 'held';
-    step.wasInterrupted = moduleFor(step.type).stopIsResumable === true ? true : undefined;
-    step.startedAt = undefined;
-    step.finishedAt = undefined;
-    step.error = undefined;
-    step.progress = { message: removedLine };
-    forgetStepParks(step.id);
-    getMainLogger().info(`[QUEUE] ${job.title} — ${step.label}: ${removedLine}`);
-    if (jobIsStageable(job)) {
-      stoppedRunToPending(job);
-    } else {
-      releaseVenueIfNothingStands(job);
-    }
-    changed();
-    pump();
+    getMainLogger().info(`[QUEUE] ${job.title} — ${step.label}: ${removedLine} — removing the run`);
+    announceServerRemoval({ jobId: job.id, title: job.title, stepLabel: step.label, line: removedLine });
+    void remove(job.id).catch((err) => {
+      console.error(`[QUEUE-ENGINE] ${job.title} could not be removed after the server removed it:`, err);
+    });
     return;
   }
 

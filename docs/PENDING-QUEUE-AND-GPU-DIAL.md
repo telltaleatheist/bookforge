@@ -174,9 +174,15 @@ the line between its own acts.
 
 - `expired`, `server_restart` → weather: the step parks with the sentence
   (`transientLine`) and is submitted again on the admission tick.
-- `operator` (and any reason a newer server invents) → the row goes back to
-  **Pending** with the server's sentence, its card and lease given up, and is NOT
-  resubmitted (`removedLine`, `settleStep`). It does not idle the queue.
+- `operator` (and any reason a newer server invents) → **the run is removed from
+  BookForge too** (Owen, 2026-09-30: "if the job is removed, it should be removed from
+  bookforge as well"), exactly as the queue's Remove does it — lease closed, nothing
+  resubmitted, nothing on disk deleted — and the server's sentence is said as a
+  `jobs:notice` (`onRunRemovedByServer`), because a row vanishing on its own would
+  otherwise read as a bug (`removedLine`, `settleStep`). It does not idle the queue.
+  BookForge learns of it from the job's own event stream (every queued job is
+  followed); a removal while the app was closed arrives as the job's `removed` status
+  when the in-flight ledger re-attaches at the next start.
 - `client` → our own cancel (Stop/Remove, the quit and startup sweeps): settles as the
   cancellation it is. `DELETE` on a waiting job answers `removed`, which the sweeps
   count as cancelled.

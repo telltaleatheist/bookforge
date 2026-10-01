@@ -114,6 +114,6 @@ export function crucibleRemovedLine(server: string, reason: string, message: str
       return `crucible "${server}" took this job out of its line at this app's request${said}`;
     case 'operator':
       return `removed from crucible "${server}"'s line by an operator (${reason})${said}. `
-        + 'It was not sent again; Send to queue runs it when you want it.';
+        + 'The run was removed from BookForge\'s queue too and not sent again; nothing on disk was deleted.';
   }
 }

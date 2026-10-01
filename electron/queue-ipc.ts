@@ -183,6 +183,17 @@ export async function startQueueEngine(): Promise<void> {
   engine.onStepFinished((event) => {
     broadcastToAllWindows('jobs:step-finished', event);
   });
+  // A run removed because a person took its job out of a Crucible's line. The
+  // row disappears from the queue, so the reason is said where it will be seen:
+  // `jobs:notice` toasts do not auto-dismiss in the failure tone.
+  engine.onRunRemovedByServer((event) => {
+    broadcastToAllWindows('jobs:notice', {
+      tone: 'failure',
+      kicker: 'Removed from a Crucible queue',
+      title: event.title,
+      message: `${event.stepLabel}: ${event.line}`,
+    });
+  });
   // Wired BEFORE `configure`, because the load path asks each step's module
   // whether it travels and then reports the runs that carry one and say
   // nothing about where — see `waitForMigrationReport`.

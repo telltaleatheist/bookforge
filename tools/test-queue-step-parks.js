@@ -172,33 +172,39 @@ async function seamChecks() {
       assert.strictEqual(failed.length, 0, 'a parked book must not appear in Needs you');
     });
 
-  await check('an OPERATOR removal from a Crucible\'s line returns the row to Pending — never resubmitted',
+  await check('an OPERATOR removal from a Crucible\'s line removes the run from BookForge — never resubmitted',
     async () => {
       /*
        * crucible docs/QUEUE.md: `removed {operator}` means a person took the job
-       * out of the server's line on purpose. Not a failure (no Needs you, no
-       * idle), not weather (no park, no resubmit): the run goes to Pending with
-       * the server's sentence on the step (`settleStep`, `removedLineOf`).
+       * out of the server's line on purpose. Owen, 2026-09-30: the run leaves
+       * BookForge too. Not a failure (no Needs you, no idle), not weather (no
+       * park, no resubmit): the run is removed as the queue's Remove does it, and
+       * the server's sentence is announced (`onRunRemovedByServer`).
        */
       const mod = fakeModule('tts-conversion');
       await freshEngine('operator-removed', mod);
-      const job = sendBook('Removed by an operator');
-      engine.start();
-      await settle();
-      assert.strictEqual(stepOf(job.id).status, 'running');
-      const line = 'removed from crucible "mac"\'s line by an operator (operator): cleared';
-      mod.runs[0].reject(Object.assign(new Error('crucible_removed_operator: removed'), { removedLine: line }));
-      await settle();
-      const step = stepOf(job.id);
-      assert.strictEqual(step.status, 'held', 'held, as a Stop that keeps the run leaves it');
-      assert.strictEqual(step.error, undefined, 'an operator removal is not an error');
-      assert.strictEqual(step.progress.message, line, 'the row says why, in the server\'s words');
-      const snap = engine.snapshot().jobs.find((j) => j.id === job.id);
-      assert.strictEqual(snap.pending, true, 'the run is back in Pending');
-      await settle();
-      assert.strictEqual(mod.runs.length, 1, 'and nothing resubmitted it');
-      const failed = engine.snapshot().jobs.flatMap((j) => j.steps).filter((s) => s.status === 'failed');
-      assert.strictEqual(failed.length, 0, 'nothing in Needs you');
+      const heard = [];
+      const unhear = engine.onRunRemovedByServer((e) => heard.push(e));
+      try {
+        const job = sendBook('Removed by an operator');
+        engine.start();
+        await settle();
+        assert.strictEqual(stepOf(job.id).status, 'running');
+        const line = 'removed from crucible "mac"\'s line by an operator (operator): cleared';
+        mod.runs[0].reject(Object.assign(new Error('crucible_removed_operator: removed'), { removedLine: line }));
+        await settle();
+        assert.strictEqual(engine.snapshot().jobs.find((j) => j.id === job.id), undefined,
+          'the run is gone from BookForge\'s queue');
+        assert.strictEqual(heard.length, 1, 'the removal is announced once');
+        assert.strictEqual(heard[0].jobId, job.id);
+        assert.strictEqual(heard[0].line, line, 'in the server\'s words');
+        await settle();
+        assert.strictEqual(mod.runs.length, 1, 'and nothing resubmitted it');
+        const failed = engine.snapshot().jobs.flatMap((j) => j.steps).filter((s) => s.status === 'failed');
+        assert.strictEqual(failed.length, 0, 'nothing in Needs you');
+      } finally {
+        unhear();
+      }
     });
 
   await check('a `CrucibleLeased` parks on its `leasedLine` — the SDK\'s other spelling',
