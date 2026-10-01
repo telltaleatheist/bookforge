@@ -26,6 +26,7 @@ import { mergeEpubParagraphs } from './epub-paragraph-merger';
 import { aiCallModel, callAI, LANGUAGE_NAMES } from './text-ai.js';
 import { aiCallServer, type AIProviderConfig } from './ai-bridge.js';
 import { CrucibleTextActError } from './crucible/text-venue.js';
+import { waitFieldsOf } from './queue-steps/runtime';
 import { createEpubSink, openEpubSource } from './epub-container.js';
 import {
   EpubProcessor,
@@ -211,6 +212,8 @@ export interface TranslationJobResult {
    * exactly when the refusal carried one.
    */
   busyLine?: string;
+  transientLine?: string;
+  removedLine?: string;
   // Job-analytics.json record (persisted by the renderer as a 'translation' entry).
   analytics?: TranslationJobAnalytics;
   // For chaining to next job
@@ -995,9 +998,7 @@ export async function runMonoTranslation(
     return {
       success: false,
       error: (err as Error).message,
-      ...(err instanceof CrucibleTextActError && err.busyLine !== undefined
-        ? { busyLine: err.busyLine }
-        : {}),
+      ...waitFieldsOf(err),
     };
   }
 }

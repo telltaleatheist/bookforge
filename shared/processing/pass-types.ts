@@ -232,6 +232,14 @@ export interface PassJobResult {
    * mangled is not waiting for anything.
    */
   busyLine?: string;
+  /** Weather that outlived its budget — the queue parks and retries. */
+  transientLine?: string;
+  /**
+   * A person took this pass's call out of a Crucible's line (crucible
+   * docs/QUEUE.md `removed_from_queue`, operator): the queue removes the run
+   * from BookForge too (Owen, 2026-09-30), and nothing resubmits it.
+   */
+  removedLine?: string;
   /**
    * What the pass did, in one sentence, when there is something to say beyond
    * "it worked" — how many markers it removed, out of how many files.

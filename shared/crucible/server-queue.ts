@@ -73,6 +73,19 @@ export const CRUCIBLE_INTERACTIVE_QUEUE = { maxWaitS: 600 } as const;
  */
 export const CRUCIBLE_QUEUE_HEARTBEAT_MS = 60_000;
 
+/**
+ * A CHAT OR DECISION WAITING IN THE LINE (crucible 1.0.72, docs/QUEUE.md "Chats
+ * and decisions can wait too"). Owen, 2026-09-30: they wait "if there is a line".
+ *
+ * A queued call has no job record and no event stream: the server HOLDS THE HTTP
+ * REQUEST OPEN until the answer, and the open request is its presence. So the wait
+ * is per ATTEMPT, an hour, not the batch day — a request held open for a day is a
+ * socket nobody can reason about. `expired` is asked again (weather), so a longer
+ * line costs more attempts, never the run. The client's deadline for a queued
+ * attempt is this wait plus the act's own answer budget.
+ */
+export const CRUCIBLE_CHAT_QUEUE = { maxWaitS: 3_600 } as const;
+
 /** "waiting, #2 of 5 in crucible "shift"'s line" — what a waiting row reads. */
 export function crucibleQueuedLine(server: string, position: number, of: number | null): string {
   const place = of === null || of < position ? `#${position}` : `#${position} of ${of}`;

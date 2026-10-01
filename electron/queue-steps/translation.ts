@@ -126,7 +126,8 @@ export const translationStep: StepModule = {
        * when a holder was named, an ordinary failure when none was.
        */
       throw stepFailure(
-        result.error || 'Translation failed and gave no reason.', result.busyLine);
+        result.error || 'Translation failed and gave no reason.',
+        result.busyLine, result.transientLine, result.removedLine);
     }
     ctx.step.analytics = (result as { analytics?: unknown }).analytics;
     ctx.report({ metrics: {

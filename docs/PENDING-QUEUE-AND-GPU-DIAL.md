@@ -149,8 +149,20 @@ policy is `shared/crucible/server-queue.ts`:
 - **A person waiting queues for 10 min** (`CRUCIBLE_INTERACTIVE_QUEUE`): Correct
   Sentences re-rolls, a voice Load (`loadHiggsVoiceOn`), the explicit text-model load
   (`loadFirst`), and the Reader extension's Load/Unload.
-- **Not queued, unchanged:** leases (and so `reserveBeforeLaunch`), chat/decide (text
-  acts), TTS stream sessions (Listen), and Settings' fire-and-forget Load/Unload model
+- **Chat (text acts), Crucible 1.0.72 — in line only if there is a line** (Owen,
+  2026-09-30). The one chat door (`ai-bridge.ts crucibleChatOnce`, which cleanup,
+  Simplify, Translate, mono and LL translation and analysis all use) asks PLAINLY first
+  with its 3-minute runaway clock — an unqueued chat still goes straight to a resident
+  model with a free slot even while something waits. Only a BUSY refusal (`CrucibleBusy`,
+  `CrucibleLeased`, `CrucibleCardHeld`, `model_not_resident`, `engine_in_use`, `503
+  chat_queue_full`) asks the same request again with `queue: {max_wait_s: 3600}`
+  (`CRUCIBLE_CHAT_QUEUE`): held open silently, so that attempt's deadline is the wait
+  plus the 3 minutes. `removed_from_queue` expired/server_restart is asked again;
+  operator (or unknown) throws with `removedLine`, carried through every text result
+  (`waitFieldsOf`) to `stepFailure`, so the run is removed from BookForge. Decide is the
+  Foundry ENGINE's (`src/backend/decide-door.ts`), queued there the same way.
+- **Not queued, unchanged:** leases (and so `reserveBeforeLaunch`), TTS stream sessions
+  (Listen), and Settings' fire-and-forget Load/Unload model
   buttons (nothing follows those jobs, so a waiting one would expire unseen). These
   keep the park path below. Note: while anything waits in a server's line, Crucible
   refuses a PLAIN submit `server_busy` even with the lane free, so these park then too.

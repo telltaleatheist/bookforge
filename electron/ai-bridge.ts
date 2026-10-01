@@ -35,6 +35,7 @@ import { promises as fsPromises } from 'fs';
 import {
   CrucibleAuthError,
   CrucibleBusy,
+  CrucibleCardHeld,
   CrucibleConfigError,
   CrucibleLeased,
   CrucibleNotACrucible,
@@ -46,6 +47,8 @@ import {
   type CrucibleClient,
   type ModelInfo,
 } from '@crucible/client';
+import { CRUCIBLE_CHAT_QUEUE, crucibleRemovalDisposition, crucibleRemovedLine } from '../shared/crucible/server-queue';
+import { waitFieldsOf } from './queue-steps/runtime';
 
 // Power save blocker ID - prevents system sleep during AI cleanup
 let aiPowerBlockerId: number | null = null;
@@ -2598,6 +2601,62 @@ export async function crucibleChatOnce(options: {
   sizeChars: number;
   signal?: AbortSignal;
 }): Promise<{ content: string; finishReason?: string }> {
+  /*
+   * ASKED PLAINLY FIRST, IN LINE ONLY IF THERE IS A LINE (Owen, 2026-09-30).
+   *
+   * An unqueued chat still goes straight to a resident model with a free slot
+   * "even while something waits in the line" (crucible docs/QUEUE.md), so the
+   * common case keeps its runaway clock untouched. Only a refusal that means
+   * BUSY — the card or model held by other work, every chat slot taken, the model
+   * not on the card — sends the same request again WITH `queue`. A queued call is
+   * held open silently until its turn, so its deadline is the server's maximum
+   * wait plus the answer budget: the server answers or removes it by
+   * `max_wait_s`, which is what makes that deadline honest rather than a runaway
+   * clock gone slack. `expired` / `server_restart` are asked again; an operator's
+   * removal (or an unknown reason) carries `removedLine`, which the queue engine
+   * turns into removing the run from BookForge.
+   */
+  try {
+    return await crucibleChatAttempt(options, false, TIMEOUT_MS);
+  } catch (err) {
+    if (!chatRefusedAsBusy(err)) throw translateCrucibleError(err, options.server);
+  }
+  for (;;) {
+    try {
+      return await crucibleChatAttempt(options, CRUCIBLE_CHAT_QUEUE, CRUCIBLE_CHAT_QUEUE.maxWaitS * 1_000 + TIMEOUT_MS);
+    } catch (err) {
+      if (err instanceof CrucibleRefused && err.code === 'removed_from_queue') {
+        const details = (err as { details?: unknown }).details as { reason?: unknown } | undefined;
+        const reason = typeof details?.reason === 'string' ? details.reason : 'unknown';
+        const line = crucibleRemovedLine(options.server, reason, err.serverMessage);
+        if (crucibleRemovalDisposition(reason) === 'weather') {
+          console.warn(`[Crucible] ${line}`);
+          continue;
+        }
+        throw Object.assign(new Error(`crucible_removed_from_queue: ${line}`), { removedLine: line });
+      }
+      throw translateCrucibleError(err, options.server);
+    }
+  }
+}
+
+/** A refusal that means "busy right now" — worth a place in the server's line. */
+function chatRefusedAsBusy(err: unknown): boolean {
+  if (err instanceof CrucibleBusy || err instanceof CrucibleLeased || err instanceof CrucibleCardHeld) return true;
+  if (err instanceof CrucibleRefused) return err.code === 'model_not_resident' || err.code === 'engine_in_use';
+  if (err instanceof CrucibleServerError) return err.code === 'chat_queue_full';
+  return false;
+}
+
+/**
+ * One chat request, unqueued or queued, under its own deadline. Errors come back
+ * raw: the caller decides whether a refusal is a reason to join the line.
+ */
+async function crucibleChatAttempt(
+  options: Parameters<typeof crucibleChatOnce>[0],
+  queue: false | typeof CRUCIBLE_CHAT_QUEUE,
+  deadlineMs: number,
+): Promise<{ content: string; finishReason?: string }> {
   const { server, model } = options;
   const controller = new AbortController();
   // Whose abort it was. The SDK throws the DOM AbortError for both, and the
@@ -2606,7 +2665,7 @@ export async function crucibleChatOnce(options: {
   // message instead, and retried like any other transport stall rather than
   // ending the chunk.
   let timedOut = false;
-  const timeoutId = setTimeout(() => { timedOut = true; controller.abort(); }, TIMEOUT_MS);
+  const timeoutId = setTimeout(() => { timedOut = true; controller.abort(); }, deadlineMs);
 
   // Chain abort signals - if parent aborts, abort this request too.
   //
@@ -2638,16 +2697,17 @@ export async function crucibleChatOnce(options: {
         temperature: options.temperature,
         maxTokens: options.maxTokens,
         thinking: false,
+        queue,
         signal: controller.signal,
       });
       return { content: answer.content, finishReason: answer.finishReason };
     } catch (err) {
       if (timedOut) {
-        throw new Error(`Crucible timeout: no answer from "${server}" within ${TIMEOUT_MS / 1000}s `
+        throw new Error(`Crucible timeout: no answer from "${server}" within ${deadlineMs / 1000}s `
           + `for a ${options.sizeChars}-char chunk. The model may be running away on this chunk — `
           + 'its engine log on that host says how many tokens it produced.');
       }
-      throw translateCrucibleError(err, server);
+      throw err;
     }
   } finally {
     clearTimeout(timeoutId);
@@ -3778,6 +3838,10 @@ export interface EpubCleanupResult {
    * model mangled is not waiting for anything.
    */
   busyLine?: string;
+  /** Weather that outlived its budget — the queue parks and retries (`waitFieldsOf`). */
+  transientLine?: string;
+  /** A person took this run's call out of a Crucible's line — the queue removes the run. */
+  removedLine?: string;
   chaptersProcessed?: number;
   copyrightIssuesDetected?: boolean;  // True if any chunks triggered copyright refusal
   copyrightChunksAffected?: number;   // Number of chunks that fell back to original due to copyright
@@ -5943,7 +6007,13 @@ async function cleanupEpubRun(
       error: isCancelled ? 'Cancelled by user' : message
     });
     stopAIPowerBlock();
-    return { success: false, error: isCancelled ? 'Cancelled by user' : message };
+    // The "not a failure" fields a chunk's refusal carried (a Crucible line's
+    // removal, a held card) reach the queue step whole — see `waitFieldsOf`.
+    return {
+      success: false,
+      error: isCancelled ? 'Cancelled by user' : message,
+      ...(isCancelled ? {} : waitFieldsOf(error)),
+    };
   }
 }
 

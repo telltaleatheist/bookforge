@@ -17,7 +17,7 @@ import { BrowserWindow, powerSaveBlocker } from 'electron';
 import { extractChaptersFromEpub, type ChapterData } from './epub-processor.js';
 import { aiCallServer, findBestBreakPoint } from './ai-bridge.js';
 // The ONE rule for "did this refusal name a holder" — see queue-steps/runtime.ts.
-import { busyLineOf } from './queue-steps/runtime';
+import { busyLineOf, removedLineOf, waitFieldsOf } from './queue-steps/runtime';
 import type { AIProviderConfig } from './ai-bridge.js';
 import {
   commitAudiobookAnalysisReport,
@@ -108,6 +108,8 @@ export interface AnalysisResult {
    * wrong on (bug hunt 2026-09-19, A5).
    */
   busyLine?: string;
+  transientLine?: string;
+  removedLine?: string;
   flagCount?: number;
   contentSkipsDetected?: boolean;
   contentSkipsAffected?: number;
@@ -741,7 +743,7 @@ export async function analyzeBook(
            * could simply have waited. Re-thrown whole so the holder's line
            * reaches the result and the queue parks the book.
            */
-          if (busyLineOf(err) !== undefined) throw err;
+          if (busyLineOf(err) !== undefined || removedLineOf(err) !== undefined) throw err;
           console.error(`[Analysis] Error analyzing ${chapter.title} chunk ${chunkIndex + 1}:`, err);
           // Continue to next chunk — don't fail the whole job for one chunk
         }
@@ -858,11 +860,10 @@ export async function analyzeBook(
 
     // The holder's line, carried rather than flattened into the sentence: it is
     // what lets the queue park this book instead of reddening it.
-    const busyLine = busyLineOf(err);
     return {
       success: false,
       error,
-      ...(busyLine === undefined ? {} : { busyLine }),
+      ...waitFieldsOf(err),
     };
   }
 }
@@ -1202,7 +1203,7 @@ function classifyAudiobookAnalysisError(error: unknown): AudiobookAnalysisFailur
    * failing it. Asked FIRST, because the message tests below would read a
    * 409's prose and call it a request error.
    */
-  if (busyLineOf(error) !== undefined) {
+  if (busyLineOf(error) !== undefined || removedLineOf(error) !== undefined) {
     return { reason: 'request-error', recoverable: false, splitAllowed: false, retrySameChunk: false };
   }
   const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
@@ -1548,8 +1549,7 @@ export async function analyzeAudiobook(
     console.error(`[AudiobookAnalysis] Job ${jobId} failed:`, error);
     sendProgress({ phase: 'error', progress: 0, message: error });
     // See the document arm above: a refusal that names a holder is a WAIT.
-    const busyLine = busyLineOf(err);
-    return { success: false, error, ...(busyLine === undefined ? {} : { busyLine }) };
+    return { success: false, error, ...waitFieldsOf(err) };
   } finally {
     activeAnalysisJobs.delete(jobId);
     powerSaveBlocker.stop(powerBlockerId);

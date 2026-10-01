@@ -246,7 +246,8 @@ function passModule(type: JobType): StepModule {
            * forgot.
            */
           throw stepFailure(
-            result.error || `${ctx.step.label} failed and gave no reason.`, result.busyLine);
+            result.error || `${ctx.step.label} failed and gave no reason.`,
+            result.busyLine, result.transientLine, result.removedLine);
         }
         // What the pass has to SAY carries onto the row, not just whether it
         // worked. A pass that could record no ledger row succeeded and still

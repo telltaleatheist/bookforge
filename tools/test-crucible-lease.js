@@ -593,7 +593,9 @@ const { check, summary } = makeChecker();
        * does not throw a bare Error past it.
        */
       const step = read('electron', 'queue-steps', 'pass.ts');
-      assert.match(step, /throw stepFailure\([\s\S]*?result\.busyLine\)/,
+      // `[,)]`: the busy line may be followed by the other wait fields
+      // (`transientLine`, `removedLine` — Crucible's line, 2026-09-30).
+      assert.match(step, /throw stepFailure\([\s\S]*?result\.busyLine[,)]/,
         'the pass step no longer hands the leased card\'s holder line to the seam, so the row '
         + 'reddens instead of waiting');
       assert.ok(!/throw new Error\(result\.error/.test(step),

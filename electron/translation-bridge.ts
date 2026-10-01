@@ -21,7 +21,7 @@ import {
 } from './diff-cache.js';
 import { escapeXml, extractChapterAsText, replaceXhtmlBody } from './epub-processor.js';
 // The ONE rule for "did this refusal name a holder" — see queue-steps/runtime.ts.
-import { busyLineOf } from './queue-steps/runtime';
+import { busyLineOf, removedLineOf, waitFieldsOf } from './queue-steps/runtime';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -71,6 +71,8 @@ export interface TranslationResult {
    * model mangled is not waiting for anything.
    */
   busyLine?: string;
+  transientLine?: string;
+  removedLine?: string;
   chaptersProcessed?: number;
   // Failed-chunk accounting (ports AI cleanup's skipped-chunk discipline).
   // failedChunkCount > 0 means that many chunks kept their ORIGINAL (untranslated)
@@ -637,7 +639,7 @@ export async function translateEpub(
            * re-thrown whole so the line reaches the result, and the row waits
            * instead of failing.
            */
-          if (busyLineOf(error) !== undefined) throw error;
+          if (busyLineOf(error) !== undefined || removedLineOf(error) !== undefined) throw error;
 
           // Check for unrecoverable errors
           const isUnrecoverable = errorMessage.includes('credit') ||
@@ -814,13 +816,12 @@ export async function translateEpub(
     // THE HOLDER'S LINE IS CARRIED, NOT FLATTENED AWAY. Read through the one
     // rule (`busyLineOf`), because the refusal reaches here as whatever the
     // door threw — the queue parks the row on it; see `TranslationResult`.
-    const busyLine = busyLineOf(error);
     return {
       success: false,
       error: isCancelled ? 'Cancelled by user' : message,
       failedChunkCount,
       skippedChunksPath: errorSkippedChunksPath,
-      ...(busyLine === undefined ? {} : { busyLine }),
+      ...(isCancelled ? {} : waitFieldsOf(error)),
     };
   }
 }

@@ -625,7 +625,7 @@ async function runSimplifyPass(
     return {
       success: false,
       error: result.error || 'Simplify produced no EPUB and gave no reason.',
-      ...(result.busyLine === undefined ? {} : { busyLine: result.busyLine }),
+      ...waitsOf(result),
     };
   }
 
@@ -698,7 +698,10 @@ async function runTranslatePass(
     mainWindow ?? null
   );
   if (!result.success || !result.outputPath) {
-    return { success: false, error: result.error || 'Translation produced no EPUB and gave no reason.' };
+    // The wait fields travel here too: this arm used to drop them, so a
+    // translate against a busy server reddened its row (mono-translation-job's
+    // own note about the same bug one layer down).
+    return { success: false, error: result.error || 'Translation produced no EPUB and gave no reason.', ...waitsOf(result) };
   }
 
   // Translation replaces the WORDS of every element and keeps the elements: the
@@ -1347,4 +1350,20 @@ export async function runProcessingPass(
     console.error(`[processing-pass] ${config.kind} failed:`, err);
     return { success: false, error };
   }
+}
+
+/**
+ * The "not a failure" fields a pass result may carry — a held card
+ * (`busyLine`), weather past its budget (`transientLine`), a person's removal
+ * from a Crucible's line (`removedLine`) — copied only when present, so the
+ * queue step reads them back through `stepFailure`.
+ */
+function waitsOf(result: { busyLine?: string; transientLine?: string; removedLine?: string }): {
+  busyLine?: string; transientLine?: string; removedLine?: string;
+} {
+  return {
+    ...(result.busyLine === undefined ? {} : { busyLine: result.busyLine }),
+    ...(result.transientLine === undefined ? {} : { transientLine: result.transientLine }),
+    ...(result.removedLine === undefined ? {} : { removedLine: result.removedLine }),
+  };
 }

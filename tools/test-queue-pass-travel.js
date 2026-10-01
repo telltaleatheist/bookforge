@@ -381,6 +381,95 @@ function passConfig(kind, ai) {
     }
   });
 
+  // ── 6b. In the server's line only if there is a line (Crucible 1.0.72) ──
+
+  const answerBody = (content) => ({
+    id: 'c1', model: 'm',
+    choices: [{ message: { role: 'assistant', content }, finish_reason: 'stop' }],
+    usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+  });
+  const refusal = (code, message, details) => ({ error: { code, message, details: details ?? {} } });
+
+  await check('a FREE server gets a plain chat: no `queue` is sent', async () => {
+    const seen = [];
+    const fake = await startFakeCrucible(async (req, res, ctx) => {
+      if (ctx.url.pathname !== '/v1/openai/chat/completions') return false;
+      seen.push(JSON.parse((await ctx.readBody(req)).toString('utf-8')));
+      send(res, 200, answerBody('ok'));
+      return true;
+    });
+    const server = nameFake(fake.url);
+    try {
+      await textAi.callAI('hi', { provider: 'crucible', crucible: { server, act: 'translate', model: 'm' } });
+      assert.strictEqual(seen.length, 1);
+      assert.ok(seen[0].queue === undefined || seen[0].queue === false,
+        'the common case keeps its runaway clock: nothing asks to wait');
+    } finally {
+      await fake.close();
+    }
+  });
+
+  await check('a BUSY refusal (503 chat_queue_full) asks again WITH queue, and the answer comes back', async () => {
+    const seen = [];
+    const fake = await startFakeCrucible(async (req, res, ctx) => {
+      if (ctx.url.pathname !== '/v1/openai/chat/completions') return false;
+      const body = JSON.parse((await ctx.readBody(req)).toString('utf-8'));
+      seen.push(body);
+      if (body.queue === undefined || body.queue === false) {
+        send(res, 503, refusal('chat_queue_full', 'every slot is taken', { retry_after: 1 }));
+      } else {
+        send(res, 200, answerBody('after the line'));
+      }
+      return true;
+    });
+    const server = nameFake(fake.url);
+    try {
+      const answer = await textAi.callAI('hi', { provider: 'crucible', crucible: { server, act: 'translate', model: 'm' } });
+      assert.strictEqual(answer, 'after the line');
+      assert.strictEqual(seen.length, 2, 'one plain ask, one in the line');
+      assert.deepStrictEqual(seen[1].queue, { max_wait_s: 3600 }, 'the line ask states its wait');
+    } finally {
+      await fake.close();
+    }
+  });
+
+  await check('removed_from_queue: expired is asked again; an operator removal carries removedLine and is NOT re-sent', async () => {
+    let n = 0;
+    let reasonForSecond = 'expired';
+    const fake = await startFakeCrucible(async (req, res, ctx) => {
+      if (ctx.url.pathname !== '/v1/openai/chat/completions') return false;
+      const body = JSON.parse((await ctx.readBody(req)).toString('utf-8'));
+      n += 1;
+      if (body.queue === undefined || body.queue === false) {
+        send(res, 409, refusal('server_busy', 'busy', {
+          holder: 'parsec', job_id: 'j1', type: 'image', model: 'qwen-image', status: 'running',
+          since: '2026-09-30T00:00:00Z', progress: 0.5, message: null,
+        }));
+      } else if (n === 2) {
+        send(res, 409, refusal('removed_from_queue', 'left the line', { reason: reasonForSecond }));
+      } else {
+        send(res, 200, answerBody('third time'));
+      }
+      return true;
+    });
+    const server = nameFake(fake.url);
+    try {
+      const answer = await textAi.callAI('hi', { provider: 'crucible', crucible: { server, act: 'translate', model: 'm' } });
+      assert.strictEqual(answer, 'third time', 'expired is weather: asked again in the line');
+      n = 0; reasonForSecond = 'operator';
+      let thrown = null;
+      try {
+        await textAi.callAI('hi', { provider: 'crucible', crucible: { server, act: 'translate', model: 'm' } });
+      } catch (err) { thrown = err; }
+      assert.ok(thrown, 'an operator removal is not answered');
+      assert.ok(typeof thrown.removedLine === 'string' && /operator/.test(thrown.removedLine),
+        'it carries removedLine, which the queue turns into removing the run');
+      assert.strictEqual(n, 2, 'and it was not sent a third time');
+    } finally {
+      await fake.close();
+    }
+  });
+
   await check('the chat door STATES ITS ACT, so a bench can say what is running', async () => {
     /*
      * ── THIS CHECK USED TO BE THE OPPOSITE, AND THAT IS THE STORY ─────────

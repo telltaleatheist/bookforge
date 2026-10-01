@@ -157,7 +157,8 @@ export const bookAnalysisStep: StepModule = {
          * not — one road, no side call into the engine.
          */
         throw stepFailure(
-          result.error || 'The analysis failed and gave no reason.', result.busyLine);
+          result.error || 'The analysis failed and gave no reason.',
+          result.busyLine, result.transientLine, result.removedLine);
       }
       ctx.step.analytics = (result as { analytics?: unknown }).analytics;
       ctx.report({ metrics: {
