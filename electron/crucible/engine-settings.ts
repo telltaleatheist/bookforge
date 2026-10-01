@@ -355,30 +355,9 @@ function projectSettings(doc: SettingsDocument, server: string): CrucibleEngineS
 }
 
 /**
- * The two model-assignment maps — ONE FACT, so both or neither.
- *
- * ── 2026-09-24: A SERVER THAT STATES NEITHER IS READ AGAIN, NOT REFUSED ──
- *
- * Owen: *"dont require any particular crucible server. if it can make the call
- * to the crucible server then it should work."* The SDK (Crucible 1.0.25) now
- * reads either absent map as null, and this returns null when EITHER is: a
- * selection with no choices to go with it (or choices with no selection) is
- * not something the panel can draw honestly, and the settings around it —
- * routes, upstreams, the allowance — still work. The history below is why it
- * was required for a while.
- *
- * This read a document with neither as a VINTAGE — a server older than model
- * assignment — and drew the panel disabled with a sentence saying so. Owen
- * ended that on 2026-09-16: *"I won't be releasing any of this until it's
- * completely done, so we don't need to worry about legacy functionality at all
- * right now. Nothing is legacy because nothing exists publicly. There will be
- * no person trying to access the system with an older version of crucible
- * other than us."*
- *
- * So the vintage path served nobody, and it cost a branch in every reader plus
- * a `null` that each of them had to remember the meaning of. The SDK now reads
- * both as required and refuses a document without them by name and with the
- * field path, which means this function keeps only the shape translation.
+ * The two model-assignment maps, in this app's spelling. The SDK (1.0.71)
+ * reads both as required — Owen's 2026-09-27 reversal of the "any Crucible
+ * that answers" ruling (crucible fe53356) — so there is no absent case here.
  *
  * The empty case is still real and still different: `local_model_choices` is
  * `{}` on an engine that has not measured its card yet (`crucible/settings.py`
@@ -390,7 +369,6 @@ function projectLocalModels(
   doc: SettingsDocument,
   server: string,
 ): CrucibleEngineSettings['localModels'] {
-  if (doc.localModels === null || doc.localModelChoices === null) return null;
   return {
     selected: { ...doc.localModels },
     choices: Object.fromEntries(

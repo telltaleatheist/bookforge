@@ -689,9 +689,7 @@ export class AiPanelComponent implements OnInit {
    */
   readonly undecided = computed(() => {
     const doc = this.engine();
-    // An engine that states no model assignment at all (localModels null) has
-    // not said it is undecided — it has said nothing, and nothing is drawn.
-    if (doc === null || doc.localModels === null) return false;
+    if (doc === null) return false;
     return Object.keys(doc.localModels.choices).length === 0;
   });
 
@@ -980,7 +978,7 @@ export class AiPanelComponent implements OnInit {
 
   selectedFor(act: string): string | null {
     const doc = this.engine();
-    if (doc === null || doc.localModels === null) return null;
+    if (doc === null) return null;
     return doc.localModels.selected[act] ?? null;
   }
 

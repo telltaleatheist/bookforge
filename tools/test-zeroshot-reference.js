@@ -297,7 +297,7 @@ function refusal(fn) {
   const registerFake = fakeNamer(servers);
 
   /** A fake whose voices row for `zeroshot` says it needs a reference. */
-  function voicesDocument(shape = { preField: false, partial: false }) {
+  function voicesDocument(shape = { partial: false }) {
     const pace = {
       pace_chars_per_sec: 17.28, max_chars_per_sec: 22.46, min_chars_per_sec: 13.29,
       target_chars: null, safe_min_chars: 400, safe_max_chars: 800,
@@ -318,10 +318,8 @@ function refusal(fn) {
     });
     // `GET /v1/voices` answers the ARRAY, not an envelope around one.
     const rows = [row('mistborn', 'checkpoint', false), row('zeroshot', 'zeroshot', true)];
-    // A server older than crucible `743dc1a` states the field on NO row; a
-    // broken one states it on some. Both are shapes the SDK has a reading for,
-    // and both are served from here rather than described in a comment.
-    if (shape.preField) for (const r of rows) delete r.needs_reference;
+    // The current server states the field on every row; a row without it is
+    // a defect the SDK refuses by name (1.0.71 has no pre-field reading).
     if (shape.partial) delete rows[0].needs_reference;
     return rows;
   }
@@ -330,10 +328,7 @@ function refusal(fn) {
     const state = { residentReference: behaviour.residentReference, omitDoneReference: !!behaviour.omitDoneReference };
     const fake = await startFakeCrucible(async (req, res, ctx) => {
       if (ctx.url.pathname === '/v1/voices' && req.method === 'GET') {
-        ctx.send(res, 200, voicesDocument({
-          preField: !!behaviour.preFieldVoices && !ctx.state.partialVoices,
-          partial: !!ctx.state.partialVoices,
-        }));
+        ctx.send(res, 200, voicesDocument({ partial: !!behaviour.partialVoices }));
         return true;
       }
       if (ctx.url.pathname === '/v1/activity' && req.method === 'GET') {
@@ -341,10 +336,13 @@ function refusal(fn) {
           server: { name: 'fake', version: '0.6.0', api_version: 1, backend: 'cuda-linux', uptime_s: 1 },
           resident: state.residentReference === undefined ? null : {
             kind: 'tts', id: 'zeroshot', since: '2026-09-14T00:00:00Z', memory_bytes_estimate: 1,
+            held_by: null, unclaimed_since: '2026-09-14T00:00:00Z', engine_exit_code: null,
             reference: state.residentReference,
           },
-          warming: null, claim: null, streaming: null, chat: { in_flight: 0, rows: [] },
-          lease: null, slots: { accelerated: { busy: 0, capacity: 1 } }, running: [], queued: [],
+          stopping: null, warming: null, claim: null, streaming: null,
+          chat: { in_flight: 0, max_in_flight: null, max_in_flight_basis: null, rows: [] },
+          lease: null, slots: { accelerated: { busy: 0, of: 1, queue_depth: 0, accepts_work: true } },
+          running: [], queued: [],
         });
         return true;
       }
@@ -425,32 +423,14 @@ function refusal(fn) {
     });
   });
 
-  await withFake({ preFieldVoices: true }, async ({ name, fake }) => {
-    await check('a PRE-FIELD voices document reads as all-false, and a partial one is refused', async () => {
-      /*
-       * The SDK's reading, checked rather than assumed (crucible `00a59b16`,
-       * PHASE15-HOST.md §3.3's rule applied to `needs_reference`): a document
-       * in which NO row carries the field comes from a server older than
-       * `743dc1a`, where every voice IS a checkpoint — so `needsReference`
-       * reads false because the document's VINTAGE says so, not because a
-       * client filled a default. It matters here because this app's load door
-       * asks the row before it sends a clip: a false read of `true` would
-       * refuse a legitimate checkpoint load `reference_required`.
-       */
-      const rows = await servers.crucibleClientFor(name, 'bookforge').voices();
-      assert.ok(rows.length > 0);
-      for (const row of rows) {
-        assert.strictEqual(row.needsReference, false,
-          `${row.id} reads needsReference ${row.needsReference} on a pre-field document`);
-      }
-      // And a HALF-stated document is a defect, not a vintage: the SDK
-      // refuses it by name rather than reading the silent row as false.
-      fake.state.partialVoices = true;
+  await withFake({ partialVoices: true }, async ({ name }) => {
+    await check('a voices row that does not state needs_reference is refused by name', async () => {
+      // This app's load door asks the row before it sends a clip, so a row
+      // that does not say is not read as "no clip": the SDK refuses it.
       await assert.rejects(
         () => servers.crucibleClientFor(name, 'bookforge').voices(),
         /voices_needs_reference_missing/,
-        'a document where SOME rows state needs_reference and one does not was read anyway');
-      fake.state.partialVoices = false;
+        'a row with no needs_reference was read anyway');
     });
   });
 

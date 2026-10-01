@@ -147,25 +147,6 @@ async function withFake(behaviour, fn) {
     });
   });
 
-  // A DOCUMENT WITHOUT THEM READS AS "NO MODEL ASSIGNMENT STATED" — localModels
-  // null — and the rest of the document still works. It was refused by name from
-  // 2026-09-16 ("nothing is legacy"); Owen reversed that on 2026-09-24: *"dont
-  // require any particular crucible server. if it can make the call to the
-  // crucible server then it should work."* The SDK (1.0.25) reads either absent
-  // map as null, and the two maps are one fact, so EITHER missing is null.
-  for (const shape of ['absent', 'selected-only', 'choices-only']) {
-    await withFake({ localModels: shape }, async ({ name }) => {
-      await check(`a document missing a local-model field (${shape}) reads as no assignment stated, not a refusal`, async () => {
-        const doc = await seam.crucibleEngineSettings(name);
-        assert.strictEqual(doc.localModels, null,
-          'one map without the other cannot be drawn honestly, so the pair reads as not stated');
-        // The rest of the document is still read: routes and upstreams.
-        assert.ok(doc.routes.clean !== undefined, 'the routes were not read');
-        assert.ok('anthropic' in doc.upstreams, 'the upstreams were not read');
-      });
-    });
-  }
-
   await withFake({
     routes: { translate: 'anthropic/claude-sonnet-5' },
     upstreams: { anthropic: { key: 'sk-ant-secret-k3A9' }, ollama: { url: 'http://192.0.2.20:11434' } },
@@ -298,29 +279,6 @@ async function withFake(behaviour, fn) {
         assert.strictEqual(clean.selected, 'qwen3.5-9b');
       });
     });
-
-  await withFake({ omitRoute: true }, async ({ name }) => {
-    await check('a document where NO row carries a route reads every class as local', async () => {
-      /*
-       * THIS CHECK HAS NOW BEEN ROUND THREE TIMES, AND THE HISTORY IS THE POINT.
-       *
-       * A tripwire pinning the SDK's refusal; inverted on 2026-09-14 (crucible
-       * `eb59f7b`: a routeless document came from a server predating the field,
-       * where every class was local); refused again from 2026-09-16 ("we dont
-       * need to worry about legacy anything"). Owen, 2026-09-24: *"dont require
-       * any particular crucible server. if it can make the call to the crucible
-       * server then it should work."* Crucible 1.0.25's SDK reads an absent
-       * `route` as `local` — true of a server that does not route — and this
-       * pins that. NOTHING in `electron/crucible/engine-settings.ts` changed for
-       * any of the four positions: it reads whatever the SDK reads.
-       */
-      const view = await seam.crucibleCapabilityWithRoutes(name);
-      assert.ok(view.classes.length > 0, 'the capability record came back empty');
-      for (const row of view.classes) {
-        assert.strictEqual(row.route, 'local', `${row.capability} did not read as local`);
-      }
-    });
-  });
 
   await withFake({ routeMissingFor: 'simplify' }, async ({ name }) => {
     await check('SOME rows with a route and one without is refused, naming the row', async () => {

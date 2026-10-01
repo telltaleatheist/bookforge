@@ -796,7 +796,6 @@ function modelLeasedRefusal(held) {
  *   refusePut(n)      null, or {status, code, message, details}
  *   refuseTest(name, n)  the same
  *   testModels(name)  what the upstream lists; default three ids
- *   omitRoute         true -> NO row carries `route` (a pre-phase-15 server)
  *   routeMissingFor   a class name -> every OTHER row carries `route` and that
  *                     one does not (the document a client must refuse)
  *   badRouteFor       a class name -> that row's `route` is a value from a
@@ -888,14 +887,10 @@ function settingsRoutes(behaviour) {
       }
     }
     /*
-     * MODEL ASSIGNMENT, in the server's spelling. A 0.6.6 engine emits both
-     * maps unconditionally, so the DEFAULT here emits both — a fake that left
-     * them out would make every other keeper exercise the vintage path by
-     * accident. `behaviour.localModels` names the three shapes worth testing:
-     *   'absent'       — neither map, which is a server older than the feature
-     *   'selected-only' / 'choices-only' — a PARTIAL document, which is a defect
+     * MODEL ASSIGNMENT, in the server's spelling. The server emits both maps
+     * unconditionally (`crucible/settings.py`), and @crucible/client 1.0.71
+     * reads both as required, so this fake always sends both.
      */
-    const shape = behaviour.localModels || 'both';
     const selectedDoc = {};
     const choicesDoc = {};
     for (const c of LLM_CLASSES) {
@@ -910,9 +905,9 @@ function settingsRoutes(behaviour) {
       upstreams: upstreamDoc,
       desktop_allowance_bytes: 3221225472,
       backend_kind: backendKind,
+      local_models: selectedDoc,
+      local_model_choices: choicesDoc,
     };
-    if (shape === 'both' || shape === 'selected-only') doc.local_models = selectedDoc;
-    if (shape === 'both' || shape === 'choices-only') doc.local_model_choices = choicesDoc;
     return doc;
   };
 
@@ -977,7 +972,7 @@ function settingsRoutes(behaviour) {
           row.selected = '';
           row.reason = disabled[c];
         }
-        if (behaviour.omitRoute !== true && behaviour.routeMissingFor !== c) {
+        if (behaviour.routeMissingFor !== c) {
           row.route = behaviour.badRouteFor === c
             ? 'somewhere-else'
             : routes[c] !== undefined && routes[c] !== 'local' ? 'upstream' : 'local';
@@ -1314,6 +1309,7 @@ function faultyJobRoutes(behaviour = {}) {
               unclaimed_since: holder === null || holder === undefined
                 ? (card.unclaimedSince || a.unclaimedSince || null)
                 : null,
+              engine_exit_code: null,
             },
           stopping: null,
           warming: card.warming === null ? (a.warming === undefined ? null : a.warming) : card.warming,
@@ -1574,8 +1570,19 @@ const ENGINE_INFO_FIELDS = Object.freeze({
   },
 });
 
+/**
+ * The role-dependent `/v1/info` fields for a document whose `role` is `role`.
+ * An ENGINE (Crucible's own `/v1/info`) always sends `role`, `managed_by` and
+ * `pages_engine`; an ORCHESTRATOR (the host controller door) sends `role` and
+ * `engine` and neither of the others. A fixture spreads this in BEFORE its own
+ * overrides, so an orchestrator document is not an engine's with a new role.
+ */
+function infoRoleFields(role) {
+  return role === 'orchestrator' ? { role } : ENGINE_INFO_FIELDS;
+}
+
 module.exports = {
-  ENGINE_INFO_FIELDS,
+  ENGINE_INFO_FIELDS, infoRoleFields,
   REPO, installElectronStub, makeChecker, startFakeCrucible, fakeNamer, provenanceFor,
   refuseRenderParams, renderDoneProvenance,
   crucibleHost, noServerHost, send,

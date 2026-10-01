@@ -5,7 +5,9 @@
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
-const { REPO, installElectronStub, makeChecker, startFakeCrucible, leaseRoutes } = require('./fake-crucible');
+const {
+  REPO, installElectronStub, makeChecker, startFakeCrucible, leaseRoutes, infoRoleFields,
+} = require('./fake-crucible');
 const { userData } = installElectronStub('bf-engine-routing-');
 const load = (name) => require(path.join(REPO, 'dist/electron/crucible', `${name}.js`));
 const servers = load('servers');
@@ -16,7 +18,8 @@ function info(name, extra = {}) {
   return {
     server: { name, version: '0.6.0', api_version: 1 },
     host: { platform: 'win32', arch: 'x86_64', backend: 'llama-windows', gpu: { vendor: 'none', name: 'CPU', vram_bytes: 0 } },
-    job_types: ['echo'], capabilities: [], role: 'engine', managed_by: null,
+    job_types: ['echo'], capabilities: [],
+    ...infoRoleFields(extra.role ?? 'engine'),
     ...extra,
   };
 }

@@ -107,7 +107,18 @@ async function main() {
     const source = ts.createSourceFile('main.ts', fs.readFileSync(path.join(__dirname, '../electron/main.ts'), 'utf8'),
       ts.ScriptTarget.Latest, true);
     const entrypoints = [];
+    /*
+     * `coordinateWithServer` is the logging wrapper; the gate itself lives in
+     * `coordinateWithServerNow` (b33cfcf0), bounded by INSTALL_STATUS_BOUND_MS.
+     * Both declarations are carried into the sandbox as written, so the wrapper
+     * runs the real gate rather than a name the sandbox does not have.
+     */
+    const helpers = {};
     function visit(node) {
+      if (ts.isVariableDeclaration(node)
+        && ['coordinateWithServerNow', 'INSTALL_STATUS_BOUND_MS'].includes(node.name.getText(source))) {
+        helpers[node.name.getText(source)] = node.initializer.getText(source);
+      }
       if (ts.isVariableDeclaration(node) && node.name.getText(source) === 'coordinateWithServer') entrypoints.push(node.initializer);
       if (ts.isCallExpression(node) && node.expression.getText(source) === 'ipcMain.handle'
         && node.arguments[0]?.getText(source) === "'bookforge:crucible-coordinate'") entrypoints.push(node.arguments[1]);
@@ -115,6 +126,11 @@ async function main() {
     }
     visit(source);
     assert.equal(entrypoints.length, 2);
+    assert.deepEqual(Object.keys(helpers).sort(), ['INSTALL_STATUS_BOUND_MS', 'coordinateWithServerNow'],
+      'the gate moved out of coordinateWithServerNow — re-read main.ts before trusting this');
+    const prelude = Object.entries(helpers)
+      .sort(([a], [b]) => (a === 'INSTALL_STATUS_BOUND_MS' ? -1 : b === 'INSTALL_STATUS_BOUND_MS' ? 1 : 0))
+      .map(([name, init]) => `const ${name} = ${init};`).join('\n');
     /*
      * THE SECOND GATE IS PHASE19 §2.8's. Coordination installs job
      * environments and pulls weights — gigabytes — and run against the NATIVE
@@ -148,7 +164,7 @@ async function main() {
     for (const entrypoint of entrypoints) {
       for (const [pending, door, local, expected] of cases) {
         let requests = 0;
-        const code = ts.transpileModule(`(${entrypoint.getText(source)})('desk', 'connected')`, {
+        const code = ts.transpileModule(`${prelude}\n(${entrypoint.getText(source)})('desk', 'connected')`, {
           compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
         }).outputText;
         await vm.runInNewContext(code, {
@@ -161,6 +177,7 @@ async function main() {
           isTheEngineOnThisComputer: async () => local,
           require: () => ({ coordinateServer: async () => { requests++; return { phase: 'stocked' }; } }),
           getMainLogger: () => ({ info() {}, warn() {} }),
+          setTimeout, clearTimeout,
         });
         assert.equal(
           requests, expected,

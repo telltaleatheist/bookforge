@@ -51,6 +51,7 @@ const os = require('os');
 const path = require('path');
 const {
   REPO, installElectronStub, makeChecker, startFakeCrucible, fakeNamer, settingsRoutes,
+  infoRoleFields,
 } = require('./fake-crucible');
 const { skipLine } = require('./keeper-skip.js');
 
@@ -189,6 +190,7 @@ function startFake(options) {
           gpu: { vendor: 'nvidia', name: 'fake', vram_bytes: 25757220864 } },
         job_types: ['echo'],
         capabilities: opts.jobTypes.map((jobType) => ({ job_type: jobType, models: [] })),
+        ...infoRoleFields(opts.info && opts.info.role),
         ...opts.info,
       });
       return true;
@@ -214,6 +216,8 @@ function startFake(options) {
         installed: !opts.missing.includes(subject.id),
         installed_bytes: opts.missing.includes(subject.id) ? null : 1024,
         expected_bytes: subject.kind === 'denoise' ? 9126805504 : null,
+        shares_weights_of: null,
+        missing_files: opts.missing.includes(subject.id) ? null : [],
         floors: [],
         license: null,
         source: `hf:fake/${subject.id}`,
@@ -229,6 +233,8 @@ function startFake(options) {
           installed: !opts.missing.includes(id),
           installed_bytes: opts.missing.includes(id) ? null : 1024,
           expected_bytes: 9663676416,
+          shares_weights_of: null,
+          missing_files: opts.missing.includes(id) ? null : [],
           floors: [],
           license: null,
           source: `hf:fake/${id}`,
@@ -244,7 +250,7 @@ function startFake(options) {
       send(res, 200, {
         server: { name: 'fake-crucible', version: '0.6.0', api_version: 1, backend: 'cuda-linux', uptime_s: 10 },
         resident: null, warming: null, claim: null, streaming: null,
-        chat: { in_flight: 0, rows: [] }, lease: null,
+        chat: { in_flight: 0, max_in_flight: null, max_in_flight_basis: null, rows: [] }, lease: null,
         slots: { accelerated: { busy: 0, of: 1, queue_depth: 0, accepts_work: seen.activity >= opts.acceptsWorkAfter } },
         running: [], queued: [],
         /*
@@ -283,6 +289,7 @@ function startFake(options) {
         task_id: 'task-already-running', type: 'module', request: { type: 'module' },
         state: 'running', error: null,
         created: '2026-09-14T11:59:00Z', started: '2026-09-14T11:59:00Z', finished: null,
+        unmet: [], message: null,
       }] });
       return true;
     }
@@ -308,9 +315,9 @@ function startFake(options) {
      *
      * §5.3a puts the classes an engine does not serve on `TaskStatus.unmet`
      * and on NO frame of the stream, so `module-setup.ts` reads the document
-     * once when the stream ends. `taskUnmet: undefined` leaves the field off
-     * the body entirely — a server that predates the field — which the SDK
-     * reads as `[]`; a list puts it there.
+     * once when the stream ends. The server always sends the field
+     * (Crucible's `TaskStatus.to_dict`); `taskUnmet: undefined` is the empty
+     * list and a list puts that list there.
      */
     const document = /^\/v1\/tasks\/([^/]+)$/.exec(route);
     if (document && req.method === 'GET') {
@@ -324,8 +331,9 @@ function startFake(options) {
         task_id: taskId, type: 'module', request: { type: 'module' }, state: 'done', error: null,
         created: '2026-09-14T11:59:00Z', started: '2026-09-14T11:59:00Z',
         finished: '2026-09-14T12:00:00Z',
+        unmet: opts.taskUnmet === undefined ? [] : opts.taskUnmet,
+        message: null,
       };
-      if (opts.taskUnmet !== undefined) body.unmet = opts.taskUnmet;
       send(res, 200, body);
       return true;
     }
@@ -759,7 +767,7 @@ async function main() {
           platform: 'linux', arch: 'x86_64', backend: 'cuda-linux',
           gpu: { vendor: 'nvidia', name: 'fake', vram_bytes: 25757220864 },
         },
-        job_types: ['echo'], capabilities: [], role: 'engine', managed_by: null,
+        job_types: ['echo'], capabilities: [], ...infoRoleFields('engine'),
       });
       return true;
     });
@@ -1064,32 +1072,6 @@ async function main() {
       assert.deepStrictEqual(state.unmet, [{ class: 'clean', reason }],
         'the reason is the row\'s, verbatim — a word of ours makes a fixable thing a mystery');
       assert.strictEqual(fake.seen.posts.length, 0);
-    } finally { await fake.close(); }
-  });
-
-  await check('a document where NO row carries a route reads as local and connects', async () => {
-    /*
-     * INVERTED TWICE, and the history is the point.
-     *
-     * It asserted a routeless document came from a server predating phase 15,
-     * where every class was local; on 2026-09-16 it was inverted to a named
-     * refusal ("we dont need to worry about legacy anything"). Owen, 2026-09-24:
-     * *"dont require any particular crucible server. if it can make the call to
-     * the crucible server then it should work."* Crucible 1.0.25's SDK reads an
-     * absent `route` as `local` — the truth about a server that does not route
-     * (nothing on it can forward work anywhere) — so the connect goes ahead as
-     * it would against any server whose classes run on its own card, and no
-     * refusal names the route.
-     */
-    coordinate.resetCoordinationForTests();
-    const fake = await startFake({ settings: { omitRoute: true } });
-    try {
-      const name = registerFake(fake.url);
-      const state = await coordinate.coordinateServer(name, deps());
-      const said = JSON.stringify(state);
-      assert.ok(state.phase !== 'refused' && state.phase !== 'unreachable',
-        `a routeless document must connect like any all-local server: ${said}`);
-      assert.ok(!/route/i.test(said), `nothing should complain about a route: ${said}`);
     } finally { await fake.close(); }
   });
 

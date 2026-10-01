@@ -584,22 +584,18 @@ export interface CrucibleEngineSettings {
   /** `cuda-linux`, `mlx-darwin`, or `none` in host mode — null where the server did not say. */
   backendKind: string | null;
   /**
-   * `null` = the engine's document states no model assignment at all.
-   *
-   * It was `| null` for two hours on 2026-09-16 ("this server predates model
-   * assignment"), then required when Owen ruled legacy servers out of
-   * existence. Owen's 2026-09-24 ruling reverses the requirement — *"dont
-   * require any particular crucible server. if it can make the call to the
-   * crucible server then it should work"* — and the SDK (1.0.25) reads the
-   * absent maps as null, so this carries that: a server that does not offer
-   * model choices is drawn as offering none, and its settings still work.
+   * The engine's model assignment. Always present: the server sends both
+   * `local_models` and `local_model_choices` on every settings document, and
+   * @crucible/client 1.0.71 reads both as required (Owen reversed the
+   * 2026-09-24 "any Crucible that answers" ruling on 2026-09-27, crucible
+   * fe53356), so a document without them is a protocol refusal, not a `null`.
    *
    * `choices` can still be EMPTY, and that is a different thing: an engine
    * that has not measured its card yet has no candidates to offer and no budget
    * to measure them against. It is answering with nothing, not failing to
    * answer.
    */
-  localModels: CrucibleLocalModels | null;
+  localModels: CrucibleLocalModels;
 }
 
 /**

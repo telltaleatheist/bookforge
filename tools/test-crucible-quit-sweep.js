@@ -106,6 +106,7 @@ function activityBody(state) {
       ...resident,
       held_by: heldByFor(state),
       unclaimed_since: heldByFor(state) === null ? (state.unclaimedSince ?? '2026-09-20T18:00:00Z') : null,
+      engine_exit_code: null,
     },
     stopping: state.stopping ?? null,
     warming: null,
@@ -280,11 +281,11 @@ it('two jobs on two servers are both DELETEd, and a resident nobody holds is unl
   // Each server starts with OUR job on the lane and the voice resident. It
   // leaves the lane once the DELETE has landed — which is what the poll is for.
   scriptA.current = () => (fakeA.state.cancelled.includes('job-a')
-    ? { resident: { kind: 'tts', id: 'mistborn', since: 'x', memory_bytes_estimate: null } }
-    : { resident: { kind: 'tts', id: 'mistborn', since: 'x', memory_bytes_estimate: null }, running: [job({ job_id: 'job-a' })] });
+    ? { resident: { kind: 'tts', id: 'mistborn', since: 'x', memory_bytes_estimate: 12_000_000_000 } }
+    : { resident: { kind: 'tts', id: 'mistborn', since: 'x', memory_bytes_estimate: 12_000_000_000 }, running: [job({ job_id: 'job-a' })] });
   scriptB.current = () => (fakeB.state.cancelled.includes('job-b')
-    ? { resident: { kind: 'llm', id: 'qwen3', since: 'x', memory_bytes_estimate: null } }
-    : { resident: { kind: 'llm', id: 'qwen3', since: 'x', memory_bytes_estimate: null }, running: [job({ job_id: 'job-b', type: 'align', model: 'qwen3' })] });
+    ? { resident: { kind: 'llm', id: 'qwen3', since: 'x', memory_bytes_estimate: 12_000_000_000 } }
+    : { resident: { kind: 'llm', id: 'qwen3', since: 'x', memory_bytes_estimate: 12_000_000_000 }, running: [job({ job_id: 'job-b', type: 'align', model: 'qwen3' })] });
 
   ledger.recordInFlight(entry({ server: nameA, jobId: 'job-a', owns: ['/scratch/ebook-a'] }));
   ledger.recordInFlight(entry({ server: nameB, jobId: 'job-b', jobType: 'align', model: 'qwen3' }));
@@ -327,7 +328,7 @@ it('a resident another client is running against is LEFT ALONE, with one named l
   const name = registerFake(fake.url);
   // Ours goes; a stranger's translate job is still on the card.
   script.current = () => ({
-    resident: { kind: 'llm', id: 'qwen3', since: 'x', memory_bytes_estimate: null },
+    resident: { kind: 'llm', id: 'qwen3', since: 'x', memory_bytes_estimate: 12_000_000_000 },
     running: fake.state.cancelled.includes('job-ours')
       ? [job({ job_id: 'job-theirs', type: 'translate', model: 'qwen3', client: 'foundry crucible-client/1.0.6' })]
       : [job({ job_id: 'job-ours' }), job({ job_id: 'job-theirs', type: 'translate', model: 'qwen3', client: 'foundry crucible-client/1.0.6' })],
@@ -367,7 +368,7 @@ it('a stranded card the sweep will not touch is logged WITH the unheld-since sta
   const fake = await fakeWithActivity(script);
   const name = registerFake(fake.url);
   script.current = () => ({
-    resident: { kind: 'llm', id: 'qwen3', since: 'x', memory_bytes_estimate: null },
+    resident: { kind: 'llm', id: 'qwen3', since: 'x', memory_bytes_estimate: 12_000_000_000 },
     running: fake.state.cancelled.includes('job-ours') ? [] : [job({ job_id: 'job-ours' })],
     // Nothing HOLDS it once ours is gone — but two chats are mid-block on it.
     chatInFlight: fake.state.cancelled.includes('job-ours') ? 2 : 0,
