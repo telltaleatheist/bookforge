@@ -1090,10 +1090,29 @@ async function bridgeSeamChecks() {
   });
 
   await check('Stop cancels the remote job before it tears the local session down', () => {
-    const stop = bridge.slice(bridge.indexOf('export async function stopParallelConversion'));
-    assert.ok(/session\.crucibleCancel/.test(stop.slice(0, 4000)),
-      'stopParallelConversion must call the render\'s cancel handle: there is no process here to '
+    /*
+     * THE WHOLE FUNCTION, COMMENTS STRIPPED, AND THE ORDER — not a character
+     * window. This read the first 4000 characters, and the explanation above
+     * the cancel grew past it (2026-09): the call was still there and the check
+     * failed. A window measures prose; what the name promises is ORDER — the
+     * render's cancel is awaited before any local teardown (worker kill, WSL
+     * wrapper) runs.
+     */
+    const start = bridge.indexOf('export async function stopParallelConversion');
+    assert.ok(start >= 0, 'stopParallelConversion exists');
+    const next = bridge.indexOf('\nexport ', start + 1);
+    const body = bridge.slice(start, next < 0 ? undefined : next)
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/\/\/[^\n]*/g, '');
+    const cancelAt = body.search(/const cancel = session\.crucibleCancel;[\s\S]*?await cancel\(\)/);
+    assert.ok(cancelAt >= 0,
+      'stopParallelConversion must await the render\'s cancel handle: there is no process here to '
       + 'kill, and hanging up leaves that server rendering the rest of the book');
+    const teardowns = ['killProcessTree(', 'killWslWrapper(', 'activeSessions.delete(']
+      .map((t) => body.indexOf(t)).filter((i) => i >= 0);
+    assert.ok(teardowns.length > 0, 'the local teardown is found, so the order can be judged');
+    assert.ok(cancelAt < Math.min(...teardowns),
+      'the remote cancel is awaited BEFORE the local session is torn down');
   });
 
   await check('the seam is on the job, and it is not a boolean toggle', () => {
