@@ -697,8 +697,19 @@ export function clientFor(entry: CrucibleServerEntry, options: ClientOptions = {
     token: entry.token,
     clientName: CRUCIBLE_CLIENT_NAME,
     timeoutMs: options.timeoutMs,
+    queue: CRUCIBLE_QUEUE,
   });
 }
+
+/**
+ * WAIT IN THE SERVER'S LINE, STATED HERE RATHER THAN INHERITED (crucible 1.0.71+,
+ * docs/QUEUE.md). Owen, 2026-09-30: work waits in line when there is a line. The
+ * SDK's helpers queue by default for an hour; this app's only helper jobs are the
+ * model load and unload a placement makes (crucible-dispatch.ts), and a placement
+ * is book work, so it waits as long as the server allows. Each of those jobs is
+ * followed on its own event stream, which is what keeps it alive in the line.
+ */
+const CRUCIBLE_QUEUE = { maxWaitS: 86_400 } as const;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // An orchestrator is not an engine — crucible docs/PHASE17-ORCHESTRATOR.md §6

@@ -30954,7 +30954,7 @@ var init_version = __esm({
     init_engine_import_meta_url();
     init_package();
     VERSION = package_default.version;
-    GIT_COMMIT = "src 9c241a50a715".length > 0 ? "src 9c241a50a715" : null;
+    GIT_COMMIT = "src e940f35a45e0".length > 0 ? "src e940f35a45e0" : null;
   }
 });
 
@@ -35146,17 +35146,25 @@ var init_prose = __esm({
 });
 
 // src/backend/decide-door.ts
+function decideDeadline(concurrencyDeadlineMs) {
+  return concurrencyDeadlineMs + DECIDE_QUEUE_MAX_WAIT_S * 1e3;
+}
+function withQueue(body) {
+  const parsed = JSON.parse(body);
+  return JSON.stringify({ ...parsed, queue: { max_wait_s: DECIDE_QUEUE_MAX_WAIT_S } });
+}
 function decideUrl(endpoint) {
   const base = endpoint.trim().replace(/\/+$/, "").replace(/\/v1$/, "");
   return `${base}/v1/decide`;
 }
 async function askDecide(transport, url, body, caller) {
   const { who, fail, sleep, log: log2 } = caller;
+  const queued = withQueue(body);
   let transportFailures = 0;
   for (; ; ) {
     let response;
     try {
-      response = await transport.post(url, body);
+      response = await transport.post(url, queued);
     } catch (err) {
       transportFailures += 1;
       if (transportFailures > TRANSPORT_RETRIES) {
@@ -35183,6 +35191,14 @@ async function askDecide(transport, url, body, caller) {
       await sleep(seconds * 1e3);
       continue;
     }
+    if (response.status === 409 && code === "removed_from_queue") {
+      const reason = typeof reply.error?.details?.reason === "string" ? reply.error.details.reason : "unknown";
+      if (reason === "expired" || reason === "server_restart") {
+        log2(`${who}: the server let this request go from its line (${reason}) \u2014 asking again`);
+        continue;
+      }
+      throw fail(`${who}: ${url} removed this request from its line (${reason}): ${message}. It was not sent again.`);
+    }
     const problems = Array.isArray(reply.error?.details?.problems) ? reply.error.details.problems.slice(0, 5).map((p) => `${Array.isArray(p.location) ? p.location.join(".") : "?"}: ${String(p.message)}`).join("; ") : "";
     throw fail(
       `${who}: ${url} refused the request (${response.status} ${code}): ${message}` + (problems ? ` \u2014 ${problems}` : "")
@@ -35200,12 +35216,13 @@ async function pool(count, concurrency, job) {
   });
   await Promise.all(lanes);
 }
-var TRANSPORT_RETRIES;
+var TRANSPORT_RETRIES, DECIDE_QUEUE_MAX_WAIT_S;
 var init_decide_door = __esm({
   "src/backend/decide-door.ts"() {
     "use strict";
     init_engine_import_meta_url();
     TRANSPORT_RETRIES = 5;
+    DECIDE_QUEUE_MAX_WAIT_S = 3600;
   }
 });
 
@@ -35466,7 +35483,7 @@ async function loadedContextOf(transport, endpoint, model) {
 async function runAnalyzeRank(opts) {
   const started = Date.now();
   const { log: log2 } = opts;
-  const transport = opts.transport ?? fetchTransport(deadlineForConcurrency(1));
+  const transport = opts.transport ?? fetchTransport(decideDeadline(deadlineForConcurrency(1)));
   const sleep = opts.sleep ?? ((ms) => new Promise((resolve20) => setTimeout(resolve20, ms)));
   const url = decideUrl(opts.endpoint);
   const { sentences, bankSha: bankSha2 } = readProse(opts.bookPath, "analyze", log2);
@@ -73557,7 +73574,7 @@ async function runCleanTriage(opts) {
   const started = Date.now();
   const at = (/* @__PURE__ */ new Date()).toISOString();
   const concurrency = opts.concurrency ?? DEFAULT_TRIAGE_CONCURRENCY;
-  const transport = opts.transport ?? fetchTransport(deadlineForConcurrency(concurrency));
+  const transport = opts.transport ?? fetchTransport(decideDeadline(deadlineForConcurrency(concurrency)));
   const sleep = opts.sleep ?? ((ms) => new Promise((resolve20) => setTimeout(resolve20, ms)));
   const url = decideUrl(opts.endpoint);
   const where = path22.resolve(opts.bookPath);

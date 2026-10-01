@@ -1454,6 +1454,22 @@ async function placeOnCrucible(
           if (event.event === 'warming') say(`Loading ${row.selected} on ${slot.name}${event.data.message === null ? ' (warming)…' : `: ${warmingHeadline(event.data.message)}`}`);
           // A progress frame with no message still says the load is moving.
           else if (event.event === 'progress') say(`Loading ${row.selected} on ${slot.name}${event.data.message === null ? '…' : `: ${event.data.message}`}`);
+          // In the server's own line (crucible docs/QUEUE.md): another client's
+          // work is on the card, and this load waits its turn rather than being
+          // refused.
+          else if (event.event === 'queued') say(`Waiting for ${slot.name}: #${event.data.position}${event.data.of === null ? '' : ` of ${event.data.of}`} in its line`);
+          else if (event.event === 'removed') {
+            /*
+             * TAKEN OUT OF THE LINE WITHOUT RUNNING — never a failure of the model.
+             * `expired` / `server_restart`: nobody removed it, so the placement
+             * waits and asks again. Anything else (`operator`, or a reason a newer
+             * server invents) is a person's decision: refused by name, not re-sent.
+             */
+            const { reason, message } = event.data;
+            return reason === 'expired' || reason === 'server_restart'
+              ? transientWait(`"${slot.name}" let the load of ${row.selected} go from its line (${reason})`)
+              : { verdict: 'refuse', reason: `the load of ${row.selected} was removed from "${slot.name}"'s line (${reason}): ${message}` };
+          }
           else if (event.event === 'done') {
             /*
              * WHICHEVER ACT MADE THE RESIDENCY OURS HANDS US THE LEASE ID. The
@@ -1878,6 +1894,15 @@ export async function releaseAbandonedLoad(
       }
       if (event.event === 'cancelled') {
         console.error(`[slots] cancelled placement: the unload of ${where} was itself cancelled.`);
+        return;
+      }
+      if (event.event === 'removed') {
+        // Waited in the server's line and left it unrun — the model is still
+        // there, so this is NOT "unloaded it".
+        console.error(
+          `[slots] cancelled placement: the unload of ${where} was removed from the server's line `
+          + `(${event.data.reason}) without running; the model may still be resident.`,
+        );
         return;
       }
     }
