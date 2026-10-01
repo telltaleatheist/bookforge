@@ -935,6 +935,7 @@ function settingsRoutes(behaviour) {
         reason: here ? WSL_ONLY_REASON : 'installed',
         shortfall_bytes: 0,
         work: null,
+        context_ceilings: null,
       };
     }
     const local = localModelFor(c);
@@ -948,6 +949,7 @@ function settingsRoutes(behaviour) {
         : (local === null ? 'nothing on this card fits' : local + ' fits'),
       shortfall_bytes: 0,
       work: null,
+      context_ceilings: null,
     };
   };
 
@@ -1290,7 +1292,8 @@ function faultyJobRoutes(behaviour = {}) {
               kind: card.kind || a.residentKind || 'llm',
               id,
               since: card.since || '2026-09-20T01:00:00Z',
-              memory_bytes_estimate: null,
+              // @crucible/client 1.0.71 reads this as a number on a resident row.
+              memory_bytes_estimate: 1_000_000_000,
               /*
                * ── CRUCIBLE 1.0.11: THE CARD SAYS WHEN NOBODY IS COMING BACK ──
                *
@@ -1551,7 +1554,28 @@ function cancelRefusedFault(kind, times = 1) {
   });
 }
 
+/**
+ * THE `/v1/info` FIELDS @crucible/client 1.0.71 READS AS REQUIRED on an engine
+ * (`readRole`, `readPagesEngine`): `role`, `managed_by` and the `pages_engine`
+ * block. A keeper that serves its own info spreads this in, so a fixture states
+ * the 1.0.71 wire and not an older one the SDK no longer reads.
+ */
+const ENGINE_INFO_FIELDS = Object.freeze({
+  role: 'engine',
+  managed_by: null,
+  pages_engine: {
+    engine: null,
+    installed: false,
+    detail: 'no pages engine in this fake',
+    request: {
+      model: 'none', dpi: 200, max_pixels: 0, max_tokens: 0, temperature: 0, prompt: '',
+      dialect: 'none', concurrency: 1, truncated_finish_reason: 'length',
+    },
+  },
+});
+
 module.exports = {
+  ENGINE_INFO_FIELDS,
   REPO, installElectronStub, makeChecker, startFakeCrucible, fakeNamer, provenanceFor,
   refuseRenderParams, renderDoneProvenance,
   crucibleHost, noServerHost, send,

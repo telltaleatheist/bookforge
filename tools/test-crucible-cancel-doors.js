@@ -41,6 +41,7 @@ const path = require('path');
 const {
   REPO, installElectronStub, makeChecker, startFakeCrucible, fakeNamer, provenanceFor,
   refuseRenderParams,
+  ENGINE_INFO_FIELDS,
 } = require('./fake-crucible');
 
 const DIST = path.join(REPO, 'dist', 'electron');
@@ -419,6 +420,7 @@ function startCancellingAlignServer(patienceMs) {
       send(res, 200, {
         server: { name: 'fake-crucible', version: '0.5.0', api_version: 1 },
         host: { platform: 'linux', arch: 'x86_64', backend: 'cuda-linux', gpu: { vendor: 'nvidia', name: 'fake', vram_bytes: 1 } },
+        ...ENGINE_INFO_FIELDS,
         job_types: ['echo', 'asr', 'align', 'align-longform'],
         capabilities: [
           { job_type: 'asr', models: [row('qwen3-asr-1.7b')] },

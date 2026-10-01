@@ -36,6 +36,7 @@ const path = require('path');
 const {
   REPO, installElectronStub, makeChecker, startFakeCrucible, fakeNamer, provenanceFor,
   crucibleHost, noServerHost,
+  ENGINE_INFO_FIELDS,
 } = require('./fake-crucible');
 const { skipLine } = require('./keeper-skip.js');
 
@@ -103,6 +104,7 @@ function startFake(behaviour) {
         server: { name: 'fake-crucible', version: '0.5.0', api_version: 1 },
         host: { platform: behaviour === 'no-align' ? 'darwin' : 'linux', arch: 'arm64',
           backend: behaviour === 'no-align' ? 'mlx-darwin' : 'cuda-linux', gpu: { vendor: 'x', name: 'fake', vram_bytes: 1 } },
+        ...ENGINE_INFO_FIELDS,
         job_types: ['echo'],
         capabilities,
       });
