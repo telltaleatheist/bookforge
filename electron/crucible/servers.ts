@@ -72,6 +72,8 @@ import { app } from 'electron';
 import * as fs from 'fs';
 import * as path from 'path';
 import { CrucibleClient } from '@crucible/client';
+import type { QueueChoice } from '@crucible/client';
+import { CRUCIBLE_CLIENT_QUEUE_DEFAULT } from '../../shared/crucible/server-queue';
 import { announceCrucibleRecordChanged, forgetCrucibleRoutes } from './routes';
 import { engineClientFor, forgetResolvedEngine } from './engine-resolve';
 import { LOCAL_WORK_SET, LONGFORM_ALIGN_SET } from '../../shared/queue/slot-sets';
@@ -632,12 +634,25 @@ export function removeServer(name: string): CrucibleServerListing {
  * requires it: an unnamed client in a shared server's log is an unanswerable
  * question.
  */
-export async function crucibleClientFor(name: string, clientName: string): Promise<CrucibleClient> {
-  return engineClientFor(getServer(name), clientName);
+export async function crucibleClientFor(
+  name: string,
+  clientName: string,
+  /**
+   * Whether this client's high-level helpers wait in the server's line. `false`
+   * unless the door says otherwise — see `shared/crucible/server-queue.ts` for
+   * which doors queue and for how long.
+   */
+  queue: QueueChoice = CRUCIBLE_CLIENT_QUEUE_DEFAULT,
+): Promise<CrucibleClient> {
+  return engineClientFor(getServer(name), clientName, queue);
 }
 
 /** Inspect the registered process itself, including an orchestrator with no engine. */
-export function crucibleAddressClientFor(name: string, clientName: string): CrucibleClient {
+export function crucibleAddressClientFor(
+  name: string,
+  clientName: string,
+  queue: QueueChoice = CRUCIBLE_CLIENT_QUEUE_DEFAULT,
+): CrucibleClient {
   const entry = getServer(name);
-  return new CrucibleClient({ url: entry.url, token: entry.token, clientName });
+  return new CrucibleClient({ url: entry.url, token: entry.token, clientName, queue });
 }

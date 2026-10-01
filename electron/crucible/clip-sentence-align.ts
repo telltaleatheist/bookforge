@@ -279,7 +279,7 @@ export async function runClipSentenceAlign(o: RunClipSentenceAlignOptions): Prom
         inputs, artifactsTo: adir,
         ...(o.signal ? { signal: o.signal } : {}),
         onLog: log,
-        onProgress: (p: CrucibleJobProgress) => progress('align', p.kind === 'warming' ? 0 : p.fraction, p.message),
+        onProgress: (p: CrucibleJobProgress) => progress('align', p.kind === 'progress' ? p.fraction : 0, p.message),
       });
       if (outcome.artifacts.where !== 'disk') throw new Error('crucible align: artifacts were not written to disk');
       const written = outcome.artifacts.files.get('alignment.json');

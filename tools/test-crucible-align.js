@@ -130,7 +130,7 @@ function startFake(behaviour) {
       const entry = state.jobs.get(decodeURIComponent(events[1]));
       const chunks = entry.body.params.chunks;
       const sse = sseWriter(req, res);
-      sse.frame('queued', { position: null });
+      sse.frame('started', { waited_s: 0 });
       sse.frame('warming', { message: 'loaded qwen3-aligner on cuda in 8.2s' });
       chunks.forEach((chunk, n) => {
         sse.frame('progress', {

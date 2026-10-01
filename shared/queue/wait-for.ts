@@ -97,8 +97,23 @@ export type ServerState =
   | { readonly kind: 'unknown' }
   | { readonly kind: 'ready' }
   | { readonly kind: 'unreachable'; readonly detail: string }
-  /** A 409 `server_busy`. A WAIT, never a failure — crucible ARCHITECTURE.md §3. */
-  | { readonly kind: 'busy'; readonly line: string };
+  /**
+   * A 409 `server_busy`. A WAIT, never a failure — crucible ARCHITECTURE.md §3.
+   *
+   * `polled` is present when the busy came from READING the card (`/v1/activity`)
+   * rather than from a refusal a step received. Only a polled busy may be
+   * walked past by a step whose work waits in the server's own line
+   * ({@link WaitForFacts.queuesOnServer}): a refusal this app was handed (a
+   * lease, a chat, a `queue_full`) is a door that actually shut, and its
+   * cool-off is honoured by everyone. `queueDepth` is the server's
+   * `slots.accelerated.queue_depth` (the job on the lane plus every waiting
+   * one), or null where it did not say.
+   */
+  | {
+      readonly kind: 'busy';
+      readonly line: string;
+      readonly polled?: { readonly queueDepth: number | null };
+    };
 
 export interface WaitForFacts {
   /** The row's answer: a server name, `any`, or absent (see `holdNoAnswer`). */
@@ -193,6 +208,19 @@ export interface WaitForFacts {
    * the scheduler stay pure.
    */
   readonly canServe: (server: string) => boolean;
+  /**
+   * THIS STEP'S WORK WAITS IN THE SERVER'S OWN LINE (crucible docs/QUEUE.md,
+   * v1.0.71; `StepModule.queuesOnServer`). Its every GPU submit carries
+   * `queue`, so a card busy with ANOTHER client's work is not a reason to park
+   * the row here: it launches, its job takes a place in that server's FIFO, and
+   * the row reads "waiting, #N of M in <server>'s line" until it reaches the
+   * lane. Only a POLLED busy is walked past (see {@link ServerState}). Absent or
+   * false: the pre-queue behaviour exactly — a busy card parks the row.
+   *
+   * For `any`, a free server still wins; with none free, the SHORTEST line
+   * (`queueDepth`) wins, ties in rank order.
+   */
+  readonly queuesOnServer?: boolean;
 }
 
 export type WaitForVerdict =
@@ -523,6 +551,8 @@ export function decideWaitFor(facts: WaitForFacts): WaitForVerdict {
    * server nobody has asked is the one asked now.
    */
   let firstUnknown: string | null = null;
+  /** For a step that queues on the server: the shortest line among busy cards. */
+  let shortestLine: { server: string; depth: number } | null = null;
   for (const row of capable) {
     // §2.4: "a book set to `any` takes the first server whose GPU slot is free,
     // in rank order". Ours is the slot we can be certain about, so it is asked
@@ -538,13 +568,25 @@ export function decideWaitFor(facts: WaitForFacts): WaitForVerdict {
       if (firstUnknown === null) firstUnknown = row.name;
       continue;
     }
+    if (state.kind === 'busy' && facts.queuesOnServer === true && state.polled !== undefined) {
+      // A line, not a wall. Unstated depth ranks after every stated one (and
+      // among themselves, in rank order): it is not evidence of a short line.
+      const depth = state.polled.queueDepth ?? Number.POSITIVE_INFINITY;
+      if (shortestLine === null || depth < shortestLine.depth) shortestLine = { server: row.name, depth };
+    }
     tried.push(state.kind === 'busy'
       ? `${row.name}: ${state.line}`
       : `${row.name}: ${state.detail}`);
   }
+  /*
+   * AN UNASKED SERVER IS ASKED BEFORE A LINE IS JOINED: it may be free, and a
+   * free card beats any place in a queue. Only with every capable server
+   * answered, none free, does a queueing step take the shortest line.
+   */
   if (firstUnknown !== null) {
     return { kind: 'ask', server: firstUnknown, sentence: asking(firstUnknown) };
   }
+  if (shortestLine !== null) return { kind: 'run', server: shortestLine.server };
   return { kind: 'hold', sentence: holdAnyNoneReachable(tried) };
 }
 
@@ -600,7 +642,11 @@ function forOneServer(
   switch (state.kind) {
     case 'unknown': return { kind: 'ask', server, sentence: asking(server) };
     case 'ready': return { kind: 'run', server };
-    case 'busy': return { kind: 'hold', sentence: holdBusy(server, state.line) };
+    case 'busy':
+      // A step whose work waits in the server's line joins it rather than
+      // parking here (`WaitForFacts.queuesOnServer`) — a polled busy only.
+      if (facts.queuesOnServer === true && state.polled !== undefined) return { kind: 'run', server };
+      return { kind: 'hold', sentence: holdBusy(server, state.line) };
     case 'unreachable':
       return { kind: 'hold', sentence: holdUnreachable(server, state.detail, source) };
   }

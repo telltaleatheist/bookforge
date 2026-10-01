@@ -31,6 +31,9 @@ interface GsCompleteEvent {
   venue?: string;
   /** A Crucible `server_busy`: the holder line. A wait, never a failure. */
   busyLine?: string;
+  /** Transport weather / an operator's removal from a Crucible's line (`waitFieldsOf`). */
+  transientLine?: string;
+  removedLine?: string;
 }
 
 interface GsStepConfig {
@@ -91,6 +94,12 @@ export const generateSentencesStep: StepModule = {
    * pins both halves.
    */
   machines: (): 'local' | 'any' => 'any',
+  /**
+   * ITS GPU WORK WAITS IN THE SERVER'S OWN LINE — the transcription (`crucible/asr.ts` -> `runCrucibleJob`, submitted with `queue`) — so a card busy
+   * with another client's work is joined, not waited out app-side
+   * (`StepModule.queuesOnServer`, crucible docs/QUEUE.md).
+   */
+  queuesOnServer: (): boolean => true,
 
   async run(ctx: StepRunContext): Promise<ArtifactRef> {
     const config = ctx.step.config as unknown as GsStepConfig;
@@ -143,7 +152,8 @@ export const generateSentencesStep: StepModule = {
         // one road that fact travels since 2026-09-19 (A5) — no side call into
         // the engine, and an ordinary failure when no holder was named.
         throw stepFailure(
-          result.error || 'Transcription failed and gave no reason.', result.busyLine);
+          result.error || 'Transcription failed and gave no reason.', result.busyLine,
+          result.transientLine, result.removedLine);
       }
       if (result.warning) ctx.step.completionNotes = [result.warning];
       return {

@@ -105,6 +105,12 @@ export const rvcEnhancementStep: StepModule = {
    * would be a second owner of that question.
    */
   machines: (): 'local' | 'any' => 'any',
+  /**
+   * ITS GPU WORK WAITS IN THE SERVER'S OWN LINE — the conversion (`crucible/job.ts runCrucibleJob`, submitted with `queue`) — so a card busy
+   * with another client's work is joined, not waited out app-side
+   * (`StepModule.queuesOnServer`, crucible docs/QUEUE.md).
+   */
+  queuesOnServer: (): boolean => true,
 
   async run(ctx: StepRunContext): Promise<ArtifactRef> {
     const config = ctx.step.config as unknown as RvcConfig;
@@ -186,7 +192,8 @@ export const rvcEnhancementStep: StepModule = {
         // failure: `stepFailure` parks the row with the holder's line and the
         // admission tick tries again (A5, 2026-09-19).
         throw stepFailure(
-          result.error || 'Voice enhancement failed and gave no reason.', result.busyLine);
+          result.error || 'Voice enhancement failed and gave no reason.', result.busyLine,
+          result.transientLine, result.removedLine);
       }
       return {
         kind: 'sentences',

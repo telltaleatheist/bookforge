@@ -139,7 +139,7 @@ const MAC_PACE = {
 function voiceRow(id, over) {
   return Object.assign({
     id,
-    display: id,
+    display: id, orphan: false,
     kind: 'checkpoint',
     language: 'en',
     narrator_engine: 'higgs-v3',

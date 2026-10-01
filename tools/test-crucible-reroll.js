@@ -85,7 +85,7 @@ const FAKE_PACE = {
  */
 function voiceRow(id, takes = 4, pace = FAKE_PACE) {
   return {
-    id, display: id, kind: 'checkpoint', language: 'en', narrator_engine: 'higgs-v3',
+    id, display: id, orphan: false, kind: 'checkpoint', language: 'en', narrator_engine: 'higgs-v3',
     backend_supported: true, installed: true, resident: false, loadable: true, reason: null,
     revision: 'rev1', fingerprint: `${id}@rev1`, memory_bytes_estimate: 1,
     estimate_basis: 'declared', max_chars: 800, sample_rate: 24000, takes,
@@ -196,7 +196,7 @@ function startFake(behaviour) {
       const j = state.jobs.get(decodeURIComponent(events[1]));
       assert.ok(j, `the fake was asked for events of an unknown job: ${events[1]}`);
       const sse = sseWriter(req, res);
-      sse.frame('queued', { position: null });
+      sse.frame('started', { waited_s: 0 });
       const names = [];
       j.chunks.forEach((chunk, n) => {
         sse.frame('chunk', {

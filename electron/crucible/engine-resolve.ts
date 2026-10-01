@@ -51,7 +51,8 @@
  * It is forgotten on a registry change by {@link forgetResolvedEngine}.
  */
 import { CrucibleClient, CrucibleProtocolError, engineOf } from '@crucible/client';
-import type { EngineRef, ServerInfo } from '@crucible/client';
+import type { EngineRef, QueueChoice, ServerInfo } from '@crucible/client';
+import { CRUCIBLE_CLIENT_QUEUE_DEFAULT } from '../../shared/crucible/server-queue';
 import { noteCrucibleEngineUrl, noteCrucibleRole } from './routes';
 
 /** One registry row, as much of it as resolving needs. */
@@ -214,7 +215,17 @@ function remember(entry: EngineEntry, resolved: ResolvedEngine): void {
  * this module, so a rotation takes effect at once and a cached resolution can
  * never serve an old secret.
  */
-export async function engineClientFor(entry: EngineEntry, clientName: string): Promise<CrucibleClient> {
+export async function engineClientFor(
+  entry: EngineEntry,
+  clientName: string,
+  queue: QueueChoice = CRUCIBLE_CLIENT_QUEUE_DEFAULT,
+): Promise<CrucibleClient> {
   const resolved = await resolveEngine(entry, clientName);
-  return new CrucibleClient({ url: resolved.url, token: entry.token, clientName });
+  /*
+   * `queue` IS STATED, NEVER INHERITED. @crucible/client 1.0.71's helpers queue
+   * by default with the server's hour; BookForge builds every client with
+   * `false` and the doors that wait in a server's line pass their own choice
+   * (`shared/crucible/server-queue.ts`).
+   */
+  return new CrucibleClient({ url: resolved.url, token: entry.token, clientName, queue });
 }

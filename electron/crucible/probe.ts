@@ -56,6 +56,7 @@ import type {
   ServerFacts,
 } from '../../shared/crucible/settings-wire';
 import { crucibleAddressClientFor, crucibleClientFor, getServer, listServers, maskToken, CRUCIBLE_CLIENT_NAME } from './servers';
+import { CRUCIBLE_CLIENT_QUEUE_DEFAULT, CRUCIBLE_INTERACTIVE_QUEUE } from '../../shared/crucible/server-queue';
 import { CrucibleDiscoveryError, discoverCrucible, processDiscoveryHost } from './discovery';
 import { getWslDistro } from '../tool-paths';
 import { readRouting } from './routing';
@@ -215,7 +216,9 @@ export async function probeAddress(url: string, token: string): Promise<Crucible
   }
   let client: CrucibleClient;
   try {
-    client = new CrucibleClient({ url: url.trim(), token: token.trim(), clientName: CRUCIBLE_CLIENT_NAME });
+    client = new CrucibleClient({
+      url: url.trim(), token: token.trim(), clientName: CRUCIBLE_CLIENT_NAME, queue: CRUCIBLE_CLIENT_QUEUE_DEFAULT,
+    });
   } catch (err) {
     return { outcome: 'refused', message: err instanceof Error ? err.message : String(err) };
   }
@@ -448,7 +451,10 @@ export async function loadHiggsVoiceOn(
 ): Promise<{ outcome: 'ok'; loaded: CrucibleVoiceLoaded } | Exclude<CrucibleProbeResult, { outcome: 'ok' }>> {
   let client: CrucibleClient;
   try {
-    client = await crucibleClientFor(name, CRUCIBLE_CLIENT_NAME);
+    // A PERSON PRESSED LOAD AND IS WATCHING `onProgress`, so the load waits in
+    // the server's line with the INTERACTIVE wait (10 min) and reads
+    // "waiting, #N" — `loadVoiceOn` follows the job, which keeps it present.
+    client = await crucibleClientFor(name, CRUCIBLE_CLIENT_NAME, CRUCIBLE_INTERACTIVE_QUEUE);
   } catch (err) {
     return { outcome: 'refused', message: err instanceof Error ? err.message : String(err) };
   }
@@ -566,6 +572,14 @@ async function operate(
 ): Promise<{ outcome: 'ok'; jobId: string } | Exclude<CrucibleProbeResult, { outcome: 'ok' }>> {
   let client: CrucibleClient;
   try {
+    /*
+     * NOT QUEUED, deliberately (`CRUCIBLE_CLIENT_QUEUE_DEFAULT`). Settings'
+     * Load/Unload submit and return the job id; nothing here follows the job,
+     * so a waiting one would have no stream, no GET and no heartbeat and the
+     * server would expire it after 300 s (crucible docs/QUEUE.md "Stay
+     * present") — a place in line nobody can see. A busy server answers
+     * `server_busy` naming the holder, which is the honest answer to a button.
+     */
     client = await crucibleClientFor(name, CRUCIBLE_CLIENT_NAME);
   } catch (err) {
     return { outcome: 'refused', message: err instanceof Error ? err.message : String(err) };

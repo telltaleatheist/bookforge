@@ -964,14 +964,15 @@ async function refreshServer(): Promise<boolean> {
       // call a zero-shot voice anything it likes, and a picker that guessed
       // from the name would hide the clip list on the day it was renamed.
       needsReference: v.needsReference,
-      // VERBATIM, NULLS AND ALL. `pace` is always an object on the wire and
-      // its members are what go null (crucible `voices.py` `Pace.to_dict`), so
-      // there is nothing to guard here — and nothing to substitute either:
+      // VERBATIM, NULLS AND ALL. Since @crucible/client 1.0.71 `pace` itself
+      // may be null ("a pinned voice this host cannot read"); a missing block
+      // is the same news as a block whose members are null — the server stated
+      // no band — so both read as null here, and nothing is substituted:
       // `voice-band.ts` is the one place a null becomes a decision.
       lengths: {
         maxChars: v.maxChars,
-        safeMinChars: v.pace.safeMinChars,
-        safeMaxChars: v.pace.safeMaxChars,
+        safeMinChars: v.pace === null ? null : v.pace.safeMinChars,
+        safeMaxChars: v.pace === null ? null : v.pace.safeMaxChars,
       },
     }));
     voices = voiceRows.map((v) => v.id);

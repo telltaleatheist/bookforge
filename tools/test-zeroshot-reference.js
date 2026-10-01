@@ -303,7 +303,7 @@ function refusal(fn) {
       target_chars: null, safe_min_chars: 400, safe_max_chars: 800,
     };
     const row = (id, kind, needsReference) => ({
-      id, display: id, kind, language: 'en', narrator_engine: 'higgs-v3',
+      id, display: id, orphan: false, kind, language: 'en', narrator_engine: 'higgs-v3',
       backend_supported: true, installed: true, resident: false, loadable: true, reason: null,
       revision: 'abc1234', fingerprint: `${id}@abc1234`, memory_bytes_estimate: 19000000000,
       estimate_basis: 'declared', max_chars: 600, sample_rate: 24000, takes: 1,

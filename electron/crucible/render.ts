@@ -73,6 +73,12 @@ import {
 } from '@crucible/client';
 import type { RenderChunk, RenderResult } from '@crucible/client';
 import { CRUCIBLE_CLIENT_NAME, crucibleClientFor } from './servers';
+import {
+  CRUCIBLE_BATCH_QUEUE,
+  crucibleRemovalDisposition,
+  crucibleRemovedLine,
+} from '../../shared/crucible/server-queue';
+import { queueFullLine, watchQueueWait, type CrucibleQueuePlace } from './queue-wait';
 import { noteInFlightEvent, recordInFlight } from './in-flight-ledger';
 import { artifactOnDiskIn, createArtifactsOwed } from './artifacts-owed';
 import { holdRenderAtSubmit, processDirOfSentencesDir, writeRenderHoldRecord } from './render-holds';
@@ -190,7 +196,16 @@ export class CrucibleRenderRefused extends Error {
   /** The sentence a parked row shows. Present exactly when `transient`. */
   readonly transientLine?: string;
 
-  constructor(code: string, message: string, busyLine?: string, transientLine?: string) {
+  /**
+   * An operator removed this render from the server's line (`removed
+   * {operator}`, crucible docs/QUEUE.md). The row goes back to Pending and is
+   * never resubmitted by itself — `queue-steps/runtime.ts removedLineOf`.
+   */
+  readonly removedLine?: string;
+
+  constructor(
+    code: string, message: string, busyLine?: string, transientLine?: string, removedLine?: string,
+  ) {
     super(`${code}: ${message}`);
     this.name = 'CrucibleRenderRefused';
     this.code = code;
@@ -199,6 +214,7 @@ export class CrucibleRenderRefused extends Error {
       this.transient = true;
       this.transientLine = transientLine;
     }
+    if (removedLine !== undefined) this.removedLine = removedLine;
   }
 }
 
@@ -459,6 +475,14 @@ export function describeCrucibleRefusal(err: unknown, server: string): CrucibleR
       err.leasedLine,
     );
   }
+  // `409 queue_full`: the server's line is full. A wait, like a held card —
+  // `queue-wait.ts queueFullLine`, the same sentence job.ts uses.
+  const full = queueFullLine(err, server);
+  if (full !== null && err instanceof CrucibleRefused) {
+    return new CrucibleRenderRefused(
+      err.code, `${at} would not take this render into its line: ${err.serverMessage}`, full,
+    );
+  }
   if (err instanceof CrucibleRefused) {
     return new CrucibleRenderRefused(
       err.code,
@@ -605,6 +629,13 @@ export interface RunCrucibleRenderOptions {
   readonly onStarted?: (started: { readonly jobId: string; readonly cancel: () => Promise<void> }) => void;
   /** Every progress frame, with the server's fraction. */
   readonly onProgress?: (progress: CrucibleRenderProgress) => void;
+  /**
+   * WAITING IN THE SERVER'S LINE: every `queued` frame and every heartbeat
+   * answer that still places the render in it. `line` is the row's sentence —
+   * "waiting, #2 of 5 in crucible "shift"'s line". The render is submitted
+   * with {@link CRUCIBLE_BATCH_QUEUE}; see `shared/crucible/server-queue.ts`.
+   */
+  readonly onQueued?: (place: CrucibleQueuePlace) => void;
   /** One call per `<index>.flac` that lands on this disk, with its chunk index. */
   readonly onChunkWritten?: (index: number, file: string) => void;
   /** Free-text for the job log. */
@@ -717,7 +748,10 @@ export async function runCrucibleRender(
   // server that is simply not answering yet.
   let client: Awaited<ReturnType<typeof crucibleClientFor>>;
   try {
-    client = await crucibleClientFor(server, CLIENT_NAME);
+    // A BOOK RENDER WAITS IN THE SERVER'S LINE (`client.render` is a helper,
+    // so the client's own choice is what it submits with): a server busy with
+    // another client's work holds this book in its FIFO instead of refusing it.
+    client = await crucibleClientFor(server, CLIENT_NAME, CRUCIBLE_BATCH_QUEUE);
   } catch (err) {
     throw describeCrucibleRefusal(err, server);
   }
@@ -908,6 +942,25 @@ export async function runCrucibleRender(
   };
   options.onStarted?.({ jobId, cancel });
 
+  /*
+   * WAITING IN THE SERVER'S LINE — `queue-wait.ts`. The stall clock's `beat`
+   * is re-handed on every reconnect, so it is read through this cell.
+   */
+  let currentBeat: () => void = () => undefined;
+  const lineWatch = watchQueueWait({
+    server,
+    jobId,
+    client,
+    beat: () => currentBeat(),
+    onPlace: (place) => {
+      log(`crucible "${server}" render ${jobId}: ${place.line}`);
+      options.onQueued?.(place);
+    },
+    onLog: log,
+  });
+  /** The `removed` frame, when the render left the line without running. */
+  let removal: { reason: string; message: string; waitedS: number | null } | null = null;
+
   /**
    * THE DELETE THE STALL CLOCK SENDS, which is NOT the `cancel` handle above.
    *
@@ -985,6 +1038,8 @@ export async function runCrucibleRender(
     },
     onEvent: (event) => {
       beat();
+      lineWatch.seen(event.event, event.data);
+      if (event.event === 'removed') removal = event.data;
       if (event.id > lastEventId) {
         lastEventId = event.id;
         // THE RESUME POINT, ON DISK AS IT MOVES — `job.ts` carries the same
@@ -994,7 +1049,10 @@ export async function runCrucibleRender(
         noteInFlightEvent(server, jobId, lastEventId);
       }
       if (event.event === 'artifact') owed.announced(event.data.name, event.id);
-      if (event.event === 'done' || event.event === 'failed' || event.event === 'cancelled') {
+      if (event.event === 'done' || event.event === 'failed' || event.event === 'cancelled'
+        || event.event === 'removed') {
+        // `removed` IS TERMINAL: the render left the server's line without
+        // running (crucible docs/QUEUE.md). Not a failure — see below.
         sawTerminalFrame = true;
         // The `done` frame's list is the authoritative set: a name in it that
         // produced no `artifact` frame is still a file this side is owed.
@@ -1048,7 +1106,7 @@ export async function runCrucibleRender(
     signal: stopReconnecting.signal,
     ...(options.reconnect?.delaysMs === undefined ? {} : { delaysMs: options.reconnect.delaysMs }),
     onLog: log,
-    attempt: (resumeFrom) => oneStreamRun(resumeFrom, beat),
+    attempt: (resumeFrom) => { currentBeat = beat; return oneStreamRun(resumeFrom, beat); },
   }).finally(() => {
     // THE DIRECTORY HAS STOPPED CHANGING, and `cancel()` above is what waits
     // for it. In the `finally` and not in the success arm because a stream that
@@ -1082,6 +1140,7 @@ export async function runCrucibleRender(
   } catch (err) {
     streamError = err;
   }
+  lineWatch.stop();
   // Whatever ended the stream, what landed is on disk and on the server.
   recordHold();
 
@@ -1149,6 +1208,37 @@ export async function runCrucibleRender(
      * not fire, and the queue tells a stop from a failure by its own
      * `stopRequested` rather than by anything in the error.
      */
+    /*
+     * THE RENDER LEFT THE SERVER'S LINE WITHOUT RUNNING (`removed`, crucible
+     * docs/QUEUE.md) — never a failure, and nothing was rendered. By reason,
+     * through the one table (`crucibleRemovalDisposition`): weather
+     * (`expired`, `server_restart`) parks and is submitted again; our own
+     * cancel (`client`) is the Stop it was; an operator's removal sends the row
+     * to Pending and nothing resubmits it.
+     */
+    const left = removal as { reason: string; message: string; waitedS: number | null } | null;
+    if (err instanceof CrucibleRenderNotDone && err.terminalEvent === 'removed' && left !== null) {
+      const line = crucibleRemovedLine(server, left.reason, left.message);
+      const said = `this render (job ${jobId}) left crucible "${server}"'s line without running `
+        + `(${left.reason}): ${left.message}`;
+      switch (crucibleRemovalDisposition(left.reason)) {
+        case 'weather':
+          throw new CrucibleRenderRefused(`crucible_removed_${left.reason}`, said, undefined, line);
+        case 'ours':
+          // Our own Stop on a waiting render: the cancellation it was.
+          if (cancelled) throw new CrucibleRenderNotDone(jobId, 'cancelled', err.terminalData);
+          // This client name, but not this render's handle: the in-flight
+          // sweep, or another BookForge. Somebody else took it — a wait.
+          throw new CrucibleRenderRefused(
+            'crucible_cancelled_elsewhere', said, undefined,
+            crucibleTransientLine(server, `job ${jobId} was taken out of the line elsewhere`),
+          );
+        case 'operator':
+          throw new CrucibleRenderRefused(
+            `crucible_removed_${left.reason}`, said, undefined, undefined, line,
+          );
+      }
+    }
     if (err instanceof CrucibleRenderNotDone && err.terminalEvent === 'cancelled' && !cancelled) {
       throw new CrucibleRenderRefused(
         'crucible_cancelled_elsewhere',

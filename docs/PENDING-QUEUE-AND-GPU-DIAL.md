@@ -132,6 +132,55 @@ server holds ONE, so the second is refused `409 leased`, by us, naming us.
 slot is open and an item enters the active (and unpaused) queue"* — it does not wait
 for a server. The lease and the GPU slot are asked for only once the chunks exist.
 
+### Crucible's own line — what queues on the server, what still parks (2026-09-30)
+
+Crucible 1.0.71 keeps an opt-in FIFO per server (crucible `docs/QUEUE.md`,
+ARCHITECTURE.md §3.3): a `POST /v1/jobs` carrying `queue: {max_wait_s}` waits in line
+instead of being refused `server_busy` / `leased` / `engine_in_use`. BookForge's ONE
+policy is `shared/crucible/server-queue.ts`:
+
+- **Every `CrucibleClient` is built with `queue: false`.** The SDK's helpers queue by
+  default with the server's hour; nothing here inherits that. A door that wants the
+  line asks by name.
+- **Queue rows' GPU work queues for 24 h** (`CRUCIBLE_BATCH_QUEUE`, the server max):
+  `runCrucibleJob` (align, asr, denoise, RVC, sentence/clip align) and the narration
+  render. 24 h because the app-side park it replaces had no limit; an abandoned job is
+  reclaimed by the server's 300 s presence rule, not by this number.
+- **A person waiting queues for 10 min** (`CRUCIBLE_INTERACTIVE_QUEUE`): Correct
+  Sentences re-rolls, a voice Load (`loadHiggsVoiceOn`), the explicit text-model load
+  (`loadFirst`), and the Reader extension's Load/Unload.
+- **Not queued, unchanged:** leases (and so `reserveBeforeLaunch`), chat/decide (text
+  acts), TTS stream sessions (Listen), and Settings' fire-and-forget Load/Unload model
+  buttons (nothing follows those jobs, so a waiting one would expire unseen). These
+  keep the park path below. Note: while anything waits in a server's line, Crucible
+  refuses a PLAIN submit `server_busy` even with the lane free, so these park then too.
+
+**Admission for a step that queues on the server** (`StepModule.queuesOnServer`:
+`tts-conversion`, `align`, `final-denoise`, `rvc-enhancement`, `generate-sentences`):
+a busy card that the reach poll SAW (`ServerState.busy.polled`) is a line to join, not
+a reason to park — the row takes BookForge's slot for that server, launches, and reads
+**"waiting, #N of M in crucible "X"'s line"** (the `queued` frame, refreshed by a 60 s
+`POST /v1/queue/{id}/heartbeat`, whose answer also beats the 10-minute stall clock).
+An *Any* row still prefers a free server, asks an unasked one before settling, and
+otherwise joins the SHORTEST line (`slots.accelerated.queue_depth`), ties in rank
+order. A busy that arrived as a REFUSAL (`busyHolds` — a lease, a chat, a
+`queue_full`, an older server that does not queue) is still honoured by everyone.
+`409 queue_full` (50 per client / 200 per server) parks the row like a held card.
+The per-book GPU hold (`gpuHoldOf`) and the row lease are unchanged; Crucible lets the
+LEASE HOLDER's queued jobs go first, so a book that holds a lease is not stuck behind
+the line between its own acts.
+
+**`removed` (terminal, never a failure)** — `crucibleRemovalDisposition`:
+
+- `expired`, `server_restart` → weather: the step parks with the sentence
+  (`transientLine`) and is submitted again on the admission tick.
+- `operator` (and any reason a newer server invents) → the row goes back to
+  **Pending** with the server's sentence, its card and lease given up, and is NOT
+  resubmitted (`removedLine`, `settleStep`). It does not idle the queue.
+- `client` → our own cancel (Stop/Remove, the quit and startup sweeps): settles as the
+  cancellation it is. `DELETE` on a waiting job answers `removed`, which the sweeps
+  count as cancelled.
+
 ### A book is atomic on the card
 
 Owen, **2026-09-20**, after watching *Mistborn* finish its render, move to the CPU for

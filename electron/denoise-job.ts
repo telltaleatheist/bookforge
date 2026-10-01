@@ -92,7 +92,7 @@ import type { RunVenue } from './crucible/step-venue';
 import { denoiseSentences, finalDenoiseReady } from './denoise-bridge';
 import { acquireGpu, releaseGpu, warnProceedingWithoutGpu } from './gpu-arbiter';
 // The ONE rule for "did this refusal name a holder" — see queue-steps/runtime.ts.
-import { busyLineOf } from './queue-steps/runtime';
+import { waitFieldsOf } from './queue-steps/runtime';
 import {
   abandonDerivedSentences,
   assertStagingSpace,
@@ -207,6 +207,15 @@ export interface FinalDenoiseResult {
    * hunt 2026-09-19, A5).
    */
   busyLine?: string;
+  /**
+   * The other two "not a failure" answers a Crucible door can give
+   * (`queue-steps/runtime.ts waitFieldsOf`): transport weather, including a
+   * job the server's line let go (`removed {expired|server_restart}`), and a
+   * job an operator removed from the line. Forwarded so the step parks or
+   * returns to Pending instead of failing.
+   */
+  transientLine?: string;
+  removedLine?: string;
 }
 
 const activeAborts = new Map<string, AbortController>();
@@ -526,8 +535,7 @@ export async function runFinalDenoise(
     sendProgress(mainWindow, jobId, { phase: 'error', percentage: 0, error, message: error });
     // The holder's line, carried rather than flattened into `error` — see the
     // field's own note. One rule reads it, for every door in the app.
-    const busyLine = busyLineOf(err);
-    return { success: false, error, wasStopped, ...(busyLine === undefined ? {} : { busyLine }) };
+    return { success: false, error, wasStopped, ...waitFieldsOf(err) };
   } finally {
     releaseGpu(gpuOwner);
   }

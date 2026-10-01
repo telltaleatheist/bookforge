@@ -265,7 +265,11 @@ export async function downloadRenderArtifacts(
         recordCrucibleChunkGuard(renderId, data);
         continue;
       }
-      if (event.event === 'done' || event.event === 'failed' || event.event === 'cancelled') {
+      if (event.event === 'done' || event.event === 'failed' || event.event === 'cancelled'
+        || event.event === 'removed') {
+        // `removed` is terminal too (crucible docs/QUEUE.md): the job left the
+        // server's line without running. The caller reads it off
+        // `CrucibleRenderNotDone.terminalEvent` — it is not a failure.
         terminal = event;
         /*
          * THE IN-FLIGHT LEDGER IS NOT TOUCHED HERE (PK15, 2026-09-20).

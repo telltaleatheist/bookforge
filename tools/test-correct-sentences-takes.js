@@ -81,7 +81,7 @@ const FAKE_PACE = {
 /** One `GET /v1/voices` row, with the ladder length the check is about. */
 function voiceRow(id, takes) {
   return {
-    id, display: id, kind: 'checkpoint', language: 'en', narrator_engine: 'higgs-v3',
+    id, display: id, orphan: false, kind: 'checkpoint', language: 'en', narrator_engine: 'higgs-v3',
     backend_supported: true, installed: true, resident: false, loadable: true, reason: null,
     revision: 'rev1', fingerprint: `${id}@rev1`, memory_bytes_estimate: 1,
     estimate_basis: 'declared', max_chars: 800, sample_rate: 24000, takes,

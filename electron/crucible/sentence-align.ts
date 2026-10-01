@@ -194,7 +194,7 @@ export async function transcribe(o: TranscribeOptions, scratch: string, model: s
     ...(o.signal ? { signal: o.signal } : {}),
     onLog: log,
     onProgress: (p: CrucibleJobProgress) => o.onProgress?.({
-      stage: 'transcribe', fraction: p.kind === 'warming' ? 0 : p.fraction, message: p.message,
+      stage: 'transcribe', fraction: p.kind === 'progress' ? p.fraction : 0, message: p.message,
     }),
   });
   if (outcome.artifacts.where !== 'disk') throw new Error('crucible asr: artifacts were not written to disk');
@@ -492,7 +492,7 @@ export async function runSentenceAlign(o: RunSentenceAlignOptions): Promise<Sent
         artifactsTo: adir,
         ...(o.signal ? { signal: o.signal } : {}),
         onLog: log,
-        onProgress: (p: CrucibleJobProgress) => progress('align', p.kind === 'warming' ? 0 : p.fraction, p.message),
+        onProgress: (p: CrucibleJobProgress) => progress('align', p.kind === 'progress' ? p.fraction : 0, p.message),
       });
       if (outcome.artifacts.where !== 'disk') throw new Error('crucible align: artifacts were not written to disk');
       const written = outcome.artifacts.files.get('alignment.json');

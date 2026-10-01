@@ -104,9 +104,17 @@ import type {
   DoneData,
   JobEvent,
   JobInput,
+  QueueChoice,
+  RemovedData,
   ServerInfo,
   WrittenArtifact,
 } from '@crucible/client';
+import {
+  CRUCIBLE_BATCH_QUEUE,
+  crucibleRemovalDisposition,
+  crucibleRemovedLine,
+} from '../../shared/crucible/server-queue';
+import { queueFullLine, watchQueueWait } from './queue-wait';
 import { CRUCIBLE_CLIENT_NAME, crucibleClientFor } from './servers';
 import { noteInFlightEvent, recordInFlight } from './in-flight-ledger';
 import { artifactOnDiskIn, createArtifactsOwed } from './artifacts-owed';
@@ -170,6 +178,13 @@ export class CrucibleJobRefused extends Error {
   readonly transient?: boolean;
   /** The sentence a parked row shows. Present exactly when `transient`. */
   readonly transientLine?: string;
+  /**
+   * AN OPERATOR TOOK THIS JOB OUT OF THE SERVER'S LINE (`removed {operator}`,
+   * crucible docs/QUEUE.md). Not a failure and not weather: a person decided,
+   * so `settleStep` sends the row back to Pending with this sentence and
+   * nothing resubmits it (`queue-steps/runtime.ts removedLineOf`).
+   */
+  readonly removedLine?: string;
 
   constructor(
     code: string,
@@ -177,6 +192,7 @@ export class CrucibleJobRefused extends Error {
     message: string,
     busyLine?: string,
     transientLine?: string,
+    removedLine?: string,
   ) {
     super(`${code}: ${message}`);
     this.name = 'CrucibleJobRefused';
@@ -187,6 +203,53 @@ export class CrucibleJobRefused extends Error {
       this.transient = true;
       this.transientLine = transientLine;
     }
+    if (removedLine !== undefined) this.removedLine = removedLine;
+  }
+}
+
+/**
+ * A `removed` terminal frame, as the error this door throws — by its reason,
+ * through the one table (`crucibleRemovalDisposition`):
+ *
+ *  - weather (`expired`, `server_restart`) → a TRANSIENT refusal: the row parks
+ *    with the sentence and the admission tick submits it again;
+ *  - ours (`client`) → {@link CrucibleJobCancelled}, the same ending a
+ *    `cancelled` frame after a Stop has;
+ *  - operator (and any reason a newer server invents) → `removedLine`: the row
+ *    goes back to Pending and nothing resubmits it.
+ *
+ * `removed` is never a {@link CrucibleJobFailed}: the job never ran.
+ */
+export function crucibleRemovalError(
+  server: string, jobId: string, verb: string, removal: RemovedData, cancelAsked: boolean,
+): Error {
+  const line = crucibleRemovedLine(server, removal.reason, removal.message);
+  const waited = removal.waitedS === null ? '' : ` after waiting ${Math.round(removal.waitedS)} s`;
+  const code = `crucible_removed_${removal.reason}`;
+  switch (crucibleRemovalDisposition(removal.reason)) {
+    case 'weather':
+      return new CrucibleJobRefused(
+        code, server, `${verb} (${jobId}) left crucible "${server}"'s line without running${waited}: `
+        + `${removal.message}`,
+        undefined,
+        line,
+      );
+    case 'ours':
+      return new CrucibleJobCancelled(
+        server, jobId,
+        cancelAsked
+          ? `crucible "${server}" job ${jobId} was taken out of the line at this side's request`
+          : `crucible "${server}" job ${jobId} was taken out of the line by this app's client name `
+            + `elsewhere${waited}: ${removal.message}`,
+      );
+    case 'operator':
+      return new CrucibleJobRefused(
+        code, server, `${verb} (${jobId}) was removed from crucible "${server}"'s line${waited}: `
+        + `${removal.message}`,
+        undefined,
+        undefined,
+        line,
+      );
   }
 }
 
@@ -291,6 +354,18 @@ export function describeCrucibleJobRefusal(err: unknown, server: string, verb: s
       + `(lease ${err.leaseId}, since ${err.since}). Nothing here waits for it or runs the work `
       + 'somewhere else.',
       err.leasedLine,
+    );
+  }
+  /*
+   * `409 queue_full` IS A WAIT (crucible docs/QUEUE.md): the server's line has
+   * 50 of this client's jobs, or 200 in all. Nobody misconfigured anything and
+   * the line drains by itself, so the row parks on the sentence like a held
+   * card — asked before the generic arm, which would fail it.
+   */
+  const full = queueFullLine(err, server);
+  if (full !== null && err instanceof CrucibleRefused) {
+    return new CrucibleJobRefused(
+      err.code, server, `${at} would not take ${verb} into its line: ${err.serverMessage}`, full,
     );
   }
   if (err instanceof CrucibleRefused) {
@@ -500,7 +575,18 @@ export type CrucibleJobProgress =
       readonly message: string;
       readonly extra: Readonly<Record<string, unknown>>;
     }
-  | { readonly kind: 'warming'; readonly message: string };
+  | { readonly kind: 'warming'; readonly message: string }
+  /**
+   * WAITING IN THE SERVER'S LINE (a `queued` frame, or a heartbeat answer):
+   * `message` is the row's sentence — "waiting, #2 of 5 in crucible "shift"'s
+   * line". Like `warming`, nothing has run yet, so a bar reads it as 0.
+   */
+  | {
+      readonly kind: 'queued';
+      readonly message: string;
+      readonly position: number;
+      readonly of: number | null;
+    };
 
 export interface RunCrucibleJobOptions {
   /** Names an entry in `<userData>/crucible-servers.json`, or the reserved `local`. Never a URL. */
@@ -511,6 +597,15 @@ export interface RunCrucibleJobOptions {
   readonly model?: string;
   /** The job type's own params, verbatim. */
   readonly params: Readonly<Record<string, unknown>>;
+  /**
+   * WAIT IN THE SERVER'S LINE WHILE IT IS BUSY. Default
+   * {@link CRUCIBLE_BATCH_QUEUE} (24 h): every caller of this door today is a
+   * queue row's GPU work, which waited app-side with no limit before the
+   * server queue existed (`shared/crucible/server-queue.ts` says why the
+   * number). `false` submits plainly and a busy server refuses `server_busy`
+   * as it always did.
+   */
+  readonly queue?: QueueChoice;
   /**
    * Named inputs: `<name on the server>` → a local file path or bytes. Every
    * one is uploaded before the submit and named as a blob. A path that does not
@@ -682,6 +777,7 @@ export async function runCrucibleJob(options: RunCrucibleJobOptions): Promise<Cr
         ...(options.model === undefined ? {} : { model: options.model }),
         params: options.params,
         inputs,
+        queue: options.queue ?? CRUCIBLE_BATCH_QUEUE,
       });
     } catch (err) {
       throw describeCrucibleJobRefusal(err, server, verb);
@@ -764,6 +860,24 @@ export async function runCrucibleJob(options: RunCrucibleJobOptions): Promise<Cr
   if (options.signal?.aborted) onAbort();
   options.onStarted?.({ jobId, cancel });
 
+  /*
+   * WAITING IN THE SERVER'S LINE. The stall clock's `beat` is re-handed on
+   * every reconnect, so the watch reads it through this cell rather than
+   * capturing one. See `queue-wait.ts`.
+   */
+  let currentBeat: () => void = () => undefined;
+  const lineWatch = watchQueueWait({
+    server,
+    jobId,
+    client,
+    beat: () => currentBeat(),
+    onPlace: (place) => {
+      log(`crucible "${server}" job ${jobId}: ${place.line}`);
+      options.onProgress?.({ kind: 'queued', message: place.line, position: place.position, of: place.of });
+    },
+    onLog: log,
+  });
+
   let terminal: JobEvent | null = null;
   const files = new Map<string, WrittenArtifact>();
   /**
@@ -794,6 +908,9 @@ export async function runCrucibleJob(options: RunCrucibleJobOptions): Promise<Cr
       noteInFlightEvent(server, jobId, lastEventId);
     }
     options.onEvent?.(event);
+    // `queued` / `started` move the line watch; every frame that means the job
+    // is on the lane, or over, ends it.
+    lineWatch.seen(event.event, event.data);
     /*
      * A FRAME MAY STATE LESS THAN IT USED TO. Crucible 1.0.25 reads an absent
      * informational field as null (Owen, 2026-09-24: any Crucible that answers
@@ -821,7 +938,10 @@ export async function runCrucibleJob(options: RunCrucibleJobOptions): Promise<Cr
       }
     } else if (event.event === 'artifact') {
       owed.announced(event.data.name, event.id);
-    } else if (event.event === 'done' || event.event === 'failed' || event.event === 'cancelled') {
+    } else if (event.event === 'done' || event.event === 'failed' || event.event === 'cancelled'
+      || event.event === 'removed') {
+      // `removed` IS TERMINAL (crucible docs/QUEUE.md): the job left the line
+      // without running. Not a failure — see `crucibleRemovalError`.
       terminal = event;
       // The `done` frame's list is the authoritative set: a name in it that
       // produced no `artifact` frame is still a file this side is owed.
@@ -845,6 +965,7 @@ export async function runCrucibleJob(options: RunCrucibleJobOptions): Promise<Cr
    * attach or a reconnect.
    */
   const followTheStream = async (resumeFrom: number, beat: () => void): Promise<void> => {
+    currentBeat = beat;
     const resume = resumeFrom > 0 ? { lastEventId: resumeFrom } : {};
     if (options.artifactsTo !== undefined) {
       for await (const write of client.writeArtifactsTo(jobId, options.artifactsTo, resume)) {
@@ -907,6 +1028,7 @@ export async function runCrucibleJob(options: RunCrucibleJobOptions): Promise<Cr
     streamError = err;
   } finally {
     options.signal?.removeEventListener('abort', onAbort);
+    lineWatch.stop();
   }
 
   /*
@@ -1009,6 +1131,11 @@ export async function runCrucibleJob(options: RunCrucibleJobOptions): Promise<Cr
   }
   if (ended.event === 'failed') {
     throw new CrucibleJobFailed(server, jobId, ended.data.error.code, ended.data.error.message);
+  }
+  if (ended.event === 'removed') {
+    log(`crucible "${server}" job ${jobId} was removed from the line (${ended.data.reason}): `
+      + `${ended.data.message}`);
+    throw crucibleRemovalError(server, jobId, verb, ended.data, cancelAsked);
   }
   if (ended.event !== 'done') {
     throw new CrucibleJobRefused(

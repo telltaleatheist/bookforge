@@ -466,7 +466,7 @@ it('runCrucibleJob records the job at submit and forgets it at the terminal fram
       // matters.
       duringTheJob = ledger.readInFlightLedger();
       const sse = sseWriter(req, res);
-      sse.frame('queued', { position: null });
+      sse.frame('started', { waited_s: 0 });
       sse.frame('done', { artifacts: [] });
       sse.end();
       return true;

@@ -38,6 +38,7 @@
  */
 
 import { CruciblePairingError, CrucibleClient, parsePairing } from '@crucible/client';
+import { CRUCIBLE_INTERACTIVE_QUEUE } from '../../shared/crucible/server-queue';
 
 /** What this extension calls itself in a server's log. */
 export const CLIENT_NAME = 'bookforge-reader';
@@ -209,9 +210,25 @@ export async function selectedServer(): Promise<ServerEntry | null> {
   return registry.servers.find((s) => s.name === registry.selected) ?? null;
 }
 
-/** A client bound to one registered server, named so its log says who called. */
+/**
+ * A client bound to one registered server, named so its log says who called.
+ *
+ * ITS JOBS WAIT IN THE SERVER'S LINE, FOR TEN MINUTES (crucible docs/QUEUE.md,
+ * v1.0.71; `shared/crucible/server-queue.ts CRUCIBLE_INTERACTIVE_QUEUE`). The
+ * only jobs this extension submits are Load and Unload of a voice, and both are
+ * a person at the player: pressed while an image job or a book holds the card,
+ * they read "waiting, #N of M" instead of a refusal. This extension has no
+ * cancel for a load, so a wait nobody watches any more ends on the server's
+ * terms: the ten-minute cap, or five minutes after the page that followed it
+ * closed (crucible's presence rule). Ten minutes and not the hour default,
+ * because a person who walked away should not keep a place in somebody's
+ * line. Stated here, never inherited from the SDK's default.
+ * Stream sessions are not jobs and are not queued by the server at all.
+ */
 export function clientFor(entry: ServerEntry): CrucibleClient {
-  return new CrucibleClient({ url: entry.url, token: entry.token, clientName: CLIENT_NAME });
+  return new CrucibleClient({
+    url: entry.url, token: entry.token, clientName: CLIENT_NAME, queue: CRUCIBLE_INTERACTIVE_QUEUE,
+  });
 }
 
 /**

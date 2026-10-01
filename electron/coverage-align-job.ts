@@ -258,6 +258,8 @@ export interface CoverageAlignResult {
   transient?: boolean;
   /** The sentence a parked row shows. Present exactly when `transient`. */
   transientLine?: string;
+  /** An operator removed the job from the server's line (`queue-steps/runtime.ts removedLineOf`). */
+  removedLine?: string;
   /**
    * On a Crucible run: where the model's items landed (`<processDir>/alignment.json`)
    * — present even when `success` is false for the owed narrator door, because
@@ -911,6 +913,9 @@ async function runCoverageAlignOnCrucible(
           ...(err.transientLine === undefined
             ? {}
             : { transient: true, transientLine: err.transientLine }),
+          // AN OPERATOR TOOK THE JOB OUT OF THE SERVER'S LINE (`removed
+          // {operator}`): the row goes back to Pending, never resubmitted.
+          ...(err.removedLine === undefined ? {} : { removedLine: err.removedLine }),
         });
     }
     if (err instanceof CrucibleAlignRefused) {

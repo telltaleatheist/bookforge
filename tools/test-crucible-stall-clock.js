@@ -84,7 +84,7 @@ function startSilentFake({ frames = 2, endOnCancel = false } = {}) {
     const events = /^\/v1\/jobs\/([^/]+)\/events$/.exec(url.pathname);
     if (events && req.method === 'GET') {
       const sse = sseWriter(req, res);
-      sse.frame('queued', { position: null });
+      sse.frame('started', { waited_s: 0 });
       for (let n = 1; n < frames; n += 1) {
         sse.frame('progress', {
           fraction: n / 100, message: `chunk ${n}`, stage: 'rendering', processed: n, total: 100,

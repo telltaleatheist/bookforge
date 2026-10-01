@@ -93,6 +93,12 @@ export const finalDenoiseStep: StepModule = {
    * owner of that question.
    */
   machines: (): 'local' | 'any' => 'any',
+  /**
+   * ITS GPU WORK WAITS IN THE SERVER'S OWN LINE — each block (`crucible/job.ts runCrucibleJob`, submitted with `queue`; the pass's lease is opportunistic and non-fatal, and while it is open this app's waiting blocks go first) — so a card busy
+   * with another client's work is joined, not waited out app-side
+   * (`StepModule.queuesOnServer`, crucible docs/QUEUE.md).
+   */
+  queuesOnServer: (): boolean => true,
 
   async run(ctx: StepRunContext): Promise<ArtifactRef> {
     const config = (ctx.step.config ?? {}) as unknown as FinalDenoiseStepConfig;
@@ -166,7 +172,8 @@ export const finalDenoiseStep: StepModule = {
         // `stepFailure` parks the row with the holder's line and the admission
         // tick tries again (A5, 2026-09-19).
         throw stepFailure(
-          result.error || 'The denoise pass failed and gave no reason.', result.busyLine);
+          result.error || 'The denoise pass failed and gave no reason.', result.busyLine,
+          result.transientLine, result.removedLine);
       }
       return {
         kind: 'sentences',

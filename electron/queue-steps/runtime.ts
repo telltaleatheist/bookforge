@@ -271,8 +271,59 @@ export function transientLineOf(err: unknown): string | undefined {
   return said(spelt.transientLine) ?? said(spelt.message);
 }
 
-export function stepFailure(message: string, busyLine?: string, transientLine?: string): Error {
+/**
+ * A PERSON TOOK THIS STEP'S JOB OUT OF A CRUCIBLE'S LINE — the third outcome a
+ * server-side queue added (crucible docs/QUEUE.md, `removed {operator}`), and
+ * neither of the two waits above.
+ *
+ * Not a failure (the job never ran and nothing is wrong with the book) and not
+ * weather (nobody re-asks on a timer): somebody decided. `settleStep` sends the
+ * row back to Pending with this sentence and NOTHING resubmits it — Send to
+ * queue is the person's gesture to run it again. The weather reasons
+ * (`expired`, `server_restart`) never reach here; they are `transientLine`
+ * refusals and park like any other transport fault.
+ *
+ * Duck-typed like its siblings: `CrucibleJobRefused` and
+ * `CrucibleRenderRefused` set it, and a result-returning door forwards it with
+ * {@link waitFieldsOf}.
+ */
+export function removedLineOf(err: unknown): string | undefined {
+  if (err === null || typeof err !== 'object') return undefined;
+  const value = (err as { removedLine?: unknown }).removedLine;
+  return typeof value === 'string' && value !== '' ? value : undefined;
+}
+
+/**
+ * EVERY "THIS IS NOT A FAILURE" FIELD A THROWN REFUSAL CARRIES, as a spreadable
+ * object — for the doors that answer with a RESULT rather than throwing
+ * (`denoise-job`, `rvc-job`, the render bridge), so they forward all three and
+ * not only the one they were written for. Read back by {@link stepFailure}.
+ */
+export function waitFieldsOf(err: unknown): {
+  busyLine?: string;
+  transientLine?: string;
+  removedLine?: string;
+} {
+  const busyLine = busyLineOf(err);
+  const transientLine = transientLineOf(err);
+  const removedLine = removedLineOf(err);
+  return {
+    ...(busyLine === undefined ? {} : { busyLine }),
+    ...(transientLine === undefined ? {} : { transientLine }),
+    ...(removedLine === undefined ? {} : { removedLine }),
+  };
+}
+
+export function stepFailure(
+  message: string,
+  busyLine?: string,
+  transientLine?: string,
+  removedLine?: string,
+): Error {
   if (busyLine !== undefined && busyLine !== '') return new StepParked(message, busyLine);
+  if (removedLine !== undefined && removedLine !== '') {
+    return Object.assign(new Error(message), { removedLine });
+  }
   /*
    * A RESULT that carries the transient pair (`CoverageAlignResult` does — the
    * align door returns a result rather than throwing) has to become an ERROR

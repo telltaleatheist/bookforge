@@ -70,6 +70,10 @@ interface TtsCompleteEvent {
    * the row WAIT with that sentence on it rather than fail.
    */
   busyLine?: string;
+  /** Transport weather, incl. a render the server's line let go (`ConversionSession.crucibleTransientLine`). */
+  transientLine?: string;
+  /** An operator removed the render from the server's line (`ConversionSession.crucibleRemovedLine`). */
+  removedLine?: string;
   analytics?: unknown;
   rvcAnalytics?: unknown;
   wasStopped?: boolean;
@@ -302,6 +306,12 @@ export const ttsConversionStep: StepModule = {
    * that question.
    */
   machines: () => 'any',
+  /**
+   * ITS GPU WORK WAITS IN THE SERVER'S OWN LINE — the render (`crucible/render.ts`, one `tts` job submitted with `queue`) — so a card busy
+   * with another client's work is joined, not waited out app-side
+   * (`StepModule.queuesOnServer`, crucible docs/QUEUE.md).
+   */
+  queuesOnServer: (): boolean => true,
   // The rendered sentences survive a stop, and a resume skips them. That is the
   // whole reason a stopped narration must land HELD rather than cancelled.
   stopIsResumable: true,
@@ -639,7 +649,10 @@ export const ttsConversionStep: StepModule = {
         // A 409 is a WAIT: `stepFailure` mints the refusal that parks this row
         // when the server named a holder, and an ordinary failure when it did
         // not. One road, and the module remembers no side call (A5, 2026-09-19).
-        throw stepFailure(result.error || 'Narration failed and gave no reason.', result.busyLine);
+        throw stepFailure(
+          result.error || 'Narration failed and gave no reason.',
+          result.busyLine, result.transientLine, result.removedLine,
+        );
       }
 
       /*

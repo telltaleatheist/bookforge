@@ -134,7 +134,7 @@ const FAKE_PACE = {
 function voiceRow(id, over) {
   return Object.assign({
     id,
-    display: id,
+    display: id, orphan: false,
     kind: 'checkpoint',
     language: 'en',
     narrator_engine: 'higgs-v3',
@@ -333,7 +333,7 @@ function startFakeCrucible(behaviour, rows) {
         : behaviour === 'restarts' ? 0
         : null;
       const total = job.chunks.length;
-      frame('queued', { position: null });
+      frame('started', { waited_s: 0 });
       frame('progress', {
         fraction: 0, message: `rendering ${total} chunk(s) at take 0`,
         rendered: 0, failed: 0, total,

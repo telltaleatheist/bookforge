@@ -376,17 +376,15 @@ async function leaseRequest(
     /*
      * THE SIX FIELDS `Lease.to_dict()` SENDS, READ AS THE SDK READS THEM.
      *
-     * Since Crucible 1.0.25 the SDK's `CrucibleLeased` carries every one as
-     * `string | null`: a server that did not send a field has said nothing
-     * about it, and null is "it did not say" — never a guess and never `''`.
-     * Owen, 2026-09-24: *"dont require any particular crucible server. if it
-     * can make the call to the crucible server then it should work."* It used
-     * to be a {@link CrucibleProtocolError} to leave one out; a refusal that
-     * names fewer facts is still the refusal the door needs (it WAITS on
-     * `leased` either way), and a door that shows the holder renders a null
-     * as unknown. A field that is PRESENT with the wrong type is still a
-     * protocol error: that is a server this client cannot read, not one that
-     * said less.
+     * From 1.0.25 to 1.0.38 the SDK carried every one as `string | null`;
+     * @crucible/client 1.0.71 reads them as its own `readLeased` does (client.js,
+     * `str` / `nullableStr`): five are REQUIRED strings and only `client` (the
+     * holder) may be null. This parser follows the library it is built against
+     * rather than keeping a second, laxer reading of the same refusal: a 409
+     * `leased` that leaves out `lease_id`, `kind`, `act`, `since` or
+     * `expires_at` is a {@link CrucibleProtocolError} here exactly as it is in
+     * the SDK. Every Crucible server since leases existed sends all six
+     * (crucible/leases.py Lease.to_dict).
      */
     const held = (details ?? {}) as Record<string, unknown>;
     const said = (key: string): string | null => {
@@ -401,13 +399,23 @@ async function leaseRequest(
       }
       return value;
     };
+    const must = (key: string): string => {
+      const value = said(key);
+      if (value === null) {
+        throw new CrucibleProtocolError(
+          `a 409 leased from ${where.url} leaves "${key}" out of error.details; `
+          + '@crucible/client 1.0.71 requires it (crucible/leases.py Lease.to_dict sends it).',
+        );
+      }
+      return value;
+    };
     throw new CrucibleLeased(409, code, message, details, {
-      leaseId: said('lease_id'),
-      kind: said('kind'),
+      leaseId: must('lease_id'),
+      kind: must('kind'),
       holder: said('client'),
-      act: said('act'),
-      since: said('since'),
-      expiresAt: said('expires_at'),
+      act: must('act'),
+      since: must('since'),
+      expiresAt: must('expires_at'),
     });
   }
   throw new CrucibleRefused(response.status, code, message, details);

@@ -3499,6 +3499,16 @@ interface ConversionSession {
    */
   crucibleBusyLine?: string;
   /**
+   * THE OTHER TWO "NOT A FAILURE" ANSWERS a Crucible render can end with, kept
+   * beside {@link crucibleBusyLine} for the same reason and carried out on the
+   * completion event the same way (`queue-steps/runtime.ts waitFieldsOf`):
+   * transport weather — including a render the server's line let go,
+   * `removed {expired|server_restart}` — parks the row and submits again; an
+   * operator's `removed {operator}` sends the row back to Pending.
+   */
+  crucibleTransientLine?: string;
+  crucibleRemovedLine?: string;
+  /**
    * WHERE THIS SESSION'S GENERATION STEP RUNS — decided once, before prep, and
    * carried here so every later question ("does this session live in the WSL
    * guest?", "is there a guest worker to tear down?", "must the session be
@@ -5136,6 +5146,13 @@ function startCrucibleGeneration(session: ConversionSession, server: string): vo
             });
           }
         },
+        onQueued: (place) => {
+          // WAITING IN THE SERVER'S LINE (crucible docs/QUEUE.md): the row
+          // reads "waiting, #2 of 5 in crucible "shift"'s line" until the
+          // render reaches the lane.
+          session.stageDetail = place.line;
+          emitProgress(session);
+        },
         onProgress: (progress) => {
           // THE SERVER'S OWN FRACTION drives the stage line. The chunk tally
           // below drives the bar and the ETA, because those are counted in
@@ -5200,10 +5217,11 @@ function startCrucibleGeneration(session: ConversionSession, server: string): vo
        * loop here would be an invisible second queue with a policy nobody
        * chose.
        */
-      const { CrucibleRenderRefused } = await import('./crucible/render.js');
-      if (err instanceof CrucibleRenderRefused && err.busyLine !== undefined) {
-        session.crucibleBusyLine = err.busyLine;
-      }
+      const { waitFieldsOf } = await import('./queue-steps/runtime.js');
+      const waits = waitFieldsOf(err);
+      if (waits.busyLine !== undefined) session.crucibleBusyLine = waits.busyLine;
+      else if (waits.transientLine !== undefined) session.crucibleTransientLine = waits.transientLine;
+      else if (waits.removedLine !== undefined) session.crucibleRemovedLine = waits.removedLine;
       const detail = err instanceof Error ? err.message : String(err);
       await logger.log('ERROR', jobId, `Crucible render failed: ${detail}`).catch(() => {});
       writeWorkerLog(`[CRUCIBLE] FAILED: ${detail}`);
@@ -7641,6 +7659,13 @@ function emitComplete(
     ...(session.crucibleBusyLine === undefined
       ? {}
       : { busyLine: session.crucibleBusyLine }),
+    // And the other two non-failures, the same way (`crucibleTransientLine`).
+    ...(session.crucibleTransientLine === undefined
+      ? {}
+      : { transientLine: session.crucibleTransientLine }),
+    ...(session.crucibleRemovedLine === undefined
+      ? {}
+      : { removedLine: session.crucibleRemovedLine }),
     // Present only when an RVC enhancement pass ran; persisted as a separate
     // 'rvc' analytics entry by the renderer.
     rvcAnalytics: session.rvcAnalytics,

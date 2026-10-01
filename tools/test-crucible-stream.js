@@ -137,7 +137,7 @@ const FAKE_PACE = {
 
 function voiceRow(id, resident, over) {
   return Object.assign({
-    id, display: id, kind: 'checkpoint', language: 'en', narrator_engine: 'higgs-v3',
+    id, display: id, orphan: false, kind: 'checkpoint', language: 'en', narrator_engine: 'higgs-v3',
     backend_supported: true, installed: true, resident, loadable: true, reason: null,
     revision: 'abc1234', fingerprint: `${id}@abc1234`, memory_bytes_estimate: 19000000000,
     estimate_basis: 'declared', max_chars: 800, sample_rate: 24000, takes: 1,

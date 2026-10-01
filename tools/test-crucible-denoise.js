@@ -132,7 +132,7 @@ function startFake(behaviour) {
     const events = /^\/v1\/jobs\/([^/]+)\/events$/.exec(route);
     if (events && req.method === 'GET') {
       const sse = sseWriter(req, res);
-      sse.frame('queued', { position: null });
+      sse.frame('started', { waited_s: 0 });
       sse.frame('warming', { message: 'loading denoise_mel_band_roformer' });
       sse.frame('artifact', { name: PRIMARY });
       sse.frame('artifact', { name: OTHER });

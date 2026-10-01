@@ -264,7 +264,22 @@ export async function loadVoiceOn(
     // Display only; either field may be unstated (Crucible 1.0.25) and is said to be.
     if (event.event === 'warming') onProgress?.(event.data.message === null ? 'warming up' : event.data.message);
     else if (event.event === 'queued') {
-      onProgress?.(event.data.position === null ? 'queued' : `queued (position ${event.data.position})`);
+      // WAITING IN THE SERVER'S LINE (crucible docs/QUEUE.md) — re-sent on
+      // every move, so the person watching sees the number fall.
+      const of = event.data.of === null ? '' : ` of ${event.data.of}`;
+      onProgress?.(`waiting, #${event.data.position}${of} in the server's line`);
+    }
+    else if (event.event === 'started') onProgress?.('loading');
+    else if (event.event === 'removed') {
+      // LEFT THE LINE WITHOUT RUNNING — not a failure, and never resubmitted
+      // here: the person who pressed Load decides whether to press it again.
+      const waited = event.data.waitedS === null ? '' : ` after ${Math.round(event.data.waitedS)} s`;
+      throw new CrucibleVoiceLoadRefused(
+        `removed_${event.data.reason}`,
+        `the load of "${load.voice}" left the server's line without running${waited} `
+        + `(${event.data.reason}): ${event.data.message}. Nothing was loaded; press Load again when `
+        + 'you want it.',
+      );
     }
     else if (event.event === 'done') {
       return {
@@ -286,7 +301,7 @@ export async function loadVoiceOn(
   // moved, and that is said rather than treated as success.
   throw new CrucibleVoiceLoadRefused(
     'crucible_protocol',
-    `the load of "${load.voice}" ended with no done, failed or cancelled event.`,
+    `the load of "${load.voice}" ended with no done, failed, cancelled or removed event.`,
   );
 }
 

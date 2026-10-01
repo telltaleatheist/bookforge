@@ -362,6 +362,25 @@ export function describeHolder(activity: Activity, self: SelfIdentity): HolderNo
 export type JobProgress = (line: string) => void;
 
 /**
+ * THIS EXTENSION'S OWN `load-voice` OF `voice`, running or waiting — its job
+ * id, or null. Matched by client name, type and model on the server's own
+ * activity read (the lane and the line); a failed read answers null, because
+ * the submit after it is the authority and this is only a way not to double up.
+ */
+async function ourLoadInFlight(client: CrucibleClient, voice: string): Promise<string | null> {
+  let activity: Activity;
+  try {
+    activity = await client.activity();
+  } catch {
+    return null;
+  }
+  const mine = [...activity.running, ...activity.queued].find((row) => (
+    row.type === 'load-voice' && row.model === voice && row.client === CLIENT_NAME
+  ));
+  return mine === undefined ? null : mine.jobId;
+}
+
+/**
  * Make a voice resident: `POST /v1/jobs {type: "load-voice", …}` and watch it.
  *
  * Resolves when the server says `done`. A failure is the server's own code and
@@ -382,10 +401,24 @@ export async function loadVoice(
    * ROW's to say (`needsReference`), never this function's to guess.
    */
   let jobId: string;
+  /*
+   * OUR OWN LOAD OF THIS VOICE ALREADY ON THE LANE OR IN THE LINE is followed,
+   * not doubled. Before the server queue the second submit was refused 409 and
+   * the catch below joined the running job; a queued submit is not refused, so
+   * it would put a second load behind the first. One activity read answers
+   * "is it already coming" for both the lane and the line. A read that fails is
+   * not a reason to refuse the load — the submit below is the authority.
+   */
+  const already = await ourLoadInFlight(client, voice);
   try {
-    jobId = reference === null
-      ? await client.loadVoice(voice)
-      : await client.loadVoice(voice, { reference });
+    if (already !== null) {
+      jobId = already;
+      onProgress?.(`waiting for the load of ${voice} already on its way`);
+    } else {
+      jobId = reference === null
+        ? await client.loadVoice(voice)
+        : await client.loadVoice(voice, { reference });
+    }
   } catch (err) {
     /*
      * BUSY WITH OUR OWN LOAD OF THIS VOICE is not a refusal: it is the load we
@@ -409,7 +442,17 @@ export async function loadVoice(
       // Display only; either field may be unstated (Crucible 1.0.25).
       if (event.event === 'warming') onProgress?.(event.data.message === null ? 'warming up' : event.data.message);
       else if (event.event === 'queued') {
-        onProgress?.(event.data.position === null ? 'queued' : `queued (position ${event.data.position})`);
+        // WAITING IN THE SERVER'S LINE — re-sent on every move.
+        const of = event.data.of === null ? '' : ` of ${event.data.of}`;
+        onProgress?.(`waiting, #${event.data.position}${of} in the server's line`);
+      }
+      else if (event.event === 'started') onProgress?.(`loading ${voice}`);
+      else if (event.event === 'removed') {
+        // TERMINAL, AND NOT A FAILURE: it left the line without running. Never
+        // resubmitted here — the person decides whether to press Load again.
+        throw new Error(`the load of "${voice}" left the server's line without running `
+          + `(${event.data.reason}): ${event.data.message}. Nothing was loaded; press Load again `
+          + 'when you want it.');
       }
       else if (event.event === 'done') return;
       else if (event.event === 'failed') {
@@ -422,7 +465,7 @@ export async function loadVoice(
     // throws for the latter — so falling out of the loop means the contract
     // changed under us, and that is said rather than treated as success.
     throw new Error(
-      `the load of "${voice}" ended with no done, failed or cancelled event. The server's job `
+      `the load of "${voice}" ended with no done, failed, cancelled or removed event. The server's job `
       + 'event stream did something API v1 does not describe.',
     );
   } finally {
@@ -447,6 +490,14 @@ export async function unloadVoice(
   const jobId = await client.unloadVoice(voice);
   for await (const event of client.events(jobId)) {
     if (event.event === 'warming') onProgress?.(event.data.message === null ? 'warming up' : event.data.message);
+    else if (event.event === 'queued') {
+      const of = event.data.of === null ? '' : ` of ${event.data.of}`;
+      onProgress?.(`waiting, #${event.data.position}${of} in the server's line`);
+    }
+    else if (event.event === 'removed') {
+      throw new Error(`the unload of "${voice}" left the server's line without running `
+        + `(${event.data.reason}): ${event.data.message}`);
+    }
     else if (event.event === 'done') return;
     else if (event.event === 'failed') {
       throw new Error(`${event.data.error.code}: ${event.data.error.message}`);
@@ -455,7 +506,7 @@ export async function unloadVoice(
     }
   }
   throw new Error(
-    `the unload of "${voice}" ended with no done, failed or cancelled event. The server's job `
+    `the unload of "${voice}" ended with no done, failed, cancelled or removed event. The server's job `
     + 'event stream did something API v1 does not describe.',
   );
 }

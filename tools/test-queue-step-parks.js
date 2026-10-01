@@ -630,13 +630,26 @@ async function moduleChecks() {
      */
     const read = (...bits) => fs.readFileSync(path.join(REPO, ...bits), 'utf-8');
     const bridge = read('electron', 'parallel-tts-bridge.ts');
-    assert.match(bridge, /session\.crucibleBusyLine = err\.busyLine;/,
+    // ALL THREE non-failures (2026-09-30): the holder's line, transport weather
+    // (incl. `removed {expired|server_restart}`) and an operator's removal from
+    // the server's line, read off the throw by the one rule (`waitFieldsOf`).
+    assert.match(bridge, /const waits = waitFieldsOf\(err\);/,
+      'the render\'s refusal is not read by waitFieldsOf, so nothing can carry it to the step');
+    assert.match(bridge, /session\.crucibleBusyLine = waits\.busyLine;/,
       'the render\'s 409 is not kept on the session, so nothing can carry it to the step');
+    assert.match(bridge, /session\.crucibleTransientLine = waits\.transientLine;/,
+      'the render\'s transient refusal is not kept on the session');
+    assert.match(bridge, /session\.crucibleRemovedLine = waits\.removedLine;/,
+      'an operator\'s removal of the render is not kept on the session');
     assert.match(bridge, /busyLine: session\.crucibleBusyLine/,
       'the completion event does not carry the line, so the step cannot park on it');
+    assert.match(bridge, /transientLine: session\.crucibleTransientLine/,
+      'the completion event does not carry the transient line');
+    assert.match(bridge, /removedLine: session\.crucibleRemovedLine/,
+      'the completion event does not carry the removed line');
     const step = read('electron', 'queue-steps', 'tts-conversion.ts');
-    assert.match(step, /throw stepFailure\([\s\S]*?result\.busyLine\)/,
-      'the narration step does not hand the line to the seam, so a refused render reddens');
+    assert.match(step, /throw stepFailure\([\s\S]*?result\.busyLine, result\.transientLine, result\.removedLine,/,
+      'the narration step does not hand the lines to the seam, so a refused render reddens');
   });
 }
 

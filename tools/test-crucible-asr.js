@@ -137,7 +137,7 @@ function startFake(behaviour) {
     const events = /^\/v1\/jobs\/([^/]+)\/events$/.exec(route);
     if (events && req.method === 'GET') {
       const sse = sseWriter(req, res);
-      sse.frame('queued', { position: null });
+      sse.frame('started', { waited_s: 0 });
       sse.frame('warming', { message: '12s of audio decoded, 1 window(s) of 900s to transcribe on cuda at float16' });
       sse.frame('progress', { fraction: 0, message: 'decoding book.m4b', stage: 'decoding', processed_s: 0, total_s: 0 });
       sse.frame('progress', { fraction: 0, message: 'decoding 6s of 12s, 0 segments', stage: 'decoding', processed_s: 6, total_s: 12.5 });

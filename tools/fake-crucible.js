@@ -934,6 +934,7 @@ function settingsRoutes(behaviour) {
         selected: here ? '' : 'higgs-v3',
         reason: here ? WSL_ONLY_REASON : 'installed',
         shortfall_bytes: 0,
+        work: null,
       };
     }
     const local = localModelFor(c);
@@ -946,6 +947,7 @@ function settingsRoutes(behaviour) {
           + (local === null ? 'nothing fits' : local)
         : (local === null ? 'nothing on this card fits' : local + ' fits'),
       shortfall_bytes: 0,
+      work: null,
     };
   };
 
@@ -1419,7 +1421,9 @@ function faultyJobRoutes(behaviour = {}) {
         const pause = () => (gap > 0 ? new Promise((r) => setTimeout(r, gap)) : Promise.resolve());
         let alive = true;
         req.on('close', () => { alive = false; });
-        sse.frame('queued', { position: null });
+        // Crucible 1.0.71: a job submitted to a FREE lane says `started` (waited 0);
+        // `queued` is only for a job waiting in the line, and always carries a position.
+        sse.frame('started', { waited_s: 0 });
         await pause();
         if (!alive) return true;
         sse.frame('warming', { message: 'loading the model' });

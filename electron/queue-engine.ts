@@ -146,7 +146,7 @@ import { stopSentence, userStopped, type StopReason } from '../shared/queue/stop
  * `queue-steps/runtime` without the cycle that module's other exports would
  * imply — everything it imports is `import type`.
  */
-import { busyLineOf, projectDirForStep, transientLineOf } from './queue-steps/runtime';
+import { busyLineOf, projectDirForStep, removedLineOf, transientLineOf } from './queue-steps/runtime';
 /*
  * WHERE A FAILURE GOES SO IT IS STILL THERE TOMORROW.
  *
@@ -329,6 +329,16 @@ export interface StepModule {
    * that is RUNNING: that act is using the card right now.
    */
   leasesModel?(config: Record<string, unknown>): boolean;
+  /**
+   * EVERY GPU SUBMIT THIS STEP MAKES WAITS IN THE SERVER'S OWN LINE (crucible
+   * docs/QUEUE.md, v1.0.71): its Crucible door submits with `queue`
+   * (`shared/crucible/server-queue.ts CRUCIBLE_BATCH_QUEUE`) and holds no
+   * lease, chat or stream session that would be refused instead. Such a step
+   * is not parked app-side on a card another client is using — it launches
+   * and takes its place in that server's FIFO (`WaitForFacts.queuesOnServer`).
+   * Absent: the pre-queue behaviour, a busy card parks the row.
+   */
+  queuesOnServer?(config: Record<string, unknown>): boolean;
   /*
    * THERE IS NO `leasedModel` HOOK ANY MORE, AND ITS ABSENCE IS THE RULING.
    *
@@ -2875,7 +2885,12 @@ export interface CrucibleRoutingHost {
    * lifts a 409's cool-off early.
    */
   reach(server: string): Promise<
-    { reachable: true; busy: { line: string } | null; shadow?: ServerShadow | null }
+    {
+      reachable: true;
+      /** `queueDepth`: the server's lane + waiting count, when the read could see it. */
+      busy: { line: string; queueDepth?: number | null } | null;
+      shadow?: ServerShadow | null;
+    }
     | { reachable: false; detail: string }
   >;
 }
@@ -3112,7 +3127,11 @@ function serverState(name: string): ServerState {
    * row is waiting for, and nothing else would notice it.
    */
   const held = entry.answer.busy ?? null;
-  return held === null ? { kind: 'ready' } : { kind: 'busy', line: held.line };
+  // POLLED, so a step whose work waits in the server's own line may join it
+  // (`WaitForFacts.queuesOnServer`); a refusal's hold above carries no such mark.
+  return held === null
+    ? { kind: 'ready' }
+    : { kind: 'busy', line: held.line, polled: { queueDepth: held.queueDepth ?? null } };
 }
 
 /** The same observation, or a different one? Compares the ANSWER, not its age. */
@@ -3553,6 +3572,12 @@ function crucibleAdmission(
    * `enabled: false` (Owen's pages-refused report, 2026-09-21).
    */
   needClass: string | undefined,
+  /*
+   * THIS STEP'S WORK WAITS IN THE SERVER'S OWN LINE (`StepModule.queuesOnServer`),
+   * so a card busy with another client's work is a line to join, not a reason
+   * to park. Asked by the pump of the module, once per pass.
+   */
+  queuesOnServer = false,
 ): CrucibleAdmission {
   const host = crucibleHost;
   if (host === null) {
@@ -3575,6 +3600,7 @@ function crucibleAdmission(
   }
 
   const verdict = decideWaitFor({
+    queuesOnServer,
     waitFor: job.waitFor,
     resolved: job.waitForResolved,
     ranked: record.ranked,
@@ -4353,7 +4379,10 @@ export function pump(): void {
           ? (step.crucibleClass ?? undefined)
           : undefined;
         const routed = step.travels === true
-          ? crucibleAdmission(job, cardHeld, stepClass)
+          ? crucibleAdmission(
+            job, cardHeld, stepClass,
+            modules.get(step.type)?.queuesOnServer?.(step.config ?? {}) === true,
+          )
           : { ok: true as const, venue: LONGFORM_ALIGN_SET };
         if (!routed.ok) {
           admissionBlocked = true;
@@ -4852,11 +4881,19 @@ async function launch(job: QueueJob, step: QueueStep): Promise<void> {
      * 2026-09-20).
      */
     const transientLine = busyLine === undefined ? transientLineOf(err) : undefined;
+    /*
+     * AND THE THIRD NON-FAILURE: an operator took this step's job out of a
+     * Crucible's line (`removed {operator}`, crucible docs/QUEUE.md). Read by
+     * the same duck-typed rule; `settleStep` sends the row to Pending.
+     */
+    const removedLine = busyLine === undefined && transientLine === undefined
+      ? removedLineOf(err) : undefined;
     settleStep(job, step, {
       ok: false,
       error: (err as Error)?.message || String(err),
       ...(busyLine === undefined ? {} : { busyLine }),
       ...(transientLine === undefined ? {} : { transientLine }),
+      ...(removedLine === undefined ? {} : { removedLine }),
     });
   }
 }
@@ -4896,6 +4933,13 @@ type StepOutcome =
      * other books share.
      */
     transientLine?: string;
+    /**
+     * AN OPERATOR REMOVED THIS STEP'S JOB FROM A CRUCIBLE'S LINE (`removed
+     * {operator}`, crucible docs/QUEUE.md; `queue-steps/runtime.ts
+     * removedLineOf`). Neither a failure nor a wait: `settleStep` puts the row
+     * back in Pending with this sentence, and nothing resubmits it.
+     */
+    removedLine?: string;
   };
 
 /**
@@ -5008,6 +5052,7 @@ function settleStep(job: QueueJob, step: QueueStep, outcome: StepOutcome): void 
    * server-wide hold, because a reset socket names no holder.
    */
   const transientLine = outcome.ok ? undefined : outcome.transientLine;
+  const removedLine = outcome.ok ? undefined : outcome.removedLine;
   runningSteps.delete(step.id);
   step.finishedAt = new Date().toISOString();
 
@@ -5156,6 +5201,43 @@ function settleStep(job: QueueJob, step: QueueStep, outcome: StepOutcome): void 
      */
     releaseVenueIfNothingStands(job);
     step.progress = { ...step.progress, percent: undefined, message: reason, admissionHold: reason };
+    changed();
+    pump();
+    return;
+  }
+
+  /*
+   * REMOVED FROM A CRUCIBLE'S LINE BY A PERSON — back to Pending, NOT resubmitted
+   * (crucible docs/QUEUE.md: "do not resubmit by yourself on operator").
+   *
+   * Shaped like the Stop arm that keeps the run (`stopKeepsRun` below): the step
+   * goes back to `held` as if it had not started — a resumable step keeps
+   * `wasInterrupted`, so its next run resumes what is on disk — and the run
+   * moves to Pending with its card and lease given up (`stoppedRunToPending`).
+   * The server's sentence stays on the row so a person sees why. It is not an
+   * error, so it does not idle the queue and does not cascade-cancel the steps
+   * after it. A run that cannot be staged keeps its `held` step on the queue
+   * page, which is where a Resume is pressed.
+   *
+   * A Stop pressed while the job was waiting is NOT this arm: our own cancel is
+   * `removed {client}`, which the doors turn into a cancellation and the stop
+   * arms below settle.
+   */
+  if (!outcome.ok && removedLine !== undefined && !stopped) {
+    takeThermalSummary(step.id);
+    step.status = 'held';
+    step.wasInterrupted = moduleFor(step.type).stopIsResumable === true ? true : undefined;
+    step.startedAt = undefined;
+    step.finishedAt = undefined;
+    step.error = undefined;
+    step.progress = { message: removedLine };
+    forgetStepParks(step.id);
+    getMainLogger().info(`[QUEUE] ${job.title} — ${step.label}: ${removedLine}`);
+    if (jobIsStageable(job)) {
+      stoppedRunToPending(job);
+    } else {
+      releaseVenueIfNothingStands(job);
+    }
     changed();
     pump();
     return;

@@ -112,7 +112,7 @@ function startFake(behaviour) {
       const j = state.jobs.get(decodeURIComponent(events[1]));
       assert.ok(j, `the fake was asked for events of an unknown job: ${events[1]}`);
       const sse = sseWriter(req, res);
-      sse.frame('queued', { position: null });
+      sse.frame('started', { waited_s: 0 });
       sse.frame('warming', { message: `loading ${j.model} into urvc` });
       j.names.forEach((name, n) => {
         sse.frame('artifact', { name });

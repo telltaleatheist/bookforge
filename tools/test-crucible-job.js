@@ -125,7 +125,7 @@ function startFake(behaviour, onSubmit = () => {}) {
       assert.ok(entry, `events asked for an unknown job ${id}`);
       const sse = sseWriter(req, res);
       const names = Object.keys(entry.body.inputs).map((n) => `${n}.out`);
-      sse.frame('queued', { position: null });
+      sse.frame('started', { waited_s: 0 });
       sse.frame('warming', { message: 'loading the model' });
       sse.frame('progress', { fraction: 0, message: 'starting', stage: 'decoding', processed_s: 0, total_s: 100 });
       sse.frame('cue', { index: 7, items: [{ text: 'hi', start: 0.1, end: 0.4 }] });
@@ -609,7 +609,7 @@ async function droppedStreamSweepsItsOwnServer() {
     }
     if (/^\/v1\/jobs\/[^/]+\/events$/.test(url.pathname) && req.method === 'GET') {
       const sse = sseWriter(req, res);
-      sse.frame('queued', { position: null });
+      sse.frame('started', { waited_s: 0 });
       sse.frame('warming', { message: 'loading qwen3-aligner' });
       sse.frame('progress', {
         fraction: 0.5, message: 'half the book', stage: 'aligning', processed: 1, total: 2,
@@ -753,7 +753,7 @@ async function aBrokenStreamIsReOpenedAndTheJobFinishes() {
       // The writer numbers from 1 and skips everything at or below
       // `Last-Event-ID`, which is what a real Crucible does on a resume.
       const sse = sseWriter(req, res);
-      sse.frame('queued', { position: null });
+      sse.frame('started', { waited_s: 0 });
       sse.frame('warming', { message: 'loading qwen3-aligner' });
       sse.frame('progress', { fraction: 0.5, message: 'half the book', stage: 'aligning' });
       if (opened === 1) {
@@ -852,7 +852,7 @@ async function aRestartedServerIsAWaitWithNothingToCancel() {
       opened += 1;
       if (opened === 1) {
         const sse = sseWriter(req, res);
-        sse.frame('queued', { position: null });
+        sse.frame('started', { waited_s: 0 });
         sse.frame('progress', { fraction: 0.5, message: 'half the book', stage: 'aligning' });
         setTimeout(() => res.destroy(), 30);
         return true;
@@ -918,7 +918,7 @@ async function aStallSettlesItsOwnLedgerRow() {
     if (/^\/v1\/jobs\/[^/]+\/events$/.test(url.pathname) && req.method === 'GET') {
       // A SOCKET THAT IS OPEN AND MUTE — the wedged-worker shape C2 exists for.
       const sse = sseWriter(req, res);
-      sse.frame('queued', { position: null });
+      sse.frame('started', { waited_s: 0 });
       sse.frame('progress', { fraction: 0.4, message: 'rendering', stage: 'tts' });
       await new Promise((done) => req.on('close', done));
       return true;
@@ -982,7 +982,7 @@ async function aFailedArtifactFetchIsRetriedNotDiscarded(alwaysFail) {
       // The SAME history every time, ids and all — a finished job's events stay
       // readable on a real Crucible, which is what makes a retry possible.
       const sse = sseWriter(req, res);
-      sse.frame('queued', { position: null });
+      sse.frame('started', { waited_s: 0 });
       sse.frame('warming', { message: 'loading qwen3-aligner' });
       sse.frame('artifact', { name: 'alignment.json' });
       sse.frame('done', { artifacts: ['alignment.json'] });

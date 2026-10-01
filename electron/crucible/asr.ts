@@ -471,7 +471,7 @@ export async function runCrucibleAsr(options: RunCrucibleAsrOptions): Promise<Cr
       onLog: log,
       onProgress: (p: CrucibleJobProgress) => {
         if (options.onProgress === undefined) return;
-        if (p.kind === 'warming') {
+        if (p.kind !== 'progress') { // warming, or waiting in the server's line: nothing has run yet
           options.onProgress({
             stage: 'warming', fraction: 0, message: p.message,
             processedSec: null, totalSec: null, cues: null,

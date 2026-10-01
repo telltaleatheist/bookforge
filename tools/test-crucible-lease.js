@@ -649,7 +649,7 @@ const { check, summary } = makeChecker();
       }
       if (/^\/v1\/jobs\/[^/]+\/events$/.test(ctx.url.pathname) && req.method === 'GET') {
         const sse = ctx.sseWriter(req, res);
-        sse.frame('queued', { position: null });
+        sse.frame('started', { waited_s: 0 });
         sse.frame('progress', { fraction: 1, message: 'done' });
         sse.frame('done', { artifacts: [] });
         sse.end();

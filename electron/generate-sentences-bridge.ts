@@ -23,7 +23,7 @@ import { isWhisperEnvInstalled, WHISPER_ENV_ID } from './components/whisper-env.
 import { componentManager } from './components/component-manager.js';
 import { getMainLogger } from './rolling-logger.js';
 // The ONE rule for "did this refusal name a holder" — see queue-steps/runtime.ts.
-import { busyLineOf } from './queue-steps/runtime';
+import { waitFieldsOf } from './queue-steps/runtime';
 import * as manifestService from './manifest-service.js';
 import { embedAndVerifyVtt, deleteSidecarsForM4b } from './metadata-tools.js';
 import { regenerateBoundSidecars } from './sidecar-migration.js';
@@ -182,10 +182,17 @@ function sendComplete(
   venue?: string,
   /** Present exactly on a Crucible `server_busy`: the SDK's holder line the queue holds the row on. */
   busyLine?: string,
+  /**
+   * The other two non-failures (`queue-steps/runtime.ts waitFieldsOf`): transport
+   * weather — including an asr the server's line let go — and an operator's
+   * removal from the line.
+   */
+  waits: { transientLine?: string; removedLine?: string } = {},
 ): void {
-  publishBridgeEvent('generate-sentences:complete', { jobId, success, outputPath, error, warning, venue, busyLine });
+  const event = { jobId, success, outputPath, error, warning, venue, busyLine, ...waits };
+  publishBridgeEvent('generate-sentences:complete', event);
   if (win.isDestroyed()) return;
-  win.webContents.send('generate-sentences:complete', { jobId, success, outputPath, error, warning, venue, busyLine });
+  win.webContents.send('generate-sentences:complete', event);
 }
 
 /** One word for a venue, for the log and the completion record. */
@@ -493,8 +500,11 @@ export async function startGenerateSentences(
     // the SDK's own holder line rides on the completion so the queue step can
     // hold the row on it (`stepFailure`) rather than fail the book.
     // Read through the ONE rule every door in the app reads it by.
-    const busyLine = busyLineOf(err);
-    sendComplete(mainWindow, jobId, false, undefined, message, undefined, undefined, busyLine);
+    const { busyLine, transientLine, removedLine } = waitFieldsOf(err);
+    sendComplete(mainWindow, jobId, false, undefined, message, undefined, undefined, busyLine, {
+      ...(transientLine === undefined ? {} : { transientLine }),
+      ...(removedLine === undefined ? {} : { removedLine }),
+    });
   } finally {
     if (workingVttPath) {
       try { fs.unlinkSync(workingVttPath); } catch { /* absent/already cleaned */ }

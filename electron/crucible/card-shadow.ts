@@ -41,8 +41,13 @@ export interface OwnCardIds {
 }
 
 export interface CardReading {
-  /** The card is shut to us, in the holder's one busy line; null when it is not. */
-  readonly busy: { line: string } | null;
+  /**
+   * The card is shut to us, in the holder's one busy line; null when it is not.
+   * `queueDepth` is the server's `slots.accelerated.queue_depth` (lane + every
+   * waiting job), or null where it did not say — what an `any` step that waits
+   * in the server's line compares (`shared/queue/wait-for.ts`).
+   */
+  readonly busy: { line: string; queueDepth: number | null } | null;
   /** Somebody else's work on the card; null when there is none. */
   readonly shadow: ServerShadow | null;
 }
@@ -115,9 +120,10 @@ export function readCard(activity: CrucibleActivityView, ours: OwnCardIds): Card
   }
 
   // ── Busy: the lane's own refusal, then a foreign lease ──────────────────
-  let busy: { line: string } | null = null;
+  let busy: { line: string; queueDepth: number | null } | null = null;
+  const queueDepth = activity.slot.queueDepth;
   if (!activity.slot.acceptsWork) {
-    busy = { line: laneLine(activity) };
+    busy = { line: laneLine(activity), queueDepth };
   } else if (foreignLease !== null) {
     const act = foreignLease.act ?? 'a run';
     busy = {
@@ -127,6 +133,7 @@ export function readCard(activity: CrucibleActivityView, ours: OwnCardIds): Card
         progress: null,
         message: null,
       }),
+      queueDepth,
     };
   }
   return { busy, shadow };

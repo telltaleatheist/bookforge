@@ -82,7 +82,7 @@ const FAKE_PACE = {
 function voiceRow(id) {
   return {
     id,
-    display: id,
+    display: id, orphan: false,
     kind: 'checkpoint',
     language: 'en',
     narrator_engine: 'higgs-v3',
@@ -192,7 +192,7 @@ function startCancellingRenderServer() {
           rendered: n + 1, failed: 0, total: chunks.length,
         });
       };
-      sse.frame('queued', { position: null });
+      sse.frame('started', { waited_s: 0 });
       for (let n = 0; n < chunks.length - 1; n++) emit(chunks[n], n);
 
       const waitForDelete = setInterval(() => {
@@ -440,7 +440,7 @@ function startCancellingAlignServer(patienceMs) {
     const events = /^\/v1\/jobs\/([^/]+)\/events$/.exec(route);
     if (events && req.method === 'GET') {
       const sse = sseWriter(req, res);
-      sse.frame('queued', { position: null });
+      sse.frame('started', { waited_s: 0 });
       sse.frame('progress', {
         fraction: 0.1, message: 'transcribing', stage: 'transcribe', processed: 1, total: 10,
       });

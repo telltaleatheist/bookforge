@@ -66,7 +66,7 @@
 import type {
   CrucibleCapabilityView, RankedServerRow,
 } from '../../shared/crucible/settings-wire';
-import type { CapabilityRecord, ModelInfo } from '@crucible/client';
+import type { ModelInfo } from '@crucible/client';
 import { rankedServers } from './routing';
 import { pingServer, type CruciblePingResult } from './probe';
 import {
@@ -76,6 +76,7 @@ import {
   type VenueWords,
 } from './venue-decision';
 import { crucibleCapabilityWithRoutes } from './engine-settings';
+import { CRUCIBLE_INTERACTIVE_QUEUE } from '../../shared/crucible/server-queue';
 import { crucibleClientFor, getServer, CRUCIBLE_CLIENT_NAME, type ResolvedServer } from './servers';
 import { resolveEngine } from './engine-resolve';
 import {
@@ -232,14 +233,33 @@ export function processTextVenueHost(): TextVenueHost {
       return (await crucibleClientFor(name, CRUCIBLE_CLIENT_NAME)).models();
     },
     async loadModel(name: string, model: string): Promise<void> {
-      const client = await crucibleClientFor(name, CRUCIBLE_CLIENT_NAME);
+      /*
+       * THE EXPLICIT `loadFirst` DOOR — a person asked for the model, and waits
+       * on this call. It waits in the server's line with the INTERACTIVE wait
+       * (10 min, `shared/crucible/server-queue.ts`) rather than being refused
+       * by another client's job; this loop follows the job, which keeps it
+       * present.
+       */
+      const client = await crucibleClientFor(name, CRUCIBLE_CLIENT_NAME, CRUCIBLE_INTERACTIVE_QUEUE);
       const jobId = await client.loadModel(model);
       for await (const event of client.events(jobId)) {
         if (event.event === 'done') return;
         if (event.event === 'failed') {
           throw new Error(`crucible "${name}" could not load ${model}: ${JSON.stringify(event.data)}`);
         }
+        if (event.event === 'cancelled') {
+          throw new Error(`crucible "${name}" cancelled the load of ${model}`);
+        }
+        if (event.event === 'removed') {
+          // Not a failure and not resubmitted: it left the line without running.
+          throw new Error(`crucible "${name}": the load of ${model} left the server's line without `
+            + `running (${event.data.reason}): ${event.data.message}`);
+        }
+        // `queued` / `started` / `warming` / `progress`: the load is on its way.
       }
+      // `events()` ends only on a terminal frame or by throwing; anything else
+      // is the contract moving, and is not read as a load that happened.
+      throw new Error(`crucible "${name}": the load of ${model} ended with no terminal event`);
     },
     capability: crucibleCapabilityWithRoutes,
   };
@@ -269,7 +289,7 @@ export function processTextVenueHost(): TextVenueHost {
  *    reported rather than repaired.
  */
 export function modelFromCapability(
-  record: CapabilityRecord,
+  record: Pick<CrucibleCapabilityView, 'classes'>,
   act: CrucibleTextAct,
   server: string,
 ): string {

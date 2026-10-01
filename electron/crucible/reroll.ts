@@ -118,12 +118,16 @@ import * as path from 'path';
 import type { RenderChunk, RenderResult } from '@crucible/client';
 import { CRUCIBLE_CLIENT_NAME, crucibleClientFor } from './servers';
 import {
+  CRUCIBLE_INTERACTIVE_QUEUE,
+  crucibleQueuedLine,
+} from '../../shared/crucible/server-queue';
+import {
   assertVoiceRowLoadable,
   crucibleVoiceFor,
   describeCrucibleRefusal,
 } from './render';
 import { crucibleVoiceBand, renderBandFor } from './voice-band';
-import { downloadRenderArtifacts } from './render-artifacts';
+import { CrucibleRenderNotDone, downloadRenderArtifacts } from './render-artifacts';
 import type { ChunkGuardSummary } from '../chunk-guard-ledger';
 import type { VenueHost } from './generation-venue';
 import { venueForRunStep, type RunVenue, type StepVenue } from './step-venue';
@@ -320,7 +324,13 @@ export async function runCrucibleReroll(
   // Throws CrucibleRenderRefused by name for a non-Higgs engine, an override
   // checkpoint that lives only on this machine, and a zero-shot voice.
   const voice = crucibleVoiceFor(options.ttsEngine, options.voiceId);
-  const client = await crucibleClientFor(server, CRUCIBLE_CLIENT_NAME);
+  /*
+   * A PERSON IS AUDITIONING THESE, so the candidates wait in the server's line
+   * with the INTERACTIVE wait (10 min, `shared/crucible/server-queue.ts`): a
+   * correction pressed while another client's job holds the card reads
+   * "waiting, #N" instead of a refusal, and the dialog's cancel takes it out.
+   */
+  const client = await crucibleClientFor(server, CRUCIBLE_CLIENT_NAME, CRUCIBLE_INTERACTIVE_QUEUE);
   // Before the first submit: does this server serve that voice, can it load it,
   // HOW LONG IS ITS LADDER, and WHAT BAND has it measured. One GET for the whole
   // pass rather than one per candidate, and the row answers all four.
@@ -447,6 +457,14 @@ export async function runCrucibleReroll(
           if (/^\d+\.flac$/.test(file.name)) written += 1;
         },
         onEvent: (event) => {
+          if (event.event === 'queued' && options.onProgress !== undefined) {
+            // WAITING IN THE SERVER'S LINE: the sentence, at 0 — nothing ran yet.
+            options.onProgress({
+              take, fraction: 0, message: crucibleQueuedLine(server, event.data.position, event.data.of),
+              written, total,
+            });
+            return;
+          }
           if (event.event !== 'progress' || options.onProgress === undefined) return;
           // Display only — the rule job.ts and render.ts follow (Crucible 1.0.25):
           // no fraction, nothing moved; no words, described by the fraction.
@@ -459,6 +477,22 @@ export async function runCrucibleReroll(
           });
         },
       }).catch((err) => {
+        /*
+         * LEFT THE LINE WITHOUT RUNNING (`removed`, crucible docs/QUEUE.md): not
+         * a failure. Said in the server's words, with no resubmit — the person
+         * at the dialog decides whether to press it again.
+         */
+        if (err instanceof CrucibleRenderNotDone && err.terminalEvent === 'removed') {
+          const data = (err.terminalData ?? {}) as { reason?: unknown; message?: unknown };
+          const reason = typeof data.reason === 'string' ? data.reason : 'unknown';
+          const said = typeof data.message === 'string' ? data.message : '';
+          throw new CrucibleRerollRefused(
+            `crucible_removed_${reason}`,
+            `crucible "${server}" let candidate ${take + 1} go from its line without rendering it `
+            + `(${reason})${said === '' ? '' : `: ${said}`}. Nothing was rendered; re-roll again when `
+            + 'you want it.',
+          );
+        }
         throw describeCrucibleRefusal(err, server);
       });
       if (outcome.result.failed.length > 0) {

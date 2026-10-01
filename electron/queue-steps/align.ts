@@ -255,6 +255,12 @@ export const alignStep: StepModule = {
    * and R3 both forbid.
    */
   machines: (): 'local' | 'any' => 'any',
+  /**
+   * ITS GPU WORK WAITS IN THE SERVER'S OWN LINE — the align (`crucible/job.ts runCrucibleJob`, submitted with `queue`) — so a card busy
+   * with another client's work is joined, not waited out app-side
+   * (`StepModule.queuesOnServer`, crucible docs/QUEUE.md).
+   */
+  queuesOnServer: (): boolean => true,
 
   async run(ctx: StepRunContext): Promise<ArtifactRef> {
     const config = (ctx.step.config ?? {}) as unknown as AlignStepConfig;
@@ -442,7 +448,8 @@ export const alignStep: StepModule = {
         // on the throw, so this module makes no side call into the engine.
         throw stepFailure(
           result.error || 'The alignment failed and gave no reason.', result.busyLine,
-          result.transient === true ? (result.transientLine ?? result.error) : undefined);
+          result.transient === true ? (result.transientLine ?? result.error) : undefined,
+          result.removedLine);
       }
       /*
        * WHAT IT FOUND, SAID ONCE ON THE ROW. The card's live message is the
