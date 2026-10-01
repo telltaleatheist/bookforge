@@ -28,22 +28,12 @@
  * {@link crucibleCapabilityWithRoutes} is a projection like the other three,
  * and the three-case reading of §3.3 belongs to the SDK's parser.
  *
- * And since the 0.6.0 re-pack (`1a1fb892`, 2026-09-14) it MAKES all three.
- * A document in which NO row carries `route` is a server that predates the
- * field, and §3.3 pins that for both apps by name — *"every class on such a
- * server IS local … BookForge's helper and Foundry's package K alike"* —
- * which `readCapabilityRow` now reads exactly that way (no row has it ⇒
- * `local`; SOME rows have it ⇒ refused, naming the row; a value that is
- * neither ⇒ refused, naming the value).
- *
- * Until that re-pack the SDK refused the routeless document, and this file
- * deliberately did NOT work around it: catching that refusal and reading
- * `local` out of it would have been this app holding a second opinion about a
- * document the SDK owns, which is the two-owners defect the seam was deleted
- * to end (ARCHITECTURE.md R1). `tools/test-crucible-settings-seam.js` carried
- * the tripwire that pinned the defect in the open. **Because nothing was
- * worked around, inverting that check was the entire fix — no code in this
- * file changed, and this paragraph is the only thing that had to.**
+ * The SDK (1.0.71) reads `route` strictly: a row without one, or with a value
+ * that is neither `local` nor `upstream`, is a protocol refusal, and reaches a
+ * caller as `settings_document_unreadable` naming the row. Where a class
+ * runs decides whether its work costs GPU-minutes or money, so no client fills
+ * it in, and this file holds no second opinion about a document the SDK owns
+ * (ARCHITECTURE.md R1).
  *
  * ── NOTHING HERE STORES ANYTHING ───────────────────────────────────────────
  *
@@ -271,39 +261,28 @@ function settingsFailure(server: string, door: string, err: unknown): unknown {
  * `desktop_allowance_bytes` and on `backend_kind`, so none of those is checked
  * again here — a second reader of the same fact is the thing this file exists
  * not to be. It reads `routes` as whatever keys the document carried, because
- * the SDK serves clients that do not know what a text act is; an act the
- * document does not route is local (Owen's 2026-09-24 ruling — see below).
+ * the SDK serves clients that do not know what a text act is. A Crucible
+ * server routes every routable class (`classnames.ROUTABLE_CLASSES`, which
+ * holds the four text acts), so a document missing one of OUR acts is not the
+ * document the contract describes and is refused by name.
  */
 function projectSettings(doc: SettingsDocument, server: string): CrucibleEngineSettings {
   const routes = {} as Record<CrucibleTextActName, CrucibleRouteRow>;
   for (const act of CRUCIBLE_TEXT_ACTS) {
     const row = doc.routes[act];
-    /*
-     * A SERVER THAT STATES NO ROUTE FOR AN ACT RUNS IT LOCALLY. Owen, 2026-09-24:
-     * *"dont require any particular crucible server. if it can make the call to
-     * the crucible server then it should work."* This used to refuse the whole
-     * settings document (`settings_document_unreadable`). A server that does not
-     * state a route for an act predates routing that act, so local is simply true
-     * of it — the same default the SDK now reads for a capability row's `route`
-     * (crucible feat/sdk-any-server). The model is `null`, "nothing stated".
-     */
-    routes[act] = row === undefined ? { route: 'local', model: null } : { route: row.route, model: row.model };
+    if (row === undefined) {
+      throw new CrucibleEngineSettingsError(
+        'settings_document_unreadable',
+        `"${server}" answered with a settings document that routes no "${act}". Every Crucible `
+          + 'server routes each text act; this one is not speaking the contract.',
+      );
+    }
+    routes[act] = { route: row.route, model: row.model };
   }
 
-  const upstreams = {} as Record<CrucibleUpstreamName, CrucibleUpstreamRow | null>;
+  const upstreams = {} as Record<CrucibleUpstreamName, CrucibleUpstreamRow>;
   for (const name of CRUCIBLE_UPSTREAM_NAMES) {
-    const row: UpstreamSetting | null = doc.upstreams[name];
-    /*
-     * AN UPSTREAM THE DOCUMENT DOES NOT DESCRIBE IS CARRIED AS NULL — not as
-     * "unconfigured", which would be a claim the server did not make. Crucible
-     * 1.0.25 reads the absent entry as null (Owen, 2026-09-24: any Crucible that
-     * answers works); nothing can be routed to it, and the panel says the
-     * engine does not describe it.
-     */
-    if (row === null) {
-      upstreams[name] = null;
-      continue;
-    }
+    const row: UpstreamSetting = doc.upstreams[name];
     /*
      * `keyHint` and `url` are each ABSENT on the upstreams they do not apply to
      * — ollama has no key, anthropic and openai have no url — and the SDK keeps
@@ -340,9 +319,7 @@ function projectSettings(doc: SettingsDocument, server: string): CrucibleEngineS
    */
   noteCrucibleUpstreams(
     server,
-    // An upstream the document does not describe (null) is not one this engine
-    // can forward to, so it does not open the cloud lane.
-    CRUCIBLE_UPSTREAM_NAMES.some((name) => upstreams[name]?.configured === true),
+    CRUCIBLE_UPSTREAM_NAMES.some((name) => upstreams[name].configured),
   );
 
   return {

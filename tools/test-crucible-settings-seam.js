@@ -21,22 +21,13 @@
  * SDK's parser and this app's projection meeting over real bytes on a real
  * socket.
  *
- * ── SECTION 4'S TRIPWIRE HAS EXPIRED, AND THAT IS WHAT IT WAS FOR ─────────
+ * ── THE CAPABILITY ROUTE IS THE SDK'S TO REFUSE ───────────────────────────
  *
- * PHASE15 §3.3 says a capability document in which NO row carries `route`
- * comes from a server that predates the field and reads as all-local. The
- * vendored SDK refused that document instead, which Foundry measured against
- * Owen's live server; BookForge did not work around it — a client that caught
- * the refusal and read "local" out of it would be a second opinion about a
- * document the SDK owns — so the WRONG behaviour was pinned, counted, and
- * carried the instruction to invert the check when the fix landed.
- *
- * It landed with the 0.6.0 re-pack (BookForge `1a1fb892`). The check is
- * inverted: a routeless document now reads as every class local, and the
- * route record the read fills says local too. Because the defect was never
- * worked around, INVERTING THE CHECK WAS THE WHOLE FIX — no BookForge code
- * changed, only a header paragraph in `engine-settings.ts` that called the
- * refusal live.
+ * @crucible/client 1.0.71 reads `route` strictly (crucible fe53356, Owen's
+ * 2026-09-27 reversal of "any Crucible that answers"): a row without one, or
+ * with a value that is neither `local` nor `upstream`, is a protocol refusal,
+ * and it reaches a caller as `settings_document_unreadable`. BookForge reads
+ * no "local" out of a missing route; the checks below pin that.
  *
  * The pairing-file checks that used to sit here have their own suite
  * (`test-crucible-pairing-file.js`): `electron/crucible/pairing-file.ts` did

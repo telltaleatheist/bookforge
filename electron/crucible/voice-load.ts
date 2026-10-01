@@ -261,8 +261,7 @@ export async function loadVoiceOn(
     ? await client.loadVoice(load.voice)
     : await client.loadVoice(load.voice, { reference: load.reference });
   for await (const event of client.events(jobId)) {
-    // Display only; either field may be unstated (Crucible 1.0.25) and is said to be.
-    if (event.event === 'warming') onProgress?.(event.data.message === null ? 'warming up' : event.data.message);
+    if (event.event === 'warming') onProgress?.(event.data.message);
     else if (event.event === 'queued') {
       // WAITING IN THE SERVER'S LINE (crucible docs/QUEUE.md) — re-sent on
       // every move, so the person watching sees the number fall.

@@ -92,25 +92,11 @@ export const CRUCIBLE_STREAM_IN_FLIGHT = 8;
  */
 export const CRUCIBLE_STREAM_RAMP_WIDTH = CRUCIBLE_STREAM_IN_FLIGHT;
 
-/** A chunk's seconds: the server's, or measured off its samples where it stated none. */
-function chunkSeconds(stated: number | null, pcm: Int16Array, sampleRate: number): number {
-  return stated === null ? pcm.length / sampleRate : stated;
-}
-
-/** `{seconds}` when the server stated them; nothing when it did not — never a zero. */
-function rowSeconds(stated: number | null): { seconds?: number } {
-  return stated === null ? {} : { seconds: stated };
-}
-
 /** One sub-row chunk, as it leaves this layer. */
 export interface CrucibleRowChunk {
   readonly seq: number;
   readonly pcm: Int16Array;
-  /**
-   * The chunk's length in seconds: the server's figure, or — where it did not
-   * state one (Crucible 1.0.25 reads it as null) — `pcm.length / sampleRate`,
-   * which is the same quantity measured off the samples themselves, not a guess.
-   */
+  /** The chunk's length in seconds, as the server measured it. */
   readonly seconds: number;
   readonly sampleRate: number;
 }
@@ -120,7 +106,7 @@ export interface CrucibleRowResult {
   success: boolean;
   /** The whole row's PCM, in seq order, when it was NOT streamed out. */
   pcm?: Int16Array;
-  /** Seconds the SERVER measured for this row; absent when it did not state them (Crucible 1.0.25). */
+  /** Seconds the SERVER measured for this row; present on every successful row. */
   seconds?: number;
   /** The row's audio already reached the caller through `onChunk`. */
   streamed?: boolean;
@@ -204,13 +190,10 @@ export class CrucibleRowSession {
   /** The session's own sample rate — per voice, never assumed to be 24000. */
   get sampleRate(): number { return this.session.sampleRate; }
   /**
-   * `<voice>@<revision>` — the merge that is speaking, not just its name. This
-   * and {@link backend} are null where the server did not state them (Crucible
-   * 1.0.25; Owen 2026-09-24, any Crucible that answers works).
-   */
-  get fingerprint(): string | null { return this.session.fingerprint; }
+  /** `<voice>@<revision>` — the merge that is speaking, not just its name. */
+  get fingerprint(): string { return this.session.fingerprint; }
   get sessionId(): string { return this.session.sessionId; }
-  get backend(): string | null { return this.session.backend; }
+  get backend(): string { return this.session.backend; }
   /** Rows said and not yet retired. */
   get liveRows(): number { return this.rows.size; }
 
@@ -358,14 +341,14 @@ export class CrucibleRowSession {
           row.onChunk({
             seq: event.seq,
             pcm: event.pcm,
-            seconds: chunkSeconds(event.seconds, event.pcm, this.session.sampleRate),
+            seconds: event.seconds,
             sampleRate: this.session.sampleRate,
           });
         } else {
           row.buffered.push({
             seq: event.seq,
             pcm: event.pcm,
-            seconds: chunkSeconds(event.seconds, event.pcm, this.session.sampleRate),
+            seconds: event.seconds,
           });
         }
         return;
@@ -421,7 +404,7 @@ export class CrucibleRowSession {
         }
         if (row.onChunk !== undefined) {
           this.settle(row, {
-            success: true, streamed: true, ...rowSeconds(event.seconds), gapSec: done.gapSec,
+            success: true, streamed: true, seconds: event.seconds, gapSec: done.gapSec,
           });
           return;
         }
@@ -433,7 +416,7 @@ export class CrucibleRowSession {
           pcm.set(chunk.pcm, at);
           at += chunk.pcm.length;
         }
-        this.settle(row, { success: true, pcm, ...rowSeconds(event.seconds), gapSec: done.gapSec });
+        this.settle(row, { success: true, pcm, seconds: event.seconds, gapSec: done.gapSec });
         return;
       }
       case 'error': {

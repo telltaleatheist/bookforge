@@ -187,10 +187,8 @@ export interface CrucibleCoordinationHolder {
   readonly fact: string;
   /**
    * The server's own words. Shown verbatim — §5.4 forbids a generic failure.
-   * Null when the server did not name the holder (Crucible 1.0.25 reads an
-   * absent field as null): shown as that, never as a blank.
    */
-  readonly who: string | null;
+  readonly who: string;
 }
 
 /**

@@ -42,10 +42,9 @@ import { CLIENT_NAME, type ServerEntry } from './servers';
 export interface ServerProbe {
   /** The server's own name — not the name it is registered under here. */
   name: string;
-  /** Null where the server did not say (Crucible 1.0.25 reads a field a server left out as null; Owen 2026-09-24: any Crucible that answers works). */
-  version: string | null;
-  /** `cuda-linux`, `mlx-darwin`, `llama-windows` — null where the server did not say. */
-  backend: string | null;
+  version: string;
+  /** `cuda-linux`, `mlx-darwin`, `llama-windows`. */
+  backend: string;
   /** The voice (or model) on the card right now, or null. */
   resident: string | null;
   /** `tts`, `llm`, … or null when nothing is resident. */
@@ -439,8 +438,7 @@ export async function loadVoice(
   ownJobs.add(jobId);
   try {
     for await (const event of client.events(jobId)) {
-      // Display only; either field may be unstated (Crucible 1.0.25).
-      if (event.event === 'warming') onProgress?.(event.data.message === null ? 'warming up' : event.data.message);
+      if (event.event === 'warming') onProgress?.(event.data.message);
       else if (event.event === 'queued') {
         // WAITING IN THE SERVER'S LINE — re-sent on every move.
         const of = event.data.of === null ? '' : ` of ${event.data.of}`;

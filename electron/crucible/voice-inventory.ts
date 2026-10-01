@@ -74,8 +74,8 @@ export interface InventoryVoice {
    * machine runs, and the narration modal's engine strip used to be built from
    * what was installed on the box DRAWING the dialog — a fact about the wrong
    * computer, exactly as the voice list was before this module existed. See
-   * `enginesServed` in `voice-picker.ts`. Null where the server's row did not
-   * say (Crucible 1.0.25) — then the row is no evidence about engines at all.
+   * `enginesServed` in `voice-picker.ts`. Null where the server's row names no
+   * narrator engine — then the row is no evidence about engines at all.
    */
   readonly narratorEngine: string | null;
   /**
@@ -200,9 +200,7 @@ export async function readVoiceInventory(
       state: 'answered',
       voices: rows.map((v) => ({
         id: v.id,
-        // A row with no display name (Crucible 1.0.25 reads it as null) is shown
-        // by its id — the voice's own name on that server, not an invented one.
-        display: v.display === null ? v.id : v.display,
+        display: v.display,
         loadable: v.loadable,
         reason: v.reason,
         narratorEngine: v.narratorEngine,
@@ -268,12 +266,11 @@ export function placeVoices(inventory: VoiceInventory): VoicePlacement[] {
         continue;
       }
       /*
-       * NOT LOADABLE AND NO REASON is shown as exactly that. It used to be a
-       * protocol error that threw away the whole voice list; Crucible 1.0.25
-       * reads an absent `reason` as null and Owen ruled on 2026-09-24 that any
-       * Crucible that answers works — one quiet row is not a reason to list no
-       * voices at all. The row is still BLOCKED, and it says the server did not
-       * say why, so nobody is told "no" as though it were an explanation.
+       * NOT LOADABLE AND NO REASON is shown as exactly that: the SDK types a
+       * voice row's `reason` as nullable, and one row with a null reason is not
+       * a reason to list no voices at all. The row is still BLOCKED, and it says
+       * the server gave no reason, so nobody is told "no" as though it were an
+       * explanation.
        */
       row.blocked.push({
         server: entry.server,

@@ -113,19 +113,11 @@ export function bookforgeModuleSubjects(): string[] {
  * the tidier place for this rule and would require every engine to be updated
  * before any app could post the new file at all.
  */
-/*
- * `backend` IS NULL when the server did not say which backend it runs (Crucible
- * 1.0.25 reads the absent field as null; Owen 2026-09-24: any Crucible that
- * answers works). Then only the entries pinned to NO backend are asked for:
- * an entry for a named backend is never guessed onto a server that did not
- * name its own — that is how the wrong transcriber gets installed — and a
- * class that needed one shows up unmet, by name, through the capability read.
- */
-export function moduleForBackend(backend: string | null): CrucibleModule {
+export function moduleForBackend(backend: string): CrucibleModule {
   const job_types = BOOKFORGE_MODULE.job_types
     .filter((entry) => {
       const where = (entry as { backends?: string[] }).backends;
-      return where === undefined || (backend !== null && where.includes(backend));
+      return where === undefined || where.includes(backend);
     })
     .map(({ type, narrator_engine }) => narrator_engine === undefined
       ? { type } : { type, narrator_engine });

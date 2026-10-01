@@ -216,9 +216,8 @@ check('"has it but cannot load it" is kept apart from "has never heard of it"', 
     'a download the operator can do in a minute must not read as a catalog difference');
 });
 
-// Owen, 2026-09-24: "dont require any particular crucible server. if it can make
-// the call to the crucible server then it should work." This used to throw away
-// the whole voice list; now the one quiet row is blocked, and says it gave no reason.
+// A voice row's `reason` is nullable in the SDK. This used to throw away the
+// whole voice list; now the one quiet row is blocked, and says it gave no reason.
 check('not loadable and no reason is BLOCKED and says so — the rest of the list survives', async () => {
   const inventory = await scripted({
     '3090 Ti': [voice('deathstalker', { loadable: false, reason: null }), voice('mistborn')],

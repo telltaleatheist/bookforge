@@ -29,7 +29,6 @@ import {
   capabilityClassWords,
   capabilityWords,
   localRouteWords,
-  reasonWords,
   routeWords,
   sizeWords,
   upstreamCredentialField,
@@ -780,7 +779,7 @@ export class AiPanelComponent implements OnInit {
   anyAccountConfigured(): boolean {
     const doc = this.engine();
     if (doc === null) return false;
-    return this.UPSTREAMS.some((name) => doc.upstreams[name]?.configured === true);
+    return this.UPSTREAMS.some((name) => doc.upstreams[name].configured);
   }
 
   readonly modelClasses = computed<readonly string[]>(() => {
@@ -944,10 +943,7 @@ export class AiPanelComponent implements OnInit {
     const doc = this.engine();
     const record = this.capability();
     if (doc === null || record === null) return 'reading…';
-    // Either fact may be unstated (Crucible 1.0.25) and is said to be.
-    const backend = doc.backendKind === null ? 'backend not stated' : doc.backendKind;
-    const card = record.totalBytes === null ? 'card size not stated' : sizeWords(record.totalBytes) + ' card';
-    return backend + ' · ' + card;
+    return doc.backendKind + ' · ' + sizeWords(record.totalBytes) + ' card';
   }
 
   actWords(act: string): string { return capabilityClassWords(act); }
@@ -991,16 +987,13 @@ export class AiPanelComponent implements OnInit {
   }
 
   choiceWords(choice: CrucibleLocalModelChoice): string {
-    // An unstated install or fit claims nothing either way (Crucible 1.0.25).
     const size = sizeWords(choice.memoryBytesEstimate);
-    if (choice.installed === false) return size + ' · not downloaded yet';
-    return choice.fits === false ? size + ' · may not fit this card' : size;
+    if (!choice.installed) return size + ' · not downloaded yet';
+    return choice.fits ? size : size + ' · may not fit this card';
   }
 
   rowWords(row: CrucibleCatalogRow): string {
-    // A server that did not name the source says so rather than showing a blank.
-    const repo = row.source === null ? 'source not stated'
-      : row.source.startsWith('hf:') ? row.source.slice(3) : row.source;
+    const repo = row.source.startsWith('hf:') ? row.source.slice(3) : row.source;
     const size = row.installed ? sizeWords(row.installedBytes) : sizeWords(row.expectedBytes);
     return repo + ' · ' + size;
   }
@@ -1075,10 +1068,8 @@ export class AiPanelComponent implements OnInit {
   downloadableFor(act: string): readonly CrucibleCatalogRow[] {
     const rows: CrucibleCatalogRow[] = [];
     for (const choice of this.choicesFor(act)) {
-      // Only a choice the engine SAYS is not installed is offered as a download;
-      // one whose install state it did not state (Crucible 1.0.25) is offered
-      // for use, and the engine answers a load of it by name either way.
-      if (choice.installed !== false) continue;
+      // Only a choice that is not installed is offered as a download.
+      if (choice.installed) continue;
       const row = this.rowFor(act, choice.id);
       // NOT SKIPPED QUIETLY when the catalog does not have it. A candidate the
       // catalog cannot name has no `kind`, so there is no pull to offer; the
@@ -1217,9 +1208,7 @@ export class AiPanelComponent implements OnInit {
     const missing = this.downloadableFor(job);
 
     for (const choice of this.choicesFor(job)) {
-      // `!== false`, not truthiness: see `downloadableFor` — an unstated install
-      // state is offered for use, never as a download.
-      if (choice.installed !== false) {
+      if (choice.installed) {
         options.push({
           key: 'model:' + choice.id,
           title: this.modelLabel(job, choice.id),
@@ -1363,7 +1352,7 @@ export class AiPanelComponent implements OnInit {
   jobNow(job: string): string | null {
     const row = this.capability()?.classes.find((entry) => entry.capability === job);
     if (row === undefined) return null;
-    if (!row.enabled) return reasonWords(row.reason);
+    if (!row.enabled) return row.reason;
     if (row.route === 'upstream') return upstreamRouteWords(row.selected);
     return row.selected === '' ? null : this.modelLabel(job, row.selected);
   }
@@ -1453,7 +1442,7 @@ export class AiPanelComponent implements OnInit {
   }
 
   isConfigured(name: CrucibleUpstreamName): boolean {
-    return this.engine()?.upstreams[name]?.configured === true;
+    return this.engine()?.upstreams[name].configured === true;
   }
 
   fieldLabel(name: CrucibleUpstreamName): string { return upstreamFieldWords(name).label; }

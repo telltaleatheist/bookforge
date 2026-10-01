@@ -143,7 +143,7 @@ export const IDLE_RECORDING: RecordingStatus = {
  */
 export interface VoiceRow {
   id: string;
-  /** The row's display name — its id where the server gave none (Crucible 1.0.25 reads a field a server left out as null; Owen 2026-09-24: any Crucible that answers works). */
+  /** The row's display name, as the server gives it. */
   display: string;
   /** The `narratorEngine` the server puts on the row, e.g. `higgs-v3`; null where it did not say. */
   engine: string | null;

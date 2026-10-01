@@ -61,12 +61,8 @@ export interface CrucibleCatalogRow {
   id: string;
   /** The manifest's display name, or null where a manifest carries none. */
   name: string | null;
-  /**
-   * Which job type it belongs to: `llm`, `tts`, `asr`, `align`, … — or null
-   * where the server did not say (Crucible 1.0.25 reads an absent
-   * informational field as null; Owen 2026-09-24, any Crucible that answers).
-   */
-  jobType: string | null;
+  /** Which job type it belongs to: `llm`, `tts`, `asr`, `align`, … */
+  jobType: string;
   installed: boolean;
   /** Bytes on disk, or null when it is not installed. */
   installedBytes: number | null;
@@ -78,13 +74,10 @@ export interface CrucibleCatalogRow {
    * rather than invent one.
    */
   expectedBytes: number | null;
-  /**
-   * The capability classes this model is the FLOOR for. Only ever on a model.
-   * Null = the server did not say, which is not the same as "none".
-   */
-  floors: string[] | null;
-  /** `hf:<repo>` — where the bytes come from, or null where the server did not say. */
-  source: string | null;
+  /** The capability classes this model is the FLOOR for (empty on anything else). */
+  floors: string[];
+  /** `hf:<repo>` — where the bytes come from. */
+  source: string;
   /** Is this the thing on the card right now? */
   resident: boolean;
 }

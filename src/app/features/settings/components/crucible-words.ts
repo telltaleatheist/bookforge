@@ -151,17 +151,9 @@ export function subjectWords(
 }
 
 /** "8.5 GB", or "size not declared" — never "0 GB", which nobody measured. */
-/**
- * A capability row's reason, verbatim — or the sentence saying the engine gave
- * none (Crucible 1.0.25 reads an absent `reason` as null), never "null".
- */
-export function reasonWords(reason: string | null): string {
-  return reason === null ? 'the engine did not say why' : reason;
-}
-
-/** ` — <holder>` when the server named who holds the card; nothing when it did not. */
-function whoWords(who: string | null): string {
-  return who === null ? '' : ` — ${who}`;
+/** ` — <holder>`, the server's words for who holds the card. */
+function whoWords(who: string): string {
+  return ` — ${who}`;
 }
 
 export function sizeWords(bytes: number | null): string {
@@ -217,11 +209,9 @@ export function capabilityWords(
     return 'not measured yet — install a job type from the engine\'s own page to write its '
       + 'capability record';
   }
-  // A reason or shortfall the server did not state is said to be missing or
-  // left out — never drawn as "null" or as zero (Crucible 1.0.25).
-  const why = reasonWords(row.reason);
+  const why = row.reason;
   if (!row.enabled) {
-    const short = row.shortfallBytes !== null && row.shortfallBytes > 0
+    const short = row.shortfallBytes > 0
       ? ` (short by ${(row.shortfallBytes / 1024 ** 3).toFixed(1)} GB)`
       : '';
     return `not served here — ${why}${short}`;
@@ -452,11 +442,7 @@ export function upstreamFieldWords(
  * so there is nothing to put back in the box, and this line is the whole of
  * what a person gets to recognise the stored one by.
  */
-export function upstreamStateWords(name: CrucibleUpstreamName, row: CrucibleUpstreamRow | null): string {
-  // Null = the engine's settings document does not describe this upstream at
-  // all (Crucible 1.0.25; Owen 2026-09-24, any Crucible that answers). That is
-  // not "not set up" — it is an engine that cannot say.
-  if (row === null) return `This engine does not describe ${upstreamWords(name)}.`;
+export function upstreamStateWords(name: CrucibleUpstreamName, row: CrucibleUpstreamRow): string {
   if (!row.configured) {
     return `Not set up — this engine cannot send anything to ${upstreamWords(name)} yet.`;
   }
@@ -565,7 +551,7 @@ export function unavailableGroups(
   const groups: { reason: string; capabilities: string[] }[] = [];
   for (const row of record.classes) {
     if (row.enabled) continue;
-    const reason = reasonWords(row.reason);
+    const reason = row.reason;
     const existing = groups.find((g) => g.reason === reason);
     if (existing === undefined) groups.push({ reason, capabilities: [row.capability] });
     else existing.capabilities.push(row.capability);
@@ -708,8 +694,7 @@ function preparingWords(
   const total = progress.bytes.total === null
     ? null
     : (progress.bytes.total / 1024 ** 3).toFixed(1);
-  // A server that did not name the file is shown downloading, not downloading "null".
-  const file = progress.bytes.file === null ? '' : ` ${progress.bytes.file}`;
+  const file = ` ${progress.bytes.file}`;
   return total === null
     ? `${head} — downloading${file} ${done} GB`
     : `${head} — downloading${file} ${done} of ${total} GB`;

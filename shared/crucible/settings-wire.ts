@@ -130,27 +130,25 @@ export interface CrucibleServersView {
 /**
  * `GET /v1/info` + `GET /v1/health`, as one answer.
  *
- * EVERY `| null` HERE IS "THE SERVER DID NOT SAY". Crucible 1.0.25 reads an
- * informational field a server left out as null instead of refusing the whole
- * answer — Owen, 2026-09-24: *"dont require any particular crucible server. if
- * it can make the call to the crucible server then it should work."* These are
- * facts for a person to read, and a screen shows a null as not stated.
+ * Typed exactly as @crucible/client 1.0.71 reads them: every field the
+ * server is required to send is required here. `residentKind` is null when
+ * nothing is resident — the server's answer, not a missing one.
  */
 export interface ServerFacts {
   /** What the server calls itself — not the name this machine files it under. */
   serverName: string;
-  version: string | null;
+  version: string;
   apiVersion: number;
-  platform: string | null;
-  arch: string | null;
+  platform: string;
+  arch: string;
   /** `cuda-linux`, `mlx-darwin`, `llama-windows`. */
-  backend: string | null;
-  gpu: { vendor: string | null; name: string | null; vramBytes: number | null } | null;
+  backend: string;
+  gpu: { vendor: string; name: string; vramBytes: number };
   /** What this server will accept as a job `type`. */
   jobTypes: string[];
   /** The lane, right now: `ok`, `warming`, `busy` — verbatim, as the server said it. */
-  health: string | null;
-  queueDepth: number | null;
+  health: string;
+  queueDepth: number;
   /** The ids on the card, and what KIND holds it (`llm`, `tts`, … or null). */
   residentModels: string[];
   residentKind: string | null;
@@ -235,18 +233,15 @@ export interface CrucibleModuleProgress {
   taskId: string | null;
   state: 'running' | 'done' | 'failed' | 'cancelled';
   /**
-   * `{name, index, total}` — for a module, one per entry plus the reload. Each
-   * part null where the server's frame did not say (Crucible 1.0.25; Owen
-   * 2026-09-24, any Crucible that answers).
+   * `{name, index, total}` — for a module, one per entry plus the reload.
    */
-  step: { name: string | null; index: number | null; total: number | null } | null;
+  step: { name: string; index: number; total: number } | null;
   /** One line of pip's output. Draw it, never branch on it. */
   line: string | null;
   /**
-   * A pull's byte counts. `total` is null where no manifest sizes it; `file`
-   * is null where the server's frame did not name one (Crucible 1.0.25).
+   * A pull's byte counts. `total` is null where no manifest sizes it.
    */
-  bytes: { done: number; total: number | null; file: string | null } | null;
+  bytes: { done: number; total: number | null; file: string } | null;
   /** A module entry that was already true. Idempotence, reported. */
   skipped: string | null;
   /**
@@ -284,16 +279,15 @@ export interface CrucibleModuleProgress {
 /** One row of `GET /v1/models`: four separate facts, plus the reason for a no. */
 export interface CrucibleModelRow {
   id: string;
-  /** Each `| null` is "the server did not say" (Crucible 1.0.25; see {@link ServerFacts}). */
-  family: string | null;
-  paramsB: number | null;
-  backendSupported: boolean | null;
-  installed: boolean | null;
+  family: string;
+  paramsB: number;
+  backendSupported: boolean;
+  installed: boolean;
   resident: boolean;
   loadable: boolean;
-  /** Why not, when `loadable` is false — null or absent where the server gave no reason. */
+  /** Why not, when `loadable` is false; null on a loadable model, whose row carries no reason. */
   reason?: string | null;
-  /** Weights plus KV at the default context, measured on the host. */
+  /** Weights plus KV at the default context, measured on the host; null where the host has not measured it. */
   memoryBytesEstimate: number | null;
 }
 
@@ -305,13 +299,13 @@ export interface ActivityJobRow {
   status: string;
   /**
    * 0..1. A job HAS a denominator: the client posted the whole of the work up
-   * front. Null where the server did not report it (Crucible 1.0.25).
+   * front.
    */
-  progress: number | null;
+  progress: number;
   message: string | null;
   /** The submitting client's User-Agent, or null when it did not say. */
   client: string | null;
-  /** When it started running (ISO 8601), or null when the server did not say. */
+  /** When it started running (ISO 8601), or null while it has not started. */
   started: string | null;
 }
 
@@ -322,10 +316,10 @@ export interface ActivityJobRow {
 export interface ActivityLeaseRow {
   leaseId: string;
   /** The capability class it was taken for: `clean`, `simplify`, … */
-  act: string | null;
-  /** The holder's User-Agent, or null when it did not say. */
+  act: string;
+  /** The holder's User-Agent, or null when it did not send one. */
   client: string | null;
-  since: string | null;
+  since: string;
 }
 
 /**
@@ -337,33 +331,32 @@ export interface ActivityLeaseRow {
 export interface ActivityStreamRow {
   sessionId: string;
   voice: string;
-  /** Each `| null` is "the server did not say" (Crucible 1.0.25). */
-  since: string | null;
+  since: string;
+  /** Who opened it, or null when the opener sent no name. */
   client: string | null;
-  said: number | null;
-  finished: number | null;
-  inFlight: number | null;
-  seconds: number | null;
+  said: number;
+  finished: number;
+  inFlight: number;
+  seconds: number;
 }
 
 /** `GET /v1/activity`, as the row draws it. */
 export interface CrucibleActivityView {
   serverName: string;
-  /** Each `| null` below is "the server did not say" (Crucible 1.0.25; see {@link ServerFacts}). */
-  uptimeS: number | null;
-  resident: { kind: string; id: string; since: string | null } | null;
+  uptimeS: number;
+  resident: { kind: string; id: string; since: string } | null;
   /** The id of a model being loaded right now, or null. */
   warming: string | null;
   /** Who holds narrator's wire. Not the lane — a stream holds this and not that. */
   claimedBy: string | null;
   streaming: ActivityStreamRow | null;
-  chatInFlight: number | null;
+  chatInFlight: number;
   /** The open lease, or null. */
   lease: ActivityLeaseRow | null;
   slot: {
-    busy: number | null;
-    of: number | null;
-    queueDepth: number | null;
+    busy: number;
+    of: number;
+    queueDepth: number;
     /**
      * The server's own composition of "the lane is free AND nobody holds the
      * card". **Never a reservation** — reading it is not permission to submit;
@@ -419,10 +412,10 @@ export interface CrucibleCapabilityRow {
   enabled: boolean;
   /** The model that won, or `''` when none did. Branch on `enabled`, not on this. */
   selected: string;
-  /** Why, in the server's own words, whichever way it went — or null where it gave none. */
-  reason: string | null;
-  /** How much more memory the smallest candidate needed, or 0 — or null where the server did not say. */
-  shortfallBytes: number | null;
+  /** Why, in the server's own words, whichever way it went. */
+  reason: string;
+  /** How much more memory the smallest candidate needed, or 0. */
+  shortfallBytes: number;
   /**
    * WHERE this class's work runs on that server (PHASE15 §3.3).
    *
@@ -451,10 +444,9 @@ export interface CrucibleCapabilityRow {
  * record is told from a current one without anybody writing down a date.
  */
 export interface CrucibleCapabilityView {
-  /** Each null where the server did not say (Crucible 1.0.25 reads an informational field a server left out as null — Owen, 2026-09-24: any Crucible that answers works). */
-  backendKind: string | null;
-  totalBytes: number | null;
-  desktopAllowanceBytes: number | null;
+  backendKind: string;
+  totalBytes: number;
+  desktopAllowanceBytes: number;
   classes: CrucibleCapabilityRow[];
 }
 
@@ -551,10 +543,9 @@ export interface CrucibleUpstreamRow {
  */
 export interface CrucibleLocalModelChoice {
   id: string;
-  /** Each of these three is null where the engine did not say (Crucible 1.0.25 reads an informational field a server left out as null — Owen, 2026-09-24: any Crucible that answers works). */
-  memoryBytesEstimate: number | null;
-  fits: boolean | null;
-  installed: boolean | null;
+  memoryBytesEstimate: number;
+  fits: boolean;
+  installed: boolean;
 }
 
 /**
@@ -572,17 +563,11 @@ export interface CrucibleLocalModels {
 export interface CrucibleEngineSettings {
   /** One entry per llm class, always all four. */
   routes: Record<CrucibleTextActName, CrucibleRouteRow>;
-  /**
-   * One entry per upstream name. `null` = the server's document does not
-   * describe that upstream at all (Crucible 1.0.25 reads an informational field a server left out as null — Owen, 2026-09-24: any Crucible that answers works) — which is
-   * not "unconfigured": nothing can be routed to it, and nothing is claimed
-   * about it either.
-   */
-  upstreams: Record<CrucibleUpstreamName, CrucibleUpstreamRow | null>;
-  /** Null where the server did not say. */
-  desktopAllowanceBytes: number | null;
-  /** `cuda-linux`, `mlx-darwin`, or `none` in host mode — null where the server did not say. */
-  backendKind: string | null;
+  /** One entry per upstream name, always all three (the SDK requires each). */
+  upstreams: Record<CrucibleUpstreamName, CrucibleUpstreamRow>;
+  desktopAllowanceBytes: number;
+  /** `cuda-linux`, `mlx-darwin`, or `none` in host mode. */
+  backendKind: string;
   /**
    * The engine's model assignment. Always present: the server sends both
    * `local_models` and `local_model_choices` on every settings document, and

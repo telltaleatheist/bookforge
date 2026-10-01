@@ -308,8 +308,7 @@ export const CRUCIBLE_PAGES_NO_BACKEND = 'page reading is the PC\'s';
  *
  * A BACKEND ABSENT FROM THIS TABLE IS READ ONE PAGE AT A TIME
  * ({@link UNPAIRED_PAGE_CONCURRENCY}) — never twelve against slots nobody has
- * counted, and never refused. It used to be refused by name; Owen, 2026-09-24:
- * *"if it can make the call to the crucible server then it should work."*
+ * counted, and never refused: one in flight is the width every engine admits.
  */
 /** The width for a backend with no pairing in the table below: one page at a time, which every engine admits. */
 export const UNPAIRED_PAGE_CONCURRENCY = 1;
@@ -349,7 +348,7 @@ export interface PagesVenueHost extends VenueHost {
    * rather than inferred from the model row — `backendSupported` is a boolean
    * about the manifest and says nothing about how many slots the engine has.
    */
-  backend(name: string): Promise<string | null>;
+  backend(name: string): Promise<string>;
 }
 
 /** The real one: the app's routing record, the real registry and real HTTP. */
@@ -365,7 +364,7 @@ export function processPagesVenueHost(): PagesVenueHost {
     async models(name: string): Promise<ModelInfo[]> {
       return (await crucibleClientFor(name, CRUCIBLE_CLIENT_NAME)).models();
     },
-    async backend(name: string): Promise<string | null> {
+    async backend(name: string): Promise<string> {
       return (await (await crucibleClientFor(name, CRUCIBLE_CLIENT_NAME)).info()).host.backend;
     },
   };
@@ -428,10 +427,10 @@ export interface CruciblePageReader {
   /** What the server's row said it is, for the run's record. `null` on a host with no block. */
   fingerprint: string | null;
   /**
-   * The backend that answered: `cuda-linux` or `llama-windows` — or null when the
-   * server did not say (Crucible 1.0.25). For the record, and for {@link concurrency}.
+   * The backend that answered: `cuda-linux` or `llama-windows`. For the record,
+   * and for {@link concurrency}.
    */
-  backend: string | null;
+  backend: string;
   /**
    * `--vlm-concurrency`: how many pages the engine may hold in flight against
    * THIS server. `0` means "send nothing and let foundry's measured default of
@@ -536,17 +535,13 @@ export async function resolveCruciblePageReader(
   const backend = await host.backend(server);
   /*
    * A BACKEND THIS BUILD HAS NO WIDTH FOR IS READ ONE PAGE AT A TIME — it is not
-   * refused. Owen, 2026-09-24: *"dont require any particular crucible server. if
-   * it can make the call to the crucible server then it should work."* This used
-   * to throw `crucible_pages_unknown_backend`, which is what a Mac serving pages
-   * (mlx-darwin, since 2026-09-21) would have met. One in flight is the width
-   * every engine admits, so the read works everywhere; what it costs is speed on
-   * an engine that could take more, which is a pairing to add to the table, not
-   * a reason to stop the book. A server that does not NAME its backend (null,
-   * Crucible 1.0.25) is the same case: nothing is paired with it.
+   * refused. This used to throw `crucible_pages_unknown_backend`, which is what a
+   * Mac serving pages (mlx-darwin, since 2026-09-21) would have met. One in
+   * flight is the width every engine admits, so the read works everywhere; what
+   * it costs is speed on an engine that could take more, which is a pairing to
+   * add to the table, not a reason to stop the book.
    */
-  const paired = backend === null ? undefined : PAGE_CONCURRENCY_BY_BACKEND[backend];
-  const concurrency = paired ?? UNPAIRED_PAGE_CONCURRENCY;
+  const concurrency = PAGE_CONCURRENCY_BY_BACKEND[backend] ?? UNPAIRED_PAGE_CONCURRENCY;
 
   const entry = host.server(server);
   return {

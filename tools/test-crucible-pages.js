@@ -278,9 +278,8 @@ async function main() {
     assert.strictEqual(pages.PAGE_CONCURRENCY_BY_BACKEND['mlx-darwin'], undefined);
   });
 
-  // Owen, 2026-09-24: "if it can make the call to the crucible server then it
-  // should work." A backend with no paired width used to be refused by name; it
-  // is read one page at a time — the width every engine admits — never twelve.
+  // A backend with no paired width used to be refused by name; it is read one
+  // page at a time — the width every engine admits — never twelve.
   await check('a backend with no paired width is read ONE page at a time, not refused and never sent twelve', async () => {
     const placed = await pages.resolveCruciblePageReader(
       'odd', scriptedHost({ backend: async () => 'rocm-linux' }));

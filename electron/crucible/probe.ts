@@ -187,9 +187,7 @@ async function factsOf(client: CrucibleClient): Promise<ServerFacts> {
     platform: info.host.platform,
     arch: info.host.arch,
     backend: info.host.backend,
-    gpu: info.host.gpu === null
-      ? null
-      : { vendor: info.host.gpu.vendor, name: info.host.gpu.name, vramBytes: info.host.gpu.vramBytes },
+    gpu: { vendor: info.host.gpu.vendor, name: info.host.gpu.name, vramBytes: info.host.gpu.vramBytes },
     jobTypes: [...info.jobTypes],
     health: health.status,
     queueDepth: health.queueDepth,
@@ -313,7 +311,7 @@ export async function activityOf(
               seconds: activity.streaming.seconds,
             }
           : null,
-        chatInFlight: activity.chat === null ? null : activity.chat.inFlight,
+        chatInFlight: activity.chat.inFlight,
         lease: activity.lease === null
           ? null
           : {

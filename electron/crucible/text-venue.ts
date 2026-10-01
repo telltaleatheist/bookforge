@@ -306,12 +306,10 @@ export function modelFromCapability(
     );
   }
   if (!row.enabled) {
-    // A shortfall or a reason the server did not state is left out of the
-    // sentence, never drawn as zero or blank (Crucible 1.0.25 reads both as null).
-    const short = row.shortfallBytes !== null && row.shortfallBytes > 0
+    const short = row.shortfallBytes > 0
       ? ` It is short by ${(row.shortfallBytes / 1024 ** 3).toFixed(1)} GB.`
       : '';
-    const why = row.reason === null ? 'it did not say why' : row.reason;
+    const why = row.reason;
     throw new CrucibleTextActError(
       'crucible_capability_disabled',
       `crucible "${server}" cannot serve the "${act}" class: ${why}.${short} That is the `

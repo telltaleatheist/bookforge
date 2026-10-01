@@ -78,15 +78,9 @@ const OUR_STEPS: Readonly<Record<string, SetupPhase>> = {
   'local-readiness': 'windows-engine',
 };
 
-/**
- * `name (index of total)`, saying only what the server's step frame stated —
- * a Crucible may leave any part out (1.0.25 reads it as null), and a missing
- * count is omitted rather than drawn as a zero.
- */
-function stepWords(step: { name: string | null; index: number | null; total: number | null }): string {
-  const name = step.name ?? 'a step it did not name';
-  if (step.index === null) return name;
-  return step.total === null ? `${name} (step ${step.index})` : `${name} (${step.index} of ${step.total})`;
+/** `name (index of total)`, as the server's step frame states it. */
+function stepWords(step: { name: string; index: number; total: number }): string {
+  return `${step.name} (${step.index} of ${step.total})`;
 }
 
 @Component({
