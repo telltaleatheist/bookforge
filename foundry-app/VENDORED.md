@@ -10,10 +10,16 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\<user>\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **6aea488** — *Adopt Crucible 1.0.76: a placement opens a queue session instead of loading and leasing* (was 631ac3b, full sync: 18 files — the 1.0.76 tarballs, `HeldSession`/`openSession` in the dispatcher, `foundry@<host>` client name, the rebuilt engine, tests moved to sessions). Before it: 631ac3b (1.0.72), 70d23a4 (1.0.63), 0d1891a (partial), **1115cea** |
+| Source sha | **1b66649** — *Adopt Crucible 1.0.80 (was 1.0.76)* (was 6aea488, full sync: 5 files — the 1.0.80 tarballs, package.json and lock). Before it: 6aea488 (1.0.76 sessions), 631ac3b (1.0.72), 70d23a4 (1.0.63), 0d1891a (partial), **1115cea** |
 | Engine | **VENDORED, in `engine/`** since 1927563 (2026-09-24): `engine/foundry-engine.cjs` plus its four fonts, built from Foundry's `src/` by Foundry's `tools/build-engine.mjs` and checked against those sources by Foundry's test suite. Run by BookForge's own Electron as Node (`ELECTRON_RUN_AS_NODE=1`) from BOTH doors — this copy's `electron/engine.ts` and BookForge's `electron/foundry-bridge.ts`. **Ask it: `node foundry-app/engine/foundry-engine.cjs --version`** → `foundry X.Y.Z (src <digest>)`. There is no downloaded engine any more; `FOUNDRY_BIN` still overrides in both doors. |
 | Copied on | 2026-09-19 (five times: 3738c01, 3436fc5, 806d44b, f349771, ca4754c), 2026-09-20 (98a4344, 9e0b27d, dccc144, 7b98004, cc5fc5b, 93010d8, 77e1d6d) 2026-09-21 (753dca8, 3e26e53, f9bebb6, 95593b0, 8ee48b7) and 2026-09-22 (7185764, 7912022, 19fa7a9, df63f9f) and 2026-09-23 (acf63c2, 4835411), 2026-09-24 (b4c7346, 1927563, e2481dc, a1138f6, 72c6b08, b7ba2a8, 0eb12de), 2026-09-28 (1115cea) |
 | Copied by | Mechanical source sync, verified against Foundry `0eb12de:app/` (`git hash-object` per file: clean but for this file, `IPC-CHANNELS.md` and `.gitignore` — see below); details below |
+
+## The `6aea488 → 1b66649` re-vendor — Crucible 1.0.80 (2026-10-02)
+
+Pin only: the hosted Foundry moves to SDK 1.0.80, the release BookForge pins. No code
+changed — every request Foundry sends already states its wait, so 1.0.78's "wait in line
+by default" changes nothing for it. `npm install` in `foundry-app/` relinks the SDK.
 
 ## The `631ac3b → 6aea488` re-vendor — Crucible 1.0.76: queue sessions replace leases (2026-10-01)
 
