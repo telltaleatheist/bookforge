@@ -512,6 +512,7 @@ function renderEngine(): void {
   if (!connected) { setNote(s?.connectionError ?? 'Pick a Crucible in Options.', 'bad'); return; }
   // Our own load is a wait, not a refusal — see `describeHolder`.
   if (engine?.holder) { setNote(engine.holder.text, engine.holder.ours ? '' : 'bad'); return; }
+  if (engine?.lineWait) { setNote(engine.lineWait, ''); return; }
   if (engine?.note) { setNote(engine.note, engine.busy ? '' : 'bad'); return; }
   if (s?.switchingVoice) { setNote(`Loading ${s.switchingVoice}…`, ''); return; }
   if (engine?.residentKind && engine.residentKind !== 'tts') {

@@ -320,6 +320,9 @@ function startFakeCrucible(options = {}) {
       res.writeHead(201, { 'Content-Type': 'application/json' });
       return res.end(JSON.stringify({
         session_id: s.id, voice: s.voice, fingerprint: `${s.voice}@abc1234`, sample_rate: 24000, backend: 'cuda-linux',
+        // Crucible 1.0.76: a stream runs inside a queue session, opened for it
+        // here because this client holds none.
+        queue_session_id: `ses-for-${s.id}`, queue_session_opened_for_stream: true,
       }));
     }
 

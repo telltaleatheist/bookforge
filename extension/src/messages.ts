@@ -199,6 +199,12 @@ export interface EngineStatus {
   /** The job's latest `warming` line, or a refusal, for the popup. */
   note: string | null;
   /**
+   * The reading stream is WAITING IN THE SERVER'S LINE behind another app's
+   * session — "waiting, #1 of 2 in crucible "mac"'s line — …" — or null. A wait,
+   * drawn as one, never as an error (Crucible 1.0.82 `stream({onQueue})`).
+   */
+  lineWait: string | null;
+  /**
    * Who holds the engine there, from `/v1/activity`, after a refusal — and
    * whether that is this extension itself, which the popup draws as a wait
    * rather than as an error (`describeHolder`).
@@ -229,6 +235,7 @@ export const NO_ENGINE: EngineStatus = {
   residentKind: null,
   busy: null,
   note: null,
+  lineWait: null,
   holder: null,
   idleMinutes: 0,
   residentClip: null,

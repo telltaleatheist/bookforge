@@ -44,7 +44,8 @@
  */
 
 import { CrucibleRefused } from '@crucible/client';
-import type { Activity, CrucibleClient, TtsStreamSession, VoiceInfo } from '@crucible/client';
+import type { Activity, CrucibleClient, StreamOptions, TtsStreamSession, VoiceInfo } from '@crucible/client';
+import { crucibleQueuedLine } from '../../shared/crucible/server-queue';
 import {
   BYTES_PER_SECOND,
   CLOSE_AUTH,
@@ -777,6 +778,7 @@ function engineStatus(): EngineStatus {
     residentKind,
     busy: engineBusy,
     note: engineNote,
+    lineWait: streamWait,
     holder: engineHolder,
     idleMinutes,
     residentClip: residentClip === null ? null : (residentClip.name ?? residentClip.sha256.slice(0, 12)),
@@ -1034,6 +1036,26 @@ function bandFor(voice: string): ListenChunkBand {
  * and this turns it into "press Load voice" — never into a load-voice job on a
  * card somebody else may be using.
  */
+/**
+ * WHERE A STREAM THAT IS WAITING IN THE SERVER'S LINE STANDS — "waiting, #1 of 2
+ * in crucible "mac"'s line" — or null when nothing is waiting.
+ *
+ * Since Crucible 1.0.76 a stream runs inside a queue session, and a session asked
+ * for while another app's is open (a book narrating) WAITS its turn. Until 1.0.82
+ * the open said nothing while it waited, so Play just spun — the Sep 30 complaint.
+ * `stream({onQueue})` reports every move; this line is the toolbar's note and the
+ * popup's, and it clears the moment the stream opens or the wait ends.
+ */
+let streamWait: string | null = null;
+
+/**
+ * ABORTS THE OPEN THAT IS WAITING IN THE LINE. Stop (and every teardown through
+ * `stopAll`) takes a waiting stream out of the server's line: a stream that
+ * opened later for a read nobody wants any more would hold the whole machine
+ * until its session idled out (15 minutes).
+ */
+let openAbort: AbortController | null = null;
+
 async function ensureStream(): Promise<LiveStream | null> {
   if (live !== null) return live;
   if (opening !== null) return opening;
@@ -1077,12 +1099,25 @@ async function ensureStream(): Promise<LiveStream | null> {
       return null;
     }
     let session: TtsStreamSession;
+    const abort = new AbortController();
+    openAbort = abort;
+    const wait = {
+      onQueue: ({ position, of }: { position: number; of: number }): void => {
+        streamWait = `${crucibleQueuedLine(named.name, position, of)} — another app is using it`;
+        broadcast();
+      },
+      signal: abort.signal,
+    };
     try {
-      session = await openWaitingOutOurselves(bound, voice);
+      session = await openWaitingOutOurselves(bound, voice, wait);
     } catch (err) {
+      if (abort.signal.aborted) return null;   // Stop took it out of the line; not an error
       connectionError = describeRefusal(err, named.name);
       await noteHolder();
       return null;
+    } finally {
+      if (openAbort === abort) openAbort = null;
+      if (streamWait !== null) { streamWait = null; broadcast(); }
     }
     if (session.sampleRate !== SAMPLE_RATE) {
       // The player's byte arithmetic, its WAV header and its cache are all
@@ -1145,9 +1180,10 @@ async function ensureStream(): Promise<LiveStream | null> {
 async function openWaitingOutOurselves(
   bound: CrucibleClient,
   voice: string,
+  wait: Pick<StreamOptions, 'onQueue' | 'signal'>,
 ): Promise<TtsStreamSession> {
   try {
-    return await bound.stream({ voice, language: LISTEN_LANGUAGE });
+    return await bound.stream({ voice, language: LISTEN_LANGUAGE, ...wait });
   } catch (err) {
     if (!(err instanceof CrucibleRefused)) throw err;
     if (err.code !== 'stream_session_open' && err.code !== 'engine_in_use') throw err;
@@ -1164,7 +1200,7 @@ async function openWaitingOutOurselves(
       // OUR orphan. Close it and go again.
       console.warn(`[BFR] evicting this browser's own stale session ${activity.streaming.sessionId}`);
       await evictOwnSession(activity.streaming.sessionId);
-      return await bound.stream({ voice, language: LISTEN_LANGUAGE });
+      return await bound.stream({ voice, language: LISTEN_LANGUAGE, ...wait });
     }
     // Our own load settling: wait it out, bounded, then ask once more.
     const deadline = Date.now() + OUR_ORPHAN_WAIT_MS;
@@ -1176,7 +1212,7 @@ async function openWaitingOutOurselves(
       if (!h.ours) throw err;
       await new Promise((r) => setTimeout(r, 1000));
     }
-    return await bound.stream({ voice, language: LISTEN_LANGUAGE });
+    return await bound.stream({ voice, language: LISTEN_LANGUAGE, ...wait });
   }
 }
 
@@ -1736,6 +1772,9 @@ function concludeCurrent(): void {
  * bounded by the LRU cap; the audio is freed for real in {@link purgeAll}.
  */
 function stopAll(): void {
+  // A stream still waiting in the server's line leaves it (see `openAbort`).
+  openAbort?.abort();
+  openAbort = null;
   cancelGeneration();
   dropAllPrefetch();
   current = null;
@@ -3413,7 +3452,7 @@ function currentStatus(): PlaybackStatus {
     rate,
     paused: !!s && userPaused,
     error: errorMsg ?? undefined,
-    note: s?.note ?? undefined
+    note: s?.note ?? streamWait ?? undefined
   };
 }
 
