@@ -14,7 +14,8 @@ THE CONTRACT, identical on every stack that implements it (crucible-pc owns the
 Crucible side and the PC sglang-omni patch; this file is the MLX arm):
 
   HIGGS_STALL_GUARD="<frames>,<rate>,<max>,<window>"  read ONCE, at engine start.
-  Unset or `off` = no guard. Crucible always sets it explicitly; the recommended
+  Unset or exactly `off` = no guard (the grammar is the PC patch's - see
+  `stall_guard_from_env`). Crucible always sets it explicitly; the recommended
   value is "37,0.5,20,8". A malformed value is a startup error naming the
   variable.
 
@@ -45,6 +46,7 @@ machine; `mlx_backend` does the one scatter.
 from __future__ import annotations
 
 import os
+import re
 from collections import deque
 from dataclasses import dataclass
 
@@ -69,29 +71,37 @@ class StallGuard:
         return min(self.max, self.rate * (run - self.frames))
 
 
-def stall_guard_from_env(environ=None) -> StallGuard | None:
-    """The guard `HIGGS_STALL_GUARD` asks for, None when unset or `off`."""
-    env = os.environ if environ is None else environ
-    raw = (env.get(ENV) or '').strip()
-    if raw == '' or raw.lower() == 'off':
-        return None
-    parts = [p.strip() for p in raw.split(',')]
-    if len(parts) != 4:
-        raise ValueError(
-            f'{ENV}={raw!r} is not "<frames>,<rate>,<max>,<window>" (e.g. {RECOMMENDED!r}) '
-            'or "off". The stall guard refuses to guess at a malformed setting.')
-    try:
-        frames, window = int(parts[0]), int(parts[3])
-        rate, top = float(parts[1]), float(parts[2])
-    except ValueError:
-        raise ValueError(
-            f'{ENV}={raw!r}: frames and window are whole numbers, rate and max are '
-            f'numbers (e.g. {RECOMMENDED!r}).') from None
-    if frames < 0 or window < 1 or not rate > 0 or not top > 0:
-        raise ValueError(
-            f'{ENV}={raw!r}: frames must be >= 0, window >= 1, and rate and max > 0.')
-    return StallGuard(frames=frames, rate=rate, max=top, window=window)
+#: The PC sampler patch's grammar, exactly (crucible-pc, 2026-10-02), so a value reads the same on both stacks.
+_GRAMMAR = re.compile(r'([0-9]+),([0-9]+(?:\.[0-9]+)?),([0-9]+(?:\.[0-9]+)?),([0-9]+)')
+_RANGES = (('frames', 1, 10000), ('rate', 0.001, 100.0), ('max', 0.001, 1000.0), ('window', 1, 64))
 
+
+def stall_guard_from_env(environ=None) -> StallGuard | None:
+    """The guard `HIGGS_STALL_GUARD` asks for; None when it is UNSET or exactly `off`.
+
+    THE SAME GRAMMAR AS THE PC (crucible-pc, 2026-10-02): after the surrounding whitespace is stripped the value is
+    exactly `off` or `frames,rate,max,window` - frames and window `[0-9]+`, rate and max `[0-9]+(.[0-9]+)?` - within
+    frames 1-10000, rate 0.001-100, max 0.001-1000, window 1-64. Anything else, the EMPTY string included, is refused
+    naming the variable: one setting must not mean two things on two machines.
+    """
+    env = os.environ if environ is None else environ
+    raw = env.get(ENV)
+    if raw is None:
+        return None
+    value = raw.strip()
+    if value == 'off':
+        return None
+    m = _GRAMMAR.fullmatch(value)
+    if m is None:
+        raise ValueError(
+            f'{ENV}={raw!r} is not "off" or "<frames>,<rate>,<max>,<window>" (e.g. {RECOMMENDED!r}): whole numbers '
+            'for frames and window, plain decimals for rate and max, no spaces or signs.')
+    numbers = (int(m.group(1)), float(m.group(2)), float(m.group(3)), int(m.group(4)))
+    for (name, low, high), number in zip(_RANGES, numbers):
+        if not low <= number <= high:
+            raise ValueError(f'{ENV}={raw!r}: {name} is {number:g}, outside {low:g}-{high:g}.')
+    frames, rate, top, window = numbers
+    return StallGuard(frames=frames, rate=rate, max=top, window=window)
 
 def counted(state, num_codebooks: int) -> bool:
     """Is this row counted on the step about to be taken - active, past the

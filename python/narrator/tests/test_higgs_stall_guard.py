@@ -75,15 +75,21 @@ class ParseTest(unittest.TestCase):
 
     def test_unset_and_off_are_off(self):
         self.assertIsNone(G.stall_guard_from_env({}))
-        self.assertIsNone(G.stall_guard_from_env({G.ENV: ''}))
         self.assertIsNone(G.stall_guard_from_env({G.ENV: 'off'}))
+        self.assertIsNone(G.stall_guard_from_env({G.ENV: '  off\t'}))
+        self.assertEqual(G.stall_guard_from_env({G.ENV: ' 37,0.5,20,8 '}).frames, 37)
 
     def test_the_recommended_value(self):
         guard = G.stall_guard_from_env({G.ENV: G.RECOMMENDED})
         self.assertEqual(guard, G.StallGuard(frames=37, rate=0.5, max=20.0, window=8))
 
     def test_malformed_is_refused_naming_the_variable(self):
-        for bad in ('37,0.5,20', '37,0.5,20,8,1', 'a,0.5,20,8', '37,0,20,8', '37,0.5,20,0', '-1,0.5,20,8'):
+        # The PC sampler patch's grammar exactly (crucible-pc, 2026-10-02): the empty string, any case but `off`,
+        # inner spaces, signs, exponents, inf/nan, a fractional frame count and every out-of-range value.
+        for bad in ('', '   ', 'OFF', 'Off', '37, 0.5,20,8', '37,0.5,20', '37,0.5,20,8,1', 'a,0.5,20,8',
+                    '+37,0.5,20,8', '37,1e-1,20,8', '37,0.5,inf,8', '37,nan,20,8', '37.0,0.5,20,8', '37,.5,20,8',
+                    '0,0.5,20,8', '10001,0.5,20,8', '37,0,20,8', '37,100.5,20,8', '37,0.5,0,8', '37,0.5,1000.1,8',
+                    '37,0.5,20,0', '37,0.5,20,65', '-1,0.5,20,8'):
             with self.assertRaises(ValueError, msg=bad) as caught:
                 G.stall_guard_from_env({G.ENV: bad})
             self.assertIn(G.ENV, str(caught.exception))
