@@ -107,6 +107,29 @@ class EllipsisTest(unittest.TestCase):
             self.assertEqual(normalize_for_tts(text, 'en'), text)
 
 
+class DashTest(unittest.TestCase):
+    """A hyphen in a shape that can only be a dash reaches the engine as the corpora's em dash (Owen, 2026-10-02).
+    Mutineer's Moon's own lines; the ambiguous ones are the cleanup model's and are left alone here."""
+
+    D = '—'
+
+    def test_the_shapes_that_can_be_nothing_else(self):
+        for printed, said in (
+                ('"so stop arguing. Besides-" Sean turned', '"so stop arguing. Besides{D}" Sean turned'),
+                ('a winding mountain road "-we\'re almost there."', 'a winding mountain road "{D}we\'re almost there."'),
+                ('What the-? A portable stealth', 'What the{D}? A portable stealth'),
+                ('he prepared to whirl, but-', 'he prepared to whirl, but{D}'),
+                ("some kind of panic button-he's gonna punch it", "some kind of panic button{D}he's gonna punch it"),
+                ('"You? Sandy-you’re in with Anu?"', '"You? Sandy{D}you’re in with Anu?"')):
+            self.assertEqual(normalize_for_tts(printed, 'en'), said.format(D=self.D))
+
+    def test_compounds_and_the_ambiguous_are_left_for_the_model(self):
+        for text in ("If you're wrong-if he is a bad guy",'for the fifth-or sixth-time', 'high-efficiency split-level',
+                     'up-to-date know-it-all', 'a well-spread, terrace-like fold-space', 'pre- and post-war',
+                     'the X-ray', "rock-'n'-roll"):
+            self.assertEqual(normalize_for_tts(text, 'en'), text)
+
+
 class NormalizeTest(unittest.TestCase):
     """What the listener actually hears."""
 

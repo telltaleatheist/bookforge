@@ -479,6 +479,36 @@ def check_language(language) -> str:
 #: Two periods are never an ellipsis.
 _ELLIPSIS_RUN = re.compile(r'\.[ \t]*\.[ \t]*\.(?:[ \t]*\.)*')
 
+#: The em dash the Higgs corpora print - unspaced, "word—word" (tc_clean 79 of 79, hoa 1,096 of 1,117).
+EM_DASH = '—'
+
+#: A HYPHEN TYPED WHERE AN EM DASH BELONGS, in the shapes that can be nothing else (Owen, 2026-10-02: "emdashes
+#: dramatically affect prosody ... where we can, we can do this deterministically. where it isnt trustworthy to do it
+#: deterministically, we should hand the rule to the model"). Each is a sentence breaking off or a speaker cut off:
+#:   a hyphen between a letter and a closing double quote      Besides-"      (speech broken off)
+#:   a hyphen between an opening double quote and a letter     "-we're        (speech resumed)
+#:   a hyphen between a letter and ? or !                      What the-?
+#:   a hyphen after a letter at the very end of the text       ... but-
+#:   a hyphen before a pronoun contraction                     button-he's    (no compound ends in "he's")
+#: Every other unspaced hyphen - "wrong-if", "fifth-or sixth-time", "up-to-date", "know-it-all" - needs judgement
+#: and is the cleanup MODEL's (Foundry clean-text's dash rule). Single quotes are left alone here: "rock-'n'-roll".
+_DASH_SHAPES = (
+    re.compile(r'(?<=\w)-(?=["”])'),
+    re.compile(r'(?<=["“])-(?=\w)'),
+    re.compile(r'(?<=\w)-(?=[?!])'),
+    re.compile(r'(?<=[^\W\d])-\s*$'),
+    re.compile(r"(?<=\w)-(?=(?:he|she|it|they|we|you|i|that|there|what|who)['’](?:s|re|m|ll|d|ve)\b)", re.I),
+)
+
+
+def restore_dashes(text: str) -> tuple[str, int]:
+    """The text with every hyphen in a `_DASH_SHAPES` shape made an em dash, and how many were."""
+    count = 0
+    for shape in _DASH_SHAPES:
+        text, n = shape.subn(EM_DASH, text)
+        count += n
+    return text, count
+
 
 def normalize_for_tts(text, language):
     if not text:
@@ -492,6 +522,11 @@ def normalize_for_tts(text, language):
     # (src/clean/tts-punctuation.ts ELLIPSIS_RUN, the same pattern); this is the engine's input, so a book rendered
     # without that pass is covered too, and a cleaned one passes through unchanged.
     s = _ELLIPSIS_RUN.sub('...', text.replace('…', '...'))
+    # AND THE DASHES THAT CAN BE NOTHING ELSE (`_DASH_SHAPES`). Every repair is logged with its sentence, so a
+    # book's dashes can be reviewed from the engine log.
+    s, dashes = restore_dashes(s)
+    if dashes:
+        print(f'[narrator.serve] DASH restored x{dashes}: {s[:160]!r}', file=sys.stderr, flush=True)
 
     def _money(m):
         whole = m.group(1).replace(',', '')
