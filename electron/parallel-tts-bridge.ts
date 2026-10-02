@@ -7609,7 +7609,7 @@ function emitComplete(
     //
     // It POPS the ledger, which is why it is read exactly once, here, on the one
     // path every finished render passes through.
-    guard: takeChunkGuards(session.jobId),
+    guard: takeChunkGuards(session.jobId, session.prepInfo.chapters),
   };
 
   const progress: AggregatedProgress = {
@@ -9675,7 +9675,7 @@ function emitCancelledAnalytics(session: ConversionSession, reason: StopReason):
     // ones there are — the run was stopped while they were happening — and if
     // only the completion path popped, a cancel would leave a 1,400-entry map of
     // take records alive for the life of the process.
-    guard: takeChunkGuards(session.jobId),
+    guard: takeChunkGuards(session.jobId, session.prepInfo.chapters),
   };
 
   // 'stopped', not 'error' — see AggregatedProgress.phase. And no `error` field: a stop

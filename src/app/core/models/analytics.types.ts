@@ -206,6 +206,22 @@ export interface TTSJobAnalytics {
     unknownBy: Record<string, number>;
     /** Which channels fed this render: `narrator-stdout`, `crucible-chunk`. */
     sources: string[];
+    /**
+     * What narrator's interior-pause cap cut (Owen, 2026-10-02): every pause
+     * over 1.5 s inside a chunk is shortened to 1.5 s, and each cut is a STALL
+     * SIGNAL. `reported` counts chunks that said anything (older servers and
+     * narrators say nothing, which is not "no cuts"). Absent on records written
+     * before 2026-10-02.
+     */
+    pauseCuts?: {
+      reported: number;
+      chunksCut: number;
+      cuts: number;
+      longestS: number | null;
+      byChunk: Record<string, { atS: number; fromS: number; toS: number }[]>;
+      /** Chapter number -> its cuts. */
+      byChapter?: Record<string, { chunksCut: number; cuts: number; longestS: number }>;
+    };
   };
 }
 

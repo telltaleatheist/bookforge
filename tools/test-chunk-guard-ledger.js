@@ -355,4 +355,54 @@ check('the pinned SDK is measured, not assumed, about the guard field', () => {
       + 'chunks record as sdk-drops-the-field, which is unknown and is not clean');
 });
 
+check('the pause cap: cuts are counted per chunk and per chapter; silence is not "none"', () => {
+  // narrator 14becf08 cuts every interior pause over 1.5 s and reports it on the
+  // chunk (Crucible 1.0.80 `pauseCuts`). [] = looked, cut nothing; absent or null
+  // = nobody said, which must not be counted as a clean chunk.
+  const id = 'pause-cuts';
+  ledger.forgetChunkGuards(id);
+  ledger.recordCrucibleChunkGuard(id, { index: 0, guard: verdictObject('clean'), pauseCuts: [] });
+  ledger.recordCrucibleChunkGuard(id, {
+    index: 3, guard: verdictObject('clean'),
+    pauseCuts: [{ atS: 1.2, fromS: 10.4, toS: 1.5 }, { atS: 6.0, fromS: 2.1, toS: 1.5 }],
+  });
+  ledger.recordCrucibleChunkGuard(id, { index: 12, guard: null, pauseCuts: [{ atS: 0.4, fromS: 92, toS: 1.5 }] });
+  ledger.recordCrucibleChunkGuard(id, { index: 13, guard: verdictObject('clean') }); // an older server: unsaid
+  ledger.recordCrucibleChunkGuard(id, { index: 14, guard: verdictObject('clean'), pauseCuts: null });
+  const chapters = [
+    { chapterNum: 1, sentenceStart: 0, sentenceEnd: 9 },
+    { chapterNum: 2, sentenceStart: 10, sentenceEnd: 20 },
+  ];
+  const summary = ledger.takeChunkGuards(id, chapters);
+  assert.strictEqual(summary.pauseCuts.reported, 3, 'only the chunks that said anything');
+  assert.strictEqual(summary.pauseCuts.chunksCut, 2);
+  assert.strictEqual(summary.pauseCuts.cuts, 3);
+  assert.strictEqual(summary.pauseCuts.longestS, 92);
+  assert.deepStrictEqual(Object.keys(summary.pauseCuts.byChunk), ['3', '12']);
+  assert.deepStrictEqual(summary.pauseCuts.byChapter, {
+    1: { chunksCut: 1, cuts: 2, longestS: 10.4 },
+    2: { chunksCut: 1, cuts: 1, longestS: 92 },
+  });
+  // A cut must name all three numbers.
+  assert.throws(() => ledger.recordCrucibleChunkGuard(id, {
+    index: 1, guard: null, pauseCuts: [{ atS: 1, fromS: 3 }],
+  }), /pauseCuts\[0\]\.toS/);
+  assert.throws(() => ledger.recordCrucibleChunkGuard(id, { index: 1, guard: null, pauseCuts: 'none' }),
+    /neither a list nor null/);
+  // A cut on a chunk no chapter claims is refused, never filed under a guess.
+  ledger.forgetChunkGuards(id);
+  ledger.recordCrucibleChunkGuard(id, { index: 40, guard: null, pauseCuts: [{ atS: 0, fromS: 3, toS: 1.5 }] });
+  assert.throws(() => ledger.takeChunkGuards(id, chapters), /no chapter's range covers/);
+  ledger.forgetChunkGuards(id);
+});
+
+check('the pinned SDK carries pauseCuts on a chunk (Crucible 1.0.80)', () => {
+  const sdk = require.resolve('@crucible/client');
+  const client = fs.readFileSync(path.join(path.dirname(sdk), 'client.js'), 'utf8');
+  const readChunk = /function readChunk\([\s\S]{0,3000}?\n\}/.exec(client);
+  assert.ok(readChunk, 'the SDK must still have a readChunk() to measure');
+  assert.ok(/pauseCuts/.test(readChunk[0]),
+    'the pinned @crucible/client does not read pause_cuts, so every cut narrator reports is dropped before the ledger');
+});
+
 console.log(`\nchunk-guard-ledger: ${passed} check(s) passed`);

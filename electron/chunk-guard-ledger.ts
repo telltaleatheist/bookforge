@@ -134,6 +134,21 @@ export type ChunkGuardUnknownReason =
    */
   | 'stream-unguarded';
 
+/**
+ * ONE INTERIOR PAUSE narrator shortened in this chunk (Owen, 2026-10-02; narrator
+ * `serve/pause_cap.py`, BookForge 14becf08): where it started in the audio as
+ * rendered, how long it was, and how long it is now. Every field in seconds.
+ *
+ * A cut is a STALL SIGNAL. A voice that pauses ten seconds mid-sentence is a
+ * voice that has stopped speaking for a while, and the cap makes the book
+ * listenable without making the stall invisible: it is counted here and shown.
+ */
+export interface PauseCutRecord {
+  readonly atS: number;
+  readonly fromS: number;
+  readonly toS: number;
+}
+
 /** What the ledger knows about one chunk. ONE shape, whichever path rendered it. */
 export interface ChunkGuardRecord {
   /** The book's own chunk index — the same number that names `<index>.flac`. */
@@ -154,6 +169,13 @@ export interface ChunkGuardRecord {
   /** The per-fire take records, VERBATIM AND UNREAD. Empty on a clean take 0. */
   readonly takes: readonly unknown[];
   readonly source: ChunkGuardSource;
+  /**
+   * The interior pauses narrator cut in this chunk: `[]` when it looked and cut
+   * nothing, `null` when nobody said - a server older than Crucible 1.0.80, a
+   * narrator older than 14becf08, or a channel that does not carry the field
+   * (local stdout, Listen). Null is not `[]`, for this file's header's reason.
+   */
+  readonly pauseCuts: readonly PauseCutRecord[] | null;
 }
 
 /** The render-level roll-up, built for the analytics entry and for a person. */
@@ -171,6 +193,42 @@ export interface ChunkGuardSummary {
   readonly unknownBy: Readonly<Record<string, number>>;
   /** Which channels fed this render, in first-seen order. */
   readonly sources: readonly ChunkGuardSource[];
+  /** What narrator's interior-pause cap did to this render's chunks. */
+  readonly pauseCuts: PauseCutSummary;
+}
+
+/** The pause cap's roll-up: how many stalls, where, and how long the worst was. */
+export interface PauseCutSummary {
+  /** Chunks that REPORTED (a list, even an empty one). The rest said nothing. */
+  readonly reported: number;
+  /** Chunks with at least one cut. */
+  readonly chunksCut: number;
+  /** Cuts in all. */
+  readonly cuts: number;
+  /** The longest pause cut, as rendered, in seconds; null when nothing was cut. */
+  readonly longestS: number | null;
+  /** Chunk index -> its cuts, for every chunk that had one. */
+  readonly byChunk: Readonly<Record<string, readonly PauseCutRecord[]>>;
+  /**
+   * Chapter number -> its cuts, when the caller handed the chapters' chunk
+   * ranges ({@link summarizeChunkGuards}); absent otherwise. A count per
+   * chapter is what makes a stalled stretch of the book visible at a glance.
+   */
+  readonly byChapter?: Readonly<Record<string, PauseCutChapter>>;
+}
+
+/** One chapter's share of the cuts. */
+export interface PauseCutChapter {
+  readonly chunksCut: number;
+  readonly cuts: number;
+  readonly longestS: number;
+}
+
+/** A chapter's span of chunk indices, inclusive - `PrepInfo.chapters`' own shape. */
+export interface ChapterChunkRange {
+  readonly chapterNum: number;
+  readonly sentenceStart: number;
+  readonly sentenceEnd: number;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -194,6 +252,32 @@ class ChunkGuardShapeError extends Error {
       + 'report the wrong thing about a render.');
     this.name = 'ChunkGuardShapeError';
   }
+}
+
+/**
+ * The chunk event's `pauseCuts` (SDK 1.0.80 `ChunkData.pauseCuts`), or null when
+ * the key is absent or null. Read strictly, for `readVerdictObject`'s reason: a
+ * cut with a missing or mistyped field is narrator and this reader disagreeing
+ * about the shape, and guessing would report the wrong thing about a render.
+ */
+function readPauseCuts(chunk: Record<string, unknown>, where: string): readonly PauseCutRecord[] | null {
+  if (!('pauseCuts' in chunk)) return null;
+  const raw = chunk['pauseCuts'];
+  if (raw === null) return null;
+  if (!Array.isArray(raw)) {
+    throw new ChunkGuardShapeError(where, `"pauseCuts" is ${JSON.stringify(raw)}, neither a list nor null`);
+  }
+  return raw.map((cut: unknown, i: number) => {
+    const field = (name: string): number => {
+      const value = typeof cut === 'object' && cut !== null ? (cut as Record<string, unknown>)[name] : undefined;
+      if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+        throw new ChunkGuardShapeError(where,
+          `pauseCuts[${i}].${name} is ${JSON.stringify(value)}, not a non-negative number of seconds`);
+      }
+      return value;
+    };
+    return { atS: field('atS'), fromS: field('fromS'), toS: field('toS') };
+  });
 }
 
 function readVerdictObject(guard: Record<string, unknown>, where: string): {
@@ -287,6 +371,7 @@ export function recordCrucibleChunkGuard(
     ledger.set(index, {
       index, verdict: null, unknownReason: 'sdk-drops-the-field',
       clean: null, parts: null, band: null, takes: [], source: 'crucible-chunk',
+      pauseCuts: readPauseCuts(chunk, `${where} chunk ${index}`),
     });
     return;
   }
@@ -295,6 +380,7 @@ export function recordCrucibleChunkGuard(
     ledger.set(index, {
       index, verdict: null, unknownReason: 'narrator-did-not-say',
       clean: null, parts: null, band: null, takes: [], source: 'crucible-chunk',
+      pauseCuts: readPauseCuts(chunk, `${where} chunk ${index}`),
     });
     return;
   }
@@ -306,6 +392,7 @@ export function recordCrucibleChunkGuard(
   ledger.set(index, {
     index, verdict: read.verdict, unknownReason: null, clean: read.clean,
     parts: read.parts, band: read.band, takes: read.takes, source: 'crucible-chunk',
+    pauseCuts: readPauseCuts(chunk, `${where} chunk ${index}`),
   });
 }
 
@@ -361,6 +448,8 @@ export function recordGuardEvent(
     band: null,
     takes: existing ? [...existing.takes, event] : [event],
     source: 'narrator-stdout',
+    // The local stdout channel carries take records, never the pause cap's report.
+    pauseCuts: null,
   });
 }
 
@@ -415,6 +504,8 @@ export function recordCrucibleStreamRow(
       capped: row.capped, cancelled: row.cancelled,
     }],
     source: 'crucible-stream',
+    // Listen is never cut (narrator caps the render door only).
+    pauseCuts: null,
   });
 }
 
@@ -432,7 +523,11 @@ export function chunkGuards(renderId: string): readonly ChunkGuardRecord[] {
  * caller that wants "how many chunks were fine" has to read `byVerdict['clean']`
  * and see `unknown` sitting beside it.
  */
-export function summarizeChunkGuards(renderId: string): ChunkGuardSummary {
+export function summarizeChunkGuards(
+  renderId: string,
+  /** The chapters' chunk ranges, for the pause cap's per-chapter count. */
+  chapters?: readonly ChapterChunkRange[],
+): ChunkGuardSummary {
   const records = chunkGuards(renderId);
   const byVerdict: Record<string, number> = {};
   const unknownBy: Record<string, number> = {};
@@ -456,7 +551,48 @@ export function summarizeChunkGuards(renderId: string): ChunkGuardSummary {
     }
     byVerdict[record.verdict] = (byVerdict[record.verdict] ?? 0) + 1;
   }
-  return { chunks: records.length, byVerdict, unknown, unknownBy, sources };
+  return {
+    chunks: records.length, byVerdict, unknown, unknownBy, sources,
+    pauseCuts: summarizePauseCuts(records, chapters),
+  };
+}
+
+/** The pause cap's roll-up over a render's records. */
+function summarizePauseCuts(
+  records: readonly ChunkGuardRecord[],
+  chapters: readonly ChapterChunkRange[] | undefined,
+): PauseCutSummary {
+  const byChunk: Record<string, readonly PauseCutRecord[]> = {};
+  let reported = 0;
+  let cuts = 0;
+  let longestS: number | null = null;
+  for (const record of records) {
+    if (record.pauseCuts === null) continue;
+    reported += 1;
+    if (record.pauseCuts.length === 0) continue;
+    byChunk[String(record.index)] = record.pauseCuts;
+    cuts += record.pauseCuts.length;
+    for (const cut of record.pauseCuts) longestS = longestS === null ? cut.fromS : Math.max(longestS, cut.fromS);
+  }
+  const summary = { reported, chunksCut: Object.keys(byChunk).length, cuts, longestS, byChunk };
+  if (chapters === undefined) return summary;
+  const byChapter: Record<string, PauseCutChapter> = {};
+  for (const [key, chunkCuts] of Object.entries(byChunk)) {
+    const index = Number(key);
+    const chapter = chapters.find((c) => index >= c.sentenceStart && index <= c.sentenceEnd);
+    if (chapter === undefined) {
+      // A cut on a chunk no chapter claims is a prep/ledger disagreement about
+      // the book, and filing it under a guessed chapter would hide it.
+      throw new Error(`chunk-guard-ledger: pause cuts on chunk ${index}, which no chapter's range covers`);
+    }
+    const was = byChapter[String(chapter.chapterNum)];
+    byChapter[String(chapter.chapterNum)] = {
+      chunksCut: (was === undefined ? 0 : was.chunksCut) + 1,
+      cuts: (was === undefined ? 0 : was.cuts) + chunkCuts.length,
+      longestS: Math.max(was === undefined ? 0 : was.longestS, ...chunkCuts.map((c) => c.fromS)),
+    };
+  }
+  return { ...summary, byChapter };
 }
 
 /**
@@ -466,8 +602,11 @@ export function summarizeChunkGuards(renderId: string): ChunkGuardSummary {
  * would otherwise keep a 1,400-entry map — with every take record in it — alive
  * for the life of the process.
  */
-export function takeChunkGuards(renderId: string): ChunkGuardSummary {
-  const summary = summarizeChunkGuards(renderId);
+export function takeChunkGuards(
+  renderId: string,
+  chapters?: readonly ChapterChunkRange[],
+): ChunkGuardSummary {
+  const summary = summarizeChunkGuards(renderId, chapters);
   ledgers.delete(renderId);
   return summary;
 }
