@@ -610,12 +610,15 @@ const QUEUE_STATE_CONTROL = {
               a waiting one up the list. Every one of them is a call that
               already existed; nothing new was taught to the engine here.
 
-              THE DESTRUCTIVE PAIR IS IN THE MENU, and they are not the same
-              act worded twice. Send back to Pending stops the book and keeps
-              it — settings, renders, and its server a question again (Owen:
-              "if i hit cancel book while its in queue, it drops back to
-              pending"). Remove takes it out altogether. The labels say what
-              each KEEPS, because that is the difference. A book that travels
+              THE DESTRUCTIVE PAIR IS IN THE MENU, and only one of them is
+              destructive. Send back to Pending stops the book and keeps
+              everything it has DONE — its settings and its finished steps —
+              with its server a question again (Owen, 2026-09-20: "when i said
+              send it back i didnt mean erase progress it already made, i meant
+              it should go back with everything configured so i dont have to
+              re-configure it"). Remove takes it out altogether, and is
+              therefore the way to start a book over. The labels say what each
+              KEEPS, because that is the difference. A book that travels
               nowhere has no Pending band to fall back to, so it is offered
               Remove alone rather than an entry that refuses on press.
             -->
@@ -677,8 +680,9 @@ const QUEUE_STATE_CONTROL = {
                         <button type="button" class="menu-item" role="menuitem" (click)="menuReturnToPending(plan)">
                           <span class="k">Send back to Pending</span>
                           <span class="d">
-                            Stops it, keeps its settings and what it rendered; its
-                            server becomes a question again.
+                            Stops it and keeps everything it has done — settings and
+                            finished steps — then asks again which machine it goes to.
+                            To start it over, remove it and add it again.
                           </span>
                         </button>
                       }
@@ -2629,19 +2633,23 @@ export class QueueComponent {
    * Owen, 2026-09-18: *"i should be able to stop it from running and move it
    * back to the pending queue if i want … let me change the server again if i
    * want once it re-enters the queue. or delete it if i want. if i hit cancel
-   * book while its in queue, it drops back to pending."*
+   * book while its in queue, it drops back to pending."* — and, correcting how
+   * that was read, 2026-09-20: *"when i said send it back i didnt mean erase
+   * progress it already made, i meant it should go back with everything
+   * configured so i dont have to re-configure it."*
    *
-   * A book that TRAVELS goes back to the staging band with its settings intact
-   * and its server answerable again. One that does not travel has no staging
-   * band to return to — `returnToPending` refuses it by name — so for those this
-   * stays what Cancel has always been: out of the queue. Deciding that here
-   * rather than letting the engine refuse keeps the button from being one that
-   * works on some cards and errors on others.
+   * A book that TRAVELS goes back to the staging band with its settings AND its
+   * finished steps intact, and its server answerable again; Remove is the door
+   * that starts a book over. One that does not travel has no staging band to
+   * return to — `returnToPending` refuses it by name — so for those this stays
+   * what Cancel has always been: out of the queue. Deciding that here rather
+   * than letting the engine refuse keeps the button from being one that works on
+   * some cards and errors on others.
    *
-   * ASKED FIRST when the return would leave banked work behind. A read's pages
-   * live in Foundry and this side cannot discard them, so "start over" would
-   * quietly mean "resume from page 214" — and that is a thing to learn before
-   * pressing, not after.
+   * ASKED FIRST when the run banks work in another application. A read's pages
+   * live in Foundry, so sending the book out again carries on from where it
+   * stopped — which is the rule now rather than an exception to it, and still
+   * the thing to learn before pressing rather than after.
    */
   async cancelBook(plan: BookPlan): Promise<void> {
     if (!plan.travels) {
@@ -2660,8 +2668,8 @@ export class QueueComponent {
     if (warning !== null) {
       const go = await this.dialog.confirm({
         title: 'Send this book back to Pending?',
-        message: `${plan.title} stops and returns to Pending, where you can change its server or `
-          + 'delete it.',
+        message: `${plan.title} stops, keeps what it has done, and asks again which machine it `
+          + 'goes to. To start it over, remove it and add it again.',
         detail: warning,
         confirmLabel: 'Back to Pending',
         type: 'warning',

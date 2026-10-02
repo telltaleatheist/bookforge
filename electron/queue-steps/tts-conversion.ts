@@ -39,6 +39,7 @@ import {
   stopAndCacheParallelConversion,
   cacheSessionToProject,
   detectRecommendedWorkerCount,
+  isPackingOverCapRefusal,
   setMainWindow,
   TTS_GPU_PHASE_OVER,
   type PreparedSessionRef,
@@ -47,7 +48,7 @@ import { getTTSLogger } from '../rolling-logger';
 import type { StepModule, StepRunContext, StepReport } from '../queue-engine';
 import type { ArtifactRef } from '../../shared/queue/engine-types';
 import type { StopReason } from '../../shared/queue/stop-reason';
-import { projectDirForStep, queueMainWindow, stepFailure } from './runtime';
+import { projectDirForStep, queueMainWindow, stepFailure, stepNeedsRepack } from './runtime';
 import { runVenueOfRow } from '../crucible/step-venue';
 
 /** The bridge's AggregatedProgress, as it arrives on the bus. */
@@ -618,7 +619,10 @@ export const ttsConversionStep: StepModule = {
           finished,
           new Promise<null>((r) => setTimeout(() => r(null), 3000)),
         ]);
-        if (!settled) throw new Error(invoked.error || 'Narration failed to start.');
+        if (!settled) {
+          if (isPackingOverCapRefusal(invoked.error)) throw stepNeedsRepack(invoked.error as string);
+          throw new Error(invoked.error || 'Narration failed to start.');
+        }
       }
 
       const result = await finished;
@@ -628,6 +632,24 @@ export const ttsConversionStep: StepModule = {
         throw new Error('Stopped by the user.');
       }
       if (!result.success) {
+        /*
+         * PACKED FOR ANOTHER MACHINE IS NOT A FAILURE — IT IS A RE-PACK (PK16,
+         * 2026-09-20).
+         *
+         * `prepare` cut these chunks against ONE server's stated band, and this
+         * render was admitted to a machine whose CAP is lower
+         * (`packingVerdictFor`). Nothing has been submitted, no lease taken and
+         * no GPU second spent — and since a book sent back to Pending now keeps
+         * its work and re-answers only its machine
+         * (`queue-engine.returnToPending`), this is the shape the operator was
+         * invited to cause. So the engine is told to run the PREPARE row again
+         * for the machine that took the render, instead of reddening this one
+         * over chunks that can simply be cut differently.
+         *
+         * Asked FIRST, because the refusal carries no `busyLine` and would
+         * otherwise fall straight through to `stepFailure`'s plain arm.
+         */
+        if (isPackingOverCapRefusal(result.error)) throw stepNeedsRepack(result.error as string);
         // A 409 is a WAIT: `stepFailure` mints the refusal that parks this row
         // when the server named a holder, and an ordinary failure when it did
         // not. One road, and the module remembers no side call (A5, 2026-09-19).

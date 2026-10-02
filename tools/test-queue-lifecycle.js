@@ -179,22 +179,105 @@ function chainModules() {
   };
 }
 
-// ── PK7 · A return to Pending is a START OVER ───────────────────────────────
+// ── PK16 · Send back to Pending UNASSIGNS THE MACHINE AND KEEPS THE WORK ────
 
 /*
- * THE FINDING (bug hunt round 2). `returnToPending` clears output, metrics,
- * progress, notes, timestamps and the venue — and left `wasInterrupted`
- * standing. That flag is not decoration: it is what tells TTS to resume the
- * cached session instead of rendering from sentence zero. So Owen's *"move it
- * back to the queue to start over with exact same settings"* re-adopted the
- * session of the very attempt he had just pulled out of the queue, on whatever
- * machine he then picked. `lastError` goes with it: a staged run has no
- * "attempt before this one" to account for.
+ * THE RULING, and it CORRECTS A MISREADING rather than reversing a decision.
+ *
+ * Owen, 2026-09-20 ~19:20 ET: *"when i send an item back to pending and then
+ * submit back to the queue, it starts its whole thing over and discards all the
+ * progress it made. if it already did ai cleanup and tts and only has alignment
+ * left, when i send it back, it schedules ai cleanup again."*
+ *
+ * And, asked what he had meant on 2026-09-18: *"when i said send it back i
+ * didnt mean erase progress it already made, i meant it should go back with
+ * everything configured so i dont have to re-configure it."*
+ *
+ * So *"start over with exact same settings"* was about the SETTINGS surviving
+ * the trip, and PK7 — which read it as "from zero" and cleared `wasInterrupted`
+ * three hours earlier — is superseded by these tests. What the door retires is
+ * the MACHINE; what it keeps is everything the book has done and every answer
+ * the operator typed.
  */
-test('PK7: a run sent back to Pending resumes NOTHING', async () => {
+
+/** A deep, order-insensitive copy, for "the config was not touched". */
+const frozen = (value) => JSON.parse(JSON.stringify(value));
+
+test("PK16 (Owen's case): cleanup and tts stay done; only the alignment re-runs", async () => {
+  const clean = fakeModule('foundry-job', { travels: true, produces: 'epub' });
+  const tts = fakeModule('tts-conversion', { travels: true, stopIsResumable: true });
+  const align = fakeModule('align', { travels: true });
+  await fresh('pk16-owens-case', [clean, tts, align], {
+    host: routingHost([{ name: 'the-mac', enabled: true }], 'the-mac'),
+    seam: leaseSeam().host,
+    ranked: [{ name: 'the-mac' }],
+  });
+  const job = sendChain('Hitler\'s People', [
+    {
+      type: 'foundry-job',
+      label: 'Clean text',
+      config: { request: { kind: 'clean' }, voice: 'zac' },
+      sourceRef: { kind: 'epub', path: '/a.epub' },
+    },
+    { type: 'tts-conversion', label: 'Narrate', config: { speed: 1.1 }, parentIndex: 0 },
+    { type: 'align', label: 'Align', config: { chapterGap: 3 }, parentIndex: 1 },
+  ]);
+  const configsBefore = jobOf(job.id).steps.map((s) => frozen(s.config));
+
+  engine.start();
+  await settle();
+  clean.runs[0].resolve({ kind: 'epub', path: '/out/cleaned.epub' });
+  await settle();
+  tts.runs[0].resolve({ kind: 'audio-session', path: '/out/sentences' });
+  await settle();
+  assert.strictEqual(stepAt(job.id, 0).status, 'done', 'precondition: the clean landed');
+  assert.strictEqual(stepAt(job.id, 1).status, 'done', 'precondition: the narration landed');
+  assert.ok(align.runs[0], 'precondition: the alignment is the only thing left');
+
+  // Stop the alignment by hand so the book is sitting with one act to go —
+  // exactly the shape Owen described before pressing Send back to Pending.
+  await engine.cancel({ stepId: stepAt(job.id, 2).id }, 'Stopped by the user.');
+  await settle();
+
+  await engine.returnToPending(job.id);
+
+  assert.strictEqual(jobOf(job.id).pending, true, 'the book is back in the staging band');
+  assert.strictEqual(jobOf(job.id).waitForResolved, undefined,
+    'AND THE MACHINE IS A QUESTION AGAIN — that is the whole of what this door retires');
+
+  assert.strictEqual(stepAt(job.id, 0).status, 'done',
+    'THE RULING: "if it already did ai cleanup and tts … when i send it back, it schedules ai '
+    + 'cleanup again" — a finished step is history, not work');
+  assert.strictEqual(stepAt(job.id, 0).outputPath, '/out/cleaned.epub',
+    'with the artifact the steps behind it read');
+  assert.strictEqual(stepAt(job.id, 1).status, 'done', 'and the hours of GPU with it');
+  assert.strictEqual(stepAt(job.id, 1).outputPath, '/out/sentences');
+  assert.strictEqual(stepAt(job.id, 2).status, 'held', 'the only unfinished act goes back to held');
+  assert.strictEqual(stepAt(job.id, 2).venue, undefined,
+    'the machine it was pencilled in for is not an answer any more');
+
+  assert.deepStrictEqual(
+    jobOf(job.id).steps.map((s) => frozen(s.config)), configsBefore,
+    'OWEN, VERBATIM: "i meant it should go back with everything configured so i dont have to '
+    + 're-configure it" — every answer he typed survives the trip untouched');
+
+  // And the press back out re-runs the alignment and NOTHING ELSE.
+  const ranBefore = { clean: clean.runs.length, tts: tts.runs.length, align: align.runs.length };
+  engine.sendToQueue(job.id);
+  engine.start();
+  await settle();
+  assert.strictEqual(clean.runs.length, ranBefore.clean,
+    'THE COMPLAINT ITSELF: the clean must not be scheduled a second time');
+  assert.strictEqual(tts.runs.length, ranBefore.tts,
+    'nor the narration — a done step is never re-launched, because `release` moves only held rows '
+    + 'and `pump` launches only queued ones');
+  assert.strictEqual(align.runs.length, ranBefore.align + 1, 'the alignment, and only it, runs');
+});
+
+test('PK16: a half-rendered narration keeps wasInterrupted, so it RESUMES', async () => {
   const prep = fakeModule('prepare', { resource: () => 'cpu' });
   const tts = fakeModule('tts-conversion', { travels: true, stopIsResumable: true });
-  await fresh('return-to-pending', [prep, tts], {
+  await fresh('pk16-resume', [prep, tts], {
     host: routingHost([{ name: 'the-mac', enabled: true }], 'the-mac'),
     seam: leaseSeam().host,
     ranked: [{ name: 'the-mac' }],
@@ -205,41 +288,156 @@ test('PK7: a run sent back to Pending resumes NOTHING', async () => {
   ]);
   engine.start();
   await settle();
-  prep.runs[0].resolve({ kind: 'prepared-session', path: '/out/prepared' });
+  prep.runs[0].resolve({
+    kind: 'prepared-session', path: '/scratch/ebook-1', sessionId: 'ebook-1',
+    detail: { packedForServer: 'the-mac' },
+  });
   await settle();
   assert.ok(tts.runs[0], 'precondition: the narration is on the card');
 
-  // The exact state the hunt found live: a resumable Stop, which is what sets
-  // the resume flag AND (P6) parks the runner's last words in `lastError`.
+  // A resumable Stop: what sets the resume flag AND (P6) parks the runner's
+  // last words in `lastError`.
   await engine.cancel({ stepId: stepAt(job.id, 1).id }, 'Foundry stopped this job.',
     { resumable: true });
   await settle();
-  assert.strictEqual(stepAt(job.id, 1).wasInterrupted, true,
-    'precondition: a resumable stop is exactly what promises a resume');
-  assert.ok(typeof stepAt(job.id, 1).lastError === 'string',
-    'precondition (P6): and the account of it is kept');
+  assert.strictEqual(stepAt(job.id, 1).wasInterrupted, true, 'precondition');
 
   await engine.returnToPending(job.id);
 
-  assert.strictEqual(jobOf(job.id).pending, true);
-  // The row the finding is about, named before the sweep, so a failure here
-  // reads as itself rather than as whichever step the loop reached first.
-  assert.strictEqual(stepAt(job.id, 1).wasInterrupted, undefined,
-    'THE FINDING: the narration still said "interrupted", so the next press RESUMED the session '
-    + 'of the attempt Owen had just pulled out of the queue to start over');
-  assert.strictEqual(stepAt(job.id, 1).lastError, undefined,
-    'and a staged run has no attempt before this one to account for');
+  assert.strictEqual(stepAt(job.id, 0).status, 'done',
+    'THE PACK IS KEPT, and it is what makes keeping the resume flag mean anything: the chunks a '
+    + 'resumed render skips over are the ones this row wrote');
+  assert.strictEqual(stepAt(job.id, 1).status, 'held');
+  assert.strictEqual(stepAt(job.id, 1).wasInterrupted, true,
+    'PK7 CLEARED THIS AND PK16 KEEPS IT: it is what tells the render to pick the session up at '
+    + 'chunk N instead of reading the whole book again');
+  assert.ok(typeof stepAt(job.id, 1).lastError === 'string',
+    'and the account of the stop is still there to read before pressing Send to queue');
+  assert.strictEqual(stepAt(job.id, 1).error, undefined, 'moved, so the row is not red');
 
-  for (const step of jobOf(job.id).steps) {
-    assert.strictEqual(step.status, 'held', step.label);
-    assert.strictEqual(step.wasInterrupted, undefined,
-      `${step.label}: THE FINDING — a returned run that still says "interrupted" is resumed by `
-      + 'the next press, so "start over" restarts nothing and the old session is re-adopted');
-    assert.strictEqual(step.lastError, undefined,
-      `${step.label}: a staged run has no attempt before this one to account for`);
-    assert.strictEqual(step.error, undefined, step.label);
-    assert.strictEqual(step.venue, undefined, step.label);
-  }
+  engine.sendToQueue(job.id);
+  engine.start();
+  await settle();
+  assert.strictEqual(prep.runs.length, 1, 'the pack is not cut again');
+  assert.strictEqual(tts.runs.length, 2, 'the render goes again…');
+  assert.strictEqual(tts.runs[1].ctx.step.wasInterrupted, true,
+    '…and the module can still see that it is a resume');
+});
+
+test('PK16: a failed step goes back held, carrying its account', async () => {
+  const mods = {
+    prep: fakeModule('prepare', { resource: () => 'cpu' }),
+    tts: fakeModule('tts-conversion', { travels: true, stopIsResumable: true }),
+    align: fakeModule('align', { travels: true }),
+    asm: fakeModule('reassembly', { resource: () => 'cpu' }),
+  };
+  await fresh('pk16-failed', Object.values(mods), {
+    host: routingHost([{ name: 'the-mac', enabled: true }], 'the-mac'),
+    seam: leaseSeam().host,
+    ranked: [{ name: 'the-mac' }],
+  });
+  const job = narrationChain('Pursuit of Power');
+  engine.start();
+  await settle();
+  mods.prep.runs[0].resolve({ kind: 'prepared-session', path: '/out/prepared' });
+  await settle();
+  mods.tts.runs[0].resolve({ kind: 'audio', path: '/out/audio' });
+  await settle();
+  mods.align.runs[0].reject(new Error('whisper died on chapter 4'));
+  await settle();
+  assert.strictEqual(stepAt(job.id, 2).status, 'failed', 'precondition');
+  assert.strictEqual(stepAt(job.id, 3).status, 'cancelled', 'precondition: the cascade');
+
+  await engine.returnToPending(job.id);
+
+  assert.strictEqual(stepAt(job.id, 2).status, 'held', 'the failure goes back to held');
+  assert.strictEqual(stepAt(job.id, 2).lastError, 'whisper died on chapter 4',
+    'AND ITS ACCOUNT SURVIVES: a book comes back to Pending so somebody can look at it before '
+    + 'deciding where it goes next, and "it failed, but the queue has forgotten why" makes that '
+    + 'decision impossible');
+  assert.strictEqual(stepAt(job.id, 2).error, undefined,
+    'on `lastError`, which no status is derived from, so the row is not red (P6/F7)');
+  assert.strictEqual(stepAt(job.id, 3).status, 'held', 'the cascade-cancelled child comes back too');
+  assert.strictEqual(stepAt(job.id, 1).status, 'done', 'and the render is untouched');
+});
+
+/*
+ * THE PREPARE DECISION, PINNED.
+ *
+ * `prepare` packs the book to ONE server's stated band, so a book that lands
+ * somewhere else could read its chunks against the wrong cap. The tempting
+ * answer — re-pack on every return — was measured against the code and is
+ * WRONG: `prepareSession` mints a fresh `ebook-<uuid>` per call, and
+ * `tts-conversion` disables every resume mode when a prepare row is in front of
+ * it ("A PREPARED SESSION IS NOT A RESUME"), so a re-packed session is a set of
+ * file names nothing rendered has. Re-packing on return would throw away the
+ * half-rendered book the test above defends — the exact defect this packet is
+ * about, arriving by a second road.
+ *
+ * So the pack is KEPT, and the mismatch is answered where it is actually known:
+ * `packingVerdictFor` already refuses chunks over the admitted machine's cap,
+ * and that refusal is routed into re-running the prepare row FOR THAT MACHINE
+ * instead of failing the book.
+ */
+test('PK16: a pack cut for another machine re-runs PREPARE, it does not fail the book', async () => {
+  const prep = fakeModule('prepare', { resource: () => 'cpu' });
+  const tts = fakeModule('tts-conversion', { travels: true, stopIsResumable: true });
+  await fresh('pk16-repack', [prep, tts], {
+    host: routingHost([{ name: 'the-pc', enabled: true }], 'the-pc'),
+    seam: leaseSeam().host,
+    ranked: [{ name: 'the-pc' }],
+  });
+  const job = sendChain('Tender is the Flesh', [
+    { type: 'prepare', label: 'Prepare', config: {}, sourceRef: { kind: 'epub', path: '/a.epub' } },
+    { type: 'tts-conversion', label: 'Narrate', config: {}, parentIndex: 0 },
+  ]);
+  engine.start();
+  await settle();
+  // Packed for the machine the book was on before the operator moved it.
+  prep.runs[0].resolve({
+    kind: 'prepared-session', path: '/scratch/ebook-1', sessionId: 'ebook-1',
+    detail: { packedForServer: 'the-mac', packedCeilingChars: 800 },
+  });
+  await settle();
+  assert.strictEqual(jobOf(job.id).waitForResolved, 'the-pc',
+    'precondition: the render was admitted to the other machine');
+
+  const refusal = Object.assign(
+    new Error('crucible_packing_over_venue_cap: packed to 800 for "the-mac", cap 700 on "the-pc".'),
+    { repack: true, repackLine: 'packed for the-mac, admitted to the-pc' },
+  );
+  tts.runs[0].reject(refusal);
+  await settle();
+
+  assert.strictEqual(stepAt(job.id, 1).status, 'waiting',
+    'THE RENDER IS NOT RED: nothing was submitted, no lease taken, no GPU second spent');
+  assert.strictEqual(stepAt(job.id, 1).error, undefined);
+  assert.strictEqual(prep.runs.length, 2,
+    'THE PACK IS CUT AGAIN — for the machine that actually took the render');
+  assert.strictEqual(stepAt(job.id, 0).output, undefined,
+    'and its landed artifact went with its `done`: a queued step carrying the previous pack is '
+    + 'how a render reads chunks that are no longer there');
+
+  // The pack comes back naming this machine, and the render goes again.
+  prep.runs[1].resolve({
+    kind: 'prepared-session', path: '/scratch/ebook-2', sessionId: 'ebook-2',
+    detail: { packedForServer: 'the-pc', packedCeilingChars: 700 },
+  });
+  await settle();
+  assert.strictEqual(tts.runs.length, 2, 'the render is launched again on the re-packed session');
+
+  // And a SECOND refusal naming the same machine is a misconfiguration, not a
+  // loop: the pack already carries that server's name, so nothing would come
+  // back different and the row fails with the server's own sentence.
+  tts.runs[1].reject(Object.assign(
+    new Error('crucible_packing_over_venue_cap: still over the cap on "the-pc".'),
+    { repack: true, repackLine: 'still over the cap' },
+  ));
+  await settle();
+  assert.strictEqual(stepAt(job.id, 1).status, 'failed',
+    'THE CEILING: a pack already cut for this machine that is still refused is a repair somebody '
+    + 'makes, and ruling 3 says that is the only thing a step may fail on');
+  assert.strictEqual(prep.runs.length, 2, 'and the pack is not cut a third time');
 });
 
 // ── Q2/F6 · Retry revives the whole subtree ─────────────────────────────────

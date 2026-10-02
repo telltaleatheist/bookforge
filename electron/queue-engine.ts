@@ -93,6 +93,7 @@ import {
 import {
   decideWaitFor,
   holdBusy,
+  RETIRED_LOCAL_NARRATOR_VENUE,
   WAIT_FOR_ANY,
   type ServerState,
   type WaitForServer,
@@ -134,7 +135,9 @@ import { stopSentence, userStopped, type StopReason } from '../shared/queue/stop
  * `queue-steps/runtime` without the cycle that module's other exports would
  * imply — everything it imports is `import type`.
  */
-import { busyLineOf, projectDirForStep, transientLineOf } from './queue-steps/runtime';
+import {
+  busyLineOf, projectDirForStep, repackLineOf, transientLineOf,
+} from './queue-steps/runtime';
 /*
  * WHERE A FAILURE GOES SO IT IS STILL THERE TOMORROW.
  *
@@ -2130,6 +2133,16 @@ function isPending(job: QueueJob): boolean {
  * Refused by name for a run that is not pending, because the press would
  * otherwise appear to work on a book that is already running — and "it did
  * nothing" is indistinguishable from "it is broken".
+ *
+ * ── AND IT RELEASES ONLY WHAT IS STILL OWED (PK16, 2026-09-20) ─────────────
+ *
+ * A book can now come back to Pending with steps already `done`
+ * ({@link returnToPending}), so this press must not be a way of re-running
+ * them. It is not, and the reason is one line in {@link release}: it moves
+ * `held` steps and nothing else. A `done` step is skipped there, `pump` only
+ * ever launches a `queued` one, and nothing downgrades a finished step because
+ * a step in front of it ran again. That is the whole of why sending a book back
+ * and forward again costs no GPU.
  */
 export function sendToQueue(jobId: string): void {
   const job = requireJob(jobId);
@@ -2150,47 +2163,92 @@ export function sendToQueue(jobId: string): void {
  * PUT A RUN BACK IN PENDING — the reverse of {@link sendToQueue}, and the only
  * thing that makes "immutable once a GPU takes it" livable.
  *
- * Owen, 2026-09-18: *"i should be able to stop it from running and move it back
- * to the pending queue if i want … just move it back to the queue to start over
- * with exact same settings, and let me change the server again if i want once it
- * re-enters the queue. or delete it if i want. if i hit cancel book while its in
- * queue, it drops back to pending."*
+ * IT UNASSIGNS THE MACHINE AND KEEPS THE WORK. Nothing a book has already
+ * finished is thrown away by this door: `done` is left `done`, with its output,
+ * its metrics and its notes. The staging band is where *which server* becomes a
+ * question again; it is not where hours of GPU go.
  *
- * ── WHY THIS IS NOT `cancel()` AND NOT `retry()` ────────────────────────────
+ * ── THE CORRECTION (Owen, 2026-09-20 ~19:20 ET) ────────────────────────────
  *
- * `cancel` settles the steps TERMINALLY — and for a module with
- * `stopIsResumable` it deliberately lands them `held` and interrupted, so the
- * next press resumes rather than restarts. `retry` resets steps but leaves the
- * run in the live queue, still bound to the machine it was assigned. Neither can
- * answer *start this book over somewhere else*, because neither releases
- * {@link QueueJob.waitForResolved} — and while that field is set, `setWaitFor`
- * refuses by name ("a book finishes on the machine it started on").
+ * *"when i send an item back to pending and then submit back to the queue, it
+ * starts its whole thing over and discards all the progress it made. if it
+ * already did ai cleanup and tts and only has alignment left, when i send it
+ * back, it schedules ai cleanup again."*
  *
- * So THE ASSIGNMENT IS WHAT THIS DOOR RETIRES. §4.3 is not weakened by it: that
- * rule says a job that STARTED on a machine finishes there, and this run is no
- * longer going to finish — it has been taken out of the queue entirely and put
- * back in the staging band, where nothing is committed and the server is a
- * question again. A run that is merely stopped keeps its venue, as it always
- * did.
+ * And, asked what he had meant the first time: *"when i said send it back i
+ * didnt mean erase progress it already made, i meant it should go back with
+ * everything configured so i dont have to re-configure it."*
+ *
+ * So the 2026-09-18 ruling this door was built on was MISREAD, not superseded.
+ * *"just move it back to the queue to start over with exact same settings"* was
+ * about the SETTINGS — voice, speed, passes, the server picker — surviving the
+ * trip, so that sending a book back costs no re-typing. It was read here as
+ * "start over" in the sense of *from zero*, and every step was reset to `held`
+ * with its output, metrics, notes and progress cleared. The other half of that
+ * night, *"dont keep any progress or anything if i fully cancel it"*, is about
+ * Cancel and Remove — the doors that take a book OUT — and was folded into this
+ * one, which does not.
+ *
+ * A TRUE START-OVER IS REMOVE AND QUEUE AGAIN, and the menu says so.
+ *
+ * ── WHAT EACH STEP BECOMES, AND WHY ─────────────────────────────────────────
+ *
+ *  - `done` → UNTOUCHED. Its artifact is what the steps behind it read; there
+ *    is no version of "the server is a question again" that requires re-reading
+ *    a book aloud. This is the same rule `retry({jobId})` has always used one
+ *    band in — *"re-narrating a book because its assembly failed is an hour of
+ *    GPU nobody asked for"*.
+ *  - anything else → `held`, and `wasInterrupted` is KEPT. That flag is what
+ *    tells a render to pick its session up at chunk N; clearing it (PK7,
+ *    2026-09-20, which this supersedes) is exactly what turned a half-rendered
+ *    book into a render from zero. Its `prepare` parent is still `done`, so the
+ *    chunks it resumes are the same chunks — which is what makes keeping the
+ *    flag mean anything.
+ *  - a failed or cancelled step → `held` with its account moved to `lastError`,
+ *    the same move `retry` makes (P6/F7): nothing derives a status from that
+ *    field, so the row is not red, and the reason is still there to be read
+ *    before Send to queue is pressed.
+ *
+ * THE CONFIGURATION IS NEVER TOUCHED — not here, not anywhere in this door.
+ * `step.config` is the answers the operator typed, and Owen's sentence above is
+ * about exactly that. The keeper asserts it deep-equal across the trip.
+ *
+ * ── WHY THIS IS STILL NOT `cancel()` AND NOT `retry()` ─────────────────────
+ *
+ * `cancel` settles the steps TERMINALLY. `retry` resets steps but leaves the
+ * run in the live queue, still bound to the machine it was assigned. Neither
+ * can answer *send this book back and let me pick the machine again*, because
+ * neither releases {@link QueueJob.waitForResolved} — and while that field is
+ * set, `setWaitFor` refuses by name ("a book finishes on the machine it started
+ * on").
+ *
+ * THE ASSIGNMENT IS WHAT THIS DOOR RETIRES, and now it is the ONLY thing it
+ * retires. §4.3 is not weakened: that rule protects a run that is PARTWAY
+ * THROUGH from being quietly continued elsewhere, and this is the operator
+ * asking for it out loud, with the book stopped in front of them.
+ *
+ * The one thing on our side that is bound to a machine is the CHUNK PACK, which
+ * `prepare` cut to one server's band. It is not re-cut here — the operator may
+ * well send the book back to the same machine, and packing a long book again on
+ * the chance they will not is minutes of CPU spent on a guess. If the render is
+ * later admitted somewhere whose cap is tighter, the refusal that already
+ * exists for it (`packingVerdictFor`) is routed into re-running the prepare row
+ * for that machine instead of failing the book — see {@link repackParentFor}.
  *
  * ── WHAT IT DOES NOT DO: DELETE ANOTHER APPLICATION'S FILES ─────────────────
  *
- * Owen asked for *"dont keep any progress or anything if i fully cancel it"*,
- * and for a HOSTED FOUNDRY READ this side cannot honour that yet — which is
- * said out loud here rather than quietly half-done. A read's banked pages live
- * in Foundry's project, at a path recorded on that read step's own ledger
- * payload; composing it from the project key is a defect Foundry has already
- * fixed once (`readingBank`, their projects.ts — a re-read with a different page
- * range BRANCHES, so a project can hold two banks). And a cancelled read never
- * LANDS a step, so `deleteLedgerStep` — the one door that sweeps a bank — has no
- * row to act on. Reaching into `readings/` from here to guess the difference is
- * the same class of mistake as composing the path.
+ * A HOSTED FOUNDRY READ banks its pages in Foundry's project, and this side
+ * cannot discard them: the bank's path is recorded on that read step's own
+ * ledger payload, composing it from the project key is a defect Foundry has
+ * already fixed once (`readingBank`, their projects.ts — a re-read with a
+ * different page range BRANCHES, so a project can hold two banks), and a
+ * cancelled read never LANDS a step, so `deleteLedgerStep` — the one door that
+ * sweeps a bank — has no row to act on.
  *
- * Until Foundry ships a discard door (asked 2026-09-19, foundry-mac-1), a
- * re-run of a returned read RESUMES from its bank, and the caller is told so by
- * {@link returnToPendingKeepsBank} rather than discovering it on the invoice.
- * Everything a run keeps on OUR side — output, metrics, notes, progress — is
- * cleared here, so nothing of the stopped attempt is read as this one's.
+ * Under the correction above that is no longer a caveat but the RULE: a re-run
+ * of a returned read resumes from its bank, exactly as a returned render
+ * resumes from its chunks. {@link returnToPendingKeepsBank} says so in the
+ * dialog.
  */
 export async function returnToPending(jobId: string): Promise<void> {
   const job = requireJob(jobId);
@@ -2232,43 +2290,71 @@ export async function returnToPending(jobId: string): Promise<void> {
   }
 
   for (const step of job.steps) {
-    step.status = 'held';
-    step.error = undefined;
-    step.progress = {};
-    step.metrics = {};
-    step.output = undefined;
-    step.outputPath = undefined;
-    step.completionNotes = undefined;
-    step.startedAt = undefined;
-    step.finishedAt = undefined;
     /*
-     * A RETURN TO PENDING IS "START OVER", SO THE RESUME FLAG COMES OFF.
+     * A FINISHED STEP IS HISTORY, NOT WORK — the whole of the 2026-09-20
+     * correction, in one line. Its output is what the steps behind it read, and
+     * Owen's *"if it already did ai cleanup and tts and only has alignment
+     * left, when i send it back, it schedules ai cleanup again"* is what
+     * resetting it looked like from the outside.
      *
-     * `wasInterrupted` is not decoration — it is what tells TTS to pick the
-     * session up from sentence N instead of rendering from zero. Left standing
-     * on a returned run it turned Owen's *"start over with exact same
-     * settings"* into a resume of the very attempt he just took out of the
-     * queue: an inline-prep chain re-adopts the old session and the book comes
-     * out of the machine he changed his mind about. Everything else of the
-     * stopped attempt is cleared two lines up; this is the one field that
-     * would have made the clearing pointless.
-     *
-     * `lastError` goes with it, and for the opposite reason to P6's: that
-     * field is *the account of the attempt before this one*, kept so a reason
-     * survives a Stop or a Retry — but a run sent back to Pending has no
-     * attempt before this one any more. A "Last time: …" line under a staged
-     * row is history the run no longer owns.
+     * The machine is retired below all the same, on the RUN. A `done` step's
+     * `venue` is the honest record of where that work HAPPENED and stays with
+     * it; the bench draws lanes from live rows, not from finished ones.
      */
-    step.wasInterrupted = undefined;
-    // With it, WHOSE gesture that was: a staged run has no stop to remember,
-    // and a stale `'user'` here would have the row skipped by the untargeted
-    // Start for ever after it was sent back to the queue (`release`).
+    if (step.status === 'done') continue;
+    /*
+     * THE RESUME FLAG IS KEPT, and PK7 — which cleared it three hours earlier
+     * on the reading of "start over" this ruling corrects — is superseded.
+     *
+     * `wasInterrupted` is what tells a render to pick its session up at chunk N
+     * instead of from zero, and it is only ever true of a step that STARTED. A
+     * step that never ran carries no flag, so this needs no test: leaving the
+     * field alone says exactly "kept where it was earned".
+     *
+     * It is worth something here only because the `prepare` row in front of the
+     * render is left `done` above — the chunks a resumed render skips over are
+     * the ones that row packed, and a re-packed session would be a different
+     * set of files with none of them on disk.
+     */
+    step.status = 'held';
+    /*
+     * AND THE ACCOUNT OF THE ATTEMPT IS KEPT, moved where no status is derived
+     * from it — `retry`'s move, for `retry`'s reason (P6/F7). A book comes back
+     * to Pending precisely so somebody can look at it before deciding where it
+     * goes next, and "it failed, but the queue has forgotten why" is the one
+     * thing that makes that decision impossible.
+     */
+    if (step.error !== undefined && step.error !== '') step.lastError = step.error;
+    step.error = undefined;
+    /*
+     * WHOSE GESTURE STOPPED IT, which a staged run has no use for: the trip
+     * through Pending and the press that sends it back out IS the explicit
+     * gesture `held` waits for, and a stale `'user'` here would have the row
+     * stepped over by the untargeted Start for ever after (`release`).
+     */
     step.stopReason = undefined;
-    step.lastError = undefined;
     // The machine this step was PENCILLED IN for, which is now a decision the
     // operator is about to make again. Left standing it would have the bench
     // naming a server the book is no longer going to.
     step.venue = undefined;
+    // The attempt is over either way, whatever the next one decides.
+    step.finishedAt = undefined;
+    /*
+     * A ROW THAT WILL RESUME KEEPS ITS NUMBERS. The percent is the sentence the
+     * operator reads on the card (*"Stopped at 42% — it picks up where it left
+     * off"*, `shared/queue/stop-reason.ts`) and the resume counts are what the
+     * render reports against; both are still true of the session on disk. A row
+     * that will start from the beginning keeps neither, because they would be
+     * measurements of an attempt that left nothing behind.
+     */
+    if (step.wasInterrupted !== true) {
+      step.progress = {};
+      step.metrics = {};
+      step.output = undefined;
+      step.outputPath = undefined;
+      step.completionNotes = undefined;
+      step.startedAt = undefined;
+    }
     // The per-step park bookkeeping (cool-offs, the consecutive-refusal count
     // Q6 escalates on) is about the attempt that just ended, and the step id
     // does not change here — so without this a returned run starts its next
@@ -2291,24 +2377,34 @@ export async function returnToPending(jobId: string): Promise<void> {
 }
 
 /**
- * WHAT A RETURN TO PENDING CANNOT THROW AWAY, for the dialog that asks first.
+ * WHAT A RETURN TO PENDING KEEPS, for the dialog that says so before the press.
  *
- * Null when there is nothing to warn about. A sentence when the run holds work
- * banked in another application, because "start over" and "resume from page 214"
- * are different enough that a person must not find out afterwards.
+ * Null when there is nothing in particular to say. A sentence when the run holds
+ * work banked in ANOTHER APPLICATION — because that is the one kind of progress
+ * this app could not throw away even if it were asked to, and a person deciding
+ * between *send it back* and *remove it* is entitled to know which of the two
+ * doors actually starts the book over.
+ *
+ * ── Reworded 2026-09-20 with the ruling it was a caveat on ─────────────────
+ *
+ * It used to read as a WARNING: the door claimed to start a book over, and
+ * Foundry's bank was the exception that quietly did not. Owen's correction that
+ * evening — *"when i said send it back i didnt mean erase progress it already
+ * made"* — makes the bank the ORDINARY case rather than the exception, so the
+ * sentence states the rule and names the door that does start over.
  *
  * Pure, and asked of the run rather than the disk: whether a bank EXISTS is
- * Foundry's to answer, and this is only the honest caveat on a door that does
- * not delete one.
+ * Foundry's to answer, and this is only the honest note on a door that does not
+ * delete one.
  */
 export function returnToPendingKeepsBank(jobId: string): string | null {
   const job = requireJob(jobId);
   const read = job.steps.find((step) => step.type === 'foundry-job'
     && (step.config as { request?: { kind?: string } } | undefined)?.request?.kind === 'read');
   if (read === undefined) return null;
-  return 'The pages already read stay banked in Foundry, so starting this again resumes from '
-    + 'where it stopped rather than from page one. BookForge cannot discard another '
-    + "application's bank; Foundry is adding a door for that.";
+  return 'This stops the book, keeps what it has done, and asks again which machine it goes to. '
+    + 'The pages already read stay banked in Foundry, so sending it out again carries on from '
+    + 'where it stopped rather than from page one. To start it over, remove it and add it again.';
 }
 
 /**
@@ -4405,11 +4501,19 @@ async function launch(job: QueueJob, step: QueueStep): Promise<void> {
      * 2026-09-20).
      */
     const transientLine = busyLine === undefined ? transientLineOf(err) : undefined;
+    /*
+     * AND THE THIRD: a refusal saying the work in FRONT of this row was done
+     * for a different machine (PK16). Read last, because both waits above are
+     * about this row's own attempt and this one is about its parent's.
+     */
+    const repackLine = busyLine === undefined && transientLine === undefined
+      ? repackLineOf(err) : undefined;
     settleStep(job, step, {
       ok: false,
       error: (err as Error)?.message || String(err),
       ...(busyLine === undefined ? {} : { busyLine }),
       ...(transientLine === undefined ? {} : { transientLine }),
+      ...(repackLine === undefined ? {} : { repackLine }),
     });
   }
 }
@@ -4449,6 +4553,23 @@ type StepOutcome =
      * other books share.
      */
     transientLine?: string;
+    /**
+     * THE WORK IN FRONT OF THIS ROW WAS DONE FOR A DIFFERENT MACHINE — PK16,
+     * 2026-09-20, and the third thing a refusal can be
+     * (`queue-steps/runtime.ts`, {@link repackLineOf}).
+     *
+     * Present when the module refused because the chunks its `prepare` parent
+     * cut are over the CAP of the server this render was admitted to. Nothing
+     * of the attempt is lost — the refusal lands before a chunk is submitted —
+     * and `settleStep` answers it by sending the PARENT back to `queued` to
+     * pack again for the machine that took the render.
+     *
+     * It exists because a book sent back to Pending now KEEPS its work and
+     * re-answers only its machine ({@link returnToPending}), which is the one
+     * gesture that can invalidate a pack. Failing the row would be the queue
+     * punishing a book for a decision it invited.
+     */
+    repackLine?: string;
   };
 
 /**
@@ -4534,6 +4655,43 @@ function logFailure(job: QueueJob, step: QueueStep, reason: string): void {
   } catch { /* the log is an account, never a gate */ }
 }
 
+/**
+ * THE `prepare` ROW THAT SHOULD PACK THIS BOOK AGAIN, or null when re-packing
+ * would answer nothing — PK16's half of {@link StepOutcome.repackLine}.
+ *
+ * Three questions, and all three are answered from state already on the run, so
+ * there is no side map to leak and no counter to get out of step with reality:
+ *
+ *  1. IS THERE A PACK TO REDO? The refusing step's parent must be a finished
+ *     `prepare`. A render that packed INLINE (the CLI, the language-learning
+ *     chain, a row restored from before the prepare row existed) has no such
+ *     parent, and its pack is not a thing the queue can order again.
+ *  2. WHERE IS THIS BOOK NOW? The machine the render was admitted to, which is
+ *     the run's own `waitForResolved`. `any` and the retired local narrator are
+ *     not machines, so neither is an answer to pack for.
+ *  3. WOULD IT COME BACK DIFFERENT? The prepare row records whose numbers it
+ *     used (`detail.packedForServer`). If that is ALREADY the machine that just
+ *     refused, the pack came out over that server's own cap — the band it
+ *     stated and the cap its voice row certifies disagree — and that is a
+ *     misconfiguration a person repairs, not a thing to re-run. Ruling 3: a
+ *     step fails only on something that can be repaired.
+ *
+ * (3) is what makes the loop finite without a counter: a re-pack asks
+ * `assignedServerOf` rung 1 — *the card this book holds* — so the next pack
+ * carries this venue's name, and a second refusal for the same machine falls
+ * through to the ordinary failure.
+ */
+function repackParentFor(job: QueueJob, step: QueueStep): QueueStep | null {
+  const parent = parentOf(step);
+  if (parent === null || parent.type !== 'prepare' || parent.status !== 'done') return null;
+  const venue = job.waitForResolved;
+  if (venue === undefined || venue === WAIT_FOR_ANY
+    || venue === RETIRED_LOCAL_NARRATOR_VENUE) return null;
+  const packedFor = parent.output?.detail?.['packedForServer'];
+  if (typeof packedFor !== 'string' || packedFor === '' || packedFor === venue) return null;
+  return parent;
+}
+
 function settleStep(job: QueueJob, step: QueueStep, outcome: StepOutcome): void {
   const live = runningSteps.get(step.id);
   const stopped = live?.stopRequested === true;
@@ -4560,6 +4718,12 @@ function settleStep(job: QueueJob, step: QueueStep, outcome: StepOutcome): void 
    * server-wide hold, because a reset socket names no holder.
    */
   const transientLine = outcome.ok ? undefined : outcome.transientLine;
+  /*
+   * AND THE THIRD THING A REFUSAL CAN BE — the pack in front of this row was
+   * cut for a different machine (PK16). Not a wait and not a failure: a bit of
+   * CPU work to do again. See {@link repackParentFor}.
+   */
+  const repackLine = outcome.ok ? undefined : outcome.repackLine;
   runningSteps.delete(step.id);
   step.finishedAt = new Date().toISOString();
 
@@ -4614,6 +4778,67 @@ function settleStep(job: QueueJob, step: QueueStep, outcome: StepOutcome): void 
    * Handled FIRST, before the thermal accumulator and every other branch,
    * because this is the one outcome that is not an ending.
    */
+  /*
+   * PACKED FOR ANOTHER MACHINE — PACK IT AGAIN, DO NOT REDDEN THE ROW (PK16,
+   * 2026-09-20).
+   *
+   * The other outcome that is not an ending, and it is here beside the 409 for
+   * that reason. Since tonight a book sent back to Pending keeps everything it
+   * has done and re-answers only its MACHINE ({@link returnToPending}) — so the
+   * one thing a return can invalidate is the chunk pack, which was cut to one
+   * server's band. Failing the render for it would hand the operator a red row
+   * for taking the invitation the Pending band exists to offer.
+   *
+   * The refusal lands BEFORE the first chunk is submitted (`packingRefusalFor`
+   * runs between the venue decision and the submit), so nothing is lost by
+   * going back a step: the prepare row packs again for the machine that took
+   * the render, and this row waits for it exactly as it did the first time.
+   *
+   * The old scratch session is left where it is. It is swept by the same rule
+   * that sweeps every abandoned pack (`prepareSession`'s clean-session pass and
+   * the launch sweep); deleting it from the scheduler would put file surgery in
+   * the one module that is kept free of it.
+   *
+   * Handled BEFORE the 409 branch because it is not a wait: there is no cool-off
+   * to serve and no holder to record, and `launch` only ever sets one of the
+   * three lines.
+   */
+  if (!outcome.ok && repackLine !== undefined && !stopped) {
+    const prepare = repackParentFor(job, step);
+    if (prepare !== null) {
+      takeThermalSummary(step.id);
+      const line = `Packed for crucible "${String(prepare.output?.detail?.['packedForServer'])}", `
+        + `admitted to "${String(job.waitForResolved)}" — packing it again for that machine.`;
+      step.status = 'waiting';
+      step.startedAt = undefined;
+      step.finishedAt = undefined;
+      step.error = undefined;
+      step.progress = { percent: undefined, message: line };
+      // THE PACK IS THE THING BEING REDONE, so its landed artifact goes with
+      // its `done`: a `queued` step carrying the output of the run before it is
+      // how a render reads chunks that are no longer there.
+      prepare.status = 'queued';
+      prepare.output = undefined;
+      prepare.outputPath = undefined;
+      prepare.completionNotes = undefined;
+      prepare.metrics = {};
+      prepare.progress = { message: line };
+      prepare.startedAt = undefined;
+      prepare.finishedAt = undefined;
+      prepare.error = undefined;
+      forgetStepParks(prepare.id);
+      console.log(`[QUEUE] ${job.title} — ${step.label}: ${line}`);
+      changed();
+      pump();
+      return;
+    }
+    /*
+     * NOTHING TO REDO — the refusal is the honest end of this row, and it falls
+     * through to the ordinary failure carrying the server's own sentence, which
+     * names both numbers and both machines.
+     */
+  }
+
   if (!outcome.ok && (busyLine ?? transientLine) !== undefined && !stopped) {
     takeThermalSummary(step.id);
     step.status = 'queued';

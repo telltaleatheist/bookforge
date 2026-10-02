@@ -286,3 +286,52 @@ export function stepFailure(message: string, busyLine?: string, transientLine?: 
   }
   return new Error(message);
 }
+
+/**
+ * THE CHUNKS WERE PACKED FOR ANOTHER MACHINE, AND THE ANSWER IS TO PACK THEM
+ * AGAIN — the THIRD thing a refusal can be (PK16, 2026-09-20).
+ *
+ * {@link busyLineOf} says *somebody holds the card, wait*. {@link
+ * transientLineOf} says *the wire dropped, wait*. This one says *nothing is
+ * broken and nobody holds anything — the work in front of this row was done for
+ * a different server, so do that bit again and then carry on*.
+ *
+ * ── Why it exists at all ────────────────────────────────────────────────────
+ *
+ * `prepare` cuts the book into chunks against ONE server's stated band and
+ * records whose (`PrepInfo.packedFor`). Since 2026-09-20 a book sent back to
+ * Pending KEEPS everything it has done and only its MACHINE becomes a question
+ * again (`queue-engine.returnToPending`) — so the one thing a return can
+ * invalidate is exactly this: a pack cut for the machine the operator has just
+ * changed their mind about. `packingVerdictFor` already owns the comparison
+ * (`parallel-tts-bridge.ts`, bug hunt C5): chunks over the new machine's CAP are
+ * refused, because that server throws on them one at a time once the book has
+ * crossed the wire.
+ *
+ * Failing the row for it would be the queue punishing a book for a decision it
+ * invited the operator to make. So the refusal rides the throw, `settleStep`
+ * reads it here, and the `prepare` step in front of the row goes back to
+ * `queued` to re-pack for the machine the render was actually admitted to.
+ * Nothing of the render is lost: the refusal lands BEFORE a chunk is submitted,
+ * before a lease and before a GPU second.
+ *
+ * Duck-typed like its two siblings, and for the same reason — the rule is read
+ * in one place and no table of classes can go stale.
+ */
+export function repackLineOf(err: unknown): string | undefined {
+  if (err === null || typeof err !== 'object') return undefined;
+  const spelt = err as { repack?: unknown; repackLine?: unknown; message?: unknown };
+  if (spelt.repack !== true) return undefined;
+  const said = (value: unknown): string | undefined =>
+    typeof value === 'string' && value !== '' ? value : undefined;
+  return said(spelt.repackLine) ?? said(spelt.message);
+}
+
+/**
+ * The refusal a module mints when the pack in front of it was cut for another
+ * machine. ONE door, so `repack: true` is spelt in exactly one place and
+ * {@link repackLineOf} cannot drift from its only writer.
+ */
+export function stepNeedsRepack(message: string): Error {
+  return Object.assign(new Error(message), { repack: true as const, repackLine: message });
+}

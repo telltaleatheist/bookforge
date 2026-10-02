@@ -2331,6 +2331,25 @@ export type PackingVerdict =
   | { kind: 'note'; note: string }
   | { kind: 'refused'; reason: string };
 
+/**
+ * THE NAME OF THE REFUSAL, WRITTEN ONCE — the code the reason below opens with,
+ * and the only thing another layer may key on.
+ *
+ * The queue reads it (`queue-steps/tts-conversion.ts`) to turn this refusal into
+ * a RE-PACK rather than a red row: since PK16 a book sent back to Pending keeps
+ * its render and re-answers only its machine, so "packed for somebody else" is a
+ * thing the operator was invited to cause and the fix is to run `prepare` again
+ * for the machine that took the render. A string compared against the prose of
+ * the sentence would break the first time a word of it changed; this is the
+ * contract.
+ */
+export const PACKING_OVER_VENUE_CAP = 'crucible_packing_over_venue_cap';
+
+/** Is this the {@link PACKING_OVER_VENUE_CAP} refusal? One reader, one spelling. */
+export function isPackingOverCapRefusal(reason: string | undefined): boolean {
+  return typeof reason === 'string' && reason.startsWith(`${PACKING_OVER_VENUE_CAP}:`);
+}
+
 export function packingVerdictFor(
   packed: { server: string; ceilingChars: number },
   venue: { server: string; maxChars: number; ceilingChars: number },
@@ -2338,14 +2357,14 @@ export function packingVerdictFor(
   if (!packingTravelsTo(packed.ceilingChars, venue.maxChars)) {
     return {
       kind: 'refused',
-      reason: 'crucible_packing_over_venue_cap: this book was packed to chunks of at most '
+      reason: `${PACKING_OVER_VENUE_CAP}: this book was packed to chunks of at most `
         + `${packed.ceilingChars} characters, which is what crucible "${packed.server}" states for `
         + `this voice, and the render was admitted to crucible "${venue.server}", whose cap for it `
         + `is ${venue.maxChars}. Chunking is this client's and the cap is that server's `
         + 'certificate, so the over-long chunks would be refused one at a time '
-        + '(crucible_chunk_over_venue_cap) after the book had crossed the wire. Name a server on '
-        + 'the book, or remove it and queue it again so it is packed for the machine it will run '
-        + 'on.',
+        + '(crucible_chunk_over_venue_cap) after the book had crossed the wire. The queue answers '
+        + 'this by packing the book again for the machine that took it; outside the queue, name a '
+        + 'server on the book and run it again.',
     };
   }
   if (packed.ceilingChars > venue.ceilingChars) {
