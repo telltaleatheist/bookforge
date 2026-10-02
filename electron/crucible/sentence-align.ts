@@ -52,6 +52,7 @@ import { compactedLength, keepPieces, mapSpansBack, mapWordsBack, type KeptPiece
 import { correctToHeard, MIN_AGREEMENT, wordKey } from '../../shared/sentence-align/correct-to-heard';
 import { recheckPieces, touchesDecodeLoop } from '../../shared/sentence-align/recheck';
 import { repeatedRuns } from '../../shared/sentence-align/repeat-loops';
+import { MIN_CUE_S, trimOverlaps } from '../../shared/sentence-align/overlaps';
 
 export const SENTENCE_ASR_MODEL = 'qwen3-asr-1.7b';
 export const SENTENCE_ALIGN_MODEL = 'qwen3-aligner';
@@ -510,10 +511,20 @@ export async function runSentenceAlign(o: RunSentenceAlignOptions): Promise<Sent
 
     // 4. EDGES — every placed sentence, in time order
     progress('edges', 0, 'Putting every cue edge in a pause');
-    const placed = placements.filter((p) => p.status === 'placed' && p.start !== null && p.end !== null)
-      .sort((a, b) => a.start! - b.start!);
+    // A SENTENCE ENDS BEFORE THE NEXT ONE BEGINS (shared/sentence-align/overlaps.ts): a placement whose tail the
+    // aligner stretched past the next sentence's first words comes back to its last word before them, instead of
+    // pushing the next cues to nothing.
+    const overlap = trimOverlaps(placements.filter((p) => p.status === 'placed' && p.start !== null && p.end !== null)
+      .sort((a, b) => a.start! - b.start!));
+    const placed = overlap.placed;
+    const overlapped = new Set(overlap.trimmed.map((t) => t.index));
+    if (overlap.trimmed.length > 0) {
+      log(`${overlap.trimmed.length} sentence(s) placed past the start of the next one, brought back to their last word `
+        + `before it: ${overlap.trimmed.slice(0, 8).map((t) => `${t.index + 1} (${(t.from - t.to).toFixed(1)} s)`).join(', ')}`
+        + `${overlap.trimmed.length > 8 ? ', ...' : ''}`);
+    }
     const cues: { index: number; start: number; end: number; flagged: string[]; heardEnd: number }[] = [];
-    let noPause = 0; let collapsed = 0; let prevEdgeEnd = 0; let absorbed = 0;
+    let noPause = 0; let collapsed = 0; let prevEdgeEnd = 0; let absorbed = 0; let tooShort = 0;
     // TRAILING ADDITIONS ARE THE CUE'S OWN WORDS (Owen's spot check, 2026-09-26: the reader says "Ephesians 5 verse 21"
     // where the book prints "(Eph. 5:21)"). Words heard between a sentence's last word and the next sentence's first
     // belonged to NO cue: the edge landed in the pause before "verse", the clip ended on "ver-", and a long row that
@@ -548,10 +559,15 @@ export async function runSentenceAlign(o: RunSentenceAlignOptions): Promise<Sent
       const s = startEdge(env, p.start!, prevEnd !== null && prevEnd <= p.start! ? prevEnd : null);
       const e = endEdge(env, pEnd, nextStart !== null && nextStart >= pEnd ? nextStart : null);
       const flagged: string[] = [];
+      if (overlapped.has(p.index)) flagged.push('overlapped-next');
       if (!s.inSilence) { flagged.push('start-not-in-a-pause'); noPause++; }
       if (!e.inSilence) { flagged.push('end-not-in-a-pause'); noPause++; }
       let a = Math.max(s.t, prevEdgeEnd); let b = e.t;
       if (b <= a) { collapsed++; flagged.push('collapsed-to-word-times'); a = Math.max(p.start!, prevEdgeEnd); b = Math.max(p.end!, a + 0.05); }
+      // A CUE TOO SHORT TO HOLD ITS SENTENCE IS A DEFECT, NOT OUTPUT (training-pc, 2026-10-02): no sentence is read
+      // in MIN_CUE_S, so a cue that short is one whose audio went to a neighbour. Flagged, counted, and listed in
+      // discrepancies.json as an exclusion candidate beside the barely-matched ones.
+      if (b - a < MIN_CUE_S) { tooShort++; flagged.push('too-short'); }
       cues.push({ index: p.index, start: a, end: b, flagged, heardEnd: pEnd });
       prevEdgeEnd = b;
     }
@@ -732,7 +748,7 @@ export async function runSentenceAlign(o: RunSentenceAlignOptions): Promise<Sent
       alignWindows: windows.length, alignWindowsFailed: alignFailed.length,
       tooLongForAligner: tooLong.reduce((n, t) => n + t.sentences.length, 0),
       cues: cues.length, notPlaced: placements.length - cues.length, correctedToHeard: corrections.length,
-      edgesWithoutPause: noPause, collapsed,
+      edgesWithoutPause: noPause, collapsed, overlappedNext: overlap.trimmed.length, tooShort,
     };
     const report = {
       generator: 'bookforge sentence-align', asrModel: SENTENCE_ASR_MODEL, alignModel: SENTENCE_ALIGN_MODEL,
@@ -761,10 +777,12 @@ export async function runSentenceAlign(o: RunSentenceAlignOptions): Promise<Sent
       corrections: { count: corrections.length, note: 'cue text corrected to the words heard; the book word is kept wherever the reader said it (near-miss spellings included)', items: corrections },
       disputed: { count: disputedCues.length, model: SECOND_OPINION_MODEL, note: 'edits qwen made that the second opinion did not share: the book kept its word; listed for a human (book / qwen / second heard, and each disputed edit)', items: disputedCues },
       // cues whose heard words agree on < 30 % of the book's: more likely misplaced than reworded - exclusion candidates
-      barelyMatched: { count: barelyIdx.length, note: 'misplaced: the heard words in the span agree on < 30 % of the text - not written to the VTT', sentences: barelyIdx } }, null, 1));
+      barelyMatched: { count: barelyIdx.length, note: 'misplaced: the heard words in the span agree on < 30 % of the text - not written to the VTT', sentences: barelyIdx },
+      tooShort: { count: tooShort, note: `cues shorter than ${MIN_CUE_S} s: no sentence is read that fast, so the audio went to a neighbour - exclusion candidates`, sentences: cues.filter((c) => c.flagged.includes('too-short')).map((c) => c.index) } }, null, 1));
     log(`discrepancies: ${Object.entries(discrepancies.summary).map(([k, v]) => `${k} ${v.count} (${v.seconds} s)`).join(', ') || 'none'} -> ${discrepanciesPath}`);
     log(`wrote ${cues.length} cue(s) to ${o.outVttPath}; ${stats.notPlaced} sentence(s) not placed, `
-      + `${noPause} edge(s) without a pause, ${collapsed} collapsed; report ${o.reportPath}`);
+      + `${noPause} edge(s) without a pause, ${collapsed} collapsed, ${overlap.trimmed.length} overlapping the next, `
+      + `${tooShort} shorter than ${MIN_CUE_S} s; report ${o.reportPath}`);
     progress('write', 1, 'Done');
     return { vttPath: o.outVttPath, reportPath: o.reportPath, cues: cues.length, stats };
   } finally {

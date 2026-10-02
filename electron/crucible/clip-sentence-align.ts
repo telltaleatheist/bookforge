@@ -45,6 +45,7 @@ import {
 } from '../../shared/sentence-align/book-diff';
 import { buildBookIndex, locateClip, splitHeardByClip, stitchPlan, STITCH_GAP_S, type ClipLocation } from '../../shared/sentence-align/clip-locate';
 import { endEdge, FRAME_S, startEdge, type LevelEnvelope } from '../../shared/sentence-align/cue-edges';
+import { MIN_CUE_S, trimOverlaps } from '../../shared/sentence-align/overlaps';
 
 export const CLIP_ALIGN_STAGES = ['stitch', 'transcribe', 'locate', 'align', 'edges', 'write'] as const;
 export type ClipAlignStage = (typeof CLIP_ALIGN_STAGES)[number];
@@ -306,7 +307,11 @@ export async function runClipSentenceAlign(o: RunClipSentenceAlignOptions): Prom
         continue;
       }
       const env = envelopeOf(pcm[k]);
-      const placed = w.placements.filter((p) => p.status === 'placed' && p.start !== null && p.end !== null).sort((a, b) => a.start! - b.start!);
+      // A sentence ends before the next begins (shared/sentence-align/overlaps.ts) - the book path's rule, here too.
+      const overlap = trimOverlaps(w.placements.filter((p) => p.status === 'placed' && p.start !== null && p.end !== null)
+        .sort((a, b) => a.start! - b.start!));
+      const placed = overlap.placed;
+      const overlapped = new Set(overlap.trimmed.map((t) => t.index));
       const sentences: ClipSentence[] = []; let prevEdgeEnd = 0;
       for (let i = 0; i < placed.length; i++) {
         const p = placed[i];
@@ -314,10 +319,12 @@ export async function runClipSentenceAlign(o: RunClipSentenceAlignOptions): Prom
         const s = startEdge(env, p.start!, prevEnd !== null && prevEnd <= p.start! ? prevEnd : null);
         const e = endEdge(env, p.end!, nextStart !== null && nextStart >= p.end! ? nextStart : null);
         const flagged: string[] = [];
+        if (overlapped.has(p.index)) flagged.push('overlapped-next');
         if (!s.inSilence) { flagged.push('start-not-in-a-pause'); noPause++; }
         if (!e.inSilence) { flagged.push('end-not-in-a-pause'); noPause++; }
         let a = Math.max(0, s.t, prevEdgeEnd); let b = Math.min(dur, e.t);
         if (b <= a) { flagged.push('collapsed-to-word-times'); a = Math.max(p.start!, prevEdgeEnd); b = Math.min(dur, Math.max(p.end!, a + 0.05)); }
+        if (b - a < MIN_CUE_S) flagged.push('too-short');
         sentences.push({ index: w.from + p.index, text: w.sub[p.index].text.replace(/\s+/g, ' ').trim(), start: a, end: b, flagged });
         prevEdgeEnd = b;
       }

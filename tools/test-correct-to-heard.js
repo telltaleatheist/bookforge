@@ -14,6 +14,22 @@ let passed = 0; const failed = [];
 function check(name, fn) { try { fn(); passed++; console.log(`  ok  ${name}`); } catch (e) { failed.push(name); console.log(`  FAIL ${name}\n       ${e.message}`); } }
 const words = (s) => s.split(/\s+/);
 
+check('tc cue 1610: the next sentences heard past the end are never written as this one\'s words', () => {
+  // training-pc, 2026-10-02: the cue's window ran on through three more sentences, and all 22 of their heard words
+  // were appended, unpunctuated. More than MAX_EDGE_INSERT words past the last shared word are a neighbour's.
+  const book = 'The French, one columnist noted, called a million million a trillion, while ‘for us on the other hand, a trillion is equal to a million billion (1,000,000,000,000,000,000), and we must only hope to God that we don’t get into these or even higher numerical values with our everyday currency, merely because of the overcrowding of the lunatic asylums that it would cause.’';
+  const heard = 'and we must only hope to God that we don\'t get into these or even higher numerical values with our everyday currency merely because of the overcrowding of the lunatic asylums that it would cause At its height the hyperinflation seemed terrifying money lost its meaning almost completely Printing presses were unable to keep up with the need to';
+  const r = correctToHeard(book, words(heard));
+  assert.ok(!/height|hyperinflation|Printing|presses/.test(r.text), r.text);
+  assert.ok(/that it would cause\.’$/.test(r.text), r.text);
+  assert.ok(!r.edits.some((e) => e.op === 'insert'), JSON.stringify(r.edits.filter((e) => e.op === 'insert')));
+  // ...and the same run BEFORE the first shared word (the previous sentence's tail) is not written either.
+  const lead = correctToHeard('Money lost its meaning almost completely.', words('At its height the hyperinflation seemed terrifying money lost its meaning almost completely'));
+  assert.strictEqual(lead.text, 'Money lost its meaning almost completely.');
+  // Up to four words past the end are still the reader's own addition (Owen's "Ephesians 5 verse 21").
+  const four = correctToHeard('He sat down.', words('He sat down right there and then'));
+  assert.ok(/right there and then/.test(four.text), four.text);
+});
 check('an edition difference: the reader\'s words replace the book\'s, punctuation kept', () => {
   const r = correctToHeard('Lessie, held with a garrote around her neck.', words('Lesci held with a gun to her head'));
   assert.strictEqual(r.text, 'Lessie, held with a gun to her head.');

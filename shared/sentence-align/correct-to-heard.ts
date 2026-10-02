@@ -65,6 +65,16 @@ const EXACT_BONUS = 0.0001;
 /** Edge deletions of at most this many words are not applied (the ASR's weak spot). */
 export const MAX_EDGE_DELETE = 2;
 
+/**
+ * A run of MORE heard words than this before the sentence's first anchored word, or after its last, is another
+ * sentence's audio, never this one's (training-pc, 2026-10-02: tc cue 1610 carried "At its height the hyperinflation
+ * seemed terrifying money lost its meaning almost completely Printing presses were unable to keep up with the need to"
+ * as the reader's words, 22 of them, unpunctuated). The same bound as sentence-align's MAX_TRAILING_WORDS - Owen's
+ * "Ephesians 5 verse 21" ruling: up to four words past the end are the reader's own addition, a longer run is an
+ * unplaced passage, left alone.
+ */
+export const MAX_EDGE_INSERT = 4;
+
 const UNITS: Record<string, number> = { zero: 0, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9,
   ten: 10, eleven: 11, twelve: 12, thirteen: 13, fourteen: 14, fifteen: 15, sixteen: 16, seventeen: 17, eighteen: 18, nineteen: 19 };
 const TENS: Record<string, number> = { twenty: 20, thirty: 30, forty: 40, fifty: 50, sixty: 60, seventy: 70, eighty: 80, ninety: 90 };
@@ -381,7 +391,8 @@ export interface Correction {
   readonly edits: readonly { readonly op: 'replace' | 'insert' | 'delete'; readonly book?: string; readonly heard?: string }[];
 }
 
-type Op = 'match' | 'join2' | 'split2' | 'splitN' | 'sub' | 'ins' | 'del' | 'keep';
+/** `drop`: a heard word at an edge that is another sentence's (see MAX_EDGE_INSERT) - read past, never written. */
+type Op = 'match' | 'join2' | 'split2' | 'splitN' | 'sub' | 'ins' | 'del' | 'keep' | 'drop';
 
 export interface RegionVote {
   /** the book's words over the region, Qwen's, and the second listen's */
@@ -495,6 +506,18 @@ function alignPath(B: Tok[], H: Tok[], opts: CorrectOptions): Path {
   for (const run of [edgeRun(0, 1), edgeRun(path.length - 1, -1)]) {
     if (anyHeard && run.length > 0 && run.length <= MAX_EDGE_DELETE) for (const k of run) path[k] = { ...path[k], op: 'keep' };
   }
+  // AND A NEIGHBOUR'S WORDS AT AN EDGE ARE NOT THIS SENTENCE'S (MAX_EDGE_INSERT): the heard words before the first
+  // word the book and the reader share, or after the last, when there are more of them than a reader adds.
+  const anchored = (q: Path[number]): boolean => q.op === 'match' || q.op === 'sub' || q.op === 'split2'
+    || q.op === 'splitN' || q.op === 'join2';
+  const first = path.findIndex(anchored);
+  if (first >= 0) {
+    let last = path.length - 1; while (!anchored(path[last])) last--;
+    for (const [from, to] of [[0, first], [last + 1, path.length]]) {
+      const inserts = path.slice(from, to).filter((q) => q.op === 'ins').length;
+      if (inserts > MAX_EDGE_INSERT) for (let k = from; k < to; k++) if (path[k].op === 'ins') path[k] = { ...path[k], op: 'drop' };
+    }
+  }
   return path;
 }
 
@@ -536,7 +559,7 @@ export function correctToHeard(bookText: string, heard: readonly string[], opts:
     { let bi = 0; let hj = 0;
       const at = (i: number): void => { if (i < B.length && h2At[i] < 0) h2At[i] = hj; };
       for (const q of path2) {
-        if (q.op === 'ins') { hj++; continue; }
+        if (q.op === 'ins' || q.op === 'drop') { hj++; continue; }
         at(bi);
         if (q.op === 'match' || q.op === 'sub') { bi++; hj++; }
         else if (q.op === 'keep' || q.op === 'del') bi++;
@@ -639,6 +662,8 @@ export function correctToHeard(bookText: string, heard: readonly string[], opts:
       if (vetoed(k)) hj++;
       else { edits.push({ op: 'insert', heard: H[hj].core }); put(H[hj].core, true, H[hj].core); hj++; }
     }
+    else if (p.op === 'drop') hj++;   // another sentence's word: read past, never written
+
     else if (vetoed(k)) { put(B[bi].surface, false, B[bi].core, B[bi].glued, innerAt(bi)); bi++; }
     else {
       const b = B[bi];
