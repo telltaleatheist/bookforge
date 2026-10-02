@@ -312,13 +312,14 @@ export async function activityOf(
             }
           : null,
         chatInFlight: activity.chat.inFlight,
-        lease: activity.lease === null
+        session: activity.session === null
           ? null
           : {
-              leaseId: activity.lease.leaseId,
-              act: activity.lease.act,
-              client: activity.lease.client,
-              since: activity.lease.since,
+              sessionId: activity.session.sessionId,
+              act: activity.session.act,
+              client: activity.session.client,
+              model: activity.session.model,
+              since: activity.session.openedAt ?? activity.session.created,
             },
         slot: {
           busy: activity.slots.accelerated.busy,

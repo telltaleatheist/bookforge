@@ -132,12 +132,14 @@ export type CrucibleTextActErrorCode =
    * (`busyLine` → the queue's `busyLineOf`), because it is the same question
    * with a longer clock: a lane frees in minutes, a lease may hold for an hour.
    */
-  | 'crucible_model_leased';
+  | 'crucible_session_wait';
 
 export class CrucibleTextActError extends Error {
   readonly code: CrucibleTextActErrorCode;
   /** The SDK's "GPU busy: foundry, tts 62% done", read by the queue's `busyLineOf`. */
   readonly busyLine?: string;
+  /** An operator took this act's session out of the server's line (`removedLineOf`). */
+  readonly removedLine?: string;
 
   /**
    * The code is PREFIXED onto the message, not only carried beside it.
@@ -146,11 +148,12 @@ export class CrucibleTextActError extends Error {
    * one exists: a CLI and a queue row show `err.message` and nothing else, so
    * "refused by name" is only true where the name is in the sentence.
    */
-  constructor(code: CrucibleTextActErrorCode, message: string, busyLine?: string) {
+  constructor(code: CrucibleTextActErrorCode, message: string, busyLine?: string, removedLine?: string) {
     super(`${code}: ${message}`);
     this.name = 'CrucibleTextActError';
     this.code = code;
     if (busyLine !== undefined) this.busyLine = busyLine;
+    if (removedLine !== undefined) this.removedLine = removedLine;
   }
 }
 
@@ -625,7 +628,7 @@ export async function resolveCrucibleTextEngine(
  * `simplify` would put the lie Owen ruled out on a bench beside the card.
  *
  * `409 leased` on the take is a WAIT and never a retry loop: it arrives as
- * {@link CrucibleTextActError} `crucible_model_leased` carrying the holder's line,
+ * {@link CrucibleTextActError} `crucible_session_wait` carrying the holder's line,
  * which is the road the queue's busy hold already travels.
  */
 export async function withCrucibleTextActLease<T>(
@@ -669,24 +672,6 @@ export function describeTextActRefusal(
   // client does, and this module is loadable from a CLI harness.
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const { CrucibleBusy, CrucibleRefused } = require('@crucible/client') as typeof import('@crucible/client');
-  // Required the same way and for the same reason, and by NAME rather than by
-  // code: `leased` is a CrucibleRefused subclass, so it must be asked about
-  // before the generic branch below or it would lose the holder's line. Re-
-  // exported by `lease.js` and owned by the SDK — one class, so the door that
-  // goes through `leaseRequest` and the doors that go through the SDK's own
-  // routes catch the same object.
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const { CrucibleLeased } = require('./lease.js') as typeof import('./lease');
-  if (err instanceof CrucibleLeased) {
-    return new CrucibleTextActError(
-      'crucible_model_leased',
-      `crucible "${server}"'s resident ${err.kind} is leased by another run, so the ${act} act `
-        + `was not started: ${err.leasedLine}. A lease is that client saying it intends more work `
-        + 'on this model; nothing here waits it out or loads a model somewhere else. This book '
-        + 'waits for that server.',
-      err.leasedLine,
-    );
-  }
   if (err instanceof CrucibleBusy) {
     return new CrucibleTextActError(
       'crucible_server_busy',
@@ -695,6 +680,23 @@ export function describeTextActRefusal(
         + `${err.jobMessage === null ? '' : `; latest: ${err.jobMessage}`}). This book waits for `
         + 'that server rather than running anywhere else.',
       err.busyLine,
+    );
+  }
+  // Required the same way and for the same reason. ANOTHER CLIENT'S SESSION, or
+  // a session of ours the line let go, is asked about BEFORE the generic branch:
+  // `session_open` and `session_closed` are CrucibleRefused subclasses and would
+  // otherwise lose the holder's line there. After the busy LANE above, which
+  // keeps its own code.
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { asSessionWait, CrucibleSessionWait } = require('./lease.js') as typeof import('./lease');
+  const wait = asSessionWait(err, server, act);
+  if (wait instanceof CrucibleSessionWait) {
+    return new CrucibleTextActError(
+      'crucible_session_wait',
+      `the ${act} act was not started: ${wait.message}. Nothing here runs it somewhere else; `
+        + 'this book waits for that server.',
+      wait.busyLine,
+      wait.removedLine,
     );
   }
   if (err instanceof CrucibleRefused && err.code === 'engine_in_use') {

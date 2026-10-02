@@ -91,11 +91,11 @@ import {
   CrucibleAuthError,
   CrucibleBusy,
   CrucibleConfigError,
-  CrucibleLeased,
   CrucibleNotACrucible,
   CrucibleProtocolError,
   CrucibleRefused,
   CrucibleServerError,
+  CrucibleSessionHeld,
   CrucibleUnreachable,
   CrucibleVersionError,
 } from '@crucible/client';
@@ -259,7 +259,7 @@ export function crucibleRemovalError(
  * `render.ts` and `coverage-align-job.ts` compose theirs through this rather
  * than writing their own, because the row a person sees must not read
  * differently depending on which door hit the closed socket — that is the
- * shape the `busyLine`/`leasedLine` split turned out to be (bug hunt §C1).
+ * shape the `busyLine`/`heldLine` split turned out to be (bug hunt §C1).
  *
  * `cause` is the server's OWN words wherever there are any — `read
  * ECONNRESET`, `HTTP 503: worker pool exhausted` — and never a category this
@@ -331,31 +331,26 @@ export function describeCrucibleJobRefusal(err: unknown, server: string, verb: s
     );
   }
   /*
-   * A LEASED CARD IS A WAIT, AND IT IS ASKED ABOUT BEFORE `CrucibleRefused`.
+   * ANOTHER CLIENT'S QUEUE SESSION HOLDS THE MACHINE — A WAIT, ASKED ABOUT
+   * BEFORE `CrucibleRefused` (Crucible 1.0.76, which replaced leases).
    *
-   * `CrucibleLeased` is a subclass of {@link CrucibleRefused} and NOT of
-   * {@link CrucibleBusy} (crucible `sdk/ts/src/errors.ts`), so until
-   * 2026-09-18 it fell into the generic arm below with no `busyLine` — and
-   * `settleStep` parks a row only when one is present, so the row FAILED and
-   * waited for a person to press Retry. Foundry, on the identical refusal,
-   * parks with the holder's name and comes back on backoff; two clients
-   * against one server must not answer one refusal in opposite directions.
-   *
-   * Same question as `server_busy` with a longer clock — a lane frees in
-   * minutes, a lease may hold for an hour — so it takes the same road. Nothing
-   * here retries: the queue holds the row and the admission tick asks again.
+   * `CrucibleSessionHeld` is a subclass of {@link CrucibleRefused} and NOT of
+   * {@link CrucibleBusy}, so without this arm it would fall into the generic one
+   * with no `busyLine` and `settleStep` would fail the row instead of parking
+   * it. A job sent WITH `queue` waits in the line and never meets this; one
+   * sent without it (a `queue: false` door) is refused `server_busy` door
+   * `session`, and this is that refusal.
    */
-  if (err instanceof CrucibleLeased) {
+  if (err instanceof CrucibleSessionHeld) {
     return new CrucibleJobRefused(
       err.code,
       server,
-      `${at} has its resident ${err.kind} held by another client's run, so ${verb} was not `
-      + `admitted — it would take that ${err.kind} off the card. ${err.leasedLine} `
-      + `(lease ${err.leaseId}, since ${err.since}). Nothing here waits for it or runs the work `
-      + 'somewhere else.',
-      err.leasedLine,
+      `${at} is held by another client's queue session, so ${verb} was not admitted. `
+      + `${err.heldLine}. Nothing here runs the work somewhere else.`,
+      err.heldLine,
     );
   }
+
   /*
    * `409 queue_full` IS A WAIT (crucible docs/QUEUE.md): the server's line has
    * 50 of this client's jobs, or 200 in all. Nobody misconfigured anything and

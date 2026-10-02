@@ -32,7 +32,7 @@ import { registerAllStepModules } from './queue-steps';
 import type { AppendStepSpec, JobSpec } from './queue-engine';
 import { readRouting } from './crucible/routing';
 import { activityOf, pingServer } from './crucible/probe';
-import { crucibleLeaseSeam, ownCrucibleLeaseIds } from './crucible/lease';
+import { crucibleLeaseSeam, ownCrucibleSessionIds } from './crucible/lease';
 import { readCard } from './crucible/card-shadow';
 import { ownCrucibleJobIds } from './crucible/in-flight-ledger';
 import { readCrucibleRoutes } from './crucible/route-read';
@@ -114,7 +114,7 @@ function crucibleRoutingHost(): engine.CrucibleRoutingHost {
       if (seen.outcome === 'ok') {
         const reading = readCard(seen.activity, {
           jobs: ownCrucibleJobIds(server),
-          leases: ownCrucibleLeaseIds(server),
+          sessions: ownCrucibleSessionIds(server),
         });
         return { reachable: true as const, busy: reading.busy, shadow: reading.shadow };
       }

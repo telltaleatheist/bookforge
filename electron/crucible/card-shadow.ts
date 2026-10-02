@@ -12,21 +12,20 @@
  *
  *  - `busy` GATES ADMISSION. It is what it has always been, the lane shut
  *    (`slots.accelerated.acceptsWork` false) with the holder named, plus ONE
- *    addition: an open lease that is not ours. Crucible holds one lease per
- *    server and refuses a second (`crucible/leases.py`, `open`), and a job that
- *    would move the leased model is refused `leased` too. So a foreign lease is
- *    a refusal waiting to happen, and asking the door every cool-off while it
- *    is open is the "tries to take the lease" Owen wants only AFTER it ends.
+ *    addition: another client's open QUEUE SESSION (Crucible 1.0.76, which
+ *    replaced leases). While one is open nothing from any other client runs —
+ *    an unqueued request is refused `session_open` / `server_busy` door
+ *    `session` — so a foreign session is a refusal waiting to happen.
  *  - `shadow` IS DRAWN, never scheduled on: the foreign holder, with its
  *    progress when it has one.
  *
  * ── Ours, by id ────────────────────────────────────────────────────────────
  *
- * Our own jobs and leases are never a shadow and never make the card busy on
- * the lease rule. They are told apart by ID (the in-flight ledger, which also
- * carries the hosted Foundry's leases, and the lease module's own set), never
- * by client name: the Mac's BookForge sends the same `bookforge` User-Agent,
- * and its lease on this card is somebody else's.
+ * Our own jobs and sessions are never a shadow and never make the card busy.
+ * They are told apart by ID (the in-flight ledger, which also carries the
+ * hosted Foundry's sessions, and the session module's own set), never by
+ * client name: the hosted Foundry runner sends its own `foundry@<host>` name,
+ * and its session on this card is still ours.
  */
 import type { CrucibleActivityView } from '../../shared/crucible/settings-wire';
 import type { ServerShadow } from '../../shared/queue/engine-types';
@@ -34,10 +33,10 @@ import { busyLineFor } from '../../shared/queue/wait-for';
 
 /** This app's own ids on one server. */
 export interface OwnCardIds {
-  /** Job ids from the in-flight ledger (jobs, and Foundry's leases). */
+  /** Job ids from the in-flight ledger (jobs, and the hosted Foundry's sessions). */
   readonly jobs: ReadonlySet<string>;
-  /** Lease ids this process holds, or released a moment ago. */
-  readonly leases: ReadonlySet<string>;
+  /** Queue-session ids this process holds, or closed a moment ago. */
+  readonly sessions: ReadonlySet<string>;
 }
 
 export interface CardReading {
@@ -64,7 +63,7 @@ export function holderName(client: string | null): string | null {
 }
 
 export function readCard(activity: CrucibleActivityView, ours: OwnCardIds): CardReading {
-  const isOurs = (id: string): boolean => ours.jobs.has(id) || ours.leases.has(id);
+  const isOurs = (id: string): boolean => ours.jobs.has(id) || ours.sessions.has(id);
   const resident = activity.resident === null ? null : activity.resident.id;
 
   // ── The shadow: the first foreign holder, in the order the card is held ──
@@ -89,17 +88,17 @@ export function readCard(activity: CrucibleActivityView, ours: OwnCardIds): Card
       since: activity.streaming.since,
     };
   }
-  const lease = activity.lease;
-  const foreignLease = lease !== null && !isOurs(lease.leaseId) ? lease : null;
-  if (shadow === null && foreignLease !== null) {
-    const act = foreignLease.act ?? 'a run';
+  const session = activity.session;
+  const foreignSession = session !== null && !isOurs(session.sessionId) ? session : null;
+  if (shadow === null && foreignSession !== null) {
+    const model = foreignSession.model ?? resident;
     shadow = {
-      kind: 'lease',
-      holder: holderName(foreignLease.client),
-      what: resident === null ? act : `${act} on ${resident}`,
+      kind: 'session',
+      holder: holderName(foreignSession.client),
+      what: model === null ? foreignSession.act : `${foreignSession.act} on ${model}`,
       progress: null,
       message: null,
-      since: foreignLease.since,
+      since: foreignSession.since,
     };
   }
   /*
@@ -119,17 +118,18 @@ export function readCard(activity: CrucibleActivityView, ours: OwnCardIds): Card
     };
   }
 
-  // ── Busy: the lane's own refusal, then a foreign lease ──────────────────
+  // ── Busy: the lane's own refusal, then a foreign queue session ──────────
   let busy: { line: string; queueDepth: number | null } | null = null;
   const queueDepth = activity.slot.queueDepth;
   if (!activity.slot.acceptsWork) {
     busy = { line: laneLine(activity), queueDepth };
-  } else if (foreignLease !== null) {
-    const act = foreignLease.act ?? 'a run';
+  } else if (foreignSession !== null) {
+    const model = foreignSession.model ?? resident;
+    const act = foreignSession.act;
     busy = {
       line: busyLineFor({
-        holder: foreignLease.client,
-        what: `a lease for ${resident === null ? act : `${act} on ${resident}`}`,
+        holder: foreignSession.client,
+        what: `a session for ${model === null ? act : `${act} on ${model}`}`,
         progress: null,
         message: null,
       }),

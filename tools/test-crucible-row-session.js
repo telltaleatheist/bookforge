@@ -1,70 +1,37 @@
 #!/usr/bin/env node
 /**
- * ONE LEASE PER ROW — a row of acts is one run, and the model does not go
- * between them.
+ * ONE SESSION PER ROW — a row of acts is one run, and nothing of anybody else's
+ * runs between them.
  *
- *   npx tsc -p tsconfig.electron.json && node tools/test-crucible-row-lease.js
+ *   npx tsc -p tsconfig.electron.json && node tools/test-crucible-row-session.js
  *
- * ── The defect this defends against ────────────────────────────────────────
+ * Crucible 1.0.76 replaced leases with QUEUE SESSIONS: one client's turn holding
+ * the machine, opened with a model resident, during which nothing from another
+ * client runs. A queue row's acts share ONE session (`withRowLease`, ambient via
+ * `AsyncLocalStorage`), and the scheduler closes it when nothing of the row
+ * wants that machine next — or on Stop, Remove and Pause (Owen, Oct 1 2026:
+ * Pause closes it and Resume rejoins the back of the line).
  *
- * A queue row that cleans a book and THEN simplifies it is two acts against one
- * resident model. Each used to take and release its own lease, and Owen's
- * 2026-09-14 ruling — *"Models should always be unloaded when we're done with
- * them. Every time."* — means the server unloads a 19 GB model in the gap. The
- * second act does not merely run slowly: the chat door never loads, so it is
- * answered `model_not_resident` and the row dies between two steps that both
- * worked.
- *
- * ── What is worth defending, and why each is invisible from the call site ──
- *
- *  1. TWO ACTS, ONE LEASE. The wire is the proof: one POST and one DELETE for a
- *     row that ran two acts. Counting calls to `withCrucibleLease` would not
- *     have caught the old behaviour, which called it twice and took twice.
- *  2. AND THE DELETE COMES AFTER THE SECOND ACT, not between them. A lease
- *     released early and re-taken is the reload wearing a different hat.
- *  3. A DIFFERENT MODEL ENDS THE RUN OF ACTS. A server holds ONE lease, so a
- *     second take against the same server would be refused `409 leased` — by us,
- *     against ourselves. The first must be given back before the second is asked
- *     for, and in that order.
- *  3b. AND THE SCHEDULER MUST NOT KEEP IT ACROSS THE SEAM EITHER (Foundry,
- *     2026-09-14). `leasesModel` alone kept the row's lease open for any next
- *     act that leases, and the acts of one row do not share a model: clean is
- *     the 9B, simplify and translate the 27B. What that costs is precise, and
- *     worth stating exactly because check 3 already covers the other half:
- *     `withRowLease` DOES swap a lease when the model changes, so BookForge's
- *     own chat acts do not deadlock. What the stale keep holds is the GAP —
- *     from the moment clean settles to the moment simplify asks — and in that
- *     gap a `load-model` for the 27B is refused `leased`, naming `bookforge`.
- *     That load is not hypothetical: `resolveCrucibleTextEngine`'s `loadFirst`
- *     door issues one before any lease is taken, and so does an operator at
- *     the CLI. Comparing what the two acts would take is what closes it — the
- *     CLASS on the row's server since 2026-09-19, the step's own model id
- *     before that (a hook every module had to answer `null` for).
- *  3c. AND A RELEASE THAT HAS NOT LANDED IS NOT A RELEASE. `settleStep` fires
- *     `closeRow` without awaiting the DELETE and pumps in the same tick, so
- *     the next act can ask for its lease while the server still holds the
- *     last one. Provable only against a server that is not instant — see the
- *     slow-release check.
- *  4. OUTSIDE A ROW SCOPE NOTHING CHANGES. The CLI, Settings → AI and every
- *     headless caller must keep releasing in their own `finally`; a scope that
- *     leaked into them would hold a card for a whole ttl after a one-off press.
- *  5. TWO RUNS AT ONCE DO NOT SHARE A LEASE. The slot sets exist so two books
- *     are in flight; a single "current row" variable would hand one book's
- *     lease to the other, which is why the scope is an AsyncLocalStorage.
- *  6. THE SCHEDULER CLOSES IT WHEN NOTHING FOLLOWS. A lease held across an hour
- *     of ffmpeg holds somebody's model for work that has no use for it, and
- *     `StepModule.leasesModel` is the only thing that can say which it is.
- *  7. THE QUIT PATH FORGETS THE ROW. A released lease still sitting in the row
- *     map would be handed to the next act as if it were open.
+ *  1. TWO ACTS, ONE SESSION — on the wire: one open, one close, and the close
+ *     after the second act. Across a change of MODEL too: a session can change
+ *     model mid-way, so only a change of MACHINE closes it.
+ *  2. OUTSIDE A ROW SCOPE a session is closed in its own `finally`.
+ *  3. TWO RUNS AT ONCE do not share one.
+ *  4. THE SCHEDULER keeps it across the seam for any next act that opens one on
+ *     the same machine, and closes it when nothing follows, on another machine,
+ *     on Stop, Remove and Pause.
+ *  5. THE RESERVE is the session the act uses, and a reserve the line let go is
+ *     a `busyLine` the row parks on.
  */
+'use strict';
 const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
 const {
-  REPO, installElectronStub, makeChecker, startFakeCrucible, leaseRoutes, fakeNamer,
-  settingsRoutes, modelLeasedRefusal,
+  REPO, installElectronStub, makeChecker, startFakeCrucible, sessionRoutes, fakeNamer,
+  settingsRoutes,
 } = require('./fake-crucible.js');
 const { skipLine } = require('./keeper-skip.js');
 
@@ -75,7 +42,7 @@ if (!fs.existsSync(LEASE)) {
   process.exit(0);
 }
 
-installElectronStub('bf-crucible-row-lease-');
+installElectronStub('bf-crucible-row-session-');
 
 const lease = require(LEASE);
 const servers = require(path.join(REPO, 'dist', 'electron', 'crucible', 'servers.js'));
@@ -92,107 +59,108 @@ const settle = async (n = 20) => { for (let i = 0; i < n; i += 1) await new Prom
   // The scope itself
   // ───────────────────────────────────────────────────────────────────────────
 
-  await check('two acts of one row take ONE lease, and it is released after the second',
-    async () => {
-      const routes = leaseRoutes();
-      const fake = await startFakeCrucible(routes.handler);
-      const server = nameFake(fake.url);
-      try {
-        const order = [];
-        await lease.withCrucibleRowScope('job_1', async () => {
-          await lease.withCrucibleLease(
-            { server, kind: 'model', id: 'qwen3.5-9b', act: 'clean', onLog: () => {} },
-            async () => { order.push('clean'); },
-          );
-          assert.strictEqual(routes.lease.released.length, 0,
-            'the model must still be held between the two acts — that gap IS the defect');
-          await lease.withCrucibleLease(
-            { server, kind: 'model', id: 'qwen3.5-9b', act: 'simplify', onLog: () => {} },
-            async () => { order.push('simplify'); },
-          );
-        });
-        assert.deepStrictEqual(order, ['clean', 'simplify']);
-        assert.strictEqual(routes.lease.taken.length, 1, 'ONE lease for the whole row');
-        assert.strictEqual(routes.lease.taken[0].act, 'clean',
-          'stamped with the act that OPENED it — Crucible has no name for "a row of acts"');
-        assert.strictEqual(routes.lease.released.length, 0,
-          'the scope does not release; the scheduler does, when nothing follows');
-
-        await lease.closeCrucibleRowLease('job_1');
-        assert.strictEqual(routes.lease.released.length, 1, 'and then it is given back');
-        assert.strictEqual(lease.openCrucibleLeaseCount(), 0);
-      } finally {
-        await lease.closeCrucibleRowLease('job_1');
-        await fake.close();
-      }
-    });
-
-  await check('a DIFFERENT model ends the run of acts — released first, then taken', async () => {
-    const routes = leaseRoutes();
+  await check('two acts of one row share ONE session, closed only when the scheduler says', async () => {
+    const routes = sessionRoutes();
     const fake = await startFakeCrucible(routes.handler);
     const server = nameFake(fake.url);
     try {
-      const wire = [];
-      routes.onEvent = (kind) => wire.push(kind);
-      await lease.withCrucibleRowScope('job_2', async () => {
+      const order = [];
+      await lease.withCrucibleRowScope('job_1', async () => {
         await lease.withCrucibleLease(
           { server, kind: 'model', id: 'qwen3.5-9b', act: 'clean', onLog: () => {} },
-          async () => {},
+          async () => { order.push('clean'); },
         );
+        assert.strictEqual(routes.session.closed.length, 0,
+          'the machine must still be ours between the two acts — that gap IS the defect');
         await lease.withCrucibleLease(
-          { server, kind: 'model', id: 'qwen3.8-27b', act: 'translate', onLog: () => {} },
-          async () => {
-            assert.strictEqual(routes.lease.released.length, 1,
-              'the first is given back BEFORE the second is asked for — a server holds one '
-              + 'lease, so the other order is a 409 against ourselves');
-          },
+          { server, kind: 'model', id: 'qwen3.5-9b', act: 'simplify', onLog: () => {} },
+          async () => { order.push('simplify'); },
         );
       });
-      assert.deepStrictEqual(routes.lease.taken.map((t) => t.model),
-        ['qwen3.5-9b', 'qwen3.8-27b']);
+      assert.deepStrictEqual(order, ['clean', 'simplify']);
+      assert.strictEqual(routes.session.opened.length, 1, 'ONE session for the whole row');
+      assert.strictEqual(routes.session.opened[0].act, 'clean', 'opened as the act that opened it');
+      assert.strictEqual(routes.session.closed.length, 0, 'the scope does not close; the scheduler does');
+      await lease.closeCrucibleRowLease('job_1');
+      assert.strictEqual(routes.session.closed.length, 1, 'and then it is given back');
+      assert.strictEqual(lease.openCrucibleLeaseCount(), 0);
+    } finally {
+      await lease.closeCrucibleRowLease('job_1');
+      await fake.close();
+    }
+  });
+
+  await check('a DIFFERENT MODEL on the same machine keeps the session — it loads inside it', async () => {
+    const routes = sessionRoutes();
+    const fake = await startFakeCrucible(routes.handler);
+    const server = nameFake(fake.url);
+    try {
+      await lease.withCrucibleRowScope('job_2', async () => {
+        await lease.withCrucibleLease(
+          { server, kind: 'model', id: 'qwen3.5-9b', act: 'clean', onLog: () => {} }, async () => {});
+        await lease.withCrucibleLease(
+          { server, kind: 'model', id: 'qwen3.8-27b', act: 'translate', onLog: () => {} }, async () => {});
+      });
+      assert.strictEqual(routes.session.opened.length, 1,
+        'a session can change model mid-way; closing it would send the row to the back of the line');
       await lease.closeCrucibleRowLease('job_2');
-      assert.strictEqual(routes.lease.released.length, 2);
+      assert.strictEqual(routes.session.closed.length, 1);
     } finally {
       await lease.closeCrucibleRowLease('job_2');
       await fake.close();
     }
   });
 
-  await check('OUTSIDE a row scope a lease is released in its own finally, as before',
-    async () => {
-      const routes = leaseRoutes();
-      const fake = await startFakeCrucible(routes.handler);
-      const server = nameFake(fake.url);
-      try {
-        await lease.withCrucibleLease(
-          { server, kind: 'model', id: 'qwen3.5-9b', act: 'clean', onLog: () => {} },
-          async () => {},
-        );
-        assert.strictEqual(routes.lease.released.length, 1,
-          'the CLI and Settings → AI must not leave a card held after a one-off press');
-        assert.strictEqual(lease.openCrucibleLeaseCount(), 0);
-      } finally {
-        await fake.close();
-      }
-    });
-
-  await check('two runs in flight at once never share a lease', async () => {
-    /*
-     * TWO SERVERS, because one server holds ONE lease and the fake enforces
-     * that now. Two rows in flight is two machines by construction — the slot
-     * sets give each server one GPU slot — so a single fake here would have
-     * been testing a shape that cannot occur, and would fail for the server's
-     * reason rather than for the scope's.
-     */
-    const routes = leaseRoutes();
-    const fake = await startFakeCrucible(routes.handler);
-    const server = nameFake(fake.url);
-    const routesB = leaseRoutes();
+  await check('a DIFFERENT MACHINE closes the first session before opening the second', async () => {
+    const routesA = sessionRoutes();
+    const fakeA = await startFakeCrucible(routesA.handler);
+    const serverA = nameFake(fakeA.url);
+    const routesB = sessionRoutes();
     const fakeB = await startFakeCrucible(routesB.handler);
     const serverB = nameFake(fakeB.url);
     try {
-      // Interleaved deliberately: a single mutable "current row" would hand the
-      // second run the first's lease, which is the bug AsyncLocalStorage avoids.
+      await lease.withCrucibleRowScope('job_3', async () => {
+        await lease.withCrucibleLease(
+          { server: serverA, kind: 'model', id: 'qwen3.5-9b', act: 'clean', onLog: () => {} }, async () => {});
+        await lease.withCrucibleLease(
+          { server: serverB, kind: 'model', id: 'qwen3.5-9b', act: 'simplify', onLog: () => {} },
+          async () => {
+            assert.strictEqual(routesA.session.closed.length, 1, 'A is given back before B is used');
+          });
+      });
+      assert.strictEqual(routesB.session.opened.length, 1);
+      await lease.closeCrucibleRowLease('job_3');
+      assert.strictEqual(routesB.session.closed.length, 1);
+    } finally {
+      await lease.closeCrucibleRowLease('job_3');
+      await fakeA.close();
+      await fakeB.close();
+    }
+  });
+
+  await check('OUTSIDE a row scope a session is closed in its own finally', async () => {
+    const routes = sessionRoutes();
+    const fake = await startFakeCrucible(routes.handler);
+    const server = nameFake(fake.url);
+    try {
+      await lease.withCrucibleLease(
+        { server, kind: 'model', id: 'qwen3.5-9b', act: 'clean', onLog: () => {} }, async () => {});
+      assert.strictEqual(routes.session.closed.length, 1,
+        'the CLI and Settings → AI must not leave a machine held after a one-off press');
+      assert.strictEqual(lease.openCrucibleLeaseCount(), 0);
+    } finally {
+      await fake.close();
+    }
+  });
+
+  await check('two runs in flight at once never share a session', async () => {
+    const routes = sessionRoutes();
+    const fake = await startFakeCrucible(routes.handler);
+    const server = nameFake(fake.url);
+    const routesB = sessionRoutes();
+    const fakeB = await startFakeCrucible(routesB.handler);
+    const serverB = nameFake(fakeB.url);
+    try {
       let releaseA;
       const heldA = new Promise((r) => { releaseA = r; });
       const runA = lease.withCrucibleRowScope('job_a', () =>
@@ -208,11 +176,8 @@ const settle = async (n = 20) => { for (let i = 0; i < n; i += 1) await new Prom
         ));
       releaseA();
       await runA;
-
       assert.strictEqual(lease.crucibleRowLease('job_a').leased, 'model-a');
       assert.strictEqual(lease.crucibleRowLease('job_b').leased, 'model-b');
-      await lease.closeCrucibleRowLease('job_a');
-      await lease.closeCrucibleRowLease('job_b');
     } finally {
       await lease.closeCrucibleRowLease('job_a');
       await lease.closeCrucibleRowLease('job_b');
@@ -221,13 +186,37 @@ const settle = async (n = 20) => { for (let i = 0; i < n; i += 1) await new Prom
     }
   });
 
+  await check('closing a row whose session still WAITS takes it out of the line', async () => {
+    const routes = sessionRoutes();
+    const fake = await startFakeCrucible(routes.handler);
+    const server = nameFake(fake.url);
+    const sdk = require('@crucible/client');
+    const foreign = new sdk.CrucibleClient({ url: fake.url, token: 't', clientName: 'foundry@else' });
+    try {
+      const theirs = await foreign.session({ act: 'translate' });
+      const waiting = lease.withCrucibleRowScope('job_wait', () => lease.withCrucibleLease(
+        { server, kind: 'model', id: 'qwen3.5-9b', act: 'clean', onLog: () => {} },
+        async () => { throw new Error('must not run'); }));
+      await new Promise((r) => setTimeout(r, 80));
+      await lease.closeCrucibleRowLease('job_wait');
+      let caught = null;
+      try { await waiting; } catch (err) { caught = err; }
+      assert.ok(caught && typeof caught.busyLine === 'string',
+        `leaving the line is our own gesture, a park and never a failure: ${caught}`);
+      assert.strictEqual(lease.crucibleRowLease('job_wait'), null);
+      await theirs.close();
+    } finally {
+      await fake.close();
+    }
+  });
+
   await check('closing a row that holds nothing is a no-op, not a throw', async () => {
     await lease.closeCrucibleRowLease('job_never');
     assert.strictEqual(lease.crucibleRowLease('job_never'), null);
   });
 
-  await check('the quit path forgets the row as well as releasing it', async () => {
-    const routes = leaseRoutes();
+  await check('the quit path forgets the row as well as closing it', async () => {
+    const routes = sessionRoutes();
     const fake = await startFakeCrucible(routes.handler);
     const server = nameFake(fake.url);
     try {
@@ -382,18 +371,14 @@ const settle = async (n = 20) => { for (let i = 0; i < n; i += 1) await new Prom
     assert.strictEqual(spy.closed.length, 1, 'and it IS given back when the last act lands');
   });
 
-  await check('a row whose next act is a DIFFERENT CLASS gives the lease back at the seam',
+  await check('a row whose next act is a DIFFERENT CLASS on the same machine keeps the session',
     async () => {
       /*
-       * THE ARCHETYPAL ROW, and the one this seam broke. Clean runs on the 9B
-       * and simplify on the 27B, so keeping the clean lease open for the
-       * simplify would mean the simplify's own load is refused `leased` by
-       * BookForge, against BookForge, until the ttl lapsed.
-       *
-       * The CLASS is what says so here. Neither side can name those ids — the
-       * server owns the act-to-model mapping — so the comparison is `clean` vs
-       * `simplify` on one machine, which is the same two cards said in the
-       * vocabulary both sides have.
+       * Clean runs on the 9B and simplify on the 27B. Under leases the clean
+       * lease had to go back first or BookForge refused its own load; a SESSION
+       * can change model mid-way (Crucible 1.0.76), so the row keeps its turn
+       * and the 27B loads inside it — closing it here would send the book to
+       * the back of the server's line between two of its own acts.
        */
       const clean = fakeModule('narration-text', { consumes: 'epub', leases: 'clean' });
       const simplify = fakeModule('simplify', { consumes: 'epub', leases: 'simplify' });
@@ -411,8 +396,10 @@ const settle = async (n = 20) => { for (let i = 0; i < n; i += 1) await new Prom
       await settle(30);
       clean.runs[0].resolve({ kind: 'epub', path: '/out/clean' });
       await settle(30);
-      assert.strictEqual(spy.closed.length, 1,
-        'the 9B lease must be given back before an act that needs the 27B on the card');
+      assert.strictEqual(spy.closed.length, 0, 'kept across the seam: same machine');
+      simplify.runs[0].resolve({ kind: 'epub', path: '/out/simplify' });
+      await settle(30);
+      assert.strictEqual(spy.closed.length, 1, 'and closed when the last act lands');
     });
 
   await check('a next act that leases but will not say WHICH ends the run of acts', async () => {
@@ -810,213 +797,63 @@ const settle = async (n = 20) => { for (let i = 0; i < n; i += 1) await new Prom
     };
   }
 
-  const wireOf = (routes) => routes.lease.wire.map(
-    (w) => `${w.kind} ${w.model} ${w.ok ? 'ok' : 'REFUSED'}`);
+  const wireOf = (routes) => routes.session.wire.map((w) => `${w.kind} ${w.model ?? ''}`.trim());
 
-  await check('clean(9B) then simplify(27B) on the wire: take, release, take, release',
-    async () => {
-      const routes = leaseRoutes();
-      const fake = await startFakeCrucible(routes.handler);
-      const server = nameFake(fake.url);
-      try {
-        const clean = leasingModule('narration-text', {
-          server, model: 'qwen3.5-9b', act: 'clean', consumes: 'epub' });
-        const simplify = leasingModule('simplify', {
-          server, model: 'qwen3.8-27b-4bit', act: 'simplify', consumes: 'epub' });
-        await freshEngine('wire-two-models', [clean, simplify], { host: lease.crucibleLeaseSeam() });
-        engine.enqueue({
-          title: 'Mistborn',
-          steps: [
-            { type: 'narration-text', label: 'Clean', config: { kind: 'narration-text' },
-              sourceRef: { kind: 'epub', path: '/a.epub' } },
-            { type: 'simplify', label: 'Simplify', config: { kind: 'simplify' }, parentIndex: 0 },
-          ],
-        });
-        engine.start();
-        await settle(80);
-
-        assert.deepStrictEqual(wireOf(routes), [
-          'take qwen3.5-9b ok',
-          'release qwen3.5-9b ok',
-          'take qwen3.8-27b-4bit ok',
-          'release qwen3.8-27b-4bit ok',
-        ], 'two acts, two models, two leases - and the first given back BEFORE the second is '
-          + 'asked for, or the server refuses us in our own name');
-        assert.deepStrictEqual(routes.lease.refusals, [],
-          'a refusal here is this app blocking itself, which is the whole defect');
-        assert.deepStrictEqual(routes.lease.taken.map((t) => t.act), ['clean', 'simplify'],
-          'each lease names its own act truthfully - a lease says WHY the model is held');
-      } finally {
-        await fake.close();
-      }
-    });
-
-  await check('the next act WAITS for the previous release, on a server that is not instant',
-    async () => {
+  for (const [first, second, why] of [
+    [{ type: 'narration-text', model: 'qwen3.5-9b', act: 'clean', config: { kind: 'narration-text' } },
+      { type: 'simplify', model: 'qwen3.8-27b-4bit', act: 'simplify', config: { kind: 'simplify' } },
+      'clean(9B) then simplify(27B)'],
+    [{ type: 'translate-pass', model: 'qwen3.8-27b-4bit', act: 'translate', config: { kind: 'translate' } },
+      { type: 'simplify', model: 'qwen3.8-27b-4bit', act: 'simplify', config: { kind: 'simplify' } },
+      'translate then simplify'],
+    [{ type: 'translation', model: 'qwen3.8-27b-4bit', act: 'translate', config: { aiProvider: 'crucible' } },
+      { type: 'translate-pass', model: 'qwen3.8-27b-4bit', act: 'translate', config: { kind: 'translate' } },
+      'translate then translate'],
+  ]) {
+    await check(`${why} on the wire: ONE session, opened once and closed once`, async () => {
       /*
-       * THE RACE THE SCHEDULER'S OWN SHAPE CREATES. `settleStep` is
-       * synchronous by contract and fires `closeRow` WITHOUT awaiting it, then
-       * pumps - so the next step can be launched while the DELETE is still in
-       * flight and the server still believes the lease is held. A server holds
-       * ONE, so the next act's take is answered `409 leased`, naming us.
-       *
-       * With an instant fake the window is too small to observe, which is how
-       * this would have shipped. The release is slowed here so the wait in
-       * `withRowLease` is the only thing standing between the row and a
-       * refusal it handed itself.
+       * A session can change model mid-way (Crucible 1.0.76), so every act of a
+       * row on one machine shares it — whatever model or class the server picks
+       * for each — and nothing of another client's runs between them. Closing it
+       * between acts would send the row to the BACK of the line mid-book.
        */
-      const routes = leaseRoutes({ releaseDelayMs: 60 });
+      const routes = sessionRoutes();
       const fake = await startFakeCrucible(routes.handler);
       const server = nameFake(fake.url);
       try {
-        const clean = leasingModule('narration-text', {
-          server, model: 'qwen3.5-9b', act: 'clean', consumes: 'epub' });
-        const simplify = leasingModule('simplify', {
-          server, model: 'qwen3.8-27b-4bit', act: 'simplify', consumes: 'epub' });
-        await freshEngine('wire-slow-release', [clean, simplify],
-          { host: lease.crucibleLeaseSeam() });
+        const a = leasingModule(first.type, { server, model: first.model, act: first.act, consumes: 'epub' });
+        const b = leasingModule(second.type, { server, model: second.model, act: second.act, consumes: 'epub' });
+        await freshEngine(`wire-${first.act}-${second.act}`, [a, b], { host: lease.crucibleLeaseSeam() });
         engine.enqueue({
           title: 'Mistborn',
           steps: [
-            { type: 'narration-text', label: 'Clean', config: { kind: 'narration-text' },
-              sourceRef: { kind: 'epub', path: '/a.epub' } },
-            { type: 'simplify', label: 'Simplify', config: { kind: 'simplify' }, parentIndex: 0 },
+            { type: first.type, label: 'First', config: first.config, sourceRef: { kind: 'epub', path: '/a.epub' } },
+            { type: second.type, label: 'Second', config: second.config, parentIndex: 0 },
           ],
         });
         engine.start();
-        // Waited on the WIRE and not on `released`, which is recorded when the
-        // DELETE arrives rather than when it is answered — the delay is the
-        // whole point of this check.
-        for (let i = 0; i < 40 && routes.lease.wire.length < 4; i += 1) {
+        for (let i = 0; i < 40 && routes.session.wire.length < 2; i += 1) {
           await new Promise((r) => setTimeout(r, 25));
         }
-
-        assert.deepStrictEqual(routes.lease.refusals, [],
-          'the second act must not overtake the first act\'s release');
-        assert.deepStrictEqual(wireOf(routes), [
-          'take qwen3.5-9b ok',
-          'release qwen3.5-9b ok',
-          'take qwen3.8-27b-4bit ok',
-          'release qwen3.8-27b-4bit ok',
-        ]);
+        assert.deepStrictEqual(wireOf(routes), [`open ${first.model}`, 'close'],
+          'one session for the row, given back when the last act lands');
+        assert.strictEqual(routes.session.opened[0].act, first.act);
       } finally {
         await fake.close();
       }
     });
-
-  await check('translate then simplify on the wire: the card is given back BETWEEN CLASSES',
-    async () => {
-      /*
-       * WHAT THE 2026-09-19 RULE COSTS, stated rather than discovered later.
-       *
-       * These two acts may well resolve to the SAME model on a big machine —
-       * `translate` and `simplify` are both the 27B on the Ultra — and until
-       * this date the keeper pinned ONE take across them. It pinned a behaviour
-       * the app never had: the comparison was the step's own model id, phase 15
-       * had already left every module answering `null` for it, and null never
-       * equalled the subject, so production released here every time (bug hunt
-       * §H). The keeper only passed because its fake modules named ids no real
-       * module can.
-       *
-       * So the rule compares what both sides CAN state — the class on the
-       * machine — and two classes are not a guarantee of one model: the same
-       * pair is two different models on a smaller card, and only the server
-       * knows which. Owen's ruling 2 is *"if the next step is guaranteed to use
-       * the currently loaded model"*, and this pair is not guaranteed. The card
-       * goes back, and the check below is the half that is kept.
-       */
-      const routes = leaseRoutes();
-      const fake = await startFakeCrucible(routes.handler);
-      const server = nameFake(fake.url);
-      try {
-        const translate = leasingModule('translate-pass', {
-          server, model: 'qwen3.8-27b-4bit', act: 'translate', consumes: 'epub' });
-        const simplify = leasingModule('simplify', {
-          server, model: 'qwen3.8-27b-4bit', act: 'simplify', consumes: 'epub' });
-        await freshEngine('wire-two-classes', [translate, simplify],
-          { host: lease.crucibleLeaseSeam() });
-        engine.enqueue({
-          title: 'Mistborn',
-          steps: [
-            { type: 'translate-pass', label: 'Translate', config: { kind: 'translate' },
-              sourceRef: { kind: 'epub', path: '/a.epub' } },
-            { type: 'simplify', label: 'Simplify', config: { kind: 'simplify' }, parentIndex: 0 },
-          ],
-        });
-        engine.start();
-        await settle(80);
-
-        assert.deepStrictEqual(wireOf(routes), [
-          'take qwen3.8-27b-4bit ok',
-          'release qwen3.8-27b-4bit ok',
-          'take qwen3.8-27b-4bit ok',
-          'release qwen3.8-27b-4bit ok',
-        ], 'two classes, so the run of acts ends — and the first lease is given back BEFORE '
-          + 'the second is asked for, or the server refuses us in our own name');
-        assert.deepStrictEqual(routes.lease.refusals, [],
-          'a refusal here is this app blocking itself, which is the whole defect');
-      } finally {
-        await fake.close();
-      }
-    });
-
-  await check('translate then translate on the wire: ONE take, ONE release',
-    async () => {
-      /*
-       * THE CARRY-OVER THAT SURVIVES, and the shape it is for: a row with two
-       * acts of ONE class on one machine — the language-learning row's
-       * per-language translations. Same class, same server, so the next act is
-       * guaranteed to want the model that is loaded, and the lease is handed to
-       * it rather than released and re-taken with an unload in the gap.
-       */
-      const routes = leaseRoutes();
-      const fake = await startFakeCrucible(routes.handler);
-      const server = nameFake(fake.url);
-      try {
-        const de = leasingModule('translation', {
-          server, model: 'qwen3.8-27b-4bit', act: 'translate', consumes: 'epub' });
-        const ko = leasingModule('translate-pass', {
-          server, model: 'qwen3.8-27b-4bit', act: 'translate', consumes: 'epub' });
-        await freshEngine('wire-one-class', [de, ko], { host: lease.crucibleLeaseSeam() });
-        engine.enqueue({
-          title: 'Mistborn',
-          steps: [
-            { type: 'translation', label: 'Translate (de)', config: { aiProvider: 'crucible' },
-              sourceRef: { kind: 'epub', path: '/a.epub' } },
-            { type: 'translate-pass', label: 'Translate (ko)', config: { kind: 'translate' },
-              parentIndex: 0 },
-          ],
-        });
-        engine.start();
-        await settle(80);
-
-        assert.deepStrictEqual(wireOf(routes),
-          ['take qwen3.8-27b-4bit ok', 'release qwen3.8-27b-4bit ok'],
-          'same class on one machine, so the run of acts continues and the model is not '
-          + 'unloaded between them');
-        assert.strictEqual(routes.lease.taken[0].act, 'translate',
-          'stamped with the act that OPENED it - crucible has no name for "a row of acts"');
-      } finally {
-        await fake.close();
-      }
-    });
+  }
 
   // ───────────────────────────────────────────────────────────────────────────
-  // THE RESERVE — admission takes the lease, and the act REUSES it
+  // THE RESERVE — admission opens the session, and the act REUSES it
   // ───────────────────────────────────────────────────────────────────────────
   //
   // Owen, 2026-09-19: *"It reserves the lease, THEN it takes the slot and
-  // starts real work."* The scheduler's half is pinned in
-  // `tools/test-queue-admission.js`, against a scripted seam; these two are the
-  // WIRE, because the reserve is only worth anything if the act that follows
-  // finds the same lease. A reserve that took a second lease would be this app
-  // refused `409 leased` in its own name, one step after paying for the first.
+  // starts real work."* The session is what is reserved now; it waits in the
+  // server's line, and the act that follows finds it in the row map.
 
-  await check('a reserved lease is the one the act uses — ONE take on the wire', async () => {
-    const routes = leaseRoutes();
-    // The capability door, because the reserve has to ask the SERVER which
-    // model serves this act (phase 15 §5.3) — that is the whole reason
-    // no module can name the id and this door is async.
+  await check('a reserved session is the one the act uses — ONE open on the wire', async () => {
+    const routes = sessionRoutes();
     const door = settingsRoutes({});
     const fake = await startFakeCrucible(async (req, res, ctx) => {
       if (await door.handle(req, res, ctx)) return true;
@@ -1026,42 +863,26 @@ const settle = async (n = 20) => { for (let i = 0; i < n; i += 1) await new Prom
     try {
       const seam = lease.crucibleLeaseSeam();
       await seam.reserveRow('job_reserve', { server, act: 'clean' });
-      assert.strictEqual(routes.lease.taken.length, 1, 'admission took it');
-      assert.strictEqual(routes.lease.taken[0].model, 'qwen3.5-9b',
-        'on the model the SERVER names for that class, not one this side guessed');
-      assert.deepStrictEqual(seam.leaseHeld('job_reserve'), { server, act: 'clean' },
-        'and the row is holding it before anything has started');
-      assert.strictEqual(lease.crucibleRowLease('job_reserve').leased, 'qwen3.5-9b',
-        'on the model the SERVER named — the id the scheduler never sees');
+      assert.strictEqual(routes.session.opened.length, 1, 'admission opened it');
+      assert.strictEqual(routes.session.opened[0].model, 'qwen3.5-9b',
+        'with the model the SERVER names for that class resident, not one this side guessed');
+      assert.deepStrictEqual(seam.leaseHeld('job_reserve'), { server, act: 'clean' });
 
-      // The act, exactly as a step runs it.
       await lease.withCrucibleRowScope('job_reserve', () => lease.withCrucibleLease(
         { server, kind: 'model', id: 'qwen3.5-9b', act: 'clean', onLog: () => {} },
         async () => undefined,
       ));
-      assert.strictEqual(routes.lease.taken.length, 1,
-        'the act REUSED the reserved lease — a second take is a 409 we hand ourselves');
-      assert.strictEqual(routes.lease.released.length, 0,
-        'and the act does not release it either: the scheduler owns it now');
+      assert.strictEqual(routes.session.opened.length, 1, 'the act REUSED the reserved session');
+      assert.strictEqual(routes.session.closed.length, 0, 'and does not close it: the scheduler owns it');
     } finally {
       await lease.closeCrucibleRowLease('job_reserve');
       await fake.close();
     }
   });
 
-  await check('a reserve refused `409 leased` carries the holder\'s line as `busyLine`', async () => {
-    /*
-     * The scheduler reads ONE rule — `busyLineOf`, which duck-types on
-     * `busyLine` — and the SDK spells this refusal `leasedLine`. Untranslated,
-     * a held card would reach `settleReserve` as an unnamed failure and the row
-     * would park on "something went wrong" instead of on who is holding the
-     * model and until when.
-     */
-    const routes = leaseRoutes({
-      refuseLease: () => modelLeasedRefusal({
-        model: 'qwen3.5-9b', client: 'foundry', act: 'translate', leaseId: 'lease-9',
-        since: '2026-09-19T03:00:00+00:00', expiresAt: '2026-09-19T04:00:00+00:00',
-      }),
+  await check('a reserve the line let go carries a `busyLine` the row parks on, and says where it stood', async () => {
+    const routes = sessionRoutes({
+      holdLine: () => ({ position: 2, of: 4, then: { reason: 'expired', message: 'nobody followed it' } }),
     });
     const door = settingsRoutes({});
     const fake = await startFakeCrucible(async (req, res, ctx) => {
@@ -1070,16 +891,17 @@ const settle = async (n = 20) => { for (let i = 0; i < n; i += 1) await new Prom
     });
     const server = nameFake(fake.url);
     try {
+      const said = [];
       let thrown = null;
       try {
-        await lease.crucibleLeaseSeam().reserveRow('job_refused', { server, act: 'clean' });
+        await lease.crucibleLeaseSeam().reserveRow('job_refused', { server, act: 'clean' }, (line) => said.push(line));
       } catch (err) { thrown = err; }
-      assert.ok(thrown !== null, 'a refused reserve must not resolve');
-      assert.strictEqual(typeof thrown.busyLine, 'string',
-        'the holder\'s line has to arrive under the name the scheduler reads');
-      assert.match(thrown.busyLine, /^leased: foundry, translate, until /);
-      assert.strictEqual(lease.crucibleLeaseSeam().leaseHeld('job_refused'), null,
-        'and nothing is recorded as held — the take never happened');
+      assert.ok(thrown !== null, 'a reserve the line let go must not resolve');
+      assert.strictEqual(typeof thrown.busyLine, 'string', 'under the name the scheduler reads');
+      assert.match(thrown.busyLine, /expired/);
+      assert.deepStrictEqual(said, [`waiting, #2 of 4 in crucible "${server}"'s line`],
+        'the row says where it stands while it waits');
+      assert.strictEqual(lease.crucibleLeaseSeam().leaseHeld('job_refused'), null);
     } finally {
       await lease.closeCrucibleRowLease('job_refused');
       await fake.close();
@@ -1186,5 +1008,5 @@ await check('an UPSTREAM-routed act takes no lease — the server would refuse o
     assert.strictEqual(asked.loads, 0);
   });
 
-    summary('crucible row lease');
+    summary('crucible row session');
 })();

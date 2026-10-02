@@ -119,7 +119,7 @@ export const translationStep: StepModule = {
        * A 409 IS A WAIT, AND THE TRANSLATION NOW TAKES IT (A5, 2026-09-19).
        *
        * `mono-translation-job.ts` has carried the holder's line on its result
-       * since 2026-09-18 — `crucible_model_leased` and `crucible_server_busy`
+       * since 2026-09-18 — `crucible_session_wait` and `crucible_server_busy`
        * both arrive with one — and this module dropped it on the floor, so a
        * translate against a held card reddened in *Needs you* while a simplify
        * against the same card parked. `stepFailure` is the one road: a park

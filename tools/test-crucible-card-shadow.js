@@ -11,10 +11,10 @@
  *
  *  A. A FOREIGN job is the shadow, with its progress; OUR job never is.
  *  B. Ours is told apart by ID, never by client name: another BookForge's
- *     lease is foreign even though it calls itself `bookforge` too.
- *  C. A foreign LEASE makes the card busy (one lease per server, so our
- *     reserve would be refused); our own lease does not.
- *  D. A lease or a stream has no denominator, so the shadow's progress is null,
+ *     session is foreign even though it is a BookForge too.
+ *  C. A foreign queue SESSION makes the card busy (one open per server, and
+ *     nothing from another client runs while it is); our own session does not.
+ *  D. A session or a stream has no denominator, so the shadow's progress is null,
  *     never 0.
  *  E. A shut lane with nothing foreign named and none of our jobs on it is a
  *     claim; with one of our jobs on it, there is no shadow at all.
@@ -36,12 +36,12 @@ function check(name, fn) {
   }
 }
 
-const NONE = { jobs: new Set(), leases: new Set() };
+const NONE = { jobs: new Set(), sessions: new Set() };
 
 function activity(over = {}) {
   return {
     serverName: 'pc', uptimeS: 1, resident: { kind: 'llm', id: 'qwen3.5-9b', since: null },
-    warming: null, claimedBy: null, streaming: null, chatInFlight: 0, lease: null,
+    warming: null, claimedBy: null, streaming: null, chatInFlight: 0, session: null,
     slot: { busy: 0, of: 1, queueDepth: 0, acceptsWork: true }, running: [], queued: [],
     ...over,
   };
@@ -70,27 +70,27 @@ check('A: a foreign job is the shadow, with its progress and message', () => {
 
 check('A: OUR job is never a shadow, though the lane is still busy for our other books', () => {
   const r = readCard(activity({ slot: shut, running: [job('ours', { client: 'bookforge crucible-client/1.0.38' })] }),
-    { jobs: new Set(['ours']), leases: new Set() });
+    { jobs: new Set(['ours']), sessions: new Set() });
   assert.strictEqual(r.shadow, null);
   assert.ok(r.busy !== null, 'the own-card rule, not this read, keeps a run off its own line');
 });
 
-check('B+C: another BookForge\'s lease is foreign and makes the card busy', () => {
-  const lease = { leaseId: 'L-mac', act: 'clean', client: 'bookforge crucible-client/1.0.38', since: '2026-09-26T09:00:00Z' };
-  const r = readCard(activity({ lease }), NONE);
+check('B+C: another BookForge\'s session is foreign and makes the card busy', () => {
+  const session = { sessionId: 'S-mac', act: 'clean', client: 'bookforge@owens-pc', model: null, since: '2026-09-26T09:00:00Z' };
+  const r = readCard(activity({ session }), NONE);
   assert.deepStrictEqual(r.shadow, {
-    kind: 'lease', holder: 'bookforge', what: 'clean on qwen3.5-9b', progress: null,
+    kind: 'session', holder: 'bookforge@owens-pc', what: 'clean on qwen3.5-9b', progress: null,
     message: null, since: '2026-09-26T09:00:00Z',
   });
-  assert.ok(r.busy !== null && /a lease for clean on qwen3\.5-9b/.test(r.busy.line), r.busy && r.busy.line);
+  assert.ok(r.busy !== null && /a session for clean on qwen3\.5-9b/.test(r.busy.line), r.busy && r.busy.line);
 });
 
-check('C: OUR lease is neither a shadow nor busy', () => {
-  const lease = { leaseId: 'L-ours', act: 'clean', client: 'bookforge crucible-client/1.0.38', since: null };
-  assert.deepStrictEqual(readCard(activity({ lease }), { jobs: new Set(), leases: new Set(['L-ours']) }),
+check('C: OUR session is neither a shadow nor busy', () => {
+  const session = { sessionId: 'S-ours', act: 'clean', client: 'bookforge@owens-mac-studio', model: null, since: '2026-09-26T09:00:00Z' };
+  assert.deepStrictEqual(readCard(activity({ session }), { jobs: new Set(), sessions: new Set(['S-ours']) }),
     { busy: null, shadow: null });
-  // The hosted Foundry's lease is ours by the LEDGER, where it is recorded as a job id.
-  assert.deepStrictEqual(readCard(activity({ lease }), { jobs: new Set(['L-ours']), leases: new Set() }),
+  // The hosted Foundry's session is ours by the LEDGER, where it is recorded as a job id.
+  assert.deepStrictEqual(readCard(activity({ session }), { jobs: new Set(['S-ours']), sessions: new Set() }),
     { busy: null, shadow: null });
 });
 
@@ -106,7 +106,7 @@ check('E: a shut lane that names nobody is a claim, unless one of our jobs is on
   assert.strictEqual(r.shadow.kind, 'claim');
   assert.strictEqual(r.shadow.what, 'loading higgs');
   const ours = readCard(activity({ slot: shut, warming: 'higgs', queued: [job('q1')] }),
-    { jobs: new Set(['q1']), leases: new Set() });
+    { jobs: new Set(['q1']), sessions: new Set() });
   assert.strictEqual(ours.shadow, null);
 });
 

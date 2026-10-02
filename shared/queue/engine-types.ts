@@ -997,10 +997,10 @@ export interface ServerReach {
  */
 export interface ServerShadow {
   /**
-   * What held it: a job on the lane, an open lease, a streaming session, or a
-   * load/claim the server could only name by its holder.
+   * What held it: a job on the lane, another client's open queue session, a
+   * streaming session, or a load/claim the server could only name by its holder.
    */
-  readonly kind: 'job' | 'lease' | 'streaming' | 'claim';
+  readonly kind: 'job' | 'session' | 'streaming' | 'claim';
   /** The holder's own name for itself (its User-Agent's product), or null when it did not say. */
   readonly holder: string | null;
   /** What it is doing, in words: `tts higgs-deathstalker`, `clean on qwen3.5-9b`. */

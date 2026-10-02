@@ -2156,7 +2156,7 @@ export type RunOutcome =
  * WHERE THIS RUN WAS PLACED, announced ONCE before the engine is spawned.
  *
  * The host writes it into its own in-flight ledger, so a hard kill has something
- * to release the lease with (BookForge P8: a ctrl-C left Foundry's Crucible lease
+ * to close the session with (BookForge P8: a ctrl-C left Foundry's Crucible claim
  * held by a process that no longer existed, recorded nowhere). Settled by the
  * outcome, whichever one arrives.
  */
@@ -2165,8 +2165,8 @@ export interface RunPlacement {
   server: string;
   /** The model the placement selected, or `''` for a run that meets none. */
   model: string;
-  /** The Crucible lease id this run holds, or null when it holds none. */
-  leaseId: string | null;
+  /** The Crucible queue-session id this run holds, or null when it holds none. */
+  sessionId: string | null;
   /** Blocks in flight the engine was told to keep. See `Placement.concurrency`. */
   concurrency: number;
 }

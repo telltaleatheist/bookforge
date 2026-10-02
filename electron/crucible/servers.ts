@@ -80,15 +80,11 @@ import { LOCAL_WORK_SET, LONGFORM_ALIGN_SET } from '../../shared/queue/slot-sets
 import { RETIRED_LOCAL_NARRATOR_VENUE, WAIT_FOR_ANY } from '../../shared/queue/wait-for';
 
 /**
- * What this app calls itself to a Crucible.
- *
- * Lands in the `User-Agent` the SDK sends, which is what `GET /v1/activity`
- * reports as a job's `client` — so a server shared by the PC and the Mac can
- * say whose render is on the card (crucible `docs/PHASE7-LANES.md` section 5,
- * "`client` is load-bearing"). One name, declared once: two spellings would be
- * two apps in that log.
+ * What this app calls itself to a Crucible — `bookforge@<host>`, one name per
+ * install, declared once in `client-name.ts` (which says why the host is in it).
  */
-export const CRUCIBLE_CLIENT_NAME = 'bookforge';
+export { CRUCIBLE_CLIENT_NAME } from './client-name';
+import { CRUCIBLE_CLIENT_NAME } from './client-name';
 
 /** The registry file's shape on disk. */
 interface RegistryFile {

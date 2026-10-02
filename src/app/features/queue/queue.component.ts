@@ -3764,7 +3764,7 @@ export class QueueComponent {
   shadowVerb(shadow: ServerShadow): string {
     switch (shadow.kind) {
       case 'job': return 'Running';
-      case 'lease': return 'Holding the card';
+      case 'session': return 'Holding the machine';
       case 'streaming': return 'Streaming';
       case 'claim': return 'Holding the card';
     }

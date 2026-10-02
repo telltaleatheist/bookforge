@@ -116,6 +116,7 @@ import {
   FOUNDRY_ENDPOINT_HEADERS_VAR,
   maskEndpointHeaders,
 } from './text-acts';
+import { CRUCIBLE_CLIENT_HEADER } from './client-name';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // The act, the model and the base
@@ -197,6 +198,9 @@ export function pagesEndpointHeaderMap(token: string): Record<string, string> {
     Authorization: `Bearer ${token}`,
     'X-Crucible-Api': CRUCIBLE_API_VERSION,
     [CRUCIBLE_ACT_HEADER]: CRUCIBLE_PAGES_ACT,
+    // This install's name: the reader's requests are items of the page read's
+    // queue session (`client-name.ts`).
+    [CRUCIBLE_CLIENT_HEADER]: CRUCIBLE_CLIENT_NAME,
   };
 }
 
@@ -237,7 +241,7 @@ export type CruciblePagesErrorCode =
    * (`@crucible/client`'s own `LEASED` constant). This door's own name keeps
    * `pages` in it, the way `text-venue.ts`'s keeps its act.
    */
-  | 'crucible_pages_model_leased';
+  | 'crucible_pages_session_wait';
 
 export class CruciblePagesError extends Error {
   readonly code: CruciblePagesErrorCode;
@@ -245,7 +249,7 @@ export class CruciblePagesError extends Error {
    * The holder's line — "leased: foundry, translate since …" — which the queue
    * reads off the throw (`queue-steps/runtime.ts busyLineOf`).
    *
-   * Present exactly on `crucible_pages_model_leased`. Without it a leased page
+   * Present exactly on `crucible_pages_session_wait`. Without it a held page
    * read is indistinguishable from a conversion that failed, so `settleStep`
    * reddens the row instead of parking it against that server; the render and
    * job readers already carry the same field for the same reason.
@@ -258,11 +262,15 @@ export class CruciblePagesError extends Error {
    * and nothing else, so "refused by name" is only true where the name is in
    * the sentence.
    */
-  constructor(code: CruciblePagesErrorCode, message: string, busyLine?: string) {
+  /** An operator took this read's session out of the server's line (`removedLineOf`). */
+  readonly removedLine?: string;
+
+  constructor(code: CruciblePagesErrorCode, message: string, busyLine?: string, removedLine?: string) {
     super(`${code}: ${message}`);
     this.name = 'CruciblePagesError';
     this.code = code;
     if (busyLine !== undefined) this.busyLine = busyLine;
+    if (removedLine !== undefined) this.removedLine = removedLine;
   }
 }
 
@@ -589,7 +597,7 @@ export async function withCruciblePagesLease<T>(
   reader: CruciblePageReader,
   run: () => Promise<T>,
 ): Promise<T> {
-  const { withCrucibleLease, CrucibleLeased } = await import('./lease.js');
+  const { withCrucibleLease, asSessionWait, CrucibleSessionWait } = await import('./lease.js');
   // Only the TAKE is translated: once `run` has begun, what it throws is the
   // conversion's own failure and keeps its stack.
   let started = false;
@@ -603,17 +611,17 @@ export async function withCruciblePagesLease<T>(
     );
   } catch (err) {
     if (started) throw err;
-    if (err instanceof CrucibleLeased) {
+    const wait = asSessionWait(err, reader.server, reader.act);
+    if (wait instanceof CrucibleSessionWait) {
       throw new CruciblePagesError(
-        'crucible_pages_model_leased',
-        `crucible "${reader.server}"'s resident model is leased by another run, so the pages were `
-        + `not read there: ${err.leasedLine} (until at least ${err.expiresAt}). A lease is that `
-        + 'client saying it intends more work on this model; nothing here waits it out, loads a '
-        + 'model, or quietly reads the pages on this machine instead. Try again when that run is '
-        + 'done, or pick another server.',
-        // The SDK's own holder line, so a queue row parks against this server
-        // instead of reddening — see this function's header.
-        err.leasedLine,
+        'crucible_pages_session_wait',
+        `the pages were not read on crucible "${reader.server}": ${wait.message}. Nothing here `
+        + 'quietly reads them on this machine instead. Try again when that run is done, or pick '
+        + 'another server.',
+        // The holder's line, so a queue row parks against this server instead
+        // of reddening — see this function's header.
+        wait.busyLine,
+        wait.removedLine,
       );
     }
     throw err;

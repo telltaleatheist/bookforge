@@ -305,14 +305,14 @@ const SUITES = [
   // one-job doors and the streaming door do NOT lease, because a job holds the
   // lane and a session holds the claim already — and for `tts`/`align` a lease
   // would make the server refuse the very job that took it.
-  'test-crucible-lease',
+  'test-crucible-session',
   // AND ONE LEASE FOR A ROW OF THEM. A row that cleans and then simplifies took
   // two leases, and Owen's unload ruling means the model is gone in the gap —
   // so the second act is answered `model_not_resident` and the row dies between
   // two steps that both worked. Every check here is a way the lease could
   // quietly not be held across the seam, or be held across an hour of ffmpeg
   // that has no use for it.
-  'test-crucible-row-lease',
+  'test-crucible-row-session',
   // The voice conversion on that same helper and that same fake (tier 3,
   // 2026-09-14). Its centre is an identity and a knob, each of which could be
   // lost with nothing failing: a voice has THREE spellings — BookForge's asset

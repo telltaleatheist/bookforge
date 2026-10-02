@@ -30299,7 +30299,7 @@ function busyReason(status) {
   if (status === 429) return "rate limited";
   if (status === 529) return "overloaded";
   if (status === 503) return "no lane free";
-  if (status === 409) return "the lane is leased";
+  if (status === 409) return "the machine is held";
   return `busy (${status})`;
 }
 function retryAfterMs(headers) {
@@ -30954,7 +30954,7 @@ var init_version = __esm({
     init_engine_import_meta_url();
     init_package();
     VERSION = package_default.version;
-    GIT_COMMIT = "src e940f35a45e0".length > 0 ? "src e940f35a45e0" : null;
+    GIT_COMMIT = "src 47c83f3912c3".length > 0 ? "src 47c83f3912c3" : null;
   }
 });
 

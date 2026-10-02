@@ -283,51 +283,51 @@ it('done: the step finishes, and claims no artifact of its own', async () => {
 // The in-flight ledger — P8's hosted half
 // ─────────────────────────────────────────────────────────────────────────────
 
-it('onPlaced records the LEASE, and the outcome clears it', async () => {
+it('onPlaced records the SESSION, and the outcome clears it', async () => {
   let duringTheRun = [];
   fakeRunner((request, opts) => {
     opts.onPlaced({
-      server: 'the Mac', model: 'qwen3-30b', leaseId: 'lease-42', concurrency: 4,
+      server: 'the Mac', model: 'qwen3-30b', sessionId: 'ses-42', concurrency: 4,
     });
     duringTheRun = ledger.readInFlightLedger();
     return { outcome: 'done', row: A_ROW };
   });
-  await foundryJobStep.run(stepContext({ stepId: 'step_lease_seam' }));
+  await foundryJobStep.run(stepContext({ stepId: 'step_session_seam' }));
 
   assert.strictEqual(duringTheRun.length, 1,
-    'THE FINDING (P8): Foundry takes its own Crucible lease inside the vendored dispatcher and '
+    'THE FINDING (P8): Foundry opens its own Crucible session inside the vendored dispatcher and '
     + 'recorded it nowhere, so a ctrl-C left a card held by a process that no longer existed '
     + 'with nothing on disk able to name the claim');
   assert.strictEqual(duringTheRun[0].server, 'the Mac');
-  assert.strictEqual(duringTheRun[0].jobId, 'lease-42',
-    'the LEASE id, because that is what DELETE /v1/leases/{id} takes');
-  assert.strictEqual(duringTheRun[0].jobType, 'foundry-lease',
-    'and the type is what sends the sweep down the lease route rather than the jobs route');
+  assert.strictEqual(duringTheRun[0].jobId, 'ses-42',
+    'the SESSION id, because that is what DELETE /v1/queue/{id} closes');
+  assert.strictEqual(duringTheRun[0].jobType, 'foundry-session',
+    'and the type is what sends the sweep down the session route rather than the jobs route');
   assert.strictEqual(duringTheRun[0].model, 'qwen3-30b');
-  assert.strictEqual(duringTheRun[0].localId, 'step_lease_seam',
+  assert.strictEqual(duringTheRun[0].localId, 'step_session_seam',
     "this app's own id, so a sweep's log line lands next to a row a person can see");
 
   assert.deepStrictEqual(ledger.readInFlightLedger(), [],
-    'and the settle clears it: a row left behind sends the next startup sweep at a lease '
-    + 'Foundry has already given back, which is a DELETE against a stranger\'s claim');
+    'and the settle clears it: a row left behind sends the next startup sweep at a session '
+    + 'Foundry has already closed');
 });
 
-it('a placement with NO lease records nothing — there is nothing to release', async () => {
+it('a placement with NO session records nothing — there is nothing to close', async () => {
   let duringTheRun = null;
   fakeRunner((request, opts) => {
-    opts.onPlaced({ server: '', model: '', leaseId: null, concurrency: 0 });
+    opts.onPlaced({ server: '', model: '', sessionId: null, concurrency: 0 });
     duringTheRun = ledger.readInFlightLedger();
     return { outcome: 'done', row: A_ROW };
   });
   await foundryJobStep.run(stepContext());
   assert.deepStrictEqual(duringTheRun, [],
-    'an export meets no model, takes no lease and puts nothing on a card; a row for it would '
+    'an export meets no model, opens no session and puts nothing on a card; a row for it would '
     + 'be a sweep with nothing to do and a file that grows for no reason');
 });
 
 it('the ledger is cleared even when the run THROWS', async () => {
   fakeRunner((request, opts) => {
-    opts.onPlaced({ server: 'the Mac', model: 'qwen3', leaseId: 'lease-99', concurrency: 4 });
+    opts.onPlaced({ server: 'the Mac', model: 'qwen3', sessionId: 'ses-99', concurrency: 4 });
     throw new Error('the seam itself blew up');
   });
   let thrown = null;
@@ -339,7 +339,7 @@ it('the ledger is cleared even when the run THROWS', async () => {
   assert.ok(thrown, 'the throw still ends the step');
   assert.deepStrictEqual(ledger.readInFlightLedger(), [],
     'the record exists to survive a KILL, not a bug: a row that outlives its own run would be '
-    + 'swept at a lease nobody holds');
+    + 'swept at a session nobody holds');
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

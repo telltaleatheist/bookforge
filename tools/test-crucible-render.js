@@ -199,7 +199,7 @@ function provenanceFor(name, voice) {
  * One fake server. `behaviour` decides what it does with a submit:
  *   'render' — the happy path, one chunk/artifact/progress triple per chunk
  *   'busy'   — 409 server_busy with the holder named
- *   'leased' — 409 leased: a CLIENT is mid-run on what is on the card
+ *   'held'   — 409 session_open: another client's queue SESSION holds the machine
  *   'cancel' — streams two chunks, then waits for DELETE and ends `cancelled`
  */
 function startFakeCrucible(behaviour, rows) {
@@ -268,22 +268,18 @@ function startFakeCrucible(behaviour, rows) {
             },
           });
         }
-        if (behaviour === 'leased') {
-          // `crucible/crucible/leases.py`, `Lease.to_dict()` — the six fields a
-          // `409 leased` carries. A `tts` submit is refused one because `tts` is
-          // in `EVICTS_THE_RESIDENT_MODEL`: the render would take the 27B this
-          // lease is holding off the card.
+        if (behaviour === 'held') {
+          // Crucible 1.0.76: while another client's queue session is open,
+          // a job sent without `queue` is refused `409 server_busy` with
+          // `details.door: "session"` — the SDK's `CrucibleSessionHeld`.
           return send(res, 409, {
             error: {
-              code: 'leased',
-              message: "'qwen3.8-27b-4bit' is leased by 'foundry' for 'translate'",
+              code: 'server_busy',
+              message: "session ses-held of 'foundry@owens-pc' for 'translate' holds this server",
               details: {
-                lease_id: 'lease-held',
-                kind: 'llm',
-                client: 'foundry',
-                act: 'translate',
+                door: 'session', holder: 'foundry@owens-pc', session_id: 'ses-held',
+                act: 'translate', model: 'qwen3.8-27b-4bit', status: 'open',
                 since: '2026-09-18T01:00:00+00:00',
-                expires_at: '2026-09-18T01:02:00+00:00',
               },
             },
           });
@@ -782,7 +778,7 @@ async function busyChecks() {
 // row back to `queued` carrying that line. Absent, the row FAILS.
 
 async function leasedChecks() {
-  const fake = await startFakeCrucible('leased');
+  const fake = await startFakeCrucible('held');
   const server = registerFake(fake.url);
   const sentencesDir = freshSentencesDir();
   let thrown = null;
@@ -801,19 +797,17 @@ async function leasedChecks() {
     await fake.close();
   }
 
-  await check('409 leased is a WAIT the queue can park on, not a red row', () => {
-    assert.ok(thrown, 'a leased card must not produce a render');
-    assert.strictEqual(thrown.code, 'leased');
-    assert.strictEqual(thrown.busyLine, 'leased: foundry, translate, until 2026-09-18T01:02:00+00:00',
+  await check('a machine held by another client\'s session is a WAIT the queue can park on, not a red row', () => {
+    assert.ok(thrown, 'a held machine must not produce a render');
+    assert.strictEqual(thrown.code, 'server_busy');
+    assert.strictEqual(thrown.busyLine, "held: foundry@owens-pc's session for translate, since 2026-09-18T01:00:00+00:00",
       'without a busyLine nothing carries the wait to the seam and the row FAILS instead of holding');
-    assert.ok(/foundry/.test(thrown.message), `the holder must be named; got: ${thrown.message}`);
+    assert.ok(/foundry@owens-pc/.test(thrown.message), `the holder must be named; got: ${thrown.message}`);
     assert.ok(/translate/.test(thrown.message),
       'and what they are doing, so a person can judge the wait');
-    assert.ok(/2026-09-18T01:02:00\+00:00/.test(thrown.message),
-      'and until when — a lease may hold for an hour where a lane frees in minutes');
   });
 
-  await check('a leased card renders NOTHING locally and writes no file', () => {
+  await check('a held machine renders NOTHING locally and writes no file', () => {
     assert.strictEqual(fs.readdirSync(sentencesDir).length, 0,
       'a refused render leaves an empty sentences dir — no silent downgrade');
   });

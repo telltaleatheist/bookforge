@@ -103,6 +103,8 @@ export function isUpstreamModelId(model: string): boolean {
   return model.includes('/');
 }
 
+import { CRUCIBLE_CLIENT_HEADER, CRUCIBLE_CLIENT_NAME } from './client-name';
+
 /** The one variable, spelled once. crucible `docs/PHASE7-LANES.md` §8.0. */
 export const FOUNDRY_ENDPOINT_HEADERS_VAR = 'FOUNDRY_ENDPOINT_HEADERS';
 
@@ -161,6 +163,9 @@ export function endpointHeaderMap(token: string, act: CrucibleTextAct): Record<s
     Authorization: `Bearer ${token}`,
     'X-Crucible-Api': CRUCIBLE_API_VERSION,
     [CRUCIBLE_ACT_HEADER]: act,
+    // THIS INSTALL'S NAME, so the engine's chats are items of the queue session
+    // the door opened (`client-name.ts`) and not a stranger waiting behind it.
+    [CRUCIBLE_CLIENT_HEADER]: CRUCIBLE_CLIENT_NAME,
   };
 }
 

@@ -18,7 +18,6 @@ const dispatch = await import('../electron/crucible-dispatch');
 const queue = await import('../electron/job-queue');
 const engine = await import('../electron/engine');
 const settings = await import('../electron/app-settings');
-const { CrucibleRefused } = await import('@crucible/client');
 
 afterEach(() => mock.restore());
 
@@ -51,7 +50,7 @@ for (const verdict of ['go', 'wait', 'refuse'] as const) {
     await entered.promise;
     controller.abort();
     answer.resolve(verdict === 'go'
-      ? { verdict, placement: { ...dispatch.UNPLACED, lease: { id: 'late', release } } }
+      ? { verdict, placement: { ...dispatch.UNPLACED, session: { id: 'late', release } } }
       : verdict === 'wait'
         ? { verdict, reason: 'busy', standing: false }
         : { verdict, reason: 'refused' });
@@ -68,105 +67,18 @@ for (const verdict of ['go', 'wait', 'refuse'] as const) {
   });
 }
 
-test('release racing lease replacement releases both receipts and serializes heartbeats', async () => {
-  let beat!: () => void;
-  spyOn(globalThis, 'setInterval').mockImplementation(((callback: () => void) => {
-    beat = callback;
-    return { unref() {} };
-  }) as typeof setInterval);
-  spyOn(globalThis, 'clearInterval').mockImplementation(() => {});
-  const replacement = deferred<{ leaseId: string }>();
-  let acquisitions = 0;
-  const client = {
-    lease: mock(async () => ++acquisitions === 1 ? { leaseId: 'old' } : replacement.promise),
-    heartbeat: mock(async () => { throw new CrucibleRefused(404, 'unknown_lease', 'gone', null); }),
-    release: mock(async (_id: string) => {}),
-  };
-  spyOn(registry, 'clientFor').mockReturnValue(client as never);
-  const lease = await dispatch.takeLease({
-    name: 'test', url: 'http://127.0.0.1:1', token: 'test', enabled: true,
-  }, 'test', 'clean');
-  beat();
-  await flush();
-  beat();
-  expect(client.heartbeat).toHaveBeenCalledTimes(1);
-  await lease.release();
-  replacement.resolve({ leaseId: 'new' });
-  await flush();
-  expect(client.release.mock.calls.map(([id]) => id)).toEqual(['old', 'new']);
-  await lease.release();
-  expect(client.release).toHaveBeenCalledTimes(2);
-});
-
-/**
- * THE HEARTBEAT GIVES UP ONCE — the regression test for the 10-hour loop
- * measured on 2026-09-18: 264 × (404 `unknown_lease` heartbeat → 409 re-lease
- * refused) at a flat 40.0 s cadence, on a run that had ended long before.
- *
- * `unknown_lease` used to be read as "the server restarted", and a restart is
- * the one reading under which re-leasing can work. It is also not what happened:
- * the lease had been RELEASED, and a re-lease of a model nothing is holding can
- * only ever be refused. So the assertion is that a refusal of the RE-LEASE ends
- * the timer rather than arming the next identical attempt — and that it says so
- * once, because a run left unprotected in silence is what made this invisible in
- * the first place.
- */
-test('a heartbeat whose re-lease is refused stops beating and says the run is unprotected', async () => {
-  let beat!: () => void;
-  spyOn(globalThis, 'setInterval').mockImplementation(((callback: () => void) => {
-    beat = callback;
-    return { unref() {} };
-  }) as typeof setInterval);
-  const cleared = spyOn(globalThis, 'clearInterval').mockImplementation(() => {});
-  let acquisitions = 0;
-  const client = {
-    lease: mock(async () => {
-      if (++acquisitions === 1) return { leaseId: 'the-one-it-forgot' };
-      throw new CrucibleRefused(409, 'not_resident', 'dots-ocr is not resident here', null);
-    }),
-    heartbeat: mock(async () => {
-      throw new CrucibleRefused(404, 'unknown_lease', 'this server has no lease the-one-it-forgot', null);
-    }),
-    release: mock(async (_id: string) => {}),
-  };
-  spyOn(registry, 'clientFor').mockReturnValue(client as never);
-  const said: string[] = [];
-  spyOn(console, 'error').mockImplementation((...parts: unknown[]) => { said.push(parts.join(' ')); });
-  await dispatch.takeLease({
-    name: 'test', url: 'http://127.0.0.1:1', token: 'test', enabled: true,
-  }, 'dots-ocr', 'pages');
-  beat();
-  await flush();
-  expect(client.heartbeat).toHaveBeenCalledTimes(1);
-  expect(client.lease).toHaveBeenCalledTimes(2);
-  expect(cleared).toHaveBeenCalled();
-  // AND THE CALLBACK ITSELF IS DEAD, which is the half `clearInterval` cannot
-  // prove here: this suite hands the timer out as a function, so the loop that
-  // was measured would run again on the next tick whatever the clock was told.
-  beat();
-  await flush();
-  expect(client.heartbeat).toHaveBeenCalledTimes(1);
-  expect(client.lease).toHaveBeenCalledTimes(2);
-  // ONE LINE, and it names the server's own refusal and what the run has lost.
-  expect(said).toHaveLength(1);
-  expect(said[0]).toContain('not_resident');
-  expect(said[0]).toContain('dots-ocr is not resident here');
-  expect(said[0]).toContain('UNPROTECTED');
-});
-
-test('cancelling during a Crucible model load cancels that server job and takes no lease', async () => {
+test('cancelling while the session waits in the server\'s line leaves the line and spawns nothing', async () => {
   const entered = deferred<void>();
-  const cancelled = deferred<void>();
   const client = {
     models: async () => [{ id: 'test-model', resident: false }],
-    loadModel: async () => 'load-123',
-    events: async function* () {
+    session: mock(async (options: { signal?: AbortSignal }) => {
       entered.resolve();
-      await cancelled.promise;
-      yield { event: 'cancelled', data: {} };
-    },
-    cancel: mock(async (_id: string) => { cancelled.resolve(); }),
-    lease: mock(async () => ({ leaseId: 'must-not-acquire' })),
+      // The SDK takes a waiting session out of the line and throws the abort.
+      await new Promise<void>((_done, fail) => {
+        options.signal?.addEventListener('abort', () => fail(options.signal?.reason), { once: true });
+      });
+      throw new Error('unreachable');
+    }),
     capability: async () => ({ backendKind: 'cuda', totalBytes: 1, classes: [{
       capability: 'clean', enabled: true, selected: 'test-model',
       reason: '', shortfallBytes: 0, route: 'local',
@@ -187,8 +99,10 @@ test('cancelling during a Crucible model load cancels that server job and takes 
   await entered.promise;
   controller.abort();
   expect((await result).verdict).toBe('wait');
-  expect(client.cancel).toHaveBeenCalledWith('load-123');
-  expect(client.lease).not.toHaveBeenCalled();
+  // The session was asked for with the model and the act, and the Stop's signal.
+  expect(client.session).toHaveBeenCalledWith(expect.objectContaining({
+    act: 'clean', model: 'test-model', signal: controller.signal,
+  }));
 });
 
 
@@ -201,19 +115,15 @@ for (const [kind, capability, model] of [
   test(`native Windows ${kind} uses its selected engine model through the controller registration`, async () => {
     const controller = { name: 'Windows', url: 'http://windows-pc:7101', token: 'fixture-token', enabled: true };
     const native = { ...controller, url: 'http://windows-pc:7100' };
+    const closeSession = mock(async () => ({ reason: 'client', message: '', itemsRun: 0, heldS: 0 }));
     const client = {
       models: mock(async () => [{ id: model, resident: false }]),
-      loadModel: mock(async () => 'load-native'),
-      /*
-       * `extra` IS ALWAYS ON A `done` FRAME — the SDK carries every key the job
-       * type put there verbatim and `{}` is the true answer to "what else was on
-       * the frame", never an absence. This one is empty because this fixture's
-       * server leases nothing on the load, which is what keeps the separate
-       * `client.lease` below under test.
-       */
-      events: async function* () { yield { event: 'done', data: { extra: {} } }; },
-      lease: mock(async () => ({ leaseId: 'native-lease' })),
-      release: mock(async () => {}),
+      session: mock(async () => ({
+        id: 'ses-native',
+        touch: async () => {},
+        close: closeSession,
+        closed: new Promise(() => {}),
+      })),
       activity: mock(async () => ({ chat: { maxInFlight: null, maxInFlightBasis: null } })),
       capability: async () => ({ backendKind: 'llama-windows', totalBytes: 24e9, classes: [{
         capability, enabled: true, selected: model, reason: 'native Windows', shortfallBytes: 0, route: 'local',
@@ -230,18 +140,18 @@ for (const [kind, capability, model] of [
     expect(result.verdict).toBe('go');
     if (result.verdict !== 'go') throw Error('native route was refused');
     try {
-      // THE LEASE RIDES ON THE LOAD (Crucible 1.0.13) — the act and the ttl both.
-      expect(client.loadModel).toHaveBeenCalledWith(model, {
-        lease: { act: capability, ttlSeconds: expect.any(Number) },
-      });
-      expect(client.lease).toHaveBeenCalledWith(model, expect.objectContaining({ act: capability, ttlSeconds: expect.any(Number) }));
+      // ONE SESSION, opened with the selected model resident (Crucible 1.0.76).
+      expect(client.session).toHaveBeenCalledWith(expect.objectContaining({ act: capability, model }));
+      expect(result.placement.session?.id).toBe('ses-native');
       expect(result.placement.model).toBe(model);
       expect(result.placement.endpoint).toBe('http://windows-pc:7100/openai');
       expect(result.placement.door).toBe('openai');
       const headers = JSON.parse(result.placement.env['FOUNDRY_ENDPOINT_HEADERS']!);
       expect(headers['Authorization']).toBe('Bearer fixture-token');
       expect(headers['X-Crucible-Act']).toBe(capability);
-    } finally { await result.placement.lease?.release(); }
-    expect(client.release).toHaveBeenCalledWith('native-lease');
+      // This install's name, so the engine's chats are items of the session.
+      expect(headers['X-Crucible-Client']).toBe(registry.CRUCIBLE_CLIENT_NAME);
+    } finally { await result.placement.session?.release(); }
+    expect(closeSession).toHaveBeenCalledTimes(1);
   });
 }

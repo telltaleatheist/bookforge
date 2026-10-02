@@ -242,7 +242,7 @@ import { ENGINE_PARKED_EXIT, isResumableStop } from '../shared/types';
 import { computeSlots, waitForOfNewJob } from './crucible-registry';
 import {
   capabilityClassOf, placeJob, placesOnASlot, CRUCIBLE_READS, UNPLACED,
-  type LaneClaim, type Lease, type Placement, type PlacementWait,
+  type HeldSession, type LaneClaim, type Placement, type PlacementWait,
 } from './crucible-dispatch';
 import { ANY_SLOT } from '../shared/slots';
 
@@ -1223,26 +1223,24 @@ function settled(
    */
   forgetPark(job.id);
   /*
-   * ── AND THE LEASE ON SOMEBODY ELSE'S CARD IS GIVEN BACK, HERE, FOR THE SAME
+   * ── AND THE SESSION ON SOMEBODY ELSE'S MACHINE IS CLOSED, HERE, FOR THE SAME
    * REASON ──────────────────────────────────────────────────────────────────
    *
-   * A Crucible placement holds a claim on the resident model for the length of
-   * the run (`Lease`, electron/crucible-dispatch.ts), and a claim that outlives
-   * its run is a card nobody else can load onto until the TTL expires. The
-   * requirement is that it be released on SUCCESS, FAILURE AND CANCEL alike —
-   * which is exactly the set of endings that reach this function, and is why the
-   * release lives here rather than in a `finally` around the spawn: there are
-   * three arms in `executeJob` that settle without ever reaching one.
+   * A Crucible placement holds a queue session for the length of the run
+   * (`HeldSession`, electron/crucible-dispatch.ts), and while it is open nothing
+   * from any other client runs on that machine. The requirement is that it be
+   * closed on SUCCESS, FAILURE AND CANCEL alike — which is exactly the set of
+   * endings that reach this function, and is why the close lives here rather
+   * than in a `finally` around the spawn: there are three arms in `executeJob`
+   * that settle without ever reaching one.
    *
-   * FIRE AND FORGET, AFTER THE STOP. `release()` clears its own heartbeat
-   * synchronously and only then awaits the DELETE, so nothing is still beating by
-   * the time this line returns; the network half is allowed to finish on its own
-   * because a settle must not wait on somebody else's server, and a release that
-   * fails logs itself and expires.
+   * FIRE AND FORGET, AFTER THE STOP. `release()` stops its own touching
+   * synchronously and only then awaits the DELETE; a settle must not wait on
+   * somebody else's server, and a close that fails logs itself and idles out.
    */
-  const lease = leases.get(job.id);
+  const lease = sessions.get(job.id);
   if (lease !== undefined) {
-    leases.delete(job.id);
+    sessions.delete(job.id);
     /*
      * HELD, THOUGH STILL NOT AWAITED. The settle goes on without it — a run must
      * not wait on somebody else's server to be over — but the promise is kept in
@@ -4994,7 +4992,7 @@ const PARK_AFTER_WEATHER_MS = 60_000;
  * and is copied to a host. Keyed by job id here, taken out and released in
  * `settled`, which is the one place every ending in this file passes through.
  */
-const leases = new Map<string, Lease>();
+const sessions = new Map<string, HeldSession>();
 
 /** How many times each parked row has been turned away. Drives the backoff. */
 const parkCount = new Map<string, number>();
@@ -5182,8 +5180,8 @@ async function placeRun(
     // in that interval has already settled this row; never revive it, and give
     // back a lease that arrived after the settle could see it.
     if (next.state === 'cancelled') {
-      if (outcome.verdict === 'go' && outcome.placement.lease !== null) {
-        await outcome.placement.lease.release();
+      if (outcome.verdict === 'go' && outcome.placement.session !== null) {
+        await outcome.placement.session.release();
       }
       return { go: false, wait: null };
     }
@@ -5222,7 +5220,7 @@ async function placeRun(
        * and a lease the map never learned about would be a claim on somebody's
        * card that nothing releases until it expires.
        */
-      if (outcome.placement.lease !== null) leases.set(next.id, outcome.placement.lease);
+      if (outcome.placement.session !== null) sessions.set(next.id, outcome.placement.session);
       changed();
       return { go: true, placement: outcome.placement };
     }
@@ -5584,7 +5582,7 @@ async function carry(
       wires.placed({
         server: placement.slot?.name ?? '',
         model: placement.model ?? '',
-        leaseId: placement.lease?.id ?? null,
+        sessionId: placement.session?.id ?? null,
         concurrency: placement.concurrency ?? 0,
       });
     } catch (err) {

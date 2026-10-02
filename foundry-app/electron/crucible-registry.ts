@@ -37,6 +37,7 @@
  * module full of sentences about "the server" that only one server can answer.
  */
 import { spawn } from 'node:child_process';
+import * as os from 'node:os';
 
 import {
   CrucibleAuthError,
@@ -77,15 +78,29 @@ import {
 } from '../shared/slots';
 
 /**
- * WHAT THE SERVER LOGS AS THE HOLDER OF OUR JOBS — and it must be this word.
+ * WHAT THE SERVER LOGS AS THE HOLDER OF OUR JOBS — `foundry@<host>`, one name
+ * per INSTALL.
  *
- * The SDK puts it in `User-Agent`, and that is what a Crucible reports back to
- * the NEXT client that finds the lane taken: `CrucibleBusy.holder`. So this
- * string is what BookForge's queue will print when Foundry is in the way, and
- * what this app will print when BookForge is. A clientName invented per call
- * site would make one machine look like two apps.
+ * The SDK puts it in `X-Crucible-Client` and `User-Agent`, and that is what a
+ * Crucible reports back to the NEXT client that finds the machine taken. A
+ * clientName invented per call site would make one machine look like two apps.
+ *
+ * THE HOST IS IN IT (Crucible 1.0.76): a queue SESSION is matched to its client
+ * by this name, and every request from the client holding the open session is
+ * an implicit item of it. Foundry on the Mac and Foundry on the PC (and the
+ * copy BookForge hosts) both saying `foundry` would ride each other's sessions
+ * ahead of the line. crucible-pc-1, Oct 1 2026: one distinct, stable name per
+ * install; nothing on the server keys on the exact string. The spawned engine
+ * sends the same name in its header map (`headerMapFor`), so its chats are items
+ * of the session the placement opened.
  */
-export const CRUCIBLE_CLIENT_NAME = 'foundry';
+export const CRUCIBLE_CLIENT_NAME = crucibleClientNameFor('foundry');
+
+/** `foundry@owens-mac-studio` — the app's name and the short host name. */
+export function crucibleClientNameFor(app: string, host: string = os.hostname()): string {
+  const short = host.split('.')[0]?.trim().toLowerCase() ?? '';
+  return short.length === 0 ? app : `${app}@${short}`;
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // The registry

@@ -987,7 +987,7 @@ export async function runMonoTranslation(
     /*
      * THE HOLDER'S LINE IS CARRIED, NOT FLATTENED AWAY.
      *
-     * A `CrucibleTextActError` for `crucible_model_leased` or
+     * A `CrucibleTextActError` for `crucible_session_wait` or
      * `crucible_server_busy` is a WAIT, and `busyLine` is the whole of what
      * makes it one to the queue. Rebuilding the answer as `{success, error}`
      * dropped it here — the message survived, the parkability did not — so a

@@ -647,7 +647,7 @@ function passConfig(kind, ai) {
     const realCallAI = textAi.callAI;
     textAi.callAI = async () => {
       throw new textVenue.CrucibleTextActError(
-        'crucible_model_leased',
+        'crucible_session_wait',
         'crucible "mac"\'s resident model is leased by another run, so the translate act was '
         + `not started: ${BUSY}.`,
         BUSY);
@@ -665,7 +665,7 @@ function passConfig(kind, ai) {
       textAi.callAI = realCallAI;
     }
     assert.strictEqual(result.success, false, 'a leased server did not stop the translation');
-    assert.ok(result.error.includes('crucible_model_leased'),
+    assert.ok(result.error.includes('crucible_session_wait'),
       `the refusal lost its name: ${result.error}`);
     assert.strictEqual(result.busyLine, BUSY,
       'the holder\'s line did not survive the catch, so the queue row would redden rather than '

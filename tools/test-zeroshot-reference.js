@@ -341,7 +341,7 @@ function refusal(fn) {
           },
           stopping: null, warming: null, claim: null, streaming: null,
           chat: { in_flight: 0, max_in_flight: null, max_in_flight_basis: null, rows: [] },
-          lease: null, slots: { accelerated: { busy: 0, of: 1, queue_depth: 0, accepts_work: true } },
+          session: null, slots: { accelerated: { busy: 0, of: 1, queue_depth: 0, accepts_work: true } },
           running: [], queued: [],
         });
         return true;

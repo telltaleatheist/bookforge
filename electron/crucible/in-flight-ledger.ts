@@ -307,7 +307,7 @@ const recentlySettled = new Map<string, number>();
 
 /**
  * EVERY JOB ID ON `server` THAT IS THIS APP'S: what the ledger holds (jobs,
- * and the hosted Foundry's leases under `foundry-lease`), plus what settled in
+ * and the hosted Foundry's sessions under `foundry-session`), plus what settled in
  * the last {@link RECENTLY_SETTLED_MS}.
  *
  * What the queue's card read uses to tell our own work from somebody else's

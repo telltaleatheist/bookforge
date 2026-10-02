@@ -43,16 +43,17 @@ import {
 } from '../foundry-host-queue';
 import type { FoundryJobStepConfig, FoundryRunOutcome } from '../foundry-host-queue';
 /*
- * ── THE LEASE THIS RUN TAKES IS WRITTEN DOWN WHERE A SWEEP CAN FIND IT ──────
+ * ── THE SESSION THIS RUN OPENS IS WRITTEN DOWN WHERE A SWEEP CAN FIND IT ────
  *
  * The same ledger `crucible/job.ts` and `crucible/render.ts` write to, and the
- * same one the startup sweep reads. Foundry's lease was the one claim on a card
- * this app could make and not record (P8), and a ledger with two writers is
- * better than a second file: one sweep, one rule, one place a person looks after
- * a hard kill. See `onPlaced` below for what a `foundry-lease` row means.
+ * same one the startup sweep reads. Foundry's queue session is the one claim on
+ * a machine this app could make and not record (P8), and a ledger with two
+ * writers is better than a second file: one sweep, one rule, one place a person
+ * looks after a hard kill. See `onPlaced` below for what a `foundry-session` row
+ * means.
  */
 import { recordInFlight, settleInFlight } from '../crucible/in-flight-ledger';
-import { FOUNDRY_LEASE_JOB_TYPE } from '../crucible/in-flight-sweep';
+import { FOUNDRY_SESSION_JOB_TYPE } from '../crucible/in-flight-sweep';
 import { stepFailure } from './runtime';
 /*
  * NOTHING IS IMPORTED FROM `text-server.ts` OR `narration-clean-text.ts` HERE
@@ -619,15 +620,14 @@ export const foundryJobStep: StepModule = {
        * P8's hosted half. The startup sweep reads
        * `<userData>/crucible-in-flight.json` and cancels or releases what a hard
        * kill left behind — and it covered only what THIS app submits, because
-       * Foundry takes its own Crucible lease inside the vendored dispatcher and
-       * recorded it nowhere. So a ctrl-C during a hosted clean left a lease held
-       * by a process that no longer existed, with nothing on disk naming it.
+       * Foundry opens its own Crucible queue session inside the vendored
+       * dispatcher and recorded it nowhere. So a ctrl-C during a hosted clean
+       * left a session open for a process that no longer existed.
        *
-       * `jobId` IS THE LEASE ID, and `jobType` says so by name: the sweep reads
-       * `foundry-lease` and sends `DELETE /v1/leases/{id}` rather than
-       * `DELETE /v1/jobs/{id}`, because a lease is not a job (see
-       * `in-flight-sweep.ts`). A placement that took no lease — an act that meets
-       * no model — records nothing, because there is nothing for a sweep to do.
+       * `jobId` IS THE SESSION ID, and `jobType` says so by name: the sweep reads
+       * `foundry-session` and closes it (`DELETE /v1/queue/{id}`) rather than
+       * cancelling a job (see `in-flight-sweep.ts`). A placement that opened no
+       * session — an act that meets no model — records nothing.
        *
        * `owns` IS EMPTY AND THAT IS DELIBERATE: the scratch a hosted run makes is
        * Foundry's `derived/` book, which its own settle sweeps and which the
@@ -635,12 +635,12 @@ export const foundryJobStep: StepModule = {
        * delete a file inside somebody else's project.
        */
       onPlaced: (placement) => {
-        if (placement.leaseId === null || placement.server.length === 0) return;
-        recorded.push({ server: placement.server, jobId: placement.leaseId });
+        if (placement.sessionId === null || placement.server.length === 0) return;
+        recorded.push({ server: placement.server, jobId: placement.sessionId });
         recordInFlight({
           server: placement.server,
-          jobId: placement.leaseId,
-          jobType: FOUNDRY_LEASE_JOB_TYPE,
+          jobId: placement.sessionId,
+          jobType: FOUNDRY_SESSION_JOB_TYPE,
           model: placement.model.length > 0 ? placement.model : null,
           localId: ctx.stepId,
           owns: [],

@@ -195,28 +195,27 @@ export class StepParked extends Error {
  * {@link StepParked} — so the seam reads them all without a table of classes
  * that would go stale the first time a new door is built.
  *
- * ── AND `leasedLine`, BECAUSE THE SDK SPELLS THE OTHER WAIT THAT WAY ───────
+ * ── AND `heldLine`, BECAUSE THE SDK SPELLS THE OTHER WAIT THAT WAY ─────────
  *
- * A held LANE is `CrucibleBusy.busyLine`; a held MODEL is
- * `CrucibleLeased.leasedLine` (`@crucible/client` errors) — the same sentence
- * about a longer clock. This docstring claimed `CrucibleLeased` carried
- * `busyLine` until 2026-09-19 (bug hunt §H), and it does not: a `409 leased`
- * that reached a module's `catch` and propagated untranslated was read here as
- * an ordinary failure and FAILED the row over a card that was merely held.
- * Two names, one rule, read in one place — `crucible/lease.ts` still
- * translates on the reserve path, because a refusal it re-dresses is its own
- * sentence, and it may keep doing so: the first line that says something wins
- * and both say the same thing.
+ * A held LANE is `CrucibleBusy.busyLine`; a machine held by another client's
+ * queue SESSION is `CrucibleSessionHeld.heldLine` (`@crucible/client` 1.0.76,
+ * which replaced `CrucibleLeased.leasedLine` when leases went) — the same
+ * sentence about a longer clock. A `session_open` that reached a module's
+ * `catch` and propagated untranslated would otherwise be read here as an
+ * ordinary failure and FAIL the row over a machine that was merely held (the
+ * defect bug hunt §H found for `leased`). Two names, one rule, read in one
+ * place — `crucible/lease.ts` still translates on the reserve path, and the
+ * first line that says something wins.
  *
  * A non-string, or an empty string, is NOT a line: it would park a row on a
  * blank sentence, which reads to an operator as a stall with no cause.
  */
 export function busyLineOf(err: unknown): string | undefined {
   if (err === null || typeof err !== 'object') return undefined;
-  const spelt = err as { busyLine?: unknown; leasedLine?: unknown };
+  const spelt = err as { busyLine?: unknown; heldLine?: unknown };
   const said = (value: unknown): string | undefined =>
     typeof value === 'string' && value !== '' ? value : undefined;
-  return said(spelt.busyLine) ?? said(spelt.leasedLine);
+  return said(spelt.busyLine) ?? said(spelt.heldLine);
 }
 
 /**

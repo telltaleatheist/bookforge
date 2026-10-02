@@ -124,7 +124,7 @@ const hostQueue = require(path.join(DIST, 'foundry-host-queue.js'));
 const { NARRATION_TEXT_FAILSAFE_NOTICE } =
   require(path.join(REPO, 'dist', 'shared', 'processing', 'narration-text-notice.js'));
 
-const { startFakeCrucible, settingsRoutes, leaseRoutes } =
+const { startFakeCrucible, settingsRoutes, sessionRoutes } =
   require(path.join(REPO, 'tools', 'fake-crucible.js'));
 
 /** What the fake names for the `clean` class — `settingsRoutes`' own default. */
@@ -149,7 +149,7 @@ function modelRow(id, resident) {
  */
 async function startVenue() {
   const settings = settingsRoutes({});
-  const leases = leaseRoutes();
+  const sessions = sessionRoutes();
   const fake = await startFakeCrucible(async (req, res, ctx) => {
     if (ctx.url.pathname === '/v1/models' && req.method === 'GET') {
       // A BARE ARRAY — `models()` asks `asArray` of the body itself.
@@ -179,7 +179,7 @@ async function startVenue() {
       });
       return true;
     }
-    if (await leases.handler(req, res, ctx)) return true;
+    if (await sessions.handler(req, res, ctx)) return true;
     return settings.handle(req, res, ctx);
   });
   const { port } = new URL(fake.url);

@@ -155,7 +155,7 @@ async function seamChecks() {
       await settle();
       assert.strictEqual(stepOf(job.id).status, 'running');
 
-      mod.runs[0].reject(refusal('crucible_model_leased', BUSY));
+      mod.runs[0].reject(refusal('crucible_session_wait', BUSY));
       await settle();
 
       const step = stepOf(job.id);
@@ -207,40 +207,39 @@ async function seamChecks() {
       }
     });
 
-  await check('a `CrucibleLeased` parks on its `leasedLine` — the SDK\'s other spelling',
+  await check('a `CrucibleSessionHeld` parks on its `heldLine` — the SDK\'s other spelling',
     async () => {
       /*
        * THE SDK SPELLS THE TWO WAITS DIFFERENTLY and this seam reads one rule.
-       * A held LANE is `CrucibleBusy.busyLine`; a held MODEL is
-       * `CrucibleLeased.leasedLine` — the same sentence about a longer clock,
-       * and `busyLine` is UNDEFINED on it. `busyLineOf`'s docstring claimed
-       * otherwise until 2026-09-19 (bug hunt §H), so a `409 leased` that
-       * propagated out of a module untranslated failed the row over a card
-       * that was merely held.
+       * A held LANE is `CrucibleBusy.busyLine`; a machine held by another
+       * client's queue session is `CrucibleSessionHeld.heldLine` (1.0.76) —
+       * the same sentence about a longer clock, and `busyLine` is UNDEFINED on
+       * it. Untranslated, it would fail the row over a machine that was merely
+       * held (the defect bug hunt §H found for `leased`).
        *
        * The REAL class, not a shape typed out here: this check is worth having
        * only while it tracks what `@crucible/client` actually mints.
        */
-      const { CrucibleLeased } = require('@crucible/client');
-      const held = new CrucibleLeased(409, 'leased', 'model is leased', {}, {
-        leaseId: 'lease-9', kind: 'llm', holder: 'foundry', act: 'translate',
-        since: '2026-09-19T03:00:00+00:00', expiresAt: '2026-09-19T04:00:00+00:00',
+      const { CrucibleSessionHeld } = require('@crucible/client');
+      const held = new CrucibleSessionHeld(409, 'session_open', 'the server is held', {}, {
+        holder: 'foundry@owens-pc', sessionId: 'ses-9', act: 'translate', model: null,
+        sessionStatus: 'open', since: '2026-09-19T03:00:00+00:00',
       });
       assert.strictEqual(held.busyLine, undefined,
         'if the SDK ever grows a `busyLine` on this class, this check is testing nothing');
-      assert.strictEqual(runtime.busyLineOf(held), held.leasedLine,
-        'the one rule has to read both spellings, or a held model reddens a row');
+      assert.strictEqual(runtime.busyLineOf(held), held.heldLine,
+        'the one rule has to read both spellings, or a held machine reddens a row');
 
       const mod = fakeModule('tts-conversion');
-      await freshEngine('leased-parks', mod);
-      const job = sendBook('Leased model');
+      await freshEngine('held-parks', mod);
+      const job = sendBook('Held machine');
       engine.start();
       await settle();
       mod.runs[0].reject(held);
       await settle();
       const step = stepOf(job.id);
-      assert.strictEqual(step.status, 'queued', 'a held model is a wait, not a failure');
-      assert.ok(step.progress.admissionHold.includes(held.leasedLine),
+      assert.strictEqual(step.status, 'queued', 'a held machine is a wait, not a failure');
+      assert.ok(step.progress.admissionHold.includes(held.heldLine),
         `the holder's own line is what the row says; got: ${step.progress.admissionHold}`);
     });
 
@@ -504,7 +503,7 @@ async function moduleChecks() {
     const mod = require(path.join(DIST, 'queue-steps', 'translation.js')).translationStep;
     const original = bridge.translationBridge.translateEpub;
     bridge.translationBridge.translateEpub = async () => ({
-      success: false, error: 'crucible_model_leased: crucible "mac" is held.', busyLine: BUSY,
+      success: false, error: 'crucible_session_wait: crucible "mac" is held.', busyLine: BUSY,
     });
     try {
       const ctx = context({ aiProvider: 'crucible', aiModel: 'm' }, { kind: 'epub', path: '/b.epub' });
@@ -526,7 +525,7 @@ async function moduleChecks() {
     const mod = require(path.join(DIST, 'queue-steps', 'book-analysis.js')).bookAnalysisStep;
     const original = analysis.analyzeBook;
     analysis.analyzeBook = async () => ({
-      success: false, error: 'crucible_model_leased: crucible "mac" is held.', busyLine: BUSY,
+      success: false, error: 'crucible_session_wait: crucible "mac" is held.', busyLine: BUSY,
     });
     try {
       const ctx = context({
@@ -580,7 +579,7 @@ async function moduleChecks() {
       const mod = require(path.join(DIST, 'queue-steps', 'pass.js')).simplifyStep;
       const original = passes.runProcessingPass;
       passes.runProcessingPass = async () => ({
-        success: false, error: 'crucible_model_leased: crucible "mac" is held.', busyLine: BUSY,
+        success: false, error: 'crucible_session_wait: crucible "mac" is held.', busyLine: BUSY,
       });
       try {
         const ctx = context({
@@ -645,7 +644,7 @@ async function moduleChecks() {
     const convert = require(path.join(DIST, 'vlm-convert.js'));
     const mod = require(path.join(DIST, 'queue-steps', 'vlm-convert.js')).vlmConvertStep;
     const original = convert.runVlmConversion;
-    convert.runVlmConversion = async () => { throw refusal('crucible_pages_model_leased', BUSY); };
+    convert.runVlmConversion = async () => { throw refusal('crucible_pages_session_wait', BUSY); };
     try {
       const ctx = context({ projectDir: SCRATCH, sourceLabel: 'The Waste Land.pdf' });
       assertParks('vlm-convert', (await caught(mod, ctx)).threw);

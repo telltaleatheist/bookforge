@@ -8604,7 +8604,7 @@ async function prepInfoForPreparedSession(prepared: PreparedSessionRef): Promise
  *
  *  - a HOLDER'S LINE, read by `queue-steps/runtime.ts`'s `busyLineOf`, which is
  *    the single place that knows every spelling a held card arrives under
- *    (`busyLine`, the SDK's `leasedLine`);
+ *    (`busyLine`, the SDK's `heldLine`);
  *  - `transient: true`, the bug hunt's **Contract 1** — a door saying the
  *    failure was the transport and not the book.
  *

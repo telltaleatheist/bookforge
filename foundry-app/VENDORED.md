@@ -10,10 +10,24 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\<user>\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **631ac3b** — *Adopt Crucible 1.0.72; decide and model loads wait in the server's line* (was 70d23a4, full sync: 9 files — the 1.0.72 tarballs, the `queue` client setting, `queued`/`removed` in the placement load, the rebuilt engine). Before it: 70d23a4 (1.0.63), 0d1891a (partial), **1115cea** |
+| Source sha | **6aea488** — *Adopt Crucible 1.0.76: a placement opens a queue session instead of loading and leasing* (was 631ac3b, full sync: 18 files — the 1.0.76 tarballs, `HeldSession`/`openSession` in the dispatcher, `foundry@<host>` client name, the rebuilt engine, tests moved to sessions). Before it: 631ac3b (1.0.72), 70d23a4 (1.0.63), 0d1891a (partial), **1115cea** |
 | Engine | **VENDORED, in `engine/`** since 1927563 (2026-09-24): `engine/foundry-engine.cjs` plus its four fonts, built from Foundry's `src/` by Foundry's `tools/build-engine.mjs` and checked against those sources by Foundry's test suite. Run by BookForge's own Electron as Node (`ELECTRON_RUN_AS_NODE=1`) from BOTH doors — this copy's `electron/engine.ts` and BookForge's `electron/foundry-bridge.ts`. **Ask it: `node foundry-app/engine/foundry-engine.cjs --version`** → `foundry X.Y.Z (src <digest>)`. There is no downloaded engine any more; `FOUNDRY_BIN` still overrides in both doors. |
 | Copied on | 2026-09-19 (five times: 3738c01, 3436fc5, 806d44b, f349771, ca4754c), 2026-09-20 (98a4344, 9e0b27d, dccc144, 7b98004, cc5fc5b, 93010d8, 77e1d6d) 2026-09-21 (753dca8, 3e26e53, f9bebb6, 95593b0, 8ee48b7) and 2026-09-22 (7185764, 7912022, 19fa7a9, df63f9f) and 2026-09-23 (acf63c2, 4835411), 2026-09-24 (b4c7346, 1927563, e2481dc, a1138f6, 72c6b08, b7ba2a8, 0eb12de), 2026-09-28 (1115cea) |
 | Copied by | Mechanical source sync, verified against Foundry `0eb12de:app/` (`git hash-object` per file: clean but for this file, `IPC-CHANNELS.md` and `.gitignore` — see below); details below |
+
+## The `631ac3b → 6aea488` re-vendor — Crucible 1.0.76: queue sessions replace leases (2026-10-01)
+
+Crucible 1.0.76 removed leases (Owen: *"we dont need to worry about legacy anything"*);
+the hosted Foundry's placement took one on every Crucible run, so it broke against the
+deployed servers. Foundry 6aea488: `placeOnCrucible` opens ONE queue session
+(`client.session({act, model, idleS: 300, maxWaitS: 86400, onQueue, signal})`) in place of
+`loadModel({lease})` + `takeLease`; `HeldSession` replaces `Lease` (`Placement.session`,
+`RunPlacement.sessionId`, which BookForge's `foundry-job.ts` writes to the in-flight ledger
+as a `foundry-session` row); `CRUCIBLE_CLIENT_NAME` is `foundry@<host>` and the engine's
+header map carries `X-Crucible-Client`, so the engine's chats are items of the session.
+Engine rebuilt (`foundry 2.0.2 (src 47c83f3912c3)`). Synced WHOLE from `git archive 6aea488
+app`; the 1.0.72 tarballs and `test/crucible-cancelled-placement.test.ts` deleted.
+`npm install` in `foundry-app/` relinks the SDK (the shadow trap below).
 
 ## The `70d23a4 → 631ac3b` re-vendor — Crucible 1.0.72 and its line (2026-09-30)
 

@@ -310,15 +310,19 @@ export interface ActivityJobRow {
 }
 
 /**
- * The open lease on whatever is resident. At most one per server: Crucible's
- * lease door refuses a second while this one is open (`crucible/leases.py`).
+ * The open QUEUE SESSION: one client's turn holding the whole server (Crucible
+ * 1.0.76, which replaced leases). At most one is open per server; while it is,
+ * nothing from any other client runs (crucible docs/QUEUE.md).
  */
-export interface ActivityLeaseRow {
-  leaseId: string;
-  /** The capability class it was taken for: `clean`, `simplify`, … */
+export interface ActivitySessionRow {
+  sessionId: string;
+  /** The capability class it was opened for: `clean`, `simplify`, `tts`, … */
   act: string;
-  /** The holder's User-Agent, or null when it did not send one. */
+  /** The holder's client name, or null when it did not send one. */
   client: string | null;
+  /** The model it opened with resident, or null. */
+  model: string | null;
+  /** When it opened (or was asked for, while it still waits). */
   since: string;
 }
 
@@ -351,8 +355,8 @@ export interface CrucibleActivityView {
   claimedBy: string | null;
   streaming: ActivityStreamRow | null;
   chatInFlight: number;
-  /** The open lease, or null. */
-  lease: ActivityLeaseRow | null;
+  /** The open queue session, or null. */
+  session: ActivitySessionRow | null;
   slot: {
     busy: number;
     of: number;

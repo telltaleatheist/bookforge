@@ -1500,12 +1500,12 @@ export function appendStep(jobId: string, spec: AppendStepSpec, opts?: EnqueueOp
 // say nothing — Stop (`cancel` → `settleNotStarted` → `cascadeCancel`), Remove
 // (`remove`), Remove-one-step (`removeStep`) and Pause (`pause`).
 //
-// `withRowLease` named the TTL as the backstop for exactly this. It is not one:
-// the heartbeat is a THIRD of the ttl (`electron/crucible/lease.ts`,
-// `crucibleHeartbeatIntervalMs`), so a lease this process is still beating
-// never expires while the app lives. Stop a `clean → simplify` row after
-// `clean` lands and a 9–27 GB model stays leased until BookForge quits — and
-// Crucible answers this app's OWN next job `409 leased`, naming `bookforge`.
+// `withRowLease` named the TTL as the backstop for exactly this. It is not one,
+// and under sessions (Crucible 1.0.76) it is still not: a held session is
+// TOUCHED while this process lives (`electron/crucible/lease.ts`), so it never
+// idles out. Stop a `clean → simplify` row after `clean` lands and the machine
+// stays held by this app until BookForge quits — every other client waiting
+// behind a session nothing is using.
 // The app blocking itself is the same failure the model-identity half of this
 // seam was added to end, arriving through a different door.
 //
@@ -1604,7 +1604,13 @@ function rowLeaseStillWanted(job: QueueJob, held: HeldRowLease): boolean {
  */
 function nextActWouldUseHeldCard(job: QueueJob, step: QueueStep, held: HeldRowLease): boolean {
   if (job.waitForResolved !== undefined && job.waitForResolved !== held.server) return false;
-  return leaseActOf(step) === held.act;
+  /*
+   * ANY session-taking act on the same machine (Crucible 1.0.76): the row's
+   * hold is a queue SESSION now, and a session can change model mid-way, so a
+   * simplify after a clean on the same server keeps it even when the server
+   * picks another model for it. Only a different machine ends it.
+   */
+  return leaseActOf(step) !== null;
 }
 
 /**
@@ -2958,7 +2964,12 @@ export interface CrucibleLeaseHost {
    * the step takes its own lease when it runs. Nothing is masked, because
    * nothing was reserved.
    */
-  reserveRow?(row: string, where: { server: string; act: string }): Promise<void>;
+  reserveRow?(
+    row: string,
+    where: { server: string; act: string },
+    /** The server's line, while the session waits in it ("waiting, #2 of 3 in …"). */
+    onWait?: (line: string) => void,
+  ): Promise<void>;
   /** Give back the lease this run was holding, if any. Never throws. */
   closeRow(row: string): Promise<void>;
   /**
@@ -3891,7 +3902,10 @@ function reserveBeforeLaunch(job: QueueJob, step: QueueStep, server: string): Re
 
   reservingSteps.set(step.id, { jobId: job.id, server });
   sayOnStep(step, `Reserving ${server} for this book's ${act}…`);
-  void host.reserveRow(job.id, { server, act })
+  void host.reserveRow(job.id, { server, act }, (line) => {
+    // The step is still `queued` and still this reserve's: say where it stands.
+    if (reservingSteps.has(step.id)) sayOnStep(step, `${line} for this book's ${act}`);
+  })
     .then(() => { settleReserve(job.id, step.id, server, { ok: true }); })
     .catch((err: unknown) => { settleReserve(job.id, step.id, server, { ok: false, err }); });
   return 'waiting';
@@ -3928,6 +3942,22 @@ function settleReserve(
   if (!outcome.ok) {
     if (found === null || found.job.id !== jobId) { give(); pump(); return; }
     const { step } = found;
+    /*
+     * AN OPERATOR TOOK THIS ROW'S SESSION OUT OF THE SERVER'S LINE (Crucible
+     * 1.0.76: a waiting session is a line item like a job). Owen, Sep 30 2026:
+     * the run is removed from BookForge too, with a notice — the same arm
+     * `settleStep` takes for a removed job. Weather (`expired`,
+     * `server_restart`) arrives as a `busyLine` below and parks instead.
+     */
+    const removedLine = removedLineOf(outcome.err);
+    if (removedLine !== undefined) {
+      getMainLogger().info(`[QUEUE] ${found.job.title} — ${step.label}: ${removedLine} — removing the run`);
+      announceServerRemoval({ jobId, title: found.job.title, stepLabel: step.label, line: removedLine });
+      void remove(jobId).catch((err) => {
+        console.error(`[QUEUE-ENGINE] ${found.job.title} could not be removed after the server removed it:`, err);
+      });
+      return;
+    }
     const busyLine = busyLineOf(outcome.err);
     if (busyLine !== undefined) {
       /*

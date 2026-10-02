@@ -63,11 +63,11 @@ import {
   CrucibleAuthError,
   CrucibleBusy,
   CrucibleConfigError,
-  CrucibleLeased,
   CrucibleNotACrucible,
   CrucibleProtocolError,
   CrucibleRefused,
   CrucibleServerError,
+  CrucibleSessionHeld,
   CrucibleUnreachable,
   CrucibleVersionError,
 } from '@crucible/client';
@@ -419,14 +419,13 @@ export function assertVoiceRowLoadable(
  * how two renders end up writing one directory. Same SDK, opposite policy, so
  * two readers rather than one with a flag.
  *
- * `CrucibleBusy` and `CrucibleLeased` are the two that carry structure worth
- * printing, and both fill `busyLine` — the SDK's own "GPU busy: foundry, tts
- * 62% done" / "leased: foundry, translate, until …", built from the holder the
- * server named. The holder is `null` when the holding job or lease arrived
- * without a User-Agent, and the SDK refuses to invent a name there — so does
- * this.
+ * `CrucibleBusy` and `CrucibleSessionHeld` are the two that carry structure
+ * worth printing, and both fill `busyLine` — the SDK's own "GPU busy: foundry,
+ * tts 62% done" / "held: foundry@owens-pc's session for translate, since …",
+ * built from the holder the server named. The holder is `null` when it arrived
+ * without a client name, and the SDK refuses to invent one — so does this.
  *
- * ORDER MATTERS in the table below: `CrucibleLeased` is a subclass of
+ * ORDER MATTERS in the table below: `CrucibleSessionHeld` is a subclass of
  * `CrucibleRefused`, so it has to be asked about before the generic arm or it
  * loses the holder's line and the row fails where it should have parked.
  */
@@ -444,34 +443,20 @@ export function describeCrucibleRefusal(err: unknown, server: string): CrucibleR
     );
   }
   /*
-   * A LEASED CARD IS A WAIT, AND IT IS ASKED ABOUT BEFORE `CrucibleRefused`.
-   *
-   * `CrucibleLeased` is a subclass of {@link CrucibleRefused} and NOT of
-   * {@link CrucibleBusy} (crucible `sdk/ts/src/errors.ts`), so until
-   * 2026-09-18 it fell straight into the generic arm below: the sentence lost
-   * the holder, no `busyLine` was carried, and `settleStep` — which parks a
-   * row only when one is present — failed it. The row went red and waited for
-   * somebody to press Retry, while Foundry, on the identical refusal, parked
-   * with the holder's name and came back on its own. One refusal, two
-   * clients, opposite answers: Foundry waited out BookForge's narrations and
-   * BookForge died on Foundry's translations.
-   *
-   * It is the same question `server_busy` asks with a longer clock — a lane
-   * frees in minutes, a lease may hold for an hour — so it takes the same road
-   * (`leasedLine` → `busyLine` → the step's throw → `settleStep`). What it is
-   * NOT is a retry
-   * here: the queue holds the row and the ordinary admission tick asks again.
+   * ANOTHER CLIENT'S QUEUE SESSION HOLDS THE MACHINE — A WAIT, ASKED ABOUT
+   * BEFORE `CrucibleRefused` (Crucible 1.0.76, which replaced leases). The
+   * same road `server_busy` takes (`busyLine` → the step's throw →
+   * `settleStep`); a render sent WITH `queue` waits in the line instead.
    */
-  if (err instanceof CrucibleLeased) {
+  if (err instanceof CrucibleSessionHeld) {
     return new CrucibleRenderRefused(
       err.code,
-      `${at} has its resident ${err.kind} held by another client's run, and a render would take `
-      + `it off the card. ${err.leasedLine} (lease ${err.leaseId}, since ${err.since}). Nothing `
-      + 'here waits it out or renders this book somewhere else — the queue holds the row and '
-      + 'tries again, or pick another server.',
-      err.leasedLine,
+      `${at} is held by another client's queue session. ${err.heldLine}. Nothing here renders `
+      + 'this book somewhere else — the queue holds the row and tries again, or pick another server.',
+      err.heldLine,
     );
   }
+
   // `409 queue_full`: the server's line is full. A wait, like a held card —
   // `queue-wait.ts queueFullLine`, the same sentence job.ts uses.
   const full = queueFullLine(err, server);

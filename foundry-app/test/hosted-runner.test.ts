@@ -309,7 +309,7 @@ test('the placement is announced once, before the spawn, with the venue and the 
       endpoint: 'http://127.0.0.1:9/openai',
       model: 'qwen3',
       concurrency: 4,
-      lease: { id: 'lease-7', release: async () => {} },
+      session: { id: 'ses-7', release: async () => {} },
     },
   });
   spyOn(engine, 'runEngine').mockImplementation(() => {
@@ -330,7 +330,7 @@ test('the placement is announced once, before the spawn, with the venue and the 
 
   expect(placements).toHaveLength(1);
   expect(placements[0]).toEqual({
-    server: 'the Mac', model: 'qwen3', leaseId: 'lease-7', concurrency: 4,
+    server: 'the Mac', model: 'qwen3', sessionId: 'ses-7', concurrency: 4,
   });
   // BEFORE THE SPAWN, which is the whole point: a record written after the child
   // exists can be missed by the kill it is for (BookForge's P8).
@@ -355,8 +355,8 @@ test('stopFoundry waits for the run to settle and for the lease to be given back
       ...dispatch.UNPLACED,
       endpoint: 'http://127.0.0.1:9/openai',
       model: 'qwen3',
-      lease: {
-        id: 'lease-9',
+      session: {
+        id: 'ses-9',
         release: async () => {
           await new Promise((resolve) => { setTimeout(resolve, 10); });
           released = true;

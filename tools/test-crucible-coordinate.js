@@ -150,8 +150,8 @@ function deps(overrides) {
  *
  * The door is not re-typed here: `settingsRoutes` in `fake-crucible.js` owns
  * `/v1/settings*` and `/v1/capability` in the server's own spelling, and this
- * suite DELEGATES to it exactly as the lease suites delegate to
- * `leaseRoutes` — a second capability body written out over here would be the
+ * suite DELEGATES to it exactly as the session suites delegate to
+ * `sessionRoutes` — a second capability body written out over here would be the
  * duplicated fact the whole file exists to avoid. `settings` passes that
  * handler's behaviour through, which is how `noCapabilityDoor` reaches it.
  */
@@ -178,7 +178,7 @@ function startFake(options) {
     const route = url.pathname;
 
     // The delegated door first, and its answer is final when it took the
-    // request — the same idiom `test-crucible-lease.js` uses, so a route this
+    // request — the same idiom `test-crucible-session.js` uses, so a route this
     // suite never knew about cannot be shadowed by one of the handlers below.
     if (await settings.handle(req, res, ctx)) return true;
 
@@ -250,7 +250,7 @@ function startFake(options) {
       send(res, 200, {
         server: { name: 'fake-crucible', version: '0.6.0', api_version: 1, backend: 'cuda-linux', uptime_s: 10 },
         resident: null, warming: null, claim: null, streaming: null,
-        chat: { in_flight: 0, max_in_flight: null, max_in_flight_basis: null, rows: [] }, lease: null,
+        chat: { in_flight: 0, max_in_flight: null, max_in_flight_basis: null, rows: [] }, session: null,
         slots: { accelerated: { busy: 0, of: 1, queue_depth: 0, accepts_work: seen.activity >= opts.acceptsWorkAfter } },
         running: [], queued: [],
         /*

@@ -100,7 +100,7 @@ afterEach(async () => {
 });
 
 /**
- * A reading placed on a Crucible, holding a lease — the shape the defect needs.
+ * A reading placed on a Crucible, holding a session — the shape the defect needs.
  * The bank is outside every project, so the landing's own `landReadProducts`
  * says so in the terminal and touches no disk (`projectDirOf` answers null).
  */
@@ -109,14 +109,14 @@ const SCAN = path.join(os.tmpdir(), 'foundry-execute-job-settles-test', 'outside
 /** A rendering outside every project too, so nothing is rotated aside for it. */
 const BOOK = path.join(os.tmpdir(), 'foundry-execute-job-settles-test', 'outside-any-project.epub');
 
-function placedWithALease(release: () => Promise<void>): void {
+function placedWithASession(release: () => Promise<void>): void {
   spyOn(dispatch, 'placeJob').mockResolvedValue({
     verdict: 'go',
     placement: {
       ...dispatch.UNPLACED,
       endpoint: 'http://127.0.0.1:9/openai',
       model: 'dots-ocr',
-      lease: { id: 'held-for-this-run', release },
+      session: { id: 'held-for-this-run', release },
     },
   });
 }
@@ -161,9 +161,9 @@ function listening(): { endings: Job[]; stop: () => void } {
   return { endings, stop };
 }
 
-test('a run that throws after its placement fails the row, settles it once, and gives the lease back', async () => {
+test('a run that throws after its placement fails the row, settles it once, and closes the session', async () => {
   const release = mock(async () => {});
-  placedWithALease(release);
+  placedWithASession(release);
   // `engineCommand()`'s own refusal, which is what an app folder with no engine
   // bundle actually raises out of `runEngine` — a throw, not a failed exit.
   spyOn(engine, 'runEngine').mockImplementation(() => {
@@ -183,9 +183,9 @@ test('a run that throws after its placement fails the row, settles it once, and 
   }
 });
 
-test('a reading whose landing succeeds settles, so its lease and its waiter are not held for ever', async () => {
+test('a reading whose landing succeeds settles, so its session and its waiter are not held for ever', async () => {
   const release = mock(async () => {});
-  placedWithALease(release);
+  placedWithASession(release);
   spyOn(engine, 'runEngine').mockReturnValue({
     done: Promise.resolve({ code: 0, stdout: '', stderr: '' }),
     cancel: () => {},
@@ -255,7 +255,7 @@ async function archivesIn(generated: string): Promise<string[]> {
 
 test('a run that throws after rotating the previous output puts the rotation back', async () => {
   const { output, generated } = await projectHoldingAPreviousBook();
-  placedWithALease(async () => {});
+  placedWithASession(async () => {});
   materialising();
   // The same refusal as the first test: an app folder with no engine bundle,
   // which throws out of `runEngine` — one statement after the rotation.
@@ -281,7 +281,7 @@ test('a run that throws after rotating the previous output puts the rotation bac
 test('a landing does not put its rotation back, because the product is filed', async () => {
   materialising();
   const { output, generated } = await projectHoldingAPreviousBook();
-  placedWithALease(async () => {});
+  placedWithASession(async () => {});
   // The engine writes where it was aimed, which is what makes this a landing
   // rather than the case above wearing a zero exit code.
   spyOn(engine, 'runEngine').mockImplementation(() => ({
@@ -328,7 +328,7 @@ test('two rotations in one project in one instant both land, because the folder 
   const text = path.join(generated, 'keeper.txt');
   await fsp.writeFile(text, 'the text emission that was already there', 'utf8');
   setSystemTime(new Date('2026-09-18T19:42:04.512Z'));
-  placedWithALease(async () => {});
+  placedWithASession(async () => {});
   // The catalogue write is somebody else's unit; what this test is about is the
   // folder the rotation one line above it made.
   spyOn(projects, 'recordGenerated').mockResolvedValue(null);
@@ -391,7 +391,7 @@ test('two rotations in one project in one instant both land, because the folder 
  */
 test('a ✕ that arrives while the landing is in flight is refused, so one ending is published', async () => {
   const release = mock(async () => {});
-  placedWithALease(release);
+  placedWithASession(release);
   /*
    * IN A PROJECT, BECAUSE SINCE PK6 A BOOK IS ONLY MADE FOR A RUN THAT IS IN ONE.
    * The materialise is still answered by the fixture below — this test is about
@@ -440,7 +440,7 @@ test('a ✕ that arrives while the landing is in flight is refused, so one endin
       kind: 'epub', inputPath: SCAN, outputPath: output, readingsPath: BANK,
     });
     // The ✕ was pressed on this row, mid-landing, and the ending that was
-    // published is still the run's own — once, with the lease given back once.
+    // published is still the run's own — once, with the session closed once.
     expect(pressed).toEqual([row.id]);
     expect(row.state).toBe('done');
     expect(endings.map((one) => [one.id, one.state])).toEqual([[row.id, 'done']]);

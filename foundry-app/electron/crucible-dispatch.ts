@@ -51,16 +51,18 @@
 import {
   CrucibleBusy,
   CrucibleCapabilityUndecided,
-  CrucibleLeased,
   CrucibleProtocolError,
   CrucibleRefused,
+  CrucibleSessionClosed,
+  CrucibleSessionHeld,
   CrucibleUnreachable,
   isServerSpecificRefusal,
-  type CrucibleClient,
+  type CrucibleSession,
 } from '@crucible/client';
 
 import { cloudEndpointOf, cloudHeaderMapFor, cloudProviderNamed } from './cloud-providers';
 import {
+  CRUCIBLE_CLIENT_NAME,
   CrucibleOrchestratorError,
   clientFor,
   crucibleServerNamed,
@@ -313,17 +315,16 @@ export interface Placement {
    */
   env: Record<string, string>;
   /**
-   * THE CLAIM ON THE RESIDENT MODEL, held for the length of this run.
+   * THIS RUN'S TURN HOLDING THE MACHINE — a Crucible queue session, held for the
+   * length of the run (Crucible 1.0.76, which replaced leases).
    *
    * Null on every placement that never touched a Crucible, AND on a Crucible
    * placement whose route is upstream — PHASE15 §3.4: *"no lease, no lane, the
-   * settlement untouched (nothing was on the card)"*, and §3.4 again on the lease
-   * route itself, which refuses one by name (`lease_not_needed`). Non-null
-   * placements MUST be released — see {@link Lease}, which says what happens if
-   * they are not. `settled` (electron/job-queue.ts) already reads an absent lease as
-   * nothing to release, which is why this needed no change there.
+   * settlement untouched (nothing was on the card)"*. Non-null placements MUST be
+   * released — see {@link HeldSession}. `settled` (electron/job-queue.ts) reads
+   * an absent session as nothing to release.
    */
-  lease: Lease | null;
+  session: HeldSession | null;
   /**
    * THE UPSTREAM THIS RUN IS FORWARDED TO, or null for work on a card.
    *
@@ -413,7 +414,7 @@ export const UNPLACED: Placement = {
   origin: null,
   model: null,
   env: {},
-  lease: null,
+  session: null,
   via: null,
   // NOTHING TO SAY: this job meets no model, so there is no server whose depth
   // this could be. `doorArgs` then falls back to the request's own number, which
@@ -1020,6 +1021,10 @@ async function placeOn(
   try {
     return await placeOnCrucible(entry, slot, capability, say, claim, signal);
   } catch (err) {
+    // A STOP WHILE THE SESSION WAITED IN THE LINE: the SDK has already taken it
+    // out of the line and throws the abort itself, which is our own gesture and
+    // not a refusal of the server's to interpret.
+    if (signal?.aborted) return transientWait('The request was cancelled.');
     return interpretFailure(err, slot.name, capability);
   }
 }
@@ -1164,7 +1169,7 @@ function placeOnCloud(slot: ComputeSlot, capability: CapabilityClass): Placement
        */
       model: entry.model,
       env: { FOUNDRY_ENDPOINT_HEADERS: cloudHeaderMapFor(entry) },
-      lease: null,
+      session: null,
       /*
        * A PROVIDER RATIONS BY AN ACCOUNT'S RATE LIMIT, not by a card, and nobody
        * has measured a number for one — so this states the same four the Crucible
@@ -1344,7 +1349,7 @@ async function placeOnCrucible(
       verdict: 'go',
       placement: {
         slot,
-        lease: null,
+        session: null,
         via,
         door: 'openai',
         /*
@@ -1377,23 +1382,17 @@ async function placeOnCrucible(
   }
 
   /*
-   * ── RESIDENCY: WE LOAD, AND WE NEVER UNLOAD — WITH ONE EXCEPTION ──────────
+   * ── THE MODEL MUST BE ONE THE SERVER LISTS ────────────────────────────────
    *
-   * One model is resident at a time and a load EVICTS whatever was there. That
-   * is the server's design and it is the reason nothing here ever calls
-   * `unloadModel` on a model it did not put there: the card belongs to whoever
-   * is next, and a client that tidied up after itself would be taking a model
-   * away from the run that evicted ours a minute after it started.
-   *
-   * THE EXCEPTION IS A LOAD OF OUR OWN THAT NOBODY WILL USE — see
-   * {@link releaseAbandonedLoad}. Loading for a run that has been cancelled is
-   * not somebody else's model; it is ours, resident because this placement asked
-   * for it, and leaving it there is the 21 GB nobody is holding.
+   * Its own capability record selected it, so a listing without it is the
+   * server disagreeing with itself. Whether it is RESIDENT no longer matters
+   * here: the session below opens with it loaded (Crucible 1.0.76 — `model` on
+   * `POST /v1/queue/sessions`, loaded by the server for the session).
    */
   const models = await client.models();
   signal?.throwIfAborted();
-  const resident = models.find((model) => model.id === row.selected);
-  if (resident === undefined) {
+  const listed = models.find((model) => model.id === row.selected);
+  if (listed === undefined) {
     return {
       verdict: 'refuse',
       reason: `"${slot.name}" selected ${row.selected} for ${capability} work and then did not list it. `
@@ -1402,512 +1401,70 @@ async function placeOnCrucible(
   }
 
   /*
-   * WHAT THIS PLACEMENT PUT ON THE CARD, if anything. Null until `load-model`
-   * has been submitted, because before that there is nothing this run is
-   * answerable for; non-null from the moment the server answers with a job id,
-   * because from that moment a model may land whether we are still here or not.
-   */
-  let ourLoad: SubmittedLoad | null = null;
-  try {
-    if (!resident.resident) {
-      say(`Loading ${row.selected} on ${slot.name}…`);
-      /*
-       * ── THE LOAD CARRIES ITS OWN LEASE — Crucible 1.0.13 ─────────────────
-       *
-       * A load that succeeds cannot clear the card: its whole content is "be
-       * resident", so the server deliberately does not settle on it
-       * (`crucible/settle.py`: *"a load is not a holder letting go"*). That
-       * leaves the window between the `done` frame and this app's own
-       * `POST /v1/models/{id}/lease` held by NOTHING — and a client that dies in
-       * that window strands the card for ever, because a quiet hold has no end.
-       * It is the 21 GB Owen found on 2026-09-20 (BUG-HUNT §F.8), one request
-       * wide.
-       *
-       * 1.0.13 closes it at the source: ask for the lease ON the load and the
-       * model is held from the instant it exists. The same ttl and the same
-       * heartbeat as {@link takeLease}'s — one number, one cadence — and a
-       * lapsed lease now SETTLES the card there, so the same death costs two
-       * minutes instead of for ever.
-       */
-      const jobId = await client.loadModel(row.selected, {
-        lease: { act: capability, ttlSeconds: LEASE_TTL_SECONDS },
-      });
-      const load: SubmittedLoad = { jobId, cancelled: null, leaseId: null };
-      ourLoad = load;
-      /*
-       * THE CANCEL IS KEPT, NOT DROPPED. It used to be `void client.cancel(…)`
-       * — a DELETE fired into the dark, whose answer (`cancelled` or
-       * `cancelling`) is the very fact the cleanup below has to know. Recording
-       * the promise costs nothing and is the difference between "we asked" and
-       * "we know". `??=` because a re-entry would be a second DELETE for one
-       * gesture.
-       */
-      const cancelLoad = (): void => {
-        load.cancelled ??= client.cancel(jobId).then(() => undefined).catch((err: unknown) => {
-          console.error(`[slots] cancelling the load on ${entry.name} failed: ${String(err)}`);
-        });
-      };
-      signal?.addEventListener('abort', cancelLoad, { once: true });
-      if (signal?.aborted) cancelLoad();
-      try {
-        for await (const event of client.events(jobId)) {
-          if (event.event === 'warming') say(`Loading ${row.selected} on ${slot.name}${event.data.message === null ? ' (warming)…' : `: ${warmingHeadline(event.data.message)}`}`);
-          // A progress frame with no message still says the load is moving.
-          else if (event.event === 'progress') say(`Loading ${row.selected} on ${slot.name}${event.data.message === null ? '…' : `: ${event.data.message}`}`);
-          // In the server's own line (crucible docs/QUEUE.md): another client's
-          // work is on the card, and this load waits its turn rather than being
-          // refused.
-          else if (event.event === 'queued') say(`Waiting for ${slot.name}: #${event.data.position}${event.data.of === null ? '' : ` of ${event.data.of}`} in its line`);
-          else if (event.event === 'removed') {
-            /*
-             * TAKEN OUT OF THE LINE WITHOUT RUNNING — never a failure of the model.
-             * `expired` / `server_restart`: nobody removed it, so the placement
-             * waits and asks again. Anything else (`operator`, or a reason a newer
-             * server invents) is a person's decision: refused by name, not re-sent.
-             */
-            const { reason, message } = event.data;
-            return reason === 'expired' || reason === 'server_restart'
-              ? transientWait(`"${slot.name}" let the load of ${row.selected} go from its line (${reason})`)
-              : { verdict: 'refuse', reason: `the load of ${row.selected} was removed from "${slot.name}"'s line (${reason}): ${message}` };
-          }
-          else if (event.event === 'done') {
-            /*
-             * WHICHEVER ACT MADE THE RESIDENCY OURS HANDS US THE LEASE ID. The
-             * SDK models the two keys `load-model`'s `done` frame always had
-             * (`artifacts`, `resident`) and carries everything else verbatim in
-             * `extra` — so `lease_id` is read from there, by its server spelling,
-             * and its ABSENCE is an answer too: a server older than 1.0.13, or a
-             * load submitted without the option, leaves this null and the paths
-             * below take their own lease exactly as they always did.
-             */
-            load.leaseId = leaseIdIn(event.data.extra);
-          } else if (event.event === 'failed') {
-            const code = event.data.error.code;
-            /*
-             * A LOAD THAT FAILED AFTER IT WAS ADMITTED. The codes that mean "this
-             * machine, right now" travel to the next server; anything else is about
-             * the model and would fail the same way everywhere.
-             *
-             * NOTHING TO RELEASE: a `load-model` that ends `failed` did not make
-             * the model resident, and the engine process it was starting is the
-             * load job's own to take down. The cleanup below is for the one
-             * terminal state that leaves something behind, which is `done`.
-             */
-            return isServerSpecificRefusal(code)
-              ? transientWait(`"${slot.name}" could not load ${row.selected}: ${event.data.error.message}`)
-              : { verdict: 'refuse', reason: `"${slot.name}" could not load ${row.selected}: ${event.data.error.message}` };
-          } else if (event.event === 'cancelled') {
-            return transientWait(`the load of ${row.selected} on "${slot.name}" was cancelled`);
-          }
-        }
-      } finally {
-        signal?.removeEventListener('abort', cancelLoad);
-      }
-    }
-
-    /*
-     * ── AND THE LEASE, WHICH IS THE LAST THING BEFORE THE SPAWN ───────────────
-     *
-     * It is taken HERE — after the model is resident, before the engine exists —
-     * because those are the two things that make a lease meaningful: there is
-     * something on the card to claim, and nothing has started depending on it yet.
-     * A lease taken before the load would be a claim on a model that is not there
-     * (the server says so by name: `model_not_resident`), and one taken after the
-     * spawn would leave a window in which another client's load evicts the model
-     * this run is three blocks into using.
-     *
-     * ── AND WHEN WE LOADED IT, THE LOAD ALREADY TOOK IT ──────────────────────
-     *
-     * WHICHEVER ACT MADE THE RESIDENCY OURS HANDS US THE LEASE ID. A load of
-     * ours carried `lease: {act, ttl_seconds}` and the card has been held since
-     * the instant the model existed, so there is no second lease to open — the
-     * one that exists is ADOPTED, with the same heartbeat and the same
-     * `release()`, and `Placement.lease` is the same object every caller already
-     * has. The ALREADY-RESIDENT case (nothing was loaded, so nothing leased on
-     * our behalf) opens one the old way, which is what the separate
-     * `POST /v1/models/{id}/lease` is still for.
-     *
-     * NO SECOND TAKE ON A LEASED CARD, which is not a tidiness argument: our own
-     * lease would refuse it `409 leased`, naming us, and this function would
-     * wait for a card it is already holding.
-     */
-    signal?.throwIfAborted();
-    const lease = await takeLease(engine, row.selected, capability, ourLoad?.leaseId ?? null);
-
-    /*
-     * ── THE DEPTH IS ASKED FOR AFTER THE MODEL IS RESIDENT ─────────────────
-     *
-     * A Crucible's chat admission belongs to the RESIDENT engine — its
-     * concurrency plus one — so with nothing loaded `chat.maxInFlight` is null
-     * by design, and may differ per model (sized by memory). Read before the
-     * load, as it used to be, it was always null on a card we then loaded, so
-     * every such run fell back to four; the engine's own read then clamped four
-     * down to the server's two, and never up to a server admitting eight
-     * (Owen's cleanup, 2026-09-24, ran at two). Read here, it is the number the
-     * server admits for the model this run will use.
-     *
-     * SAFE AFTER THE LEASE because `statedChatDepth` cannot throw: every failure
-     * is "it did not say" (null), and the placement goes on at four. The reason
-     * it once stood before the load — a throw here would abandon a lease just
-     * taken — went with CrucibleTooOld (c3334fe).
-     */
-    const concurrency = await chatDepthFor(engine, capability, say);
-
-    return {
-      verdict: 'go',
-      placement: {
-        slot,
-        lease,
-        /*
-         * HOW DEEP TO GO ON THIS CARD — the server's number when it states one, and
-         * four when it does not. See `Placement.concurrency`, which carries the whole
-         * argument and the night it is about, and `chatDepthFor`, which asks — just
-         * above, after the load, because admission belongs to the resident engine.
-         *
-         * A READING STATES NONE HERE: `--vlm-concurrency` is the page reader's own
-         * flag and the engine takes it from the server that serves the pages, so a
-         * chat depth on a `pages` placement would be a number about the wrong door.
-         */
-        concurrency,
-        /*
-         * `openai` IS THE ENGINE'S DEFAULT AND IS LEFT UNSPELLED on the command
-         * line — see `doorArgs` in job-queue.ts. It is named here anyway, because a
-         * placement that said nothing about the dialect would be a placement whose
-         * reader had to know the default.
-         */
-        door: 'openai',
-        /*
-         * THE OPENAI DOOR IS MOUNTED AT `<url>/openai`, and the engine appends
-         * `/v1` itself. Composed here rather than stored on the entry: the entry's
-         * URL is the address a person pasted, which after PHASE17 may be the
-         * ORCHESTRATOR's, and a stored `/openai` would be this app's routing
-         * decision written into somebody's settings file. `engine.url` is the
-         * resolved one — see the hop at the top of this function.
-         */
-        endpoint: `${engine.url}/openai`,
-        /*
-         * AND THE ENGINE ITSELF, WITH NO DOOR ON IT — what the cleanup's triage is
-         * pointed at, because it asks `/v1/decide` of the model this placement
-         * just made resident and leased. The same `engine.url` the door above is
-         * composed from; see `Placement.origin`.
-         */
-        origin: engine.url,
-        model: row.selected,
-        env: { FOUNDRY_ENDPOINT_HEADERS: headerMapFor(engine, capability) },
-        /** A resident model on that machine's card. Nothing was forwarded. */
-        via: null,
-      },
-    };
-  } catch (err) {
-    /*
-     * ── A CANCELLED PLACEMENT OWNS WHAT ITS OWN LOAD LEFT ON THE CARD ───────
-     *
-     * Every throw out of the block above lands here, and exactly one shape of
-     * throw has a card to answer for: the run was STOPPED while this function
-     * was waiting on a `load-model` of its own. `releaseAbandonedLoad` says what
-     * is done about it and why; everything else — an unreachable server, a
-     * refused lease, a protocol error — rethrows untouched into
-     * `interpretFailure`, which is the one place that turns a throw on this path
-     * into a verdict.
-     *
-     * THE RETHROW IS UNCONDITIONAL. The cleanup is tidying, not an outcome: a
-     * placement that was cancelled is cancelled whether the card came back or
-     * not, and swallowing the abort here would hand the queue a placement for a
-     * row that has already settled.
-     */
-    if (ourLoad !== null && signal?.aborted === true) {
-      await releaseAbandonedLoad(engine, client, ourLoad, row.selected, capability, slot.name);
-    }
-    throw err;
-  }
-}
-
-/**
- * A `load-model` THIS PLACEMENT SUBMITTED, and the cancel it has already sent.
- *
- * `cancelled` is the DELETE's own promise rather than a boolean, because the
- * only useful thing about the cancel is its ANSWER — `cancelled` (the job never
- * ran) or `cancelling` (it is running and will stop at a checkpoint) — and a
- * fire-and-forget DELETE cannot tell the two apart. Null means no cancel has
- * been sent yet.
- */
-interface SubmittedLoad {
-  readonly jobId: string;
-  cancelled: Promise<void> | null;
-  /**
-   * THE LEASE THE LOAD ITSELF OPENED, or null for a load that opened none.
+   * ── THE SESSION, WHICH IS THE LAST THING BEFORE THE SPAWN ─────────────────
    *
-   * Read off the `done` frame's `extra`, so it is non-null only once the model
-   * is actually on the card. Null means one of two things and they want the same
-   * treatment: the load has not finished, or the server is older than 1.0.13 and
-   * ignored the `lease` param — either way nothing is held on our behalf and
-   * whoever needs the card held must take a lease of their own.
+   * Crucible 1.0.76 replaced the load-then-lease pair with ONE act: a queue
+   * session (crucible docs/QUEUE.md, sdk/ts/MIGRATION.md). It waits in the
+   * server's line — first come, first served — and opens with `row.selected`
+   * resident; while it is open nothing from any other client runs there. So the
+   * two windows the old pair had to close by hand are gone: there is no moment
+   * between a load and its lease, and a load cancelled by a Stop is the server's
+   * to settle (aborting `signal` takes a waiting session out of the line, and a
+   * session that already opened is closed by the settle like any other).
+   *
+   * The engine's own chats are ITEMS of it because they carry this install's
+   * client name (`headerMapFor`), and the session is touched while the run lives
+   * ({@link openSession}).
    */
-  leaseId: string | null;
-}
+  say(listed.resident
+    ? `Asking ${slot.name} for its turn…`
+    : `Asking ${slot.name} for its turn and loading ${row.selected}…`);
+  const session = await openSession(engine, row.selected, capability, slot.name, say, signal);
 
-/**
- * `lease_id` OFF A `done` FRAME'S `extra`, or null.
- *
- * `DoneData.extra` is `Record<string, unknown>` by construction — the SDK
- * carries every key a job type put on its terminal frame verbatim rather than
- * modelling each one — so the read is a type test, and a value that is not a
- * non-empty string is NOT a lease id. Null rather than a throw: a server that
- * sent something strange here is a server that leased nothing we can release,
- * and the callers all have a working answer for "nothing is held".
- */
-function leaseIdIn(extra: Readonly<Record<string, unknown>>): string | null {
-  const stated = extra['lease_id'];
-  return typeof stated === 'string' && stated.length > 0 ? stated : null;
-}
+  /*
+   * ── THE DEPTH IS ASKED FOR AFTER THE MODEL IS RESIDENT ─────────────────
+   *
+   * A Crucible's chat admission belongs to the RESIDENT engine — its
+   * concurrency plus one — so with nothing loaded `chat.maxInFlight` is null by
+   * design, and may differ per model (sized by memory). Read here, once the
+   * session has opened with the model resident, it is the number the server
+   * admits for the model this run will use. `statedChatDepth` cannot throw.
+   */
+  const concurrency = await chatDepthFor(engine, capability, say);
 
-/**
- * THE LEASE A LOAD OPENED, READ BACK OFF ITS JOB RECORD — and the one field on
- * this wire this file still reads by hand.
- *
- * Crucible 1.0.13 puts `lease_id` on `GET /v1/jobs/{id}` as well as on the `done`
- * frame, in as many words *"a lease id you cannot recover is a hold nobody can
- * release"*. `@crucible/client` 1.0.13's `JobStatus` does not carry it: the
- * SDK's job reader models eleven keys and this is not one of them, and
- * `client.job()` cannot hand back a field it never parsed. So this reads the
- * document itself, with the entry's own token, exactly as {@link headerMapFor}
- * composes it — the same shape, and the same standing note, the chat-depth read
- * carried until 1.0.13 caught up with it: **the moment the SDK carries the field
- * this becomes one line of `client.job()` and the fetch goes.** It is small and
- * has one caller so that is a small edit.
- *
- * NULL FOR EVERY UNHAPPY ANSWER, because the caller has a working road for
- * "nothing is held on our behalf" (the take-and-release dance) and no road at
- * all for a throw: this runs inside a Stop's own tidying, where a failure to
- * READ must never become a failure to STOP.
- */
-async function leaseIdOfJob(entry: CrucibleServerEntry, jobId: string): Promise<string | null> {
-  const url = `${entry.url.replace(/\/+$/, '')}/v1/jobs/${encodeURIComponent(jobId)}`;
-  try {
-    const response = await fetch(url, {
-      method: 'GET',
-      headers: { Authorization: `Bearer ${entry.token}`, 'X-Crucible-Api': '1' },
-    });
-    if (!response.ok) return null;
-    const record = await response.json() as Record<string, unknown> | null;
-    return record === null ? null : leaseIdIn(record);
-  } catch {
-    return null;
-  }
-}
-
-/**
- * HOW LONG THE TIDYING MAY TAKE, in milliseconds.
- *
- * A Stop must be a Stop. This cleanup is three round trips to a machine that may
- * be mid-eviction, and a person who pressed the button is watching the row; so
- * the whole of it runs under one deadline and a deadline that fires is a LOG
- * LINE naming the model and the server, not a hang and not a failure. Thirty
- * seconds is generous for three HTTP calls and short enough that nobody wonders
- * whether the button worked.
- */
-const ABANDONED_LOAD_CLEANUP_MS = 30_000;
-
-/**
- * GIVE BACK WHAT A CANCELLED PLACEMENT LEFT ON THE CARD.
- *
- * ── The night this is about (2026-09-20) ──────────────────────────────────
- *
- * A reading was placed on a Crucible, `load-model qwen3.5-9b` went out, and the
- * load read *"vllm loading; 50s elapsed"* while Owen pressed Stop. The load
- * COMPLETED in the same second the abort fired. What this function replaced did
- * three things and all three were right-looking: it fired `DELETE /v1/jobs/{id}`
- * without waiting for the answer, it never asked how the load had actually
- * ended, and it threw out of the placement before `takeLease`. The DELETE landed
- * on a job that was already `done` — a no-op — and the placement walked away
- * from a 21 GB model that was now resident with `claim: None, lease: None,
- * chat.in_flight: 0, running: []`. Nothing was holding it and nothing ever
- * would: Crucible's settlement is triggered by a HOLDER LETTING GO, and a load's
- * own completion is deliberately not one (`crucible/settle.py`: *"a load is not
- * a holder letting go"*). It sat there until it was unloaded by hand.
- *
- * ── The rule ──────────────────────────────────────────────────────────────
- *
- * **A placement that is cancelled after it submitted a load is responsible for
- * what that load put on the card.** Not the server — it did exactly what it was
- * asked — and not the next run, which may be on another machine or may never
- * come. So:
- *
- *   1. **Await the cancel's answer.** `cancelling` and `cancelled` are different
- *      news and a DELETE nobody reads is a question nobody asked.
- *   2. **Read the load's terminal state** (`GET /v1/jobs/{id}`). `cancelled` or
- *      `failed` means nothing landed and there is nothing to give back; `done`
- *      means the model is resident because we asked for it.
- *   3. **Release it, by being a holder that lets go.** A lease taken and
- *      released immediately is the settlement's own trigger, it is the two verbs
- *      this file already owns, and it is correct even if somebody else's run
- *      arrived in between — the lease would be refused and the card is theirs.
- *      `unload-model` is the FALLBACK, for a server that refuses the lease for a
- *      reason that is not another client (`model_not_resident`: it has already
- *      gone, and the unload says so by name and costs nothing).
- *
- * ── AND SINCE 1.0.13, STEP 3 IS USUALLY ONE VERB ──────────────────────────
- *
- * The load now carries its own lease (`placeOnCrucible`), so a `done` load is
- * ALREADY held by us and the id is on its `done` frame. Then this is a single
- * `DELETE /v1/leases/{id}`: the take-and-release dance would be a second lease
- * on a card our own first one holds, refused `409 leased` naming us, and the
- * `unload-model` behind it refused for the same reason. So the dance survives
- * for exactly the case it is still true of — a load that ended `done` with NO
- * `lease_id`, which is an older server or a load submitted without the option.
- *
- * THE ID IS RE-READ FROM THE JOB RECORD WHEN THE STREAM DID NOT DELIVER IT,
- * which is the same receipt-is-not-the-fact rule step 2 keeps: a socket that
- * died before the `done` frame is not a load that did not land, and a lease id
- * this app cannot recover is a hold nobody can release.
- *
- * ── And it never hangs and never fails ────────────────────────────────────
- *
- * The whole of it is under {@link ABANDONED_LOAD_CLEANUP_MS} and it returns
- * normally whatever happens. A Stop that waited on a tidy-up would be a Stop
- * that did not stop, and a throw here would replace the row's real ending
- * (cancelled) with a story about housekeeping. What a failure gets is a log line
- * that NAMES THE MODEL AND THE SERVER, so the startup sweep — or a person with
- * `crucible unload-model` — has something to act on.
- *
- * `boundMs` IS A PARAMETER WITH THE CONSTANT AS ITS DEFAULT for exactly one
- * reason: the keeper that proves the deadline drives a server which never
- * answers, and a thirty-second test is a thirty-second test on every run of the
- * suite. Nothing in the app passes it.
- *
- * `entry` IS THE ENGINE-ADDRESSED ENTRY and `client` is the client
- * `placeOnCrucible` already built from it — the same process that took the load
- * must be the one that gives it back, and resolving again is a second chance for
- * them to differ (the same argument {@link takeLease} makes).
- */
-export async function releaseAbandonedLoad(
-  entry: CrucibleServerEntry,
-  client: CrucibleClient,
-  load: SubmittedLoad,
-  model: string,
-  capability: CapabilityClass,
-  slotName: string,
-  boundMs: number = ABANDONED_LOAD_CLEANUP_MS,
-): Promise<void> {
-  const where = `${model} on "${slotName}"`;
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const deadline = new Promise<never>((_resolve, reject) => {
-    timer = setTimeout(() => { reject(new Error(`the cleanup did not finish within ${boundMs}ms`)); }, boundMs);
-    timer.unref?.();
-  });
-  try {
-    await Promise.race([tidy(), deadline]);
-  } catch (err) {
-    /*
-     * THE ONE SENTENCE A PERSON OR A SWEEP CAN ACT ON. It names the model and
-     * the machine because the next question after "did the Stop work" is "what
-     * is on that card", and an apology with neither in it answers nothing.
-     */
-    console.error(
-      `[slots] cancelled placement: the load of ${where} may still be resident and this app `
-      + `could not give it back — ${err instanceof Error ? err.message : String(err)}. `
-      + `Unload it there (\`crucible unload-model ${model}\`) if the card is still held.`,
-    );
-  } finally {
-    if (timer !== undefined) clearTimeout(timer);
-  }
-
-  async function tidy(): Promise<void> {
-    /*
-     * The cancel may not have been sent at all: the abort can fire between the
-     * load's `done` frame and `throwIfAborted`, which is the exact second Owen's
-     * Stop landed in. Sending one now costs a DELETE on a finished job and buys
-     * the same answer the abort path gets.
-     */
-    load.cancelled ??= client.cancel(load.jobId).then(() => undefined).catch((err: unknown) => {
-      console.error(`[slots] cancelling the load on ${entry.name} failed: ${String(err)}`);
-    });
-    await load.cancelled;
-
-    const status = await client.job(load.jobId);
-    if (status.status !== 'done') {
-      console.log(
-        `[slots] cancelled placement: the load of ${where} ended ${status.status}; nothing is resident.`,
-      );
-      return;
-    }
-
-    /*
-     * ── THE LOAD'S OWN LEASE, WHICH IS THE WHOLE CLEANUP WHEN THERE IS ONE ──
-     *
-     * `load.leaseId` is set from the `done` frame. It is null when the stream
-     * broke before that frame arrived — the same reason step 2 reads the record
-     * rather than the receipt — so the record is asked before concluding the
-     * load leased nothing.
-     */
-    const heldByOurLoad = load.leaseId ?? await leaseIdOfJob(entry, load.jobId);
-    if (heldByOurLoad !== null) {
-      try {
-        await client.release(heldByOurLoad);
-      } catch (err) {
-        /*
-         * `unknown_lease` IS THE CARD ALREADY BACK, not a failed cleanup: since
-         * 1.0.13 a lapsed lease settles the card itself, so a ttl that ran out
-         * while this app was getting here did the job this function came to do.
-         * Anything else is a real failure and gets the outer catch's sentence,
-         * which names the model and the machine.
-         */
-        if (!(err instanceof CrucibleRefused && err.code === 'unknown_lease')) throw err;
-        console.log(
-          `[slots] cancelled placement: the lease the load of ${where} opened had already lapsed; `
-          + 'the card is back.',
-        );
-        return;
-      }
-      console.log(
-        `[slots] cancelled placement: the load of ${where} had landed holding its own lease; released it.`,
-      );
-      return;
-    }
-
-    try {
-      const lease = await takeLease(entry, model, capability);
-      await lease.release();
-      console.log(`[slots] cancelled placement: the load of ${where} had landed; released it.`);
-      return;
-    } catch (err) {
+  return {
+    verdict: 'go',
+    placement: {
+      slot,
+      session,
       /*
-       * A REFUSED LEASE IS NOT A FAILED CLEANUP. `leased` means another client
-       * got there first and the card is honestly theirs — but the unload below
-       * will be refused by the same server for the same reason, which is the
-       * right answer arriving from the machine that owns the fact rather than
-       * from a guess here.
+       * HOW DEEP TO GO ON THIS CARD — the server's number when it states one, and
+       * four when it does not. See `Placement.concurrency` and `chatDepthFor`.
        */
-      console.error(
-        `[slots] cancelled placement: the load of ${where} had landed and a lease to release it was `
-        + `refused (${err instanceof Error ? err.message : String(err)}); unloading it instead.`,
-      );
-    }
-
-    const unloadId = await client.unloadModel(model);
-    for await (const event of client.events(unloadId)) {
-      if (event.event === 'failed') {
-        console.error(
-          `[slots] cancelled placement: unloading ${where} failed: ${event.data.error.message}`,
-        );
-        return;
-      }
-      if (event.event === 'cancelled') {
-        console.error(`[slots] cancelled placement: the unload of ${where} was itself cancelled.`);
-        return;
-      }
-      if (event.event === 'removed') {
-        // Waited in the server's line and left it unrun — the model is still
-        // there, so this is NOT "unloaded it".
-        console.error(
-          `[slots] cancelled placement: the unload of ${where} was removed from the server's line `
-          + `(${event.data.reason}) without running; the model may still be resident.`,
-        );
-        return;
-      }
-    }
-    console.log(`[slots] cancelled placement: the load of ${where} had landed; unloaded it.`);
-  }
+      concurrency,
+      /*
+       * `openai` IS THE ENGINE'S DEFAULT AND IS LEFT UNSPELLED on the command
+       * line — see `doorArgs` in job-queue.ts. Named here so a reader of the
+       * placement need not know the default.
+       */
+      door: 'openai',
+      /*
+       * THE OPENAI DOOR IS MOUNTED AT `<url>/openai`, and the engine appends
+       * `/v1` itself. `engine.url` is the resolved one — see the hop at the top
+       * of this function.
+       */
+      endpoint: `${engine.url}/openai`,
+      /*
+       * AND THE ENGINE ITSELF, WITH NO DOOR ON IT — what the cleanup's triage is
+       * pointed at (`/v1/decide`). See `Placement.origin`.
+       */
+      origin: engine.url,
+      model: row.selected,
+      env: { FOUNDRY_ENDPOINT_HEADERS: headerMapFor(engine, capability) },
+      /** A resident model on that machine's card. Nothing was forwarded. */
+      via: null,
+    },
+  };
 }
 
 /**
@@ -1950,250 +1507,140 @@ function headerMapFor(entry: CrucibleServerEntry, capability: CapabilityClass): 
     Authorization: `Bearer ${entry.token}`,
     'X-Crucible-Api': '1',
     'X-Crucible-Act': capability,
+    // THIS INSTALL'S NAME, so the engine's chats and decisions are items of the
+    // queue session this placement opened, not strangers waiting behind it
+    // (Crucible 1.0.76 matches session membership on the client name).
+    'X-Crucible-Client': CRUCIBLE_CLIENT_NAME,
   });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// The lease — RULED 2026-09-14, and the thing that keeps a book's model on the
-// card for the length of the book
+// The session — this run's turn holding the machine (Crucible 1.0.76)
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * A CLAIM ON THE RESIDENT MODEL, held while this run is alive.
+ * A QUEUE SESSION, held while this run is alive.
  *
- * ── The hazard it closes, stated once ─────────────────────────────────────
+ * ── What it replaced, and why the hazard is still closed ──────────────────
  *
- * docs/SLOTS.md §5: one model is resident at a time and a load EVICTS. A chat
- * holds no lane — a second client can load its own model while our engine is
- * mid-book, and the next block comes back `model_not_resident` from a server
- * that is doing exactly what it was asked. Nothing about that is anybody's bug,
- * and nothing short of an explicit claim prevents it. BookForge proposed the
- * lease and Owen ruled it in: while one is open, `load-model`, `unload-model`
- * and `load-voice` refuse `409 leased` naming the client, the act and since
- * when. (The code was `model_leased` when the ruling was written; Crucible
- * renamed it on 2026-09-14 because the leased thing is a voice or an aligner as
- * often as a model — see `interpretFailure`'s branch, which read the old word
- * for a month and therefore read nothing.)
+ * docs/SLOTS.md §5: one model is resident at a time and a load EVICTS. Until
+ * Crucible 1.0.76 the claim that kept a book's model on the card was a LEASE
+ * (a refusal of other clients' loads, with a ttl and a heartbeat). Leases are
+ * gone; Owen: *"we dont need to worry about legacy anything"*. A session is
+ * stronger: while it is open NOTHING from any other client runs on that
+ * server — their queued work waits, their unqueued work is refused
+ * `session_open` — and the server ends it only when we close it, when it has
+ * been idle for `idleS`, when an operator ends it, or when the server stops.
  *
- * ── Liveness only, which is why the TTL is short and the heartbeat exists ──
+ * ── Liveness ──────────────────────────────────────────────────────────────
  *
- * The TTL is not how long the job will take; it is how long the server should
- * keep believing in a client it cannot see. This app crashes, a laptop sleeps, a
- * network goes — and a lease with no expiry would leave a card claimed by a
- * process that no longer exists, unbreakable except by restarting somebody
- * else's server. So the TTL is two minutes, the heartbeat is every forty
- * seconds, and a run this app loses track of frees the card within two minutes
- * without anybody doing anything.
+ * The engine's own chats are activity, but a run has gaps the server cannot see
+ * (triage settling into the clean, a chapter written to disk). So the session is
+ * TOUCHED every {@link SESSION_TOUCH_MS} for as long as this process holds it —
+ * a timestamp in the server's memory. A process that dies stops touching and the
+ * machine is handed on within {@link SESSION_IDLE_S}.
  *
- * ── Releasing is not optional and is not best-effort ──────────────────────
+ * ── Releasing is not optional ─────────────────────────────────────────────
  *
- * `release()` is called from the queue's SETTLE — the one place in
- * electron/job-queue.ts that every ending passes through, success, failure and
- * cancel alike. It is idempotent, it stops the heartbeat first, and it swallows
- * its own failure after logging: a lease that cannot be released expires, and
- * failing a finished job because the tidying failed would be reporting a loss
- * that did not happen.
+ * `release()` is called from the queue's SETTLE, which every ending passes
+ * through. It is idempotent and swallows its own failure after logging: a
+ * session that cannot be closed idles out, and failing a finished job because
+ * the tidying failed would be reporting a loss that did not happen.
  */
-export interface Lease {
-  /** The server's id for it, for the log line and for the two routes. */
+export interface HeldSession {
+  /** The server's id for it (`ses-…`), for the log line and the in-flight ledger. */
   readonly id: string;
-  /** Stop the heartbeat and give the card back. Idempotent; never throws. */
+  /** Close the session and give the machine back. Idempotent; never throws. */
   release(): Promise<void>;
 }
 
-/**
- * How long the server keeps believing in us without hearing from us. Liveness,
- * not duration — see {@link Lease}.
- */
-const LEASE_TTL_SECONDS = 120;
+/** The server's own default idle window, stated so nobody has to look it up. */
+const SESSION_IDLE_S = 300;
+
+/** A fifth of the idle window: four touches may be lost before the machine goes. */
+const SESSION_TOUCH_MS = 60_000;
+
+/** How long a session may wait in the server's line: the batch day. */
+const SESSION_MAX_WAIT_S = 86_400;
 
 /**
- * The heartbeat interval: a third of the TTL, so two may be lost in a row before
- * the lease expires. A half would mean one dropped packet and a lost card.
+ * OPEN THE SESSION — wait in the server's line, then keep it present.
+ *
+ * `entry` IS THE ENGINE-ADDRESSED ONE, resolved by `placeOnCrucible`: a session
+ * is a turn on a CARD and an orchestrator has none (PHASE17 §1).
+ *
+ * A REFUSAL PROPAGATES AS A THROW and is read by `interpretFailure` like every
+ * other one on this path: a session that never opened throws
+ * `CrucibleSessionClosed` with its reason, and an aborted wait (a Stop) throws
+ * the abort, having already left the line.
  */
-const LEASE_HEARTBEAT_MS = (LEASE_TTL_SECONDS / 3) * 1000;
-
-/**
- * Take the lease, and arm the heartbeat that keeps it.
- *
- * THE THREE ROUTES ARE THE SDK'S. They were hand-rolled here while the lease
- * was landing in Crucible and `@crucible/client` had no verb for it, under a
- * standing note to switch the moment the tarball carried them; 0.6.0 (packed
- * from crucible `762484f`) carries `lease()`, `heartbeat()` and `release()`,
- * and this is them. What went with the switch is the `lease_id` read and its
- * `lease_unreadable` guard — a receipt without an id is a
- * `CrucibleProtocolError` from the SDK now, which is the same refusal under the
- * name the contract owns.
- *
- * A REFUSAL HERE PROPAGATES AS A THROW and is read by `interpretFailure` like
- * every other one on this path — which is what makes `leased` a WAIT (the
- * card is somebody else's for now, and another server's may be free) rather than
- * a failure. The load above has already made the model resident, so
- * `model_not_resident` from this route is the narrow race where somebody evicted
- * it between the two calls; it is server-specific, so it waits, and the next
- * pass loads again.
- */
-/*
- * `entry` HERE IS THE ENGINE-ADDRESSED ONE, resolved by `placeOnCrucible` — a
- * lease is a claim on a CARD and an orchestrator has none (PHASE17 §1). Taking
- * one from the resolver rather than resolving again is deliberate: the lease and
- * the load must be on the same process, and two resolutions is two chances for
- * them not to be.
- */
-/*
- * ── `adopt` — WHICHEVER ACT MADE THE RESIDENCY OURS HANDS US THE LEASE ID ───
- *
- * Crucible 1.0.13 lets a `load-model` carry `lease: {act, ttl_seconds}` and
- * answers with the `lease_id` on its `done` frame, so a model this app loaded is
- * held from the instant it exists rather than from the moment this function is
- * reached. There is then nothing left to TAKE — passing that id here adopts the
- * lease the load opened: the same heartbeat on the same cadence, the same
- * `release()`, the same {@link Lease} object every caller already has. `null` is
- * the old road (`POST /v1/models/{id}/lease`), which is what the ALREADY-RESIDENT
- * case wants: nothing was loaded on our behalf, so nothing was leased on it.
- *
- * ADOPTING IS NOT A CHEAPER TAKE, and the difference matters on exactly one
- * path: taking a second lease on a card OUR OWN load is already holding is
- * refused `409 leased`, naming us, and would park the run waiting for a card it
- * holds.
- *
- * THE `unknown_lease` RE-LEASE BELOW IS UNCHANGED AND IS RIGHT FOR BOTH. A
- * server that forgot the id — a restart — forgot an adopted one exactly as it
- * forgets a taken one, and the remedy is the same: ask for a new lease on the
- * model, which succeeds only if it is still resident.
- */
-export async function takeLease(
+async function openSession(
   entry: CrucibleServerEntry,
   model: string,
   capability: CapabilityClass,
-  adopt: string | null = null,
-): Promise<Lease> {
+  slotName: string,
+  say: PlacementProgress,
+  signal?: AbortSignal,
+): Promise<HeldSession> {
   const client = clientFor(entry);
-  const acquire = async (): Promise<string> => (
-    await client.lease(model, { act: capability, ttlSeconds: LEASE_TTL_SECONDS })
-  ).leaseId;
-  let id = adopt ?? await acquire();
-  let stopped = false;
-  let beating = false;
-  const releaseId = async (leaseId: string): Promise<void> => {
-    try {
-      await client.release(leaseId);
-    } catch (err) {
-      if (err instanceof CrucibleRefused && err.code === 'unknown_lease') return;
-      console.error(
-        `[slots] the lease on ${model} at ${entry.name} could not be released `
-        + `(it expires in ${LEASE_TTL_SECONDS}s): ${err instanceof Error ? err.message : String(err)}`,
-      );
-    }
-  };
+  const session: CrucibleSession = await client.session({
+    act: capability,
+    model,
+    idleS: SESSION_IDLE_S,
+    maxWaitS: SESSION_MAX_WAIT_S,
+    onQueue: ({ position, of }) => {
+      say(`Waiting for ${slotName}: #${position}${of < position ? '' : ` of ${of}`} in its line`);
+    },
+    ...(signal === undefined ? {} : { signal }),
+  });
+  let ended = false;
+  let touching = false;
   const timer = setInterval(() => {
-    // A slow heartbeat must not start multiple concurrent replacement leases.
-    if (stopped || beating) return;
-    beating = true;
-    void client.heartbeat(id)
-      .catch(async (err: unknown) => {
-        /*
-         * THE SERVER FORGOT THE LEASE, which is what a restart does: leases are
-         * in memory there, so `unknown_lease` on a heartbeat means the card is
-         * unprotected NOW while the engine is mid-book. The right answer is not
-         * a log line but a new lease on the same model — the model is still
-         * resident (a restart that lost it would be answering the engine
-         * `model_not_resident` already, which the engine refuses by name) and
-         * this run still intends every request it has left.
-         *
-         * ── AND A RE-LEASE THAT IS REFUSED IS THE END OF THE BEAT ───────────
-         *
-         * It used to fall through to the log below and keep beating, which is
-         * what the "a lost heartbeat is not a lost run" paragraph says to do with
-         * a BLIP. This is not a blip, and the difference is the whole of the fix:
-         * once the server has answered `unknown_lease`, `id` names nothing on
-         * that machine. Every further beat can only 404, and the re-lease behind
-         * it can only be refused for the same reason it was refused the first
-         * time. Measured 2026-09-18: 264 × (404 heartbeat → 409 `not_resident`
-         * re-lease) at a flat 40.0 s cadence for ten hours, on a run whose lease
-         * this app had itself released hours earlier. No backoff, no give-up, and
-         * nothing in the log file to find it by.
-         *
-         * THE RESTART THIS BRANCH ASSUMES IS DISTINGUISHABLE, which is why the
-         * re-lease is the test rather than the diagnosis: a server that really
-         * did restart with the model still resident ACCEPTS the new lease, and
-         * that is the one outcome the timer survives. Anything else — the model
-         * is gone (`not_resident`), somebody else took it (`leased`), the machine
-         * is unreachable — means the claim is not coming back, and a timer that
-         * goes on asking for it is a loop with no exit.
-         *
-         * ONCE, NEVER A RETRY. The acquire is attempted once per `unknown_lease`
-         * and its refusal ends the lease object rather than arming the next
-         * identical attempt. A SECOND `unknown_lease` after a re-lease that
-         * SUCCEEDED may acquire again, and that is not the loop: each success is
-         * protection genuinely regained, and refusing to take it back would be
-         * this app declining a card that is free.
-         *
-         * `stopped` IS SET, NOT JUST THE TIMER CLEARED. This lease object holds
-         * nothing now — the server forgot the old id and refused a new one — so
-         * there is no card to give back and `release()` from the queue's settle
-         * is honestly a no-op. Setting it is also what stops a beat already in
-         * flight from arming another.
-         */
-        if (err instanceof CrucibleRefused && err.code === 'unknown_lease' && !stopped) {
-          try {
-            const replacement = await acquire();
-            // Cancellation may have released the old id while acquire awaited.
-            // The new receipt belongs to this run too, even after it has ended.
-            if (stopped) {
-              await releaseId(replacement);
-              return;
-            }
-            id = replacement;
-            console.error(
-              `[slots] ${entry.name} had forgotten the lease on ${model} (restarted?); took a new one`,
-            );
-            return;
-          } catch (again) {
-            if (stopped) return;
-            stopped = true;
-            clearInterval(timer);
-            /*
-             * ONE LINE, AND IT SAYS WHAT THE RUN HAS LOST. The comment above has
-             * promised "unprotected and said so" since the lease landed; what was
-             * actually printed was a heartbeat-failed line that reads like a blip
-             * and repeated every forty seconds. This says the claim is gone, that
-             * nothing will take it back, and what the server's own refusal was —
-             * so an eviction later in the book has a cause somebody can find.
-             */
-            console.error(
-              `[slots] ${entry.name} had forgotten the lease on ${model} and refused a new one, `
-              + 'so this run is now UNPROTECTED — another client may load over it at any point. '
-              + 'The heartbeat has stopped; a lease that cannot be re-taken is not coming back. '
-              + `The server said: ${again instanceof Error ? again.message : String(again)}`,
-            );
-            return;
-          }
+    if (ended || touching) return;
+    touching = true;
+    session.touch()
+      .catch((err: unknown) => {
+        if (err instanceof CrucibleSessionClosed) {
+          ended = true;
+          clearInterval(timer);
+          console.error(
+            `[slots] ${entry.name} ended this run's session ${session.id} (${err.reason}) — `
+            + 'another client may now load over it; the engine refuses by name if it does.',
+          );
+          return;
         }
-        /*
-         * A LOST HEARTBEAT IS NOT A LOST RUN AND MUST NOT STOP ONE. The engine is
-         * talking to the same server over its own socket and is the thing that
-         * would actually notice a problem; a heartbeat that fails while the run
-         * is fine is a blip, and two more will be sent before the TTL is up. What
-         * it is not is silent: the console names it so that an eviction later in
-         * the book has a visible cause rather than looking like the server
-         * misbehaving.
-         */
+        // Weather: four touches fit in one idle window, and the engine's own
+        // requests are presence too.
         console.error(
-          `[slots] the lease heartbeat for ${model} on ${entry.name} failed: `
+          `[slots] a touch of session ${session.id} on ${entry.name} failed: `
           + `${err instanceof Error ? err.message : String(err)}`,
         );
       })
-      .finally(() => { beating = false; });
-  }, LEASE_HEARTBEAT_MS);
+      .finally(() => { touching = false; });
+  }, SESSION_TOUCH_MS);
   timer.unref?.();
+  void session.closed.then((end) => {
+    if (ended) return;
+    ended = true;
+    clearInterval(timer);
+    if (end.reason !== 'client') {
+      console.error(`[slots] ${entry.name} ended this run's session ${session.id} (${end.reason}): ${end.message}`);
+    }
+  });
   return {
-    get id(): string { return id; },
+    id: session.id,
     async release(): Promise<void> {
-      if (stopped) return;
-      stopped = true;
+      if (ended) return;
+      ended = true;
       clearInterval(timer);
-      await releaseId(id);
+      try {
+        await session.close();
+      } catch (err) {
+        console.error(
+          `[slots] the session on ${model} at ${entry.name} could not be closed (it idles out in `
+          + `${SESSION_IDLE_S}s): ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
     },
   };
 }
@@ -2249,38 +1696,36 @@ function interpretFailure(err: unknown, slotName: string, capability: Capability
        */
       return transientWait(`someone is narrating on "${slotName}"`);
     }
-    if (err instanceof CrucibleLeased) {
+    if (err instanceof CrucibleSessionHeld) {
       /*
-       * 409 `leased`: another client has claimed the resident thing for the
-       * length of its own run, which is the protection this app takes for itself
-       * three functions up.
-       *
-       * ── IT USED TO KEY ON `model_leased`, WHICH NOTHING EMITS ──────────────
-       *
-       * Crucible renamed the code on 2026-09-14 and said why in the function that
-       * raises it (`leased_error`, crucible/leases.py): *"the leased thing is a
-       * voice or an aligner as often as a model, and a client branching on
-       * `model_leased` while narrator holds the card would be branching on a word
-       * that is not true of what it was refused for."* `model_leased` survives in
-       * Crucible only inside that sentence. So this branch had been dead since the
-       * day it was written, and a real refusal fell through to the generic arm at
-       * the bottom — which waited, but by luck: `leased` happens to be in the
-       * SDK's server-specific set, and nothing here was reading the body at all.
-       *
-       * THE SDK OWNS THE PARSE AND THE SENTENCE, which is the other half of the
-       * repair. The hand-rolled read of `err.details` was three `typeof` checks
-       * over a `Record<string, unknown>` that quietly rendered "another client"
-       * for a malformed body; `CrucibleLeased` refuses such a body as a protocol
-       * error instead, and `leasedLine` is the one line a bench puts in front of
-       * a person — exactly as `CrucibleBusy.busyLine` is, one branch up. Who,
-       * for what, and until when, in the server's own words.
-       *
-       * THE KIND IS SAID BESIDE IT because it is the fact the rename was about
-       * and the one `leasedLine` does not carry: a refusal arrives with no
-       * `resident` beside it, and "the resident llm is held" and "the resident
-       * tts is held" are different news to somebody reading the queue.
+       * Another client's queue session holds the machine (Crucible 1.0.76) and a
+       * request of ours went without `queue`. A WAIT: the next machine in the
+       * ranking is a different question, and this one frees when it closes.
        */
-      return transientWait(`the resident ${err.kind} on "${slotName}" is ${err.leasedLine}`);
+      return transientWait(`"${slotName}" is ${err.heldLine}`);
+    }
+    if (err instanceof CrucibleSessionClosed) {
+      /*
+       * THE SESSION NEVER OPENED, by its reason. `expired` / `server_restart`:
+       * nobody decided against it — wait and ask again. `load_failed`: the model
+       * would not load there; server-specific codes travel to the next machine,
+       * anything else is about the model. Anything else (`operator`, or a reason
+       * a newer server invents) is a person's decision: refused by name, never
+       * re-sent by itself (crucible docs/QUEUE.md).
+       */
+      if (err.reason === 'expired' || err.reason === 'server_restart') {
+        return transientWait(`"${slotName}" let this run's turn go from its line (${err.reason})`);
+      }
+      if (err.reason === 'load_failed') {
+        const code = (err.details as { error?: { code?: unknown } } | null)?.error?.code;
+        return typeof code === 'string' && isServerSpecificRefusal(code)
+          ? transientWait(`"${slotName}" could not load the model: ${err.serverMessage}`)
+          : { verdict: 'refuse', reason: `"${slotName}" could not load the model: ${err.serverMessage}` };
+      }
+      return {
+        verdict: 'refuse',
+        reason: `this run's turn was removed from "${slotName}"'s line (${err.reason}): ${err.serverMessage}`,
+      };
     }
     /*
      * ── THE THREE PHASE15 REFUSALS, BY NAME (crucible §3.4) ─────────────────
@@ -2323,18 +1768,18 @@ function interpretFailure(err: unknown, slotName: string, capability: Capability
       // TRANSIENT, exactly as built: a network and an account both come back.
       return transientWait(`"${slotName}" could not reach its upstream: ${err.serverMessage}`);
     }
-    if (err.code === 'lease_not_needed') {
+    if (err.code === 'upstream_never_resident') {
       /*
        * §3.4: *"an upstream model is never resident; send the chat."* Nothing
        * should ever reach this — `placeOnCrucible` reads the route first and the
-       * upstream path takes no lease at all. So it is OUR BUG, said out loud on
+       * upstream path opens no session at all. So it is OUR BUG, said out loud on
        * the row rather than dressed as a server problem, and refused rather than
        * retried because retrying a dispatcher defect would hide it behind a
        * backoff.
        */
       return {
         verdict: 'refuse',
-        reason: `Foundry tried to lease an upstream model on "${slotName}", which is never resident `
+        reason: `Foundry asked for an upstream model to be resident on "${slotName}", which it never is `
           + `— that is a defect in this app's dispatcher, not a fault on that server. ${err.serverMessage}`,
       };
     }

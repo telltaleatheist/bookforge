@@ -91,15 +91,14 @@ function startFake(behaviour, onSubmit = () => {}) {
         } } });
         return true;
       }
-      if (behaviour === 'leased') {
-        // `crucible/crucible/leases.py`, `Lease.to_dict()` — the six fields.
-        // An `align` submit is refused one for the same reason a `tts` is: both
-        // are in `EVICTS_THE_RESIDENT_MODEL`, so admitting the job would take
-        // the thing this lease is holding off the card.
-        send(res, 409, { error: { code: 'leased', message:
-          "'qwen3.8-27b-4bit' is leased by 'foundry' for 'translate'", details: {
-          lease_id: 'lease-held', kind: 'llm', client: 'foundry', act: 'translate',
-          since: '2026-09-18T01:00:00+00:00', expires_at: '2026-09-18T01:02:00+00:00',
+      if (behaviour === 'held') {
+        // Crucible 1.0.76: another client's queue session holds the machine,
+        // so a job sent without `queue` is refused `409 server_busy` with
+        // `details.door: "session"` — the SDK's `CrucibleSessionHeld`.
+        send(res, 409, { error: { code: 'server_busy', message:
+          "session ses-held of 'foundry@owens-pc' for 'translate' holds this server", details: {
+          door: 'session', holder: 'foundry@owens-pc', session_id: 'ses-held', act: 'translate',
+          model: 'qwen3.8-27b-4bit', status: 'open', since: '2026-09-18T01:00:00+00:00',
         } } });
         return true;
       }
@@ -288,10 +287,10 @@ async function memoryArtifacts() {
 async function refusals() {
   /*
    * `expectBusy` IS "does this refusal park the row", not "is it a
-   * CrucibleBusy". Two codes answer yes and they are two different waits:
-   * `server_busy` is the LANE (minutes), `leased` is a client saying it is
-   * mid-run on what is on the card (up to an hour). `CrucibleLeased` is a
-   * subclass of `CrucibleRefused` and not of `CrucibleBusy`, so it used to
+   * CrucibleBusy". Two refusals answer yes and they are two different waits:
+   * a busy LANE (minutes), and another client's queue SESSION holding the
+   * machine (Crucible 1.0.76; as long as their run). `CrucibleSessionHeld` is a
+   * subclass of `CrucibleRefused` and not of `CrucibleBusy`, so it would
    * fall through to the generic arm below with no `busyLine` — a red row and a
    * manual Retry, where Foundry on the identical refusal parks and comes back.
    * `busyLine` is the whole of the park: `settleStep` reads it and puts the
@@ -299,7 +298,7 @@ async function refusals() {
    */
   for (const [behaviour, expectCode, expectBusy] of [
     ['busy', 'server_busy', 'busy: foundry, tts deathstalker, 62% done — 640 of 1030 chunk(s) rendered'],
-    ['leased', 'leased', 'leased: foundry, translate, until 2026-09-18T01:02:00+00:00'],
+    ['held', 'server_busy', "held: foundry@owens-pc's session for translate, since 2026-09-18T01:00:00+00:00"],
     ['disabled', 'job_type_disabled', null],
     ['auth', 'bad_token', null],
   ]) {
@@ -627,7 +626,7 @@ async function droppedStreamSweepsItsOwnServer() {
       // lane is clear and submits no unload.
       send(res, 200, {
         server: { name: 'fake-crucible', version: '0.5.0', api_version: 1, backend: 'cuda-linux', uptime_s: 99 },
-        resident: null, stopping: null, warming: null, claim: null, streaming: null, lease: null,
+        resident: null, stopping: null, warming: null, claim: null, streaming: null, session: null,
         chat: { in_flight: 0, rows: [] },
         slots: { accelerated: { busy: 0, of: 1, queue_depth: 0, accepts_work: true } },
         running: [], queued: [],

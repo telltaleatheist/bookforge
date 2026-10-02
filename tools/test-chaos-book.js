@@ -80,7 +80,7 @@ const path = require('path');
 
 const H = require('./chaos-engine-harness.js');
 const {
-  startFakeCrucible, fakeNamer, faultyJobRoutes, leaseRoutes, cancelRefusedFault,
+  startFakeCrucible, fakeNamer, faultyJobRoutes, sessionRoutes, cancelRefusedFault,
 } = require('./fake-crucible.js');
 const { skipLine } = require('./keeper-skip.js');
 
@@ -386,14 +386,14 @@ async function startFaulty(behaviour = {}, faults = {}) {
   // server that stops misbehaving — which is what every "and then it worked"
   // half of a fault scenario needs.
   const routes = faultyJobRoutes(behaviour);
-  const lease = leaseRoutes(behaviour.lease || {});
+  const sessions = sessionRoutes(behaviour.session || {});
   const fake = await startFakeCrucible(async (req, res, ctx) => {
-    if (await lease.handler(req, res, ctx)) return true;
+    if (await sessions.handler(req, res, ctx)) return true;
     return routes.handle(req, res, ctx);
   }, { faults });
   fake.routes = routes;
   fake.behaviour = behaviour;
-  fake.lease = lease.lease;
+  fake.session = sessions.session;
   fake.server = registerFake(fake.url);
   return fake;
 }
@@ -909,7 +909,7 @@ scenario('S9', 'Retry re-runs a Foundry row from its stored request, and that re
   hostQueue.setFoundrySeam({
     runJob: async (request, opts) => {
       seen.push(JSON.parse(JSON.stringify(request)));
-      if (opts && opts.onPlaced) opts.onPlaced({ server: 'mac', model: 'qwen3.5-9b', leaseId: `lease-${seen.length}`, concurrency: 4 });
+      if (opts && opts.onPlaced) opts.onPlaced({ server: 'mac', model: 'qwen3.5-9b', sessionId: `ses-${seen.length}`, concurrency: 4 });
       if (seen.length === 1) return { outcome: 'failed', error: 'the model fell over', stderrTail: '' };
       return { outcome: 'done', row: { id: 'r1', state: 'done', kind: 'epub', inputPath: 'a', outputPath: 'b', progress: null, createdAt: 0 } };
     },
@@ -1206,7 +1206,7 @@ function whatHolds(activity) {
   if (activity.running.length > 0) return `a ${activity.running[0].type} job is running`;
   if (activity.queued.length > 0) return `a ${activity.queued[0].type} job is queued`;
   if (activity.claim !== null) return `a claim held by ${activity.claim.heldBy}`;
-  if (activity.lease !== null) return 'an open lease';
+  if (activity.session !== null) return 'an open session';
   if (activity.streaming !== null) return 'an open streaming session';
   if (activity.chat.inFlight > 0) return `${activity.chat.inFlight} chat completion(s) in flight`;
   if (activity.stopping !== null) return 'a stop already under way';
@@ -1246,17 +1246,17 @@ async function leaveAsFound(graceMs = 20000) {
     const deadline = Date.now() + graceMs;
     let now = await client.activity();
     let held = whatHolds(now);
-    while ((held !== null || now.lease !== null) && Date.now() < deadline) {
+    while ((held !== null || now.session !== null) && Date.now() < deadline) {
       await H.wait(500);
       // eslint-disable-next-line no-await-in-loop
       now = await client.activity();
       held = whatHolds(now);
     }
     const same = (now.resident === null ? null : now.resident.id) === wanted;
-    const clean = same && now.lease === null && held === null;
+    const clean = same && now.session === null && held === null;
     console.log(`\nleft as found: ${clean ? 'yes' : 'NO'} — resident `
-      + `${now.resident === null ? 'nothing' : now.resident.id}, lease `
-      + `${now.lease === null ? 'none' : 'OPEN'}, holding ${held || 'nothing'}`);
+      + `${now.resident === null ? 'nothing' : now.resident.id}, session `
+      + `${now.session === null ? 'none' : 'OPEN'}, holding ${held || 'nothing'}`);
     if (!clean) process.exitCode = 1;
   } catch (err) {
     console.log(`\nleft as found: UNKNOWN — ${err.message}`);

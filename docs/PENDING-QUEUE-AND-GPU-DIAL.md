@@ -154,18 +154,59 @@ policy is `shared/crucible/server-queue.ts`:
   Simplify, Translate, mono and LL translation and analysis all use) asks PLAINLY first
   with its 3-minute runaway clock — an unqueued chat still goes straight to a resident
   model with a free slot even while something waits. Only a BUSY refusal (`CrucibleBusy`,
-  `CrucibleLeased`, `CrucibleCardHeld`, `model_not_resident`, `engine_in_use`, `503
+  `CrucibleSessionHeld`, `CrucibleCardHeld`, `model_not_resident`, `engine_in_use`, `503
   chat_queue_full`) asks the same request again with `queue: {max_wait_s: 3600}`
   (`CRUCIBLE_CHAT_QUEUE`): held open silently, so that attempt's deadline is the wait
   plus the 3 minutes. `removed_from_queue` expired/server_restart is asked again;
   operator (or unknown) throws with `removedLine`, carried through every text result
   (`waitFieldsOf`) to `stepFailure`, so the run is removed from BookForge. Decide is the
   Foundry ENGINE's (`src/backend/decide-door.ts`), queued there the same way.
-- **Not queued, unchanged:** leases (and so `reserveBeforeLaunch`), TTS stream sessions
-  (Listen), and Settings' fire-and-forget Load/Unload model
+- **Not queued, unchanged:** TTS stream sessions (Listen), and Settings' fire-and-forget
+  Load/Unload model
   buttons (nothing follows those jobs, so a waiting one would expire unseen). These
   keep the park path below. Note: while anything waits in a server's line, Crucible
   refuses a PLAIN submit `server_busy` even with the lane free, so these park then too.
+
+### Queue sessions replace leases (Crucible 1.0.76, 2026-10-01)
+
+Crucible 1.0.76 removed leases (`lease()`/`heartbeat()`/`release()`, `409 leased`,
+lease options on loads) — Owen: *"we dont need to worry about legacy anything"*. The
+replacement is the QUEUE SESSION (crucible `docs/QUEUE.md`, `sdk/ts/MIGRATION.md`):
+one client's turn holding the machine. `session({act, model, idleS, maxWaitS})` waits
+in the server's line, opens with `model` resident, and while it is open **nothing from
+any other client runs there** (their queued work waits; their unqueued work is refused
+`session_open` / `server_busy` door `session`). One session is open per server.
+
+- **`electron/crucible/lease.ts` keeps its seam and opens a session instead.** The
+  text acts, the cleanup run, the page read and the denoise pass open one around their
+  run (idle 300 s, wait up to the batch day); a held session is touched every 60 s,
+  and one the server ends (idle, operator, restart) is dropped so the next act opens a
+  new one. A queue ROW's acts share ONE session — across a change of model too, since
+  a session can change model mid-way; only a change of MACHINE closes it
+  (`nextActWouldUseHeldCard` now asks "does the next act open one, on this machine").
+- **The reserve waits in the line.** `reserveBeforeLaunch` opens the row's session
+  before the slot is charged; the step reads *"waiting, #N of M in crucible "X"'s
+  line"* while it does. Stop / Remove / Pause take it out of the line; a line that
+  lets it go `expired` parks the row; an `operator` removal removes the run (the
+  `removedLine` arm in `settleReserve`).
+- **Pause closes the session; Resume opens a new one at the back of the line** (Owen,
+  2026-10-01 — a forgotten pause must not lock every other app off the machine).
+- **Membership is by client NAME**, so `CRUCIBLE_CLIENT_NAME` is per install:
+  `bookforge@<host>` (`electron/crucible/client-name.ts`; Foundry `foundry@<host>`).
+  Every engine BookForge or Foundry spawns sends the same name in its header map, so
+  its chats are items of the session the door opened. A second session from the SAME
+  install waits behind the first (crucible-pc-1), so two rows of one app on one
+  machine take turns.
+- **The card read** (`card-shadow.ts`) treats another client's open session as a
+  busy card and a shadow; our own (and the hosted Foundry's, by the ledger) is not.
+  The startup sweep closes a hosted Foundry session by id (`foundry-session` ledger
+  rows, `DELETE /v1/queue/{id}`).
+- **Not yet moved to sessions:** the narration chain (render → align → denoise → rvc)
+  is still per-job in the server's line with the BookForge-side `gpuHoldOf`; making a
+  book ONE session (with `touch()` across the NAS publish) is the next step. Polling
+  `/v1/activity` has not moved to `events()` either. The extension's TTS stream now
+  runs inside a session the SERVER opens for it (idle 900 s) and waits in the line
+  behind any open session — the popup must say so rather than spin.
 
 **Admission for a step that queues on the server** (`StepModule.queuesOnServer`:
 `tts-conversion`, `align`, `final-denoise`, `rvc-enhancement`, `generate-sentences`):
@@ -178,9 +219,9 @@ otherwise joins the SHORTEST line (`slots.accelerated.queue_depth`), ties in ran
 order. A busy that arrived as a REFUSAL (`busyHolds` — a lease, a chat, a
 `queue_full`, an older server that does not queue) is still honoured by everyone.
 `409 queue_full` (50 per client / 200 per server) parks the row like a held card.
-The per-book GPU hold (`gpuHoldOf`) and the row lease are unchanged; Crucible lets the
-LEASE HOLDER's queued jobs go first, so a book that holds a lease is not stuck behind
-the line between its own acts.
+The per-book GPU hold (`gpuHoldOf`) is unchanged; a row's open SESSION makes every
+request from this install an item of it, so a book is not stuck behind the line
+between its own acts.
 
 **`removed` (terminal, never a failure)** — `crucibleRemovalDisposition`:
 
@@ -188,7 +229,7 @@ the line between its own acts.
   (`transientLine`) and is submitted again on the admission tick.
 - `operator` (and any reason a newer server invents) → **the run is removed from
   BookForge too** (Owen, 2026-09-30: "if the job is removed, it should be removed from
-  bookforge as well"), exactly as the queue's Remove does it — lease closed, nothing
+  bookforge as well"), exactly as the queue's Remove does it — session closed, nothing
   resubmitted, nothing on disk deleted — and the server's sentence is said as a
   `jobs:notice` (`onRunRemovedByServer`), because a row vanishing on its own would
   otherwise read as a bug (`removedLine`, `settleStep`). It does not idle the queue.

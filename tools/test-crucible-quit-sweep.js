@@ -99,7 +99,7 @@ function activityBody(state) {
      * them from the same script the rest of this body is built from, so a keeper
      * cannot accidentally write a document in which a job is running and nothing
      * holds the card. Crucible's four facts are the holders — a job, a claim, a
-     * lease, a stream — and deliberately NOT a chat in flight or a stop under
+     * session, a stream — and deliberately NOT a chat in flight or a stop under
      * way, which is exactly the gap `cardHeldBy` is wider than.
      */
     resident: resident === null ? null : {
@@ -112,7 +112,7 @@ function activityBody(state) {
     warming: null,
     claim: state.claim ?? null,
     streaming: null,
-    lease: state.lease ?? null,
+    session: state.session ?? null,
     chat: {
       in_flight: state.chatInFlight ?? 0,
       max_in_flight: state.chatMaxInFlight ?? null,
@@ -133,7 +133,7 @@ function heldByFor(state) {
     return { fact: 'job', who: onTheLane.client ?? 'an unnamed client', details: { job_id: onTheLane.job_id } };
   }
   if (state.claim) return { fact: 'claim', who: state.claim.held_by ?? 'a claim holder', details: {} };
-  if (state.lease) return { fact: 'lease', who: state.lease.client ?? 'a lease holder', details: {} };
+  if (state.session) return { fact: 'session', who: state.session.client ?? 'a session holder', details: {} };
   return null;
 }
 
@@ -158,7 +158,7 @@ async function fakeWithActivity(script) {
       script.submitted.push(body);
       if (script.refuseSubmit) {
         ctx.send(res, 409, {
-          error: { code: 'leased', message: 'mistborn is leased by foundry, translate, until 23:30', details: {} },
+          error: { code: 'session_open', message: 'the server is held by foundry@pc\'s session for translate', details: {} },
         });
         return true;
       }
@@ -217,7 +217,8 @@ it('cardHeldBy names every real holder, and only ours is not one', () => {
   assert.match(sweep.cardHeldBy(activityShape({ ...base, running: [job({ job_id: 'job-theirs' })] }), ours), /job-theirs/);
   assert.match(sweep.cardHeldBy(activityShape({ ...base, queued: [job({ job_id: 'job-next' })] }), ours), /queued/);
   assert.match(sweep.cardHeldBy(activityShape({ ...base, claim: { heldBy: 'the extension' } }), ours), /claim/);
-  assert.match(sweep.cardHeldBy(activityShape({ ...base, lease: { leaseId: 'l1' } }), ours), /lease/);
+  assert.match(sweep.cardHeldBy(activityShape({ ...base, session: { sessionId: 'ses-1', client: 'foundry@pc' } }), ours),
+    /queue session held by/);
   assert.match(sweep.cardHeldBy(activityShape({ ...base, chat: { inFlight: 3, rows: [] } }), ours), /3 chat/);
   assert.match(sweep.cardHeldBy(activityShape({ ...base, stopping: { id: 'qwen3', pids: [] } }), ours), /stop of qwen3/);
 });
@@ -254,7 +255,7 @@ it('the server calling a card stranded does not make it ours to unload', () => {
 /** The SDK's camelCase `Activity`, as `cardHeldBy` receives it. */
 function activityShape(over) {
   return {
-    running: [], queued: [], claim: null, lease: null, streaming: null,
+    running: [], queued: [], claim: null, session: null, streaming: null,
     chat: { inFlight: 0, rows: [] }, stopping: null, resident: null,
     ...over,
     running: (over.running ?? []).map(camelJob),
@@ -357,7 +358,7 @@ it('a resident another client is running against is LEFT ALONE, with one named l
  *
  * A chat in flight is the case that only exists because the two tests differ:
  * the server says nothing holds the card (a chat holds nothing — that is the
- * whole reason leases exist), and this app still will not touch it, because
+ * whole reason a run of them is a session), and this app still will not touch it, because
  * somebody is mid-block. Nothing fires an event when a card becomes unheld, so
  * if this sweep does not say "unheld since T" in the one line it leaves behind,
  * a card that stays stranded is undiagnosable after the fact.
@@ -387,7 +388,7 @@ it('a stranded card the sweep will not touch is logged WITH the unheld-since sta
     assert.match(said[0], /2 chat/, 'it names why this app will not touch it');
     assert.match(said[0], /nothing has held it since 2026-09-20T17:45:00Z/,
       'and the server\'s own stamp, by name — the fact no event will ever announce');
-    assert.match(said[0], /lease that lapses there/, 'and who the real reconciler is');
+    assert.match(said[0], /a session idling out there/, 'and who the real reconciler is');
   } finally {
     await fake.close();
   }

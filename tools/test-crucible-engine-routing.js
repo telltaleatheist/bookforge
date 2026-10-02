@@ -6,7 +6,7 @@ const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
 const {
-  REPO, installElectronStub, makeChecker, startFakeCrucible, leaseRoutes, infoRoleFields,
+  REPO, installElectronStub, makeChecker, startFakeCrucible, sessionRoutes, infoRoleFields,
 } = require('./fake-crucible');
 const { userData } = installElectronStub('bf-engine-routing-');
 const load = (name) => require(path.join(REPO, 'dist/electron/crucible', `${name}.js`));
@@ -38,13 +38,13 @@ function deferred() {
 }
 
 (async () => {
-  await check('an orchestrator sends uploads, jobs, events, artifacts and leases to its engine', async () => {
-    const leases = leaseRoutes();
+  await check('an orchestrator sends uploads, jobs, events, artifacts and sessions to its engine', async () => {
+    const sessions = sessionRoutes();
     const engineHits = [];
     const engine = await startFakeCrucible(async (req, res, ctx) => {
       const route = ctx.url.pathname;
       engineHits.push(route);
-      if (await leases.handler(req, res, ctx)) return true;
+      if (await sessions.handler(req, res, ctx)) return true;
       if (route === '/v1/info') { ctx.send(res, 200, info('native-engine')); return true; }
       if (route === '/v1/voices') { ctx.send(res, 200, []); return true; }
       if (route === '/v1/jobs' && req.method === 'POST') {
@@ -81,8 +81,8 @@ function deferred() {
       await load('lease').withCrucibleLease({
         server: 'workstation', kind: 'model', id: 'qwen3.5-9b', act: 'clean', onLog() {},
       }, async () => {});
-      assert.strictEqual(leases.lease.taken.length, 1);
-      assert.strictEqual(leases.lease.released.length, 1);
+      assert.strictEqual(sessions.session.opened.length, 1);
+      assert.strictEqual(sessions.session.closed.length, 1);
       const inventory = await load('voice-inventory').readVoiceInventory([{ name: 'workstation', enabled: true }]);
       assert.strictEqual(inventory.complete, true);
       assert.deepStrictEqual(frontHits, ['/v1/info']);

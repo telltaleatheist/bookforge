@@ -532,228 +532,218 @@ function noServerHost() {
 }
 
 /**
- * ── THE THREE LEASE ROUTES ──────────────────────────────────────────────────
+ * ── THE QUEUE-SESSION ROUTES (Crucible 1.0.76, which replaced leases) ───────
  *
- * `POST /v1/models/{id}/lease`, `POST /v1/leases/{id}/heartbeat` and
- * `DELETE /v1/leases/{id}` — crucible `docs/PHASE7-LANES.md` §5.2, built there on
- * 2026-09-14. Added here as a HANDLER a keeper's own `route` delegates to,
- * rather than wired into {@link startFakeCrucible}, because this file is shared
- * by six suites and none of them should grow a route they never asked for.
+ * `POST /v1/queue/sessions`, `GET /v1/queue/sessions/{id}/events`,
+ * `POST /v1/queue/sessions/{id}/touch`, `DELETE /v1/queue/sessions/{id}` and
+ * `DELETE /v1/queue/{id}` (a session's id there ends it) — crucible
+ * docs/QUEUE.md and docs/internals/queue-sessions.md. A HANDLER a keeper's own
+ * `route` delegates to, because this file is shared by many suites and none of
+ * them should grow a route it never asked for.
  *
- * It speaks the real shapes: `201` with the six-field receipt, `200 {expires_at}`
- * on a heartbeat, a bare `204` on a release (no body at all — which is what
- * proves the client does not try to parse one), and the refusal envelope
- * `{"error": {"code", "message", "details"}}` for every no.
+ * It speaks the real shapes: the full session state document on open, touch and
+ * close; the session's own SSE stream (`queued`/`moved`/`opened`/`removed`); and
+ * the refusal envelope `{"error": {"code", "message", "details"}}` for every no.
  *
- * `behaviour` is how a keeper makes the server say the awkward things:
+ * ── ONE OPEN SESSION PER SERVER, ENFORCED ──────────────────────────────────
  *
- *   refuseLease(attempt, n)     → null, or {status, code, message, details}
- *   refuseHeartbeat(leaseId, n) → the same, e.g. 404 unknown_lease (a restart)
- *   refuseRelease(leaseId, n)   → the same, e.g. 404 unknown_lease (expired)
- *   releaseDelayMs             → how long a DELETE takes to ANSWER (default 0)
+ * The real server opens one at a time; a second asked for while one is open
+ * WAITS IN THE LINE behind it, the same client's included (crucible-pc-1, Oct 1
+ * 2026). So a second session here answers `queued` and opens only when the
+ * first closes — the order a keeper checks is the order the server keeps.
  *
- * `n` is 1-based: "the FIRST heartbeat fails, later ones do not" is the shape a
- * re-lease check needs and a flag could not express.
+ * `behaviour` makes the server say the awkward things:
  *
- * ── ONE LEASE PER SERVER, ENFORCED (added 2026-09-14) ──────────────────────
+ *   holdLine(attempt, n) → null, or {position, of, then: {reason, message}} — the
+ *                          session waits at that place and the line lets it go
+ *                          with that reason (`expired`, `operator`, …)
+ *   refuseOpen(attempt, n) → null, or {status, code, message, details}
+ *   closeDelayMs          → how long a DELETE takes to ANSWER (default 0)
  *
- * The real server holds exactly one (`crucible/leases.py`) and answers `409
- * leased` with the holder's name, act and clock to anything that asks for a
- * second — INCLUDING the client that already holds it, because it cannot tell
- * two of one app's runs apart. This fake used to grant every take, which made
- * a whole class of defect invisible: BookForge's row scope kept a lease across
- * a change of MODEL, and the next act's own load would have been refused by
- * the lease this app was still holding. The suite proved that "worked".
- *
- * So a take while one is open is refused here exactly as the server refuses
- * it, and the refusal is recorded on `lease.refusals` like every other. A
- * keeper that WANTS the old permissiveness passes `allowConcurrentLeases: true`
- * and has to say so.
- *
- * Everything that crossed is recorded on the returned `lease` object, including
- * the `User-Agent`, because the server records it as the holder's name and a
- * client that did not send one is a bench that cannot say whose run is on the
- * card.
+ * Everything that crossed is recorded on the returned `session` object.
  */
-function leaseRoutes(behaviour = {}) {
-  const lease = {
-    /** {model, act, ttlSeconds, userAgent, leaseId} per granted lease. */
-    taken: [],
-    /** {leaseId} per heartbeat that reached the server, refused or not. */
-    heartbeats: [],
-    /** {leaseId} per release that reached the server, refused or not. */
-    released: [],
-    /** The refusals this fake answered, for a check that wants to count them. */
+function sessionRoutes(behaviour = {}) {
+  const session = {
+    /** {sessionId, act, model, idleS, maxWaitS, client} per session that OPENED. */
+    opened: [],
+    /** {sessionId} per close that reached the server. */
+    closed: [],
+    /** {sessionId} per touch. */
+    touched: [],
+    /** The refusals this fake answered. */
     refusals: [],
     /**
-     * EVERY LEASE CALL THAT CROSSED, IN ORDER — `{kind, model?, leaseId, ok}`.
-     *
-     * `taken` and `released` answer "how many"; only this answers "in which
-     * order", which is the question a run of acts is about: a release that
-     * happens between two acts is a reload, and a take before the release
-     * ahead of it is a 409 this app hands itself. Recorded for refused calls
-     * too (`ok: false`), because a refusal is a thing that crossed.
+     * EVERY SESSION CALL THAT CROSSED, IN ORDER — `{kind, sessionId, model?}`,
+     * kind `open` | `queued` | `close` | `removed`. Only this answers "in which
+     * order", the question a run of acts is about.
      */
     wire: [],
   };
   let nextId = 1;
-  /** The one lease this server is holding, or null. See the header. */
+  /** The one open session, or null. */
   let open = null;
-  let leaseAttempts = 0;
-  let heartbeatAttempts = 0;
-  let releaseAttempts = 0;
+  /** Sessions waiting behind it: {id, doc, wake}. */
+  const line = [];
+  const docs = new Map();
+  let openAttempts = 0;
 
-  // Every branch answers `true` — `startFakeCrucible`'s dispatcher reads a falsy
-  // return as "not handled" and sends its own 404 on top, which is a thrown
-  // ERR_HTTP_HEADERS_SENT rather than a test failure.
+  const stamp = '2026-10-01T00:00:00+00:00';
+  const doc = (id, status, attempt, more = {}) => ({
+    session_id: id, status, act: attempt.act, client: attempt.client, model: attempt.model,
+    position: null, idle_s: attempt.idleS, max_wait_s: attempt.maxWaitS, created: stamp,
+    opened_at: status === 'queued' ? null : stamp, idle_deadline: null, max_hold_deadline: null,
+    items_run: 0, in_flight: [], stream_session: null, load_job: null, closed_at: null,
+    reason: null, message: null, error: null, ...more,
+  });
   const refuse = (res, refusal) => {
-    lease.refusals.push(refusal);
+    session.refusals.push(refusal);
     send(res, refusal.status, {
-      error: {
-        code: refusal.code,
-        message: refusal.message,
-        details: refusal.details === undefined ? null : refusal.details,
-      },
+      error: { code: refusal.code, message: refusal.message, details: refusal.details === undefined ? null : refusal.details },
     });
     return true;
   };
+  const openNow = (entry) => {
+    open = entry;
+    entry.status = 'open';
+    session.opened.push({ sessionId: entry.id, ...entry.attempt });
+    session.wire.push({ kind: 'open', sessionId: entry.id, model: entry.attempt.model });
+    for (const wake of entry.wakers.splice(0)) wake();
+  };
+  const closeOne = (entry, reason) => {
+    entry.status = 'closed';
+    entry.reason = reason;
+    session.wire.push({ kind: reason === 'client' ? 'close' : 'removed', sessionId: entry.id });
+    for (const wake of entry.wakers.splice(0)) wake();
+    if (open === entry) {
+      open = null;
+      const next = line.shift();
+      if (next !== undefined) openNow(next);
+    } else {
+      const at = line.indexOf(entry);
+      if (at >= 0) line.splice(at, 1);
+    }
+  };
 
   return {
-    lease,
+    session,
+    /** The open session's id, or null — for a keeper asserting what is held. */
+    openId: () => (open === null ? null : open.id),
     async handler(req, res, ctx) {
-      const take = /^\/v1\/models\/([^/]+)\/lease$/.exec(ctx.url.pathname);
-      if (take && req.method === 'POST') {
-        leaseAttempts += 1;
-        const model = decodeURIComponent(take[1]);
+      const p = ctx.url.pathname;
+      if (p === '/v1/queue/sessions' && req.method === 'POST') {
+        openAttempts += 1;
         const body = JSON.parse((await ctx.readBody(req)).toString('utf-8') || '{}');
         const attempt = {
-          model,
-          act: body.act,
-          ttlSeconds: body.ttl_seconds,
-          userAgent: req.headers['user-agent'] || null,
+          act: body.act, model: body.model === undefined ? null : body.model,
+          idleS: body.idle_s === undefined ? 300 : body.idle_s,
+          maxWaitS: body.max_wait_s === undefined ? 3600 : body.max_wait_s,
+          client: req.headers['x-crucible-client'] || null,
         };
-        const refusal = behaviour.refuseLease ? behaviour.refuseLease(attempt, leaseAttempts) : null;
+        const refusal = behaviour.refuseOpen ? behaviour.refuseOpen(attempt, openAttempts) : null;
         if (refusal) return refuse(res, refusal);
-        /*
-         * A SERVER HOLDS ONE LEASE. Named per test through `behaviour` only so
-         * a keeper that is deliberately exercising the permissive shape has to
-         * say so out loud; the default is what the server does.
-         */
-        if (open !== null && behaviour.allowConcurrentLeases !== true) {
-          lease.wire.push({ kind: 'take', model, leaseId: null, ok: false });
-          return refuse(res, modelLeasedRefusal({
-            model: open.model,
-            client: open.userAgent,
-            act: open.act,
-            since: '2026-09-14T02:00:00+00:00',
-            expiresAt: '2026-09-14T02:02:00+00:00',
-            leaseId: open.leaseId,
-            kind: behaviour.leaseKind || 'llm',
-          }));
+        const id = `ses-${nextId++}`;
+        const entry = { id, attempt, status: 'queued', reason: null, wakers: [], hold: null };
+        docs.set(id, entry);
+        const hold = behaviour.holdLine ? behaviour.holdLine(attempt, openAttempts) : null;
+        if (hold) {
+          entry.hold = hold;
+          session.wire.push({ kind: 'queued', sessionId: id, model: attempt.model });
+          send(res, 202, doc(id, 'queued', attempt, { position: hold.position }));
+          return true;
         }
-        const leaseId = `lease-${nextId++}`;
-        open = { ...attempt, leaseId };
-        lease.taken.push({ ...attempt, leaseId });
-        lease.wire.push({ kind: 'take', model, leaseId, ok: true });
-        send(res, 201, {
-          // `subject` and `kind`, as crucible 5e04e5f sends them: a lease names
-          // the resident THING, which is a voice or an aligner as often as a
-          // model, and the receipt is the one document with no `resident`
-          // beside it to read the id from.
-          lease_id: leaseId,
-          subject: model,
-          kind: behaviour.leaseKind || 'llm',
-          client: attempt.userAgent,
-          act: attempt.act,
-          since: '2026-09-14T02:00:00+00:00',
-          expires_at: '2026-09-14T02:02:00+00:00',
-        });
+        if (open === null) {
+          openNow(entry);
+          send(res, 201, doc(id, 'open', attempt));
+          return true;
+        }
+        line.push(entry);
+        session.wire.push({ kind: 'queued', sessionId: id, model: attempt.model });
+        send(res, 202, doc(id, 'queued', attempt, { position: line.length }));
         return true;
       }
 
-      const beat = /^\/v1\/leases\/([^/]+)\/heartbeat$/.exec(ctx.url.pathname);
-      if (beat && req.method === 'POST') {
-        heartbeatAttempts += 1;
-        const leaseId = decodeURIComponent(beat[1]);
-        lease.heartbeats.push({ leaseId });
-        const refusal = behaviour.refuseHeartbeat
-          ? behaviour.refuseHeartbeat(leaseId, heartbeatAttempts)
-          : null;
-        if (refusal) {
-          /*
-           * A SERVER THAT ANSWERS `unknown_lease` IS NOT HOLDING ONE.
-           *
-           * That refusal means the lease is gone — a restart forgot it, or it
-           * expired — and the client's correct answer is to take a new one on
-           * the same model. So the card has to be free here, or the fake would
-           * refuse the re-lease with a lease it has just said it does not have,
-           * which is a state no real server can be in.
-           */
-          if (refusal.code === 'unknown_lease' && open !== null && open.leaseId === leaseId) {
-            open = null;
+      const feed = /^\/v1\/queue\/sessions\/([^/]+)\/events$/.exec(p);
+      if (feed && req.method === 'GET') {
+        const entry = docs.get(decodeURIComponent(feed[1]));
+        if (entry === undefined) {
+          return refuse(res, { status: 404, code: 'unknown_queue_session', message: 'no such session' });
+        }
+        res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' });
+        let id = Number(req.headers['last-event-id'] || 0);
+        const frame = (event, data) => { id += 1; res.write(`id: ${id}\nevent: ${event}\ndata: ${JSON.stringify(data)}\n\n`); };
+        if (entry.hold) {
+          frame('queued', { position: entry.hold.position, of: entry.hold.of });
+          frame('removed', { reason: entry.hold.then.reason, message: entry.hold.then.message });
+          closeOne(entry, entry.hold.then.reason);
+          res.end();
+          return true;
+        }
+        if (entry.status === 'queued' && id === 0) {
+          frame('queued', { position: line.indexOf(entry) + 1, of: line.length });
+        }
+        const follow = () => {
+          if (res.writableEnded) return;
+          if (entry.status === 'open' && !entry.saidOpened) {
+            entry.saidOpened = true;
+            frame('opened', {});
           }
-          return refuse(res, refusal);
-        }
-        send(res, 200, { expires_at: '2026-09-14T02:04:00+00:00' });
+          if (entry.status === 'closed') {
+            frame('closed', { reason: entry.reason, message: `closed (${entry.reason})`, items_run: 0, held_s: 0 });
+            res.end();
+            return;
+          }
+          entry.wakers.push(follow);
+        };
+        follow();
+        req.on('close', () => { if (!res.writableEnded) res.end(); });
         return true;
       }
 
-      const give = /^\/v1\/leases\/([^/]+)$/.exec(ctx.url.pathname);
-      if (give && req.method === 'DELETE') {
-        releaseAttempts += 1;
-        const leaseId = decodeURIComponent(give[1]);
-        lease.released.push({ leaseId });
-        const refusal = behaviour.refuseRelease
-          ? behaviour.refuseRelease(leaseId, releaseAttempts)
-          : null;
-        if (refusal) {
-          lease.wire.push({ kind: 'release', model: null, leaseId, ok: false });
-          return refuse(res, refusal);
+      const touch = /^\/v1\/queue\/sessions\/([^/]+)\/touch$/.exec(p);
+      if (touch && req.method === 'POST') {
+        const entry = docs.get(decodeURIComponent(touch[1]));
+        session.touched.push({ sessionId: decodeURIComponent(touch[1]) });
+        if (entry === undefined || entry.status === 'closed') {
+          return refuse(res, { status: 409, code: 'session_closed', message: 'that session has ended',
+            details: { session_id: decodeURIComponent(touch[1]), reason: entry ? entry.reason : 'server_restart' } });
         }
-        // The card is free again — a release the server ACCEPTED is what makes
-        // the next take possible, which is the whole point of enforcing one.
-        /*
-         * A RELEASE TAKES TIME, and a keeper can say how much. The card is
-         * free only once the server has processed the DELETE, so a client that
-         * fires one and immediately asks for the next lease is refused. With
-         * `releaseDelayMs` at 0 that window is too small to observe reliably,
-         * which is exactly how a real race hides from a suite.
-         */
-        if (behaviour.releaseDelayMs) {
-          await new Promise((r) => setTimeout(r, behaviour.releaseDelayMs));
-        }
-        const was = open !== null && open.leaseId === leaseId ? open.model : null;
-        if (open !== null && open.leaseId === leaseId) open = null;
-        lease.wire.push({ kind: 'release', model: was, leaseId, ok: true });
-        // A BARE 204: no body, no Content-Type. A client that tried to parse one
-        // would throw here rather than on a real server at 3 a.m.
-        res.writeHead(204);
-        res.end();
+        send(res, 200, doc(entry.id, entry.status, entry.attempt));
         return true;
       }
 
+      const end = /^\/v1\/queue\/sessions\/([^/]+)$/.exec(p) || /^\/v1\/queue\/([^/]+)$/.exec(p);
+      if (end && req.method === 'DELETE') {
+        const sessionId = decodeURIComponent(end[1]);
+        const entry = docs.get(sessionId);
+        session.closed.push({ sessionId });
+        if (behaviour.closeDelayMs) await new Promise((r) => setTimeout(r, behaviour.closeDelayMs));
+        if (entry === undefined) {
+          return refuse(res, { status: 404, code: 'unknown_queue_session', message: 'no such session' });
+        }
+        if (entry.status !== 'closed') closeOne(entry, 'client');
+        if (p.startsWith('/v1/queue/sessions/')) {
+          send(res, 200, doc(entry.id, 'closed', entry.attempt, {
+            closed_at: stamp, reason: entry.reason, message: `closed (${entry.reason})`,
+          }));
+        } else {
+          send(res, 200, { job_id: entry.id, status: 'closed', reason: 'operator' });
+        }
+        return true;
+      }
       return false;
     },
   };
 }
 
-/** `409 leased`, with the details the server actually sends (`leased` since crucible 5e04e5f:
- * a lease names the resident THING, so a code naming one kind would be false
- * whenever narrator or the aligner holds the card). */
-function modelLeasedRefusal(held) {
+/** `409 session_open`: another client's queue session holds the server. */
+function sessionHeldRefusal(held) {
   return {
     status: 409,
-    code: 'leased',
-    message: `'${held.model}' is leased by '${held.client}' for '${held.act}' since ${held.since}, `
-      + `until at least ${held.expiresAt} — so leasing it is refused rather than taking the model `
-      + 'off the card underneath a run in progress.',
+    code: 'session_open',
+    message: `session ${held.sessionId} of '${held.client}' for '${held.act}' holds this server`,
     details: {
-      lease_id: held.leaseId,
-      kind: held.kind || 'llm',
-      client: held.client,
-      act: held.act,
-      since: held.since,
-      expires_at: held.expiresAt,
+      door: 'session', holder: held.client, session_id: held.sessionId, act: held.act,
+      model: held.model === undefined ? null : held.model, status: 'open', since: held.since,
     },
   };
 }
@@ -763,7 +753,7 @@ function modelLeasedRefusal(held) {
  *
  * `GET /v1/settings`, `PUT /v1/settings`,
  * `POST /v1/settings/upstreams/{name}/test` and a `GET /v1/capability` whose
- * rows carry `route`. Added as a DELEGATED handler beside {@link leaseRoutes},
+ * rows carry `route`. Added as a DELEGATED handler beside {@link sessionRoutes},
  * for the same reason that one is: this file is shared by fifteen suites and
  * none of them should grow a route it never asked for.
  *
@@ -981,7 +971,7 @@ function settingsRoutes(behaviour) {
       }),
   });
 
-  // Every branch answers `true`; see the note in `leaseRoutes`.
+  // Every branch answers `true`; see the note in `sessionRoutes`.
   const serve = (res, status, body) => {
     state.served.push(JSON.stringify(body));
     send(res, status, body);
@@ -1099,20 +1089,10 @@ function settingsRoutes(behaviour) {
   };
 }
 
-/** `404 unknown_lease` — the shape a heartbeat after a restart, or a late release, gets. */
-function unknownLeaseRefusal(leaseId, why) {
-  return {
-    status: 404,
-    code: 'unknown_lease',
-    message: `lease ${leaseId} is no longer open: ${why}.`,
-    details: { lease_id: leaseId, reason: why },
-  };
-}
-
 /**
  * ── A WHOLE JOB LIFECYCLE, WITH THE WAYS IT GOES WRONG (PK13) ───────────────
  *
- * A delegated handler beside {@link leaseRoutes} and {@link settingsRoutes},
+ * A delegated handler beside {@link sessionRoutes} and {@link settingsRoutes},
  * for the same reason those two are delegated: this file is shared by fifteen
  * suites and none of them should grow a route it never asked for.
  *
@@ -1222,7 +1202,7 @@ function faultyJobRoutes(behaviour = {}) {
       card.id = id;
       card.kind = kind;
       card.since = new Date().toISOString();
-      card.heldBy = heldBy === undefined ? { fact: 'lease', who: 'bookforge', details: {} } : heldBy;
+      card.heldBy = heldBy === undefined ? { fact: 'a session', who: 'bookforge', details: {} } : heldBy;
       card.unclaimedSince = null;
       card.warming = null;
     },
@@ -1328,7 +1308,7 @@ function faultyJobRoutes(behaviour = {}) {
             max_in_flight_basis: a.maxInFlightBasis === undefined ? 'stated' : a.maxInFlightBasis,
             rows: [],
           },
-          lease: null,
+          session: null,
           slots: { accelerated: { busy: open.size, of: 1, queue_depth: 0, accepts_work: open.size === 0 } },
           // THE TEN FIELDS AN ActivityJob CARRIES. The SDK requires every key,
           // null or not, so a three-field row is a protocol refusal and not a
@@ -1556,8 +1536,12 @@ function cancelRefusedFault(kind, times = 1) {
  * block. A keeper that serves its own info spreads this in, so a fixture states
  * the 1.0.71 wire and not an older one the SDK no longer reads.
  */
+/** What the server can do, by name (Crucible 1.0.76 `info().features`) — engine and orchestrator alike. */
+const INFO_FEATURES = Object.freeze(['queue.sessions', 'queue.calls', 'queue.jobs', 'events']);
+
 const ENGINE_INFO_FIELDS = Object.freeze({
   role: 'engine',
+  features: INFO_FEATURES,
   managed_by: null,
   pages_engine: {
     engine: null,
@@ -1578,7 +1562,7 @@ const ENGINE_INFO_FIELDS = Object.freeze({
  * overrides, so an orchestrator document is not an engine's with a new role.
  */
 function infoRoleFields(role) {
-  return role === 'orchestrator' ? { role } : ENGINE_INFO_FIELDS;
+  return role === 'orchestrator' ? { role, features: INFO_FEATURES } : ENGINE_INFO_FIELDS;
 }
 
 module.exports = {
@@ -1586,7 +1570,7 @@ module.exports = {
   REPO, installElectronStub, makeChecker, startFakeCrucible, fakeNamer, provenanceFor,
   refuseRenderParams, renderDoneProvenance,
   crucibleHost, noServerHost, send,
-  leaseRoutes, modelLeasedRefusal, unknownLeaseRefusal,
+  sessionRoutes, sessionHeldRefusal,
   settingsRoutes, LLM_CLASSES, UPSTREAM_NAMES, WSL_ONLY_CLASSES, WSL_ONLY_REASON,
   faultyJobRoutes, cancelRefusedFault, armReset, takeFault,
 };

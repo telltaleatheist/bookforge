@@ -37,11 +37,11 @@ import {
   CrucibleBusy,
   CrucibleCardHeld,
   CrucibleConfigError,
-  CrucibleLeased,
   CrucibleNotACrucible,
   CrucibleProtocolError,
   CrucibleRefused,
   CrucibleServerError,
+  CrucibleSessionHeld,
   CrucibleUnreachable,
   CrucibleVersionError,
   type CrucibleClient,
@@ -2420,7 +2420,7 @@ function translateCrucibleError(err: unknown, server: string): unknown {
   /*
    * A HELD CARD IS A WAIT, AND IT IS ASKED ABOUT BEFORE `CrucibleRefused`.
    *
-   * `CrucibleLeased` is a SUBCLASS of `CrucibleRefused` (crucible
+   * `CrucibleSessionHeld` is a SUBCLASS of `CrucibleRefused` (crucible
    * `sdk/ts/src/errors.ts`), so without these two arms a `409 leased` fell into
    * the generic one below and arrived at the caller as a plain sentence. The
    * holder's line was in the SDK's hands and never left this function — and a
@@ -2443,11 +2443,11 @@ function translateCrucibleError(err: unknown, server: string): unknown {
       { busyLine: err.busyLine },
     );
   }
-  if (err instanceof CrucibleLeased) {
+  if (err instanceof CrucibleSessionHeld) {
     return Object.assign(
-      new Error(`crucible_model_leased: ${at} has its resident ${err.kind} held by another `
-        + `client's run, so this act was not admitted. ${err.leasedLine}`),
-      { busyLine: err.leasedLine },
+      new Error(`crucible_session_open: ${at} is held by another client's queue session, so this `
+        + `act was not admitted. ${err.heldLine}`),
+      { busyLine: err.heldLine },
     );
   }
   if (err instanceof CrucibleRefused) {
@@ -2558,7 +2558,7 @@ async function assertCrucibleModelResident(server: string, model: string): Promi
  * refusal to stop naming itself (crucible `docs/ARCHITECTURE.md` R1), and the
  * error translation in particular is load-bearing: `translateCrucibleError`
  * turns the SDK's exceptions into the named codes every surface reads
- * (`crucible_model_not_resident`, `crucible_model_leased`, …).
+ * (`crucible_model_not_resident`, `crucible_session_wait`, …).
  *
  * What it does NOT decide: the temperature, the budget, what an empty answer
  * means, or whether a `length` finish is a retry — those belong to the act, and
@@ -2642,7 +2642,7 @@ export async function crucibleChatOnce(options: {
 
 /** A refusal that means "busy right now" — worth a place in the server's line. */
 function chatRefusedAsBusy(err: unknown): boolean {
-  if (err instanceof CrucibleBusy || err instanceof CrucibleLeased || err instanceof CrucibleCardHeld) return true;
+  if (err instanceof CrucibleBusy || err instanceof CrucibleSessionHeld || err instanceof CrucibleCardHeld) return true;
   if (err instanceof CrucibleRefused) return err.code === 'model_not_resident' || err.code === 'engine_in_use';
   if (err instanceof CrucibleServerError) return err.code === 'chat_queue_full';
   return false;
@@ -3993,7 +3993,7 @@ export async function cleanupEpub(
     return run();
   }
 
-  const { withCrucibleLease, CrucibleLeased } = await import('./crucible/lease.js');
+  const { withCrucibleLease, asSessionWait, CrucibleSessionWait } = await import('./crucible/lease.js');
   try {
     return await withCrucibleLease(
       {
@@ -4038,14 +4038,15 @@ export async function cleanupEpub(
      * queue behind it (the CLI, Settings → AI) reads `error` exactly as before,
      * which is why this is still a RESULT and not a throw.
      */
-    if (err instanceof CrucibleLeased) {
+    const wait = asSessionWait(err, named.server, named.act);
+    if (wait instanceof CrucibleSessionWait) {
       return {
         success: false,
-        error: `crucible_model_leased: crucible "${named.server}" holds "${named.model}" for another `
-          + `run — ${err.leasedLine}. Nothing here cleans the book somewhere else; a queued row `
-          + 'waits for that server and tries again, and a one-off run can be started again when '
-          + 'that run is done or pointed at another server.',
-        busyLine: err.leasedLine,
+        error: `crucible_session_wait: ${wait.message}. Nothing here cleans the book somewhere `
+          + 'else; a queued row waits for that server and tries again, and a one-off run can be '
+          + 'started again when that run is done or pointed at another server.',
+        ...(wait.busyLine === undefined ? {} : { busyLine: wait.busyLine }),
+        ...(wait.removedLine === undefined ? {} : { removedLine: wait.removedLine }),
       };
     }
     /*

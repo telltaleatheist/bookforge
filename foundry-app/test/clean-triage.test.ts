@@ -70,7 +70,7 @@ afterEach(async () => {
   }
 });
 
-/** A placement on a Crucible's `decide` class, leased — what the triage is spawned under. */
+/** A placement on a Crucible's `decide` class, in a session — what the triage is spawned under. */
 const PLACED: import('../electron/crucible-dispatch').Placement = {
   ...dispatch.UNPLACED,
   endpoint: 'http://127.0.0.1:7100/openai',
@@ -301,7 +301,7 @@ test('a triage spawns on the cleanup book, never the export path, and lands no s
   const release = mock(async () => {});
   spyOn(dispatch, 'placeJob').mockResolvedValue({
     verdict: 'go',
-    placement: { ...PLACED, lease: { id: 'triage-lease', release } },
+    placement: { ...PLACED, session: { id: 'triage-session', release } },
   });
   const made = spyOn(workspace, 'materializeCleanTriage').mockResolvedValue({ bookPath: BOOK });
   const exported = spyOn(workspace, 'materializeExport');
@@ -334,7 +334,7 @@ test('a triage spawns on the cleanup book, never the export path, and lands no s
   expect(filed).toHaveBeenCalledTimes(0);
   expect(stepped).toHaveBeenCalledTimes(0);
   expect(reported).toHaveBeenCalledTimes(0);
-  // The line the engine was handed, and the lease given back at the settle.
+  // The line the engine was handed, and the session closed at the settle.
   expect(spawned).toEqual([
     'clean-triage', '--book', BOOK, '--out', verdicts,
     '--endpoint', 'http://127.0.0.1:7100', '--model', 'qwen3.5-0.8b',

@@ -132,8 +132,8 @@ function isTextPass(kind: FoundryJobKind): boolean {
  * **SO BOOKFORGE COMPOSES NOTHING ON THIS PATH.** Two composers of one
  * credential is the defect the old refusal existed to avoid, and it stays
  * avoided by this side not doing it: the hosted step no longer resolves a text
- * engine, no longer writes `model`/`ollama` onto the request, and takes no
- * lease (crucible allows ONE per server, and theirs is already taken).
+ * engine, no longer writes `model`/`ollama` onto the request, and opens no
+ * session (crucible opens ONE at a time per server, and Foundry's is the one).
  *
  * ── WHAT BOOKFORGE STILL OWES: THE NAME ───────────────────────────────────
  *
@@ -284,8 +284,8 @@ export interface FoundryJobRow {
    * THE HOLDER'S OWN SENTENCE, when this row was refused by one rather than
    * broken — Contract 2 of the 2026-09-20 bug hunt.
    *
-   * Foundry takes its own Crucible lease (`crucible-dispatch.ts`), so a
-   * `409 server_busy` / `409 leased` over there arrives on this side as a row
+   * Foundry opens its own Crucible queue session (`crucible-dispatch.ts`), so a
+   * `409 server_busy` / `409 session_open` over there arrives on this side as a row
    * in state `failed` carrying prose. Every module that calls OUR bridges
    * already parks on a held card (`busyLineOf`, A5, 2026-09-19); this seam
    * crosses a process boundary as a string and kept the old behaviour, so a
@@ -376,10 +376,10 @@ export interface FoundryRunJobOptions {
   /**
    * WHERE THE RUN WAS PLACED, once, BEFORE the engine is spawned.
    *
-   * Foundry takes its own Crucible lease (`crucible-dispatch.ts`) and until PK6
-   * recorded it nowhere this side could read — so a hard kill left a lease held
-   * by a process that no longer existed, and the startup sweep, which reads this
-   * app's own in-flight ledger, had nothing to find (P8). This is the hook that
+   * Foundry opens its own Crucible queue session (`crucible-dispatch.ts`) and
+   * until PK6 recorded its claim nowhere this side could read — so a hard kill
+   * left the machine held by a process that no longer existed, and the startup
+   * sweep, which reads this app's own in-flight ledger, had nothing to find (P8). This is the hook that
    * closes it: `foundry-job.ts` writes the placement into that same ledger and
    * settles it when the outcome arrives.
    */
@@ -392,8 +392,8 @@ export interface FoundryRunPlacement {
   server: string;
   /** The model the placement selected, or `''` for a run that meets none. */
   model: string;
-  /** The Crucible lease id the run holds, or null when it holds none. */
-  leaseId: string | null;
+  /** The Crucible queue-session id the run holds, or null when it holds none. */
+  sessionId: string | null;
   /** Blocks in flight the engine was told to keep. Ruling 4's four, normally. */
   concurrency: number;
 }
@@ -426,8 +426,8 @@ export type FoundryRunner =
  * `error`. Two things this scheduler has to act on were therefore only readable
  * by parsing a sentence:
  *
- *   A CARD THAT IS MERELY BUSY. Foundry takes its own lease, so a
- *   `409 leased` / `409 server_busy` arrived here as a `failed` row carrying
+ *   A CARD THAT IS MERELY BUSY. Foundry holds its own claim on the machine, so a
+ *   `409 server_busy` (then `409 leased`, now a session) arrived here as a `failed` row carrying
  *   words — and a row that should have parked and retried itself turned RED in
  *   *Needs you*, waiting for a person to press Retry for something nobody did
  *   wrong (Q4). Contract 2 of the hunt: this is that answer, typed.

@@ -170,12 +170,12 @@ const TTS_STEP_TS = fs.readFileSync(
       true);
   });
 
-  await check('the SDK\'s other spelling — leasedLine — is a wait too', async () => {
+  await check('the SDK\'s other spelling — heldLine — is a wait too', async () => {
     assert.strictEqual(
       await bridge.refusalIsAWait(Object.assign(new Error('409'), {
-        leasedLine: 'leased: foundry, translate, until 04:12',
+        heldLine: "held: foundry@owens-pc's session for translate, since 04:12",
       })),
-      true, 'a held MODEL arrives as leasedLine; runtime.ts\'s busyLineOf reads both');
+      true, 'a held MACHINE arrives as heldLine; runtime.ts\'s busyLineOf reads both');
   });
 
   await check('Contract 1\'s transient flag is a wait', async () => {

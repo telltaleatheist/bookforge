@@ -12,16 +12,21 @@ afterEach(()=>mock.restore());
 const classes=['pages','clean','translate','simplify','analysis','decide'];
 const chosen=(cls:string)=>cls==='pages'?'dots-ocr':cls==='clean'?'qwen3.5-9b':cls==='decide'?'qwen3.5-2b':'qwen3.8-27b-4bit';
 
-function fixture(options:{missing?:boolean;competing?:boolean;competitorStocks?:boolean;failCompetitor?:boolean;leased?:boolean;chatMaxInFlight?:number|null;admitsOnlyWhenResident?:number;noActivity?:boolean;oldActivity?:boolean;leaseOnLoad?:boolean}={}) {
-  let stocked=!options.missing, competed=false, loaded:string|null=null, loadLease:string|null=null;
+function fixture(options:{missing?:boolean;competing?:boolean;competitorStocks?:boolean;failCompetitor?:boolean;held?:boolean;chatMaxInFlight?:number|null;admitsOnlyWhenResident?:number;noActivity?:boolean;oldActivity?:boolean}={}) {
+  let stocked=!options.missing, competed=false, loaded:string|null=null;
   const calls:{method:string;path:string;body:any}[]=[];
   const revision='a'.repeat(40);
   const model=(id:string)=>({id,family:'fixture',params_b:9,revision,fingerprint:`${id}@${revision}`,modalities:id==='dots-ocr'?['text','image']:['text'],backend_supported:true,installed:id!=='qwen3.8-27b'&&stocked,weights_of:null,resident:false,loadable:true,memory_bytes_estimate:1,context_default:8192,max_model_len:8192});
   const models=()=>['dots-ocr','qwen3.5-9b','qwen3.8-27b-4bit','qwen3.8-27b'].map(model);
-  const info=()=>({server:{name:'fixture',version:'0.6.2',api_version:1},host:{platform:'win32',arch:'x86_64',backend:'llama-windows',gpu:{vendor:'nvidia',name:'fake',vram_bytes:24e9}},role:'engine',managed_by:null,job_types:['load-model','unload-model'],capabilities:[{job_type:'llm',models:models()}],pages_engine:{engine:'llama-cpp',installed:true,detail:'fixture',request:{model:'dots-ocr',dpi:200,max_pixels:11289600,max_tokens:8192,temperature:0,prompt:'fixture',dialect:'dots-json',concurrency:1,truncated_finish_reason:'length'}}});
+  const info=()=>({server:{name:'fixture',version:'1.0.76',api_version:1},features:['queue.sessions','queue.calls','queue.jobs','events'],host:{platform:'win32',arch:'x86_64',backend:'llama-windows',gpu:{vendor:'nvidia',name:'fake',vram_bytes:24e9}},role:'engine',managed_by:null,job_types:['load-model','unload-model'],capabilities:[{job_type:'llm',models:models()}],pages_engine:{engine:'llama-cpp',installed:true,detail:'fixture',request:{model:'dots-ocr',dpi:200,max_pixels:11289600,max_tokens:8192,temperature:0,prompt:'fixture',dialect:'dots-json',concurrency:1,truncated_finish_reason:'length'}}});
   const capability=()=>({backend_kind:'llama-windows',total_bytes:24e9,desktop_allowance_bytes:0,classes:classes.map(capability=>({capability,enabled:true,selected:chosen(capability),reason:'fixture',shortfall_bytes:0,route:'local',work:null,context_ceilings:null}))});
   const task=(id:string,state='done')=>({task_id:id,type:'module',request:{type:'module'},state,error:null,created:'2026-09-16T00:00:00Z',started:'2026-09-16T00:00:00Z',finished:state==='running'?null:'2026-09-16T00:00:01Z',unmet:[],message:null});
   const sse=(event:string,data:any={})=>new Response(`id: 1\nevent: ${event}\ndata: ${JSON.stringify(data)}\n\n`,{headers:{'content-type':'text/event-stream'}});
+  // A queue session's state document, every field Crucible 1.0.76 sends.
+  const sessionDoc=(id:string,status:string,act:string,more:Record<string,unknown>={})=>({session_id:id,status,act,client:'fixture',model:loaded,position:null,idle_s:300,max_wait_s:86400,created:'2026-10-01T00:00:00Z',opened_at:'2026-10-01T00:00:00Z',idle_deadline:null,max_hold_deadline:null,items_run:0,in_flight:[],stream_session:null,load_job:null,closed_at:null,reason:null,message:null,error:null,...more});
+  // An open session's own stream, held open until the client lets go of it.
+  const quiet=()=>new Response(new ReadableStream({start(){}}),{headers:{'content-type':'text/event-stream'}});
+  let sessionAct='';
   const server=Bun.serve({port:0,hostname:'127.0.0.1',async fetch(req){
     expect(req.headers.get('authorization')).toBe('Bearer fixture-token');
     expect(req.headers.get('x-crucible-api')).toBe('1');
@@ -40,7 +45,7 @@ function fixture(options:{missing?:boolean;competing?:boolean;competitorStocks?:
        * 2026-09-24 ruling that is "it did not say", exactly like a 404.
        */
       if(options.oldActivity)return Response.json({server:{name:'fixture',version:'1.0.9',api_version:1,backend:'llama-windows',uptime_s:1},resident:null,warming:null,claim:null,streaming:null,chat:{in_flight:0,rows:[]},lease:null,slots:{accelerated:{busy:0,of:1,queue_depth:0,accepts_work:true}},running:[],queued:[]});
-      return Response.json({server:{name:'fixture',version:'1.0.13',api_version:1,backend:'llama-windows',uptime_s:1},resident:null,stopping:null,warming:null,claim:null,streaming:null,chat:{in_flight:0,rows:[],max_in_flight:options.admitsOnlyWhenResident!==undefined?(loaded!==null?options.admitsOnlyWhenResident:null):options.chatMaxInFlight===undefined?2:options.chatMaxInFlight,max_in_flight_basis:'engine concurrency 1, +1'},lease:null,slots:{accelerated:{busy:0,of:1,queue_depth:0,accepts_work:true}},running:[],queued:[]});
+      return Response.json({server:{name:'fixture',version:'1.0.76',api_version:1,backend:'llama-windows',uptime_s:1},resident:null,stopping:null,warming:null,claim:null,streaming:null,chat:{in_flight:0,rows:[],max_in_flight:options.admitsOnlyWhenResident!==undefined?(loaded!==null?options.admitsOnlyWhenResident:null):options.chatMaxInFlight===undefined?2:options.chatMaxInFlight,max_in_flight_basis:'engine concurrency 1, +1'},session:null,slots:{accelerated:{busy:0,of:1,queue_depth:0,accepts_work:true}},running:[],queued:[]});
     }
     if(p==='/v1/models')return Response.json(models());
     if(p==='/v1/catalog')return Response.json({backend_kind:'llama-windows',rows:models().map(m=>({kind:'model',id:m.id,name:m.id,job_type:'llm',installed:m.installed,installed_bytes:m.installed?1:null,expected_bytes:1,shares_weights_of:null,missing_files:null,floors:[],license:null,source:'fixture',resident:false})).concat([{kind:'engine',id:'llama-cpp',name:'engine',job_type:'llm',installed:true,installed_bytes:1,expected_bytes:1,shares_weights_of:null,missing_files:null,floors:[],license:null,source:'fixture',resident:false}])});
@@ -53,29 +58,22 @@ function fixture(options:{missing?:boolean;competing?:boolean;competitorStocks?:
     if(p==='/v1/tasks/ours/events'){stocked=true;return sse('done');}
     if(p.startsWith('/v1/tasks/'))return Response.json(task(p.split('/')[3]!));
     /*
-     * LEASE-ON-LOAD (Crucible 1.0.13). The load's own `params.lease` is what
-     * decides whether the `done` frame carries a `lease_id` — so a test that
-     * reads the id off the frame is reading a consequence of the param the
-     * dispatcher actually sent, not a constant the fixture made up.
-     * `leaseOnLoad:false` is a server that ignores the option (or an older one),
-     * which must leave the placement taking its own lease exactly as before.
+     * QUEUE SESSIONS (Crucible 1.0.76), which replaced the load-then-lease pair.
+     * A session named with a `model` opens with it resident — `loaded` is what
+     * the activity read's admission depends on. `held` is a machine another
+     * client holds: the session waits in the line (#1 of 2) and the line lets it
+     * go (`expired`), which is weather.
      */
-    /*
-     * A 409 `leased` ON THE LOAD DOOR, which is where a placement meets it now:
-     * with the lease on the load there is no separate lease POST to be refused
-     * on, and a `load-model` that would evict a leased model is refused by the
-     * same code with the same body (crucible/leases.py, `leased_error`).
-     */
-    if(p==='/v1/jobs'&&options.leased)return Response.json({error:{code:'leased',message:"'dots-ocr' (the resident llm) is leased by 'bookforge' for 'tts' since 2026-09-18T03:00:00+00:00, until at least 2026-09-18T03:02:00+00:00",details:{lease_id:'someone-elses',kind:'llm',client:'bookforge',act:'tts',since:'2026-09-18T03:00:00+00:00',expires_at:'2026-09-18T03:02:00+00:00'}}},{status:409});
-    if(p==='/v1/jobs'){loaded=body?.model??null;loadLease=options.leaseOnLoad===false?null:(body?.params?.lease?'load-lease':null);return Response.json({job_id:'load'},{status:202});}
-    if(p==='/v1/jobs/load/events')return sse('done',loadLease===null?{resident:loaded}:{resident:loaded,lease_id:loadLease});
-    // `leased`, with the six fields `Lease.to_dict()` attaches (crucible/leases.py).
-    // The code is `leased` and not `model_leased`: the leased thing is a voice or
-    // an aligner as often as a model, which is why the rename happened at all.
-    if(p.endsWith('/lease')&&req.method==='POST'&&options.leased)return Response.json({error:{code:'leased',message:"'dots-ocr' (the resident llm) is leased by 'bookforge' for 'tts' since 2026-09-18T03:00:00+00:00, until at least 2026-09-18T03:02:00+00:00",details:{lease_id:'someone-elses',kind:'llm',client:'bookforge',act:'tts',since:'2026-09-18T03:00:00+00:00',expires_at:'2026-09-18T03:02:00+00:00'}}},{status:409});
-    if(p.endsWith('/lease')&&req.method==='POST')return Response.json({lease_id:'lease',kind:'llm',subject:p.split('/')[3],client:'fixture',act:body.act,since:'2026-09-16T00:00:00Z',expires_at:'2026-09-16T00:02:00Z'},{status:201});
-    if(p.startsWith('/v1/leases/')&&p.endsWith('/heartbeat')&&req.method==='POST')return Response.json({expires_at:'2026-09-16T00:04:00Z'});
-    if(p.startsWith('/v1/leases/')&&req.method==='DELETE')return new Response(null,{status:204});
+    if(p==='/v1/queue/sessions'&&req.method==='POST'){
+      sessionAct=body.act;
+      if(options.held)return Response.json(sessionDoc('ses-held','queued',body.act,{position:1,opened_at:null}),{status:202});
+      loaded=body?.model??null;
+      return Response.json(sessionDoc('ses-1','open',body.act),{status:201});
+    }
+    if(p==='/v1/queue/sessions/ses-held/events')return new Response(`id: 1\nevent: queued\ndata: ${JSON.stringify({position:1,of:2})}\n\nid: 2\nevent: removed\ndata: ${JSON.stringify({reason:'expired',message:'nobody followed it'})}\n\n`,{headers:{'content-type':'text/event-stream'}});
+    if(p==='/v1/queue/sessions/ses-1/events')return quiet();
+    if(p==='/v1/queue/sessions/ses-1/touch')return Response.json(sessionDoc('ses-1','open',sessionAct));
+    if(p==='/v1/queue/sessions/ses-1'&&req.method==='DELETE')return Response.json(sessionDoc('ses-1','closed',sessionAct,{closed_at:'2026-10-01T00:01:00Z',reason:'client',message:'closed by its client'}));
     return Response.json({error:{code:'fixture_unhandled',message:`${req.method} ${p}`}},{status:500});
   }});
   const entry={name:`fixture-${server.port}`,url:`http://127.0.0.1:${server.port}`,token:'fixture-token',enabled:true};
@@ -102,113 +100,43 @@ test('after following another app task, preparation checks and installs its own 
 });
 
 /**
- * ── THE LOAD CARRIES THE LEASE, AND THE PLACEMENT ADOPTS IT — PK14a ─────────
+ * ── ONE SESSION, OPENED WITH THE MODEL RESIDENT (Crucible 1.0.76) ───────────
  *
- * It used to be two requests: `POST /v1/jobs` (load-model), then
- * `POST /v1/models/{id}/lease` once the `done` frame landed. Between them the
- * card was held by NOTHING, and a client that died in that window stranded it
- * for ever — a load's own completion is deliberately not a settlement trigger.
- * Crucible 1.0.13 lets the load ask for the lease itself, so the act's name and
- * its ttl travel ON the load and the id comes back on the `done` frame.
- *
- * So the assertion that used to read the act off the lease POST now reads it off
- * the LOAD, and the absence of that POST is asserted outright: a placement that
- * took a second lease on a card its own load already holds would be refused
- * `409 leased` by itself.
+ * The load-then-lease pair is gone: a placement asks for a queue SESSION naming
+ * the act and the selected model, the server loads it for the session, and while
+ * it is open nothing from any other client runs there. Nothing is sent to the
+ * old `load-model` or lease routes, and the settle closes the session.
  */
 for(const [kind,cls] of [['read','pages'],['clean','clean'],['translate','translate'],['simplify','simplify'],['analysis','analysis']] as const){
-  test(`real HTTP native Windows ${kind} loads the exact selected model under a lease the load itself took`,async()=>{
+  test(`real HTTP native Windows ${kind} opens one session with the exact selected model`,async()=>{
     const f=fixture();try{
       const result=await dispatch.placeJob(kind,f.entry.name,()=>{},()=>true);
       expect(result.verdict).toBe('go');if(result.verdict!=='go')throw Error(JSON.stringify(result));
       try{expect(result.placement.model).toBe(chosen(cls));expect(result.placement.endpoint).toBe(`${f.entry.url}/openai`);
-        const load=f.calls.find(c=>c.path==='/v1/jobs')!;
-        expect(load.body.model).toBe(chosen(cls));
-        // THE ACT AND THE TTL, on the load, in the server's own spelling.
-        expect(load.body.params.lease).toEqual({act:cls,ttl_seconds:120});
-        // ADOPTED, NOT RE-TAKEN: the id is the one the done frame handed back.
-        expect(result.placement.lease?.id).toBe('load-lease');
-        expect(f.calls.some(c=>c.path.endsWith('/lease')&&c.method==='POST')).toBe(false);
-      }finally{await result.placement.lease?.release();}
-      expect(f.calls.some(c=>c.path==='/v1/leases/load-lease'&&c.method==='DELETE')).toBe(true);
+        const opened=f.calls.find(c=>c.path==='/v1/queue/sessions'&&c.method==='POST')!;
+        expect(opened.body).toEqual({act:cls,model:chosen(cls),idle_s:300,max_wait_s:86400});
+        expect(result.placement.session?.id).toBe('ses-1');
+        expect(f.calls.some(c=>c.path==='/v1/jobs'||c.path.includes('/lease'))).toBe(false);
+        const headers=JSON.parse(result.placement.env['FOUNDRY_ENDPOINT_HEADERS']!);
+        expect(headers['X-Crucible-Client']).toBe(registry.CRUCIBLE_CLIENT_NAME);
+      }finally{await result.placement.session?.release();}
+      expect(f.calls.some(c=>c.path==='/v1/queue/sessions/ses-1'&&c.method==='DELETE')).toBe(true);
     }finally{f.close();}
   });
 }
 
 /**
- * A SERVER THAT LEASES NOTHING ON THE LOAD LEAVES THE OLD ROAD EXACTLY WHERE IT
- * WAS. `lease_id` absent from the `done` frame is an answer — an older Crucible,
- * or a load submitted without the option — and the separate
- * `POST /v1/models/{id}/lease` is what it is still for. Without this, "adopt"
- * would be a silent requirement that every server be 1.0.13.
+ * A MACHINE ANOTHER CLIENT HOLDS: the session waits in the line, the placement
+ * says where it stands, and a line that lets it go (`expired`) is weather — a
+ * wait, never a refusal, so `any` steps past and a pinned row asks again.
  */
-test('real HTTP a done frame with no lease_id still takes the lease the old way',async()=>{
-  const f=fixture({leaseOnLoad:false});try{
-    const result=await dispatch.placeJob('clean',f.entry.name,()=>{},()=>true);
-    expect(result.verdict).toBe('go');if(result.verdict!=='go')throw Error(JSON.stringify(result));
-    try{
-      expect(f.calls.some(c=>c.path==='/v1/models/qwen3.5-9b/lease'&&c.method==='POST')).toBe(true);
-      expect(result.placement.lease?.id).toBe('lease');
-    }finally{await result.placement.lease?.release();}
-    expect(f.calls.some(c=>c.path==='/v1/leases/lease'&&c.method==='DELETE')).toBe(true);
-  }finally{f.close();}
-});
-
-/**
- * AN ADOPTED LEASE IS KEPT ALIVE LIKE ANY OTHER — the half of "same heartbeat,
- * same release" that only a beat can prove. A lease whose id came from a load
- * and is then never heartbeaten lapses in two minutes, and since 1.0.13 a lapse
- * CLEARS THE CARD: the run would lose the model it is three blocks into using,
- * and nothing in the placement would say so.
- *
- * The interval callback is captured rather than waited for — the cadence is 40 s
- * and a keeper that waited it out would cost more than the bug — and what is
- * asserted is the URL it goes to, because the whole question is WHICH id is
- * being kept alive.
- */
-test('real HTTP an adopted lease heartbeats and releases the load\'s own id',async()=>{
-  const f=fixture();
-  let beat:(()=>void)|null=null;
-  spyOn(globalThis,'setInterval').mockImplementation(((callback:()=>void)=>{beat=callback;return {unref(){}};}) as typeof setInterval);
-  spyOn(globalThis,'clearInterval').mockImplementation(()=>{});
-  try{
-    const lease=await dispatch.takeLease(f.entry,'qwen3.5-9b','clean','load-lease');
-    expect(lease.id).toBe('load-lease');
-    // NOTHING WAS TAKEN: adopting is not a cheaper take, it is no take at all.
-    expect(f.calls.some(c=>c.path.endsWith('/lease')&&c.method==='POST')).toBe(false);
-    expect(beat).not.toBeNull();
-    beat!();
-    // A REAL ROUND TRIP, not a microtask: the beat is fire-and-forget by design
-    // (a lost heartbeat must never stop a run), so the only thing to wait on is
-    // the request arriving at the fixture.
-    const beaten=async()=>{for(let i=0;i<200;i+=1){if(f.calls.some(c=>c.path==='/v1/leases/load-lease/heartbeat'))return true;await Bun.sleep(5);}return false;};
-    expect(await beaten()).toBe(true);
-    expect(f.calls).toContainEqual({method:'POST',path:'/v1/leases/load-lease/heartbeat',body:null});
-    await lease.release();
-    expect(f.calls.some(c=>c.path==='/v1/leases/load-lease'&&c.method==='DELETE')).toBe(true);
-  }finally{f.close();}
-});
-
-/**
- * A 409 `leased` IS READ, WHICH IT WAS NOT — the keeper for the twenty-line
- * branch that keyed on `model_leased`, a code Crucible has never emitted: the
- * server renamed it to `leased` on 2026-09-14 because the leased thing is a
- * voice or an aligner as often as a model (crucible/leases.py, `leased_error`).
- * The dead branch meant a real refusal fell to the generic arm — which waited by
- * luck, because `leased` happens to be in the SDK's server-specific set — and
- * the "leased by whom, for what, until when" sentence the body carries was
- * never read. The assertion is on the sentence, because the sentence is the
- * whole of what the branch is for.
- */
-test('a 409 leased on the lease door waits and names who holds the card, for what, until when',async()=>{
-  const f=fixture({leased:true});try{
-    const result=await dispatch.placeJob('read',f.entry.name,()=>{},()=>true);
+test('real HTTP a session that waits in the line says its place, and an expired one waits',async()=>{
+  const f=fixture({held:true});const said:string[]=[];try{
+    const result=await dispatch.placeJob('read',f.entry.name,(line)=>{said.push(line);},()=>true);
     expect(result.verdict).toBe('wait');if(result.verdict!=='wait')throw Error(JSON.stringify(result));
     expect(result.standing).toBe(false);
-    // THE WHOLE SENTENCE, not a substring of it: the server's own message names
-    // the holder too, so anything looser passes on the generic arm this branch
-    // exists to replace — which is exactly how a dead branch stays dead.
-    expect(result.reason).toBe(`the resident llm on "${f.entry.name}" is leased: bookforge, tts, until 2026-09-18T03:02:00+00:00`);
+    expect(said).toContain(`Waiting for ${f.entry.name}: #1 of 2 in its line`);
+    expect(result.reason).toBe(`"${f.entry.name}" let this run's turn go from its line (expired)`);
   }finally{f.close();}
 });
 
@@ -235,7 +163,7 @@ test('real HTTP a chat placement takes the depth the server says it admits',asyn
     expect(result.verdict).toBe('go');if(result.verdict!=='go')throw Error(JSON.stringify(result));
     try{expect(result.placement.concurrency).toBe(2);
       expect(f.calls.some(c=>c.path==='/v1/activity')).toBe(true);
-    }finally{await result.placement.lease?.release();}
+    }finally{await result.placement.session?.release();}
   }finally{f.close();}
 });
 
@@ -244,14 +172,15 @@ test('real HTTP a chat placement takes the depth the server says it admits',asyn
  * loaded `chat.maxInFlight` is null, and once a model is resident it is that
  * engine's number. The placement read it BEFORE its own load and so always saw
  * null and fell back to four — Owen's cleanup ran at the engine's clamp of two
- * against a server that would have said so. It is read after the load now.
+ * against a server that would have said so. It is read once the session has opened
+ * with the model resident.
  */
 test('real HTTP a card we load states its admission only once resident, and the placement takes that number',async()=>{
   const f=fixture({admitsOnlyWhenResident:6});try{
     const result=await dispatch.placeJob('clean',f.entry.name,()=>{},()=>true);
     expect(result.verdict).toBe('go');if(result.verdict!=='go')throw Error(JSON.stringify(result));
     try{expect(result.placement.concurrency).toBe(6);}
-    finally{await result.placement.lease?.release();}
+    finally{await result.placement.session?.release();}
   }finally{f.close();}
 });
 
@@ -260,7 +189,7 @@ test('real HTTP a server that states no chat depth leaves the placement on four'
     const result=await dispatch.placeJob('translate',f.entry.name,()=>{},()=>true);
     expect(result.verdict).toBe('go');if(result.verdict!=='go')throw Error(JSON.stringify(result));
     try{expect(result.placement.concurrency).toBe(dispatch.CRUCIBLE_CHAT_CONCURRENCY);}
-    finally{await result.placement.lease?.release();}
+    finally{await result.placement.session?.release();}
   }finally{f.close();}
 });
 
@@ -269,7 +198,7 @@ test('real HTTP a Crucible older than the route is "it did not say", not a refus
     const result=await dispatch.placeJob('simplify',f.entry.name,()=>{},()=>true);
     expect(result.verdict).toBe('go');if(result.verdict!=='go')throw Error(JSON.stringify(result));
     try{expect(result.placement.concurrency).toBe(dispatch.CRUCIBLE_CHAT_CONCURRENCY);}
-    finally{await result.placement.lease?.release();}
+    finally{await result.placement.session?.release();}
   }finally{f.close();}
 });
 
@@ -280,14 +209,14 @@ test('real HTTP a Crucible older than the route is "it did not say", not a refus
  * crucible server then it should work."* This used to REFUSE the placement as
  * `CrucibleTooOld`. The activity read is a courtesy — the admission bound — so a
  * document the SDK cannot parse leaves the run on its default depth, exactly as
- * the 404 control above does, and the load and the lease go ahead.
+ * the 404 control above does, and the session goes ahead.
  */
 test('real HTTP a server whose activity document this build cannot read still places, at the default depth',async()=>{
   const f=fixture({oldActivity:true});try{
     const result=await dispatch.placeJob('translate',f.entry.name,()=>{},()=>true);
     expect(result.verdict).toBe('go');if(result.verdict!=='go')throw Error(JSON.stringify(result));
     try{expect(result.placement.concurrency).toBe(dispatch.CRUCIBLE_CHAT_CONCURRENCY);}
-    finally{await result.placement.lease?.release();}
+    finally{await result.placement.session?.release();}
   }finally{f.close();}
 });
 
@@ -301,17 +230,17 @@ test('real HTTP a server whose activity document this build cannot read still pl
  * A CLEANUP'S TRIAGE RUNS ON THE CLEANER'S MODEL (2026-09-25). The server's `decide`
  * class picks the 2B here and its `clean` class the 9B; the triage takes the 9B —
  * measured the model that separates, and the one the cleanup is about to use —
- * while the act on the lease stays `decide`, which is what the door is asked as.
+ * while the session's act stays `decide`, which is what the door is asked as.
  */
-test('real HTTP a clean-triage is placed on the clean class model, leased as decide',async()=>{
+test('real HTTP a clean-triage is placed on the clean class model, in a session opened as decide',async()=>{
   const f=fixture();try{
     const result=await dispatch.placeJob('clean-triage',f.entry.name,()=>{},()=>true);
     expect(result.verdict).toBe('go');if(result.verdict!=='go')throw Error(JSON.stringify(result));
     try{expect(result.placement.model).toBe('qwen3.5-9b');
-      const load=f.calls.find(c=>c.path==='/v1/jobs')!;
-      expect(load.body.model).toBe('qwen3.5-9b');
-      expect(load.body.params.lease).toEqual({act:'decide',ttl_seconds:120});
-    }finally{await result.placement.lease?.release();}
+      const opened=f.calls.find(c=>c.path==='/v1/queue/sessions')!;
+      expect(opened.body.model).toBe('qwen3.5-9b');
+      expect(opened.body.act).toBe('decide');
+    }finally{await result.placement.session?.release();}
   }finally{f.close();}
 });
 
@@ -321,6 +250,6 @@ test('real HTTP a reading placement states no chat depth and does not ask for on
     expect(result.verdict).toBe('go');if(result.verdict!=='go')throw Error(JSON.stringify(result));
     try{expect(result.placement.concurrency).toBeNull();
       expect(f.calls.some(c=>c.path==='/v1/activity')).toBe(false);
-    }finally{await result.placement.lease?.release();}
+    }finally{await result.placement.session?.release();}
   }finally{f.close();}
 });

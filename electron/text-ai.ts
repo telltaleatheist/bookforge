@@ -80,7 +80,7 @@ async function callLocal(prompt: string, systemPrompt?: string): Promise<string>
  * The transport is `ai-bridge`'s `crucibleChatOnce` and NOT a second client:
  * the timeout, the abort chain and — the load-bearing part — the translation of
  * the SDK's exceptions into the named codes every surface reads
- * (`crucible_model_not_resident`, `crucible_model_leased`, …) live there, and a
+ * (`crucible_model_not_resident`, `crucible_session_wait`, …) live there, and a
  * third copy of them is a third place for a refusal to stop naming itself
  * (crucible `docs/ARCHITECTURE.md` R1).
  *

@@ -61,7 +61,7 @@ import type { Activity, CrucibleClient } from '@crucible/client';
 import { CrucibleUnreachable } from '@crucible/client';
 import { CRUCIBLE_CLIENT_NAME, crucibleClientFor } from './servers';
 import { cancelCrucibleJobById, describeCrucibleJobRefusal } from './job';
-import { releaseCrucibleLeaseById } from './lease';
+import { closeCrucibleSessionById } from './lease';
 import {
   readInFlightLedger,
   settleInFlight,
@@ -83,22 +83,22 @@ import {
 /**
  * THE `jobType` A HOSTED FOUNDRY LEASE WEARS IN THE LEDGER.
  *
- * ── Why a lease is in a ledger of jobs at all (P8) ─────────────────────────
+ * ── Why a session is in a ledger of jobs at all (P8) ───────────────────────
  *
- * Because it is the same fact: *this app is holding somebody's card and a hard
- * kill can lose the handle*. The hosted Foundry takes its own Crucible lease
- * inside the vendored dispatcher (`crucible-dispatch.ts`) and releases it in its
- * own settle, so a ctrl-C — which cannot run `before-quit` — left a claim with
- * nothing on this side able to name it. One ledger, one sweep, one place a person
- * looks after a crash is better than a second file with a second lifetime.
+ * Because it is the same fact: *this app is holding somebody's machine and a
+ * hard kill can lose the handle*. The hosted Foundry opens its own Crucible queue
+ * session inside the vendored dispatcher (`crucible-dispatch.ts`) and closes it
+ * in its own settle, so a ctrl-C — which cannot run `before-quit` — leaves a
+ * session open with nothing on this side able to name it. (The server ends it
+ * after its `idle_s` anyway; the sweep hands the machine on at once.)
  *
  * WHAT IT CHANGES IS THE ROUTE, and that is why it is a NAME rather than a flag:
- * a lease is not a job, so `DELETE /v1/jobs/{id}` would answer 404 and the card
- * would stay held for its whole TTL. A row of this type goes to
- * {@link releaseCrucibleLeaseById} instead. Every other row is a job and is
- * cancelled exactly as it always was.
+ * a session is closed by `DELETE /v1/queue/{id}` ({@link closeCrucibleSessionById}),
+ * not cancelled like a job. Every other row is a job and is cancelled exactly as
+ * it always was. A `foundry-lease` row a pre-1.0.76 build left behind names an id
+ * the jobs route answers 404 for, which the sweep settles as gone.
  */
-export const FOUNDRY_LEASE_JOB_TYPE = 'foundry-lease';
+export const FOUNDRY_SESSION_JOB_TYPE = 'foundry-session';
 
 export function unloadJobTypeForResidentKind(kind: string): string | null {
   switch (kind) {
@@ -117,7 +117,7 @@ export function unloadJobTypeForResidentKind(kind: string): string | null {
  * PURE, and it is the whole safety rule of this module: an unload is submitted
  * only when this answers null. Every one of these is a real holder in
  * Crucible's settlement (`crucible/settle.py`): a job on the lane, a queued job
- * about to take it, narrator's claim, an open lease, a streaming session, a
+ * about to take it, narrator's claim, an open queue session, a streaming session, a
  * chat in flight, and a stop already under way.
  *
  * ── AND IT IS NOT `resident.heldBy`, WHICH 1.0.13 PUTS RIGHT BESIDE IT ─────
@@ -128,14 +128,14 @@ export function unloadJobTypeForResidentKind(kind: string): string | null {
  * decision, because the two tests are deliberately not the same test:
  *
  *   * **This one is WIDER on purpose.** A chat in flight holds NOTHING on the
- *     server — that is the entire reason leases exist — and a stop already
+ *     server — which is why a run of them is a session — and a stop already
  *     under way is not a holder either. Both mean somebody is mid-block on that
  *     card, and an app that is quitting must not take a model off them. Owen's
  *     rule stands: the only thing this app can honestly claim is a job id it
  *     wrote down itself.
- *   * **A stranded card is still not ours to reconcile.** Since 1.0.13 a lapsed
- *     lease settles the card on the server, which is the real reconciler and
- *     needs nothing from here. What this sweep clears is what OUR ledger says we
+ *   * **A stranded card is still not ours to reconcile.** The server's own
+ *     settlement (a session that idles out settles the card) is the real
+ *     reconciler and needs nothing from here. What this sweep clears is what OUR ledger says we
  *     put there — and that is what {@link sweepCrucibleInFlight} walks.
  *
  * So the server's answer is for the SENTENCE, not the verdict: when this sweep
@@ -162,7 +162,7 @@ export function cardHeldBy(
     return `a queued ${job.type} job (${job.jobId}) from ${clientWords(job.client)}`;
   }
   if (activity.claim !== null) return `a claim held by ${activity.claim.heldBy}`;
-  if (activity.lease !== null) return 'an open lease';
+  if (activity.session !== null) return `a queue session held by ${clientWords(activity.session.client)}`;
   if (activity.streaming !== null) return `a streaming session from ${clientWords(activity.streaming.client)}`;
   if (activity.chat.inFlight > 0) return `${activity.chat.inFlight} chat completion(s) in flight`;
   if (activity.stopping !== null) return `a stop of ${activity.stopping.id} already under way`;
@@ -433,12 +433,12 @@ async function sweep(options: {
     const ours = new Set<string>();
     for (const row of rows) {
       /*
-       * TWO ROUTES, ONE LEDGER. A `foundry-lease` row names a LEASE, which is
-       * released; everything else names a JOB, which is cancelled. See
-       * {@link FOUNDRY_LEASE_JOB_TYPE} for why they share a file.
+       * TWO ROUTES, ONE LEDGER. A `foundry-session` row names a SESSION, which
+       * is closed; everything else names a JOB, which is cancelled. See
+       * {@link FOUNDRY_SESSION_JOB_TYPE} for why they share a file.
        */
-      const result = row.jobType === FOUNDRY_LEASE_JOB_TYPE
-        ? await releaseCrucibleLeaseById(server, row.jobId)
+      const result = row.jobType === FOUNDRY_SESSION_JOB_TYPE
+        ? await closeCrucibleSessionById(server, row.jobId)
         : await cancelCrucibleJobById(server, row.jobId);
       jobs.push({ entry: row, outcome: result.outcome, detail: result.detail });
       if (result.outcome === 'cancelled' || result.outcome === 'gone'
@@ -525,14 +525,14 @@ async function clearTheCard(
    * away from. A stranded card that stays stranded is the single hardest thing
    * to diagnose after the fact — nothing fires an event when a card becomes
    * unheld — so the stamp goes in the log beside the reason we are leaving it,
-   * and the reconciler it names (a lapsing lease, on that server) is the one
-   * that will actually act on it.
+   * and the reconciler it names (a session's `idle_s`, on that server) is the
+   * one that will actually act on it.
    */
   const stranded = strandedSince(activity);
   const strandedNote = stranded === null
     ? ''
-    : ` "${server}" itself reports nothing has held it since ${stranded}; a lease that lapses `
-      + 'there is what settles that, not a sweep here.';
+    : ` "${server}" itself reports nothing has held it since ${stranded}; the server's own `
+      + 'settlement (a session idling out there) is what settles that, not a sweep here.';
 
   const holder = cardHeldBy(activity, ours);
   if (holder !== null) {
