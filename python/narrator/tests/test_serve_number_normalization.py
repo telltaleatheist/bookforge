@@ -92,6 +92,21 @@ class CheckLanguageTest(unittest.TestCase):
             check_language('')
 
 
+class EllipsisTest(unittest.TestCase):
+    """Every printed ellipsis reaches the engine as "...", the corpora's form (Owen, 2026-10-02)."""
+
+    def test_spaced_four_dot_and_the_character_become_three_periods(self):
+        self.assertEqual(normalize_for_tts('as if waiting to receive . . . or transmit', 'en'),
+                         'as if waiting to receive ... or transmit')
+        self.assertEqual(normalize_for_tts('He stopped. . . . Then he went on.', 'en'), 'He stopped... Then he went on.')
+        self.assertEqual(normalize_for_tts('Wait… what?', 'en'), 'Wait... what?')
+        self.assertEqual(normalize_for_tts('Well .. . maybe', 'en'), 'Well ... maybe')
+
+    def test_what_is_not_an_ellipsis_is_left_alone(self):
+        for text in ('Already canonical... yes.', 'e.g. this', 'a typo.. here', 'Mr. Smith.'):
+            self.assertEqual(normalize_for_tts(text, 'en'), text)
+
+
 class NormalizeTest(unittest.TestCase):
     """What the listener actually hears."""
 

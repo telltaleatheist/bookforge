@@ -475,11 +475,23 @@ def check_language(language) -> str:
     return lang
 
 
+#: Foundry's ELLIPSIS_RUN (src/clean/tts-punctuation.ts): three or more periods, spaces or tabs between them allowed.
+#: Two periods are never an ellipsis.
+_ELLIPSIS_RUN = re.compile(r'\.[ \t]*\.[ \t]*\.(?:[ \t]*\.)*')
+
+
 def normalize_for_tts(text, language):
     if not text:
         return text
     lang = resolve_language(language)
-    s = text
+    # THE ELLIPSIS THE VOICES WERE TRAINED ON (Owen, 2026-10-02: "its pretty clear we need to make sure elipses are
+    # printed correctly at a bare minimum"). Mutineer's Moon prints ". . ." 173 times, and the Higgs corpora hold
+    # none (tr_v4nb 0 vs "..." 287, mb_v16 0 vs 353, ds_v14 0 vs 121): on "as if waiting to receive . . . or
+    # transmit" the Third Reich voice invented words and repeated itself. Every printed form - spaced, four dots,
+    # U+2026 - becomes exactly "...", the form the corpora use. Foundry's Clean text does the same to the book file
+    # (src/clean/tts-punctuation.ts ELLIPSIS_RUN, the same pattern); this is the engine's input, so a book rendered
+    # without that pass is covered too, and a cleaned one passes through unchanged.
+    s = _ELLIPSIS_RUN.sub('...', text.replace('…', '...'))
 
     def _money(m):
         whole = m.group(1).replace(',', '')
