@@ -40,8 +40,52 @@
 import { CruciblePairingError, CrucibleClient, parsePairing } from '@crucible/client';
 import { CRUCIBLE_INTERACTIVE_QUEUE } from '../../shared/crucible/server-queue';
 
-/** What this extension calls itself in a server's log. */
-export const CLIENT_NAME = 'bookforge-reader';
+/**
+ * WHAT THIS EXTENSION CALLS ITSELF TO A CRUCIBLE — one name per INSTALL:
+ * `bookforge-reader@<install id>`.
+ *
+ * Crucible 1.0.76 matches a queue SESSION to its client by this name, and every
+ * request from the client holding the open session is an implicit item of it.
+ * A TTS stream now runs inside a session the server opens for it, so two
+ * browsers both saying `bookforge-reader` would ride each other's sessions
+ * ahead of the line (crucible-pc-1: one distinct, stable name per install).
+ * The manifest pins ONE extension id everywhere (`key`), so the id cannot tell
+ * installs apart; an 8-hex install id is minted once into `chrome.storage.local`
+ * and every context of this install (background, offscreen, popup, options)
+ * reads the same one.
+ */
+const CLIENT_APP = 'bookforge-reader';
+const INSTALL_KEY = 'crucibleInstallId';
+let installName: string | null = null;
+
+/** Read (or mint, once) this install's name. Every context calls it through {@link loadRegistry}. */
+export async function loadClientName(): Promise<string> {
+  if (installName !== null) return installName;
+  const stored = await chrome.storage.local.get(INSTALL_KEY);
+  let id = stored[INSTALL_KEY];
+  if (typeof id !== 'string' || !/^[0-9a-f]{8}$/.test(id)) {
+    const bytes = crypto.getRandomValues(new Uint8Array(4));
+    const minted = [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('');
+    await chrome.storage.local.set({ [INSTALL_KEY]: minted });
+    // Read back: two contexts minting at once settle on whichever write landed.
+    const settled = (await chrome.storage.local.get(INSTALL_KEY))[INSTALL_KEY];
+    id = typeof settled === 'string' ? settled : minted;
+  }
+  installName = `${CLIENT_APP}@${id}`;
+  return installName;
+}
+
+/**
+ * This install's name, once {@link loadClientName} has run. Throws before then:
+ * a client built under a made-up name would be a stranger to its own session.
+ */
+export function clientName(): string {
+  if (installName === null) {
+    throw new Error('the extension\'s Crucible client name was asked for before the registry was '
+      + 'loaded (loadRegistry / loadClientName) — a bug in the caller, not a setting.');
+  }
+  return installName;
+}
 
 /** One registered server, as stored. */
 export interface ServerEntry {
@@ -79,6 +123,7 @@ export function maskToken(token: string): string {
  * them with nothing said.
  */
 export async function loadRegistry(): Promise<Registry> {
+  await loadClientName();
   const stored = await chrome.storage.local.get([SERVERS_KEY, SELECTED_KEY]);
   const raw = stored[SERVERS_KEY];
   if (raw === undefined) return { servers: [], selected: null };
@@ -227,7 +272,7 @@ export async function selectedServer(): Promise<ServerEntry | null> {
  */
 export function clientFor(entry: ServerEntry): CrucibleClient {
   return new CrucibleClient({
-    url: entry.url, token: entry.token, clientName: CLIENT_NAME, queue: CRUCIBLE_INTERACTIVE_QUEUE,
+    url: entry.url, token: entry.token, clientName: clientName(), queue: CRUCIBLE_INTERACTIVE_QUEUE,
   });
 }
 

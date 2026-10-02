@@ -36,7 +36,7 @@ import type {
   VoiceInfo,
   VoiceReference,
 } from '@crucible/client';
-import { CLIENT_NAME, type ServerEntry } from './servers';
+import { clientName, type ServerEntry } from './servers';
 
 /** What `Test` shows for one server: is it there, and what is on its card. */
 export interface ServerProbe {
@@ -269,7 +269,7 @@ const ownJobs = new Set<string>();
 export interface SelfIdentity {
   /** `navigator.userAgent` — what Crucible records when nothing better arrives. */
   readonly userAgent: string;
-  /** The name the SDK is asked to send (`CLIENT_NAME`). */
+  /** The name the SDK is asked to send (`clientName()`). */
   readonly clientName: string;
 }
 
@@ -374,7 +374,7 @@ async function ourLoadInFlight(client: CrucibleClient, voice: string): Promise<s
     return null;
   }
   const mine = [...activity.running, ...activity.queued].find((row) => (
-    row.type === 'load-voice' && row.model === voice && row.client === CLIENT_NAME
+    row.type === 'load-voice' && row.model === voice && row.client === clientName()
   ));
   return mine === undefined ? null : mine.jobId;
 }
@@ -428,7 +428,7 @@ export async function loadVoice(
      * with a 409 and leave the player spinning (2026-09-27).
      */
     if (!(err instanceof CrucibleBusy) || err.jobId === null
-        || err.jobType !== 'load-voice' || err.model !== voice || err.holder !== CLIENT_NAME) {
+        || err.jobType !== 'load-voice' || err.model !== voice || err.holder !== clientName()) {
       throw err;
     }
     jobId = err.jobId;

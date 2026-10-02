@@ -62,14 +62,15 @@ async function loadPairModule() {
     bundle: true,
     format: 'cjs',
     platform: 'node',
-    // `servers.ts` reaches for chrome.* inside its functions; only CLIENT_NAME
-    // is wanted here, so the module is stubbed rather than loaded.
+    // `servers.ts` reaches for chrome.* inside its functions; only this
+    // install's client name is wanted here, so the module is stubbed rather
+    // than loaded.
     plugins: [{
       name: 'stub-servers',
       setup(build) {
         build.onResolve({ filter: /\.\/servers$/ }, () => ({ path: 'servers', namespace: 'stub' }));
         build.onLoad({ filter: /.*/, namespace: 'stub' }, () => ({
-          contents: 'export const CLIENT_NAME = "bookforge-reader";',
+          contents: 'export async function loadClientName() { return "bookforge-reader@0a1b2c3d"; }',
           loader: 'js',
         }));
       },
@@ -235,7 +236,7 @@ function localEngine() {
         }).then((r) => r.json());
         const mine = pending.requests.find((r) => r.id === started.id);
         assert.ok(mine, 'the engine lists it as pending for an operator to see');
-        assert.strictEqual(mine.client_name, 'bookforge-reader', 'it names the asker');
+        assert.strictEqual(mine.client_name, 'bookforge-reader@0a1b2c3d', 'it names the asker, by install');
 
         const decided = await fetch(`${engine.url}/v1/pairing/decision`, {
           method: 'POST',

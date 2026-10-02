@@ -37,7 +37,7 @@
  * this file builds.
  */
 
-import { CLIENT_NAME } from './servers';
+import { loadClientName } from './servers';
 
 /** How the engine advertises this handshake on `GET /v1/ping`. */
 const SUPPORTED_PAIRING_VERSION = 1;
@@ -158,7 +158,7 @@ export async function startPairing(typed: string): Promise<PairingStart> {
     method: 'POST',
     cache: 'no-store',
     headers: { 'Content-Type': 'application/json', 'X-Crucible-Api': '1' },
-    body: JSON.stringify({ client_name: CLIENT_NAME }),
+    body: JSON.stringify({ client_name: await loadClientName() }),
   });
   if (!response.ok) throw await refusalFrom(response, url);
   const body = await response.json() as Record<string, unknown>;

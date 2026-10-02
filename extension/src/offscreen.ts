@@ -80,8 +80,9 @@ import {
 import {
   NO_SERVER_SELECTED,
   clientFor,
+  clientName,
+  loadClientName,
   type ServerEntry,
-  CLIENT_NAME,
 } from './servers';
 import {
   describeHolder,
@@ -919,6 +920,9 @@ async function bindServer(): Promise<boolean> {
   if (server === null || server.name !== entry.name || server.url !== entry.url
       || server.token !== entry.token) {
     server = entry;
+    // This document gets its server from the background page and never reads
+    // the registry itself, so it loads this install's client name here.
+    await loadClientName();
     client = clientFor(entry);
     backend = null;
     voiceRows = [];
@@ -1147,7 +1151,7 @@ async function openWaitingOutOurselves(
   } catch (err) {
     if (!(err instanceof CrucibleRefused)) throw err;
     if (err.code !== 'stream_session_open' && err.code !== 'engine_in_use') throw err;
-    const self = { userAgent: navigator.userAgent, clientName: CLIENT_NAME };
+    const self = { userAgent: navigator.userAgent, clientName: clientName() };
     let activity: Activity;
     try {
       activity = await bound.activity();
@@ -1218,7 +1222,7 @@ async function noteHolder(): Promise<void> {
   try {
     engineHolder = describeHolder(await bound.activity(), {
       userAgent: navigator.userAgent,
-      clientName: CLIENT_NAME,
+      clientName: clientName(),
     });
   } catch {
     // The holder line is a courtesy; a server that will not answer /v1/activity
