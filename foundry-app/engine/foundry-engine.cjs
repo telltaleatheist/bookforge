@@ -3096,9 +3096,19 @@ function isPrintedForm(tokens, i) {
   if (PERIODLESS_ABBREVIATIONS.has(beforePeriod.toLowerCase())) return true;
   return false;
 }
+function unspacedDashReading(find, replace) {
+  if (find.length !== replace.length || find === replace) return false;
+  for (let i = 0; i < find.length; i++) {
+    if (find[i] === replace[i]) continue;
+    if (find[i] !== "-" || replace[i] !== "\u2014") return false;
+    if (/\d/.test(find[i - 1] ?? "") || /\d/.test(find[i + 1] ?? "")) return false;
+  }
+  return true;
+}
 function wholeShape(find, replace) {
   const dashed = find.replace(/(^|\s)[-–](\s|$)/g, "\u2014");
   if (dashed !== find && dashed === replace.replace(/\s*—\s*/g, "\u2014")) return "dash";
+  if (unspacedDashReading(find, replace)) return "dash";
   if (/\[[^\]]*\]/.test(find) && find.replace(/\[([^\]]*)\]/g, "$1") === replace) return "interpolation";
   const trimmed = find.trim();
   if (replace.trim() === "" && /^[[(][^[\]()]*[\])]$/.test(trimmed) && trimmed.split(/\s+/).length <= 4) {
@@ -4732,7 +4742,7 @@ function validateNumberEdits(target, segments, edits, reserved = [], policy = NU
       });
       continue;
     }
-    if (hyphenToDash(find) === replace) {
+    if (hyphenToDash(find) === replace || unspacedDashReading(find, replace)) {
       if (sitsInCitation(target, find, at)) {
         reject(find, replace, "CITATION_CODE");
         continue;
@@ -4752,7 +4762,7 @@ function validateNumberEdits(target, segments, edits, reserved = [], policy = NU
         find,
         replace,
         status: "APPLIED",
-        editClass: "spaced-hyphen",
+        editClass: hyphenToDash(find) === replace ? "spaced-hyphen" : "unspaced-dash",
         ...whence === void 0 ? {} : { detail: whence }
       });
       continue;
@@ -5351,7 +5361,7 @@ var init_tts_number_normalizer = __esm({
     init_tts_number_rules();
     init_number_expansion();
     init_tts_spoken_forms();
-    NORMALIZER_VERSION = "n17";
+    NORMALIZER_VERSION = "n18";
     RAW_ANSWER_EXCERPT = 600;
     MAX_PARSE_FAIL_SHARE = 0.1;
     ROMAN_WORD = /(?:^|\s)[IVXLCDM]{2,}(?:$|[\s,.;:)\]])/;
@@ -30954,7 +30964,7 @@ var init_version = __esm({
     init_engine_import_meta_url();
     init_package();
     VERSION = package_default.version;
-    GIT_COMMIT = "src 47c83f3912c3".length > 0 ? "src 47c83f3912c3" : null;
+    GIT_COMMIT = "src b32d5f206361".length > 0 ? "src b32d5f206361" : null;
   }
 });
 
@@ -73728,6 +73738,7 @@ var init_triage = __esm({
       "- a run of capital letters: an acronym such as FBI or NATO, or a word in capitals for emphasis;",
       "- a bracketed insertion or apparatus: [sic], [12], [he said], (see page twelve), (Kershaw 1993);",
       "- a hyphen with a space on each side, used as a dash;",
+      "- a hyphen with no spaces standing where the sentence breaks or turns aside, used as a dash rather than joining one word;",
       "- a roman numeral: Part IV, Chapter IX, Henry VIII.",
       "Superscript note numbers, daggers and asterisks used as reference marks do NOT count \u2014 they are removed elsewhere.",
       "Ordinary prose with none of these does not need cleaning. If you are unsure, it needs cleaning.",
@@ -73851,6 +73862,7 @@ BRACKETS.
 
 DASHES AND BROKEN WORDS.
 - A hyphen with a space on each side is a dash: replace each one, with the word either side in the find: "himself - written" is "himself\u2014written".
+- A hyphen with NO spaces is a dash when the sentence breaks there: a speaker cut off or resuming, a sudden turn of thought, or an aside set off between two such hyphens. Replace it with an em dash and change nothing else; keep the word either side in the find. A hyphen that joins the parts of one word stays a hyphen. A hyphen beside a digit is never a dash.
 - A word broken across a line is one word: "Verlags- anstalt" is "Verlagsanstalt"; "fini sh" is "finish".
 
 WORKED ANSWERS
