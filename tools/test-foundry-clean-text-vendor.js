@@ -462,7 +462,17 @@ const VENDOR_LEAVES = '770480d';
 /* MOVED 2026-09-25, 2c5edfc → 9c2aa68 (n15), read in full: the light gate — the normalizer imports src/clean/light-gate.ts (carried here as electron/light-gate.ts, byte-identical) and applies it under policy.gate 'light'. */
 /* MOVED 2026-09-25, 9c2aa68 → f57402c (n16), read in full: the version constant and its comment only in these files; the prompt moved in the engine's own file. */
 /* MOVED 2026-09-25, f57402c → 1fd0e35 (n17), read in full: the version constant and its comment only in these files; the capitals rule moved in the engine's own prompt file. */
-const ONE_DOOR_BASELINE = '1fd0e35';
+/*
+ * MOVED 2026-10-02, 1fd0e35 → a3400e0 (n18), read in full: TWO commits touch these files. 0d1891a (Clean text
+ * removal box, Owen 2026-09-29): `policy.removal` - a removal the run asked for is accepted whole under every gate,
+ * class `removal`, exempt from the citation guard, taking its adjacent space (`removalSpan`); OFF unless a run asks,
+ * so every earlier run decides exactly as before - which is why it carried no version bump. a3400e0 (n18, Owen's
+ * em-dash ruling): `unspacedDashReading` in light-gate, accepted by the strict validator as class `unspaced-dash`
+ * and by the light gate's whole shapes, and the version constant. A RULE MOVE, NORMALIZER_VERSION n17 → n18, and
+ * this side took the same diff (git apply of 1fd0e35..a3400e0 onto electron/). Owed since the 0d1891a re-vendor
+ * (df846927), which did not run this keeper.
+ */
+const ONE_DOOR_BASELINE = 'a3400e0';
 const FROZEN_SINCE_BASELINE = [
   'src/clean/tts-number-normalizer.ts',
   'src/clean/tts-spoken-forms.ts',
@@ -524,7 +534,7 @@ const FILES = [
     theirs: 'src/clean/tts-number-normalizer.ts',
     vendoredAt: VENDOR_PASS,
     shipped: {
-      sha256: '30dffa47dbbe7c6eaa86fa140e00109fd731e883b6c46a36fff0d370e0a5ca43',
+      sha256: 'e5f8ad409d69661edb5c24bc5087a15323f14467af66217c1208946e269944ba',
       why: 'the type-only `epub-processor.js` import retargeted to `./targets.js`; '
         + '`askAboutEach` exported so the engine\'s door is a third caller rather than a second '
         + 'copy of the retry rules; `normalizeNarrationNumbers` deleted (291 lines, all about a '
@@ -564,7 +574,10 @@ const FILES = [
         + 'gate off. Same diff here. REPINNED 2026-09-25 for 2c5edfc (n14): the version constant '
         + 'and its comment. Same diff here. REPINNED 2026-09-25 for 9c2aa68 (n15): the light gate. '
         + 'Same diff here. REPINNED 2026-09-25 for 1fd0e35 (n17): the version constant and its '
-        + 'comment only (n16 in f57402c moved the same two). Same diff here.',
+        + 'comment only (n16 in f57402c moved the same two). Same diff here. '
+        + 'REPINNED 2026-10-02 for a3400e0 (n18): 0d1891a\'s policy.removal (a removal asked for is accepted '
+        + 'whole, off unless asked) and a3400e0\'s unspaced hyphen read as an em dash (class unspaced-dash). '
+        + 'Same diff here.',
     },
   },
   {
@@ -708,7 +721,8 @@ const VERSIONS = [
     // n14 → n15: Foundry 9c2aa68 (the light gate).
     // n15 → n16: Foundry f57402c (years, rulers, transl./ed., month-first ranges).
     // n16 → n17: Foundry 1fd0e35 (a run of capitals that is a word is read as the word).
-    expected: 'n17',
+    // n17 → n18: Foundry a3400e0 (an unspaced hyphen where the sentence breaks is an em dash).
+    expected: 'n18',
   },
   {
     name: 'PUNCTUATION_SPEC_VERSION',

@@ -95,12 +95,31 @@ export function isPrintedForm(tokens: readonly string[], i: number): boolean {
   return false;
 }
 
+/**
+ * AN UNSPACED HYPHEN READ AS THE EM DASH IT STANDS FOR (n18): `replace` is `find`
+ * with one or more hyphens made em dashes and NOTHING else changed - same length,
+ * every other character identical - so the reading cannot paraphrase. A hyphen
+ * with a digit on either side is never one: "NG-5428", "1914-18", "I-95" are
+ * identifiers and ranges, read by their own rules.
+ */
+export function unspacedDashReading(find: string, replace: string): boolean {
+  if (find.length !== replace.length || find === replace) return false;
+  for (let i = 0; i < find.length; i++) {
+    if (find[i] === replace[i]) continue;
+    if (find[i] !== '-' || replace[i] !== '\u2014') return false;
+    if (/\d/.test(find[i - 1] ?? '') || /\d/.test(find[i + 1] ?? '')) return false;
+  }
+  return true;
+}
+
 /** Any of the three whole shapes that need no word-by-word proof. */
 function wholeShape(find: string, replace: string): string | null {
   // A spaced hyphen or en dash used as a dash, made an em dash — also where the
   // span starts or ends at the dash ("– intentionally" → "—intentionally").
   const dashed = find.replace(/(^|\s)[-–](\s|$)/g, '—');
   if (dashed !== find && dashed === replace.replace(/\s*—\s*/g, '—')) return 'dash';
+  // An UNSPACED hyphen made the em dash it stands for, nothing else changed (n18).
+  if (unspacedDashReading(find, replace)) return 'dash';
   // An editor's square brackets dropped, every word kept.
   if (/\[[^\]]*\]/.test(find) && find.replace(/\[([^\]]*)\]/g, '$1') === replace) return 'interpolation';
   // A whole bracketed insertion of a few words removed.

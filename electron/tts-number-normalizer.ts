@@ -69,7 +69,7 @@ import { promises as fs } from 'fs';
 import * as path from 'path';
 
 import { hasLetter } from './ai-cleanup-prepass.js';
-import { lightGateRefusal } from './light-gate.js';
+import { lightGateRefusal, unspacedDashReading } from './light-gate.js';
 import {
   applyNumberRules, bareWord, CANONICAL_BOOK_NAMES, cardinalWords, scriptureSpans,
   isQuantityContext, printsPreDecimalSum, sitsInCitation, stillHasDigits, yearQuantityReadings, yearReading,
@@ -202,11 +202,21 @@ export { sitsInCitation, bareWord };
  * "specific examples sometimes lead to smaller models using the examples and
  * nothing else").
  *
+ * n17 -> n18 (2026-10-02, Owen: "emdashes dramatically affect prosody. its
+ * something we want to get exactly right. so where we can, we can do this
+ * deterministically. where it isnt trustworthy to do it deterministically, we
+ * should hand the rule to the model"): a hyphen typed with NO spaces where the
+ * sentence breaks off or turns aside is read as an em dash ("If you're wrong-if
+ * he is a bad guy", "the fifth-or sixth-time"). A general rule in the prompt,
+ * and `unspacedDashReading` accepts exactly that edit. The shapes that can be
+ * nothing else are already fixed deterministically in narrator's engine input
+ * (BookForge 2340aab7); this is the judgement half.
+ *
  * A BUMP HERE IS A CROSS-REPO EVENT. These rules are vendored byte-for-byte into
  * orpheus-finetune's `pipeline/normalization/vendor/` and drift-checked on every
  * training build — see docs/NARRATION_TEXT_PASS.md.
  */
-export const NORMALIZER_VERSION = 'n17';
+export const NORMALIZER_VERSION = 'n18';
 
 /**
  * The model this pass uses when the setting is absent.
@@ -345,12 +355,20 @@ export type NumberEditClass =
   | 'bracketed'
   /** A hyphen used as a dash, with spaces around it. */
   | 'spaced-hyphen'
+  /** A hyphen with NO spaces, read as the em dash it stands for (n18, `unspacedDashReading`). */
+  | 'unspaced-dash'
   /** An ampersand, which a narrator says as the word. */
   | 'ampersand'
   /** A roman numeral naming a person or a part. */
   | 'roman'
   /** A word the page broke with a space, joined again — "fini sh". See `rejoinsSplitWord`. */
   | 'split-word'
+  /**
+   * A span REMOVED because the run asked for removals (`NumberEditPolicy.removal`,
+   * src/clean/removal.ts) — a printed reference no narrator reads, or what the
+   * person described. The model's decision; the receipt names every one.
+   */
+  | 'removal'
   /** Anything else. The class the receipt watches hardest. */
   | 'other';
 
@@ -383,6 +401,38 @@ function hasRegnalSingleNumeral(find: string): boolean {
  * and") is not this, and removing it would take prose with it.
  */
 const WHOLE_BRACKET = /^\s*[([][^()[\]]*[)\]]\s*$/;
+
+/**
+ * THE SPAN A REMOVAL ACTUALLY TAKES — the find, and the one space it would
+ * otherwise leave doubled. "as shown (see fig. 2) here" with the find "(see fig.
+ * 2)" would read "as shown  here"; "the end (fig. 2)." would read "the end .". So
+ * the space BEFORE the find goes with it when there is one, and failing that the
+ * space after it — but only when the widened span still sits in one text node and
+ * touches nothing already reserved or accepted. A find that brought its own space
+ * is taken as it is.
+ */
+export function removalSpan(
+  target: string,
+  find: string,
+  at: number,
+  withinOneNode: (start: number, end: number) => boolean,
+  reserved: readonly { at: number; end: number }[],
+  accepted: readonly { find: string; at: number }[],
+): { find: string; replace: string; at: number } {
+  const end = at + find.length;
+  const free = (start: number, stop: number): boolean => withinOneNode(start, stop)
+    && !reserved.some((r) => start < r.end && r.at < stop)
+    && !accepted.some((a) => start < a.at + a.find.length && a.at < stop);
+  const spaceBefore = at > 0 && /\s/.test(target[at - 1]!) && !/\s/.test(find[0] ?? '');
+  const spaceAfter = end < target.length && /\s/.test(target[end]!) && !/\s/.test(find[find.length - 1] ?? '');
+  if (spaceBefore && free(at - 1, end)) {
+    return { find: target.slice(at - 1, end), replace: '', at: at - 1 };
+  }
+  if (spaceAfter && at === 0 && free(at, end + 1)) {
+    return { find: target.slice(at, end + 1), replace: '', at };
+  }
+  return { find, replace: '', at };
+}
 
 /** Is this span a bracketed insertion and nothing else? */
 export function isWholeBracketedInsertion(find: string): boolean {
@@ -1429,6 +1479,14 @@ export interface NumberEditPolicy {
    * `UNGATED — …`; only an edit that cannot be spliced stays out.
    */
   gate?: boolean | 'light';
+  /**
+   * DID THIS RUN ASK FOR REMOVALS (src/clean/removal.ts)? Then a removal the model
+   * proposes — an edit whose replacement is empty — is accepted as its decision,
+   * under every gate, rather than only a bracketed aside of three words. Owen,
+   * 2026-09-29: *"the ai should make a decision about whether it should be
+   * removed."* Absent or false: removals are what they always were.
+   */
+  removal?: boolean;
 }
 
 /** The number pass's own policy — the behaviour every caller had before 2026-09-04. */
@@ -1753,7 +1811,7 @@ export function validateNumberEdits(
       });
       continue;
     }
-    if (hyphenToDash(find) === replace) {
+    if (hyphenToDash(find) === replace || unspacedDashReading(find, replace)) {
       if (sitsInCitation(target, find, at)) {
         reject(find, replace, 'CITATION_CODE');
         continue;
@@ -1765,12 +1823,14 @@ export function validateNumberEdits(
         reject(find, replace, 'OVERLAPS_APPLIED');
         continue;
       }
-      // NO BUDGET: `hyphenToDash(find) === replace` IS the proof — the dash is the
-      // only character that changed, so nothing here can paraphrase.
+      // NO BUDGET: `hyphenToDash(find) === replace` (or `unspacedDashReading`) IS
+      // the proof — the dash is the only character that changed, so nothing here
+      // can paraphrase.
       accepted.push({ find, replace, at });
       const whence = said(undefined);
       records.push({
-        find, replace, status: 'APPLIED', editClass: 'spaced-hyphen',
+        find, replace, status: 'APPLIED',
+        editClass: hyphenToDash(find) === replace ? 'spaced-hyphen' : 'unspaced-dash',
         ...(whence === undefined ? {} : { detail: whence }),
       });
       continue;
@@ -1876,7 +1936,15 @@ export function validateNumberEdits(
       // "Doctor Kempner they", which fused two sentences in the working copy.
 
       // ── A REMOVAL: apparatus, and only apparatus ─────────────────────────
-      if (isRemoval) {
+      if (isRemoval && policy.removal === true) {
+        // ── A REMOVAL THE RUN ASKED FOR: the model's decision, taken whole ──
+        // What is removed was described to the model (src/clean/removal.ts) and
+        // it chose this span. Nothing is read in its place, so there is nothing
+        // to paraphrase and no budget to spend; the markup and overlap checks
+        // below still apply.
+        recordClass = 'removal';
+        provenExact = true;
+      } else if (isRemoval) {
         if (!isWholeBracketedInsertion(find)) {
           reject(find, replace, 'EMPTY_REPLACE',
             'only a bracketed insertion may be removed outright; every other reading says '
@@ -2040,7 +2108,10 @@ export function validateNumberEdits(
     // 5:17" was refused CITATION_CODE and narrated as digits (measured,
     // adversarial review 2026-09-05). The span was recognized as a reference by
     // shape before the model was asked, and that evidence is the stronger one.
-    if (!inScripture && sitsInCitation(target, find, at)) {
+    // A REMOVAL THE RUN ASKED FOR is exempt too: "(fig. 1-1)" is citation-shaped
+    // precisely because it is a reference, and taking it out says nothing wrong.
+    const askedRemoval = isRemoval && policy.removal === true;
+    if (!inScripture && !askedRemoval && sitsInCitation(target, find, at)) {
       reject(find, replace, 'CITATION_CODE');
       continue;
     }
@@ -2078,6 +2149,15 @@ export function validateNumberEdits(
     }
 
     if (!isNumber && !provenExact) textBudgetSpent += Math.max(find.length, replace.length);
+    if (askedRemoval) {
+      accepted.push(removalSpan(target, find, at, withinOneNode, reserved, accepted));
+      const whence = said(undefined);
+      records.push({
+        find, replace: '', status: 'APPLIED', editClass: 'removal',
+        ...(whence === undefined ? {} : { detail: whence }),
+      });
+      continue;
+    }
     accepted.push({ find, replace: reading, at });
     const why = said(respelled);
     records.push(why === undefined
