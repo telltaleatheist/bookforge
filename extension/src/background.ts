@@ -27,7 +27,7 @@ import {
   UiState,
   loadSettings
 } from './messages';
-import { selectedServer } from './servers';
+import { loadClientName, selectedServer } from './servers';
 
 let activeTabId: number | null = null;
 let latestSnapshot: QueueSnapshot | null = null;
@@ -103,7 +103,11 @@ chrome.runtime.onMessage.addListener((raw: RuntimeMessage, sender, sendResponse)
   // selected server's TOKEN lives. Handing the entry over the runtime bus keeps
   // one reader of that storage key.
   if ((raw as { cmd?: string }).cmd === 'get-server') {
-    selectedServer().then(sendResponse, (err: unknown) => {
+    // The install's Crucible client name travels WITH the entry: the offscreen
+    // document cannot read chrome.storage, where it is kept (servers.ts).
+    selectedServer().then(async (entry) => (
+      entry === null ? null : { entry, clientName: await loadClientName() }
+    )).then(sendResponse, (err: unknown) => {
       console.error('[BFR] reading the Crucible registry:', err);
       sendResponse(null);
     });

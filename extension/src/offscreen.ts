@@ -81,8 +81,8 @@ import {
 import {
   NO_SERVER_SELECTED,
   clientFor,
+  adoptClientName,
   clientName,
-  loadClientName,
   type ServerEntry,
 } from './servers';
 import {
@@ -903,7 +903,12 @@ function persistVoice(voice: string): void {
 async function bindServer(): Promise<boolean> {
   let entry: ServerEntry | null;
   try {
-    entry = await chrome.runtime.sendMessage({ target: 'background', cmd: 'get-server' }) as ServerEntry | null;
+    const reply = await chrome.runtime.sendMessage({ target: 'background', cmd: 'get-server' }) as
+      { entry: ServerEntry; clientName: string } | null;
+    entry = reply?.entry ?? null;
+    // This install's Crucible client name comes with the server: this document
+    // cannot read chrome.storage, where it is kept.
+    if (reply) adoptClientName(reply.clientName);
   } catch {
     connectionError = 'The extension\'s background page is not answering; reload the extension.';
     return false;
@@ -922,9 +927,6 @@ async function bindServer(): Promise<boolean> {
   if (server === null || server.name !== entry.name || server.url !== entry.url
       || server.token !== entry.token) {
     server = entry;
-    // This document gets its server from the background page and never reads
-    // the registry itself, so it loads this install's client name here.
-    await loadClientName();
     client = clientFor(entry);
     backend = null;
     voiceRows = [];

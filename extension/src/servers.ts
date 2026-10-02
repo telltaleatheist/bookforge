@@ -76,7 +76,21 @@ export async function loadClientName(): Promise<string> {
 }
 
 /**
- * This install's name, once {@link loadClientName} has run. Throws before then:
+ * TAKE THE NAME FROM THE BACKGROUND PAGE — for the offscreen document, which
+ * cannot read `chrome.storage` (only `chrome.runtime`) and so receives this
+ * install's name with its server over the runtime bus (`get-server`).
+ */
+export function adoptClientName(name: string): void {
+  if (!/^bookforge-reader@[0-9a-f]{8}$/.test(name)) {
+    throw new Error(`the background page sent "${name}" as this install's Crucible client name, `
+      + 'which is not one this extension mints — a bug in the background page, not a setting.');
+  }
+  installName = name;
+}
+
+/**
+ * This install's name, once {@link loadClientName} (or, offscreen,
+ * {@link adoptClientName}) has run. Throws before then:
  * a client built under a made-up name would be a stranger to its own session.
  */
 export function clientName(): string {
