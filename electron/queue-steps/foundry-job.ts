@@ -625,7 +625,7 @@ export const foundryJobStep: StepModule = {
        * left a session open for a process that no longer existed.
        *
        * `jobId` IS THE SESSION ID, and `jobType` says so by name: the sweep reads
-       * `foundry-session` and closes it (`DELETE /v1/queue/{id}`) rather than
+       * `foundry-session` and closes it (`closeSession`, as its owner) rather than
        * cancelling a job (see `in-flight-sweep.ts`). A placement that opened no
        * session — an act that meets no model — records nothing.
        *

@@ -200,7 +200,7 @@ any other client runs there** (their queued work waits; their unqueued work is r
 - **The card read** (`card-shadow.ts`) treats another client's open session as a
   busy card and a shadow; our own (and the hosted Foundry's, by the ledger) is not.
   The startup sweep closes a hosted Foundry session by id (`foundry-session` ledger
-  rows, `DELETE /v1/queue/{id}`).
+  rows, `closeSession` as the owner `foundry@<host>`, SDK 1.0.77 — reason `client`).
 - **Not yet moved to sessions:** the narration chain (render → align → denoise → rvc)
   is still per-job in the server's line with the BookForge-side `gpuHoldOf`; making a
   book ONE session (with `touch()` across the NAS publish) is the next step. Polling

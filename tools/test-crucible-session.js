@@ -24,7 +24,8 @@
  *     the line the queue parks on.
  *  6. THE ENGINE'S HEADER MAP carries this install's name, so its chats are items
  *     of the session the door opened, and the name has the host in it.
- *  7. THE STARTUP SWEEP closes a session by id, and a forgotten one is gone.
+ *  7. THE STARTUP SWEEP closes a session by id AS ITS OWNER (only the opener may
+ *     close one, reason `client`), and a forgotten one is gone.
  *  8. The one-job doors never reach for the module; the many-job door does.
  *
  * No GPU, no model, no network beyond 127.0.0.1, and no registry but its own.
@@ -276,17 +277,23 @@ const { check, summary } = makeChecker();
   });
 
   // ── 7. The startup sweep ────────────────────────────────────────────────
-  await check('the sweep closes a session by id, and a forgotten one is gone', async () => {
+  await check('the sweep closes a session by id AS ITS OWNER, and a forgotten one is gone', async () => {
     const routes = sessionRoutes();
     const fake = await startFakeCrucible(routes.handler);
     const server = nameFake(fake.url);
     try {
-      const foundry = new sdk.CrucibleClient({ url: fake.url, token: 't', clientName: 'foundry@here' });
+      const owner = clientName.HOSTED_FOUNDRY_CLIENT_NAME;
+      assert.match(owner, /^foundry@/, 'the hosted Foundry opens under foundry@<host>');
+      const foundry = new sdk.CrucibleClient({ url: fake.url, token: 't', clientName: owner });
       const theirs = await foundry.session({ act: 'clean' });
-      const closed = await lease.closeCrucibleSessionById(server, theirs.id);
+      const refused = await lease.closeCrucibleSessionById(server, theirs.id, servers.CRUCIBLE_CLIENT_NAME);
+      assert.strictEqual(refused.outcome, 'refused', 'only the opener may close a session this way');
+      const closed = await lease.closeCrucibleSessionById(server, theirs.id, owner);
       assert.strictEqual(closed.outcome, 'released', closed.detail);
       assert.strictEqual(routes.openId(), null, 'the machine is free');
-      const gone = await lease.closeCrucibleSessionById(server, 'ses-never');
+      assert.deepStrictEqual(routes.session.wire.map((w) => w.kind), ['open', 'close'],
+        'closed as the client — our own cleanup, never an operator removal');
+      const gone = await lease.closeCrucibleSessionById(server, 'ses-never', owner);
       assert.strictEqual(gone.outcome, 'gone', gone.detail);
       await theirs.close().catch(() => undefined);
     } finally {

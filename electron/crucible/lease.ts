@@ -229,22 +229,26 @@ export function openCrucibleLeaseCount(): number {
  * process and a ctrl-C (no `before-quit`) leaves open. `foundry-job.ts` writes
  * its id into the in-flight ledger as a `foundry-session` row.
  *
- * `DELETE /v1/queue/{id}` given an open session's id ENDS it (MIGRATION.md,
- * `QueueRemoved.status: 'closed'`); one still waiting leaves the line. A session
- * the server no longer knows is the state a close wanted.
+ * `client.closeSession(id)` (SDK 1.0.77, `DELETE /v1/queue/sessions/{id}`) ends
+ * it with reason `client` — our own cleanup, not an operator's removal. The
+ * server lets only the client that OPENED a session close it this way
+ * (`session_not_yours`), so the request goes out under the OWNER's name —
+ * `foundry@<host>` for the hosted Foundry's, which is this install's too. A
+ * session the server no longer knows is the state a close wanted.
  */
 export async function closeCrucibleSessionById(
   server: string,
   sessionId: string,
+  ownerName: string,
 ): Promise<{ outcome: 'released' | 'gone' | 'unreachable' | 'refused'; detail: string }> {
   let client;
   try {
-    client = await crucibleClientFor(server, CRUCIBLE_CLIENT_NAME);
+    client = await crucibleClientFor(server, ownerName);
   } catch (err) {
     return { outcome: 'refused', detail: err instanceof Error ? err.message : String(err) };
   }
   try {
-    await client.removeFromQueue(sessionId);
+    await client.closeSession(sessionId);
     return { outcome: 'released', detail: `crucible "${server}" closed session ${sessionId}` };
   } catch (err) {
     if (err instanceof CrucibleUnreachable) {

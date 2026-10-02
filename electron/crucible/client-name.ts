@@ -32,5 +32,13 @@ export function crucibleClientNameFor(app: string, host: string = os.hostname())
 
 export const CRUCIBLE_CLIENT_NAME = crucibleClientNameFor('bookforge');
 
+/**
+ * The name the HOSTED Foundry (`foundry-app/`, run in this process) opens its
+ * sessions under — Foundry's own `crucibleClientNameFor('foundry')`, the same
+ * rule on the same host. The startup sweep closes a session it left behind under
+ * this name, because only the opener may close one (`session_not_yours`).
+ */
+export const HOSTED_FOUNDRY_CLIENT_NAME = crucibleClientNameFor('foundry');
+
 /** The header the server reads a request's client from. */
 export const CRUCIBLE_CLIENT_HEADER = 'X-Crucible-Client';

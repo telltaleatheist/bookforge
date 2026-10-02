@@ -61,6 +61,7 @@ import type { Activity, CrucibleClient } from '@crucible/client';
 import { CrucibleUnreachable } from '@crucible/client';
 import { CRUCIBLE_CLIENT_NAME, crucibleClientFor } from './servers';
 import { cancelCrucibleJobById, describeCrucibleJobRefusal } from './job';
+import { HOSTED_FOUNDRY_CLIENT_NAME } from './client-name';
 import { closeCrucibleSessionById } from './lease';
 import {
   readInFlightLedger,
@@ -93,7 +94,7 @@ import {
  * after its `idle_s` anyway; the sweep hands the machine on at once.)
  *
  * WHAT IT CHANGES IS THE ROUTE, and that is why it is a NAME rather than a flag:
- * a session is closed by `DELETE /v1/queue/{id}` ({@link closeCrucibleSessionById}),
+ * a session is closed by its owner (`closeSession`, {@link closeCrucibleSessionById}),
  * not cancelled like a job. Every other row is a job and is cancelled exactly as
  * it always was. A `foundry-lease` row a pre-1.0.76 build left behind names an id
  * the jobs route answers 404 for, which the sweep settles as gone.
@@ -438,7 +439,7 @@ async function sweep(options: {
        * {@link FOUNDRY_SESSION_JOB_TYPE} for why they share a file.
        */
       const result = row.jobType === FOUNDRY_SESSION_JOB_TYPE
-        ? await closeCrucibleSessionById(server, row.jobId)
+        ? await closeCrucibleSessionById(server, row.jobId, HOSTED_FOUNDRY_CLIENT_NAME)
         : await cancelCrucibleJobById(server, row.jobId);
       jobs.push({ entry: row, outcome: result.outcome, detail: result.detail });
       if (result.outcome === 'cancelled' || result.outcome === 'gone'

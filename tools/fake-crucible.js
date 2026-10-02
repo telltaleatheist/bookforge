@@ -720,7 +720,14 @@ function sessionRoutes(behaviour = {}) {
         if (entry === undefined) {
           return refuse(res, { status: 404, code: 'unknown_queue_session', message: 'no such session' });
         }
-        if (entry.status !== 'closed') closeOne(entry, 'client');
+        // Only the client that OPENED it closes it this way (`session_not_yours`);
+        // an operator uses `DELETE /v1/queue/{id}`.
+        const caller = req.headers['x-crucible-client'] || null;
+        if (p.startsWith('/v1/queue/sessions/') && caller !== entry.attempt.client) {
+          return refuse(res, { status: 409, code: 'session_not_yours', message: `session ${entry.id} is not yours`,
+            details: { session_id: entry.id, client: entry.attempt.client, caller } });
+        }
+        if (entry.status !== 'closed') closeOne(entry, p.startsWith('/v1/queue/sessions/') ? 'client' : 'operator');
         if (p.startsWith('/v1/queue/sessions/')) {
           send(res, 200, doc(entry.id, 'closed', entry.attempt, {
             closed_at: stamp, reason: entry.reason, message: `closed (${entry.reason})`,
