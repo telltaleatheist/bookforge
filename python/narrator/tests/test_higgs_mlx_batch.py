@@ -68,6 +68,9 @@ def _engine(*, ceiling: int, budget: float = 42.0,
     # take-ladder rung OVER this (`_sampling_for`), so a missing one is an
     # AttributeError rather than a silent default.
     engine._sampling = {'temperature': 1.0, 'top_p': 0.95, 'top_k': 50}
+    # ...and the stall guard `__init__` reads from HIGGS_STALL_GUARD: off, which
+    # is what an unset variable means. Its own tests are test_higgs_stall_guard.
+    engine._stall_guard = None
     return engine
 
 

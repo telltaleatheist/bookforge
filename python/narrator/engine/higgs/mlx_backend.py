@@ -113,6 +113,7 @@ from typing import Optional
 import numpy as np
 
 from ...env import env_number
+from .stall_guard import RowStall, counted, stall_guard_from_env
 from ..log import log
 from ..protocol import (EMPTY_SENTENCE_SILENCE_SEC, BackendSpec, ClipsVoice,
                         DefaultVoice, StopPolicy)
@@ -263,6 +264,47 @@ def mlx_cache_limit_gb() -> float:
     memory that was actually pinned rather than a number of its own."""
     return float(env_number(CACHE_LIMIT_ENV, CACHE_LIMIT_DEFAULT_GB, float, 0.0,
                             'the pinned MLX buffer cache, in GB'))
+
+
+def _lower_cb0(logits, position, codes: list, penalty: float):
+    """Lower codebook 0's logit for each of `codes` by `penalty` (the stall
+    guard's one write). `position` is the row's place in a batched (B, n, V)
+    logits array, or None for one row's (n, V). A scatter into at most a
+    window's worth of entries - never a full-codebook bias."""
+    import mlx.core as mx
+    idx = mx.array(codes, dtype=mx.int32)
+    if position is None:
+        return logits.at[0, idx].add(-float(penalty))
+    return logits.at[int(position), 0, idx].add(-float(penalty))
+
+
+def _observe_stall(stall: RowStall, codes, steady: bool, row) -> None:
+    """Record one row's sampled cb0 code. The code is read only on a steady
+    step - the sampler has already evaluated it there (`step` reads cb0 to watch
+    for EOC) - and a guard that has just engaged says so once."""
+    was = stall.penalty() > 0
+    stall.observe(int(codes[0].item()) if steady else -1, steady)
+    if not was and stall.penalty() > 0:
+        _log(f'Higgs v3 MLX stall guard ENGAGED on row {row}: codebook 0 has repeated '
+             f'{stall.run} frames (window of {len(stall.ring)} codes); lowering it.')
+
+
+def _observe_stall_batch(stalls, active, sampled_rows, steady) -> None:
+    """`_observe_stall` for a batch step: every steady row's cb0 is read in ONE
+    evaluation, not one sync per row."""
+    import mlx.core as mx
+    positions = [p for p, s in enumerate(steady) if s]
+    values = {}
+    if positions:
+        stacked = np.asarray(mx.stack([sampled_rows[p][0] for p in positions]))
+        values = {p: int(v) for p, v in zip(positions, stacked.tolist())}
+    for position, row in enumerate(active):
+        was = stalls[row].penalty() > 0
+        stalls[row].observe(values.get(position, -1), steady[position])
+        if not was and stalls[row].penalty() > 0:
+            _log(f'Higgs v3 MLX stall guard ENGAGED on row {row}: codebook 0 has repeated '
+                 f'{stalls[row].run} frames (window of {len(stalls[row].ring)} codes); '
+                 'lowering it.')
 
 
 def _log(message: str) -> None:
@@ -799,6 +841,14 @@ class HiggsV3MlxEngine:
         # the same question thousands of times a book and would let the answer
         # change mid-render.
         self._sampling = config.mlx_sampling()
+        # THE STALL GUARD (stall_guard.py), read ONCE for the same reason as the
+        # batch ceiling: a malformed HIGGS_STALL_GUARD refuses here, at
+        # construction, and a running render cannot change shape under it.
+        self._stall_guard = stall_guard_from_env()
+        _log('Higgs v3 MLX stall guard: '
+             + ('off' if self._stall_guard is None else
+                f'frames={self._stall_guard.frames} rate={self._stall_guard.rate:g} '
+                f'max={self._stall_guard.max:g} window={self._stall_guard.window}'))
         self.load_engine()
 
     # ---- lifecycle ----------------------------------------------------------
@@ -1235,15 +1285,24 @@ class HiggsV3MlxEngine:
         state = HiggsSamplerState(num_codebooks=NUM_CODEBOOKS)
         if sampling is None:
             sampling = self._sampling
+        stall = None if self._stall_guard is None else RowStall(self._stall_guard)
         rows = []
         for _ in range(int(cap)):
             if should_stop is not None and should_stop():
                 return None
-            codes = step(model._audio_logits(last_hidden)[0], state,
+            logits = model._audio_logits(last_hidden)[0]
+            # THE STALL GUARD, before `step` samples (so before temperature /
+            # top-k / top-p): decided from the frames already sampled.
+            was_counted = stall is not None and counted(state, NUM_CODEBOOKS)
+            if was_counted and stall.penalty() > 0:
+                logits = _lower_cb0(logits, None, stall.codes(), stall.penalty())
+            codes = step(logits, state,
                          temperature=sampling['temperature'],
                          top_p=sampling['top_p'], top_k=sampling['top_k'],
                          boc_id=int(model.config.audio_boc_token_id),
                          eoc_id=int(model.config.audio_eoc_token_id))
+            if stall is not None:
+                _observe_stall(stall, codes, was_counted and not state.generation_done, 0)
             rows.append(codes)
             if state.generation_done:
                 break
@@ -1563,16 +1622,32 @@ class HiggsV3MlxEngine:
             finished[row] = matrix
             return matrix
 
+        stalls = (None if self._stall_guard is None
+                  else [RowStall(self._stall_guard) for _ in range(batch_size)])
         for stepno in range(1, limit + 1):
             if not active:
                 break
             if should_stop is not None and should_stop():
                 return None
+            logits_batch = model._audio_logits(last_hidden_batch)
+            # THE STALL GUARD, per row, before the sampler - the same contract as
+            # the single-row loop. Only rows past `frames` touch their logits.
+            was_counted = ([] if stalls is None
+                           else [counted(samplers[row], NUM_CODEBOOKS) for row in active])
+            if stalls is not None:
+                for position, row in enumerate(active):
+                    if was_counted[position] and stalls[row].penalty() > 0:
+                        logits_batch = _lower_cb0(logits_batch, position, stalls[row].codes(),
+                                                  stalls[row].penalty())
             sampled_rows = model._step_batch_sampler(
-                model._audio_logits(last_hidden_batch),
+                logits_batch,
                 [samplers[i] for i in active],
                 temperature=sampling['temperature'],
                 top_p=sampling['top_p'], top_k=sampling['top_k'])
+            if stalls is not None:
+                _observe_stall_batch(stalls, active, sampled_rows, [
+                    was_counted[position] and not samplers[row].generation_done
+                    for position, row in enumerate(active)])
 
             next_active, next_codes, keep_positions = [], [], []
             for position, (row, codes) in enumerate(zip(active, sampled_rows)):
