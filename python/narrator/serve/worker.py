@@ -167,6 +167,8 @@ from ..env import env_number
 # the env reader above and pulls no engine into a module that must stay empty of
 # one until `ready` has been sent.
 from ..text.gaps import classify_gap_seconds
+# THE INTERIOR-PAUSE CAP, numpy and the env reader only - no engine.
+from .pause_cap import cap_interior_pauses, max_pause_seconds
 
 DEFAULT_SAMPLERATE = 24000
 
@@ -1906,7 +1908,23 @@ class OrpheusStreamServer:
         if audio is None or len(audio) == 0:
             send_response('batch_item', {'i': it.get('i'), 'message': 'No audio generated'})
         else:
+            # THE INTERIOR-PAUSE CAP (serve/pause_cap.py; Owen, 2026-10-02), on
+            # the render door only: an assembler follows it, and a stall inside a
+            # chunk would go into the book. After the ladder has judged the take -
+            # the verdict is about the render, the cap is about what ships - and
+            # before `duration`, which is measured from what is sent. `pauseCuts`
+            # rides EVERY render row, empty when nothing was cut, so a reader can
+            # tell "nothing to cut" from a narrator that never looked.
+            cuts = None
+            if door == FOR_RENDER:
+                audio, cuts = cap_interior_pauses(
+                    audio, active_samplerate(), max_pause_seconds())
+                for cut in cuts:
+                    print(f'[narrator.serve] PAUSE CUT row {it.get("i")}: an interior '
+                          f'pause of {cut["fromS"]:.2f}s at {cut["atS"]:.2f}s cut to '
+                          f'{cut["toS"]:.2f}s', file=sys.stderr, flush=True)
             send_response('batch_item', {
+                **({'pauseCuts': cuts} if cuts is not None else {}),
                 'i': it.get('i'),
                 'format': 'pcm16',
                 'data': audio_to_pcm16_base64(audio),
