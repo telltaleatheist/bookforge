@@ -125,8 +125,10 @@ function run(where, forms, { meanings = MEANINGS, placings = PLACINGS, asked = [
         // A meaning's own reading: the sense of that name, alone.
         asked.push([form.key, 'focus']);
         // Every meaning the test knows for this form, whichever round named it.
-        const all = [...(typeof meanings === 'function' ? meanings(form, null) : meanings[form.key]).senses,
-          ...(MEANINGS[form.key]?.senses ?? [])];
+        const rounds = typeof meanings === 'function'
+          ? [meanings(form, null), meanings(form, { sentences: [], meanings: [] })]
+          : [meanings[form.key]];
+        const all = [...rounds.flatMap((r) => r.senses), ...(MEANINGS[form.key]?.senses ?? [])];
         const alone = all.find((s) => s.meaning === focus);
         return { decision: 'reading', senses: alone === undefined ? [] : [alone], why: `alone: ${form.count}` };
       }
@@ -216,6 +218,34 @@ const entries = (where) => JSON.parse(fs.readFileSync(where.glossaryFile, 'utf8'
     assert.match(q, /fit NONE of them:\n1\. The cold was hard, esp\. at night\./);
   });
 
+  await test('a form decided as printed is placed too, and a stray second meaning is found', async () => {
+    const where = scratch();
+    const no = {
+      key: 'no', kind: 'abbreviation', count: 3, printed: { no: 2, 'No.': 1 },
+      samples: [{ parts: 'b1', sentence: 'There was no answer.' }],
+      occurrences: [
+        occ('b1', 0, 'no', 'There was no answer.'),
+        occ('b2', 0, 'no', 'He had no choice.'),
+        occ('b3', 0, 'No.', 'See the file, No. 12, in the archive.'),
+      ],
+    };
+    const word = { meaning: 'the word no', kind: 'word', reading: '', periodIsPart: false };
+    const number = { meaning: 'No., short for number', kind: 'abbreviation', reading: 'Number', periodIsPart: true };
+    const asked = [];
+    const out = await run(where, [no], {
+      asked,
+      meanings: (form, secondLook) => (secondLook === null
+        ? { decision: 'as-printed', senses: [word], why: 'the word' }
+        : { decision: 'reading', senses: [word, number], why: 'and a citation number' }),
+      placings: (form, senses, occurrences) => occurrences.map((o) => (/No\. 12/.test(o.sentence)
+        ? { choice: senses.length > 1 ? 's1' : 'none', confidence: 0.95 }
+        : { choice: 's0', confidence: 0.95 })),
+    });
+    assert.deepStrictEqual(asked.filter((a) => a[1] !== 'focus'), [['no', 0], ['no', 1]]);
+    assert.deepStrictEqual(guide(where), [{ find: 'No.', replace: 'Number', at: 'b3', nth: 0 }]);
+    assert.strictEqual(out.readings, 1);
+  });
+
   await test('an unsure placing, an unusable reading and an unreadable answer leave spots as printed', async () => {
     const where = scratch();
     const pius = {
@@ -276,20 +306,39 @@ const entries = (where) => JSON.parse(fs.readFileSync(where.glossaryFile, 'utf8'
     await assert.rejects(run(where, [NO]), /holding a person's decisions/);
   });
 
-  await test('an acronym is said as its capitals, whatever reading the model offered', () => {
+  await test('an acronym is said as printed, never expanded or re-cased (Owen: esp is said essp)', () => {
     const form = { ...ESP };
     const expanded = { meaning: 'the psychic sense', kind: 'acronym', reading: 'extrasensory perception', periodIsPart: true };
-    assert.deepStrictEqual(glossary.acronymRead(form, expanded), { ...expanded, reading: 'ESP', periodIsPart: false });
+    assert.deepStrictEqual(glossary.acronymRead(form, expanded), { ...expanded, reading: '', periodIsPart: false });
     const nasa = { ...form, key: 'NASA', kind: 'caps', printed: { NASA: 3 } };
     assert.strictEqual(glossary.acronymRead(nasa, { ...expanded, reading: 'NASA' }).reading, '', 'already capitals: as printed');
     const especially = { meaning: 'especially', kind: 'abbreviation', reading: 'especially', periodIsPart: true };
     assert.deepStrictEqual(glossary.acronymRead(form, especially), especially, 'an abbreviation keeps the reading the model gave');
+    // Capitals are never expanded; read as their letters they are as printed; a shouted word is its word.
+    const ceo = { key: 'CEO', kind: 'caps', count: 1, printed: { CEO: 1 }, samples: [], occurrences: [] };
+    assert.match(glossary.senseProblem(ceo, { meaning: 'chief', kind: 'abbreviation', reading: 'Chief Executive Officer', periodIsPart: false }),
+      /never expanded/);
+    assert.strictEqual(glossary.acronymRead({ ...ceo, key: 'DC', printed: { DC: 1 } }, { meaning: 'x', kind: 'abbreviation', reading: 'D C', periodIsPart: false }).reading, '');
+    assert.strictEqual(glossary.senseProblem({ ...ceo, key: 'THE', printed: { THE: 2 } }, { meaning: 'the', kind: 'word', reading: 'the', periodIsPart: false }), null);
     // The answer must say what each meaning is.
     assert.match(glossary.parseAnswer(JSON.stringify({ decision: 'reading', senses: [{ meaning: 'x', reading: 'y', periodIsPart: false }], why: '' })),
       /four fields/);
     assert.deepStrictEqual(glossary.parseAnswer(JSON.stringify({
       decision: 'reading', senses: [{ meaning: 'ESP', kind: 'acronym', reading: '', periodIsPart: false }], why: 'w',
     })).senses[0].kind, 'acronym');
+  });
+
+  await test('meanings said alike pool their weight; a numeral read without its name gets it back', () => {
+    const saint = { meaning: 'a saint', kind: 'abbreviation', reading: 'Saint', periodIsPart: true };
+    const city = { meaning: 'in St Petersburg', kind: 'abbreviation', reading: 'Saint', periodIsPart: true };
+    const split = { choice: 's0', confidence: 0.48, probabilities: { s0: 0.48, s1: 0.47, none: 0.05 } };
+    assert.strictEqual(glossary.placeAnswer([saint, city], split), 0, 'two meanings said "Saint" are one choice');
+    const street = { meaning: 'Street', kind: 'abbreviation', reading: 'Street', periodIsPart: true };
+    assert.strictEqual(glossary.placeAnswer([saint, street], split), null, 'two readings are two choices');
+    assert.strictEqual(glossary.placeAnswer([saint], { choice: 'none', confidence: 0.6, probabilities: { s0: 0.4, none: 0.6 } }), null);
+    const leopold = { key: 'Leopold II', kind: 'roman', count: 9, printed: { 'Leopold II': 9 }, samples: [], occurrences: [] };
+    assert.strictEqual(glossary.acronymRead(leopold, { meaning: 'king', kind: 'numeral', reading: 'the Second', periodIsPart: false }).reading,
+      'Leopold the Second');
   });
 
   await test('the spot replace, the marked sentence and the shared paths', () => {
@@ -312,7 +361,7 @@ const entries = (where) => JSON.parse(fs.readFileSync(where.glossaryFile, 'utf8'
       outputPath: where.request.recordsPath.replace('.clean.records.jsonl', '.clean.triage.json'),
     });
     assert.deepStrictEqual(triage, glossary.glossaryPathsFor(where.request));
-    assert.match(glossary.GLOSSARY_SYSTEM, /says EXACTLY what is printed/);
+    assert.match(glossary.GLOSSARY_SYSTEM, /HOW THE AUTHOR PRINTED IT IS THE SIGNAL/);
     assert.match(glossary.GLOSSARY_SYSTEM, /"No\." for number \(said "Number"\) and "no" the word/);
     // The test books' own forms are not the prompt's examples, so a measurement still measures the model.
     assert.doesNotMatch(glossary.GLOSSARY_SYSTEM, /\besp\b|Wolf/);

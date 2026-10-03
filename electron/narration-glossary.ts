@@ -94,7 +94,7 @@ import type { FoundryFormsLister, FoundryJobRequest } from './foundry-host-queue
 
 export const GLOSSARY_FORMAT = 'narration-glossary/v2';
 /** The prompt's version: meanings decided under another prompt are a different question. */
-export const GLOSSARY_PROMPT_VERSION = 'g4';
+export const GLOSSARY_PROMPT_VERSION = 'g6';
 /** What Foundry reads (its src/clean/fixed-readings.ts). */
 const FIXED_READINGS_FORMAT = 'fixed-readings/v1';
 
@@ -260,30 +260,33 @@ function writeAtomically(file: string, body: unknown): void {
  * when they are said the same way.
  */
 export const GLOSSARY_SYSTEM = [
-  'You prepare a book for an audiobook. The narrator is a text-to-speech voice: it says EXACTLY what is printed, letter for letter. It does not know conventions. It reads "Henry IV" as "Henry I V", "Dr" as "D R", "e.g." as "E G". So everything a human reader would silently translate must be written out as the words to say.',
+  'You prepare a book for an audiobook. The narrator is a text-to-speech voice: it says exactly what is printed. It does not expand an abbreviation or read a numeral the way a person would: it reads "Henry IV" as "Henry I V" and "Dr" as "D R". So wherever a human reader would silently say something other than what is printed, you write out the words to say.',
   '',
   'You decide how one printed form is said in this book. You are shown the form and sentences from across the book where it appears.',
   '',
-  'Answer with one of two decisions:',
-  '- "as-printed": saying it literally is right everywhere. This is for ordinary words, names, and acronyms (an acronym is read as its letters or as a word, exactly as printed). Give "senses" as an empty list.',
-  '- "reading": somewhere the narrator must say something other than what is printed. List in "senses" each distinct MEANING the form has in these sentences — usually one. A form can mean two things in one book: "No." for number (said "Number") and "no" the word (said as printed) are two senses. Two different kings with the same name and number are ONE sense if both are said the same way.',
+  'HOW THE AUTHOR PRINTED IT IS THE SIGNAL. Keep what the author printed wherever it can be said as printed:',
+  '- A form in lower case used as an ordinary word in its sentences ("a laser", "his radar", a clipped word like "rep" or "lab", a word the author coined) is a word, said as printed, even if it began as initials or as a longer word. Never turn it into capitals and never expand it.',
+  '- Initials with periods ("U.S.", "e.g." aside) that stand for a name are said as their letters, as printed: never expanded into the name.',
+  '- Capitals (FBI, NASA, SPD) are said as printed: the voice reads them as letters or as a word. Never expand them into what they stand for.',
+  '- A common English word set in capitals only for emphasis or display (THE, SHOT, REVOLUTION) is that word: give it in lower case.',
   '',
-  'Senses differ only where they are SAID differently: a noun and an adjective use of the same thing are one sense.',
+  'Expand only what a reader expands without thinking:',
+  '- a title before a name: "Dr" → "Doctor", "Mr" → "Mister", "Mrs" → "Missus", "St" → "Saint", "Rev." → "Reverend";',
+  '- an abbreviation of an ordinary word, usually with a period: "vols." → "volumes", "ch." → "chapter", "approx." → "approximately", "Oct." → "October", "e.g." → "for example";',
+  '- a roman numeral: a ruler\'s or a pope\'s number is an ordinal ("Henry IV" → "Henry the Fourth"); any other — a planet, a part, a chapter, a war, a year, a page — is a cardinal ("Rigel VII" → "Rigel Seven", "Part II" → "Part Two", "World War II" → "World War Two", "page xii" → "twelve"). Give the whole phrase as shown. This holds in a heading set in capitals ("PART II" → "Part Two") and for a page number in an index or a list of pages ("anarchism xx, 108" → "twenty").',
+  '',
+  'Answer with one of two decisions:',
+  '- "as-printed": saying it as printed is right everywhere. Still list its meaning(s) in "senses", each with "reading" "".',
+  '- "reading": somewhere the narrator must say something other than what is printed. List in "senses" each distinct MEANING the form has in these sentences — usually one. A form can mean two things in one book: "No." for number (said "Number") and "no" the word (said as printed) are two senses. Senses differ only where they are SAID differently: a noun and an adjective use of one thing are one sense, and so are two kings with the same name and number.',
   '',
   'For each sense give:',
   '- "meaning": a few words naming it, enough to recognise it in a sentence.',
-  '- "kind": "acronym" if the form is the initial letters of words, said as letters or as a word (NASA, a lower-case "ufo"); "abbreviation" if it shortens a word or phrase the narrator says in full (Dr, vols, approx.); "numeral" for a roman numeral; "word" for an ordinary word or name.',
+  '- "kind": "acronym" if the form is initials (said as printed — never expanded); "abbreviation" if it shortens a word or phrase the narrator says in full; "numeral" for a roman numeral; "word" for a word or a name.',
   '- "reading": the words the narrator says for it, in ordinary spelling, or "" if that sense is said as printed.',
-  '- "periodIsPart": true if, in this sense, a period right after the form belongs to it as an abbreviation\'s period ("approx." for approximately, "ed.", "Dr."); false if a period after it can only end the sentence (a word, a name, an acronym like NASA, a numeral).',
+  '- "periodIsPart": true if a period right after the form belongs to it as an abbreviation\'s period ("approx.", "ed.", "Dr."); false if a period after it can only end the sentence.',
   '',
-  'Rules for a reading:',
-  '- A roman numeral is never as printed: a ruler\'s or pope\'s number is an ordinal ("Henry IV" → "Henry the Fourth"); a planet, part, act, volume, year or page is a cardinal ("Rigel VII" → "Rigel Seven", "Part II" → "Part Two"). Give the whole phrase as shown.',
-  '- An abbreviation a reader expands is written as the word said ("Dr" → "Doctor", "vols" → "volumes").',
-  '- An acronym or initialism is NEVER expanded into its full name: "FBI", "NASA", "SPD" are as printed, and an acronym printed in lower case is read as the acronym in capitals ("ufo" is said "UFO", not "unidentified flying object").',
-  '- Never add words that are not the reading of the form itself, and never use digits.',
-  '- Leave out a possessive "\'s": give the reading of the form alone.',
-  '',
-  'Use the book\'s sentences as your evidence: what the thing IS in this book decides how it is said. Give "why" in at most twenty words, naming that evidence.',
+  'Never add words that are not the reading of the form itself, never use digits, and leave out a possessive "\'s".',
+  'Give "why" in at most twenty words, naming the evidence in the sentences.',
 ].join('\n');
 
 const ANSWER_SCHEMA = {
@@ -378,7 +381,14 @@ export function parseAnswer(content: string): GlossaryAnswer | string {
   if (one.decision === 'reading' && !senses.some((s) => s.reading.length > 0 || s.kind === 'acronym')) {
     return 'it chose a reading and gave none';
   }
-  return { decision: one.decision, senses: one.decision === 'reading' ? senses : [], why: one.why.trim() };
+  /*
+   * AN AS-PRINTED FORM KEEPS ITS MEANINGS, every reading "" — so it is placed like
+   * any other, and an occurrence that is something else is found. Measured
+   * 2026-10-03: God's People's "no" was decided as printed from samples that were
+   * all the word, and its twelve "No. 12" citations were never looked at again.
+   */
+  const kept = one.decision === 'reading' ? senses : senses.map((sense) => ({ ...sense, reading: '' }));
+  return { decision: one.decision, senses: kept, why: one.why.trim() };
 }
 
 /**
@@ -393,28 +403,86 @@ export function parseAnswer(content: string): GlossaryAnswer | string {
 export function senseProblem(form: PrintedForm, sense: GlossarySense): string | null {
   const reading = sense.reading;
   if (reading.length === 0) return null;
+  /*
+   * CAPITALS ARE NEVER EXPANDED. Measured 2026-10-03 on Shift: told so in the
+   * prompt, the model still read "CEO" as "Chief Executive Officer" and "GPA" as
+   * "grade point average". A form printed in capitals may be read as its letters
+   * (spaced or not — the voice says them alike) or, where it is a common word set
+   * in capitals for emphasis, as that word in lower case — never as what it stands for.
+   */
+  if (form.kind === 'caps') {
+    const letters = reading.replace(/[\s.]/g, '');
+    if (letters.toUpperCase() !== form.key) return `"${form.key}" is printed in capitals and is never expanded ("${reading}")`;
+  }
+  // Initials with periods ("U.S.", "h.c.") likewise: their letters, never the name (measured: "United States").
+  if (isDottedInitials(form) && reading.replace(/[\s.]/g, '').toLowerCase() !== form.key.replace(/\./g, '')) {
+    return `"${Object.keys(form.printed)[0]}" is initials and is never expanded ("${reading}")`;
+  }
   if (/\d/.test(reading)) return `the reading "${reading}" prints a digit`;
   if (Object.keys(form.printed).includes(reading)) return `the reading "${reading}" is the form as printed`;
   if (form.kind === 'roman') {
     const words = form.key.split(' ');
-    if (words.length === 2 && !reading.startsWith(`${words[0]} `)) {
+    if (words.length === 2 && !reading.toLowerCase().startsWith(`${words[0]!.toLowerCase()} `)) {
       return `the reading "${reading}" does not keep "${words[0]}", the word in front of the numeral`;
     }
+    const rest = words.length === 2 ? reading.slice(words[0]!.length + 1) : reading;
+    // ("PART II" read "Part Two" keeps its word: a heading's case is folded at narration.)
+    if (!numberWordsOnly(rest)) return `the reading "${reading}" says more than the numeral`;
+  }
+  // A lower-case numeral ("ii.", "xix") is read as its number and nothing else: measured
+  // 2026-10-03, "Vol. ii." came back "Volume Two" — the word before it said twice.
+  if (form.kind === 'abbreviation' && /^[ivxlcdm]+$/.test(form.key) && !numberWordsOnly(reading)) {
+    return `the reading "${reading}" says more than the numeral`;
   }
   return null;
 }
 
+/** Initials printed with periods: "U.S.", "e.V.", "h.c." — keyed "u.s". Not "e.g."/"i.e.", which a reader expands. */
+function isDottedInitials(form: PrintedForm): boolean {
+  return form.kind === 'abbreviation' && /^(\p{L}\.)+\p{L}$/u.test(form.key) && !['e.g', 'i.e'].includes(form.key);
+}
+
+const NUMBER_WORDS = new Set(('the and zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen '
+  + 'fifteen sixteen seventeen eighteen nineteen twenty thirty forty fifty sixty seventy eighty ninety hundred thousand '
+  + 'first second third fourth fifth sixth seventh eighth ninth tenth eleventh twelfth thirteenth fourteenth fifteenth '
+  + 'sixteenth seventeenth eighteenth nineteenth twentieth thirtieth fortieth fiftieth sixtieth seventieth eightieth '
+  + 'ninetieth hundredth thousandth').split(' '));
+
+/** Is `reading` number words and nothing else ("the Twenty-third", "fifteen")? */
+function numberWordsOnly(reading: string): boolean {
+  const words = reading.toLowerCase().replace(/[.,]$/, '').split(/[\s-]+/).filter(Boolean);
+  return words.length > 0 && words.every((w) => NUMBER_WORDS.has(w));
+}
+
 /**
- * AN ACRONYM IS SAID AS ITS CAPITALS. A form the model calls an acronym reads as
- * the form in capitals — as printed when it already is, "ESP" for "esp" — and a
- * period after it can only be the sentence's. The model decided WHAT it is; what
- * an acronym is said as is not a judgement.
+ * AN ACRONYM IS SAID AS PRINTED — never expanded, never re-cased. Owen,
+ * 2026-10-03, on Deathstalker's "esp": *"esp is pronounced in this book. like
+ * 'essp'. not 'ee ess pee'"* — and the principle under it, for any book: how the
+ * author printed it is the signal. Capitals are read as letters or a word by the
+ * voice; a lower-case acronym the author uses as a word is a word. So once the
+ * model says a meaning IS an acronym, what it is said as is not a judgement.
  */
 export function acronymRead(form: PrintedForm, sense: GlossarySense): GlossarySense {
-  if (sense.kind !== 'acronym' || form.kind === 'roman') return sense;
-  const capitals = form.key.replace(/\.$/, '').toUpperCase();
-  const asPrinted = Object.keys(form.printed).every((p) => p.replace(/\.$/, '') === capitals);
-  return { ...sense, reading: asPrinted ? '' : capitals, periodIsPart: false };
+  if (form.kind === 'roman') {
+    /*
+     * A NUMERAL'S READING GIVEN WITHOUT ITS NAME. "Leopold II" answered "the
+     * Second" (measured 2026-10-03, all thirteen Leopolds in The Pursuit of Power)
+     * is the numeral's reading, unambiguously: the phrase is the name and that.
+     */
+    const words = form.key.split(' ');
+    if (words.length === 2 && sense.reading.length > 0 && numberWordsOnly(sense.reading)
+      && !sense.reading.toLowerCase().startsWith(`${words[0]!.toLowerCase()} `)) {
+      return { ...sense, reading: `${words[0]} ${sense.reading}` };
+    }
+    return sense;
+  }
+  if (sense.kind === 'acronym') return { ...sense, reading: '', periodIsPart: false };
+  // Capitals read as their own letters ("D C" for "DC") are the form as printed; so are initials.
+  if (form.kind === 'caps' && sense.reading.replace(/[\s.]/g, '') === form.key) return { ...sense, reading: '' };
+  if (isDottedInitials(form) && sense.reading.replace(/[\s.]/g, '').toLowerCase() === form.key.replace(/\./g, '')) {
+    return { ...sense, reading: '' };
+  }
+  return sense;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -477,7 +545,40 @@ export function placingDigest(senses: readonly GlossarySense[], occurrences: rea
 }
 
 /** One decide answer: the option chosen and how sure. */
-export interface PlacingAnswer { choice: string; confidence: number }
+export interface PlacingAnswer {
+  choice: string;
+  confidence: number;
+  /** The door's probability per option, where it gave them — what lets meanings said alike pool their weight. */
+  probabilities?: Readonly<Record<string, number | null>>;
+}
+
+/**
+ * WHERE ONE ANSWER PLACES AN OCCURRENCE, or null. Meanings said the SAME WAY are
+ * one choice for the narrator, so their probabilities are pooled: "St" as a
+ * saint's title and "St" in "St Petersburg" are both "Saint", and an occurrence
+ * the door split between them (0.48 and 0.47, measured 2026-10-03 — thirteen left
+ * unplaced) is a confident "Saint". It goes to the likeliest of the pooled meanings.
+ */
+export function placeAnswer(senses: readonly GlossarySense[], answer: PlacingAnswer): number | null {
+  const p = answer.probabilities;
+  if (p === undefined) {
+    const index = /^s(\d+)$/.exec(answer.choice);
+    return index !== null && answer.confidence >= PLACE_CONFIDENCE ? Number(index[1]) : null;
+  }
+  const said = (s: GlossarySense): string => `${s.reading}\u0000${s.reading.length > 0 && s.periodIsPart}`;
+  const pooled = new Map<string, { mass: number; best: number; bestP: number }>();
+  senses.forEach((sense, i) => {
+    const one = p[`s${i}`] ?? 0;
+    const group = pooled.get(said(sense)) ?? { mass: 0, best: i, bestP: -1 };
+    group.mass += one;
+    if (one > group.bestP) { group.best = i; group.bestP = one; }
+    pooled.set(said(sense), group);
+  });
+  let top: { mass: number; best: number } | null = null;
+  for (const group of pooled.values()) if (top === null || group.mass > top.mass) top = group;
+  const none = p[NONE] ?? 0;
+  return top !== null && top.mass >= PLACE_CONFIDENCE && top.mass > none ? top.best : null;
+}
 
 /**
  * Place every occurrence of one form among its meanings — injected so the keeper
@@ -611,7 +712,9 @@ function decidePlacer(server: string, model: string, signal: AbortSignal): Gloss
         // A label outside the engine's top tokens answers over the letters it did return.
         missing: 'report',
       }, { act: 'analysis', signal }));
-      for (const answer of reply.answers) out.push({ choice: answer.choice, confidence: answer.confidence });
+      for (const answer of reply.answers) {
+        out.push({ choice: answer.choice, confidence: answer.confidence, probabilities: answer.probabilities });
+      }
     }
     return out;
   };
@@ -717,7 +820,7 @@ export async function ensureNarrationGlossary(opts: EnsureGlossaryOptions): Prom
   }
   const toPlace = (): PrintedForm[] => forms.filter((form) => {
     const entry = entries.get(formKey(form));
-    return entry !== undefined && entry.decision === 'reading'
+    return entry !== undefined && entry.senses.length > 0
       && entry.placed !== placingDigest(entry.senses, form.occurrences, model!);
   });
 
@@ -805,9 +908,8 @@ export async function ensureNarrationGlossary(opts: EnsureGlossaryOptions): Prom
           const person = people.get(`${o.at}\u0000${o.printed}\u0000${o.nth}`);
           if (person !== undefined) return person;
           const answer = answers[open.indexOf(o)]!;
-          const index = /^s(\d+)$/.exec(answer.choice);
-          const sense = index !== null && answer.confidence >= PLACE_CONFIDENCE ? Number(index[1]) : null;
-          if (answer.choice === NONE && answer.confidence >= PLACE_CONFIDENCE) nowhere.push(o.sentence);
+          const sense = placeAnswer(entry.senses, answer);
+          if (sense === null && answer.choice === NONE && answer.confidence >= PLACE_CONFIDENCE) nowhere.push(o.sentence);
           return { at: o.at, nth: o.nth, printed: o.printed, sense, p: answer.confidence };
         });
         placedNow += open.length;
@@ -830,7 +932,7 @@ export async function ensureNarrationGlossary(opts: EnsureGlossaryOptions): Prom
         if (first.nowhere.length > 0 && entry.by === 'model') {
           const again = await meaningsOf(form, { sentences: [...new Set(first.nowhere)].slice(0, 6), meanings: entry.senses });
           asked += 1;
-          if (again.decision === 'reading') entry = (await placeForm(form, again)).entry;
+          if (again.senses.length > 0) entry = (await placeForm(form, again)).entry;
           else entry = { ...again, why: `${again.why} (asked again: ${first.nowhere.length} occurrence(s) fitted no meaning)` };
         }
         /*
@@ -845,7 +947,7 @@ export async function ensureNarrationGlossary(opts: EnsureGlossaryOptions): Prom
          * one-meaning question the model answers well, with better evidence than
          * the first samples. A person's meanings are theirs and are not re-read.
          */
-        if (entry.by === 'model' && entry.senses.length > 1) {
+        if (entry.by === 'model' && entry.decision === 'reading' && entry.senses.length > 1) {
           const read: GlossarySense[] = [];
           for (const [i, sense] of entry.senses.entries()) {
             const mine = form.occurrences.filter((o) => entry.occurrences.some((p) => p.sense === i
