@@ -132,6 +132,71 @@ class RingTest(unittest.TestCase):
         self.assertEqual((row.run, row.codes()), (0, []))
 
 
+def snapping_render(guard, frames: int = 400) -> list[int]:
+    """A model that snaps back: while either of its last two cb0 codes is SILENCE it
+    prefers SILENCE by 9 logits (its nearest word, code 7, at 1); two non-silence
+    frames in a row and it is speaking, a new code each frame. One escaped frame is
+    not enough to leave - the row-45 cycle on the Mac arm (2026-10-02)."""
+    state = FakeState()
+    stall = None if guard is None else G.RowStall(guard)
+    out: list[int] = []
+    for t in range(frames):
+        logits = np.zeros(V)
+        if len(out) >= 2 and SILENCE not in out[-2:]:
+            logits[400 + t % 200] = 10.0
+        else:
+            logits[SILENCE] = 10.0
+            logits[7] = 1.0
+        was_counted = stall is not None and G.counted(state, N)
+        if was_counted and stall.penalty() > 0:
+            logits[stall.codes()] -= stall.penalty()
+        code = fake_step(logits, state)
+        if stall is not None:
+            steady = was_counted and not state.generation_done
+            stall.observe(code if steady else -1, steady)
+        out.append(code)
+    return out
+
+
+def silence_stretches(codes: list[int]) -> list[int]:
+    stretches, current = [], 0
+    for code in codes[N:]:
+        if code == SILENCE:
+            current += 1
+        elif current:
+            stretches.append(current)
+            current = 0
+    return stretches + ([current] if current else [])
+
+
+class EscapeHoldTest(unittest.TestCase):
+
+    def test_an_escape_that_snaps_back_is_held_until_the_row_has_left(self):
+        self.assertEqual(silence_stretches(snapping_render(None)), [400 - N])
+        stretches = silence_stretches(snapping_render(G.StallGuard(37, 1.0, 20.0, 16)))
+        self.assertEqual(len(stretches), 1, stretches)
+        self.assertLess(stretches[0], int(2.5 * 25), 'one stay, under ~2.5 s at 25 fps')
+
+    def test_an_engaged_row_starts_clean_after_ESCAPE_FRAMES_off_its_ring(self):
+        row = G.RowStall(G.StallGuard(frames=3, rate=1, max=10, window=4))
+        for _ in range(6):
+            row.observe(5, True)
+        held = row.run
+        for code in range(500, 500 + G.ESCAPE_FRAMES - 1):
+            row.observe(code, True)
+            self.assertEqual(row.run, held, 'held while away')
+        self.assertEqual(row.away, G.ESCAPE_FRAMES - 1)
+        row.observe(999, True)
+        self.assertEqual((row.run, row.away, row.codes()), (0, 0, [999]))
+
+    def test_a_row_that_never_engaged_still_ends_its_run_on_a_new_code(self):
+        row = G.RowStall(G.StallGuard(frames=37, rate=1, max=20, window=16))
+        for _ in range(5):
+            row.observe(5, True)
+        row.observe(6, True)
+        self.assertEqual((row.run, row.away), (0, 0))
+
+
 class GuardedRenderTest(unittest.TestCase):
 
     def test_without_the_guard_greedy_never_leaves_the_silence(self):

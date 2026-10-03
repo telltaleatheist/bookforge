@@ -28,8 +28,16 @@ Crucible side and the PC sglang-omni patch; this file is the MLX arm):
   choice takes over.
 
   AFTER sampling, on a STEADY step (the row was counted, and this step did not
-  finish it): run += 1 if the cb0 code is already in R, else run = 0; the code
-  is pushed into R, evicting the oldest. On a step that is NOT steady - the
+  finish it): if the cb0 code is already in R, run += 1 and away = 0. If it is
+  not, a row whose guard is ENGAGED (run > frames) HOLDS its run and counts
+  away += 1 - a return to a ring code is then penalised at once - until away
+  reaches ESCAPE_FRAMES (10, 0.4 s), when the row has left: run = 0, away = 0,
+  R emptied; a row not engaged just has run = 0. Then the code is pushed into R,
+  evicting the oldest. (v2, training-pc 2026-10-02: v1 zeroed the run on ONE
+  escaped frame, the model snapped straight back to the stuck code and sat out
+  another `frames` before the guard engaged again - three cycles were the
+  5.3-5.8 s pauses on the Mac arm. Holding only once ENGAGED leaves a row that
+  was never stalling exactly as v1 had it.) On a step that is NOT steady - the
   delay window, the EOC wind-down, the step that finishes the row - run = 0 and
   R is emptied (crucible-pc, 2026-10-02: RESET), so a wind-down never carries a
   penalty and a new row starts clean. That is ONE line in `observe` to flip.
@@ -54,6 +62,10 @@ ENV = 'HIGGS_STALL_GUARD'
 #: The value Crucible sets (crucible-pc, 2026-10-02). Stated for the docs and the
 #: tests; an UNSET variable is OFF, never this.
 RECOMMENDED = '37,0.5,20,8'
+
+#: Consecutive frames off the ring before an ENGAGED row counts as having left its
+#: stall: 0.4 s at 25 fps. The PC patch's STALL_ESCAPE_FRAMES, the same number.
+ESCAPE_FRAMES = 10
 
 
 @dataclass(frozen=True)
@@ -114,12 +126,13 @@ def counted(state, num_codebooks: int) -> bool:
 
 
 class RowStall:
-    """One row's ring R and run."""
+    """One row's ring R, its run, and how long an engaged row has been off R."""
 
     def __init__(self, guard: StallGuard):
         self.guard = guard
         self.ring: deque[int] = deque(maxlen=guard.window)
         self.run = 0
+        self.away = 0
 
     def penalty(self) -> float:
         return self.guard.penalty(self.run)
@@ -133,8 +146,18 @@ class RowStall:
         if not steady:
             # RESET (crucible-pc, 2026-10-02). To flip to "untouched", replace
             # the next line with `return`.
-            self.run = 0; self.ring.clear()  # noqa: E702 - the one line
+            self.run = 0; self.away = 0; self.ring.clear()  # noqa: E702 - the one line
             return
-        self.run = self.run + 1 if code in self.ring else 0
+        if code in self.ring:
+            self.run += 1
+            self.away = 0
+        elif self.run > self.guard.frames:
+            self.away += 1
+            if self.away >= ESCAPE_FRAMES:
+                self.run = 0
+                self.away = 0
+                self.ring.clear()
+        else:
+            self.run = 0
         self.ring.append(int(code))
 
