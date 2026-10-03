@@ -436,9 +436,19 @@ mark = str(owner)
 def ours():
     return [p for p in listeners(port) if owner_of(p) == mark]
 started = time.time()
+seen = False
 while True:
     time.sleep(every)
     if os.path.exists('/proc/%d' % owner):
+        # The owner is alive. Once the server it launched has been seen and is
+        # gone (an ordinary stop), there is nothing left to guard: exit, so the
+        # wrapper's `wait` - which waits for this process too - returns with the
+        # server instead of holding stop() for its whole timeout (every unload
+        # took ~60 s on the PC, 2026-10-02).
+        if ours():
+            seen = True
+        elif seen:
+            break
         continue
     # The owner is gone. Take down what it launched, by group, TERM only.
     groups = set()

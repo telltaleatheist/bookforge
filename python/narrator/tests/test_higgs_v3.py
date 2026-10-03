@@ -2790,6 +2790,38 @@ class PosixLaunchTest(_LaunchTestBase):
         ast.parse(HiggsV3ServedBackend._OWN_SERVERS_SCAN)
         ast.parse(HiggsV3ServedBackend._SIGNAL_GROUP)
 
+    @unittest.skipUnless(sys.platform.startswith('linux'), 'the watchdog reads /proc')
+    def test_the_watchdog_exits_once_its_server_stops_while_the_owner_lives(self):
+        """The wrapper ends in `wait`, which waits for the watchdog as well as
+        the server. A watchdog that only ever exited after its OWNER died held
+        every ordinary stop() for its whole timeout (~60 s per unload on the PC,
+        2026-10-02) and ended with 'launch wrapper still up'."""
+        import socket
+        import subprocess
+        import time
+        with socket.socket() as probe:
+            probe.bind(('127.0.0.1', 0))
+            port = probe.getsockname()[1]
+        server = subprocess.Popen(
+            [sys.executable, '-c',
+             'import socket, sys, time\n'
+             's = socket.socket()\n'
+             's.bind(("127.0.0.1", int(sys.argv[1])))\n'
+             's.listen()\n'
+             'time.sleep(600)\n', str(port)],
+            env=dict(os.environ, NARRATOR_HIGGS3_OWNER=str(os.getpid())))
+        self.addCleanup(lambda: server.poll() is None and server.terminate())
+        watchdog = subprocess.Popen(
+            [sys.executable, '-c', HiggsV3ServedBackend._WATCHDOG,
+             str(os.getpid()), str(port), '0.2'])
+        self.addCleanup(lambda: watchdog.poll() is None and watchdog.terminate())
+        time.sleep(2.0)
+        self.assertIsNone(watchdog.poll(),
+                          'the watchdog left while its server was still up')
+        server.terminate()
+        server.wait(timeout=10)
+        self.assertEqual(watchdog.wait(timeout=10), 0)
+
     def test_a_checkpoint_voice_exports_HIGGS_MODEL_DIR(self):
         backend = HiggsV3ServedBackend(serve_script=a_launcher(self),
                                        checkpoint_dir='/home/t/higgs_v3_merged/ds')

@@ -1411,7 +1411,10 @@ class HiggsV3ServedBackend(GuestOwnedServer):
            own cleanup, and until this existed the server outlived every such
            job holding 24 GB (Owen, 2026-09-05: "it should bring it down if i
            hit stop or if bookforge app dies"). The watchdog also exits on its
-           own once no marked listener remains, so it never lingers. On the
+           own once the marked listener it saw is gone while the owner lives
+           (an ordinary stop), so it never lingers - and it must not: the
+           wrapper's `wait` waits for it too, and a watchdog that outlived its
+           server held every stop() for its full timeout. On the
            Windows arm the owner is a host pid the guest cannot see, so no
            watchdog is started and `stop()` is the only teardown - stated in
            OWNER_ENV's prefix, not guessed at.
