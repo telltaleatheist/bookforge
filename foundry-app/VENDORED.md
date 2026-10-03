@@ -10,10 +10,29 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\<user>\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **06c28b5** — *app/.gitignore: ignore a node_modules symlink, not only the directory*, on 6216357 — *Adopt Crucible 1.0.88 (was 1.0.80); a card wait shows on the row* (see the entry below). Before it: a3400e0 |
+| Source sha | **9872791** — *clean-text: a lost trip to the engine is waited out, and weather that outlasts the wait parks* (see the entry below). Before it: 06c28b5 |
 | Engine | **VENDORED, in `engine/`** since 1927563 (2026-09-24): `engine/foundry-engine.cjs` plus its four fonts, built from Foundry's `src/` by Foundry's `tools/build-engine.mjs` and checked against those sources by Foundry's test suite. Run by BookForge's own Electron as Node (`ELECTRON_RUN_AS_NODE=1`) from BOTH doors — this copy's `electron/engine.ts` and BookForge's `electron/foundry-bridge.ts`. **Ask it: `node foundry-app/engine/foundry-engine.cjs --version`** → `foundry X.Y.Z (src <digest>)`. There is no downloaded engine any more; `FOUNDRY_BIN` still overrides in both doors. |
-| Copied on | 2026-09-19 (five times: 3738c01, 3436fc5, 806d44b, f349771, ca4754c), 2026-09-20 (98a4344, 9e0b27d, dccc144, 7b98004, cc5fc5b, 93010d8, 77e1d6d) 2026-09-21 (753dca8, 3e26e53, f9bebb6, 95593b0, 8ee48b7) and 2026-09-22 (7185764, 7912022, 19fa7a9, df63f9f) and 2026-09-23 (acf63c2, 4835411), 2026-09-24 (b4c7346, 1927563, e2481dc, a1138f6, 72c6b08, b7ba2a8, 0eb12de), 2026-09-28 (1115cea), 2026-10-02 (06c28b5) |
-| Copied by | Mechanical source sync, verified against Foundry `06c28b5:app/` (index blob shas: 204 match, 0 problems; nothing tracked here but this file and `IPC-CHANNELS.md`); details below |
+| Copied on | 2026-09-19 (five times: 3738c01, 3436fc5, 806d44b, f349771, ca4754c), 2026-09-20 (98a4344, 9e0b27d, dccc144, 7b98004, cc5fc5b, 93010d8, 77e1d6d) 2026-09-21 (753dca8, 3e26e53, f9bebb6, 95593b0, 8ee48b7) and 2026-09-22 (7185764, 7912022, 19fa7a9, df63f9f) and 2026-09-23 (acf63c2, 4835411), 2026-09-24 (b4c7346, 1927563, e2481dc, a1138f6, 72c6b08, b7ba2a8, 0eb12de), 2026-09-28 (1115cea), 2026-10-02 (06c28b5), 2026-10-02 (9872791) |
+| Copied by | Mechanical source sync, verified against Foundry `9872791:app/` (index blob shas: 204 match, 0 problems; nothing tracked here but this file and `IPC-CHANNELS.md`); details below |
+
+## The `06c28b5 → 9872791` re-vendor — a lost trip to the engine is weather, and parks (2026-10-02, night)
+
+*Deathstalker: Hellworld*'s clean died at block 1,238 of 4,654. Crucible lost two requests on the wire to
+a healthy engine (ReadError; the engine log shows 200s and an empty queue) and answered `502
+engine_unreachable`. The OpenAI door waited only on 429/503/409, so the pass ended, and closing its session
+unloaded the model, which the engine log records as a "shutdown".
+
+- **The engine** (`engine/foundry-engine.cjs`, src f5d8c8d33ab8): the chat door now waits on 502 and 504
+  inside the same bounded busy wait, except Crucible's `upstream_rejected` (a refused key). Weather still
+  standing when the wait runs out is a **park** (exit 75, "parked: …"), not a failure. Every answer is
+  already in the records file, and this copy's `runJob` queues a park again (`ENGINE_PARKED_EXIT`).
+- **This side's normalizer copy** took the equivalent lines: a park's exit code crosses `askForEdits`'s
+  rewrap. The vendor keeper was repinned with the reason (`ONE_DOOR_BASELINE` 9872791; not a rule move,
+  still n18).
+- `electron/crucible-registry.ts`: a host name in a comment became `my-mac`, for BookForge's
+  `test-no-machine-addresses`.
+- **Verification:** 204 blobs match, 0 problems. Deps unchanged. `npm run build` is clean. Foundry: `bun test`
+  1184/0, app/test 121/0.
 
 ## The `a3400e0 → 06c28b5` re-vendor — Crucible SDK 1.0.88, card waits on the row (2026-10-02)
 

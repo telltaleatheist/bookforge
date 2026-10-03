@@ -575,10 +575,14 @@ check('a typed drive letter reaches the adapter as typed, not as its UNC/target 
     const res = run('--tts', '--engine', 'higgs', '--voice', 'mistborn', '--note', 'n',
       '--library', `${letter}:\\`, '--input', TXT, '--out', OUT, '--dry-run');
     expectAccepted('subst library', res);
-    const m = /\[batch\] scratch: (.+)/.exec(res.out);
-    assert.ok(m, `the scratch root is printed\n${res.out.slice(0, 700)}`);
-    assert.strictEqual(m[1].trim(), `${letter}:\\tmp`,
-      `the drive letter is kept (Path.resolve() would have given ${target}\\tmp)`);
+    // The wrapper's own spawn line, which carries the library as it hands it on.
+    // (This read `[batch] scratch:` as `<library>\tmp` until the scratch root
+    // became machine-local; it no longer says anything about the library.)
+    const m = /^\s*spawn: (.+)$/m.exec(res.out);
+    assert.ok(m, `the spawn line is printed\n${res.out.slice(0, 700)}`);
+    assert.ok(m[1].includes(`--library ${letter}:\\`),
+      `the drive letter is kept (Path.resolve() would have given ${target}): ${m[1]}`);
+    assert.ok(!m[1].includes(target), `the subst target leaked onto the line: ${m[1]}`);
   } finally {
     const undone = spawnSync('subst', [`${letter}:`, '/D'], { encoding: 'utf8' });
     // A cleanup failure is not an operation failure and must not fail the check

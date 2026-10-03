@@ -2303,6 +2303,14 @@ async function askForEdits(
       answer = await runner.generate(input, systemPrompt);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      // A PARK CROSSES AS A PARK: its exit code says "queue me again, nothing is
+      // lost" (the door already spent its weather budget, so it is not re-asked).
+      const parkedExit = (err as { exitCode?: unknown } | null)?.exitCode;
+      if (typeof parkedExit === 'number') {
+        throw Object.assign(new Error(
+          `The number-normalization pass could not reach the model '${runner.model}': ${message}`
+        ), { exitCode: parkedExit });
+      }
       if (attempt === 1 && isTransportFailure(message)) continue;
       throw new Error(
         `The number-normalization pass could not reach the model '${runner.model}': ${message}`

@@ -473,7 +473,14 @@ const VENDOR_LEAVES = '770480d';
  * this side took the same diff (git apply of 1fd0e35..a3400e0 onto electron/). Owed since the 0d1891a re-vendor
  * (df846927), which did not run this keeper.
  */
-const ONE_DOOR_BASELINE = 'a3400e0';
+/*
+ * MOVED 2026-10-02 (night), a3400e0 → 9872791, read in full: ONE commit touches these files.
+ * 9872791 (Hellworld died at block 1,238 on a 502 from Crucible's lost trip to a healthy engine):
+ * `askForEdits` carries a PARK's exit code (75) across its rewrap instead of dropping it, and does
+ * not re-roll a park. Not a rule move — no reading is accepted or refused differently — so
+ * NORMALIZER_VERSION stays n18. This side took the equivalent lines in its own (older) catch.
+ */
+const ONE_DOOR_BASELINE = '9872791';
 const FROZEN_SINCE_BASELINE = [
   'src/clean/tts-number-normalizer.ts',
   'src/clean/tts-spoken-forms.ts',
@@ -535,7 +542,7 @@ const FILES = [
     theirs: 'src/clean/tts-number-normalizer.ts',
     vendoredAt: VENDOR_PASS,
     shipped: {
-      sha256: 'e5f8ad409d69661edb5c24bc5087a15323f14467af66217c1208946e269944ba',
+      sha256: '05ff11bd1e2cc6b6d580f45dd5c98fed75d108c31024fe65865275583ff5d72f',
       why: 'the type-only `epub-processor.js` import retargeted to `./targets.js`; '
         + '`askAboutEach` exported so the engine\'s door is a third caller rather than a second '
         + 'copy of the retry rules; `normalizeNarrationNumbers` deleted (291 lines, all about a '
@@ -578,7 +585,8 @@ const FILES = [
         + 'comment only (n16 in f57402c moved the same two). Same diff here. '
         + 'REPINNED 2026-10-02 for a3400e0 (n18): 0d1891a\'s policy.removal (a removal asked for is accepted '
         + 'whole, off unless asked) and a3400e0\'s unspaced hyphen read as an em dash (class unspaced-dash). '
-        + 'Same diff here.',
+        + 'Same diff here. REPINNED 2026-10-02 (night) for 9872791: a park\'s exit code (75) crosses '
+        + 'askForEdits\'s rewrap and is not re-rolled. Not a rule move; the same lines here.',
     },
   },
   {

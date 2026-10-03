@@ -5077,6 +5077,12 @@ async function askForEdits(runner, pass, systemPrompt2, input) {
       answer = await runner.generate(input, systemPrompt2);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      const parkedExit = err?.exitCode;
+      if (typeof parkedExit === "number") {
+        throw Object.assign(new Error(
+          `The ${pass} pass could not reach the model '${runner.model}': ${message}`
+        ), { exitCode: parkedExit });
+      }
       if (attempt === 1 && isTransportFailure(err)) continue;
       throw new Error(
         `The ${pass} pass could not reach the model '${runner.model}': ${message}`
@@ -30310,6 +30316,8 @@ function busyReason(status) {
   if (status === 529) return "overloaded";
   if (status === 503) return "no lane free";
   if (status === 409) return "the machine is held";
+  if (status === 502) return "the engine was not reached";
+  if (status === 504) return "the engine did not answer in time";
   return `busy (${status})`;
 }
 function retryAfterMs(headers) {
@@ -30338,6 +30346,7 @@ async function withBusyWait(send, options) {
   for (let attempt = 1; ; attempt += 1) {
     const response = await send();
     if (!options.retryOn.includes(response.status)) return response;
+    if (options.waitsOn !== void 0 && !options.waitsOn(response)) return response;
     const said = retryAfterMs(response.headers);
     const wait = said ?? backoff;
     const waited = Date.now() - startedAt;
@@ -30442,7 +30451,153 @@ var init_http_refusal = __esm({
   }
 });
 
+// src/vlm/endpoint.ts
+function capOf(cap, page) {
+  return typeof cap === "function" ? cap(page) : cap;
+}
+function requestDeadlineMs(concurrency) {
+  return Math.max(1, concurrency) * PER_PAGE_DEADLINE_MS;
+}
+async function readPagesFromEndpoint(opts) {
+  const url = `${opts.endpoint.replace(/\/+$/, "")}/chat/completions`;
+  const queue = [...opts.pages];
+  const workers = Math.max(1, Math.min(opts.concurrency, queue.length));
+  let held = null;
+  const next = () => held === null ? queue.shift() : void 0;
+  const run = async () => {
+    for (let page = next(); page !== void 0; page = next()) {
+      try {
+        opts.onPage(await readOnePage(url, page, opts));
+      } catch (err) {
+        if (held === null) held = err;
+        return;
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: workers }, run));
+  if (held !== null) throw held;
+}
+async function readOnePage(url, page, opts) {
+  const waits = opts.weatherWaitsMs ?? WEATHER_WAITS_MS;
+  const tries = waits.length + 1;
+  const started = Date.now();
+  for (let attempt = 1; ; attempt += 1) {
+    const outcome = await tryOnePage(url, page, opts);
+    if (!("fault" in outcome)) return outcome;
+    const { fault } = outcome;
+    if (fault.kind === "refused") throw new VlmEndpointError(`page ${page.number}: ${fault.said}`);
+    if (fault.kind === "deadline") {
+      throw new VlmParkedError(opts.endpoint, page.number, `${fault.said}.`);
+    }
+    const wait = waits[attempt - 1];
+    if (wait === void 0) {
+      const minutes = ((Date.now() - started) / 6e4).toFixed(1);
+      throw new VlmParkedError(
+        opts.endpoint,
+        page.number,
+        `${tries} tries over ${minutes} min all met weather; the last: ${fault.said}`
+      );
+    }
+    opts.onWeather?.(
+      `page ${page.number}: ${fault.said} That is weather, not a refusal -- trying again in ${wait >= 6e4 ? `${wait / 6e4} min` : `${wait / 1e3} s`} (${attempt} of ${tries}).`
+    );
+    await new Promise((resolve20) => setTimeout(resolve20, wait));
+  }
+}
+async function tryOnePage(url, page, opts) {
+  const image = fs11.readFileSync(page.imagePath).toString("base64");
+  const started = Date.now();
+  let response;
+  try {
+    response = await fetch(url, {
+      method: "POST",
+      // An EXPLICIT deadline, which replaces Bun's default fetch timeout — the
+      // one that fired inside a normal batch wait and failed a page that would
+      // have landed seconds later. A page gets no bytes until its batch
+      // completes, so the only honest limit is this total deadline, generous
+      // enough that only a hung server reaches it. See PER_PAGE_DEADLINE_MS.
+      signal: AbortSignal.timeout(requestDeadlineMs(opts.concurrency)),
+      headers: { ...opts.headers ?? {}, "content-type": "application/json" },
+      body: JSON.stringify({
+        model: opts.model,
+        temperature: opts.temperature,
+        max_tokens: capOf(opts.maxTokens, page),
+        messages: [{
+          role: "user",
+          content: [
+            { type: "image_url", image_url: { url: `data:image/png;base64,${image}` } },
+            { type: "text", text: opts.prompt }
+          ]
+        }]
+      })
+    });
+  } catch (err) {
+    const why = err instanceof Error ? err.message : String(err);
+    if (err instanceof Error && err.name === "TimeoutError") {
+      const minutes = Math.round(requestDeadlineMs(opts.concurrency) / 6e4);
+      return { fault: { kind: "deadline", said: `${url} gave no answer within the ${minutes} min deadline` } };
+    }
+    return { fault: { kind: "weather", said: `${url} could not be reached (${why}).` } };
+  }
+  if (!response.ok) {
+    const said = `${url} ${explainHttpRefusal(response.status, response.statusText, await response.text())}`;
+    return { fault: { kind: WEATHER_STATUSES.has(response.status) ? "weather" : "refused", said } };
+  }
+  const payload = await response.json();
+  const answer = payload;
+  const choice = answer.choices?.[0];
+  if (!choice || typeof choice.message?.content !== "string") {
+    throw new VlmEndpointError(
+      `page ${page.number}: the server's answer carries no message content. It was: ${JSON.stringify(payload).slice(0, 400)}`
+    );
+  }
+  return {
+    number: page.number,
+    text: choice.message.content.trim(),
+    tokens: answer.usage?.completion_tokens ?? 0,
+    finishReason: choice.finish_reason ?? null,
+    seconds: (Date.now() - started) / 1e3,
+    response: payload
+  };
+}
+var fs11, VlmEndpointError, PARKED_EXIT_CODE, VlmParkedError, WEATHER_WAITS_MS, WEATHER_STATUSES, DEFAULT_VLM_CONCURRENCY, PER_PAGE_DEADLINE_MS;
+var init_endpoint = __esm({
+  "src/vlm/endpoint.ts"() {
+    "use strict";
+    init_engine_import_meta_url();
+    fs11 = __toESM(require("node:fs"), 1);
+    init_http_refusal();
+    VlmEndpointError = class extends Error {
+      constructor(message) {
+        super(message);
+        this.name = "VlmEndpointError";
+      }
+    };
+    PARKED_EXIT_CODE = 75;
+    VlmParkedError = class extends VlmEndpointError {
+      constructor(endpoint, page, detail) {
+        super(
+          `parked: ${endpoint} did not answer page ${page} -- ${detail} Every page that landed is banked; run the same command again to read the rest.`
+        );
+        this.endpoint = endpoint;
+        this.page = page;
+        this.name = "VlmParkedError";
+      }
+      endpoint;
+      page;
+      exitCode = PARKED_EXIT_CODE;
+    };
+    WEATHER_WAITS_MS = [2e3, 5e3, 1e4, 3e4, 6e4, 12e4, 24e4];
+    WEATHER_STATUSES = /* @__PURE__ */ new Set([429, 502, 503, 504]);
+    DEFAULT_VLM_CONCURRENCY = 12;
+    PER_PAGE_DEADLINE_MS = 6e4;
+  }
+});
+
 // src/translate/vllm.ts
+function chatWeather(response) {
+  return response.status !== 502 || !/"code"\s*:\s*"upstream_rejected"/.test(response.body);
+}
 function normaliseVllmEndpoint(endpoint) {
   const base = endpoint.trim().replace(/\/+$/, "");
   return /\/v\d+$/.test(base) ? base : `${base}/v1`;
@@ -30613,7 +30768,7 @@ async function readChatAnswer(transport, endpoint, body) {
   try {
     response = await withBusyWait(
       () => transport.post(`${base}/chat/completions`, body),
-      { retryOn: BUSY_STATUSES, where: `${base}/chat/completions` }
+      { retryOn: CHAT_WAITS_ON, waitsOn: chatWeather, where: `${base}/chat/completions` }
     );
   } catch (error) {
     return { text: null, degraded: error.message };
@@ -30658,8 +30813,13 @@ async function complete(transport, endpoint, served, system, user, tuning) {
       `${base}/chat/completions`,
       completionsBody(served.id, system, user, tuning, served.maxModelLen, served.defaults)
     ),
-    { retryOn: BUSY_STATUSES, where: `${base}/chat/completions` }
+    { retryOn: CHAT_WAITS_ON, waitsOn: chatWeather, where: `${base}/chat/completions` }
   );
+  if (CHAT_WAITS_ON.includes(response.status) && chatWeather(response)) {
+    throw Object.assign(new VllmError(
+      `parked: ${base}, for model "${served.id}", was still answering ${explainHttpRefusal(response.status, "", response.body)} after the wait for it ran out. Every answer that landed is recorded; run the same command again to ask the rest.`
+    ), { exitCode: PARKED_EXIT_CODE });
+  }
   if (response.status !== 200) {
     throw new VllmError(
       `${base}, for model "${served.id}", ` + explainHttpRefusal(response.status, "", response.body)
@@ -30683,14 +30843,16 @@ async function complete(transport, endpoint, served, system, user, tuning) {
   }
   return withoutThinking(content);
 }
-var BUSY_STATUSES, VllmError, LISTED_IDS_SHOWN, CHARS_PER_TOKEN2, PROMPT_SLACK_TOKENS, PREDICT_FLOOR2;
+var BUSY_STATUSES, CHAT_WAITS_ON, VllmError, LISTED_IDS_SHOWN, CHARS_PER_TOKEN2, PROMPT_SLACK_TOKENS, PREDICT_FLOOR2;
 var init_vllm = __esm({
   "src/translate/vllm.ts"() {
     "use strict";
     init_engine_import_meta_url();
     init_http_refusal();
+    init_endpoint();
     init_transport();
     BUSY_STATUSES = [429, 503, 409];
+    CHAT_WAITS_ON = [...BUSY_STATUSES, 502, 504];
     VllmError = class extends Error {
       constructor(message) {
         super(message);
@@ -30964,7 +31126,7 @@ var init_version = __esm({
     init_engine_import_meta_url();
     init_package();
     VERSION = package_default.version;
-    GIT_COMMIT = "src b32d5f206361".length > 0 ? "src b32d5f206361" : null;
+    GIT_COMMIT = "src f5d8c8d33ab8".length > 0 ? "src f5d8c8d33ab8" : null;
   }
 });
 
@@ -95363,145 +95525,7 @@ init_endpoint_headers();
 init_transport();
 init_vllm();
 init_contract();
-
-// src/vlm/endpoint.ts
-init_engine_import_meta_url();
-var fs11 = __toESM(require("node:fs"), 1);
-init_http_refusal();
-var VlmEndpointError = class extends Error {
-  constructor(message) {
-    super(message);
-    this.name = "VlmEndpointError";
-  }
-};
-var PARKED_EXIT_CODE = 75;
-var VlmParkedError = class extends VlmEndpointError {
-  constructor(endpoint, page, detail) {
-    super(
-      `parked: ${endpoint} did not answer page ${page} -- ${detail} Every page that landed is banked; run the same command again to read the rest.`
-    );
-    this.endpoint = endpoint;
-    this.page = page;
-    this.name = "VlmParkedError";
-  }
-  endpoint;
-  page;
-  exitCode = PARKED_EXIT_CODE;
-};
-var WEATHER_WAITS_MS = [2e3, 5e3, 1e4, 3e4, 6e4, 12e4, 24e4];
-var WEATHER_STATUSES = /* @__PURE__ */ new Set([429, 502, 503, 504]);
-function capOf(cap, page) {
-  return typeof cap === "function" ? cap(page) : cap;
-}
-var DEFAULT_VLM_CONCURRENCY = 12;
-var PER_PAGE_DEADLINE_MS = 6e4;
-function requestDeadlineMs(concurrency) {
-  return Math.max(1, concurrency) * PER_PAGE_DEADLINE_MS;
-}
-async function readPagesFromEndpoint(opts) {
-  const url = `${opts.endpoint.replace(/\/+$/, "")}/chat/completions`;
-  const queue = [...opts.pages];
-  const workers = Math.max(1, Math.min(opts.concurrency, queue.length));
-  let held = null;
-  const next = () => held === null ? queue.shift() : void 0;
-  const run = async () => {
-    for (let page = next(); page !== void 0; page = next()) {
-      try {
-        opts.onPage(await readOnePage(url, page, opts));
-      } catch (err) {
-        if (held === null) held = err;
-        return;
-      }
-    }
-  };
-  await Promise.all(Array.from({ length: workers }, run));
-  if (held !== null) throw held;
-}
-async function readOnePage(url, page, opts) {
-  const waits = opts.weatherWaitsMs ?? WEATHER_WAITS_MS;
-  const tries = waits.length + 1;
-  const started = Date.now();
-  for (let attempt = 1; ; attempt += 1) {
-    const outcome = await tryOnePage(url, page, opts);
-    if (!("fault" in outcome)) return outcome;
-    const { fault } = outcome;
-    if (fault.kind === "refused") throw new VlmEndpointError(`page ${page.number}: ${fault.said}`);
-    if (fault.kind === "deadline") {
-      throw new VlmParkedError(opts.endpoint, page.number, `${fault.said}.`);
-    }
-    const wait = waits[attempt - 1];
-    if (wait === void 0) {
-      const minutes = ((Date.now() - started) / 6e4).toFixed(1);
-      throw new VlmParkedError(
-        opts.endpoint,
-        page.number,
-        `${tries} tries over ${minutes} min all met weather; the last: ${fault.said}`
-      );
-    }
-    opts.onWeather?.(
-      `page ${page.number}: ${fault.said} That is weather, not a refusal -- trying again in ${wait >= 6e4 ? `${wait / 6e4} min` : `${wait / 1e3} s`} (${attempt} of ${tries}).`
-    );
-    await new Promise((resolve20) => setTimeout(resolve20, wait));
-  }
-}
-async function tryOnePage(url, page, opts) {
-  const image = fs11.readFileSync(page.imagePath).toString("base64");
-  const started = Date.now();
-  let response;
-  try {
-    response = await fetch(url, {
-      method: "POST",
-      // An EXPLICIT deadline, which replaces Bun's default fetch timeout — the
-      // one that fired inside a normal batch wait and failed a page that would
-      // have landed seconds later. A page gets no bytes until its batch
-      // completes, so the only honest limit is this total deadline, generous
-      // enough that only a hung server reaches it. See PER_PAGE_DEADLINE_MS.
-      signal: AbortSignal.timeout(requestDeadlineMs(opts.concurrency)),
-      headers: { ...opts.headers ?? {}, "content-type": "application/json" },
-      body: JSON.stringify({
-        model: opts.model,
-        temperature: opts.temperature,
-        max_tokens: capOf(opts.maxTokens, page),
-        messages: [{
-          role: "user",
-          content: [
-            { type: "image_url", image_url: { url: `data:image/png;base64,${image}` } },
-            { type: "text", text: opts.prompt }
-          ]
-        }]
-      })
-    });
-  } catch (err) {
-    const why = err instanceof Error ? err.message : String(err);
-    if (err instanceof Error && err.name === "TimeoutError") {
-      const minutes = Math.round(requestDeadlineMs(opts.concurrency) / 6e4);
-      return { fault: { kind: "deadline", said: `${url} gave no answer within the ${minutes} min deadline` } };
-    }
-    return { fault: { kind: "weather", said: `${url} could not be reached (${why}).` } };
-  }
-  if (!response.ok) {
-    const said = `${url} ${explainHttpRefusal(response.status, response.statusText, await response.text())}`;
-    return { fault: { kind: WEATHER_STATUSES.has(response.status) ? "weather" : "refused", said } };
-  }
-  const payload = await response.json();
-  const answer = payload;
-  const choice = answer.choices?.[0];
-  if (!choice || typeof choice.message?.content !== "string") {
-    throw new VlmEndpointError(
-      `page ${page.number}: the server's answer carries no message content. It was: ${JSON.stringify(payload).slice(0, 400)}`
-    );
-  }
-  return {
-    number: page.number,
-    text: choice.message.content.trim(),
-    tokens: answer.usage?.completion_tokens ?? 0,
-    finishReason: choice.finish_reason ?? null,
-    seconds: (Date.now() - started) / 1e3,
-    response: payload
-  };
-}
-
-// src/vlm/read.ts
+init_endpoint();
 init_models();
 
 // src/vlm/readings.ts
@@ -100263,6 +100287,7 @@ function mintVttBook(opts) {
 }
 
 // src/commands.ts
+init_endpoint();
 init_models();
 
 // src/vlm/pages.ts
