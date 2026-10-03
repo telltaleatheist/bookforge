@@ -611,7 +611,7 @@ print(pgid)
             # `_bound_ports` scans for), so it is ours, and raising first left it
             # orphaned: `_record_server` had never run, `stop()` had no pid to
             # signal, and a setsid'd sgl-omni sat on 13.4 GB of VRAM until the
-            # next job came back accelerator_busy (Crucible 1.0.43, owens-pc,
+            # next job came back accelerator_busy (Crucible 1.0.43, my-pc,
             # 2026-09-27).
             self._stop_misbound(int(row['pid']), port)
             raise HiggsServerError(

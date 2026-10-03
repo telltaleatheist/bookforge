@@ -1443,7 +1443,7 @@ export function appendStep(jobId: string, spec: AppendStepSpec, opts?: EnqueueOp
    * therefore composing a run that was not stageable at birth and was never
    * asked again. Measured on 2026-09-21: job_mubw3zxx ("Mutineer's Moon")
    * created 23:42:22Z, `pending` never set, `waitFor` defaulted to
-   * `crucible@owens-pc-wsl`, prepare started 23:43:00Z on a server nobody chose.
+   * `crucible@my-pc-wsl`, prepare started 23:43:00Z on a server nobody chose.
    *
    * The renderer's door now enqueues a narration WHOLE, which is the real fix.
    * This is the rule's second owner, so the next composer that arrives a step at

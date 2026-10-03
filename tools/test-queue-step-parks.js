@@ -222,7 +222,7 @@ async function seamChecks() {
        */
       const { CrucibleSessionHeld } = require('@crucible/client');
       const held = new CrucibleSessionHeld(409, 'session_open', 'the server is held', {}, {
-        holder: 'foundry@owens-pc', sessionId: 'ses-9', act: 'translate', model: null,
+        holder: 'foundry@my-pc', sessionId: 'ses-9', act: 'translate', model: null,
         sessionStatus: 'open', since: '2026-09-19T03:00:00+00:00',
       });
       assert.strictEqual(held.busyLine, undefined,

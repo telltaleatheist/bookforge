@@ -1010,7 +1010,7 @@ def cmd_clean(args):
     """THE HOSTED FOUNDRY WINDOW'S **Clean text** PRESS, with no window.
 
     Not a second way of doing what the press does: the adapter calls the same
-    compiled functions in the same order - `planCleanup` (workspace:plan-clean),
+    compiled functions in the same order - `identifyCleanup` (workspace:plan-clean),
     the `CleanRequest` the dialog composes field for field, and `runJob`, the seam
     BookForge's own queue calls to run a Foundry job. So it lands the same ledger
     step, writes the same records and stamp, and can be timed.
@@ -2364,9 +2364,9 @@ if it had been cleaned.""",
         "doc": """THE HOSTED FOUNDRY WINDOW'S "Clean text" PRESS, with no window.
 
 Not a headless re-implementation of it: the adapter calls the same compiled
-functions in the same order the button walks through — planCleanup
-(workspace:plan-clean, which materialises the position's own book and mints the
-records, stamp and step id), the CleanRequest clean-dialog.add() composes field for
+functions in the same order the button walks through — identifyCleanup
+(workspace:plan-clean, which mints the records, stamp and step id; the run makes the
+book when it starts), the CleanRequest clean-dialog.add() composes field for
 field, and runJob, the seam queue-steps/foundry-job.ts hands a Foundry row to. So
 it LANDS A LEDGER STEP, writes the same records and stamp, and can be timed
 against the app it is a run of.

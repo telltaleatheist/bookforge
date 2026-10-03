@@ -76,17 +76,17 @@ check('A: OUR job is never a shadow, though the lane is still busy for our other
 });
 
 check('B+C: another BookForge\'s session is foreign and makes the card busy', () => {
-  const session = { sessionId: 'S-mac', act: 'clean', client: 'bookforge@owens-pc', model: null, since: '2026-09-26T09:00:00Z' };
+  const session = { sessionId: 'S-mac', act: 'clean', client: 'bookforge@my-pc', model: null, since: '2026-09-26T09:00:00Z' };
   const r = readCard(activity({ session }), NONE);
   assert.deepStrictEqual(r.shadow, {
-    kind: 'session', holder: 'bookforge@owens-pc', what: 'clean on qwen3.5-9b', progress: null,
+    kind: 'session', holder: 'bookforge@my-pc', what: 'clean on qwen3.5-9b', progress: null,
     message: null, since: '2026-09-26T09:00:00Z',
   });
   assert.ok(r.busy !== null && /a session for clean on qwen3\.5-9b/.test(r.busy.line), r.busy && r.busy.line);
 });
 
 check('C: OUR session is neither a shadow nor busy', () => {
-  const session = { sessionId: 'S-ours', act: 'clean', client: 'bookforge@owens-mac-studio', model: null, since: '2026-09-26T09:00:00Z' };
+  const session = { sessionId: 'S-ours', act: 'clean', client: 'bookforge@my-mac', model: null, since: '2026-09-26T09:00:00Z' };
   assert.deepStrictEqual(readCard(activity({ session }), { jobs: new Set(), sessions: new Set(['S-ours']) }),
     { busy: null, shadow: null });
   // The hosted Foundry's session is ours by the LEDGER, where it is recorded as a job id.

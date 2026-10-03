@@ -1222,7 +1222,8 @@ comma form is accepted** (*"First John one, nine"* — the one bare clip), and
 **"chapter" is refused**.
 
 The prompt is the artifact the narrator hears, so which form it *asks for* is
-pinned by its own keeper (`tools/test-prompt-examples.js`) and not only by which
+pinned by its own keeper (Foundry's `test/clean/prompt-examples.test.ts`; BookForge's copy was
+retired 2026-10-02 because the prompts are Foundry's, byte for byte) and not only by which
 forms the validator accepts: every chapter-and-verse reading the prompt states in
 prose must carry "verse" and must not carry "chapter". Without that, a prompt
 asking for the 1-of-23 minority form passes every other check on this branch —
@@ -1412,9 +1413,9 @@ and the live run measured it making it correctly.
 | `tools/test-narration-text-two-family.js` | a TWO-CHAIN project, end to end, no GPU |
 | `electron/tts-spoken-forms.ts` | what a token may be read AS — the curated tables (a LEAF: imports nothing from this repo) |
 | `electron/data/english-words.json` | the word test behind the emphasis reading |
-| `tools/test-prompt-examples.js` | every prompt example, through the validator that judges it |
+| Foundry's `test/clean/prompt-examples.test.ts` | every prompt example, through the validator that judges it (Foundry owns the prompts) |
 | `electron/prompts/tts-narration-text.txt` | the wider instruction, appended to the number prompt |
 | `shared/processing/book-passes.ts` etc. | the pass kind, registered in fourteen tables (that list itself has no consumer — see above) |
-| `tools/test-prompt-examples.js` | every prompt example, through the validator that judges it |
+| Foundry's `test/clean/prompt-examples.test.ts` | every prompt example, through the validator that judges it (Foundry owns the prompts) |
 | `studio-versions.component.ts` | the **Clean text…** button, beside Narrate |
 | `electron/book-render-service.ts` | the third streaming door |

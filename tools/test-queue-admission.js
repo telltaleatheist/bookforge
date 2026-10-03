@@ -81,7 +81,10 @@ function test(name, fn) { tests.push({ name, fn }); }
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 /** Let the scheduler's promise chain — the prober AND the reserve — settle. */
-const settle = async (n = 30) => { for (let i = 0; i < n; i++) await wait(0); };
+// setImmediate, not setTimeout(0): Windows clamps a timer to its ~15 ms resolution,
+// so thirty of them took ~465 ms there and every 40 ms cool-off lapsed INSIDE a
+// settle — the retry happened before the test could see the hold.
+const settle = async (n = 30) => { for (let i = 0; i < n; i++) await new Promise((r) => setImmediate(r)); };
 
 /**
  * A step module whose run the test resolves by hand.

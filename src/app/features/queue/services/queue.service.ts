@@ -523,7 +523,7 @@ export class QueueService {
    * born un-staged, and with the queue already moving its prepare row was
    * `queued` rather than `held`. job_mubw3zxx ("Mutineer's Moon") was created at
    * 23:42:22Z with `pending` never set, `waitFor` defaulted to
-   * `crucible@owens-pc-wsl`, and prepare started at 23:43:00Z on a server nobody
+   * `crucible@my-pc-wsl`, and prepare started at 23:43:00Z on a server nobody
    * had chosen. Prepare packs the generation chunks to THE CHOSEN SERVER's voice
    * band, so starting it before the server is picked is not merely early — it is
    * packed for a card nobody agreed to.

@@ -1856,7 +1856,7 @@ test('a CHAINED Foundry request joins its parent run and is not staged a second 
 //
 // The defect these three guard, measured 2026-09-21: job_mubw3zxx ("Mutineer's
 // Moon") was created at 23:42:22Z, `pending` was never set, `waitFor` defaulted
-// to `crucible@owens-pc-wsl`, and its prepare row started at 23:43:00Z on a
+// to `crucible@my-pc-wsl`, and its prepare row started at 23:43:00Z on a
 // server nobody had chosen. The mechanism was composition, not scheduling — the
 // narration modal created the run from its FIRST child and appended the rest,
 // and since the prepare row split (2026-09-19) the first child is `prepare`:

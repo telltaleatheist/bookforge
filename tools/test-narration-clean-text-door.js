@@ -124,7 +124,7 @@ const hostQueue = require(path.join(DIST, 'foundry-host-queue.js'));
 const { NARRATION_TEXT_FAILSAFE_NOTICE } =
   require(path.join(REPO, 'dist', 'shared', 'processing', 'narration-text-notice.js'));
 
-const { startFakeCrucible, settingsRoutes, sessionRoutes } =
+const { startFakeCrucible, settingsRoutes, sessionRoutes, ENGINE_INFO_FIELDS } =
   require(path.join(REPO, 'tools', 'fake-crucible.js'));
 
 /** What the fake names for the `clean` class — `settingsRoutes`' own default. */
@@ -134,7 +134,7 @@ const CRUCIBLE_CLEAN_MODEL = 'qwen3.5-9b';
 function modelRow(id, resident) {
   return {
     id, family: 'qwen3.5', params_b: 9, revision: 'abc1234', fingerprint: `${id}@abc1234`,
-    modalities: ['text'], backend_supported: true, installed: true, resident,
+    modalities: ['text'], backend_supported: true, installed: true, weights_of: null, resident,
     loadable: true, reason: null, memory_bytes_estimate: 19000000000,
     context_default: 32768, max_model_len: 32768,
   };
@@ -167,6 +167,8 @@ async function startVenue() {
      */
     if (ctx.url.pathname === '/v1/info' && req.method === 'GET') {
       ctx.send(res, 200, {
+        // Every field the SDK's strict reader demands of a current server (`features`, …).
+        ...ENGINE_INFO_FIELDS,
         server: { name: 'clean-door-fake', version: '0.6.0', api_version: 1 },
         host: {
           platform: 'linux', arch: 'x86_64', backend: 'cuda-linux',

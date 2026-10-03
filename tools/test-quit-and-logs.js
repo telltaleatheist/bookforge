@@ -234,7 +234,9 @@ it('PK7: ONE module decides where this machine\'s logs go', async () => {
 });
 
 it('PK7: the worker log is machine-local, and no library path can move it', async () => {
-  const src = fs.readFileSync(path.join(REPO, 'electron', 'parallel-tts-bridge.ts'), 'utf-8');
+  // LF, so a CRLF checkout slices the function the same way (`'\n}\n'` below).
+  const src = fs.readFileSync(path.join(REPO, 'electron', 'parallel-tts-bridge.ts'), 'utf-8')
+    .replace(/\r\n/g, '\n');
   const body = src.slice(src.indexOf('function initWorkerLog'));
   const fn = body.slice(0, body.indexOf('\n}\n') + 3);
 
@@ -305,7 +307,9 @@ it('PK11: and the real bookforge.log is untouched by one', async () => {
 });
 
 it('PK11: the rule is in the code, not in this file — write() has no lazy open', () => {
-  const src = fs.readFileSync(path.join(REPO, 'electron', 'rolling-logger.ts'), 'utf-8');
+  // LF, so a CRLF checkout slices the method the same way (`'\n  }\n'` below).
+  const src = fs.readFileSync(path.join(REPO, 'electron', 'rolling-logger.ts'), 'utf-8')
+    .replace(/\r\n/g, '\n');
   const write = src.slice(src.indexOf('private async write('));
   const body = write.slice(0, write.indexOf('\n  }\n') + 5);
   assert.ok(!/await this\.init\(\)/.test(body),

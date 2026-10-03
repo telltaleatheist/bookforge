@@ -2,8 +2,19 @@
 // gave it: every window sample-equal to an ffmpeg -ss/-t cut of the same span, overlapping and out-of-order windows
 // included, plus a window that runs past the end of the audio (zero tail) and one wholly past it (all zeros).
 const fs = require('fs'); const os = require('os'); const path = require('path'); const { execFileSync } = require('child_process');
+const { skipLine } = require('./keeper-skip.js');
+// The app's own user data, where the managed tools-env ffmpeg lives: the cutter
+// resolves its ffmpeg there, and the reference cuts below use the same binary.
+const USER_DATA = process.env.BOOKFORGE_USERDATA_DIR || path.join(process.env.APPDATA || '', 'BookForge');
+process.env.BOOKFORGE_USERDATA_DIR = USER_DATA;
+const FF = process.env.FFMPEG || path.join(USER_DATA, 'runtime', 'tools-env', 'Library', 'bin', 'ffmpeg.exe');
+if (!fs.existsSync(FF)) {
+  console.log(skipLine(`no ffmpeg at ${FF} — install BookForge's tools env, or set FFMPEG and BOOKFORGE_USERDATA_DIR`));
+  process.exit(0);
+}
+process.env.BOOKFORGE_USER_DATA = USER_DATA;
+require('../cli/electron-stub.js'); // the Electron `app` the tools-env lookup asks for
 const { cutWindowsStreamed } = require('../dist/electron/crucible/sentence-align.js');
-const FF = process.env.FFMPEG || 'C:/Users/tellt/AppData/Roaming/BookForge/runtime/tools-env/Library/bin/ffmpeg.exe';
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bf-cutwin-'));
 const src = path.join(dir, 'src.flac');
 // 40 s of a chirp at 48 kHz stereo (the decode must also resample and downmix, as on a real master)

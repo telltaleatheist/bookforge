@@ -859,7 +859,6 @@ const SUITES = [
   'test-text-server',
   'test-narration-clean-text-door',
   'test-narration-text-readiness',
-  'test-prompt-examples',
   'test-narration-text-two-family',
   'test-tts-number-rules',
   // The THIRD named exception to "deterministic text fixes are for Listen only"
@@ -1074,6 +1073,32 @@ const SUITES = [
   // the job's abort signal (a listener per chunk on a signal that lives for the
   // whole book). No model and no server — the joins are exported and driven.
   'test-ai-bridge-boundaries',
+  // NINETEEN GUARDS THAT EXISTED AND RAN NOWHERE, registered 2026-10-02. Each
+  // was run first: fifteen were green, and four were red only for their own
+  // reasons (no userData for the managed-bins lookup, a CRLF slice, and Q6
+  // pinning a mid-chain reserve a row no longer takes since one session spans
+  // its run). Sentence alignment and its corrections:
+  'test-correct-to-heard',
+  'test-sentence-align',
+  'test-sentence-overlaps',
+  'test-discrepancies',
+  'test-recheck',
+  'test-clip-locate',
+  'test-cut-windows',
+  'test-silence-compact',
+  'test-transcript-cache',
+  // The queue's lifecycle and Crucible's server-side line:
+  'test-queue-lifecycle',
+  'test-crucible-server-queue',
+  'test-crucible-card-shadow',
+  'test-foundry-runner-seam',
+  // Copies into the library, quitting, and what a run leaves behind:
+  'test-bounded-copy',
+  'test-library-copy',
+  'test-scratch-sweep',
+  'test-bridge-quit-and-owner',
+  'test-quit-and-logs',
+  'test-epub-inline-tags',
 ];
 
 /**

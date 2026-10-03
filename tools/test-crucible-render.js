@@ -275,9 +275,9 @@ function startFakeCrucible(behaviour, rows) {
           return send(res, 409, {
             error: {
               code: 'server_busy',
-              message: "session ses-held of 'foundry@owens-pc' for 'translate' holds this server",
+              message: "session ses-held of 'foundry@my-pc' for 'translate' holds this server",
               details: {
-                door: 'session', holder: 'foundry@owens-pc', session_id: 'ses-held',
+                door: 'session', holder: 'foundry@my-pc', session_id: 'ses-held',
                 act: 'translate', model: 'qwen3.8-27b-4bit', status: 'open',
                 since: '2026-09-18T01:00:00+00:00',
               },
@@ -800,9 +800,9 @@ async function leasedChecks() {
   await check('a machine held by another client\'s session is a WAIT the queue can park on, not a red row', () => {
     assert.ok(thrown, 'a held machine must not produce a render');
     assert.strictEqual(thrown.code, 'server_busy');
-    assert.strictEqual(thrown.busyLine, "held: foundry@owens-pc's session for translate, since 2026-09-18T01:00:00+00:00",
+    assert.strictEqual(thrown.busyLine, "held: foundry@my-pc's session for translate, since 2026-09-18T01:00:00+00:00",
       'without a busyLine nothing carries the wait to the seam and the row FAILS instead of holding');
-    assert.ok(/foundry@owens-pc/.test(thrown.message), `the holder must be named; got: ${thrown.message}`);
+    assert.ok(/foundry@my-pc/.test(thrown.message), `the holder must be named; got: ${thrown.message}`);
     assert.ok(/translate/.test(thrown.message),
       'and what they are doing, so a person can judge the wait');
   });

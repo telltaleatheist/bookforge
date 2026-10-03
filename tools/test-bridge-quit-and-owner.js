@@ -173,7 +173,7 @@ const TTS_STEP_TS = fs.readFileSync(
   await check('the SDK\'s other spelling — heldLine — is a wait too', async () => {
     assert.strictEqual(
       await bridge.refusalIsAWait(Object.assign(new Error('409'), {
-        heldLine: "held: foundry@owens-pc's session for translate, since 04:12",
+        heldLine: "held: foundry@my-pc's session for translate, since 04:12",
       })),
       true, 'a held MACHINE arrives as heldLine; runtime.ts\'s busyLineOf reads both');
   });

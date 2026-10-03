@@ -69,6 +69,7 @@ const os = require('os');
 const path = require('path');
 const Module = require('module');
 const { skipLine } = require('./keeper-skip.js');
+const { ENGINE_INFO_FIELDS } = require('./fake-crucible');
 
 const REPO = path.resolve(__dirname, '..');
 const HOST_REGISTRY = path.join(REPO, 'dist', 'electron', 'crucible', 'host-registry.js');
@@ -174,11 +175,12 @@ async function main() {
       + 'act\'s environment has changed. Re-read the dispatcher.');
   });
 
-  check('the host seam carries `waitFor`, which is the whole of what BookForge sends', () => {
+  check('the host seam carries the `venue`, which is the whole of what BookForge sends', () => {
     const jobQueue = read('foundry-app', 'electron', 'job-queue.ts');
     const options = /interface RunOptions \{[\s\S]*?\n\}/.exec(jobQueue);
-    assert.ok(/waitFor\?: string;/.test(options[0]),
-      'the vendored `RunOptions` no longer declares `waitFor`. That field IS BookForge\'s half of '
+    // `venue` since PK6 (it was `waitFor`, a preference the placement could re-decide).
+    assert.ok(/venue\?: RunVenue \| null;/.test(options[0]),
+      'the vendored `RunOptions` no longer declares `venue`. That field IS BookForge\'s half of '
       + 'the hosted placement: the scheduler picks the machine and the name crosses here. Without '
       + 'it the window answers a choice made on BookForge\'s queue row with its OWN '
       + '`newJobsWaitFor` setting — which is the defect foundry f300fc6 added it to close.');
@@ -256,7 +258,7 @@ async function main() {
       'the hosted step is no longer handing the request across VERBATIM. Its `model` and `ollama` '
       + 'are Foundry\'s own composition and the placement overrides both; writing either here '
       + 'would be the second composer of one address.');
-    assert.ok(/waitFor,/.test(step),
+    assert.ok(/venue: venueServer === null \? null : \{ server: venueServer \}/.test(step),
       'the hosted step no longer sends the machine. Without it the vendored window answers a '
       + 'choice made on BookForge\'s queue row with its own default.');
   });
@@ -296,9 +298,11 @@ async function main() {
     const jobQueue = read('foundry-app', 'electron', 'job-queue.ts');
     assert.ok(/case 'openai': return \[\];/.test(jobQueue),
       'the vendored `serverArgs` no longer treats openai as the unspelled default door.');
-    assert.ok(/args\.push\('--concurrency', String\(request\.concurrency\)\);/.test(jobQueue),
-      'the vendored spawn no longer forwards a request concurrency; re-read how the pool is '
-      + 'sized before trusting anything above.');
+    // The SERVER's admission depth wins since PK8 (`Placement.concurrency`); a
+    // request's number survives only where nothing was placed (a dry run).
+    assert.ok(/const said = placement\.concurrency \?\? request\.concurrency;/.test(jobQueue),
+      'the vendored spawn no longer sizes the pool from the placement first; re-read how the '
+      + 'pool is sized before trusting anything above.');
     const step = read('electron', 'queue-steps', 'foundry-job.ts')
       .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
     assert.ok(!/concurrency/.test(step),
@@ -542,6 +546,8 @@ async function main() {
 
   /** `GET /v1/info` for an ENGINE, in the shape the SDK's reader demands. */
   const engineInfo = (name) => ({
+    // Every field the SDK's strict reader demands of a current server (`features`, …).
+    ...ENGINE_INFO_FIELDS,
     role: 'engine',
     managed_by: null,
     server: { name, version: '0.6.0', api_version: 1 },

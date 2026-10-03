@@ -203,7 +203,7 @@ const { check, summary } = makeChecker();
   await check('another client\'s session_open is a wait carrying the holder\'s own line', async () => {
     const fake = await startFakeCrucible(async (req, res) => {
       const refusal = sessionHeldRefusal({
-        sessionId: 'ses-theirs', client: 'foundry@owens-pc', act: 'translate', since: '2026-10-01T00:00:00Z',
+        sessionId: 'ses-theirs', client: 'foundry@my-pc', act: 'translate', since: '2026-10-01T00:00:00Z',
       });
       res.writeHead(refusal.status, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: { code: refusal.code, message: refusal.message, details: refusal.details } }));
@@ -216,7 +216,7 @@ const { check, summary } = makeChecker();
       assert.ok(caught instanceof sdk.CrucibleSessionHeld, `got ${caught}`);
       const wait = lease.asSessionWait(caught, 'pc', 'clean');
       assert.strictEqual(wait.busyLine, caught.heldLine);
-      assert.match(wait.busyLine, /foundry@owens-pc's session for translate/);
+      assert.match(wait.busyLine, /foundry@my-pc's session for translate/);
     } finally {
       await fake.close();
     }
@@ -271,8 +271,8 @@ const { check, summary } = makeChecker();
     const map = textActs.endpointHeaderMap('tok', 'clean');
     assert.strictEqual(map['X-Crucible-Client'], servers.CRUCIBLE_CLIENT_NAME);
     assert.match(servers.CRUCIBLE_CLIENT_NAME, /^bookforge@[a-z0-9-]+$/);
-    assert.strictEqual(clientName.crucibleClientNameFor('bookforge', 'Owens-Mac-Studio.local'),
-      'bookforge@owens-mac-studio');
+    assert.strictEqual(clientName.crucibleClientNameFor('bookforge', 'My-Mac.local'),
+      'bookforge@my-mac');
     assert.strictEqual(clientName.crucibleClientNameFor('bookforge', ''), 'bookforge');
   });
 

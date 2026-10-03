@@ -118,7 +118,7 @@ const SPECS = {
     script: 'pipeline/enhance/roformer_dir.py', what: 'RoFormer denoise every wav in a folder (WSL separator env)',
     positional: ['in', 'out', 'tmp'], wsl: true, done: (a) => a.out,
     help: [
-      '  --in <dir of 44.1 kHz wavs>  --out <dir>  --tmp <dir>  [--wsl-python <separator env python>]',
+      '  --in <dir of 44.1 kHz wavs>  --out <dir>  --tmp <dir>  --wsl-python <separator env python inside WSL>',
       '  denoise_mel_band_roformer_aufr33_sdr_27.9959.ckpt, the "(dry)" stem - a MASK model (it only keeps or lowers',
       '  what is there; it never invents). Outputs are padded/trimmed to the exact input length (fails past 10 ms).',
       '  Resumable per file. 3090 Ti ~9.7x realtime. Take the shared GPU lock first; nothing else on the card.',
@@ -155,7 +155,12 @@ function install(ctx) {
       }
       for (const k of spec.bools || []) if (args[k]) argv.push('--' + k);
       if (spec.wsl) {
-        const py = String(args['wsl-python'] || '/home/telltale/anaconda3/envs/separator/bin/python');
+        // The separator env's python INSIDE the guest. No default: a path baked in here is one
+        // machine's home directory, and on every other machine it is a wrong path that runs.
+        if (args['wsl-python'] === undefined || args['wsl-python'] === true) {
+          throw new Error(verb + ': --wsl-python <the separator env python inside WSL> is required');
+        }
+        const py = String(args['wsl-python']);
         const wargs = ['-e', py, toWsl(script), ...argv.map((v) => (/^[A-Za-z]:[\\/]/.test(v) ? toWsl(v) : v))];
         console.log('[' + verb + '] wsl ' + wargs.join(' '));
         const code = await new Promise((res, rej) => { const c = spawn('wsl', wargs, { stdio: 'inherit' }); c.on('error', rej); c.on('close', res); });

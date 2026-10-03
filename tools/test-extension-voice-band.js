@@ -178,8 +178,9 @@ async function main() {
   check('and it carries the safe band off the row, not just the cap', () => {
     const off = fs.readFileSync(path.join(EXT, 'src', 'offscreen.ts'), 'utf-8');
     assert.ok(
-      /safeMinChars: v\.pace\.safeMinChars/.test(off)
-      && /safeMaxChars: v\.pace\.safeMaxChars/.test(off),
+      // `pace` is null when the server measured no band, so the read is guarded.
+      /safeMinChars: (?:v\.pace === null \? null : )?v\.pace\.safeMinChars/.test(off)
+      && /safeMaxChars: (?:v\.pace === null \? null : )?v\.pace\.safeMaxChars/.test(off),
       '`VoiceInfo.pace` carries the measured band and the extension is dropping it again. The '
       + 'app reads all three off the same row (electron/crucible/stream.ts), so dropping two '
       + 'here is two clients packing one voice to two bands.',

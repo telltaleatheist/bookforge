@@ -351,40 +351,41 @@ test('Q6: four identical non-busy reserve refusals FAIL the row, with the last r
   async () => {
     /*
      * The park is right — the act never ran and the refusal names the thing to
-     * repair — but a book partway through HOLDS its server's card (ruling 9),
-     * and a `queued` next act keeps the hold standing. So this park held the
-     * machine for ever. Owen's ruling 2: four consecutive identical answers is
-     * a misconfiguration somebody can repair, which is the one thing a step may
+     * repair — but a park on a refusal that will never change parks the row for
+     * ever. Owen's ruling 2: four consecutive identical answers is a
+     * misconfiguration somebody can repair, which is the one thing a step may
      * fail on.
+     *
+     * THE ROW'S FIRST ACT, because that is the only reserve a row takes now. It
+     * used to be the Align after a Narrate, when each act reserved its own
+     * lease; since Crucible 1.0.77 a row holds ONE queue session across its run
+     * (`reserveBeforeLaunch`: the run already holds one → `go`), so a later act
+     * never asks again.
      */
     const reason = 'crucible "mac" names no model for align work (model_not_resident).';
-    const tts = fakeModule('tts-conversion', { travels: true, leases: true, act: 'tts' });
     const align = fakeModule('align', { travels: true, leases: true, act: 'align' });
     const seam = leaseSeam(({ act }) => (act === 'align' ? new Error(reason) : null));
     const ranked = [{ name: 'mac', enabled: true }];
-    await fresh('reserve-ceiling', [tts, align], {
+    await fresh('reserve-ceiling', [align], {
       host: routingHost(ranked), seam: seam.host, ranked,
     });
 
     const job = sendChain('Deathstalker', [
-      { type: 'tts-conversion', label: 'Narrate', config: {}, sourceRef: { kind: 'epub', path: '/a.epub' } },
-      { type: 'align', label: 'Align', config: {}, parentIndex: 0 },
+      { type: 'align', label: 'Align', config: {}, sourceRef: { kind: 'epub', path: '/a.epub' } },
     ]);
     engine.start();
-    await settle();
-    tts.runs[0].resolve({ kind: 'audio', path: '/out/audio' });
     await settle();
 
     // The refusals arrive one per admission tick (20 ms here). Wait out enough
     // of them that the ceiling must have been reached, then read the row.
     const ceiling = engine.RESERVE_REFUSAL_CEILING;
     assert.strictEqual(ceiling, 4, 'ruling 2: four, about a minute at the 15 s tick');
-    for (let i = 0; i < ceiling + 4 && stepAt(job.id, 1).status !== 'failed'; i += 1) {
+    for (let i = 0; i < ceiling + 4 && stepAt(job.id, 0).status !== 'failed'; i += 1) {
       await wait(40);
       await settle();
     }
 
-    const step = stepAt(job.id, 1);
+    const step = stepAt(job.id, 0);
     assert.strictEqual(step.status, 'failed',
       'a park that holds the card cannot be allowed to hold it for ever');
     assert.strictEqual(step.error, reason,
@@ -396,7 +397,6 @@ test('Q6: four identical non-busy reserve refusals FAIL the row, with the last r
 test('Q6: a DIFFERENT refusal restarts the count — the server is saying something new',
   async () => {
     let nth = 0;
-    const tts = fakeModule('tts-conversion', { travels: true, leases: true, act: 'tts' });
     const align = fakeModule('align', { travels: true, leases: true, act: 'align' });
     // Every answer differs, so no streak can ever reach the ceiling.
     const seam = leaseSeam(({ act }) => {
@@ -405,23 +405,21 @@ test('Q6: a DIFFERENT refusal restarts the count — the server is saying someth
       return new Error(`refusal number ${nth}`);
     });
     const ranked = [{ name: 'mac', enabled: true }];
-    await fresh('reserve-ceiling-varied', [tts, align], {
+    await fresh('reserve-ceiling-varied', [align], {
       host: routingHost(ranked), seam: seam.host, ranked,
     });
 
+    // The row's first act — see the test above for why.
     const job = sendChain('Deathstalker II', [
-      { type: 'tts-conversion', label: 'Narrate', config: {}, sourceRef: { kind: 'epub', path: '/a.epub' } },
-      { type: 'align', label: 'Align', config: {}, parentIndex: 0 },
+      { type: 'align', label: 'Align', config: {}, sourceRef: { kind: 'epub', path: '/a.epub' } },
     ]);
     engine.start();
-    await settle();
-    tts.runs[0].resolve({ kind: 'audio', path: '/out/audio' });
     await settle();
 
     for (let i = 0; i < 8; i += 1) { await wait(40); await settle(); }
     assert.ok(nth > engine.RESERVE_REFUSAL_CEILING,
       `it was refused more than the ceiling (${nth} times)`);
-    assert.strictEqual(stepAt(job.id, 1).status, 'queued',
+    assert.strictEqual(stepAt(job.id, 0).status, 'queued',
       'but never the same answer twice running, so the row is owed its patience');
   });
 

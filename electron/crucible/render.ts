@@ -421,7 +421,7 @@ export function assertVoiceRowLoadable(
  *
  * `CrucibleBusy` and `CrucibleSessionHeld` are the two that carry structure
  * worth printing, and both fill `busyLine` — the SDK's own "GPU busy: foundry,
- * tts 62% done" / "held: foundry@owens-pc's session for translate, since …",
+ * tts 62% done" / "held: foundry@my-pc's session for translate, since …",
  * built from the holder the server named. The holder is `null` when it arrived
  * without a client name, and the SDK refuses to invent one — so does this.
  *

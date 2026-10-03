@@ -63,7 +63,7 @@ function foundryDist() {
 const FOUNDRY_DIST = foundryDist();
 const { argsFor } = require(path.join(FOUNDRY_DIST, 'electron', 'job-queue.js'));
 
-const { startFakeCrucible, settingsRoutes } = require('./fake-crucible.js');
+const { startFakeCrucible, settingsRoutes, ENGINE_INFO_FIELDS } = require('./fake-crucible.js');
 
 const ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'bookforge-clean-door-'));
 let failures = 0;
@@ -245,7 +245,7 @@ const FAKE_CLEAN_MODEL = 'qwen3.5-9b';
 function modelRow(id, resident) {
   return {
     id, family: 'qwen3.5', params_b: 9, revision: 'abc1234', fingerprint: `${id}@abc1234`,
-    modalities: ['text'], backend_supported: true, installed: true, resident,
+    modalities: ['text'], backend_supported: true, installed: true, weights_of: null, resident,
     loadable: true, reason: null, memory_bytes_estimate: 19000000000,
     context_default: 32768, max_model_len: 32768,
   };
@@ -353,6 +353,8 @@ async function projectHalf() {
      */
     if (ctx.url.pathname === '/v1/info' && req.method === 'GET') {
       ctx.send(res, 200, {
+        // Every field the SDK's strict reader demands of a current server (`features`, …).
+        ...ENGINE_INFO_FIELDS,
         server: { name: 'clean-step-fake', version: '0.6.0', api_version: 1 },
         host: {
           platform: 'linux', arch: 'x86_64', backend: 'cuda-linux',
@@ -691,7 +693,8 @@ ${refused}`);
       }), 'utf8');
       try {
         const said = await refusalOf([]);
-        assert.ok(/no_enabled_server|every Crucible server is disabled/.test(said),
+        // "paused" is the routing record's word for a disabled server now (routing.ts).
+        assert.ok(/no_enabled_server|every Crucible server is (?:disabled|paused)/.test(said),
           `expected the routing record's own refusal; got:\n${said}`);
         assert.ok(!said.includes('[clean] spawn'),
           `a refused act still composed a command line:\n${said}`);

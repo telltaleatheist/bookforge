@@ -27,15 +27,22 @@ function check(name, fn) {
 
 const idsOn = (backend) => moduleForBackend(backend).subjects.map((s) => s.id);
 
+/*
+ * ONE ID ACROSS BACKENDS since crucible 900416e ("asr: three models, one id each
+ * across backends", Owen 2026-09-24): each backend resolves `whisper-large-v3-turbo`
+ * to the weights it can hold. The per-backend ids this used to pin are retired.
+ */
 check('each backend is offered the transcriber it can actually hold', () => {
-  assert.ok(idsOn('cuda-linux').includes('faster-whisper-large-v3'));
-  assert.ok(idsOn('mlx-darwin').includes('mlx-whisper-large-v3'));
+  assert.ok(idsOn('cuda-linux').includes('whisper-large-v3-turbo'));
+  assert.ok(idsOn('mlx-darwin').includes('whisper-large-v3-turbo'));
 });
 
-check('and never the other one — this is the refusal that started it', () => {
-  assert.ok(!idsOn('mlx-darwin').includes('faster-whisper-large-v3'),
-    'the Mac refuses the WHOLE module over this one id');
-  assert.ok(!idsOn('cuda-linux').includes('mlx-whisper-large-v3'));
+check('and never a retired per-backend id — the Mac refused the WHOLE module over one', () => {
+  for (const backend of ['cuda-linux', 'mlx-darwin']) {
+    for (const retired of ['faster-whisper-large-v3', 'mlx-whisper-large-v3']) {
+      assert.ok(!idsOn(backend).includes(retired), `${backend} was offered ${retired}`);
+    }
+  }
 });
 
 check('exactly ONE transcriber reaches either backend', () => {

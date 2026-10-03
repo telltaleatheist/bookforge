@@ -20,15 +20,20 @@
  *   3. `positionOf(ledgerOf(await readManifest(dir)))` — the standing step, which
  *      is `LedgerService.standingIn` on this side of the wire, and `canCleanFrom`
  *      is asked about it because the dialog asks it before it offers the button.
- *   4. `planCleanup(inputPath, standing)` — `workspace:plan-clean`'s own call. It
- *      MATERIALISES the position's book, mints the records/stamp paths and the
- *      step id. A dry run makes the plan too: the argv is a fact about a plan, and
- *      a preview of an argv composed without one would be a preview of nothing.
- *   5. The `CleanRequest` composed field for field as `clean-dialog.add()` does.
- *   6. `runJob(request, { parentStep, onProgress, signal })` — the seam
+ *   4. `identifyCleanup(inputPath, standing)` — `workspace:plan-clean`'s own call
+ *      (Foundry 4ff96a3; it was `planCleanup`). It mints the records/stamp paths
+ *      and the step id, and names the row the run is made FROM (`at`). It makes no
+ *      book: the run materialises one when it starts (`materializeAtSpawn`).
+ *   5. The `CleanRequest` composed field for field as `clean-dialog.add()` does,
+ *      `at` and `removal` included.
+ *   6. A dry run materialises the book through `materializeCleanup`, the function
+ *      the spawn itself calls, so the printed line is the one a run would spawn.
+ *   7. `runJob(request, { parentStep, venue, onProgress, signal })` — the seam
  *      `queue-steps/foundry-job.ts` calls, with `parentStep` resolved the way
  *      `ipc.madeFrom` resolves it (`positionStepId(dir)`), so the row this lands
- *      is filed under the same step the press would file it under.
+ *      is filed under the same step the press would file it under. The hosted
+ *      placement opens the server's session and composes the endpoint, model
+ *      and credential itself, from the registry offered at step 1.
  *
  * ── THE ENGINE NEVER LOADS AND NEVER UNLOADS ────────────────────────────────
  *
@@ -73,7 +78,12 @@ const VENDORED_FOUNDRY_DIST = path.join(REPO, 'foundry-app', 'dist');
 
 const USAGE = `usage: clean-step.js (--project <BookForge project dir> | --foundry-project <dir>)
                      [--crucible-server <name>] [--model <tag>] [--concurrency <n>]
+                     [--remove-references on|off] [--remove-also <text>]
                      [--keep-server] [--library <root>] [--foundry-dist <dir>] [--dry-run]
+
+  --remove-references on|off (default on) and --remove-also <text> are the
+  dialog's removal box: references a narrator would never read ("see fig. 1-1",
+  "[image]"), and anything else named, asked of the check and the cleanup alike.
 
   --crucible-server names a Crucible (an entry in crucible-servers.json, or the
   reserved "local"). It sets the SAME venue field the app sets from a queue row,
@@ -175,16 +185,21 @@ async function main() {
 
   // Foundry is HOSTED here, and its library is BookForge's — `mountFoundry`'s own
   // first fact. `onExport` is required by the shape; a cleanup lands no export.
+  // `servers` is THE ONE REGISTRY, offered exactly as main.ts offers it: the
+  // hosted placement reads it to open the session and compose the endpoint.
+  const hostRegistry = require(path.join(BF_DIST, 'crucible', 'host-registry.js'));
+  hostRegistry.refreshHostCrucibleRegistry();
   fdist('electron/host.js').recordHost({
     libraryDir: path.join(libraryRoot, 'foundry'),
     onExport: () => {},
+    servers: () => hostRegistry.hostCrucibleServers(),
   });
 
   const { listProjects, readManifest, ledgerOf, positionStepId } = fdist('electron/projects.js');
   const { originalOf } = fdist('shared/original.js');
   const { positionOf } = fdist('shared/ledger.js');
   const { canCleanFrom } = fdist('shared/stages.js');
-  const { planCleanup } = fdist('electron/workspace.js');
+  const { identifyCleanup, materializeCleanup } = fdist('electron/workspace.js');
   const jobQueue = fdist('electron/job-queue.js');
   const { readAppSettings } = fdist('electron/app-settings.js');
   if (typeof jobQueue.argsFor !== 'function') {
@@ -303,9 +318,16 @@ async function main() {
     }
   }
 
+  // The dialog's removal box, default on, and what else it was asked to remove.
+  const refs = said(args['remove-references']) ?? 'on';
+  if (refs !== 'on' && refs !== 'off') {
+    throw new Error(`--remove-references ${refs}: say on or off.`);
+  }
+  const removal = { references: refs === 'on', also: said(args['remove-also']) ?? '' };
+
   // `workspace:plan-clean`'s call, with its own answer's rename: the handler
   // returns `{...plan, inputPath: plan.sourcePath}` and the dialog reads that.
-  const plan = await planCleanup(original.path, standing);
+  const plan = await identifyCleanup(original.path, standing);
   if (plan.stampPath === undefined || plan.stampPath.length === 0) {
     throw new Error('Foundry could not work out where to record what the cleanup did, so the run '
       + 'was not started.');
@@ -315,7 +337,6 @@ async function main() {
   const request = {
     kind: 'clean',
     inputPath: plan.sourcePath,
-    ...(plan.bookPath !== undefined ? { bookPath: plan.bookPath } : {}),
     recordsPath: plan.recordsPath,
     stampPath: plan.stampPath,
     ...(plan.deferred !== undefined ? { deferred: plan.deferred } : {}),
@@ -324,9 +345,10 @@ async function main() {
     // URL entirely; the credential is NOT here and never is — it travels in the
     // spawn's environment (crucible docs/PHASE7-LANES.md section 7.1(B)).
     ollama: crucible === null ? ollama : crucible.endpoint,
-    ...(plan.seedRecords !== undefined ? { seedRecords: plan.seedRecords } : {}),
-    ...(plan.generation !== undefined ? { generation: plan.generation } : {}),
+    // The row the run materialises its book out of when it starts.
+    at: plan.at ?? null,
     stepId: plan.stepId,
+    removal,
     /*
      * The one headless-only field left. Absent is the engine's own default,
      * deliberately not spelled here: a copy of their number is a second place
@@ -344,7 +366,19 @@ async function main() {
 
   const parentStep = await positionStepId(foundryProjectDir);
   const engine = fdist('electron/engine.js').engineCommand();
-  const argv = jobQueue.argsFor(request);
+  /*
+   * THE LINE A RUN WOULD SPAWN needs the book, and the book is made when a run
+   * starts (`materializeAtSpawn` -> `materializeCleanup`). So the preview makes it
+   * the same way, through the same function; a real run hands `runJob` the
+   * request WITHOUT it and the spawn makes its own.
+   */
+  const made = await materializeCleanup(request.inputPath, standing, request.stepId);
+  const argv = jobQueue.argsFor({
+    ...request,
+    bookPath: made.bookPath,
+    ...(made.seedRecords !== undefined ? { seedRecords: made.seedRecords } : {}),
+    ...(made.generation !== undefined ? { generation: made.generation } : {}),
+  });
 
   /*
    * WHICH BUILD ANSWERED, asked of the engine rather than assumed from its path —
@@ -388,6 +422,8 @@ async function main() {
       : route.note}`);
   }
   console.log(`[clean] concurrency      ${concurrency ?? "the engine's own default, unspelled here"}`);
+  console.log(`[clean] removal          references ${removal.references ? 'on' : 'off'}`
+    + `${removal.also.length > 0 ? `; also "${removal.also}"` : ''}`);
   console.log('[clean] residency        the operator\'s — the engine neither loads nor unloads '
     + '(foundry 646e8a1)');
   console.log(`[clean] engine           ${engine.command}${engine.args.length ? ` ${engine.args.join(' ')}` : ''}  (${engine.source})`);
@@ -434,11 +470,21 @@ async function main() {
 
   const startedAt = Date.now();
   let last = null;
-  let row;
+  let outcome;
   try {
-    const run = () => jobQueue.runJob(request, {
+    /*
+     * ONE HOLD, AND IT IS THE PLACEMENT'S. Hosted, `runJob` places the run on
+     * the venue named here: it opens that server's queue session, composes the
+     * endpoint, model and credential from the registry offered above, and closes
+     * the session when the run settles — `queue-steps/foundry-job.ts` hands it the
+     * same `venue` and takes no hold of its own. (This door used to take a lease
+     * around the act; a second hold on one server would now wait behind the
+     * first for ever.)
+     */
+    outcome = await jobQueue.runJob(request, {
       parentStep,
       signal: controller.signal,
+      venue: crucible === null ? null : { server: crucible.server },
       onProgress: (line) => {
         const counted = parseFoundryProgressLine(line);
         if (counted === null) { console.log(`[clean] ${line}`); return; }
@@ -446,26 +492,6 @@ async function main() {
         console.log(`clean-text: ${counted.page}/${counted.total}`);
       },
     });
-    /*
-     * The credential on this process's environment for the duration of the
-     * act, deleted in a `finally` (`electron/crucible/text-acts.js`,
-     * withProcessEndpointHeaders). Legitimate HERE and nowhere in the app: a
-     * CLI run is the act, so there is no other child to strip it from.
-     */
-    /*
-     * AND ONE LEASE AROUND THE WHOLE ACT (Owen, 2026-09-14: *"Models should
-     * always be unloaded when we're done with them. Every time."*). The engine's
-     * work reaches the server as hundreds of ordinary chat completions, each of
-     * which holds nothing there — so without this the resident model would be
-     * unloaded and reloaded between blocks of one book. `withCrucibleTextActLease`
-     * heartbeats it for the life of the spawn and releases it on success, failure
-     * and Ctrl+C alike. The app's door does exactly this around its own spawn.
-     */
-    row = crucible === null
-      ? await run()
-      : await textVenue.withCrucibleTextActLease(crucible, () =>
-        require(path.join(BF_DIST, 'crucible', 'text-acts.js'))
-          .withProcessEndpointHeaders(crucible.env, `clean ${path.basename(original.path)}`, run));
   } finally {
     // Success, failure or Ctrl+C alike: the card goes back unless it was asked to
     // stay.
@@ -480,7 +506,12 @@ async function main() {
 
   const seconds = (Date.now() - startedAt) / 1000;
   const blocks = last === null ? null : last.total;
-  console.log(`[clean] ${row.state}${row.error ? ` — ${row.error}` : ''}`);
+  // The five answers (`RunOutcome`): done, failed, cancelled, a wait, a park.
+  const why = outcome.outcome === 'failed' ? outcome.error
+    : outcome.outcome === 'wait' ? outcome.busyLine
+      : outcome.outcome === 'parked' ? outcome.reason
+        : null;
+  console.log(`[clean] ${outcome.outcome}${why ? ` — ${why}` : ''}`);
   console.log(`[clean] blocks           ${blocks ?? '(the engine reported no count)'}`);
   console.log(`[clean] elapsed          ${seconds.toFixed(1)}s`
     + (blocks ? `  (${(blocks / (seconds / 60)).toFixed(1)} blocks/min)` : ''));
@@ -504,7 +535,7 @@ async function main() {
     ? '(none — the ledger has no step with the planned id)'
     : `${landed.id}  ${landed.action} — ${landed.label}`}`);
 
-  if (row.state !== 'done') process.exitCode = 1;
+  if (outcome.outcome !== 'done') process.exitCode = 1;
 }
 
 main().catch((err) => {

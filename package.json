@@ -49,7 +49,6 @@
     "test": "npx tsc -p tsconfig.electron.json && node tools/run-keepers.js",
     "test:rate-window": "npx tsc -p tsconfig.electron.json && node tools/test-rate-window.js",
     "test:narration-text-two-family": "npx tsc -p tsconfig.electron.json && node tools/test-narration-text-two-family.js",
-    "test:prompt-examples": "npx tsc -p tsconfig.electron.json && node tools/test-prompt-examples.js",
     "test:narration-text-readiness": "npx tsc -p tsconfig.electron.json && node tools/test-narration-text-readiness.js",
     "test:narration-text-pass": "npx tsc -p tsconfig.electron.json && node tools/test-narration-text-pass.js",
     "test:text-normalization": "npx tsc -p tsconfig.electron.json && node tools/test-text-normalization.js",

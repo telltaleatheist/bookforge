@@ -852,7 +852,7 @@ test('an English word spelled from IVXLCDM is NOT a citation lead', () => {
 
 test('a bare prose range keeps the number prompt reading', () => {
   // The shipped prompt teaches an abbreviated range read in full, so only an
-  // APPARATUS range is claimed here; `test-prompt-examples` holds the other end.
+  // APPARATUS range is claimed here; Foundry's prompt-examples test holds the other end.
   assert.ok(!cited('A 112-14 spread ran in prose.', '112-14'));
   assert.ok(!cited('the 128-9 range of values', '128-9'));
   assert.ok(!cited('over 1935-36 the party grew', '1935-36'), 'a year range belongs to the model');

@@ -414,7 +414,7 @@ owns the row it follows, so one book is one decision.
 **2026-09-21.** Owen pressed *Add to queue* in the narration modal while the queue
 was moving and the book went straight to a card: job_mubw3zxx (*Mutineer's Moon*)
 created 23:42:22Z, `pending` never set, `waitFor` defaulted to
-`crucible@owens-pc-wsl`, prepare started 23:43:00Z on a server nobody had chosen.
+`crucible@my-pc-wsl`, prepare started 23:43:00Z on a server nobody had chosen.
 
 Nothing in the scheduler was wrong. The modal composed the run a step at a time —
 a `type: 'audiobook'` master opened a renderer-side composition, the FIRST child

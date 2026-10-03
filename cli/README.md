@@ -897,8 +897,8 @@ corpus doctrine, and the reason this door exists.
 
 **The hosted Foundry window's Clean text press, with no window.** Not a headless
 re-implementation of it: the adapter calls the same compiled functions in the same
-order the button walks through — `planCleanup` (`workspace:plan-clean`, which
-materialises the position's own book and mints the records, stamp and step id), the
+order the button walks through — `identifyCleanup` (`workspace:plan-clean`, which
+mints the records, stamp and step id; the run makes the book when it starts), the
 `CleanRequest` `clean-dialog.add()` composes field for field, and `runJob`, the seam
 `queue-steps/foundry-job.ts` hands a Foundry row to. So it **lands a ledger step**,
 writes the same records and stamp beside the project's readings, and a run can be

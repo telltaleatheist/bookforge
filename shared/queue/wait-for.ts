@@ -429,7 +429,7 @@ function holdAnyNoneServes(needClass: string, enabled: readonly WaitForServer[])
     + `(${enabled.map((r) => r.name).join(', ')}).`;
 }
 
-/** "owens-pc", "owens-pc and droplet", "owens-pc, droplet and the box". */
+/** "my-pc", "my-pc and droplet", "my-pc, droplet and the box". */
 function andList(names: readonly string[]): string {
   if (names.length <= 1) return names[0] ?? '';
   return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;

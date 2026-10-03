@@ -309,10 +309,10 @@ check('the ONE render path feeds the ONE sink', () => {
   assert.ok(!/recordGuardEvent\(/.test(bridge),
     'the bridge records a guard event from parsed WORKER STDOUT again — there is no local '
     + 'worker, so this would be parsing a stream nothing writes');
-  assert.ok(/guard: takeChunkGuards\(session\.jobId\)/.test(bridge),
+  assert.ok(/guard: takeChunkGuards\(session\.jobId, session\.prepInfo\.chapters\)/.test(bridge),
     'the roll-up must reach job-analytics.json, which is the app\'s durable per-render '
     + 'report');
-  assert.strictEqual((bridge.match(/takeChunkGuards\(session\.jobId\)/g) || []).length, 2,
+  assert.strictEqual((bridge.match(/takeChunkGuards\(session\.jobId, session\.prepInfo\.chapters\)/g) || []).length, 2,
     'BOTH terminal paths — completion and cancel — must pop the ledger, or a cancelled '
     + 'render leaks its take records for the life of the process');
 

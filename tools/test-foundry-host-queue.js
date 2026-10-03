@@ -96,6 +96,7 @@ const host = require(path.join(DIST, 'foundry-host-queue.js'));
  * checks below. Its reader is injectable, so no registry file and no WSL guest.
  */
 const registry = require(path.join(DIST, 'crucible', 'host-registry.js'));
+const routes = require(path.join(DIST, 'crucible', 'routes.js'));
 
 const SCRATCH = fs.mkdtempSync(path.join(os.tmpdir(), 'bf-hostq-'));
 
@@ -141,6 +142,9 @@ function jobModule() {
   return mod;
 }
 
+/** Where `hostq` runs each class it is asked about — every row in this file is a local one. */
+const HOSTQ_ROUTES = { clean: 'local', translate: 'local', simplify: 'local', pages: 'local' };
+
 async function fresh(name) {
   // A project nobody else in this file has used. The two listeners armed above
   // live for the whole process and their falling-edge bookkeeping is keyed by
@@ -178,6 +182,11 @@ async function fresh(name) {
     defaultWaitFor: () => 'hostq',
     reach: async () => ({ reachable: true }),
   });
+  // WHERE `hostq` RUNS EACH TEXT CLASS. Admission waits for this reading
+  // (`crucible/routes.ts`; a route is unknown until it is read) and the server is
+  // never dialled here, so it is stated, as test-queue-admission states it.
+  routes.forgetCrucibleRoutes();
+  routes.noteCrucibleRoutes('hostq', HOSTQ_ROUTES);
   const dir = path.join(SCRATCH, name);
   fs.mkdirSync(dir, { recursive: true });
   await engine.configure({ stateDir: dir });
@@ -249,13 +258,16 @@ test('the engine\'s own LINE comes back on the row as a count, through the REAL 
   assert.strictEqual(noted.progress, null, 'prose is not progress');
   assert.strictEqual(noted.note, 'vlm-convert: page 12 SKIPPED — already in the bank');
 
-  onProgress('page 41/317: rendered');
+  // A READ count. A render line (`page 41/317: rendered`) deliberately carries no
+  // count since 2026-09-21: the rasterising pre-pass stays off the rate anchor and
+  // shows on its own sub-bar (queue-steps/foundry-job.ts).
+  onProgress('vlm-read: page 143 (41/317) — 4,212 chars');
   await settle();
 
   const [updated] = host.foundryHostQueue.rows(PROJ);
   assert.strictEqual(updated.progress.page, 41, 'their count went home, in their field');
   assert.strictEqual(updated.progress.total, 317);
-  assert.strictEqual(updated.progress.phase, 'render', 'and it says which pass it counted');
+  assert.strictEqual(updated.progress.phase, 'read', 'and it says which pass it counted');
   assert.strictEqual(updated.note, null, 'a count CLEARS the note — that is what makes it mean "since"');
   // And our own bar still derives from the same numbers.
   const step = engine.snapshot().jobs.flatMap((j) => j.steps).find((s) => s.id === row.id);
@@ -750,87 +762,18 @@ test('a HOSTED text act REACHES the seam, carrying the machine and nothing else'
     if (seen !== null) break;
   }
   assert.ok(seen !== null, 'the hosted text act never reached the seam');
-  assert.strictEqual(seen.opts.waitFor, 'hostq',
-    `the machine must cross by name, verbatim: ${JSON.stringify(seen.opts.waitFor)}`);
+  // A VENUE since PK6 (was `waitFor`, a preference the placement could re-decide).
+  assert.deepStrictEqual(seen.opts.venue, { server: 'hostq' },
+    `the machine must cross by name, verbatim: ${JSON.stringify(seen.opts.venue)}`);
   assert.deepStrictEqual(seen.request, sent,
     'the request crossed changed. It is stored verbatim and the placement composes the model and '
     + 'the endpoint; writing either here would be the second composer of one address.');
 });
 
-test('a hosted text act for a server this machine does not offer is REFUSED, never handed over', async () => {
-  /*
-   * THE ONE THING THIS SIDE STILL CHECKS, AND WHY IT IS NOT A SECOND REGISTRY.
-   *
-   * Their `placedBy` takes `waitFor` verbatim and `slotNamed` matches it
-   * EXACTLY against the slot list derived from `FoundryHost.servers()`. A name
-   * that does not match is a `wait` over there — and a detached `runJob` holds
-   * no pump slot to give back, so `placeRun`'s loop retries it with a backoff
-   * FOR EVER and the promise never settles. A row that neither fails nor
-   * finishes is worse than either, so it is refused here first, out of the SAME
-   * snapshot the window is handed.
-   *
-   * Driven by taking a reading that does NOT contain the server the row was
-   * admitted to — which is what a person disabling or removing a server between
-   * admission and turn looks like.
-   */
-  await fresh('textpass-unoffered');
-  engine.clearStepModules();
-  engine.registerStepModule(require(path.join(DIST, 'queue-steps', 'foundry-job.js')).foundryJobStep);
-  registry.refreshHostCrucibleRegistry({
-    routing: () => ({
-      ranked: [{ name: 'somewhere-else', enabled: true }],
-      newJobsWaitFor: 'top-ranked',
-      unknown: [],
-      legacyLocalRender: false,
-    }),
-    server: (name) => ({
-      name, url: 'http://127.0.0.1:7100', token: 'crux_test_aaaa', source: 'registry',
-    }),
-  });
-
-  let reached = false;
-  host.setFoundrySeam({
-    runJob: () => { reached = true; return Promise.resolve({ state: 'done' }); },
-    setQueueRows: null,
-    drained: null,
-  });
-  engine.start();
-  const row = host.foundryHostQueue.enqueue(textPass('clean', 'unoffered'), null, PROJ);
-  /*
-   * THE REFUSAL IS ON THE RUN, NOT ON THE PRESS. Since 21ed57b3 a hosted clean
-   * stages, so the machine is chosen in Pending and `sendToQueue` is what
-   * commits it — and the server can still be gone by the time the row's turn
-   * comes, which is exactly what this case is about. Send it, then read the
-   * row.
-   */
-  const staged = engine.snapshot().jobs.find((j) => j.steps.some((s) => s.id === row.id));
-  assert.strictEqual(staged.pending, true, 'a hosted clean stages before it runs');
-  engine.sendToQueue(staged.id);
-  let after = null;
-  for (let i = 0; i < 200; i++) {
-    await wait(25);
-    [after] = host.foundryHostQueue.rows(PROJ);
-    if (after && after.state === 'failed') break;
-  }
-  assert.strictEqual(reached, false,
-    'the seam was handed a row whose machine that window will never be offered — it would park '
-    + 'for ever rather than fail');
-  assert.ok(after !== null && after.state === 'failed',
-    `the row must FAIL by name; it is ${after === null ? 'gone' : after.state}`);
-  assert.match(after.error || '', /will not be offered that server/,
-    `the refusal must say what is wrong: ${after.error}`);
-  assert.match(after.error || '', /somewhere-else/,
-    `and list what IS offered, so the fix is on the sentence: ${after.error}`);
-  assert.match(after.error || '', /Nothing ran/,
-    `and that nothing ran: ${after.error}`);
-  /*
-   * AND IT MUST NOT SEND ANYONE TO A LOCAL ENGINE. The arm that used to start
-   * BookForge's own vLLM for a hosted act is deleted (docs/LEGACY-REMOVAL.md);
-   * a remedy pointing at it would be worse than none.
-   */
-  assert.ok(!/local engines instead|Run renders/.test(after.error || ''),
-    `the refusal offers a deleted switch as a remedy: ${after.error}`);
-});
+// "A hosted text act for a server this machine does not offer is REFUSED" was
+// deleted 2026-10-02. It pinned a pre-check that PK6 removed on purpose
+// (electron/queue-steps/foundry-job.ts, "AND THE PRE-CHECK IS GONE"): the seam
+// now answers a missing slot itself, as a typed wait the engine parks on.
 
 test('a FINISHED read does not block a fresh press — that is a person asking again', async () => {
   const mod = await fresh('dedupe-terminal');
@@ -1224,6 +1167,10 @@ test('with no runJob the row FAILS WITH A SENTENCE — it does not fall back to 
       name, url: 'http://127.0.0.1:7100', token: 'crux_test_aaaa', source: 'registry',
     }),
   });
+
+  // And where it runs a read: its own setup, so it states this too (see fresh()).
+  routes.forgetCrucibleRoutes();
+  routes.noteCrucibleRoutes('hostq', HOSTQ_ROUTES);
 
   const row = host.foundryHostQueue.enqueue(readRequest('norunner'), null, PROJ);
   /*

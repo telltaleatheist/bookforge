@@ -24,7 +24,7 @@
  */
 import * as os from 'os';
 
-/** `bookforge@owens-mac-studio` — the app's name and the short host name. */
+/** `bookforge@my-mac` — the app's name and the short host name. */
 export function crucibleClientNameFor(app: string, host: string = os.hostname()): string {
   const short = host.split('.')[0]?.trim().toLowerCase() ?? '';
   return short.length === 0 ? app : `${app}@${short}`;

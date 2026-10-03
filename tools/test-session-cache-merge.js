@@ -502,11 +502,14 @@ const caseDir = (tag) => {
     const root = caseDir('reports-hole');
     const project = path.join(root, 'project');
     const scratch = path.join(root, 'scratch');
-    const source = makeSession(path.join(scratch, 'ebook-99cc99cc'), { chunks: [0, 1, 2] });
-    // The destination is a FILE where the session must go, so the copy fails.
-    const langDir = path.join(project, 'stages', '03-tts', 'sessions', 'en');
-    fs.mkdirSync(langDir, { recursive: true });
-    fs.writeFileSync(path.join(langDir, 'ebook-99cc99cc'), 'not a directory');
+    const NAME = 'ebook-99cc99cc';
+    const source = makeSession(path.join(scratch, NAME), { chunks: [0, 1, 2], ageSeconds: 600 });
+    // A DIRECTORY where chunk 2 belongs in the cache, so the merge cannot place
+    // it — case 3's obstruction. (This used to put a FILE where the session goes;
+    // the fresh publish now renames a temp tree into place, and Windows lets that
+    // rename replace a file, so it stopped making a hole.)
+    const cache = makeSession(cacheDirFor(project, 'en', NAME), { chunks: [0], body: 'CACHE' });
+    fs.mkdirSync(path.join(cache.sentences, '0002.flac'));
 
     const seen = [];
     const result = await bridge.cacheSessionToProject(source.sessionDir, project, 'en', {

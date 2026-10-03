@@ -157,18 +157,20 @@ test('blocks are the paragraphs, split on blank lines and nothing else', () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 // Each digit-bearing block carries a shape the RULES read (a date, a money
-// amount) AND a bare four-digit quantity only the model can judge — so both
-// halves of the pass run over the same three blocks.
+// amount) AND a room number they leave to the model — a label, not a quantity,
+// so whether it is "twelve hundred" or "one two zero zero" is a judgement. (It
+// was a bare quantity, "1200 members", until the rules learned to read those.)
+// So both halves of the pass run over the same three blocks.
 const BLOCKS = [
-  'On 23 March 1933 the Reichstag passed the Enabling Act, and 1200 members watched.',
+  'On 23 March 1933 the Reichstag passed the Enabling Act, and Room 1200 watched.',
   'A block with no numbers in it at all, long enough to be an ordinary paragraph.',
-  'The pamphlet cost $5.50 and sold out by noon, all 1500 copies of it.',
+  'The pamphlet cost $5.50 and sold out by noon in Room 1500.',
 ];
 
 test('the numbers in a text block are read as words, and the file is written', async () => {
   const runner = scriptedRunner({
-    'the Reichstag': editsJson(['1200 members', 'twelve hundred members']),
-    'The pamphlet cost': editsJson(['1500 copies', 'fifteen hundred copies']),
+    'the Reichstag': editsJson(['Room 1200', 'Room twelve hundred']),
+    'The pamphlet cost': editsJson(['Room 1500', 'Room fifteen hundred']),
   });
   const out = await norm.normalizeTextBlocks(BLOCKS, runner, textOptions('passage.txt'));
   assert.ok(out !== null);
@@ -180,7 +182,7 @@ test('the numbers in a text block are read as words, and the file is written', a
   const text = fs.readFileSync(out.textPath, 'utf8');
   assert.ok(text.includes('On March twenty-third, nineteen thirty-three the Reichstag'), 'the date');
   assert.ok(text.includes('cost five dollars and fifty cents and sold out'), 'the money');
-  assert.ok(text.includes('twelve hundred members') && text.includes('fifteen hundred copies'),
+  assert.ok(text.includes('Room twelve hundred') && text.includes('Room fifteen hundred'),
     'and the two the model was left to judge');
   assert.ok(text.includes('A block with no numbers in it at all'),
     'the digit-free block is carried through verbatim');
@@ -194,9 +196,9 @@ test('the numbers in a text block are read as words, and the file is written', a
 test('a refused edit leaves the printed digits, and the record names the refusal', async () => {
   const runner = scriptedRunner({
     // "Reichstag -> parliament" is prose tidying wearing a number edit's clothes,
-    // and dropping "copies" renames the thing being counted.
+    // and dropping "Room" unnames the thing being numbered.
     'the Reichstag': editsJson(['Reichstag', 'parliament']),
-    'The pamphlet cost': editsJson(['1500 copies', 'fifteen hundred']),
+    'The pamphlet cost': editsJson(['Room 1500', 'fifteen hundred']),
   });
   const out = await norm.normalizeTextBlocks(BLOCKS, runner, textOptions('refusals.txt'));
   assert.strictEqual(out.record.appliedSpans, 2, 'the two by rule, and nothing the model said');
@@ -206,7 +208,7 @@ test('a refused edit leaves the printed digits, and the record names the refusal
 
   const text = fs.readFileSync(out.textPath, 'utf8');
   assert.ok(text.includes('the Reichstag passed'), 'the prose was not renamed');
-  assert.ok(text.includes('all 1500 copies'), 'and the refused digits stand');
+  assert.ok(text.includes('in Room 1500'), 'and the refused digits stand');
 
   const record = JSON.parse(fs.readFileSync(out.recordPath, 'utf8'));
   const money = record.units.find((u) => u.text.includes('The pamphlet cost'));
@@ -226,7 +228,7 @@ test('a text with no digits comes back untouched, with no model call', async () 
 });
 
 test('a copy already on disk is REUSED, without calling the model', async () => {
-  const answers = { 'The pamphlet cost': editsJson(['1500 copies', 'fifteen hundred copies']) };
+  const answers = { 'The pamphlet cost': editsJson(['Room 1500', 'Room fifteen hundred']) };
   const outDir = path.join(ROOT, 'blocks-shared');
   const first = scriptedRunner(answers);
   const one = await norm.normalizeTextBlocks(BLOCKS, first, textOptions('reuse.txt', { outDir }));
@@ -241,14 +243,14 @@ test('a copy already on disk is REUSED, without calling the model', async () => 
   // Content-addressed on the BLOCKS: change a word and it is a different copy.
   const third = scriptedRunner(answers);
   const other = await norm.normalizeTextBlocks(
-    [...BLOCKS.slice(0, 2), 'The pamphlet cost $5.50 and sold out by dusk, all 1500 copies of it.'],
+    [...BLOCKS.slice(0, 2), 'The pamphlet cost $5.50 and sold out by dusk in Room 1500.'],
     third, textOptions('reuse.txt', { outDir }));
   assert.notStrictEqual(other.textPath, one.textPath);
   assert.strictEqual(other.reused, false);
 });
 
 test('a record whose copy is missing its record is re-made — both halves or neither', async () => {
-  const answers = { 'The pamphlet cost': editsJson(['1500 copies', 'fifteen hundred copies']) };
+  const answers = { 'The pamphlet cost': editsJson(['Room 1500', 'Room fifteen hundred']) };
   const outDir = path.join(ROOT, 'blocks-halved');
   const first = scriptedRunner(answers);
   const one = await norm.normalizeTextBlocks(BLOCKS, first, textOptions('halved.txt', { outDir }));
@@ -357,7 +359,7 @@ async function entryText(bookPath, entry) {
 
 /** The one paragraph both paths are given, word for word. */
 const SHARED_PARAGRAPH =
-  'On 23 March 1933 the Reichstag met, 1200 members watched, and the pamphlet cost $5.50.';
+  'On 23 March 1933 the Reichstag met, Room 1200 watched, and the pamphlet cost $5.50.';
 
 /**
  * A runner that fails the FIRST request with a transport error and then answers
@@ -375,7 +377,7 @@ function loopProbeRunner() {
     runner.calls.push(input);
     if (!failed) { failed = true; throw new Error('fetch failed'); }
     return editsJson(
-      ['1200 members', 'twelve hundred members'],
+      ['Room 1200', 'Room twelve hundred'],
       ['1200', 'twelve hundred'],
       ['Reichstag', 'parliament']);
   };
@@ -419,8 +421,8 @@ test('a block and a paragraph go through the SAME loop, and answer the same', as
   assert.ok(blockRunner.released && bookRunner.released);
 
   // Same words out of both, in their own formats.
-  const said = 'On March twenty-third, nineteen thirty-three the Reichstag met, twelve '
-    + 'hundred members watched, and the pamphlet cost five dollars and fifty cents.';
+  const said = 'On March twenty-third, nineteen thirty-three the Reichstag met, Room twelve '
+    + 'hundred watched, and the pamphlet cost five dollars and fifty cents.';
   assert.ok(fs.readFileSync(fromText.textPath, 'utf8').includes(said));
   assert.ok((await entryText(fromBook.epubPath, 'OEBPS/chapter-01.xhtml')).includes(said));
 });
@@ -438,7 +440,7 @@ test('the door routes a .txt to the block pass — no cut, a .txt out', async ()
   const input = path.join(ROOT, 'door.txt');
   fs.writeFileSync(input, `${SHARED_PARAGRAPH}\n\nA second block with no numbers.\n`, 'utf8');
   const runner = scriptedRunner({
-    'the Reichstag met': editsJson(['1200 members', 'twelve hundred members']),
+    'the Reichstag met': editsJson(['Room 1200', 'Room twelve hundred']),
   });
   const prep = await bridge.prepareNarrationInput(input, 'test-txt', {
     skipAssembly: true, textCleanup: 'required', numberRunner: runner,
@@ -594,7 +596,7 @@ test('the door reuses a copy on a second run, and says so', async () => {
   const input = path.join(ROOT, 'door-reuse.txt');
   fs.writeFileSync(input, `${SHARED_PARAGRAPH}\n`, 'utf8');
   const answers = {
-    'the Reichstag met': editsJson(['1200 members', 'twelve hundred members']),
+    'the Reichstag met': editsJson(['Room 1200', 'Room twelve hundred']),
   };
   const first = scriptedRunner(answers);
   const one = await bridge.prepareNarrationInput(input, 'test-reuse-1', {
@@ -642,10 +644,10 @@ test('an unreachable model fails the DOOR too — no falling back to raw digits'
   // Content no earlier test prepped: the door's cache is shared across this whole
   // suite (one scratch dir, as it is on a machine), so reusing a prepped passage
   // here would answer out of the cache and never reach the model at all.
-  // And a shape the RULES cannot finish (a bare four-digit quantity), or the pass
-  // would settle it deterministically and never reach the model at all.
+  // And a shape the RULES cannot finish (a room number — a bare quantity is theirs
+  // now), or the pass would settle it deterministically and never reach the model.
   fs.writeFileSync(input,
-    'The council met on 4 July 1776 and 1300 delegates adjourned at dusk.\n', 'utf8');
+    'The council met on 4 July 1776 and adjourned to Room 1300 at dusk.\n', 'utf8');
   const runner = scriptedRunner({}, { throws: 'connect ECONNREFUSED 127.0.0.1:11434' });
   await assert.rejects(
     bridge.prepareNarrationInput(input, 'test-door-down', {

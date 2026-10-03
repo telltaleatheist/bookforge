@@ -618,7 +618,7 @@ test('SCRIPTURE_UNREAD — the word "chapter" is never spoken', () => {
 test('scripture: BOTH measured shapes are accepted, and neither is forced', () => {
   // 22 of the 23 measured references say "verse"; one is bare. The prompt ASKS
   // for the comma and the word — that preference is pinned in
-  // tools/test-prompt-examples.js, where it belongs, because a validator that
+  // Foundry's test/clean/prompt-examples.test.ts, where it belongs, because a validator that
   // accepted only one form would refuse a narrator the corpus records.
   const target = 'He turned to 1 John 1:9 there.';
   assert.strictEqual(only(target, '1 John 1:9', 'First John one, verse nine'), 'APPLIED');

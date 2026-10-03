@@ -176,8 +176,8 @@ test('a 1:1 engine reports no sentences/min — it would duplicate chunks/min', 
 // The landing patterns below are not invented — they are the two live sessions'
 // own FLAC mtimes, measured while the jobs were running:
 //
-//   Mac (Higgs MLX, owens-mac-studio)   3 landings of ~60 chunks, ~5 s wide, 200 s apart
-//   PC  (Higgs vLLM, owens-pc-wsl)     61 landings of 4–12 chunks, ~3.8 s apart
+//   Mac (Higgs MLX, my-mac)   3 landings of ~60 chunks, ~5 s wide, 200 s apart
+//   PC  (Higgs vLLM, my-pc-wsl)     61 landings of 4–12 chunks, ~3.8 s apart
 //
 // A burst's chunks were all generated BEFORE it landed, so crediting them to
 // the instant it landed is the one way this arithmetic can lie.

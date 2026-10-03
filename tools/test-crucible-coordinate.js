@@ -1288,7 +1288,12 @@ async function main() {
       const catalog = fullCatalog().filter((row) =>
         Object.values(CLASS_MODELS).includes(row.id)
         || module.subjects.some((subject) => subject.kind === row.kind && subject.id === row.id));
-      assert.ok(catalog.length < fullCatalog().length, 'fixture omits another backend\'s subjects');
+      // Since crucible 900416e (one ASR id across backends) only llama-windows is
+      // offered fewer subjects; cuda-linux and mlx-darwin are offered them all, so
+      // there is nothing of another backend's for them to wrongly request.
+      if (backendKind === 'llama-windows') {
+        assert.ok(catalog.length < fullCatalog().length, 'fixture omits another backend\'s subjects');
+      }
       const result = coordinate.missingForBookForge(module.job_types.map((job) => job.type),
         catalog, { ...fullCapability(), backendKind });
       assert.deepStrictEqual(result, { missing: [], unmet: [] });

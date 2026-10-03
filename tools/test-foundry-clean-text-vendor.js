@@ -176,7 +176,8 @@
  * DETERMINISTIC transform (`tts-number-normalizer.ts`, `tts-punctuation.ts`);
  * `tts-narration-text.txt` is instruction to a model, whose output is judged by
  * the validators those constants version, and class 2b adds no reading the
- * validator did not already accept — `tools/test-prompt-examples.js` runs every
+ * validator did not already accept — `tools/test-prompt-examples.js` (now
+ * Foundry's `test/clean/prompt-examples.test.ts`) runs every
  * pair it states through that validator, 88/88. A prompt that asks for readings
  * the rules already ruled is not a rule move. (`tts-number-normalize.txt`, the
  * half the `orpheus-finetune` corpora vendor, was left alone for the same

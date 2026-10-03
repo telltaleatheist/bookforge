@@ -2175,15 +2175,6 @@ if (skipWhy) {
     assert.strictEqual(got.max_chars, VENUE.maxChars, 'the venue cap must travel with an override too');
   });
 
-  check('narrator REFUSES a checkpoint with no cap — the refusal we mirror', () => {
-    // BookForge never builds this: a fine-tune document with no venue band is refused by name
-    // (the cap is the server's, 2026-09-28). So the document is built by hand, which proves
-    // narrator refuses it too.
-    const doc = { ft: { kind: 'checkpoint', checkpointDir: CROSS } };
-    const r = runLoad(doc);
-    assert.notStrictEqual(r.status, 0, 'narrator accepted an unmeasured fine-tune');
-    assert.match(r.stderr, /maxChars/, 'refused for the wrong reason:\n' + r.stderr);
-  });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

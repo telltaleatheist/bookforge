@@ -36,7 +36,7 @@ const fs = require('fs');
 const path = require('path');
 const {
   REPO, installElectronStub, makeChecker, startFakeCrucible, fakeNamer, provenanceFor,
-  crucibleHost, noServerHost,
+  crucibleHost, noServerHost, sessionRoutes,
   ENGINE_INFO_FIELDS,
 } = require('./fake-crucible');
 const { skipLine } = require('./keeper-skip.js');
@@ -67,9 +67,12 @@ const OTHER = 'block_00_(other)_denoise_mel_band_roformer.wav';
  *   'lying'        `done` names a primary the job never wrote
  */
 function startFake(behaviour) {
+  const routes = sessionRoutes();
   return startFakeCrucible(async (req, res, ctx) => {
     const { state, send, sseWriter, url } = ctx;
     const route = url.pathname;
+    state.sessions = routes.session;
+    if (await routes.handler(req, res, ctx)) return true;
 
     if (route === '/v1/info' && req.method === 'GET') {
       state.infoAsked = (state.infoAsked || 0) + 1;
@@ -90,30 +93,9 @@ function startFake(behaviour) {
       return true;
     }
 
-    // THE LEASE. A pass is ~44 blocks and `crucible/settle.py` clears the card
-    // the moment the last holder lets go, so without one the resident separator
-    // is unloaded between every pair of blocks and each block reloads a 913 MB
-    // checkpoint — the exact cost `separator_worker.py` was written to remove.
-    const lease = /^\/v1\/models\/([^/]+)\/lease$/.exec(route);
-    if (lease && req.method === 'POST') {
-      const body = JSON.parse((await ctx.readBody(req)).toString('utf-8'));
-      state.leases = state.leases || [];
-      state.leases.push({ subject: decodeURIComponent(lease[1]), act: body.act });
-      send(res, 201, {
-        lease_id: 'lease-1',
-        subject: decodeURIComponent(lease[1]),
-        kind: 'denoise',
-        act: body.act,
-        since: '2026-09-15T12:00:00Z',
-        expires_at: '2026-09-15T12:05:00Z',
-      });
-      return true;
-    }
-    if (/^\/v1\/leases\/[^/]+$/.test(route) && req.method === 'DELETE') {
-      state.leasesReleased = (state.leasesReleased || 0) + 1;
-      res.writeHead(204).end();
-      return true;
-    }
+    // THE HOLD across a pass is a queue session (sessionRoutes above): a pass is
+    // ~44 blocks and `crucible/settle.py` clears the card the moment the last
+    // holder lets go, so without one each block reloads a 913 MB checkpoint.
 
     if (route === '/v1/jobs' && req.method === 'POST') {
       const body = JSON.parse((await ctx.readBody(req)).toString('utf-8'));
@@ -200,7 +182,7 @@ async function happyPath() {
     await sep.dispose();
     await fake.close();
   }
-  await check('a pass HOLDS the separator: one lease, named truthfully, released at the end', () => {
+  await check('a pass HOLDS the separator: one session, named truthfully, released at the end', () => {
     /*
      * THE HALF OF THE RESIDENCY THAT IS THIS SIDE'S.
      *
@@ -211,17 +193,16 @@ async function happyPath() {
      * checkpoint, and the pass is ~a third slower with every job succeeding and
      * every log clean. That is the exact cost `separator_worker.py` removed on
      * the local side (bookforge `019afa52`) and the exact shape this whole
-     * campaign is about, so it is pinned rather than trusted.
+     * campaign is about, so it is pinned rather than trusted. Since Crucible
+     * 1.0.77 the hold is a queue session (electron/crucible/lease.ts).
      */
-    assert.deepStrictEqual(fake.state.leases, [
-      { subject: denoise.CRUCIBLE_DENOISE_MODEL, act: 'denoise' },
-    ], 'a pass must take exactly one lease, on the separator, named `denoise`');
-    // Taken AFTER the first block, never in start(): a lease names what is
-    // already resident, and nothing is resident until a job has made it so.
+    assert.deepStrictEqual(fake.state.sessions.opened.map((o) => o.act), ['denoise'],
+      'a pass must open exactly one session, named `denoise`');
+    // Taken AFTER the first block, never in start(): the separator session opens
+    // bare and the first job makes the model resident.
     assert.ok(log.some((line) => /holding denoise-roformer/.test(line)), log.join(' | '));
-    // And given back, or somebody else's card stays held for the lease's ttl
-    // over a pass that has finished.
-    assert.strictEqual(fake.state.leasesReleased, 1);
+    // And given back, or nothing from another client runs there until it idles out.
+    assert.strictEqual(fake.state.sessions.closed.length, 1);
   });
 
   await check('the capability question is asked once, in start(), before any block crosses', () => {

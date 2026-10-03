@@ -96,8 +96,8 @@ function startFake(behaviour, onSubmit = () => {}) {
         // so a job sent without `queue` is refused `409 server_busy` with
         // `details.door: "session"` — the SDK's `CrucibleSessionHeld`.
         send(res, 409, { error: { code: 'server_busy', message:
-          "session ses-held of 'foundry@owens-pc' for 'translate' holds this server", details: {
-          door: 'session', holder: 'foundry@owens-pc', session_id: 'ses-held', act: 'translate',
+          "session ses-held of 'foundry@my-pc' for 'translate' holds this server", details: {
+          door: 'session', holder: 'foundry@my-pc', session_id: 'ses-held', act: 'translate',
           model: 'qwen3.8-27b-4bit', status: 'open', since: '2026-09-18T01:00:00+00:00',
         } } });
         return true;
@@ -298,7 +298,7 @@ async function refusals() {
    */
   for (const [behaviour, expectCode, expectBusy] of [
     ['busy', 'server_busy', 'busy: foundry, tts deathstalker, 62% done — 640 of 1030 chunk(s) rendered'],
-    ['held', 'server_busy', "held: foundry@owens-pc's session for translate, since 2026-09-18T01:00:00+00:00"],
+    ['held', 'server_busy', "held: foundry@my-pc's session for translate, since 2026-09-18T01:00:00+00:00"],
     ['disabled', 'job_type_disabled', null],
     ['auth', 'bad_token', null],
   ]) {

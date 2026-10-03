@@ -1,6 +1,12 @@
 // The transcript cache follows the audio's CONTENT (2026-09-27): a COPY of the audio (new mtime) still hits the cache;
 // a different recording of the same size never does. The 3000 Degrees copy re-ran a whole ASR pass before this.
 const fs = require('fs'); const os = require('os'); const path = require('path');
+// The module resolves its managed binaries' home on load; the fingerprint needs
+// none of them, so a scratch user-data folder is enough to load it.
+process.env.BOOKFORGE_USERDATA_DIR = process.env.BOOKFORGE_USERDATA_DIR
+  || fs.mkdtempSync(path.join(os.tmpdir(), 'bf-fp-userdata-'));
+process.env.BOOKFORGE_USER_DATA = process.env.BOOKFORGE_USERDATA_DIR;
+require('../cli/electron-stub.js'); // the Electron `app` the tools-env lookup asks for
 const { audioFingerprint } = require('../dist/electron/crucible/sentence-align.js');
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bf-fp-'));
 const a = path.join(dir, 'a.wav'); const b = path.join(dir, 'b.wav'); const c = path.join(dir, 'c.wav');
