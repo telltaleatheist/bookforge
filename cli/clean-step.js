@@ -80,6 +80,12 @@ const USAGE = `usage: clean-step.js (--project <BookForge project dir> | --found
                      [--crucible-server <name>] [--model <tag>] [--concurrency <n>]
                      [--remove-references on|off] [--remove-also <text>]
                      [--keep-server] [--library <root>] [--foundry-dist <dir>] [--dry-run]
+                     [--glossary-only]
+
+  --glossary-only decides the book's narration glossary exactly as the cleanup
+  would (its own session, the server's analysis model, every decision already in
+  the glossary file reused), prints it, and stops: nothing is cleaned and no step
+  lands. The review before a clean, and the way to see what a clean will be handed.
 
   --remove-references on|off (default on) and --remove-also <text> are the
   dialog's removal box: references a narrator would never read ("see fig. 1-1",
@@ -298,8 +304,15 @@ async function main() {
      * queue step answers `none` for the same spawn and is refused, because its
      * process is shared with ~180 other spawn sites.
      */
-    ? await textVenue.resolveCrucibleTextEngine(
-      'clean', venue.server, venueHost, { headerReach: 'process' })
+    /*
+     * `--glossary-only` asks the server's ANALYSIS model and spawns no engine, so
+     * the cleanup's own engine is not resolved: its residency check would refuse
+     * a glossary for a model the glossary never uses. Only the machine is needed.
+     */
+    ? args['glossary-only'] === true
+      ? { server: venue.server, model: '', act: 'clean', endpoint: '(not resolved — glossary only)', maskedHeaders: '(none)' }
+      : await textVenue.resolveCrucibleTextEngine(
+        'clean', venue.server, venueHost, { headerReach: 'process' })
     : null;
 
   const profile = crucible === null && textServer.textServerRoute(ollama).manage
@@ -379,6 +392,12 @@ async function main() {
     ...(made.seedRecords !== undefined ? { seedRecords: made.seedRecords } : {}),
     ...(made.generation !== undefined ? { generation: made.generation } : {}),
   });
+  /*
+   * THAT BOOK WAS MADE ONLY TO PRINT THE LINE, and it is this door's to remove:
+   * a real run makes and sweeps its own at the spawn, so the preview's copy was
+   * left in the project's derived/ by every invocation, dry or not.
+   */
+  fs.rmSync(made.bookPath, { force: true });
 
   /*
    * WHICH BUILD ANSWERED, asked of the engine rather than assumed from its path —
@@ -432,8 +451,12 @@ async function main() {
   console.log(`[clean] request          ${JSON.stringify(request, null, 2).split('\n').join('\n                         ')}`);
   console.log(`[clean] spawn            ${[engine.command, ...engine.args, ...argv].join(' ')}`);
 
+  console.log(`[clean] glossary         ${crucible === null
+    ? 'none — the narration glossary asks a Crucible, and this run goes to the local text engines'
+    : `decided on crucible "${crucible.server}" (its analysis model) before the engine starts, and handed to it as --fixed-readings`}`);
+
   if (dryRun) {
-    console.log('[clean] DRY RUN — nothing was spawned, no model was loaded.');
+    console.log('[clean] DRY RUN — nothing was spawned, no model was loaded, no glossary was decided.');
     return;
   }
 
@@ -468,6 +491,45 @@ async function main() {
       + `(${((Date.now() - readyAt) / 1000).toFixed(1)}s to be ready)`);
   }
 
+  /*
+   * ── THE BOOK'S GLOSSARY, AS THE APP'S STEP DECIDES IT ───────────────────────
+   *
+   * `queue-steps/foundry-job.ts` decides the narration glossary in the cleanup's
+   * own step, in its own session on the cleanup's machine, closed before the
+   * engine is spawned — and this door does the same, through the same function
+   * and Foundry's same printed-forms door (`printedFormsForRun`). Every decision
+   * already in the book's glossary file is reused; only new forms are asked.
+   */
+  let fixedReadings;
+  const glossaryOnly = args['glossary-only'] === true;
+  if (glossaryOnly && crucible === null) {
+    throw new Error('--glossary-only asks a Crucible, and this run goes to the local text engines. '
+      + 'Name one with --crucible-server.');
+  }
+  if (crucible !== null) {
+    const glossary = require(path.join(BF_DIST, 'narration-glossary.js'));
+    const made = await glossary.ensureNarrationGlossary({
+      request,
+      server: crucible.server,
+      signal: controller.signal,
+      report: (line) => console.log(`[clean] ${line}`),
+      listForms: (req, onLine) => jobQueue.printedFormsForRun(req, onLine),
+    });
+    if (made.readingsPath !== null) fixedReadings = made.readingsPath;
+    if (glossaryOnly) {
+      const files = glossary.glossaryPathsFor(request);
+      const entries = made.forms === 0 ? [] : glossary.readGlossary(files.glossary, files.book).entries;
+      for (const e of entries) {
+        const said2 = e.decision === 'reading' ? `-> "${e.reading}"` : e.decision;
+        console.log(`  ${String(e.count).padStart(5)}  ${e.kind.padEnd(12)} ${e.key.padEnd(24)} ${said2.padEnd(32)} ${e.by === 'person' ? '(yours) ' : ''}${e.why}`);
+      }
+      console.log(`[clean] glossary         ${files.glossary}`);
+      console.log(`[clean] readings         ${made.readingsPath ?? 'none — nothing in this book is read differently'}`);
+      console.log('[clean] GLOSSARY ONLY — nothing was cleaned and no step landed.');
+      return;
+    }
+  }
+
   const startedAt = Date.now();
   let last = null;
   let outcome;
@@ -485,6 +547,7 @@ async function main() {
       parentStep,
       signal: controller.signal,
       venue: crucible === null ? null : { server: crucible.server },
+      ...(fixedReadings === undefined ? {} : { fixedReadings }),
       onProgress: (line) => {
         const counted = parseFoundryProgressLine(line);
         if (counted === null) { console.log(`[clean] ${line}`); return; }

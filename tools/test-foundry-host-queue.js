@@ -726,6 +726,7 @@ test('a HOSTED text act REACHES the seam, carrying the machine and nothing else'
   });
 
   let seen = null;
+  let listed = null;
   host.setFoundrySeam({
     runJob: (request, opts) => {
       seen = { request, opts };
@@ -735,9 +736,18 @@ test('a HOSTED text act REACHES the seam, carrying the machine and nothing else'
     },
     setQueueRows: null,
     drained: null,
+    // The book glossary asks Foundry for the book's printed forms first
+    // (electron/narration-glossary.ts). This book prints none, so nothing is
+    // asked of any model and the run is handed no readings.
+    printedForms: async (request) => {
+      listed = request;
+      return { format: 'printed-forms/v1', source: 'book.jsonl', forms: [] };
+    },
   });
   engine.start();
-  const sent = textPass('clean', 'placed');
+  // A cleanup's records are `<book>.clean.records.jsonl` in the project's
+  // readings/, which is where its glossary is kept beside them.
+  const sent = { ...textPass('clean', 'placed'), recordsPath: `${PROJ}\\readings\\placed.clean.records.jsonl` };
   const row = host.foundryHostQueue.enqueue(sent, null, PROJ);
 
   // STAGED, and untouched while it is. `engine.start()` above is the toolbar's
@@ -768,6 +778,9 @@ test('a HOSTED text act REACHES the seam, carrying the machine and nothing else'
   assert.deepStrictEqual(seen.request, sent,
     'the request crossed changed. It is stored verbatim and the placement composes the model and '
     + 'the endpoint; writing either here would be the second composer of one address.');
+  // The glossary ran first, over the same request, and a book with no forms hands no readings.
+  assert.deepStrictEqual(listed, sent, 'the glossary must list the forms of the book this cleanup reads');
+  assert.strictEqual(seen.opts.fixedReadings, undefined, 'a book that prints no form is handed no readings');
 });
 
 // "A hosted text act for a server this machine does not offer is REFUSED" was

@@ -257,7 +257,7 @@ export { RESUMABLE_STOP } from '../shared/types';
  *
  * ABSENT, ALL THREE ARE UNREACHED and Foundry queues exactly as it always has.
  */
-export { hostQueueDrained, runJob, setHostQueueRows } from './job-queue';
+export { hostQueueDrained, printedFormsForRun, runJob, setHostQueueRows } from './job-queue';
 export type { FoundryHostQueue } from './host';
 export type {
   CleanRequest, FoundryJobRow, Job, JobRequest, RunOutcome, RunPlacement, RunVenue, SimplifyRequest,

@@ -38,7 +38,7 @@ import { noteStepStopped } from '../queue-engine';
 import type { StepModule, StepRunContext } from '../queue-engine';
 import type { ArtifactRef, JobStageProgress, StepResource } from '../../shared/queue/engine-types';
 import {
-  foundryRowFailure, foundryRunner,
+  foundryFormsLister, foundryRowFailure, foundryRunner,
   parseFoundryProgressLine,
 } from '../foundry-host-queue';
 import type { FoundryJobStepConfig, FoundryRunOutcome } from '../foundry-host-queue';
@@ -482,6 +482,41 @@ export const foundryJobStep: StepModule = {
      * the one placement this run was given.
      */
     const recorded: { server: string; jobId: string }[] = [];
+
+    /*
+     * ── THE BOOK'S GLOSSARY, DECIDED BEFORE THE CLEANUP READS IT ───────────────
+     *
+     * Owen, 2026-10-03: *"it should effectively be a part of the cleaning
+     * logic."* A cleanup and its triage are handed the book's fixed readings
+     * ("Wolf IV" → "Wolf Four", "esp" → "ESP"), decided once for the whole book
+     * from sentences across it (`narration-glossary.ts`). Here, in the step that
+     * runs the cleanup, so it cannot be skipped and has no row of its own; on the
+     * machine the cleanup was admitted to; in its OWN session, closed before the
+     * engine is spawned so Foundry's session is not queued behind it.
+     *
+     * The triage in front of a cleanup decides it; the cleanup behind finds every
+     * decision made and asks nothing. A wait in it (a card held, weather past its
+     * budget) is the row's wait, with every decision already made kept.
+     */
+    let fixedReadings: string | undefined;
+    if (kind === 'clean' || kind === 'clean-triage') {
+      if (venueServer === null) {
+        throw new Error(
+          `This ${kind} was not placed on a Crucible server, so its narration glossary has no model to `
+          + 'ask. Every cleanup runs on a Crucible; add or switch one on under Settings › Crucible Servers.',
+        );
+      }
+      const { ensureNarrationGlossary } = await import('../narration-glossary.js');
+      const made = await ensureNarrationGlossary({
+        request: config.request,
+        server: venueServer,
+        signal: ctx.signal,
+        report: (line) => ctx.report({ message: line, detail: line }),
+        listForms: foundryFormsLister(),
+      });
+      if (made.readingsPath !== null) fixedReadings = made.readingsPath;
+    }
+
     const run = async (): Promise<FoundryRunOutcome> => {
       /*
        * THE RASTERISING PRE-PASS THIS ATTEMPT HAS SEEN, or null. Only the READ
@@ -495,6 +530,8 @@ export const foundryJobStep: StepModule = {
       return foundryRunner()(config.request, {
       parentStep: config.parentStep,
       signal: ctx.signal,
+      // The glossary's readings, decided above; absent for every other kind.
+      ...(fixedReadings === undefined ? {} : { fixedReadings }),
       /*
        * THE MACHINE, AND THE ONLY THING THIS SIDE DECIDES ABOUT THE ACT.
        *

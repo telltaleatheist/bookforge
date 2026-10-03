@@ -43,7 +43,7 @@
  * spoken as printed, which is never legitimate.
  */
 
-import { isRomanContext } from './tts-spoken-forms.js';
+import { isRomanContext, romanValue } from './tts-spoken-forms.js';
 
 /** Abbreviations a book prints WITHOUT a period (British style), lower-cased. */
 const PERIODLESS_ABBREVIATIONS: ReadonlySet<string> = new Set([
@@ -64,7 +64,8 @@ function core(token: string): string {
 
 /** Is a lone I, V or X a numeral here — after a ruler's name or a part word? */
 function romanHere(tokens: readonly string[], i: number): boolean {
-  const bare = core(tokens[i]!).replace(/'s$|’s$/, '');
+  // A sentence's own period is not the numeral's ("never a dull moment on Wolf IV.").
+  const bare = core(tokens[i]!).replace(/\.$/, '').replace(/'s$|’s$/, '');
   if (!/^[IVXLCDM]+$/.test(bare)) return false;
   if (bare.length >= 2) return true;
   return isRomanContext(tokens.slice(0, i).join(' '), tokens.slice(i + 1).join(' '));
@@ -84,11 +85,16 @@ export function isPrintedForm(tokens: readonly string[], i: number): boolean {
   const beforePeriod = bare.replace(/\.$/, '');
   if (beforePeriod.includes('.')) return true;                                    // e.g. · U.S.
   if (bare.endsWith('.') && /^\p{L}$/u.test(beforePeriod)) return true;           // H. · F.
-  if (/^[ivxlcdm]+(?:[-–][ivxlcdm]+)?$/.test(beforePeriod)) return true;          // ii. · vii-xi
+  // A run of numeral letters is a numeral only when it IS one: "did", "civil",
+  // "mill", "vivid" are words spelled with those letters, and treating them as
+  // printed forms let a reading rewrite them freely (found 2026-10-03 — 372
+  // "did"s in The Pursuit of Power alone).
+  if (/^[ivxlcdm]+(?:[-–][ivxlcdm]+)?$/.test(beforePeriod)
+    && beforePeriod.split(/[-–]/).every((part) => romanValue(part) !== null)) return true; // ii. · vii-xi
   // A word the page GARBLED ("帮pers"): Latin mixed with another script.
   if (/\p{Script=Han}|\p{Script=Cyrillic}|\p{Script=Greek}/u.test(bare)
     && /\p{Script=Latin}/u.test(bare)) return true;
-  if (/^\p{Lu}{2,}(?:['’]s)?$/u.test(bare)) return true;        // FBI · SS · KERSHAW
+  if (/^\p{Lu}{2,}(?:['’]s)?$/u.test(beforePeriod)) return true; // FBI · SS · KERSHAW, and "the SPD." 
   if (romanHere(tokens, i)) return true;                        // Alexander I · Part IV
   if (/-$/.test(token)) return true;                            // "Verlag-" at a line break
   if (PERIODLESS_ABBREVIATIONS.has(beforePeriod.toLowerCase())) return true;

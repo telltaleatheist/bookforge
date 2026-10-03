@@ -480,7 +480,16 @@ const VENDOR_LEAVES = '770480d';
  * not re-roll a park. Not a rule move — no reading is accepted or refused differently — so
  * NORMALIZER_VERSION stays n18. This side took the equivalent lines in its own (older) catch.
  */
-const ONE_DOOR_BASELINE = '9872791';
+/*
+ * MOVED 2026-10-03, 9872791 → 737cb30 (n19), read in full: ONE commit touches these files. 737cb30 (the
+ * book glossary's engine half): NORMALIZER_VERSION n19 and its comment, for two light-gate holes the
+ * printed-forms inventory found — a lower-case word of numeral letters ("did", "civil") is a printed form
+ * only when `romanValue` reads it, and a numeral or capitals ending a sentence ("on Wolf IV.") is no longer
+ * hidden by its period. A RULE MOVE (the gate refuses differently), so the version moved. This side took
+ * the same diff: electron/light-gate.ts is Foundry's 737cb30 copy byte for byte, and the normalizer the
+ * same two lines.
+ */
+const ONE_DOOR_BASELINE = '737cb30';
 const FROZEN_SINCE_BASELINE = [
   'src/clean/tts-number-normalizer.ts',
   'src/clean/tts-spoken-forms.ts',
@@ -542,7 +551,7 @@ const FILES = [
     theirs: 'src/clean/tts-number-normalizer.ts',
     vendoredAt: VENDOR_PASS,
     shipped: {
-      sha256: '05ff11bd1e2cc6b6d580f45dd5c98fed75d108c31024fe65865275583ff5d72f',
+      sha256: 'ccf48b020f075b08bcd596b88615cfc49b4f228ec71be2a4ccd04da619ce51ee',
       why: 'the type-only `epub-processor.js` import retargeted to `./targets.js`; '
         + '`askAboutEach` exported so the engine\'s door is a third caller rather than a second '
         + 'copy of the retry rules; `normalizeNarrationNumbers` deleted (291 lines, all about a '
@@ -586,7 +595,10 @@ const FILES = [
         + 'REPINNED 2026-10-02 for a3400e0 (n18): 0d1891a\'s policy.removal (a removal asked for is accepted '
         + 'whole, off unless asked) and a3400e0\'s unspaced hyphen read as an em dash (class unspaced-dash). '
         + 'Same diff here. REPINNED 2026-10-02 (night) for 9872791: a park\'s exit code (75) crosses '
-        + 'askForEdits\'s rewrap and is not re-rolled. Not a rule move; the same lines here.',
+        + 'askForEdits\'s rewrap and is not re-rolled. Not a rule move; the same lines here. '
+        + 'REPINNED 2026-10-03 for 737cb30 (n19): the version constant and its comment — the light '
+        + 'gate no longer takes "did" or "civil" for a numeral, nor hides "Wolf IV." behind its '
+        + 'period. A RULE MOVE; the same lines here, and electron/light-gate.ts is Foundry\'s copy.',
     },
   },
   {
@@ -731,7 +743,7 @@ const VERSIONS = [
     // n15 → n16: Foundry f57402c (years, rulers, transl./ed., month-first ranges).
     // n16 → n17: Foundry 1fd0e35 (a run of capitals that is a word is read as the word).
     // n17 → n18: Foundry a3400e0 (an unspaced hyphen where the sentence breaks is an em dash).
-    expected: 'n18',
+    expected: 'n19',
   },
   {
     name: 'PUNCTUATION_SPEC_VERSION',
