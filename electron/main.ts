@@ -774,6 +774,12 @@ interface FoundryMountModule {
    */
   setHostQueueRows?(projectDir: string, rows: readonly FoundryJobRow[]): void;
   /**
+   * THE PRINTED FORMS OF THE BOOK A CLEANUP WILL READ (`foundry clean-forms` over
+   * the run's own book) — what `electron/narration-glossary.ts` decides readings
+   * from. Optional for `runJob`'s reason.
+   */
+  printedFormsForRun?(request: FoundryJobRequest, onLine?: (line: string) => void): Promise<unknown>;
+  /**
    * OUR QUEUE HAS NO FOUNDRY WORK RUNNING — the one signal their vLLM reading
    * server's lifetime hangs on.
    *
@@ -13829,6 +13835,9 @@ app.whenReady().then(async () => {
       : null,
     drained: typeof foundryMount.hostQueueDrained === 'function'
       ? () => foundryMount.hostQueueDrained!()
+      : null,
+    printedForms: typeof foundryMount.printedFormsForRun === 'function'
+      ? (request, onLine) => foundryMount.printedFormsForRun!(request, onLine)
       : null,
   });
   /*

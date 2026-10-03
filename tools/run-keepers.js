@@ -1051,6 +1051,8 @@ const SUITES = [
   'test-qwen-align-env',
   'test-gpu-arbiter',
   'test-clean-step-door',
+  // The book glossary a cleanup is handed (no server: lister and asker injected).
+  'test-narration-glossary',
   'test-foundry-manifest-version',
   'test-tab-recorder',
   // Drives a REAL narrator refusal through a REAL python to prove the reason

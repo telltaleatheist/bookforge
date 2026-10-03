@@ -384,6 +384,15 @@ export interface FoundryRunJobOptions {
    * settles it when the outcome arrives.
    */
   onPlaced: (placement: FoundryRunPlacement) => void;
+  /**
+   * THE BOOK GLOSSARY'S READINGS, for a cleanup or its triage — a
+   * `fixed-readings/v1` file this app decided before the run
+   * (`electron/narration-glossary.ts`). Their `RunOptions.fixedReadings`: put on
+   * the run's own copy of the request and spelled `--fixed-readings`, so the
+   * model is never shown a form the whole book already decided. Absent for every
+   * other kind, which the runner refuses by name if handed one.
+   */
+  fixedReadings?: string;
 }
 
 /** What {@link FoundryRunJobOptions.onPlaced} carries. Their `RunPlacement`. */
@@ -491,15 +500,41 @@ export type FoundryRunOutcome =
 let runner: FoundryRunner | null = null;
 let pushRows: ((projectDir: string, rows: readonly FoundryJobRow[]) => void) | null = null;
 let sayDrained: (() => void) | null = null;
+let formsLister: FoundryFormsLister | null = null;
+
+/**
+ * THE PRINTED FORMS OF THE BOOK A CLEANUP WILL READ — their `printedFormsForRun`:
+ * the same book the run will be handed, `foundry clean-forms` over it, parsed.
+ * What the narration glossary decides readings from.
+ */
+export type FoundryFormsLister =
+  (request: FoundryJobRequest, onLine?: (line: string) => void) => Promise<unknown>;
 
 export function setFoundrySeam(seam: {
   runJob: FoundryRunner | null;
   setQueueRows: ((projectDir: string, rows: readonly FoundryJobRow[]) => void) | null;
   drained: (() => void) | null;
+  printedForms?: FoundryFormsLister | null;
 }): void {
   runner = seam.runJob;
+  formsLister = seam.printedForms ?? null;
   pushRows = seam.setQueueRows;
   sayDrained = seam.drained;
+}
+
+/**
+ * The printed-forms lister, or the sentence saying why a glossary cannot be made.
+ * A vendored Foundry from before `printedFormsForRun` cannot list them; that is a
+ * subtree to refresh, said by name rather than a cleanup run without its glossary.
+ */
+export function foundryFormsLister(): FoundryFormsLister {
+  if (formsLister === null) {
+    throw new Error(
+      'This version of the Foundry engine cannot list a book\'s printed forms, so BookForge cannot '
+      + 'make the narration glossary a cleanup reads. Update Foundry — printedFormsForRun arrives with it.',
+    );
+  }
+  return formsLister;
 }
 
 /**
