@@ -136,7 +136,7 @@ async function download(version, name, into) {
  * sentence: these keys say things this script has no business restating, and a
  * generated sentence would quietly erase whatever a person put there.
  */
-function repin(manifest, from, to) {
+export function repin(manifest, from, to) {
   let text = fs.readFileSync(manifest.file, 'utf8');
   const changed = [];
   for (const name of PACKAGES) {
@@ -178,11 +178,19 @@ function repin(manifest, from, to) {
     // replaced inside it. That leaves every escape exactly as the author wrote
     // it — this file is hand-edited prose and reformatting it would be a diff
     // nobody asked for.
+    //
+    // ONLY WHERE THE PROSE NAMES THE PIN. The same notes keep HISTORY too ("1.0.80
+    // ADDS ChunkData.pauseCuts"), and replacing every occurrence of `from`
+    // rewrote that history as the new release (1.0.80 -> 1.0.88 and before it
+    // 1.0.77 -> 1.0.80, both 2026-10-02). A pin mention is the version straight
+    // after "RELEASE ", "v", "<tool>.mjs " or a package name; a history line
+    // states it bare.
     const span = valueSpan(text, key);
     if (span === null) die(`could not find the prose for ${key} to update`);
     const raw = text.slice(span.start, span.end);
-    if (!raw.includes(from)) die(`the prose for ${key} does not name ${from}`);
-    text = text.slice(0, span.start) + raw.split(from).join(to) + text.slice(span.end);
+    const pinMention = new RegExp(`(RELEASE |\\bv|\\.mjs |@crucible/(?:client|bootstrap) )${from.replace(/\./g, '\\.')}(?![\\d.]*\\d)`, 'g');
+    if (!pinMention.test(raw)) die(`the prose for ${key} does not name ${from} as its pin`);
+    text = text.slice(0, span.start) + raw.replace(pinMention, `$1${to}`) + text.slice(span.end);
     changed.push(key);
   }
   fs.writeFileSync(manifest.file, text);

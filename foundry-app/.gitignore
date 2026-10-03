@@ -8,5 +8,5 @@ release/
 # is electron-builder's buildResources — the app icon lives here and ships.
 !build/
 
-# a symlink, not a directory — the directory form above does not catch it (2026-09-19)
+# a symlink, not a directory — the directory form above does not catch it (BookForge 17643042, 2026-09-19)
 node_modules

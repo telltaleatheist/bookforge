@@ -12,6 +12,9 @@ afterEach(()=>mock.restore());
 const classes=['pages','clean','translate','simplify','analysis','decide'];
 const chosen=(cls:string)=>cls==='pages'?'dots-ocr':cls==='clean'?'qwen3.5-9b':cls==='decide'?'qwen3.5-2b':'qwen3.8-27b-4bit';
 
+/** A card wait (Crucible 1.0.83): first in line, the card held by a process the server does not own. */
+const CARD_WAIT={code:'accelerator_busy',message:'the card is held by another process (pid 4242); checking again every 10 s',details:null,since:'2026-10-02T22:00:00Z',next_check_at:'2026-10-02T22:00:10Z'};
+
 function fixture(options:{missing?:boolean;competing?:boolean;competitorStocks?:boolean;failCompetitor?:boolean;held?:boolean;chatMaxInFlight?:number|null;admitsOnlyWhenResident?:number;noActivity?:boolean;oldActivity?:boolean}={}) {
   let stocked=!options.missing, competed=false, loaded:string|null=null;
   const calls:{method:string;path:string;body:any}[]=[];
@@ -70,7 +73,7 @@ function fixture(options:{missing?:boolean;competing?:boolean;competitorStocks?:
       loaded=body?.model??null;
       return Response.json(sessionDoc('ses-1','open',body.act),{status:201});
     }
-    if(p==='/v1/queue/sessions/ses-held/events')return new Response(`id: 1\nevent: queued\ndata: ${JSON.stringify({position:1,of:2})}\n\nid: 2\nevent: removed\ndata: ${JSON.stringify({reason:'expired',message:'nobody followed it'})}\n\n`,{headers:{'content-type':'text/event-stream'}});
+    if(p==='/v1/queue/sessions/ses-held/events')return new Response(`id: 1\nevent: queued\ndata: ${JSON.stringify({position:1,of:2})}\n\nid: 2\nevent: waiting\ndata: ${JSON.stringify(CARD_WAIT)}\n\nid: 3\nevent: removed\ndata: ${JSON.stringify({reason:'expired',message:'nobody followed it'})}\n\n`,{headers:{'content-type':'text/event-stream'}});
     if(p==='/v1/queue/sessions/ses-1/events')return quiet();
     if(p==='/v1/queue/sessions/ses-1/touch')return Response.json(sessionDoc('ses-1','open',sessionAct));
     if(p==='/v1/queue/sessions/ses-1'&&req.method==='DELETE')return Response.json(sessionDoc('ses-1','closed',sessionAct,{closed_at:'2026-10-01T00:01:00Z',reason:'client',message:'closed by its client'}));
@@ -130,12 +133,13 @@ for(const [kind,cls] of [['read','pages'],['clean','clean'],['translate','transl
  * says where it stands, and a line that lets it go (`expired`) is weather — a
  * wait, never a refusal, so `any` steps past and a pinned row asks again.
  */
-test('real HTTP a session that waits in the line says its place, and an expired one waits',async()=>{
+test('real HTTP a session that waits in the line says its place and its card wait, and an expired one waits',async()=>{
   const f=fixture({held:true});const said:string[]=[];try{
     const result=await dispatch.placeJob('read',f.entry.name,(line)=>{said.push(line);},()=>true);
     expect(result.verdict).toBe('wait');if(result.verdict!=='wait')throw Error(JSON.stringify(result));
     expect(result.standing).toBe(false);
     expect(said).toContain(`Waiting for ${f.entry.name}: #1 of 2 in its line`);
+    expect(said).toContain(`Waiting for ${f.entry.name}: ${CARD_WAIT.message}`);
     expect(result.reason).toBe(`"${f.entry.name}" let this run's turn go from its line (expired)`);
   }finally{f.close();}
 });

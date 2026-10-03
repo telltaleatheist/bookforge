@@ -10,10 +10,33 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\<user>\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **a3400e0** — *n18: an unspaced hyphen where the sentence breaks is read as an em dash* (engine only: `engine/foundry-engine.cjs`, src b32d5f206361; every other file identical to 1b66649, see the entry below). Before it: 1b66649 |
+| Source sha | **06c28b5** — *app/.gitignore: ignore a node_modules symlink, not only the directory*, on 6216357 — *Adopt Crucible 1.0.88 (was 1.0.80); a card wait shows on the row* (see the entry below). Before it: a3400e0 |
 | Engine | **VENDORED, in `engine/`** since 1927563 (2026-09-24): `engine/foundry-engine.cjs` plus its four fonts, built from Foundry's `src/` by Foundry's `tools/build-engine.mjs` and checked against those sources by Foundry's test suite. Run by BookForge's own Electron as Node (`ELECTRON_RUN_AS_NODE=1`) from BOTH doors — this copy's `electron/engine.ts` and BookForge's `electron/foundry-bridge.ts`. **Ask it: `node foundry-app/engine/foundry-engine.cjs --version`** → `foundry X.Y.Z (src <digest>)`. There is no downloaded engine any more; `FOUNDRY_BIN` still overrides in both doors. |
-| Copied on | 2026-09-19 (five times: 3738c01, 3436fc5, 806d44b, f349771, ca4754c), 2026-09-20 (98a4344, 9e0b27d, dccc144, 7b98004, cc5fc5b, 93010d8, 77e1d6d) 2026-09-21 (753dca8, 3e26e53, f9bebb6, 95593b0, 8ee48b7) and 2026-09-22 (7185764, 7912022, 19fa7a9, df63f9f) and 2026-09-23 (acf63c2, 4835411), 2026-09-24 (b4c7346, 1927563, e2481dc, a1138f6, 72c6b08, b7ba2a8, 0eb12de), 2026-09-28 (1115cea) |
-| Copied by | Mechanical source sync, verified against Foundry `0eb12de:app/` (`git hash-object` per file: clean but for this file, `IPC-CHANNELS.md` and `.gitignore` — see below); details below |
+| Copied on | 2026-09-19 (five times: 3738c01, 3436fc5, 806d44b, f349771, ca4754c), 2026-09-20 (98a4344, 9e0b27d, dccc144, 7b98004, cc5fc5b, 93010d8, 77e1d6d) 2026-09-21 (753dca8, 3e26e53, f9bebb6, 95593b0, 8ee48b7) and 2026-09-22 (7185764, 7912022, 19fa7a9, df63f9f) and 2026-09-23 (acf63c2, 4835411), 2026-09-24 (b4c7346, 1927563, e2481dc, a1138f6, 72c6b08, b7ba2a8, 0eb12de), 2026-09-28 (1115cea), 2026-10-02 (06c28b5) |
+| Copied by | Mechanical source sync, verified against Foundry `06c28b5:app/` (index blob shas: 204 match, 0 problems; nothing tracked here but this file and `IPC-CHANNELS.md`); details below |
+
+## The `a3400e0 → 06c28b5` re-vendor — Crucible SDK 1.0.88, card waits on the row (2026-10-02)
+
+Owen: *"so foundry is up to date with crucible's sdk? if not, go ahead and fix it completely so it functions with it"*,
+then *"lets revendor and commit/push everything"*.
+
+- **6216357** adopts Crucible 1.0.88 (was 1.0.80) with `tools/adopt-crucible-release.mjs`. 1.0.81-1.0.88 are additive on
+  the SDK: `stream({onQueue})`, typed card waits and `onWaiting`, and `waiting_for` on queue and activity rows. Nothing
+  Foundry calls changed shape. One gap is closed: since 1.0.82 a session first in line waits while another process holds
+  the card, and `openSession` now passes `onWaiting`, so the row says the server's sentence (holder, next check) instead of
+  "#1 in its line".
+- **06c28b5** moves this side's `.gitignore` line (`node_modules`, the symlink form; BookForge 17643042) upstream. The
+  subtree is sealed, and every re-vendor was otherwise dropping it.
+- **BookForge's own pin moves to 1.0.88 in the same commit** (was 1.0.82). The packaged app resolves `@crucible/client`
+  from BookForge's root `node_modules` (`build.files` carries `foundry-app/dist`, not its `node_modules`), so the two pins
+  must name the same release, or this copy's `onWaiting` runs against an SDK without it.
+- **Deps moved** (package.json, package-lock, `vendor/` 1.0.80 → 1.0.88 tarballs). `npm ci` then `npm run build`: clean,
+  `dist/electron/mount.js` rebuilt, `@crucible/client` 1.0.88 installed. Foundry side: electron and renderer typecheck
+  clean, app/test 121/0, and the new held-line assertion fails without the change.
+- **Keepers:** BookForge's electron typecheck is clean against 1.0.88. `run-keepers` has 15 failing suites, all present
+  before this copy. They assert leases (removed in Crucible 1.0.77: test-crucible-denoise, test-queue-admission,
+  test-foundry-hosted-crucible-seam), a module file that drifted from the Crucible repo, or narrator, extension and
+  address scans. `waitFor` appears in the same ten files before and after the copy. None touches `openSession`.
 
 ## The `1b66649 → a3400e0` re-vendor — the n18 dash rule (2026-10-02)
 

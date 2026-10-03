@@ -1591,6 +1591,15 @@ async function openSession(
     onQueue: ({ position, of }) => {
       say(`Waiting for ${slotName}: #${position}${of < position ? '' : ` of ${of}`} in its line`);
     },
+    /*
+     * FIRST IN LINE AND STILL WAITING: another process holds the card (Crucible
+     * 1.0.82+). Without this the row's last word was "#1 in its line", which
+     * reads as stuck. The server's sentence names the holder and the next check,
+     * and it repeats every minute while that holder stays.
+     */
+    onWaiting: ({ message }) => {
+      say(`Waiting for ${slotName}: ${message}`);
+    },
     ...(signal === undefined ? {} : { signal }),
   });
   let ended = false;
