@@ -325,63 +325,6 @@ function migrateLegacyConfigKeys(): void {
   saveConfig({ ...state.config });
 }
 
-/**
- * ONE-TIME, AT STARTUP: adopt the environment that used to be resolved as
- * `<ebook2audiobook>/python_env` (or the conda env literally named
- * `ebook2audiobook`) as an explicit `toolsEnvPath`.
- *
- * Before Phase 6 the tools env was DERIVED from the e2a checkout: dev resolved
- * `<e2a>/python_env`, and a Mac with no prefix env resolved the named conda env
- * `ebook2audiobook`. Nothing in either is an e2a artifact any more — the contents
- * are numpy/soundfile/mutagen/whisper/ffmpeg — but the LOCATION was, and Owen's
- * ruling was to make the mechanism narrator's rather than to move gigabytes.
- *
- * So the path is RECORDED once, in tool-paths.json, and from then on it is a
- * stated setting like any other. After this runs, nothing resolves a python by
- * asking where ebook2audiobook is. Deleting the checkout afterwards is a broken
- * `toolsEnvPath` that says exactly which directory went missing, instead of a
- * silent re-derivation onto some other machine's layout.
- *
- * Runs only when there is nothing else to use: no `toolsEnvPath`, and no managed
- * `runtime/tools-env`. Called from main.ts after the legacy-directory rename.
- */
-export function adoptLegacyToolsEnv(legacyE2aRoots: string[]): void {
-  loadConfig();
-  if (state.config.toolsEnvPath) return;
-  if (getActiveToolsEnvPath()) return;
-
-  const candidates: string[] = [];
-  for (const root of legacyE2aRoots) {
-    if (root && root.trim()) candidates.push(path.join(root.trim(), 'python_env'));
-  }
-  // The Mac's shape: a conda env named `ebook2audiobook` with no prefix folder in
-  // the checkout. Recorded by PREFIX, not by name, so the stored value is a path
-  // like every other tools env and `conda run -p` is the only invocation form.
-  const condaExe = getCondaPath();
-  const envsDirs: string[] = [];
-  if (condaExe && condaExe !== 'conda' && fs.existsSync(condaExe)) {
-    envsDirs.push(path.join(path.dirname(path.dirname(condaExe)), 'envs'));
-  }
-  envsDirs.push(path.join(os.homedir(), '.conda', 'envs'));
-  for (const d of envsDirs) candidates.push(path.join(d, 'ebook2audiobook'));
-
-  for (const candidate of candidates) {
-    if (!fs.existsSync(relocatablePythonPath(candidate))) continue;
-    console.log(
-      `[TOOL-PATHS] Adopting ${candidate} as the tools environment (toolsEnvPath). ` +
-        'It is recorded in tool-paths.json from now on — nothing resolves a python ' +
-        'from an ebook2audiobook path any more.',
-    );
-    updateConfig({ toolsEnvPath: candidate });
-    return;
-  }
-  console.warn(
-    '[TOOL-PATHS] No tools environment is installed and none could be adopted. Assembly, ' +
-      'resume/list, whisper and the metadata tools will refuse by name until one exists ' +
-      '(first-run setup downloads it; Settings can point at an existing one).',
-  );
-}
-
 /** The stated tools environment, or undefined when none is configured. */
 export function getConfiguredToolsEnvPath(): string | undefined {
   loadConfig();
@@ -568,37 +511,6 @@ function getFfmpegCandidates(): string[] {
       '/usr/local/bin/ffmpeg',
     ];
   }
-}
-
-/**
- * Where an ebook2audiobook checkout used to be looked for.
- *
- * The ONLY caller left is `adoptLegacyToolsEnv`, the one-time migration that
- * records `<checkout>/python_env` as `toolsEnvPath`. Nothing resolves a path to
- * run from here — after the migration this list is never consulted again, and
- * on a machine that has a managed tools env it is never consulted at all.
- */
-export function legacyE2aCandidates(): string[] {
-  const platform = os.platform();
-  const homeDir = os.homedir();
-
-  const projectDirs = [
-    path.join(homeDir, 'Projects'),
-    path.join(homeDir, 'projects'),
-    path.join(homeDir, 'Developer'),
-    path.join(homeDir, 'dev'),
-    path.join(homeDir, 'Code'),
-    homeDir,
-  ];
-
-  const candidates: string[] = [];
-  if (process.env.EBOOK2AUDIOBOOK_PATH) candidates.push(process.env.EBOOK2AUDIOBOOK_PATH);
-  for (const dir of projectDirs) {
-    candidates.push(path.join(dir, 'ebook2audiobook-latest'));
-    candidates.push(path.join(dir, 'ebook2audiobook'));
-  }
-  if (platform === 'win32') candidates.push('C:\\ebook2audiobook');
-  return candidates;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

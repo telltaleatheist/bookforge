@@ -206,7 +206,7 @@ def _apply_cli_settings(args, settings):
     #    ERROR — a typo'd key must not be silently ignored (NO FALLBACKS).
     fillable = {"voice", "provider", "model", "output_dir", "tier", "simplify_mode",
                 "model_dir", "models_dir", "voice_token", "input", "text", "out",
-                "sentence_gap", "max_chars", "orpheus_install", "conda_env",
+                "sentence_gap", "max_chars", "conda_env",
                 "custom_instructions", "parallel_workers", "test_chunks",
                 "api_key", "ollama_url", "cleanup_prompt",
                 # The 2026-09-12 model-picking knobs. All None-defaulted, so
@@ -245,8 +245,11 @@ def _apply_cli_settings(args, settings):
     #    conda env / models dir from the named engine, only where the user left them unset.
     eng = (settings.get("engines") or {}).get(args.engine or "")
     if eng:
-        if not args.orpheus_install and eng.get("install"):
-            args.orpheus_install = eng["install"]
+        # 'install' named an ebook2audiobook checkout; e2a is gone (2026-10-03) and
+        # nothing reads it, so a settings file still carrying it is refused by name.
+        _require("install" not in eng,
+                 f"settings engines.{args.engine}.install named an ebook2audiobook checkout, "
+                 "which BookForge no longer uses. Remove the key.")
         if not args.conda_env and eng.get("conda_env"):
             args.conda_env = eng["conda_env"]
         if not args.models_dir and eng.get("models_dir"):
@@ -525,8 +528,6 @@ def cmd_tts(args):
     # Customization delivered through the process env — the compiled pipeline reads these
     # seams (mirrors how the app's persisted settings feed the same code paths).
     env = os.environ.copy()
-    if args.orpheus_install:          # override the e2a install the worker uses
-        env["EBOOK2AUDIOBOOK_PATH"] = args.orpheus_install
     if args.models_dir:               # override where custom models are discovered
         env["BOOKFORGE_ORPHEUS_MODELS_DIR"] = args.models_dir
     if args.tier:                     # force the GPU memory tier (else auto-sized)
@@ -556,7 +557,7 @@ def cmd_tts(args):
         print("  spawn:", " ".join(cmd))
         print("  higgs override:", json.dumps(override, sort_keys=True) if override else "(none)")
         overrides = {k: env[k] for k in (
-            "EBOOK2AUDIOBOOK_PATH", "BOOKFORGE_ORPHEUS_MODELS_DIR",
+            "BOOKFORGE_ORPHEUS_MODELS_DIR",
             "ORPHEUS_MEMORY_TIER", "WSL_ORPHEUS_CONDA_ENV", "ORPHEUS_SENTENCE_GAP",
             "ORPHEUS_MAX_CHARS", "ORPHEUS_TEMPERATURE", "ORPHEUS_TOP_P", "ORPHEUS_MIN_P",
             "ORPHEUS_REP_PENALTY", *mlx_keys,
@@ -759,8 +760,6 @@ def _audiobook_spawn(args, assemble_only):
 
     # Same env seams as --tts (the compiled pipeline reads these).
     env = os.environ.copy()
-    if args.orpheus_install:
-        env["EBOOK2AUDIOBOOK_PATH"] = args.orpheus_install
     if args.models_dir:
         env["BOOKFORGE_ORPHEUS_MODELS_DIR"] = args.models_dir
     if args.tier:
@@ -797,7 +796,7 @@ def _audiobook_spawn(args, assemble_only):
         print("  spawn:", " ".join(cmd))
         print("  higgs override:", json.dumps(override, sort_keys=True) if override else "(none)")
         overrides = {k: env[k] for k in (
-            "EBOOK2AUDIOBOOK_PATH", "BOOKFORGE_ORPHEUS_MODELS_DIR", "ORPHEUS_MEMORY_TIER",
+            "BOOKFORGE_ORPHEUS_MODELS_DIR", "ORPHEUS_MEMORY_TIER",
             "WSL_ORPHEUS_CONDA_ENV", "ORPHEUS_SENTENCE_GAP", "ORPHEUS_MAX_CHARS",
             "ORPHEUS_TEMPERATURE", "ORPHEUS_TOP_P", "ORPHEUS_MIN_P", "ORPHEUS_REP_PENALTY",
             *mlx_keys,
@@ -1998,7 +1997,7 @@ the book the app ships.""",
             "--min-p", "--top-k", "--rep-penalty", "--safe-band", "--max-chars",
             "--batch-width", "--mem-budget-gb", "--as-chunks", "--max-chunks",
             "--keep-sentences", "--keep-session", "--skip-text-cleanup",
-            "--orpheus-install", "--conda-env", "--crucible-server",
+            "--conda-env", "--crucible-server",
         ],
         "refuses": [
             ("--mode", "'streaming' drove the DELETED 8766 speak relay; speech for an "
@@ -2048,7 +2047,7 @@ its canonical project location, so there is no --out. It RESUMES by default —
             "--tier", "--sentence-gap", "--temperature", "--top-p", "--min-p", "--top-k",
             "--rep-penalty", "--safe-band", "--max-chars", "--batch-width", "--mem-budget-gb",
             "--fresh", "--skip-text-cleanup", "--keep-session", "--de-ring", "--assembly-gap",
-            "--final-denoise", "--no-final-denoise", "--orpheus-install", "--conda-env",
+            "--final-denoise", "--no-final-denoise", "--conda-env",
         ],
         "refuses": [
             ("--max-chunks", "a capped book is not an audiobook: it would be filed in the "
@@ -3447,8 +3446,6 @@ def _flag_registry():
                         "prosody, more runaway risk). AI cleanup/simplify: model temperature "
                         "(default 0.1 clamp; 0=deterministic). Consumed by whichever mode runs.",
                    metavar="T")
-    p.add_argument("--orpheus-install", dest="orpheus_install",
-                   help="override the e2a/Orpheus install path the worker uses", metavar="PATH")
     p.add_argument("--conda-env", dest="conda_env",
                    help="override the WSL conda env for Orpheus", metavar="NAME")
     p.add_argument("--provider", choices=["claude", "openai", "ollama", "local", "crucible"],

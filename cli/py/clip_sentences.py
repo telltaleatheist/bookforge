@@ -510,8 +510,8 @@ def run_anchor(args, clips):
         from faster_whisper.audio import decode_audio
     except Exception as e:  # noqa: BLE001
         die(f"faster_whisper not importable in this python env: {e}\n"
-            "  anchor mode needs the e2a runtime env "
-            "(%APPDATA%\\BookForge\\runtime\\e2a-env\\python.exe) or pass --python "
+            "  anchor mode needs BookForge's tools env "
+            "(%APPDATA%\\BookForge\\runtime\\tools-env\\python.exe) or pass --python "
             "at a env with faster_whisper installed.")
     ct = "int8" if args.device == "cpu" else "float16"
     t_load0 = time.time()

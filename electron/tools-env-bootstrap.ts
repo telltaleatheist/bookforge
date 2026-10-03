@@ -29,8 +29,8 @@
  * module cannot even import it.
  *
  * The RELEASE ARTIFACT is unchanged — same URL, same sha256, same bytes. Only
- * the directory it unpacks into is renamed, and `migrateLegacyToolsEnvDir()`
- * renames an existing one in place rather than re-downloading 1.8 GB.
+ * the directory it unpacks into was renamed. The one-time startup rename of an
+ * old `runtime/e2a-env` was removed on 2026-10-03, once every machine had moved.
  *
  * Readiness is keyed on ENV_VERSION + the artifact sha256 (recorded in the
  * ready-marker): bumping ENV_VERSION or publishing a new tarball forces a
@@ -58,8 +58,6 @@ import { downloadFile, sha256File, osTarBin } from './components/downloader';
 const TARBALL_NAME = 'tools-env.tar.gz';
 const READY_MARKER = '.bookforge-env-ready.json';
 
-/** The pre-Phase-6 unpack directory, renamed in place by migrateLegacyToolsEnvDir(). */
-const LEGACY_ENV_DIRNAME = 'e2a-env';
 /** The pre-Phase-6 override variable. Refused by name — see toolsEnvOverride(). */
 const LEGACY_ENV_OVERRIDE = 'BOOKFORGE_E2A_ENV';
 
@@ -110,40 +108,6 @@ function envReleaseForThisPlatform(): EnvRelease | null {
 /** Where the tools environment is unpacked. */
 export function getToolsEnvDir(): string {
   return path.join(app.getPath('userData'), 'runtime', 'tools-env');
-}
-
-/**
- * ONE-TIME MOVE: `<userData>/runtime/e2a-env` → `<userData>/runtime/tools-env`.
- *
- * A rename, not a re-download. The tarball is unchanged, the ready-marker inside
- * the directory is still true of it, and the env is relocatable only in the
- * conda-unpack sense — its baked prefixes were rewritten at unpack time to the
- * OLD absolute path. That sounds like it should break, and it does not: every
- * caller runs the interpreter by absolute path and BookForge prepends the env's
- * own bin dirs to PATH (`buildToolsSpawnEnv`), which is what a conda activation
- * does. The stale prefix would only matter to something that read
- * `sys.prefix`-derived paths off the packed metadata, and the smoke test below
- * is what proves the interpreter still starts after the move.
- *
- * Idempotent and best-effort: called once at startup, before anything resolves
- * an env. A failure leaves the legacy directory alone and the new name absent,
- * which resolution then reports BY NAME rather than silently using the old path.
- */
-export function migrateLegacyToolsEnvDir(): void {
-  const target = getToolsEnvDir();
-  if (fs.existsSync(target)) return;
-  const legacy = path.join(app.getPath('userData'), 'runtime', LEGACY_ENV_DIRNAME);
-  if (!fs.existsSync(legacy)) return;
-  try {
-    fs.renameSync(legacy, target);
-    console.log(`[TOOLS-ENV] Migrated the tools environment: ${legacy} -> ${target}`);
-  } catch (err) {
-    console.error(
-      `[TOOLS-ENV] Could not rename ${legacy} to ${target}. The tools environment will be ` +
-        'reported as missing until this succeeds (or the env is re-downloaded).',
-      err,
-    );
-  }
 }
 
 /** Direct python executable inside a relocatable env (no conda involved). */

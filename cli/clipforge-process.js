@@ -80,9 +80,10 @@ function appDataDir() {
   return appData;
 }
 
-// anchor mode transcribes with faster-whisper, which lives in the e2a runtime
-// env. Map mode has no whisper dependency (runs fine under clipforge-speakers).
-const e2aPython = () => path.join(appDataDir(), 'BookForge', 'runtime', 'e2a-env', 'python.exe');
+// anchor mode transcribes with faster-whisper, which lives in BookForge's tools
+// env (runtime/tools-env, formerly runtime/e2a-env). Map mode has no whisper
+// dependency (runs fine under clipforge-speakers).
+const toolsPython = () => path.join(appDataDir(), 'BookForge', 'runtime', 'tools-env', 'python.exe');
 
 function parseArgs(argv) {
   const a = {};
@@ -519,7 +520,7 @@ async function runSplit(args) {
  *          only, then the ASR is fuzzy-anchored against the epub; output text is
  *          the epub's exact words for the matched span.
  *
- * The JS side validates args, resolves the worker python (anchor => the e2a
+ * The JS side validates args, resolves the worker python (anchor => the tools
  * runtime env for faster_whisper; map => the clipforge-speakers env — both
  * overridable with --python, both FAIL LOUDLY if missing), spawns
  * cli/py/clip_sentences.py, relays its STAGE/RESULT lines, and writes a run
@@ -542,11 +543,11 @@ async function runSentences(args) {
   const mapMode = args['book-vtt'] !== undefined;
   const mode = mapMode ? 'map' : 'anchor';
 
-  // Default python per mode: anchor needs faster_whisper (e2a env); map does not
+  // Default python per mode: anchor needs faster_whisper (tools env); map does not
   // (clipforge-speakers env). --python overrides both. FAIL LOUDLY if missing.
   const defaultPython = mapMode
     ? machinePath(undefined, '--python', 'CLIPFORGE_SPEAKERS_PYTHON', 'the clipforge-speakers python')
-    : e2aPython();
+    : toolsPython();
   const python = args.python ? path.resolve(args.python) : defaultPython;
   if (!fs.existsSync(python)) {
     if (mapMode) {
@@ -557,9 +558,9 @@ async function runSentences(args) {
     }
     throw new Error(
       `sentences (anchor) python not found: ${python}\n` +
-      '  anchor mode transcribes with faster-whisper, which lives in the e2a runtime env.\n' +
-      '  Expected: %APPDATA%\\BookForge\\runtime\\e2a-env\\python.exe (install BookForge\'s\n' +
-      '  e2a runtime), or pass --python <python.exe> pointing at an env with faster_whisper.');
+      '  anchor mode transcribes with faster-whisper, which lives in BookForge\'s tools env.\n' +
+      '  Expected: %APPDATA%\\BookForge\\runtime\\tools-env\\python.exe (run BookForge once\n' +
+      '  to install it), or pass --python <python.exe> pointing at an env with faster_whisper.');
   }
 
   const worker = path.resolve(__dirname, 'py', 'clip_sentences.py');
@@ -735,7 +736,7 @@ async function runNarration(args) {
 /**
  * runVerify — is every clip in this corpus actually the narrator?
  *
- * Delegates to cli/py/speaker_verify.py in the e2a runtime env (which already has
+ * Delegates to cli/py/speaker_verify.py in the tools env (which already has
  * pyannote.audio + soundfile + torch — no new install). Embeds with
  * pyannote/wespeaker-voxceleb-resnet34-LM, builds a centroid from a KNOWN-narrator
  * reference set, and flags clips that sit far from it.
@@ -764,11 +765,11 @@ async function runVerify(args) {
   const corpus = path.resolve(args.corpus);
   if (!fs.existsSync(corpus)) throw new Error(`verify: corpus not found: ${corpus}`);
 
-  const python = args.python ? path.resolve(args.python) : e2aPython();
+  const python = args.python ? path.resolve(args.python) : toolsPython();
   if (!fs.existsSync(python)) {
     throw new Error(
       `verify python not found: ${python}\n` +
-      '  Needs pyannote.audio + soundfile + torch; the BookForge e2a runtime env has them.\n' +
+      '  Needs pyannote.audio + soundfile + torch; the BookForge tools env has them.\n' +
       '  Override with --python <exe>.');
   }
   const script = path.resolve(__dirname, 'py', 'speaker_verify.py');

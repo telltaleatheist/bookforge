@@ -417,8 +417,9 @@ export function getNarratorMlxEnv(): string {
  * machine can both answer to it, and which one `conda run -n` picks depends on
  * the conda that happens to resolve first.
  *
- * The Mac keeps working because `adoptLegacyToolsEnv` (tool-paths.ts) records
- * that env's PREFIX once, so it becomes a stated `toolsEnvPath` like any other.
+ * The tools env is now BookForge's managed `runtime/tools-env` (or a stated
+ * `toolsEnvPath`). The bridge that adopted the Mac's `ebook2audiobook` conda env
+ * as a `toolsEnvPath` was removed on 2026-10-03, along with e2a itself.
  */
 
 export interface PythonInvocation {

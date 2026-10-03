@@ -27,9 +27,8 @@
   },
 
   "engines": {
-    "_comment": "type '--engine orpheus' and it looks up where orpheus lives. Fills --orpheus-install / --conda-env / --models-dir only where you didn't set them. Omit any key to inherit BookForge's own config.",
+    "_comment": "type '--engine orpheus' and it looks up where orpheus lives. Fills --conda-env / --models-dir only where you didn't set them. Omit any key to inherit BookForge's own config.",
     "orpheus": {
-      "install": "C:/Users/<user>/Projects/ebook2audiobook",
       "conda_env": "orpheus_tts"
     }
   },

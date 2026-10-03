@@ -177,8 +177,9 @@ engine-agnostic doors (assembly, session resume/list), whisper and whisperx, the
 metadata tools, and the ffmpeg/ffprobe/sox binaries beside them.
 
 **Phase 6 renamed the DIRECTORY, not the artifact.** The env unpacks into
-`<userData>/runtime/tools-env`; it was `runtime/e2a-env`, and
-`migrateLegacyToolsEnvDir()` renames an existing one in place on startup. The
+`<userData>/runtime/tools-env`; it was `runtime/e2a-env`. (The startup rename
+of an old `e2a-env`, `migrateLegacyToolsEnvDir()`, was removed on 2026-10-03
+once every machine had moved.) The
 release assets keep their `e2a-env-<platform>.tar.gz` filenames and their
 recorded sha256s, because they are published artifacts with fixed URLs and
 renaming them would invalidate every installed copy's marker for no gain.
@@ -219,11 +220,10 @@ every other name in the app said tools-env.
 
 A **DEV** run now resolves `runtime/tools-env` too, where before it refused the
 directory outright and fell back to `<ebook2audiobook>/python_env`. Dev still
-never downloads; `adoptLegacyToolsEnv()` records an existing
-`<e2a>/python_env` (or the conda env named `ebook2audiobook`) into
-`tool-paths.json` as `toolsEnvPath` once, so a dev machine that never ran a
-packaged build keeps working — as a **stated setting**, not as a derivation from
-where a checkout happens to live.
+never downloads: a dev machine uses `runtime/tools-env` or a stated
+`toolsEnvPath`. The bridge that adopted an ebook2audiobook checkout's
+`python_env` (or the conda env named `ebook2audiobook`) as `toolsEnvPath`,
+`adoptLegacyToolsEnv()`, was removed on 2026-10-03 along with e2a itself.
 
 **`RUNTIME_ASSETS` is gone.** Three assets used to ride the same bootstrap — the
 default Scarlett Johansson voice (1.74 GB), the English Stanza pack (197 MB) and

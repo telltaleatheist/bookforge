@@ -13118,29 +13118,6 @@ app.whenReady().then(async () => {
   await initializeLoggers();
   const logger = getMainLogger();
 
-  // PHASE 6, FIRST THING: relocate the tools environment out from under
-  // ebook2audiobook, before anything resolves a python.
-  //
-  // Two moves, both one-time and both idempotent. The RENAME turns
-  // `<userData>/runtime/e2a-env` into `<userData>/runtime/tools-env` — the same
-  // 1.8 GB unpack under a name that is true of it. The ADOPTION is for the dev
-  // machine that never ran a packaged build and whose tools env therefore IS
-  // `<ebook2audiobook>/python_env` (or, on the Mac, the conda env literally named
-  // `ebook2audiobook`): its path is written into tool-paths.json as
-  // `toolsEnvPath`, so from that moment it is a stated setting rather than a
-  // derivation from where a checkout happens to live.
-  //
-  // Ordered: the rename first, because adoption skips itself when a managed env
-  // is already resolvable and the renamed directory IS one.
-  try {
-    const { migrateLegacyToolsEnvDir } = await import('./tools-env-bootstrap.js');
-    const { adoptLegacyToolsEnv, legacyE2aCandidates } = await import('./tool-paths.js');
-    migrateLegacyToolsEnvDir();
-    adoptLegacyToolsEnv(legacyE2aCandidates());
-  } catch (err) {
-    logger.error('Tools-environment migration failed', { error: (err as Error).message });
-  }
-
   // The live-DOM EPUB viewer's opening channel. The scheme it needs was
   // registered at module scope above; this is only the two handles.
   setupQuireViewerIpc();

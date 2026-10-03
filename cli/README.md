@@ -44,7 +44,7 @@ removed (found while deriving the map, 2026-09-12):
 |---|---|
 | `--voice-token` | reaches **no adapter** — `cmd_tts` never puts it on the argv, though its help says "tts mode only". (It used to be refused by name in `--mode streaming`; that mode is gone, so nothing refuses it anywhere now.) Use `--model-dir`, or a settings-file voice alias (which carries the token). |
 | `--family` on `--narration-text` | its help says `--pass/--narration-text`, but only `cmd_pass` reads it; a project with two chains cannot be steered from this door. |
-| the `ORPHEUS_*` env seams on `--assemble` | `--tier`, `--sentence-gap`, `--max-chars`, `--temperature`, `--top-p`, `--min-p`, `--rep-penalty`, `--models-dir`, `--orpheus-install`, `--conda-env` and `--engine` all still reach the spawn env of a run that **renders nothing**. `--assemble`'s render-choice refusals (`--checkpoint-dir`, `--safe-band`, `--top-k`, `--batch-width`, `--mem-budget-gb`) stop at those five. |
+| the `ORPHEUS_*` env seams on `--assemble` | `--tier`, `--sentence-gap`, `--max-chars`, `--temperature`, `--top-p`, `--min-p`, `--rep-penalty`, `--models-dir`, `--conda-env` and `--engine` all still reach the spawn env of a run that **renders nothing**. `--assemble`'s render-choice refusals (`--checkpoint-dir`, `--safe-band`, `--top-k`, `--batch-width`, `--mem-budget-gb`) stop at those five. |
 
 **On Windows, a typed path reaches the adapter AS TYPED** (2026-09-12, the PC
 review of the two commits above). Every operator path (`--project`, `--library`,
@@ -767,9 +767,6 @@ proposed, and what became of it (`APPLIED_RULE` naming the rule that read it, `A
   temperature = livelier prosody but more runaway risk — the token-cap and chars/sec
   guards catch and log trips. min_p cuts the rare-junk tail (vLLM + MLX batch paths).
 - `--models-dir <path>` — where custom models are discovered (env `BOOKFORGE_ORPHEUS_MODELS_DIR`).
-- `--orpheus-install <path>` — the **native-path** e2a install (env `EBOOK2AUDIOBOOK_PATH`; a
-  set-but-missing path errors). NOTE: for Orpheus-via-WSL the executing code is the WSL copy
-  configured in `tool-paths.json` (`wslE2aPath`) — this flag does NOT repoint the WSL worker.
 - `--conda-env <name>` — the WSL Orpheus conda env (env `WSL_ORPHEUS_CONDA_ENV`; default `orpheus_tts`).
 
 **Output / control**
