@@ -129,6 +129,15 @@ ls -l "$BF/foundry-app/dist/electron/mount.js"
 BookForge **refuses to start** without it. `dist/` and `node_modules/` are
 gitignored by the subtree's own `.gitignore`, so they never appear in the commit.
 
+They are also **per machine**: a re-vendor pulled by git leaves every other
+machine's dev checkout running its old build until this section is run there.
+Packaging does not have that problem. Every packaging script calls
+`buildVendoredFoundry` (`packaging/foundry-guard.js`), which runs
+`npm install` + `npm run build` here first, so an installer always carries the
+Foundry its own commit names. It used to check only that `mount.js` existed,
+and on 2026-10-02 it shipped a Sep 29 dist that still called the removed
+`client.lease()`.
+
 ### Restart the app — a running BookForge does not pick this up
 
 If BookForge was running while you refreshed, **quit and relaunch it before
