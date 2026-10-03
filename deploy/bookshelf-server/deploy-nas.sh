@@ -9,10 +9,15 @@
 #   · The ref must already be on origin/main. NAS only ever serves committed,
 #     pushed code — never a working tree, never a local-only commit — so the sha
 #     it prints is one anyone can check out.
-#   · The build happens in a STAGE outside the checkout, cut with `git archive`
-#     from that sha. The stage holds exactly one commit's bytes and owns its own
-#     dist/, so a build can neither carry uncommitted edits nor race a build in
-#     the working checkout (build:electron opens with rm -rf dist/electron).
+#   · The build happens in a STAGE cut with `git archive` from that sha:
+#     <repo>/release/nas-stage, beside the app's other build output (gitignored,
+#     and outside every tsconfig include and the packager's file list). The stage
+#     holds exactly one commit's bytes and owns its own dist/, so a build can
+#     neither carry uncommitted edits nor race a build in the working checkout
+#     (build:electron opens with rm -rf dist/electron). GIT_CEILING_DIRECTORIES
+#     stops git inside the stage from finding the checkout's .git, so the stage
+#     behaves exactly as it did outside the checkout: no .git, and only the
+#     BOOKFORGE_BUILD_* overrides can tell a build what it is.
 #   · Everything but node_modules is wiped before the extract, so a file a later
 #     commit deleted cannot linger in the stage as a ghost.
 #   · BOOKFORGE_BUILD_SHA / _COUNT are set here — stamp-build refuses to stamp a
@@ -61,16 +66,16 @@ NAS_HOST=$BOOKFORGE_NAS_HOST
 NAS_DIR=/volume1/System/bookshelf-server
 HEALTH_URL=$BOOKFORGE_NAS_HEALTH
 
-if [ -n "${BOOKFORGE_NAS_STAGE:-}" ]; then
-  STAGE=$BOOKFORGE_NAS_STAGE
-elif [ -d /Volumes/Callisto/Projects ]; then
-  STAGE=/Volumes/Callisto/Projects/bookforge-nas-stage
-else
-  STAGE=$HOME/bookforge-nas-stage
-fi
+STAGE=${BOOKFORGE_NAS_STAGE:-$REPO/release/nas-stage}
+# The stage is wiped (everything but node_modules) before each extract, so it may
+# be release/<something> or somewhere outside the checkout, and nothing else: a
+# stage at the checkout, or in any source directory, would wipe source.
 case "$STAGE" in
-  "$REPO"|"$REPO"/*) echo "refusing: stage $STAGE is inside the checkout" >&2; exit 2 ;;
+  "$REPO"/release/?*) ;;
+  "$REPO"|"$REPO"/*) echo "refusing: stage $STAGE is inside the checkout but not under release/" >&2; exit 2 ;;
 esac
+# git run inside the stage must not discover the checkout's .git above it.
+export GIT_CEILING_DIRECTORIES="$(dirname "$STAGE")"
 
 say() { printf '\n[deploy:nas] %s\n' "$*"; }
 

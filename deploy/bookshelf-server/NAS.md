@@ -52,7 +52,7 @@ npm run deploy:nas -- <sha|ref>      # e.g. HEAD once pushed, or origin/main
 
 `deploy/bookshelf-server/deploy-nas.sh` IS the recipe below, run in order
 with its traps closed: it refuses a ref that is not on `origin/main`, stages
-the commit with `git archive` outside the checkout (wiping ghosts, `npm ci`
+the commit with `git archive` into `release/nas-stage` (wiping ghosts, `npm ci`
 only when the lockfile changed), sets the two stamp-build env vars itself,
 ships the tarball, runs `redeploy.sh`, waits on `/api/health`, and writes
 `DEPLOYED_SHA` beside the tarball on the NAS so "what is running?" is
@@ -74,7 +74,7 @@ commit's, and the stage owns its dist/ outright.
 
 ```sh
 # 0. (first time only) make the persistent stage and install deps
-STAGE=<somewhere outside the checkout>
+STAGE=<repo>/release/nas-stage   # deploy-nas.sh's default; anywhere outside the checkout works too
 git archive origin/main | tar -x -C "$STAGE" && (cd "$STAGE" && npm ci)
 
 # 1. Refresh sources + build. Re-extract OVERWRITES tracked files and leaves
