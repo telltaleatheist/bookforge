@@ -519,12 +519,24 @@ async function main() {
     if (glossaryOnly) {
       const files = glossary.glossaryPathsFor(request);
       const entries = made.forms === 0 ? [] : glossary.readGlossary(files.glossary, files.book).entries;
+      // The guide: each form, each of its meanings with the spots placed in it, and what is left.
       for (const e of entries) {
-        const said2 = e.decision === 'reading' ? `-> "${e.reading}"` : e.decision;
-        console.log(`  ${String(e.count).padStart(5)}  ${e.kind.padEnd(12)} ${e.key.padEnd(24)} ${said2.padEnd(32)} ${e.by === 'person' ? '(yours) ' : ''}${e.why}`);
+        console.log(`  ${String(e.count).padStart(5)}  ${e.kind.padEnd(12)} ${e.key.padEnd(24)} `
+          + `${e.decision === 'reading' ? '' : 'as printed — '}${e.by === 'person' ? '(yours) ' : ''}${e.why}`);
+        e.senses.forEach((sense, i) => {
+          const spots = e.occurrences.filter((o) => o.sense === i).length;
+          console.log(`         ${String(spots).padStart(5)} spot(s)  ${sense.meaning} -> `
+            + `${sense.reading.length > 0 ? `"${sense.reading}"` : 'as printed'}`
+            + `${sense.problem !== undefined ? `  [NOT READ: ${sense.problem}]` : ''}`);
+        });
+        const nowhere = e.occurrences.filter((o) => o.sense === null).length;
+        if (e.decision === 'reading' && nowhere > 0) {
+          console.log(`         ${String(nowhere).padStart(5)} spot(s)  placed in no meaning — left to their sentence`);
+        }
       }
       console.log(`[clean] glossary         ${files.glossary}`);
-      console.log(`[clean] readings         ${made.readingsPath ?? 'none — nothing in this book is read differently'}`);
+      console.log(`[clean] readings         ${made.readingsPath ?? 'none — nothing in this book is read differently'}`
+        + ` (${made.readings} spot(s); ${made.asked} meaning question(s) and ${made.placed} placing(s) asked this time)`);
       console.log('[clean] GLOSSARY ONLY — nothing was cleaned and no step landed.');
       return;
     }

@@ -31126,7 +31126,7 @@ var init_version = __esm({
     init_engine_import_meta_url();
     init_package();
     VERSION = package_default.version;
-    GIT_COMMIT = "src 6a6b6ec361b0".length > 0 ? "src 6a6b6ec361b0" : null;
+    GIT_COMMIT = "src 8a77ab7155c0".length > 0 ? "src 8a77ab7155c0" : null;
   }
 });
 
@@ -73207,7 +73207,8 @@ __export(fixed_readings_exports, {
   applyFixedToAll: () => applyFixedToAll,
   fixedKeyField: () => fixedKeyField,
   readFixedReadingsFile: () => readFixedReadingsFile,
-  validateFixedReadings: () => validateFixedReadings
+  validateFixedReadings: () => validateFixedReadings,
+  wholeTokenOffsets: () => wholeTokenOffsets
 });
 function readFixedReadingsFile(file) {
   const where = path21.resolve(file);
@@ -73220,14 +73221,15 @@ function readFixedReadingsFile(file) {
   const doc = parsed;
   if (doc?.format !== FIXED_READINGS_FORMAT || !Array.isArray(doc.readings)) {
     throw new CleanTextError(
-      `--fixed-readings ${where} is not a ${FIXED_READINGS_FORMAT} file ({"format": "fixed-readings/v1", "readings": [{"find", "replace"}, ...]}).`
+      `--fixed-readings ${where} is not a ${FIXED_READINGS_FORMAT} file ({"format": "fixed-readings/v1", "readings": [{"find", "replace", "at"?, "nth"?}, ...]}).`
     );
   }
   return validateFixedReadings(doc.readings, where);
 }
 function validateFixedReadings(list, where = "fixed readings") {
   const out = [];
-  const seen = /* @__PURE__ */ new Map();
+  const bookWide = /* @__PURE__ */ new Map();
+  const spots = /* @__PURE__ */ new Set();
   list.forEach((raw, i) => {
     const one = raw;
     if (typeof one?.find !== "string" || typeof one.replace !== "string") {
@@ -73246,29 +73248,53 @@ function validateFixedReadings(list, where = "fixed readings") {
         `${where}: reading ${i} ("${find}" \u2192 "${replace}") touches inline markup \u2014 emphasis or a superscript note number \u2014 which a reading never crosses.`
       );
     }
-    const earlier = seen.get(find);
+    const hasAt = one.at !== void 0;
+    const hasNth = one.nth !== void 0;
+    if (hasAt !== hasNth) {
+      throw new CleanTextError(`${where}: reading ${i} ("${find}") names ${hasAt ? '"at" without "nth"' : '"nth" without "at"'}; a spot needs both.`);
+    }
+    if (hasAt) {
+      if (typeof one.at !== "string" || one.at.length === 0 || !Number.isInteger(one.nth) || one.nth < 0) {
+        throw new CleanTextError(`${where}: reading ${i} ("${find}") needs a block key "at" and a whole number "nth".`);
+      }
+      const spot = `${one.at}\0${find}\0${one.nth}`;
+      if (spots.has(spot)) {
+        throw new CleanTextError(`${where}: "${find}" is read twice at ${one.at} #${one.nth}. One spot, one reading.`);
+      }
+      spots.add(spot);
+      if (find !== replace) out.push({ find, replace, at: one.at, nth: one.nth });
+      return;
+    }
+    const earlier = bookWide.get(find);
     if (earlier !== void 0 && earlier !== replace) {
       throw new CleanTextError(
-        `${where}: "${find}" is given two readings, "${earlier}" and "${replace}". One printed form, one reading.`
+        `${where}: "${find}" is given two book-wide readings, "${earlier}" and "${replace}". A form read two ways is read at its spots ("at" and "nth"), never twice book-wide.`
       );
     }
     if (earlier === void 0 && find !== replace) out.push({ find, replace });
-    seen.set(find, replace);
+    bookWide.set(find, replace);
   });
   return out;
 }
 function escape(text) {
   return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
-function matcherFor(readings) {
-  if (readings.length === 0) return null;
-  const finds = [...readings].map((r) => r.find).sort((a, b) => b.length - a.length);
-  return { finds, pattern: new RegExp(finds.map(escape).join("|"), "gu") };
-}
 function standsAt(text, at, find) {
   if (!text.startsWith(find, at)) return false;
   const end = at + find.length;
   return !(at > 0 && WORD.test(text[at - 1])) && !(end < text.length && WORD.test(text[end]));
+}
+function wholeTokenOffsets(text, find) {
+  const out = [];
+  for (let at = text.indexOf(find); at >= 0; at = text.indexOf(find, at + 1)) {
+    if (standsAt(text, at, find)) out.push(at);
+  }
+  return out;
+}
+function matcherFor(readings) {
+  if (readings.length === 0) return null;
+  const finds = [...readings].map((r) => r.find).sort((a, b) => b.length - a.length);
+  return { finds, pattern: new RegExp(finds.map(escape).join("|"), "gu") };
 }
 function occurrences(text, matcher) {
   const out = [];
@@ -73286,42 +73312,82 @@ function occurrences(text, matcher) {
   }
   return out;
 }
-function applyFixedReadings(text, readings) {
+function forBlock(readings, at) {
+  const spots = [];
+  const bookWide = [];
+  for (const reading of readings) {
+    if (reading.at === void 0) bookWide.push(reading);
+    else if (at !== void 0 && (reading.at === at || reading.at.startsWith(`${at}#c`))) spots.push(reading);
+  }
+  return { spots, bookWide };
+}
+function applyFixedReadings(text, readings, at) {
   const applied = /* @__PURE__ */ new Map();
-  const matcher = matcherFor(readings);
-  if (matcher === null) return { text, applied };
-  const byFind = new Map(readings.map((r) => [r.find, r.replace]));
-  let out = "";
+  const missed = [];
+  const { spots, bookWide } = forBlock(readings, at);
+  const edits = [];
+  for (const spot of spots) {
+    if (spot.at !== at) continue;
+    const offset = wholeTokenOffsets(text, spot.find)[spot.nth];
+    if (offset === void 0) {
+      missed.push(spot);
+      continue;
+    }
+    edits.push({ at: offset, length: spot.find.length, replace: spot.replace, find: spot.find });
+  }
+  edits.sort((a, b) => b.at - a.at);
+  let out = text;
+  let floor = Infinity;
+  for (const edit of edits) {
+    if (edit.at + edit.length > floor) {
+      missed.push(spots.find((s) => s.find === edit.find));
+      continue;
+    }
+    out = out.slice(0, edit.at) + edit.replace + out.slice(edit.at + edit.length);
+    floor = edit.at;
+    applied.set(edit.find, (applied.get(edit.find) ?? 0) + 1);
+  }
+  const matcher = matcherFor(bookWide);
+  if (matcher === null) return { text: out, applied, missed };
+  const byFind = new Map(bookWide.map((r) => [r.find, r.replace]));
+  let result = "";
   let from = 0;
-  for (const hit of occurrences(text, matcher)) {
+  for (const hit of occurrences(out, matcher)) {
     const replace = byFind.get(hit.find);
     const end = hit.at + hit.find.length;
-    const keepsStop = hit.find.endsWith(".") && !replace.endsWith(".") && /^["'’”)\]]*\s*$/u.test(text.slice(end));
-    out += text.slice(from, hit.at) + replace + (keepsStop ? "." : "");
+    const keepsStop = hit.find.endsWith(".") && !replace.endsWith(".") && /^["'’”)\]]*\s*$/u.test(out.slice(end));
+    result += out.slice(from, hit.at) + replace + (keepsStop ? "." : "");
     from = end;
     applied.set(hit.find, (applied.get(hit.find) ?? 0) + 1);
   }
-  return { text: out + text.slice(from), applied };
+  return { text: result + out.slice(from), applied, missed };
 }
-function fixedKeyField(text, readings) {
-  const matcher = matcherFor(readings);
-  if (matcher === null) return "";
-  const byFind = new Map(readings.map((r) => [r.find, r.replace]));
-  const used = [...new Set(occurrences(text, matcher).map((hit) => hit.find))].sort();
+function fixedKeyField(text, readings, at) {
+  const { spots, bookWide } = forBlock(readings, at);
+  const used = spots.map((s) => `${s.at}${s.nth}${s.find}${s.replace}`);
+  const matcher = matcherFor(bookWide);
+  if (matcher !== null) {
+    const byFind = new Map(bookWide.map((r) => [r.find, r.replace]));
+    for (const find of new Set(occurrences(text, matcher).map((hit) => hit.find))) {
+      used.push(`${find}${byFind.get(find)}`);
+    }
+  }
   if (used.length === 0) return "";
-  return `fixed/v1:${used.map((find) => `${find}${byFind.get(find)}`).join("")}`;
+  return `fixed/v1:${used.sort().join("")}`;
 }
 function applyFixedToAll(texts, readings) {
   const applied = {};
+  const missed = [];
   if (readings.length > 0) {
     for (const [key, text] of texts) {
-      const one = applyFixedReadings(text, readings);
+      const one = applyFixedReadings(text, readings, key);
+      for (const spot of one.missed) missed.push({ at: spot.at, find: spot.find, nth: spot.nth });
       if (one.applied.size === 0) continue;
       texts.set(key, one.text);
       for (const [find, n] of one.applied) applied[find] = (applied[find] ?? 0) + n;
     }
   }
-  return { given: readings.length, applied };
+  return { given: readings.length, applied, missed };
 }
 var fs27, path21, FIXED_READINGS_FORMAT, MARKUP, WORD;
 var init_fixed_readings = __esm({
@@ -73734,7 +73800,7 @@ function core2(token) {
   return token.replace(/^[^\p{L}\p{N}&]+|[^\p{L}\p{N}&.]+$/gu, "");
 }
 function heading(block) {
-  if (/title|header/.test(block.target.statedCategory)) return true;
+  if (block.target.statedCategory !== null && /title|header/.test(block.target.statedCategory)) return true;
   const letters = block.target.text.replace(/[^\p{L}]/gu, "");
   return letters.length > 0 && letters.replace(/[^\p{Lu}]/gu, "").length / letters.length >= 0.7;
 }
@@ -73760,18 +73826,34 @@ function spread(items, n) {
   if (items.length <= n) return [...items];
   return Array.from({ length: n }, (_, k) => items[Math.round(k * (items.length - 1) / (n - 1))]);
 }
+function samplesOf(occurrences2) {
+  const chosen = spread(occurrences2, SAMPLES);
+  for (const spelling of new Set(occurrences2.map((o) => o.printed))) {
+    if (chosen.some((o) => o.printed === spelling)) continue;
+    chosen.push(...occurrences2.filter((o) => o.printed === spelling).slice(0, 2));
+  }
+  chosen.sort((a, b) => occurrences2.indexOf(a) - occurrences2.indexOf(b));
+  return chosen.map((o) => ({ parts: o.at, sentence: o.sentence }));
+}
 function collectPrintedForms(bookText, where) {
   const book = readBookFile(bookText, where);
   const { blocks } = cleanBlocks(book, where);
   const forms = /* @__PURE__ */ new Map();
   for (const block of blocks) {
     const inHeading = heading(block);
-    for (const span of cleanSentences(block.target.text)) {
-      const tokens = span.text.split(/\s+/).filter(Boolean);
+    const text = block.target.text;
+    for (const span of cleanSentences(text)) {
+      const found = [...span.text.matchAll(/\S+/g)].map((m) => ({ text: m[0], at: span.start + m.index }));
+      const tokens = found.map((t) => t.text);
       for (let i = 0; i < tokens.length; i++) {
         if (!isPrintedForm(tokens, i)) continue;
         const form = formOf(tokens, i, inHeading);
         if (form === null) continue;
+        const from = form.printed.includes(" ") && i > 0 ? found[i - 1].at : found[i].at;
+        const to = found[i].at + found[i].text.length;
+        const offsets = wholeTokenOffsets(text, form.printed);
+        const nth = offsets.findIndex((o) => o >= from && o < to);
+        if (nth < 0) continue;
         const id = `${form.kind}\0${form.key}`;
         let gathering = forms.get(id);
         if (gathering === void 0) {
@@ -73779,7 +73861,14 @@ function collectPrintedForms(bookText, where) {
           forms.set(id, gathering);
         }
         gathering.printed.set(form.printed, (gathering.printed.get(form.printed) ?? 0) + 1);
-        gathering.hits.push({ parts: block.parts, sentence: span.text });
+        gathering.hits.push({
+          at: block.target.key,
+          nth,
+          printed: form.printed,
+          sentence: span.text,
+          inSentence: offsets[nth] - span.start,
+          endsSentence: i === tokens.length - 1
+        });
       }
     }
   }
@@ -73789,7 +73878,8 @@ function collectPrintedForms(bookText, where) {
     kind: g.kind,
     count: g.hits.length,
     printed: Object.fromEntries([...g.printed].sort((a, b) => b[1] - a[1])),
-    samples: spread(g.hits, SAMPLES)
+    samples: samplesOf(g.hits),
+    occurrences: g.hits
   }));
 }
 function runCleanForms(opts) {
@@ -73827,6 +73917,7 @@ var init_forms = __esm({
     init_bookrows();
     init_blocks2();
     init_light_gate();
+    init_fixed_readings();
     init_punctuate();
     init_sentences2();
     init_tts_spoken_forms();
@@ -74905,7 +74996,7 @@ function cleanKey(request) {
   ];
   const removal = request.removal === void 0 ? "" : removalKeyField(request.removal);
   if (removal.length > 0) fields.push(removal);
-  const fixed = request.fixed === void 0 ? "" : fixedKeyField(request.text, request.fixed);
+  const fixed = request.fixed === void 0 ? "" : fixedKeyField(request.text, request.fixed, request.at);
   if (fixed.length > 0) fields.push(fixed);
   return (0, import_node_crypto7.createHash)("sha256").update(fields.join(NUL6), "utf8").digest("hex");
 }
@@ -74919,7 +75010,7 @@ function triageKey(request) {
   ];
   const removal = request.removal === void 0 ? "" : removalKeyField(request.removal);
   if (removal.length > 0) fields.push(removal);
-  const fixed = request.fixed === void 0 ? "" : fixedKeyField(request.text, request.fixed);
+  const fixed = request.fixed === void 0 ? "" : fixedKeyField(request.text, request.fixed, request.at);
   if (fixed.length > 0) fields.push(fixed);
   return (0, import_node_crypto7.createHash)("sha256").update(fields.join(NUL6), "utf8").digest("hex");
 }
@@ -75000,17 +75091,17 @@ async function runCleanText(opts) {
   refuseForeignRecords(records, new Set(blocks.map((b) => b.parts)), recordsPath, where);
   opts.log(records.size === 0 ? `clean-text: nothing is recorded in ${recordsPath}, so every block is asked of the model and recorded there as it lands.` : `clean-text: ${records.size} record(s) covering ${records.positions} position(s) are in ${recordsPath} \u2014 a block whose exact question is in there is not asked again, and every new answer is added to it.`);
   const keyOf = /* @__PURE__ */ new Map();
-  for (const block of blocks) keyOf.set(block.target.key, cleanKey({ text: block.target.text, model, unit, removal, fixed }));
+  for (const block of blocks) keyOf.set(block.target.key, cleanKey({ text: block.target.text, model, unit, removal, fixed, at: block.target.key }));
   const tableKey = /* @__PURE__ */ new Map();
-  for (const table of tables) tableKey.set(table.parts, cleanKey({ text: table.source, model, unit, removal, fixed }));
-  const answered = (source, key) => records.get(key) !== void 0 || triage !== null && records.get(triageKey({ text: source, triageModel: triage.model.id, removal, fixed })) !== void 0;
+  for (const table of tables) tableKey.set(table.parts, cleanKey({ text: table.source, model, unit, removal, fixed, at: table.parts }));
+  const answered = (source, key, at2) => records.get(key) !== void 0 || triage !== null && records.get(triageKey({ text: source, triageModel: triage.model.id, removal, fixed, at: at2 })) !== void 0;
   const bankedTable = /* @__PURE__ */ new Set();
   for (const table of tables) {
-    if (answered(table.source, tableKey.get(table.parts))) bankedTable.add(table.parts);
+    if (answered(table.source, tableKey.get(table.parts), table.parts)) bankedTable.add(table.parts);
   }
   const outstanding = blocks.filter((block) => {
     if (block.cell !== void 0) return !bankedTable.has(block.parts);
-    return !answered(block.target.text, keyOf.get(block.target.key));
+    return !answered(block.target.text, keyOf.get(block.target.key), block.target.key);
   });
   const reused = blocks.length - outstanding.length;
   if (reused > 0) {
@@ -75035,8 +75126,13 @@ async function runCleanText(opts) {
   if (fixed.length > 0) {
     const reads = Object.values(fixedRecord.applied).reduce((n, k) => n + k, 0);
     opts.log(
-      `clean-text: ${fixed.length} fixed reading(s) handed in; ${reads} occurrence(s) of ${Object.keys(fixedRecord.applied).length} of them read across the blocks this run cleans.`
+      `clean-text: ${fixed.length} fixed reading(s) handed in; ${reads} occurrence(s) read across the blocks this run cleans.`
     );
+    for (const spot of fixedRecord.missed) {
+      opts.log(
+        `clean-text: a fixed reading for "${spot.find}" #${spot.nth} in ${spot.at} found no such occurrence (the block changed since it was decided); left to the cleanup.`
+      );
+    }
   }
   const pieces = [];
   const sentencesOf = /* @__PURE__ */ new Map();
@@ -75145,7 +75241,7 @@ async function runCleanText(opts) {
       const text = cleanText.get(block.target.key);
       if (block.cell === void 0) {
         if (text !== block.target.text) changed += 1;
-        appendRecord(block.parts, triageKey({ text: block.target.text, triageModel: triage.model.id, removal, fixed }), text);
+        appendRecord(block.parts, triageKey({ text: block.target.text, triageModel: triage.model.id, removal, fixed, at: block.target.key }), text);
         continue;
       }
       if (keptTables.has(block.parts)) continue;
@@ -75158,7 +75254,7 @@ async function runCleanText(opts) {
         continue;
       }
       if (spliced.text !== table.source) changed += 1;
-      appendRecord(table.parts, triageKey({ text: table.source, triageModel: triage.model.id, removal, fixed }), spliced.text);
+      appendRecord(table.parts, triageKey({ text: table.source, triageModel: triage.model.id, removal, fixed, at: table.parts }), spliced.text);
     }
   }
   const pieceByKey = new Map(askedPieces.map((piece) => [piece.key, piece]));
