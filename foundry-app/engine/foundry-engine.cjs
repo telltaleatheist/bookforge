@@ -31126,7 +31126,7 @@ var init_version = __esm({
     init_engine_import_meta_url();
     init_package();
     VERSION = package_default.version;
-    GIT_COMMIT = "src 8a77ab7155c0".length > 0 ? "src 8a77ab7155c0" : null;
+    GIT_COMMIT = "src cc7119f337d6".length > 0 ? "src cc7119f337d6" : null;
   }
 });
 
@@ -73814,8 +73814,9 @@ function formOf(tokens, i, heading2) {
   const unstopped = bare.replace(/\.$/, "");
   if (/^[IVXLCDM]+$/.test(unstopped) && romanValue(unstopped) !== null) {
     const before = i > 0 ? core2(tokens[i - 1]).replace(/['’]s$/, "") : "";
-    const phrase = before.length > 0 && new RegExp("^\\p{L}+$", "u").test(before) ? `${before} ${unstopped}` : unstopped;
-    return { kind: "roman", key: phrase, printed: phrase };
+    const named = new RegExp("^\\p{Lu}[\\p{L}'\u2019-]+$", "u").test(before) && romanValue(before.toUpperCase()) === null && /^[IVX]+$/.test(unstopped) && !DETERMINERS.has(before.toLowerCase());
+    if (named) return { kind: "roman", key: `${before} ${unstopped}`, printed: `${before} ${unstopped}` };
+    if (/^[IVX]{2,}$/.test(unstopped)) return { kind: "roman", key: unstopped, printed: unstopped };
   }
   if (new RegExp("^\\p{Lu}{2,}$", "u").test(unstopped)) return heading2 ? null : { kind: "caps", key: unstopped, printed: unstopped };
   if (/^[ivxlcdm]+$/.test(unstopped) && romanValue(unstopped) === null) return null;
@@ -73842,6 +73843,11 @@ function collectPrintedForms(bookText, where) {
   for (const block of blocks) {
     const inHeading = heading(block);
     const text = block.target.text;
+    let leadEnd = 0;
+    for (const m of text.matchAll(/\S+/g)) {
+      if (new RegExp("\\p{Ll}", "u").test(m[0]) || !new RegExp("\\p{Lu}", "u").test(m[0])) break;
+      leadEnd = m.index + m[0].length;
+    }
     for (const span of cleanSentences(text)) {
       const found = [...span.text.matchAll(/\S+/g)].map((m) => ({ text: m[0], at: span.start + m.index }));
       const tokens = found.map((t) => t.text);
@@ -73854,6 +73860,7 @@ function collectPrintedForms(bookText, where) {
         const offsets = wholeTokenOffsets(text, form.printed);
         const nth = offsets.findIndex((o) => o >= from && o < to);
         if (nth < 0) continue;
+        if (form.kind === "caps" && offsets[nth] < leadEnd) continue;
         const id = `${form.kind}\0${form.key}`;
         let gathering = forms.get(id);
         if (gathering === void 0) {
@@ -73905,7 +73912,7 @@ function runCleanForms(opts) {
   );
   return file;
 }
-var fs28, path23, PRINTED_FORMS_FORMAT, SAMPLES;
+var fs28, path23, PRINTED_FORMS_FORMAT, SAMPLES, DETERMINERS;
 var init_forms = __esm({
   "src/clean/forms.ts"() {
     "use strict";
@@ -73923,6 +73930,35 @@ var init_forms = __esm({
     init_tts_spoken_forms();
     PRINTED_FORMS_FORMAT = "printed-forms/v1";
     SAMPLES = 6;
+    DETERMINERS = /* @__PURE__ */ new Set([
+      "the",
+      "a",
+      "an",
+      "this",
+      "that",
+      "these",
+      "those",
+      "his",
+      "her",
+      "its",
+      "our",
+      "their",
+      "my",
+      "your",
+      "every",
+      "each",
+      "no",
+      "any",
+      "some",
+      "many",
+      "all",
+      "as",
+      "of",
+      "in",
+      "on",
+      "and",
+      "or"
+    ]);
   }
 });
 
