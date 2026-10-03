@@ -145,6 +145,28 @@ test('the cleanup line carries --triage exactly when its request does', () => {
     .toEqual(['--remove-references', 'on']);
 });
 
+test('a cleanup and its triage carry the host fixed readings exactly when the request does', () => {
+  const READINGS = path.join(SCRATCH, 'readings', 'keeper.narration-glossary.readings.json');
+  const clean: CleanRequest = {
+    kind: 'clean', inputPath: path.join(SCRATCH, 'keeper.epub'), bookPath: BOOK,
+    recordsPath: RECORDS, stampPath: RECORDS.replace('.records.jsonl', '.stamp.json'),
+    model: 'unused', ollama: 'unused', stepId: 'step-clean',
+  };
+  const plain = queue.argsFor(clean, {}, PLACED);
+  expect(plain).not.toContain('--fixed-readings');
+  const read = queue.argsFor({ ...clean, fixedReadings: READINGS }, {}, PLACED);
+  expect(read.slice(-2)).toEqual(['--fixed-readings', READINGS]);
+  expect(read.slice(0, -2)).toEqual(plain);
+
+  const triage: CleanTriageRequest = {
+    kind: 'clean-triage', inputPath: path.join(SCRATCH, 'keeper.epub'), outputPath: VERDICTS,
+    bookPath: BOOK, at: null,
+  };
+  expect(queue.argsFor(triage, {}, PLACED)).not.toContain('--fixed-readings');
+  expect(queue.argsFor({ ...triage, fixedReadings: READINGS }, {}, PLACED).slice(-2))
+    .toEqual(['--fixed-readings', READINGS]);
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // The class and the progress line
 // ─────────────────────────────────────────────────────────────────────────────

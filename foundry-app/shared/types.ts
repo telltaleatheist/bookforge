@@ -1283,6 +1283,18 @@ export interface CleanRequest {
    * left to the engine's default, which is on.
    */
   removal?: CleanRemoval;
+  /**
+   * `--fixed-readings`: A FILE OF READINGS THE HOST DECIDED FOR THE WHOLE BOOK
+   * before this run (the engine's src/clean/fixed-readings.ts) — BookForge's
+   * narration glossary: "Wolf IV" → "Wolf Four", "esp" → "ESP". Applied to every
+   * block's stage-one text, so the model is never shown a form the book already
+   * decided. A cleanup and its triage are handed the same file.
+   *
+   * NEVER COMPOSED HERE. It arrives as a run option (`RunOptions.fixedReadings`)
+   * and is put on the run's own copy of the request at the mint, because the
+   * host decides it when the run starts, not when the person pressed.
+   */
+  fixedReadings?: string;
 }
 
 /**
@@ -1370,6 +1382,18 @@ export interface CleanTriageRequest {
    * refuses a triage asked about a different removal.
    */
   removal?: CleanRemoval;
+  /**
+   * `--fixed-readings`: A FILE OF READINGS THE HOST DECIDED FOR THE WHOLE BOOK
+   * before this run (the engine's src/clean/fixed-readings.ts) — BookForge's
+   * narration glossary: "Wolf IV" → "Wolf Four", "esp" → "ESP". Applied to every
+   * block's stage-one text, so the model is never shown a form the book already
+   * decided. A cleanup and its triage are handed the same file.
+   *
+   * NEVER COMPOSED HERE. It arrives as a run option (`RunOptions.fixedReadings`)
+   * and is put on the run's own copy of the request at the mint, because the
+   * host decides it when the run starts, not when the person pressed.
+   */
+  fixedReadings?: string;
 }
 
 /**

@@ -212,11 +212,19 @@ export { sitsInCitation, bareWord };
  * nothing else are already fixed deterministically in narrator's engine input
  * (BookForge 2340aab7); this is the judgement half.
  *
+ * n18 -> n19 (2026-10-03): the light gate stops treating a lower-case word spelled
+ * only with numeral letters as a numeral ("did", "civil", "mill", "vivid" — 372
+ * "did"s in The Pursuit of Power were open to any reading). A run of those letters
+ * is a printed form only when `romanValue` reads it. And a numeral or a run of
+ * capitals that ENDS a sentence ("on Wolf IV.", "the SPD.") is a printed form too:
+ * its sentence period hid it, so the gate protected it from every reading. Same
+ * prompt, same rules.
+ *
  * A BUMP HERE IS A CROSS-REPO EVENT. These rules are vendored byte-for-byte into
  * orpheus-finetune's `pipeline/normalization/vendor/` and drift-checked on every
  * training build — see docs/NARRATION_TEXT_PASS.md.
  */
-export const NORMALIZER_VERSION = 'n18';
+export const NORMALIZER_VERSION = 'n19';
 
 /**
  * The model this pass uses when the setting is absent.

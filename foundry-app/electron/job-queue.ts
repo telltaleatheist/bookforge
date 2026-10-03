@@ -3790,6 +3790,7 @@ export function argsFor(
       '--model', placement.model,
       ...concurrencyArgs(request, UNPLACED),
       ...removalArgs(request.removal),
+      ...(request.fixedReadings === undefined ? [] : ['--fixed-readings', request.fixedReadings]),
     ];
   }
   if (request.kind === 'clean') {
@@ -3848,6 +3849,8 @@ export function argsFor(
      */
     if (request.triagePath !== undefined) args.push('--triage', request.triagePath);
     args.push(...removalArgs(request.removal));
+    // The host's book glossary (`CleanRequest.fixedReadings`) — the same file its triage was handed.
+    if (request.fixedReadings !== undefined) args.push('--fixed-readings', request.fixedReadings);
     /*
      * `--concurrency` IS `doorArgs`' NOW, with the endpoint and the model it
      * belongs beside — see `concurrencyArgs`. It was pushed here and on no other
@@ -7002,6 +7005,58 @@ export async function runJob(request: EngineRequest, opts: RunOptions = {}): Pro
 }
 
 /**
+ * THE PRINTED FORMS OF THE BOOK A CLEANUP (OR ITS TRIAGE) WILL READ — `foundry
+ * clean-forms` over that book, for a host that decides readings before the run
+ * (BookForge's narration glossary; the engine's src/clean/forms.ts).
+ *
+ * THE SAME BOOK THE RUN WILL READ, made the way the spawn makes it: the row the
+ * request names (`deferred.from`, else `at`), replayed by `materializeBook`. A
+ * named row that never landed is refused with `materializeAtSpawn`'s sentence, so
+ * a glossary is never decided over a book the run will not be shown.
+ *
+ * NOTHING IS LEFT BEHIND. The book and the forms file are both this call's, made
+ * in the OS temp directory and the project's `derived/`, and both are removed
+ * however it ends; what the caller keeps is the parsed file.
+ */
+export async function printedFormsForRun(
+  request: EngineRequest,
+  onLine?: (line: string) => void,
+): Promise<unknown> {
+  if (request.kind !== 'clean' && request.kind !== 'clean-triage') {
+    throw new Error(`Printed forms are listed for a cleanup or its triage, not a ${request.kind} run.`);
+  }
+  const dir = homeOf(request) ?? projectDirOf(productOf(request));
+  if (dir === null) {
+    throw new Error('This cleanup is not inside a project this library holds, so there is no book to list.');
+  }
+  const deferred = deferralOf(request);
+  const named = deferred !== undefined ? deferred.from : request.at ?? null;
+  const ledger = ledgerOf(await readManifest(dir));
+  const step = named === null ? null : ledger.steps.find((row) => row.id === named) ?? null;
+  if (named !== null && step === null) {
+    throw new Error(
+      'The step this was to be made from never landed, so there is nothing to make it out of. '
+      + 'Whatever was going to produce it left the queue — order this again from a step that exists.',
+    );
+  }
+  const { bookPath } = await materializeCleanTriage(dir, step);
+  const out = path.join(os.tmpdir(), 'foundry', `printed-forms-${randomUUID()}.json`);
+  try {
+    await fsp.mkdir(path.dirname(out), { recursive: true });
+    const run = runEngine(['clean-forms', '--book', bookPath, '--out', out], onLine);
+    const ended = await run.done;
+    if (ended.code !== 0) {
+      const tail = ended.stderr.trim().split(/\r?\n/).slice(-3).join(' ');
+      throw new Error(`foundry clean-forms ended with code ${ended.code}: ${tail}`);
+    }
+    return JSON.parse(await fsp.readFile(out, 'utf8')) as unknown;
+  } finally {
+    await fsp.rm(out, { force: true });
+    await fsp.rm(bookPath, { force: true });
+  }
+}
+
+/**
  * WHAT WHOEVER SCHEDULED A DETACHED RUN HANDS IT — named once, because two doors
  * spell it: the seam's (`runJob`) and the dialog's (`runNow`).
  */
@@ -7057,6 +7112,13 @@ interface RunOptions {
    * checked against a list that is current.
    */
   venue?: RunVenue | null;
+  /**
+   * A FILE OF READINGS THE HOST DECIDED FOR THE WHOLE BOOK, for a cleanup or its
+   * triage — see `CleanRequest.fixedReadings`. Put on the run's own copy of the
+   * request at the mint; any other kind of run is refused with it, by name,
+   * because a flag a run cannot carry must not be dropped on the floor.
+   */
+  fixedReadings?: string;
 }
 
 /**
@@ -7084,6 +7146,15 @@ async function runDetached(
   viaHost: boolean,
 ): Promise<{ job: Job; wait: PlacementWait | null; parked: string | null; stderrTail: string }> {
   const parentStep = opts.parentStep ?? null;
+  if (opts.fixedReadings !== undefined) {
+    if (request.kind !== 'clean' && request.kind !== 'clean-triage') {
+      throw new Error(
+        `A ${request.kind} run was handed fixed readings (${opts.fixedReadings}). Only a cleanup and its `
+        + 'triage read them; nothing was started.',
+      );
+    }
+    request = { ...request, fixedReadings: opts.fixedReadings };
+  }
   /*
    * THE ROW, BORN RUNNING. Every field is composed exactly as `enqueueHere` and
    * `enqueueTextPass` compose theirs — the same output identity (asked of

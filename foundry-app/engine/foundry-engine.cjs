@@ -446,18 +446,18 @@ function followedByLookahead(fb) {
 }
 function composeFootnoteRegex(p, anchorClassOverride) {
   const t = p.marker_type || "arabic";
-  let core2;
+  let core3;
   if (t === "arabic") {
     const hi = p.restarts_each_chapter === false ? 3 : Math.min(3, Math.max(1, String(Math.trunc(p.max_value ?? 99)).length));
-    core2 = String.raw`\d{1,${hi}}`;
+    core3 = String.raw`\d{1,${hi}}`;
   } else if (t === "roman") {
-    core2 = "[ivxlcdmIVXLCDM]{1,7}";
+    core3 = "[ivxlcdmIVXLCDM]{1,7}";
   } else if (t === "letter") {
-    core2 = "[a-z]";
+    core3 = "[a-z]";
   } else if (t === "symbol") {
     const chars = p.symbol_chars || "";
     if (!chars) throw new Error("marker_type=symbol but symbol_chars is empty");
-    core2 = `[${escapeForClass(chars)}]{1,4}`;
+    core3 = `[${escapeForClass(chars)}]{1,4}`;
   } else {
     throw new Error(`unknown marker_type ${JSON.stringify(t)}`);
   }
@@ -477,7 +477,7 @@ function composeFootnoteRegex(p, anchorClassOverride) {
   }
   const lb = parts.length === 1 ? parts[0] : `(?:${parts.join("|")})`;
   const gap = p.space_between_anchor_and_marker ? "[ ]" : "";
-  const pattern = lb + gap + core2 + String.raw`(?![A-Za-z])` + followedByLookahead(p.followed_by);
+  const pattern = lb + gap + core3 + String.raw`(?![A-Za-z])` + followedByLookahead(p.followed_by);
   return new RegExp(pattern, "g");
 }
 function scoreFootnoteCandidates(text) {
@@ -3074,7 +3074,7 @@ function core(token) {
   return token.replace(/^[^\p{L}\p{N}&]+|[^\p{L}\p{N}&.]+$/gu, "");
 }
 function romanHere(tokens, i) {
-  const bare = core(tokens[i]).replace(/'s$|’s$/, "");
+  const bare = core(tokens[i]).replace(/\.$/, "").replace(/'s$|’s$/, "");
   if (!/^[IVXLCDM]+$/.test(bare)) return false;
   if (bare.length >= 2) return true;
   return isRomanContext(tokens.slice(0, i).join(" "), tokens.slice(i + 1).join(" "));
@@ -3088,9 +3088,9 @@ function isPrintedForm(tokens, i) {
   const beforePeriod = bare.replace(/\.$/, "");
   if (beforePeriod.includes(".")) return true;
   if (bare.endsWith(".") && new RegExp("^\\p{L}$", "u").test(beforePeriod)) return true;
-  if (/^[ivxlcdm]+(?:[-–][ivxlcdm]+)?$/.test(beforePeriod)) return true;
+  if (/^[ivxlcdm]+(?:[-–][ivxlcdm]+)?$/.test(beforePeriod) && beforePeriod.split(/[-–]/).every((part) => romanValue(part) !== null)) return true;
   if (new RegExp("\\p{Script=Han}|\\p{Script=Cyrillic}|\\p{Script=Greek}", "u").test(bare) && new RegExp("\\p{Script=Latin}", "u").test(bare)) return true;
-  if (new RegExp("^\\p{Lu}{2,}(?:['\u2019]s)?$", "u").test(bare)) return true;
+  if (new RegExp("^\\p{Lu}{2,}(?:['\u2019]s)?$", "u").test(beforePeriod)) return true;
   if (romanHere(tokens, i)) return true;
   if (/-$/.test(token)) return true;
   if (PERIODLESS_ABBREVIATIONS.has(beforePeriod.toLowerCase())) return true;
@@ -4691,16 +4691,16 @@ function validateNumberEdits(target, segments, edits, reserved = [], policy = NU
       );
       continue;
     }
-    const occurrences = typeof proposed.at === "number" ? [proposed.at] : digitBoundedOccurrences(target, find);
-    if (occurrences.length === 0) {
+    const occurrences2 = typeof proposed.at === "number" ? [proposed.at] : digitBoundedOccurrences(target, find);
+    if (occurrences2.length === 0) {
       reject(find, replace, "NOT_FOUND");
       continue;
     }
-    if (occurrences.length > 1) {
+    if (occurrences2.length > 1) {
       reject(find, replace, "AMBIGUOUS_FIND");
       continue;
     }
-    const at = occurrences[0];
+    const at = occurrences2[0];
     const inScripture = scripture.some((s) => at < s.end && s.at < at + find.length);
     if (!isNumber && !policy.allowTextEdits) {
       reject(find, replace, "NO_DIGIT_IN_FIND");
@@ -5029,10 +5029,10 @@ function validateNumberEdits(target, segments, edits, reserved = [], policy = NU
       "APPLIED",
       "APPLIED_RULE"
     ]);
-    const MARKUP = /[*_⁰¹²³⁴⁵⁶⁷⁸⁹]/;
+    const MARKUP2 = /[*_⁰¹²³⁴⁵⁶⁷⁸⁹]/;
     for (const record2 of records) {
       if (MECHANICAL.has(record2.status) || record2.find === "") continue;
-      if (MARKUP.test(record2.find)) continue;
+      if (MARKUP2.test(record2.find)) continue;
       const at = target.indexOf(record2.find);
       if (at < 0 || target.indexOf(record2.find, at + 1) >= 0) continue;
       const end = at + record2.find.length;
@@ -5367,7 +5367,7 @@ var init_tts_number_normalizer = __esm({
     init_tts_number_rules();
     init_number_expansion();
     init_tts_spoken_forms();
-    NORMALIZER_VERSION = "n18";
+    NORMALIZER_VERSION = "n19";
     RAW_ANSWER_EXCERPT = 600;
     MAX_PARSE_FAIL_SHARE = 0.1;
     ROMAN_WORD = /(?:^|\s)[IVXLCDM]{2,}(?:$|[\s,.;:)\]])/;
@@ -5696,20 +5696,20 @@ function crc32(data) {
   for (let i = 0; i < data.length; i++) c = CRC_TABLE[(c ^ data[i]) & 255] ^ c >>> 8;
   return (c ^ 4294967295) >>> 0;
 }
-function zipText(path26, text) {
-  return { path: path26, data: new TextEncoder().encode(text) };
+function zipText(path28, text) {
+  return { path: path28, data: new TextEncoder().encode(text) };
 }
-function checkPath(path26) {
-  if (path26.length === 0) throw new ZipError("an entry has an empty path");
-  if (path26.includes("\\")) {
-    throw new ZipError(`entry "${path26}" contains a backslash \u2014 ZIP paths are forward-slashed`);
+function checkPath(path28) {
+  if (path28.length === 0) throw new ZipError("an entry has an empty path");
+  if (path28.includes("\\")) {
+    throw new ZipError(`entry "${path28}" contains a backslash \u2014 ZIP paths are forward-slashed`);
   }
-  if (path26.startsWith("/")) throw new ZipError(`entry "${path26}" is absolute \u2014 ZIP paths are relative`);
-  if (path26.split("/").some((seg) => seg === "." || seg === ".." || seg === "")) {
-    throw new ZipError(`entry "${path26}" has an empty or relative path segment`);
+  if (path28.startsWith("/")) throw new ZipError(`entry "${path28}" is absolute \u2014 ZIP paths are relative`);
+  if (path28.split("/").some((seg) => seg === "." || seg === ".." || seg === "")) {
+    throw new ZipError(`entry "${path28}" has an empty or relative path segment`);
   }
-  const name = new TextEncoder().encode(path26);
-  if (name.length > MAX_U16) throw new ZipError(`entry "${path26}" has a name longer than ${MAX_U16} bytes`);
+  const name = new TextEncoder().encode(path28);
+  if (name.length > MAX_U16) throw new ZipError(`entry "${path28}" has a name longer than ${MAX_U16} bytes`);
   return name;
 }
 function writeZip(entries) {
@@ -6398,38 +6398,38 @@ function readZip(bytes) {
     const extraLen = u16(p + 30);
     const commentLen = u16(p + 32);
     const localOffset = u32(p + 42);
-    const path26 = decoder.decode(bytes.subarray(p + 46, p + 46 + nameLen));
+    const path28 = decoder.decode(bytes.subarray(p + 46, p + 46 + nameLen));
     p += 46 + nameLen + extraLen + commentLen;
     if (csize === 4294967295 || usize === 4294967295 || localOffset === 4294967295) {
-      throw new UnzipError(`entry "${path26}" is zip64, which this reader does not implement`);
+      throw new UnzipError(`entry "${path28}" is zip64, which this reader does not implement`);
     }
     if (localOffset + 30 > bytes.length || u32(localOffset) !== LOCAL_SIG2) {
-      throw new UnzipError(`entry "${path26}": bad local header signature`);
+      throw new UnzipError(`entry "${path28}": bad local header signature`);
     }
     const lFlags = u16(localOffset + 6);
     const lMethod = u16(localOffset + 8);
     const lNameLen = u16(localOffset + 26);
     const lExtraLen = u16(localOffset + 28);
     const lPath = decoder.decode(bytes.subarray(localOffset + 30, localOffset + 30 + lNameLen));
-    if (lPath !== path26) {
-      throw new UnzipError(`the central directory says "${path26}", its local header says "${lPath}"`);
+    if (lPath !== path28) {
+      throw new UnzipError(`the central directory says "${path28}", its local header says "${lPath}"`);
     }
     if (lMethod !== method) {
-      throw new UnzipError(`entry "${path26}": method ${lMethod} locally, ${method} centrally`);
+      throw new UnzipError(`entry "${path28}": method ${lMethod} locally, ${method} centrally`);
     }
     const streamed = (lFlags & 8) !== 0;
     if (!streamed) {
       const lCrc = u32(localOffset + 14);
       const lCsize = u32(localOffset + 18);
       const lUsize = u32(localOffset + 22);
-      if (lCrc !== crc) throw new UnzipError(`entry "${path26}": the two headers disagree about its checksum`);
+      if (lCrc !== crc) throw new UnzipError(`entry "${path28}": the two headers disagree about its checksum`);
       if (lCsize !== csize || lUsize !== usize) {
-        throw new UnzipError(`entry "${path26}": the two headers disagree about its size`);
+        throw new UnzipError(`entry "${path28}": the two headers disagree about its size`);
       }
     }
     const start = localOffset + 30 + lNameLen + lExtraLen;
     if (start + csize > bytes.length) {
-      throw new UnzipError(`entry "${path26}" runs past the end of the file \u2014 the archive is truncated`);
+      throw new UnzipError(`entry "${path28}" runs past the end of the file \u2014 the archive is truncated`);
     }
     const raw = bytes.slice(start, start + csize);
     let data;
@@ -6439,24 +6439,24 @@ function readZip(bytes) {
       try {
         data = new Uint8Array((0, import_node_zlib.inflateRawSync)(raw));
       } catch (error) {
-        throw new UnzipError(`entry "${path26}" is deflated and would not inflate: ${error.message}`);
+        throw new UnzipError(`entry "${path28}" is deflated and would not inflate: ${error.message}`);
       }
     } else {
       throw new UnzipError(
-        `entry "${path26}" uses compression method ${method}; this reader implements stored (0) and deflate (8)`
+        `entry "${path28}" uses compression method ${method}; this reader implements stored (0) and deflate (8)`
       );
     }
     if (data.length !== usize) {
-      throw new UnzipError(`entry "${path26}" is ${data.length} bytes, its header says ${usize}`);
+      throw new UnzipError(`entry "${path28}" is ${data.length} bytes, its header says ${usize}`);
     }
     const actual = crc322(data);
     if (actual !== crc) {
       throw new UnzipError(
-        `entry "${path26}" fails its checksum (${actual.toString(16)} against ${crc.toString(16)}) \u2014 the file is damaged`
+        `entry "${path28}" fails its checksum (${actual.toString(16)} against ${crc.toString(16)}) \u2014 the file is damaged`
       );
     }
     out.push({
-      path: path26,
+      path: path28,
       data,
       raw,
       method,
@@ -6517,9 +6517,9 @@ function resolveHref(baseDir, href) {
   }
   return out.join("/");
 }
-function directoryOf(path26) {
-  const slash = path26.lastIndexOf("/");
-  return slash < 0 ? "" : path26.slice(0, slash);
+function directoryOf(path28) {
+  const slash = path28.lastIndexOf("/");
+  return slash < 0 ? "" : path28.slice(0, slash);
 }
 function attr(el, name) {
   return el.attrs.get(name);
@@ -6573,13 +6573,13 @@ function containerFromMembers(members) {
     if (item === void 0) {
       throw new BookError(`the spine references manifest id "${idref}", which the manifest does not declare`);
     }
-    const path26 = resolveHref(opfDir, item.href);
-    const member = byPath.get(path26);
+    const path28 = resolveHref(opfDir, item.href);
+    const member = byPath.get(path28);
     if (member === void 0) {
-      throw new BookError(`the manifest declares "${path26}", and there is no such entry in the archive`);
+      throw new BookError(`the manifest declares "${path28}", and there is no such entry in the archive`);
     }
     const source = member.text();
-    documents.push({ path: path26, source, stamped: source.includes("data-bf-cat") });
+    documents.push({ path: path28, source, stamped: source.includes("data-bf-cat") });
   }
   if (documents.length === 0) {
     throw new BookError("this EPUB has an empty spine \u2014 there is no book in it");
@@ -8001,11 +8001,11 @@ function __metadata(metadataKey, metadataValue) {
 }
 function __awaiter(thisArg, _arguments, P, generator) {
   function adopt(value) {
-    return value instanceof P ? value : new P(function(resolve20) {
-      resolve20(value);
+    return value instanceof P ? value : new P(function(resolve22) {
+      resolve22(value);
     });
   }
-  return new (P || (P = Promise))(function(resolve20, reject) {
+  return new (P || (P = Promise))(function(resolve22, reject) {
     function fulfilled(value) {
       try {
         step(generator.next(value));
@@ -8021,7 +8021,7 @@ function __awaiter(thisArg, _arguments, P, generator) {
       }
     }
     function step(result) {
-      result.done ? resolve20(result.value) : adopt(result.value).then(fulfilled, rejected);
+      result.done ? resolve22(result.value) : adopt(result.value).then(fulfilled, rejected);
     }
     step((generator = generator.apply(thisArg, _arguments || [])).next());
   });
@@ -8199,14 +8199,14 @@ function __asyncValues(o) {
   }, i);
   function verb(n) {
     i[n] = o[n] && function(v) {
-      return new Promise(function(resolve20, reject) {
-        v = o[n](v), settle(resolve20, reject, v.done, v.value);
+      return new Promise(function(resolve22, reject) {
+        v = o[n](v), settle(resolve22, reject, v.done, v.value);
       });
     };
   }
-  function settle(resolve20, reject, d, v) {
+  function settle(resolve22, reject, d, v) {
     Promise.resolve(v).then(function(v2) {
-      resolve20({ value: v2, done: d });
+      resolve22({ value: v2, done: d });
     }, reject);
   }
 }
@@ -8630,9 +8630,9 @@ var require_async = __commonJS({
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.waitForTick = void 0;
     exports2.waitForTick = function() {
-      return new Promise(function(resolve20) {
+      return new Promise(function(resolve22) {
         setTimeout(function() {
-          return resolve20();
+          return resolve22();
         }, 0);
       });
     };
@@ -17442,12 +17442,12 @@ var require_CustomFontSubsetEmbedder = __commonJS({
         };
         CustomFontSubsetEmbedder2.prototype.serializeFont = function() {
           var _this = this;
-          return new Promise(function(resolve20, reject) {
+          return new Promise(function(resolve22, reject) {
             var parts = [];
             _this.subset.encodeStream().on("data", function(bytes) {
               return parts.push(bytes);
             }).on("end", function() {
-              return resolve20(utils_1.mergeUint8Arrays(parts));
+              return resolve22(utils_1.mergeUint8Arrays(parts));
             }).on("error", function(err) {
               return reject(err);
             });
@@ -24702,14 +24702,14 @@ var require_svgPath = __commonJS({
       ["Z", 0],
       ["z", 0]
     ]);
-    var parse = function(path26) {
+    var parse = function(path28) {
       var cmd;
       var ret = [];
       var args = [];
       var curArg = "";
       var foundDecimal = false;
       var params = 0;
-      for (var _i = 0, path_1 = path26; _i < path_1.length; _i++) {
+      for (var _i = 0, path_1 = path28; _i < path_1.length; _i++) {
         var c = path_1[_i];
         if (parameters.has(c)) {
           params = parameters.get(c);
@@ -25023,8 +25023,8 @@ var require_svgPath = __commonJS({
       ];
       return result;
     };
-    exports2.svgPathToOperators = function(path26) {
-      return apply(parse(path26));
+    exports2.svgPathToOperators = function(path28) {
+      return apply(parse(path28));
     };
   }
 });
@@ -25208,7 +25208,7 @@ var require_operations = __commonJS({
         operators_1.popGraphicsState()
       ]).filter(Boolean);
     };
-    exports2.drawSvgPath = function(path26, options) {
+    exports2.drawSvgPath = function(path28, options) {
       var _a, _b, _c;
       return tslib_1.__spreadArrays([
         operators_1.pushGraphicsState(),
@@ -25222,7 +25222,7 @@ var require_operations = __commonJS({
         options.borderWidth && operators_1.setLineWidth(options.borderWidth),
         options.borderLineCap && operators_1.setLineCap(options.borderLineCap),
         operators_1.setDashPattern((_b = options.borderDashArray) !== null && _b !== void 0 ? _b : [], (_c = options.borderDashPhase) !== null && _c !== void 0 ? _c : 0)
-      ], svgPath_1.svgPathToOperators(path26), [
+      ], svgPath_1.svgPathToOperators(path28), [
         // prettier-ignore
         options.color && options.borderWidth ? operators_1.fillAndStroke() : options.color ? operators_1.fill() : options.borderColor ? operators_1.stroke() : operators_1.closePath(),
         operators_1.popGraphicsState()
@@ -29546,12 +29546,12 @@ var require_PDFPage = __commonJS({
             graphicsState: graphicsStateKey
           }));
         };
-        PDFPage2.prototype.drawSvgPath = function(path26, options) {
+        PDFPage2.prototype.drawSvgPath = function(path28, options) {
           var _a, _b, _c, _d, _e, _f, _g, _h, _j;
           if (options === void 0) {
             options = {};
           }
-          utils_1.assertIs(path26, "path", ["string"]);
+          utils_1.assertIs(path28, "path", ["string"]);
           utils_1.assertOrUndefined(options.x, "options.x", ["number"]);
           utils_1.assertOrUndefined(options.y, "options.y", ["number"]);
           utils_1.assertOrUndefined(options.scale, "options.scale", ["number"]);
@@ -29580,7 +29580,7 @@ var require_PDFPage = __commonJS({
             options.borderColor = colors_1.rgb(0, 0, 0);
           }
           var contentStream = this.getContentStream();
-          contentStream.push.apply(contentStream, operations_1.drawSvgPath(path26, {
+          contentStream.push.apply(contentStream, operations_1.drawSvgPath(path28, {
             x: (_a = options.x) !== null && _a !== void 0 ? _a : this.x,
             y: (_b = options.y) !== null && _b !== void 0 ? _b : this.y,
             scale: options.scale,
@@ -30360,8 +30360,8 @@ async function withBusyWait(send, options) {
     log2(
       `${options.where} answered ${response.status} (${busyReason(response.status)}) \u2014 waiting ${(wait / 1e3).toFixed(1)}s${said === null ? "" : " (its own retry-after)"} and asking again; ${(waited / 1e3).toFixed(1)}s of this request's ${(budgetMs / 1e3).toFixed(0)}s slot budget spent so far.`
     );
-    await new Promise((resolve20) => {
-      setTimeout(resolve20, wait);
+    await new Promise((resolve22) => {
+      setTimeout(resolve22, wait);
     });
     backoff = Math.min(backoff * 2, BUSY_MAX_WAIT_MS);
   }
@@ -30501,7 +30501,7 @@ async function readOnePage(url, page, opts) {
     opts.onWeather?.(
       `page ${page.number}: ${fault.said} That is weather, not a refusal -- trying again in ${wait >= 6e4 ? `${wait / 6e4} min` : `${wait / 1e3} s`} (${attempt} of ${tries}).`
     );
-    await new Promise((resolve20) => setTimeout(resolve20, wait));
+    await new Promise((resolve22) => setTimeout(resolve22, wait));
   }
 }
 async function tryOnePage(url, page, opts) {
@@ -31126,7 +31126,7 @@ var init_version = __esm({
     init_engine_import_meta_url();
     init_package();
     VERSION = package_default.version;
-    GIT_COMMIT = "src f5d8c8d33ab8".length > 0 ? "src f5d8c8d33ab8" : null;
+    GIT_COMMIT = "src 6a6b6ec361b0".length > 0 ? "src 6a6b6ec361b0" : null;
   }
 });
 
@@ -31233,11 +31233,11 @@ function parseMarkdown(source, page, furniture) {
       blocks.push({ kind: "html", xhtml: "<hr/>" });
       continue;
     }
-    const heading = HEADING2.exec(trimmed);
-    if (heading) {
+    const heading2 = HEADING2.exec(trimmed);
+    if (heading2) {
       flush();
-      const xhtml = inlineMarkdown(heading[2].trim());
-      blocks.push({ kind: "heading", level: heading[1].length, xhtml, text: plainText(xhtml) });
+      const xhtml = inlineMarkdown(heading2[2].trim());
+      blocks.push({ kind: "heading", level: heading2[1].length, xhtml, text: plainText(xhtml) });
       continue;
     }
     const bullet = BULLET.exec(line);
@@ -31520,12 +31520,12 @@ function consumeMarkdown(block) {
   };
   for (const line of block.text.split("\n")) {
     const trimmed = line.trim();
-    const heading = MD_HEADING.exec(trimmed);
+    const heading2 = MD_HEADING.exec(trimmed);
     const quoted = MD_QUOTE.exec(trimmed);
-    if (heading) {
+    if (heading2) {
       flushPlain();
       flushQuote();
-      out.push(sub(heading[1].length === 1 ? "Title" : "Section-header", heading[2].trim()));
+      out.push(sub(heading2[1].length === 1 ? "Title" : "Section-header", heading2[2].trim()));
       continue;
     }
     if (quoted) {
@@ -31682,11 +31682,11 @@ function entryShapedLines(blocks, except) {
   return lines;
 }
 function contentsEntryLines(blocks) {
-  const heading = blocks.find(
+  const heading2 = blocks.find(
     (b) => DISPLAY.has(b.category) && CONTENTS_HEADING.test(unemphasise(b.text))
   );
-  if (heading === void 0) return null;
-  const entries = entryShapedLines(blocks, heading);
+  if (heading2 === void 0) return null;
+  const entries = entryShapedLines(blocks, heading2);
   return entries.length < CONTENTS_ENTRIES ? null : entries;
 }
 function contentsEntryTitle(line) {
@@ -32894,8 +32894,8 @@ function proposeSections(pages, overlay = emptyOverlay(), listed = /* @__PURE__ 
 function sectionName(span, opens) {
   const label = opens?.label;
   if (label !== null && label !== void 0 && label.length > 0) return label;
-  const heading = span.find((b) => b.category === "Title" || b.category === "Section-header");
-  return heading === void 0 ? "" : headingLabel(heading.text);
+  const heading2 = span.find((b) => b.category === "Title" || b.category === "Section-header");
+  return heading2 === void 0 ? "" : headingLabel(heading2.text);
 }
 function foldDuplicateSections(blocks, starts, opens) {
   const folded = [];
@@ -35656,7 +35656,7 @@ async function runAnalyzeRank(opts) {
   const started = Date.now();
   const { log: log2 } = opts;
   const transport = opts.transport ?? fetchTransport(decideDeadline(deadlineForConcurrency(1)));
-  const sleep = opts.sleep ?? ((ms) => new Promise((resolve20) => setTimeout(resolve20, ms)));
+  const sleep = opts.sleep ?? ((ms) => new Promise((resolve22) => setTimeout(resolve22, ms)));
   const url = decideUrl(opts.endpoint);
   const { sentences, bankSha: bankSha2 } = readProse(opts.bookPath, "analyze", log2);
   const plan = readPlan(opts.categoriesPath ?? null, log2);
@@ -65774,7 +65774,7 @@ var require_fontkit_umd = __commonJS({
           return cmds.join("");
         };
         _proto.mapPoints = function mapPoints(fn) {
-          var path26 = new Path2();
+          var path28 = new Path2();
           for (var _iterator2 = _createForOfIteratorHelperLoose$l(this.commands), _step2; !(_step2 = _iterator2()).done; ) {
             var c = _step2.value;
             var args = [];
@@ -65782,9 +65782,9 @@ var require_fontkit_umd = __commonJS({
               var _fn = fn(c.args[i2], c.args[i2 + 1]), x = _fn[0], y = _fn[1];
               args.push(x, y);
             }
-            path26[c.command].apply(path26, args);
+            path28[c.command].apply(path28, args);
           }
-          return path26;
+          return path28;
         };
         _proto.transform = function transform2(m0, m1, m2, m3, m4, m5) {
           return this.mapPoints(function(x, y) {
@@ -66394,7 +66394,7 @@ var require_fontkit_umd = __commonJS({
         };
         _proto2._getPath = function _getPath() {
           var contours = this._getContours();
-          var path26 = new Path();
+          var path28 = new Path();
           for (var i2 = 0; i2 < contours.length; i2++) {
             var contour = contours[i2];
             var firstPt = contour[0];
@@ -66411,32 +66411,32 @@ var require_fontkit_umd = __commonJS({
               }
               var curvePt = firstPt;
             }
-            path26.moveTo(firstPt.x, firstPt.y);
+            path28.moveTo(firstPt.x, firstPt.y);
             for (var j = start; j < contour.length; j++) {
               var pt = contour[j];
               var prevPt = j === 0 ? firstPt : contour[j - 1];
               if (prevPt.onCurve && pt.onCurve) {
-                path26.lineTo(pt.x, pt.y);
+                path28.lineTo(pt.x, pt.y);
               } else if (prevPt.onCurve && !pt.onCurve) {
                 var curvePt = pt;
               } else if (!prevPt.onCurve && !pt.onCurve) {
                 var midX = (prevPt.x + pt.x) / 2;
                 var midY = (prevPt.y + pt.y) / 2;
-                path26.quadraticCurveTo(prevPt.x, prevPt.y, midX, midY);
+                path28.quadraticCurveTo(prevPt.x, prevPt.y, midX, midY);
                 var curvePt = pt;
               } else if (!prevPt.onCurve && pt.onCurve) {
-                path26.quadraticCurveTo(curvePt.x, curvePt.y, pt.x, pt.y);
+                path28.quadraticCurveTo(curvePt.x, curvePt.y, pt.x, pt.y);
                 var curvePt = null;
               } else {
                 throw new Error("Unknown TTF path state");
               }
             }
             if (curvePt) {
-              path26.quadraticCurveTo(curvePt.x, curvePt.y, firstPt.x, firstPt.y);
+              path28.quadraticCurveTo(curvePt.x, curvePt.y, firstPt.x, firstPt.y);
             }
-            path26.closePath();
+            path28.closePath();
           }
-          return path26;
+          return path28;
         };
         return TTFGlyph2;
       })(Glyph);
@@ -66473,7 +66473,7 @@ var require_fontkit_umd = __commonJS({
           var str = cff.topDict.CharStrings[this.id];
           var end = str.offset + str.length;
           stream.pos = str.offset;
-          var path26 = new Path();
+          var path28 = new Path();
           var stack = [];
           var trans = [];
           var width = null;
@@ -66506,9 +66506,9 @@ var require_fontkit_umd = __commonJS({
           }
           function moveTo(x2, y2) {
             if (open) {
-              path26.closePath();
+              path28.closePath();
             }
-            path26.moveTo(x2, y2);
+            path28.moveTo(x2, y2);
             open = true;
           }
           var parse = function parse2() {
@@ -66536,7 +66536,7 @@ var require_fontkit_umd = __commonJS({
                     while (stack.length >= 2) {
                       x += stack.shift();
                       y += stack.shift();
-                      path26.lineTo(x, y);
+                      path28.lineTo(x, y);
                     }
                     break;
                   case 6:
@@ -66549,7 +66549,7 @@ var require_fontkit_umd = __commonJS({
                       } else {
                         y += stack.shift();
                       }
-                      path26.lineTo(x, y);
+                      path28.lineTo(x, y);
                       phase = !phase;
                     }
                     break;
@@ -66561,7 +66561,7 @@ var require_fontkit_umd = __commonJS({
                       var c2y = c1y + stack.shift();
                       x = c2x + stack.shift();
                       y = c2y + stack.shift();
-                      path26.bezierCurveTo(c1x, c1y, c2x, c2y, x, y);
+                      path28.bezierCurveTo(c1x, c1y, c2x, c2y, x, y);
                     }
                     break;
                   case 10:
@@ -66591,7 +66591,7 @@ var require_fontkit_umd = __commonJS({
                       checkWidth();
                     }
                     if (open) {
-                      path26.closePath();
+                      path28.closePath();
                       open = false;
                     }
                     break;
@@ -66655,17 +66655,17 @@ var require_fontkit_umd = __commonJS({
                       var c2y = c1y + stack.shift();
                       x = c2x + stack.shift();
                       y = c2y + stack.shift();
-                      path26.bezierCurveTo(c1x, c1y, c2x, c2y, x, y);
+                      path28.bezierCurveTo(c1x, c1y, c2x, c2y, x, y);
                     }
                     x += stack.shift();
                     y += stack.shift();
-                    path26.lineTo(x, y);
+                    path28.lineTo(x, y);
                     break;
                   case 25:
                     while (stack.length >= 8) {
                       x += stack.shift();
                       y += stack.shift();
-                      path26.lineTo(x, y);
+                      path28.lineTo(x, y);
                     }
                     var c1x = x + stack.shift();
                     var c1y = y + stack.shift();
@@ -66673,7 +66673,7 @@ var require_fontkit_umd = __commonJS({
                     var c2y = c1y + stack.shift();
                     x = c2x + stack.shift();
                     y = c2y + stack.shift();
-                    path26.bezierCurveTo(c1x, c1y, c2x, c2y, x, y);
+                    path28.bezierCurveTo(c1x, c1y, c2x, c2y, x, y);
                     break;
                   case 26:
                     if (stack.length % 2) {
@@ -66686,7 +66686,7 @@ var require_fontkit_umd = __commonJS({
                       c2y = c1y + stack.shift();
                       x = c2x;
                       y = c2y + stack.shift();
-                      path26.bezierCurveTo(c1x, c1y, c2x, c2y, x, y);
+                      path28.bezierCurveTo(c1x, c1y, c2x, c2y, x, y);
                     }
                     break;
                   case 27:
@@ -66700,7 +66700,7 @@ var require_fontkit_umd = __commonJS({
                       c2y = c1y + stack.shift();
                       x = c2x + stack.shift();
                       y = c2y;
-                      path26.bezierCurveTo(c1x, c1y, c2x, c2y, x, y);
+                      path28.bezierCurveTo(c1x, c1y, c2x, c2y, x, y);
                     }
                     break;
                   case 28:
@@ -66740,7 +66740,7 @@ var require_fontkit_umd = __commonJS({
                         x = c2x + stack.shift();
                         y = c2y + (stack.length === 1 ? stack.shift() : 0);
                       }
-                      path26.bezierCurveTo(c1x, c1y, c2x, c2y, x, y);
+                      path28.bezierCurveTo(c1x, c1y, c2x, c2y, x, y);
                       phase = !phase;
                     }
                     break;
@@ -66876,8 +66876,8 @@ var require_fontkit_umd = __commonJS({
                         var c6y = c5y;
                         x = c6x;
                         y = c6y;
-                        path26.bezierCurveTo(c1x, c1y, c2x, c2y, c3x, c3y);
-                        path26.bezierCurveTo(c4x, c4y, c5x, c5y, c6x, c6y);
+                        path28.bezierCurveTo(c1x, c1y, c2x, c2y, c3x, c3y);
+                        path28.bezierCurveTo(c4x, c4y, c5x, c5y, c6x, c6y);
                         break;
                       case 35:
                         var pts = [];
@@ -66886,8 +66886,8 @@ var require_fontkit_umd = __commonJS({
                           y += stack.shift();
                           pts.push(x, y);
                         }
-                        path26.bezierCurveTo.apply(path26, pts.slice(0, 6));
-                        path26.bezierCurveTo.apply(path26, pts.slice(6));
+                        path28.bezierCurveTo.apply(path28, pts.slice(0, 6));
+                        path28.bezierCurveTo.apply(path28, pts.slice(6));
                         stack.shift();
                         break;
                       case 36:
@@ -66905,8 +66905,8 @@ var require_fontkit_umd = __commonJS({
                         c6y = c5y;
                         x = c6x;
                         y = c6y;
-                        path26.bezierCurveTo(c1x, c1y, c2x, c2y, c3x, c3y);
-                        path26.bezierCurveTo(c4x, c4y, c5x, c5y, c6x, c6y);
+                        path28.bezierCurveTo(c1x, c1y, c2x, c2y, c3x, c3y);
+                        path28.bezierCurveTo(c4x, c4y, c5x, c5y, c6x, c6y);
                         break;
                       case 37:
                         var startx = x;
@@ -66925,8 +66925,8 @@ var require_fontkit_umd = __commonJS({
                           y += stack.shift();
                         }
                         pts.push(x, y);
-                        path26.bezierCurveTo.apply(path26, pts.slice(0, 6));
-                        path26.bezierCurveTo.apply(path26, pts.slice(6));
+                        path28.bezierCurveTo.apply(path28, pts.slice(0, 6));
+                        path28.bezierCurveTo.apply(path28, pts.slice(6));
                         break;
                       default:
                         throw new Error("Unknown op: 12 " + op);
@@ -66950,9 +66950,9 @@ var require_fontkit_umd = __commonJS({
           };
           parse();
           if (open) {
-            path26.closePath();
+            path28.closePath();
           }
-          return path26;
+          return path28;
         };
         return CFFGlyph2;
       })(Glyph);
@@ -67666,7 +67666,7 @@ var require_fontkit_umd = __commonJS({
         function TTFGlyphEncoder2() {
         }
         var _proto = TTFGlyphEncoder2.prototype;
-        _proto.encodeSimple = function encodeSimple(path26, instructions) {
+        _proto.encodeSimple = function encodeSimple(path28, instructions) {
           if (instructions === void 0) {
             instructions = [];
           }
@@ -67677,14 +67677,14 @@ var require_fontkit_umd = __commonJS({
           var same = 0;
           var lastX = 0, lastY = 0, lastFlag = 0;
           var pointCount = 0;
-          for (var i2 = 0; i2 < path26.commands.length; i2++) {
-            var c = path26.commands[i2];
+          for (var i2 = 0; i2 < path28.commands.length; i2++) {
+            var c = path28.commands[i2];
             for (var j = 0; j < c.args.length; j += 2) {
               var x = c.args[j];
               var y = c.args[j + 1];
               var flag2 = 0;
               if (c.command === "quadraticCurveTo" && j === 2) {
-                var next = path26.commands[i2 + 1];
+                var next = path28.commands[i2 + 1];
                 if (next && next.command === "quadraticCurveTo") {
                   var midX = (lastX + next.args[0]) / 2;
                   var midY = (lastY + next.args[1]) / 2;
@@ -67717,10 +67717,10 @@ var require_fontkit_umd = __commonJS({
               endPtsOfContours.push(pointCount - 1);
             }
           }
-          if (path26.commands.length > 1 && path26.commands[path26.commands.length - 1].command !== "closePath") {
+          if (path28.commands.length > 1 && path28.commands[path28.commands.length - 1].command !== "closePath") {
             endPtsOfContours.push(pointCount - 1);
           }
-          var bbox = path26.bbox;
+          var bbox = path28.bbox;
           var glyf2 = {
             numberOfContours: endPtsOfContours.length,
             xMin: bbox.minX,
@@ -67922,7 +67922,7 @@ var require_fontkit_umd = __commonJS({
             var gid = _step2.value;
             this.charstrings.push(this.cff.getCharString(gid));
             var glyph2 = this.font.getGlyph(gid);
-            var path26 = glyph2.path;
+            var path28 = glyph2.path;
             for (var subr in glyph2._usedGsubrs) {
               gsubrs[subr] = true;
             }
@@ -67963,7 +67963,7 @@ var require_fontkit_umd = __commonJS({
             used_fds[fd] = true;
             topDict.FDSelect.fds.push(topDict.FDArray.length - 1);
             var glyph2 = this.font.getGlyph(gid);
-            var path26 = glyph2.path;
+            var path28 = glyph2.path;
             for (var subr in glyph2._usedSubrs) {
               used_subrs[used_subrs.length - 1][subr] = true;
             }
@@ -67983,7 +67983,7 @@ var require_fontkit_umd = __commonJS({
           for (var _iterator3 = _createForOfIteratorHelperLoose$p(this.glyphs), _step3; !(_step3 = _iterator3()).done; ) {
             var gid = _step3.value;
             var glyph2 = this.font.getGlyph(gid);
-            var path26 = glyph2.path;
+            var path28 = glyph2.path;
             for (var subr in glyph2._usedSubrs) {
               used_subrs[subr] = true;
             }
@@ -72909,16 +72909,16 @@ var init_base = __esm({
           }
         }
       }
-      addToPath(path26, added, removed, oldPosInc, options) {
-        const last = path26.lastComponent;
+      addToPath(path28, added, removed, oldPosInc, options) {
+        const last = path28.lastComponent;
         if (last && !options.oneChangePerToken && last.added === added && last.removed === removed) {
           return {
-            oldPos: path26.oldPos + oldPosInc,
+            oldPos: path28.oldPos + oldPosInc,
             lastComponent: { count: last.count + 1, added, removed, previousComponent: last.previousComponent }
           };
         } else {
           return {
-            oldPos: path26.oldPos + oldPosInc,
+            oldPos: path28.oldPos + oldPosInc,
             lastComponent: { count: 1, added, removed, previousComponent: last }
           };
         }
@@ -73196,6 +73196,145 @@ var init_punctuate = __esm({
         this.name = "CleanTextError";
       }
     };
+  }
+});
+
+// src/clean/fixed-readings.ts
+var fixed_readings_exports = {};
+__export(fixed_readings_exports, {
+  FIXED_READINGS_FORMAT: () => FIXED_READINGS_FORMAT,
+  applyFixedReadings: () => applyFixedReadings,
+  applyFixedToAll: () => applyFixedToAll,
+  fixedKeyField: () => fixedKeyField,
+  readFixedReadingsFile: () => readFixedReadingsFile,
+  validateFixedReadings: () => validateFixedReadings
+});
+function readFixedReadingsFile(file) {
+  const where = path21.resolve(file);
+  let parsed;
+  try {
+    parsed = JSON.parse(stripBom(fs27.readFileSync(where, "utf8")));
+  } catch (err) {
+    throw new CleanTextError(`--fixed-readings ${where} cannot be read as JSON (${err.message}).`);
+  }
+  const doc = parsed;
+  if (doc?.format !== FIXED_READINGS_FORMAT || !Array.isArray(doc.readings)) {
+    throw new CleanTextError(
+      `--fixed-readings ${where} is not a ${FIXED_READINGS_FORMAT} file ({"format": "fixed-readings/v1", "readings": [{"find", "replace"}, ...]}).`
+    );
+  }
+  return validateFixedReadings(doc.readings, where);
+}
+function validateFixedReadings(list, where = "fixed readings") {
+  const out = [];
+  const seen = /* @__PURE__ */ new Map();
+  list.forEach((raw, i) => {
+    const one = raw;
+    if (typeof one?.find !== "string" || typeof one.replace !== "string") {
+      throw new CleanTextError(`${where}: reading ${i} needs a string "find" and a string "replace".`);
+    }
+    const find = one.find;
+    const replace = one.replace;
+    if (find.trim() !== find || find.length === 0) {
+      throw new CleanTextError(`${where}: reading ${i} has an empty or space-edged find ${JSON.stringify(find)}.`);
+    }
+    if (replace.trim() !== replace || replace.length === 0) {
+      throw new CleanTextError(`${where}: reading ${i} ("${find}") has an empty or space-edged replace.`);
+    }
+    if (MARKUP.test(find) || MARKUP.test(replace)) {
+      throw new CleanTextError(
+        `${where}: reading ${i} ("${find}" \u2192 "${replace}") touches inline markup \u2014 emphasis or a superscript note number \u2014 which a reading never crosses.`
+      );
+    }
+    const earlier = seen.get(find);
+    if (earlier !== void 0 && earlier !== replace) {
+      throw new CleanTextError(
+        `${where}: "${find}" is given two readings, "${earlier}" and "${replace}". One printed form, one reading.`
+      );
+    }
+    if (earlier === void 0 && find !== replace) out.push({ find, replace });
+    seen.set(find, replace);
+  });
+  return out;
+}
+function escape(text) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+function matcherFor(readings) {
+  if (readings.length === 0) return null;
+  const finds = [...readings].map((r) => r.find).sort((a, b) => b.length - a.length);
+  return { finds, pattern: new RegExp(finds.map(escape).join("|"), "gu") };
+}
+function standsAt(text, at, find) {
+  if (!text.startsWith(find, at)) return false;
+  const end = at + find.length;
+  return !(at > 0 && WORD.test(text[at - 1])) && !(end < text.length && WORD.test(text[end]));
+}
+function occurrences(text, matcher) {
+  const out = [];
+  const { pattern, finds } = matcher;
+  pattern.lastIndex = 0;
+  for (let m = pattern.exec(text); m !== null; m = pattern.exec(text)) {
+    const at = m.index;
+    const find = finds.find((one) => standsAt(text, at, one));
+    if (find === void 0) {
+      pattern.lastIndex = at + 1;
+      continue;
+    }
+    out.push({ at, find });
+    pattern.lastIndex = at + find.length;
+  }
+  return out;
+}
+function applyFixedReadings(text, readings) {
+  const applied = /* @__PURE__ */ new Map();
+  const matcher = matcherFor(readings);
+  if (matcher === null) return { text, applied };
+  const byFind = new Map(readings.map((r) => [r.find, r.replace]));
+  let out = "";
+  let from = 0;
+  for (const hit of occurrences(text, matcher)) {
+    const replace = byFind.get(hit.find);
+    const end = hit.at + hit.find.length;
+    const keepsStop = hit.find.endsWith(".") && !replace.endsWith(".") && /^["'’”)\]]*\s*$/u.test(text.slice(end));
+    out += text.slice(from, hit.at) + replace + (keepsStop ? "." : "");
+    from = end;
+    applied.set(hit.find, (applied.get(hit.find) ?? 0) + 1);
+  }
+  return { text: out + text.slice(from), applied };
+}
+function fixedKeyField(text, readings) {
+  const matcher = matcherFor(readings);
+  if (matcher === null) return "";
+  const byFind = new Map(readings.map((r) => [r.find, r.replace]));
+  const used = [...new Set(occurrences(text, matcher).map((hit) => hit.find))].sort();
+  if (used.length === 0) return "";
+  return `fixed/v1:${used.map((find) => `${find}${byFind.get(find)}`).join("")}`;
+}
+function applyFixedToAll(texts, readings) {
+  const applied = {};
+  if (readings.length > 0) {
+    for (const [key, text] of texts) {
+      const one = applyFixedReadings(text, readings);
+      if (one.applied.size === 0) continue;
+      texts.set(key, one.text);
+      for (const [find, n] of one.applied) applied[find] = (applied[find] ?? 0) + n;
+    }
+  }
+  return { given: readings.length, applied };
+}
+var fs27, path21, FIXED_READINGS_FORMAT, MARKUP, WORD;
+var init_fixed_readings = __esm({
+  "src/clean/fixed-readings.ts"() {
+    "use strict";
+    init_engine_import_meta_url();
+    fs27 = __toESM(require("node:fs"), 1);
+    path21 = __toESM(require("node:path"), 1);
+    init_bom();
+    init_punctuate();
+    FIXED_READINGS_FORMAT = "fixed-readings/v1";
+    MARKUP = /[*_⁰¹²³⁴⁵⁶⁷⁸⁹]/;
+    WORD = /[\p{L}\p{N}]/u;
   }
 });
 
@@ -73485,7 +73624,7 @@ function cleanBlocks(book, where) {
   const plan = bookRowPlan(book, where);
   const blocks = [];
   const tables = [];
-  const fileName = path21.basename(where);
+  const fileName = path22.basename(where);
   const targetOf = (key, block) => ({
     key,
     kind: "row",
@@ -73567,12 +73706,12 @@ function triageUnits(blocks, punctuated, unit) {
   }
   return out;
 }
-var path21, CELL_JOIN, DEFAULT_CLEAN_UNIT, CLEAN_UNITS;
+var path22, CELL_JOIN, DEFAULT_CLEAN_UNIT, CLEAN_UNITS;
 var init_blocks2 = __esm({
   "src/clean/blocks.ts"() {
     "use strict";
     init_engine_import_meta_url();
-    path21 = __toESM(require("node:path"), 1);
+    path22 = __toESM(require("node:path"), 1);
     init_bookrows();
     init_punctuate();
     init_segments();
@@ -73580,6 +73719,119 @@ var init_blocks2 = __esm({
     CELL_JOIN = " | ";
     DEFAULT_CLEAN_UNIT = "sentence";
     CLEAN_UNITS = ["sentence", "block"];
+  }
+});
+
+// src/clean/forms.ts
+var forms_exports = {};
+__export(forms_exports, {
+  PRINTED_FORMS_FORMAT: () => PRINTED_FORMS_FORMAT,
+  SAMPLES: () => SAMPLES,
+  collectPrintedForms: () => collectPrintedForms,
+  runCleanForms: () => runCleanForms
+});
+function core2(token) {
+  return token.replace(/^[^\p{L}\p{N}&]+|[^\p{L}\p{N}&.]+$/gu, "");
+}
+function heading(block) {
+  if (/title|header/.test(block.target.statedCategory)) return true;
+  const letters = block.target.text.replace(/[^\p{L}]/gu, "");
+  return letters.length > 0 && letters.replace(/[^\p{Lu}]/gu, "").length / letters.length >= 0.7;
+}
+function formOf(tokens, i, heading2) {
+  const token = tokens[i];
+  const bare = core2(token).replace(/['’]s$/, "");
+  if (/\d/.test(token) || /[[\]()&]/.test(token) || /-$/.test(token)) return null;
+  if (/\.{2,}$/.test(bare) || new RegExp("\\p{L}{2}\\.\\p{L}{2}", "u").test(bare)) return null;
+  if (new RegExp("^\\p{L}\\.$", "u").test(bare)) return null;
+  if (new RegExp("\\p{Script=Han}|\\p{Script=Cyrillic}|\\p{Script=Greek}", "u").test(bare)) return null;
+  const unstopped = bare.replace(/\.$/, "");
+  if (/^[IVXLCDM]+$/.test(unstopped) && romanValue(unstopped) !== null) {
+    const before = i > 0 ? core2(tokens[i - 1]).replace(/['’]s$/, "") : "";
+    const phrase = before.length > 0 && new RegExp("^\\p{L}+$", "u").test(before) ? `${before} ${unstopped}` : unstopped;
+    return { kind: "roman", key: phrase, printed: phrase };
+  }
+  if (new RegExp("^\\p{Lu}{2,}$", "u").test(unstopped)) return heading2 ? null : { kind: "caps", key: unstopped, printed: unstopped };
+  if (/^[ivxlcdm]+$/.test(unstopped) && romanValue(unstopped) === null) return null;
+  if (!/^[\p{L}.]+$/u.test(bare)) return null;
+  return { kind: "abbreviation", key: unstopped.toLowerCase(), printed: bare };
+}
+function spread(items, n) {
+  if (items.length <= n) return [...items];
+  return Array.from({ length: n }, (_, k) => items[Math.round(k * (items.length - 1) / (n - 1))]);
+}
+function collectPrintedForms(bookText, where) {
+  const book = readBookFile(bookText, where);
+  const { blocks } = cleanBlocks(book, where);
+  const forms = /* @__PURE__ */ new Map();
+  for (const block of blocks) {
+    const inHeading = heading(block);
+    for (const span of cleanSentences(block.target.text)) {
+      const tokens = span.text.split(/\s+/).filter(Boolean);
+      for (let i = 0; i < tokens.length; i++) {
+        if (!isPrintedForm(tokens, i)) continue;
+        const form = formOf(tokens, i, inHeading);
+        if (form === null) continue;
+        const id = `${form.kind}\0${form.key}`;
+        let gathering = forms.get(id);
+        if (gathering === void 0) {
+          gathering = { kind: form.kind, key: form.key, printed: /* @__PURE__ */ new Map(), hits: [] };
+          forms.set(id, gathering);
+        }
+        gathering.printed.set(form.printed, (gathering.printed.get(form.printed) ?? 0) + 1);
+        gathering.hits.push({ parts: block.parts, sentence: span.text });
+      }
+    }
+  }
+  const order = ["roman", "caps", "abbreviation"];
+  return [...forms.values()].sort((a, b) => order.indexOf(a.kind) - order.indexOf(b.kind) || b.hits.length - a.hits.length || a.key.localeCompare(b.key)).map((g) => ({
+    key: g.key,
+    kind: g.kind,
+    count: g.hits.length,
+    printed: Object.fromEntries([...g.printed].sort((a, b) => b[1] - a[1])),
+    samples: spread(g.hits, SAMPLES)
+  }));
+}
+function runCleanForms(opts) {
+  const where = path23.resolve(opts.bookPath);
+  let text;
+  try {
+    text = stripBom(fs28.readFileSync(where, "utf8"));
+  } catch (err) {
+    throw new CleanTextError(`--book ${where} cannot be read (${err.message}).`);
+  }
+  const forms = collectPrintedForms(text, where);
+  const file = { format: PRINTED_FORMS_FORMAT, source: where, forms };
+  const out = path23.resolve(opts.outPath);
+  ensureDir(path23.dirname(out));
+  const partial = `${out}.partial`;
+  fs28.writeFileSync(partial, `${JSON.stringify(file, null, 2)}
+`, "utf8");
+  fs28.renameSync(partial, out);
+  const byKind = /* @__PURE__ */ new Map();
+  for (const form of forms) byKind.set(form.kind, (byKind.get(form.kind) ?? 0) + 1);
+  opts.log(
+    `clean-forms: ${forms.length} printed form(s) \u2014 ${[...byKind].map(([k, n]) => `${n} ${k}`).join(", ") || "none"} \u2014 written to ${out}`
+  );
+  return file;
+}
+var fs28, path23, PRINTED_FORMS_FORMAT, SAMPLES;
+var init_forms = __esm({
+  "src/clean/forms.ts"() {
+    "use strict";
+    init_engine_import_meta_url();
+    fs28 = __toESM(require("node:fs"), 1);
+    path23 = __toESM(require("node:path"), 1);
+    init_fsdirs();
+    init_bom();
+    init_bookrows();
+    init_blocks2();
+    init_light_gate();
+    init_punctuate();
+    init_sentences2();
+    init_tts_spoken_forms();
+    PRINTED_FORMS_FORMAT = "printed-forms/v1";
+    SAMPLES = 6;
   }
 });
 
@@ -73747,12 +73999,12 @@ async function runCleanTriage(opts) {
   const at = (/* @__PURE__ */ new Date()).toISOString();
   const concurrency = opts.concurrency ?? DEFAULT_TRIAGE_CONCURRENCY;
   const transport = opts.transport ?? fetchTransport(decideDeadline(deadlineForConcurrency(concurrency)));
-  const sleep = opts.sleep ?? ((ms) => new Promise((resolve20) => setTimeout(resolve20, ms)));
+  const sleep = opts.sleep ?? ((ms) => new Promise((resolve22) => setTimeout(resolve22, ms)));
   const url = decideUrl(opts.endpoint);
-  const where = path22.resolve(opts.bookPath);
+  const where = path24.resolve(opts.bookPath);
   let bookText;
   try {
-    bookText = stripBom(fs27.readFileSync(where, "utf8"));
+    bookText = stripBom(fs29.readFileSync(where, "utf8"));
   } catch (err) {
     throw new CleanTextError(`--book ${where} cannot be read (${err.message}).`);
   }
@@ -73762,6 +74014,7 @@ async function runCleanTriage(opts) {
     throw new CleanTextError(`--book ${where} has no block with words in it, so there is nothing to triage.`);
   }
   const punctuated = punctuateAll(blocks);
+  applyFixedToAll(punctuated.text, opts.fixedReadings ?? []);
   const unit = opts.unit ?? DEFAULT_CLEAN_UNIT;
   const removal = opts.removal ?? NO_REMOVAL;
   const units = triageUnits(blocks, punctuated.text, unit);
@@ -73829,12 +74082,12 @@ async function runCleanTriage(opts) {
     // In the book's order, so the file reads alongside it.
     blocks: Object.fromEntries(units.map((unit2) => [unit2.parts, verdicts[unit2.parts]]))
   };
-  const out = path22.resolve(opts.outPath);
-  ensureDir(path22.dirname(out));
+  const out = path24.resolve(opts.outPath);
+  ensureDir(path24.dirname(out));
   const partial = `${out}.partial`;
-  fs27.writeFileSync(partial, `${JSON.stringify(file, null, 2)}
+  fs29.writeFileSync(partial, `${JSON.stringify(file, null, 2)}
 `, "utf8");
-  fs27.renameSync(partial, out);
+  fs29.renameSync(partial, out);
   const flagged = Object.values(file.blocks).filter((v) => v.needsCleaning).length;
   const seconds = ((Date.now() - started) / 1e3).toFixed(1);
   opts.log(
@@ -73843,10 +74096,10 @@ async function runCleanTriage(opts) {
   return { positions: units.length, flagged, clean: units.length - flagged, file };
 }
 function readTriageFile(triagePath) {
-  const where = path22.resolve(triagePath);
+  const where = path24.resolve(triagePath);
   let parsed;
   try {
-    parsed = JSON.parse(stripBom(fs27.readFileSync(where, "utf8")));
+    parsed = JSON.parse(stripBom(fs29.readFileSync(where, "utf8")));
   } catch (err) {
     throw new CleanTextError(`--triage ${where} cannot be read as JSON (${err.message}).`);
   }
@@ -73864,13 +74117,13 @@ function readTriageFile(triagePath) {
   }
   return file;
 }
-var fs27, path22, TRIAGE_FORMAT, TRIAGE_FLAG_P, TRIAGE_MIN_LABEL_MASS, GROUP_MAX_UNITS, GROUP_MAX_SENTENCES, GROUP_MAX_CHARS, CONTEXT_UNITS, CONTEXT_CHARS, DEFAULT_TRIAGE_CONCURRENCY, TRIAGE_GUIDE, SENTENCE_TRIAGE_STATE, TRIAGE_CRITERIA, SENTENCE_OPTIONS;
+var fs29, path24, TRIAGE_FORMAT, TRIAGE_FLAG_P, TRIAGE_MIN_LABEL_MASS, GROUP_MAX_UNITS, GROUP_MAX_SENTENCES, GROUP_MAX_CHARS, CONTEXT_UNITS, CONTEXT_CHARS, DEFAULT_TRIAGE_CONCURRENCY, TRIAGE_GUIDE, SENTENCE_TRIAGE_STATE, TRIAGE_CRITERIA, SENTENCE_OPTIONS;
 var init_triage = __esm({
   "src/clean/triage.ts"() {
     "use strict";
     init_engine_import_meta_url();
-    fs27 = __toESM(require("node:fs"), 1);
-    path22 = __toESM(require("node:path"), 1);
+    fs29 = __toESM(require("node:fs"), 1);
+    path24 = __toESM(require("node:path"), 1);
     init_fsdirs();
     init_bom();
     init_bookrows();
@@ -73882,6 +74135,7 @@ var init_triage = __esm({
     init_tts_number_normalizer();
     init_tts_punctuation();
     init_removal();
+    init_fixed_readings();
     TRIAGE_FORMAT = "foundry-clean-triage/v1";
     TRIAGE_FLAG_P = 0.2;
     TRIAGE_MIN_LABEL_MASS = 0.9;
@@ -74172,10 +74426,10 @@ function cleanEpubKey(request) {
   return (0, import_node_crypto6.createHash)("sha256").update(fields.join(NUL5), "utf8").digest("hex");
 }
 function cleanEpubBankPath(outPath) {
-  return `${path23.resolve(outPath)}.clean-bank.jsonl`;
+  return `${path25.resolve(outPath)}.clean-bank.jsonl`;
 }
 function cleanEpubStampPath(outPath) {
-  return `${path23.resolve(outPath)}.stamp.json`;
+  return `${path25.resolve(outPath)}.stamp.json`;
 }
 function textNodesOf(source, site) {
   const fragment = source.slice(site.innerStart, site.innerEnd);
@@ -74263,8 +74517,8 @@ async function cleanTextEpub(opts) {
   });
   const transport = opts.transport ?? fetchTransport(deadlineForConcurrency(concurrency));
   const model = opts.model ?? opts.runner?.model ?? (await openModelServer({ kind, transport, endpoint, log: opts.log })).model;
-  const epubPath = path23.resolve(opts.epubPath);
-  const outPath = path23.resolve(opts.outPath);
+  const epubPath = path25.resolve(opts.epubPath);
+  const outPath = path25.resolve(opts.outPath);
   if (epubPath === outPath) {
     throw new CleanTextError(
       `--out ${outPath} is --epub itself. This command writes a NEW book and never edits one in place: the input is what a second run would have to read, and a pass that consumed it would make its own result impossible to check. Name a different --out.`
@@ -74272,7 +74526,7 @@ async function cleanTextEpub(opts) {
   }
   let bytes;
   try {
-    bytes = new Uint8Array(fs28.readFileSync(epubPath));
+    bytes = new Uint8Array(fs30.readFileSync(epubPath));
   } catch (err) {
     throw new CleanTextError(`--epub ${epubPath} cannot be read (${err.message}).`);
   }
@@ -74527,13 +74781,13 @@ async function cleanTextEpub(opts) {
       uncompressedSize: member.uncompressedSize
     };
   });
-  ensureDir(path23.dirname(outPath));
-  await fs28.promises.writeFile(outPath, writeZip(entries));
+  ensureDir(path25.dirname(outPath));
+  await fs30.promises.writeFile(outPath, writeZip(entries));
   const stampPath = cleanEpubStampPath(outPath);
-  fs28.writeFileSync(stampPath, `${JSON.stringify(stamp, null, 2)}
+  fs30.writeFileSync(stampPath, `${JSON.stringify(stamp, null, 2)}
 `, "utf8");
   const receiptPath2 = `${outPath}.receipt.json`;
-  fs28.writeFileSync(receiptPath2, `${JSON.stringify({
+  fs30.writeFileSync(receiptPath2, `${JSON.stringify({
     normalizerVersion: NORMALIZER_VERSION,
     punctuationSpec: PUNCTUATION_SPEC_VERSION,
     model,
@@ -74592,13 +74846,13 @@ function sayRefusal(log2, key, record2) {
     `clean-text: REFUSED ${record2.status} in ${key} \u2014 "${record2.find}" \u2192 "${record2.replace}"${record2.detail === void 0 ? "" : ` (${record2.detail})`}`
   );
 }
-var fs28, path23, import_node_crypto6, NUL5, NOTHING_TO_ASK;
+var fs30, path25, import_node_crypto6, NUL5, NOTHING_TO_ASK;
 var init_epub2 = __esm({
   "src/clean/epub.ts"() {
     "use strict";
     init_engine_import_meta_url();
-    fs28 = __toESM(require("node:fs"), 1);
-    path23 = __toESM(require("node:path"), 1);
+    fs30 = __toESM(require("node:fs"), 1);
+    path25 = __toESM(require("node:path"), 1);
     import_node_crypto6 = require("node:crypto");
     init_fsdirs();
     init_zip();
@@ -74651,6 +74905,8 @@ function cleanKey(request) {
   ];
   const removal = request.removal === void 0 ? "" : removalKeyField(request.removal);
   if (removal.length > 0) fields.push(removal);
+  const fixed = request.fixed === void 0 ? "" : fixedKeyField(request.text, request.fixed);
+  if (fixed.length > 0) fields.push(fixed);
   return (0, import_node_crypto7.createHash)("sha256").update(fields.join(NUL6), "utf8").digest("hex");
 }
 function triageKey(request) {
@@ -74663,16 +74919,18 @@ function triageKey(request) {
   ];
   const removal = request.removal === void 0 ? "" : removalKeyField(request.removal);
   if (removal.length > 0) fields.push(removal);
+  const fixed = request.fixed === void 0 ? "" : fixedKeyField(request.text, request.fixed);
+  if (fixed.length > 0) fields.push(fixed);
   return (0, import_node_crypto7.createHash)("sha256").update(fields.join(NUL6), "utf8").digest("hex");
 }
 function receiptPath(recordsPath) {
-  return `${path24.resolve(recordsPath)}.receipt.json`;
+  return `${path26.resolve(recordsPath)}.receipt.json`;
 }
 function openBook(bookPath) {
-  const where = path24.resolve(bookPath);
+  const where = path26.resolve(bookPath);
   let text;
   try {
-    text = stripBom(fs29.readFileSync(where, "utf8"));
+    text = stripBom(fs31.readFileSync(where, "utf8"));
   } catch (err) {
     throw new CleanTextError(
       `--book ${where} cannot be read (${err.message}). It is the book file the app materialises for a step (docs/BOOK-FILE.md) \u2014 one JSON object per line, the header first.`
@@ -74709,15 +74967,16 @@ async function runCleanText(opts) {
   const model = opts.model ?? opts.runner?.model ?? (await openModelServer({ kind, transport, endpoint, log: opts.log })).model;
   const unit = opts.unit ?? DEFAULT_CLEAN_UNIT;
   const removal = opts.removal ?? NO_REMOVAL;
+  const fixed = opts.fixedReadings ?? [];
   const triage = opts.triagePath === void 0 ? null : readTriageFile(opts.triagePath);
   if (triage !== null && !sameRemoval(triage.removal ?? NO_REMOVAL, removal)) {
     throw new CleanTextError(
-      `--triage ${path24.resolve(opts.triagePath)} was asked about a different removal (${JSON.stringify(removalRecord(triage.removal ?? NO_REMOVAL))}) from this run's (${JSON.stringify(removalRecord(removal))}). Run clean-triage with the same --remove-references and --remove-also as clean-text.`
+      `--triage ${path26.resolve(opts.triagePath)} was asked about a different removal (${JSON.stringify(removalRecord(triage.removal ?? NO_REMOVAL))}) from this run's (${JSON.stringify(removalRecord(removal))}). Run clean-triage with the same --remove-references and --remove-also as clean-text.`
     );
   }
   if (triage !== null && (triage.unit ?? "block") !== unit) {
     throw new CleanTextError(
-      `--triage ${path24.resolve(opts.triagePath)} judged ${triage.unit ?? "block"}s, and this run asks about ${unit}s. Its verdicts name positions this run does not have. Run clean-triage with --unit ${unit}, or clean-text with --unit ${triage.unit ?? "block"}.`
+      `--triage ${path26.resolve(opts.triagePath)} judged ${triage.unit ?? "block"}s, and this run asks about ${unit}s. Its verdicts name positions this run does not have. Run clean-triage with --unit ${unit}, or clean-text with --unit ${triage.unit ?? "block"}.`
     );
   }
   const { text: bookText, where } = openBook(opts.bookPath);
@@ -74730,21 +74989,21 @@ async function runCleanText(opts) {
   for (const one of plan.kept) {
     opts.log(`clean-text: LEFT AS PRINTED \u2014 ${one}`);
   }
-  const fileName = path24.basename(where);
+  const fileName = path26.basename(where);
   if (blocks.length === 0) {
     throw new CleanTextError(
       `--book ${where} has no block with words in it, so there is nothing to clean. A book file whose every row is shelved, skipped or blank is not a book this pass can act on.`
     );
   }
-  const recordsPath = path24.resolve(opts.recordsPath);
+  const recordsPath = path26.resolve(opts.recordsPath);
   const records = TranslationRecords.open(recordsPath);
   refuseForeignRecords(records, new Set(blocks.map((b) => b.parts)), recordsPath, where);
   opts.log(records.size === 0 ? `clean-text: nothing is recorded in ${recordsPath}, so every block is asked of the model and recorded there as it lands.` : `clean-text: ${records.size} record(s) covering ${records.positions} position(s) are in ${recordsPath} \u2014 a block whose exact question is in there is not asked again, and every new answer is added to it.`);
   const keyOf = /* @__PURE__ */ new Map();
-  for (const block of blocks) keyOf.set(block.target.key, cleanKey({ text: block.target.text, model, unit, removal }));
+  for (const block of blocks) keyOf.set(block.target.key, cleanKey({ text: block.target.text, model, unit, removal, fixed }));
   const tableKey = /* @__PURE__ */ new Map();
-  for (const table of tables) tableKey.set(table.parts, cleanKey({ text: table.source, model, unit, removal }));
-  const answered = (source, key) => records.get(key) !== void 0 || triage !== null && records.get(triageKey({ text: source, triageModel: triage.model.id, removal })) !== void 0;
+  for (const table of tables) tableKey.set(table.parts, cleanKey({ text: table.source, model, unit, removal, fixed }));
+  const answered = (source, key) => records.get(key) !== void 0 || triage !== null && records.get(triageKey({ text: source, triageModel: triage.model.id, removal, fixed })) !== void 0;
   const bankedTable = /* @__PURE__ */ new Set();
   for (const table of tables) {
     if (answered(table.source, tableKey.get(table.parts))) bankedTable.add(table.parts);
@@ -74772,6 +75031,13 @@ async function runCleanText(opts) {
   for (const block of outstanding) {
     cleanText.set(block.target.key, punctuated.text.get(block.target.key));
   }
+  const fixedRecord = applyFixedToAll(cleanText, fixed);
+  if (fixed.length > 0) {
+    const reads = Object.values(fixedRecord.applied).reduce((n, k) => n + k, 0);
+    opts.log(
+      `clean-text: ${fixed.length} fixed reading(s) handed in; ${reads} occurrence(s) of ${Object.keys(fixedRecord.applied).length} of them read across the blocks this run cleans.`
+    );
+  }
   const pieces = [];
   const sentencesOf = /* @__PURE__ */ new Map();
   for (const block of outstanding) {
@@ -74793,7 +75059,7 @@ async function runCleanText(opts) {
   const keptClean = /* @__PURE__ */ new Set();
   if (triage !== null) {
     const summary = {
-      file: path24.resolve(opts.triagePath),
+      file: path26.resolve(opts.triagePath),
       model: triage.model.id,
       clean: [],
       flagged: 0,
@@ -74879,7 +75145,7 @@ async function runCleanText(opts) {
       const text = cleanText.get(block.target.key);
       if (block.cell === void 0) {
         if (text !== block.target.text) changed += 1;
-        appendRecord(block.parts, triageKey({ text: block.target.text, triageModel: triage.model.id, removal }), text);
+        appendRecord(block.parts, triageKey({ text: block.target.text, triageModel: triage.model.id, removal, fixed }), text);
         continue;
       }
       if (keptTables.has(block.parts)) continue;
@@ -74892,7 +75158,7 @@ async function runCleanText(opts) {
         continue;
       }
       if (spliced.text !== table.source) changed += 1;
-      appendRecord(table.parts, triageKey({ text: table.source, triageModel: triage.model.id, removal }), spliced.text);
+      appendRecord(table.parts, triageKey({ text: table.source, triageModel: triage.model.id, removal, fixed }), spliced.text);
     }
   }
   const pieceByKey = new Map(askedPieces.map((piece) => [piece.key, piece]));
@@ -75018,11 +75284,12 @@ async function runCleanText(opts) {
     unitsParseFailed: settled.parseFailed,
     server: runner.serverFacts?.() ?? null,
     ...triageSummary === void 0 ? {} : { triage: triageSummary },
-    removal: removalRecord(removal)
+    removal: removalRecord(removal),
+    ...fixed.length > 0 ? { fixedReadings: fixedRecord } : {}
   };
   const receiptOut = receiptPath(recordsPath);
-  ensureDir(path24.dirname(receiptOut));
-  fs29.writeFileSync(receiptOut, `${JSON.stringify(receipt, null, 2)}
+  ensureDir(path26.dirname(receiptOut));
+  fs31.writeFileSync(receiptOut, `${JSON.stringify(receipt, null, 2)}
 `, "utf8");
   const sourceTexts = bookPositionTexts(book);
   const digests = /* @__PURE__ */ new Map();
@@ -75041,15 +75308,15 @@ async function runCleanText(opts) {
     punctuationRefused: punctuated.record.refused.length,
     blocks: digests
   });
-  ensureDir(path24.dirname(path24.resolve(opts.stampPath)));
-  fs29.writeFileSync(path24.resolve(opts.stampPath), `${JSON.stringify(stamp, null, 2)}
+  ensureDir(path26.dirname(path26.resolve(opts.stampPath)));
+  fs31.writeFileSync(path26.resolve(opts.stampPath), `${JSON.stringify(stamp, null, 2)}
 `, "utf8");
   if (humanKept > 0) {
     opts.log(
       `clean-text: ${humanKept} position(s) whose newest row a person wrote were left exactly as they left them \u2014 their source text has not changed since.`
     );
   }
-  opts.log(`clean-text: the receipt is ${receiptOut}; the stamp is ${path24.resolve(opts.stampPath)}`);
+  opts.log(`clean-text: the receipt is ${receiptOut}; the stamp is ${path26.resolve(opts.stampPath)}`);
   opts.log(
     `clean-text: the stamp names ${digests.size} block position(s) and their text digest is ${stamp.textDigest} \u2014 vlm-compile --narration-stamp recomputes both over the book it is handed and refuses by name if it is not this one.`
   );
@@ -75076,13 +75343,13 @@ function sayRefusal2(log2, key, record2) {
     `clean-text: REFUSED ${record2.status} in ${key} \u2014 "${record2.find}" \u2192 "${record2.replace}"${record2.detail === void 0 ? "" : ` (${record2.detail})`}`
   );
 }
-var fs29, path24, import_node_crypto7, KEY_FORMAT, SENTENCE_KEY_FORMAT, NUL6, DEFAULT_CLEAN_GATE, TRIAGE_KEY_FORMAT, NOTHING_TO_ASK2;
+var fs31, path26, import_node_crypto7, KEY_FORMAT, SENTENCE_KEY_FORMAT, NUL6, DEFAULT_CLEAN_GATE, TRIAGE_KEY_FORMAT, NOTHING_TO_ASK2;
 var init_run = __esm({
   "src/clean/run.ts"() {
     "use strict";
     init_engine_import_meta_url();
-    fs29 = __toESM(require("node:fs"), 1);
-    path24 = __toESM(require("node:path"), 1);
+    fs31 = __toESM(require("node:fs"), 1);
+    path26 = __toESM(require("node:path"), 1);
     import_node_crypto7 = require("node:crypto");
     init_fsdirs();
     init_bom();
@@ -75102,6 +75369,7 @@ var init_run = __esm({
     init_stamp();
     init_tts_number_normalizer();
     init_tts_punctuation();
+    init_fixed_readings();
     init_removal();
     KEY_FORMAT = "clean/dialect/v1";
     SENTENCE_KEY_FORMAT = "clean/sentence/v1";
@@ -75796,14 +76064,14 @@ var require_util = __commonJS({
         }
         const port = url.port != null ? url.port : url.protocol === "https:" ? 443 : 80;
         let origin = url.origin != null ? url.origin : `${url.protocol || ""}//${url.hostname || ""}:${port}`;
-        let path26 = url.path != null ? url.path : `${url.pathname || ""}${url.search || ""}`;
+        let path28 = url.path != null ? url.path : `${url.pathname || ""}${url.search || ""}`;
         if (origin[origin.length - 1] === "/") {
           origin = origin.slice(0, origin.length - 1);
         }
-        if (path26 && path26[0] !== "/") {
-          path26 = `/${path26}`;
+        if (path28 && path28[0] !== "/") {
+          path28 = `/${path28}`;
         }
-        return new URL(`${origin}${path26}`);
+        return new URL(`${origin}${path28}`);
       }
       if (!isHttpOrHttpsPrefixed(url.origin || url.protocol)) {
         throw new InvalidArgumentError("Invalid URL protocol: the URL must start with `http:` or `https:`.");
@@ -76255,39 +76523,39 @@ var require_diagnostics = __commonJS({
       });
       diagnosticsChannel.channel("undici:client:sendHeaders").subscribe((evt) => {
         const {
-          request: { method, path: path26, origin }
+          request: { method, path: path28, origin }
         } = evt;
-        debuglog("sending request to %s %s/%s", method, origin, path26);
+        debuglog("sending request to %s %s/%s", method, origin, path28);
       });
       diagnosticsChannel.channel("undici:request:headers").subscribe((evt) => {
         const {
-          request: { method, path: path26, origin },
+          request: { method, path: path28, origin },
           response: { statusCode }
         } = evt;
         debuglog(
           "received response to %s %s/%s - HTTP %d",
           method,
           origin,
-          path26,
+          path28,
           statusCode
         );
       });
       diagnosticsChannel.channel("undici:request:trailers").subscribe((evt) => {
         const {
-          request: { method, path: path26, origin }
+          request: { method, path: path28, origin }
         } = evt;
-        debuglog("trailers received from %s %s/%s", method, origin, path26);
+        debuglog("trailers received from %s %s/%s", method, origin, path28);
       });
       diagnosticsChannel.channel("undici:request:error").subscribe((evt) => {
         const {
-          request: { method, path: path26, origin },
+          request: { method, path: path28, origin },
           error
         } = evt;
         debuglog(
           "request to %s %s/%s errored - %s",
           method,
           origin,
-          path26,
+          path28,
           error.message
         );
       });
@@ -76336,9 +76604,9 @@ var require_diagnostics = __commonJS({
         });
         diagnosticsChannel.channel("undici:client:sendHeaders").subscribe((evt) => {
           const {
-            request: { method, path: path26, origin }
+            request: { method, path: path28, origin }
           } = evt;
-          debuglog("sending request to %s %s/%s", method, origin, path26);
+          debuglog("sending request to %s %s/%s", method, origin, path28);
         });
       }
       diagnosticsChannel.channel("undici:websocket:open").subscribe((evt) => {
@@ -76402,7 +76670,7 @@ var require_request = __commonJS({
     var kHandler = /* @__PURE__ */ Symbol("handler");
     var Request = class {
       constructor(origin, {
-        path: path26,
+        path: path28,
         method,
         body,
         headers,
@@ -76417,11 +76685,11 @@ var require_request = __commonJS({
         expectContinue,
         servername
       }, handler) {
-        if (typeof path26 !== "string") {
+        if (typeof path28 !== "string") {
           throw new InvalidArgumentError("path must be a string");
-        } else if (path26[0] !== "/" && !(path26.startsWith("http://") || path26.startsWith("https://")) && method !== "CONNECT") {
+        } else if (path28[0] !== "/" && !(path28.startsWith("http://") || path28.startsWith("https://")) && method !== "CONNECT") {
           throw new InvalidArgumentError("path must be an absolute URL or start with a slash");
-        } else if (invalidPathRegex.test(path26)) {
+        } else if (invalidPathRegex.test(path28)) {
           throw new InvalidArgumentError("invalid request path");
         }
         if (typeof method !== "string") {
@@ -76484,7 +76752,7 @@ var require_request = __commonJS({
         this.completed = false;
         this.aborted = false;
         this.upgrade = upgrade || null;
-        this.path = query ? buildURL(path26, query) : path26;
+        this.path = query ? buildURL(path28, query) : path28;
         this.origin = origin;
         this.idempotent = idempotent == null ? method === "HEAD" || method === "GET" : idempotent;
         this.blocking = blocking == null ? false : blocking;
@@ -76798,9 +77066,9 @@ var require_dispatcher_base = __commonJS({
       }
       close(callback) {
         if (callback === void 0) {
-          return new Promise((resolve20, reject) => {
+          return new Promise((resolve22, reject) => {
             this.close((err, data) => {
-              return err ? reject(err) : resolve20(data);
+              return err ? reject(err) : resolve22(data);
             });
           });
         }
@@ -76838,12 +77106,12 @@ var require_dispatcher_base = __commonJS({
           err = null;
         }
         if (callback === void 0) {
-          return new Promise((resolve20, reject) => {
+          return new Promise((resolve22, reject) => {
             this.destroy(err, (err2, data) => {
               return err2 ? (
                 /* istanbul ignore next: should never error */
                 reject(err2)
-              ) : resolve20(data);
+              ) : resolve22(data);
             });
           });
         }
@@ -79121,8 +79389,8 @@ var require_util2 = __commonJS({
     function createDeferredPromise() {
       let res;
       let rej;
-      const promise = new Promise((resolve20, reject) => {
-        res = resolve20;
+      const promise = new Promise((resolve22, reject) => {
+        res = resolve22;
         rej = reject;
       });
       return { promise, resolve: res, reject: rej };
@@ -80154,7 +80422,7 @@ var require_body = __commonJS({
         const boundary = `----formdata-undici-0${`${random(1e11)}`.padStart(11, "0")}`;
         const prefix = `--${boundary}\r
 Content-Disposition: form-data`;
-        const escape = (str) => str.replace(/\n/g, "%0A").replace(/\r/g, "%0D").replace(/"/g, "%22");
+        const escape2 = (str) => str.replace(/\n/g, "%0A").replace(/\r/g, "%0D").replace(/"/g, "%22");
         const normalizeLinefeeds = (value) => value.replace(/\r?\n|\r/g, "\r\n");
         const blobParts = [];
         const rn = new Uint8Array([13, 10]);
@@ -80162,14 +80430,14 @@ Content-Disposition: form-data`;
         let hasUnknownSizeValue = false;
         for (const [name, value] of object) {
           if (typeof value === "string") {
-            const chunk2 = textEncoder.encode(prefix + `; name="${escape(normalizeLinefeeds(name))}"\r
+            const chunk2 = textEncoder.encode(prefix + `; name="${escape2(normalizeLinefeeds(name))}"\r
 \r
 ${normalizeLinefeeds(value)}\r
 `);
             blobParts.push(chunk2);
             length += chunk2.byteLength;
           } else {
-            const chunk2 = textEncoder.encode(`${prefix}; name="${escape(normalizeLinefeeds(name))}"` + (value.name ? `; filename="${escape(value.name)}"` : "") + `\r
+            const chunk2 = textEncoder.encode(`${prefix}; name="${escape2(normalizeLinefeeds(name))}"` + (value.name ? `; filename="${escape2(value.name)}"` : "") + `\r
 Content-Type: ${value.type || "application/octet-stream"}\r
 \r
 `);
@@ -81018,7 +81286,7 @@ var require_client_h1 = __commonJS({
       return method !== "GET" && method !== "HEAD" && method !== "OPTIONS" && method !== "TRACE" && method !== "CONNECT";
     }
     function writeH1(client, request) {
-      const { method, path: path26, host, upgrade, blocking, reset } = request;
+      const { method, path: path28, host, upgrade, blocking, reset } = request;
       let { body, headers, contentLength } = request;
       const expectsPayload = method === "PUT" || method === "POST" || method === "PATCH" || method === "QUERY" || method === "PROPFIND" || method === "PROPPATCH";
       if (util.isFormDataLike(body)) {
@@ -81084,7 +81352,7 @@ var require_client_h1 = __commonJS({
       if (blocking) {
         socket[kBlocking] = true;
       }
-      let header = `${method} ${path26} HTTP/1.1\r
+      let header = `${method} ${path28} HTTP/1.1\r
 `;
       if (typeof host === "string") {
         header += `host: ${host}\r
@@ -81271,12 +81539,12 @@ upgrade: ${upgrade}\r
           cb();
         }
       }
-      const waitForDrain = () => new Promise((resolve20, reject) => {
+      const waitForDrain = () => new Promise((resolve22, reject) => {
         assert(callback === null);
         if (socket[kError]) {
           reject(socket[kError]);
         } else {
-          callback = resolve20;
+          callback = resolve22;
         }
       });
       socket.on("close", onDrain).on("drain", onDrain);
@@ -81611,7 +81879,7 @@ var require_client_h2 = __commonJS({
     }
     function writeH2(client, request) {
       const session = client[kHTTP2Session];
-      const { method, path: path26, host, upgrade, expectContinue, signal, headers: reqHeaders } = request;
+      const { method, path: path28, host, upgrade, expectContinue, signal, headers: reqHeaders } = request;
       let { body } = request;
       if (upgrade) {
         util.errorRequest(client, request, new Error("Upgrade not supported for H2"));
@@ -81678,7 +81946,7 @@ var require_client_h2 = __commonJS({
         });
         return true;
       }
-      headers[HTTP2_HEADER_PATH] = path26;
+      headers[HTTP2_HEADER_PATH] = path28;
       headers[HTTP2_HEADER_SCHEME] = "https";
       const expectsPayload = method === "PUT" || method === "POST" || method === "PATCH";
       if (body && typeof body.read === "function") {
@@ -81914,12 +82182,12 @@ var require_client_h2 = __commonJS({
           cb();
         }
       }
-      const waitForDrain = () => new Promise((resolve20, reject) => {
+      const waitForDrain = () => new Promise((resolve22, reject) => {
         assert(callback === null);
         if (socket[kError]) {
           reject(socket[kError]);
         } else {
-          callback = resolve20;
+          callback = resolve22;
         }
       });
       h2stream.on("close", onDrain).on("drain", onDrain);
@@ -82032,9 +82300,9 @@ var require_redirect_handler = __commonJS({
           return this.handler.onHeaders(statusCode, headers, resume, statusText);
         }
         const { origin, pathname, search } = util.parseURL(new URL(this.location, this.opts.origin && new URL(this.opts.path, this.opts.origin)));
-        const path26 = search ? `${pathname}${search}` : pathname;
+        const path28 = search ? `${pathname}${search}` : pathname;
         this.opts.headers = cleanRequestHeaders(this.opts.headers, statusCode === 303, this.opts.origin !== origin);
-        this.opts.path = path26;
+        this.opts.path = path28;
         this.opts.origin = origin;
         this.opts.maxRedirections = 0;
         this.opts.query = null;
@@ -82399,16 +82667,16 @@ var require_client = __commonJS({
         return this[kNeedDrain] < 2;
       }
       async [kClose]() {
-        return new Promise((resolve20) => {
+        return new Promise((resolve22) => {
           if (this[kSize]) {
-            this[kClosedResolve] = resolve20;
+            this[kClosedResolve] = resolve22;
           } else {
-            resolve20(null);
+            resolve22(null);
           }
         });
       }
       async [kDestroy](err) {
-        return new Promise((resolve20) => {
+        return new Promise((resolve22) => {
           const requests = this[kQueue].splice(this[kPendingIdx]);
           for (let i = 0; i < requests.length; i++) {
             const request = requests[i];
@@ -82419,7 +82687,7 @@ var require_client = __commonJS({
               this[kClosedResolve]();
               this[kClosedResolve] = null;
             }
-            resolve20(null);
+            resolve22(null);
           };
           if (this[kHTTPContext]) {
             this[kHTTPContext].destroy(err, callback);
@@ -82470,7 +82738,7 @@ var require_client = __commonJS({
         });
       }
       try {
-        const socket = await new Promise((resolve20, reject) => {
+        const socket = await new Promise((resolve22, reject) => {
           client[kConnector]({
             host,
             hostname,
@@ -82482,7 +82750,7 @@ var require_client = __commonJS({
             if (err) {
               reject(err);
             } else {
-              resolve20(socket2);
+              resolve22(socket2);
             }
           });
         });
@@ -82821,8 +83089,8 @@ var require_pool_base = __commonJS({
         if (this[kQueue].isEmpty()) {
           await Promise.all(this[kClients].map((c) => c.close()));
         } else {
-          await new Promise((resolve20) => {
-            this[kClosedResolve] = resolve20;
+          await new Promise((resolve22) => {
+            this[kClosedResolve] = resolve22;
           });
         }
       }
@@ -83969,7 +84237,7 @@ var require_readable = __commonJS({
         if (this._readableState.closeEmitted) {
           return null;
         }
-        return await new Promise((resolve20, reject) => {
+        return await new Promise((resolve22, reject) => {
           if (this[kContentLength] > limit) {
             this.destroy(new AbortError());
           }
@@ -83982,7 +84250,7 @@ var require_readable = __commonJS({
             if (signal?.aborted) {
               reject(signal.reason ?? new AbortError());
             } else {
-              resolve20(null);
+              resolve22(null);
             }
           }).on("error", noop).on("data", function(chunk) {
             limit -= chunk.length;
@@ -84001,7 +84269,7 @@ var require_readable = __commonJS({
     }
     async function consume(stream, type) {
       assert(!stream[kConsume]);
-      return new Promise((resolve20, reject) => {
+      return new Promise((resolve22, reject) => {
         if (isUnusable(stream)) {
           const rState = stream._readableState;
           if (rState.destroyed && rState.closeEmitted === false) {
@@ -84018,7 +84286,7 @@ var require_readable = __commonJS({
             stream[kConsume] = {
               type,
               stream,
-              resolve: resolve20,
+              resolve: resolve22,
               reject,
               length: 0,
               body: []
@@ -84088,18 +84356,18 @@ var require_readable = __commonJS({
       return buffer;
     }
     function consumeEnd(consume2) {
-      const { type, body, resolve: resolve20, stream, length } = consume2;
+      const { type, body, resolve: resolve22, stream, length } = consume2;
       try {
         if (type === "text") {
-          resolve20(chunksDecode(body, length));
+          resolve22(chunksDecode(body, length));
         } else if (type === "json") {
-          resolve20(JSON.parse(chunksDecode(body, length)));
+          resolve22(JSON.parse(chunksDecode(body, length)));
         } else if (type === "arrayBuffer") {
-          resolve20(chunksConcat(body, length).buffer);
+          resolve22(chunksConcat(body, length).buffer);
         } else if (type === "blob") {
-          resolve20(new Blob(body, { type: stream[kContentType] }));
+          resolve22(new Blob(body, { type: stream[kContentType] }));
         } else if (type === "bytes") {
-          resolve20(chunksConcat(body, length));
+          resolve22(chunksConcat(body, length));
         }
         consumeFinish(consume2);
       } catch (err) {
@@ -84358,9 +84626,9 @@ var require_api_request = __commonJS({
     };
     function request(opts, callback) {
       if (callback === void 0) {
-        return new Promise((resolve20, reject) => {
+        return new Promise((resolve22, reject) => {
           request.call(this, opts, (err, data) => {
-            return err ? reject(err) : resolve20(data);
+            return err ? reject(err) : resolve22(data);
           });
         });
       }
@@ -84585,9 +84853,9 @@ var require_api_stream = __commonJS({
     };
     function stream(opts, factory, callback) {
       if (callback === void 0) {
-        return new Promise((resolve20, reject) => {
+        return new Promise((resolve22, reject) => {
           stream.call(this, opts, factory, (err, data) => {
-            return err ? reject(err) : resolve20(data);
+            return err ? reject(err) : resolve22(data);
           });
         });
       }
@@ -84874,9 +85142,9 @@ var require_api_upgrade = __commonJS({
     };
     function upgrade(opts, callback) {
       if (callback === void 0) {
-        return new Promise((resolve20, reject) => {
+        return new Promise((resolve22, reject) => {
           upgrade.call(this, opts, (err, data) => {
-            return err ? reject(err) : resolve20(data);
+            return err ? reject(err) : resolve22(data);
           });
         });
       }
@@ -84969,9 +85237,9 @@ var require_api_connect = __commonJS({
     };
     function connect(opts, callback) {
       if (callback === void 0) {
-        return new Promise((resolve20, reject) => {
+        return new Promise((resolve22, reject) => {
           connect.call(this, opts, (err, data) => {
-            return err ? reject(err) : resolve20(data);
+            return err ? reject(err) : resolve22(data);
           });
         });
       }
@@ -85135,20 +85403,20 @@ var require_mock_utils = __commonJS({
       }
       return true;
     }
-    function safeUrl(path26) {
-      if (typeof path26 !== "string") {
-        return path26;
+    function safeUrl(path28) {
+      if (typeof path28 !== "string") {
+        return path28;
       }
-      const pathSegments = path26.split("?");
+      const pathSegments = path28.split("?");
       if (pathSegments.length !== 2) {
-        return path26;
+        return path28;
       }
       const qp = new URLSearchParams(pathSegments.pop());
       qp.sort();
       return [...pathSegments, qp.toString()].join("?");
     }
-    function matchKey(mockDispatch2, { path: path26, method, body, headers }) {
-      const pathMatch = matchValue(mockDispatch2.path, path26);
+    function matchKey(mockDispatch2, { path: path28, method, body, headers }) {
+      const pathMatch = matchValue(mockDispatch2.path, path28);
       const methodMatch = matchValue(mockDispatch2.method, method);
       const bodyMatch = typeof mockDispatch2.body !== "undefined" ? matchValue(mockDispatch2.body, body) : true;
       const headersMatch = matchHeaders(mockDispatch2, headers);
@@ -85170,7 +85438,7 @@ var require_mock_utils = __commonJS({
     function getMockDispatch(mockDispatches, key) {
       const basePath = key.query ? buildURL(key.path, key.query) : key.path;
       const resolvedPath = typeof basePath === "string" ? safeUrl(basePath) : basePath;
-      let matchedMockDispatches = mockDispatches.filter(({ consumed }) => !consumed).filter(({ path: path26 }) => matchValue(safeUrl(path26), resolvedPath));
+      let matchedMockDispatches = mockDispatches.filter(({ consumed }) => !consumed).filter(({ path: path28 }) => matchValue(safeUrl(path28), resolvedPath));
       if (matchedMockDispatches.length === 0) {
         throw new MockNotMatchedError(`Mock dispatch not matched for path '${resolvedPath}'`);
       }
@@ -85208,9 +85476,9 @@ var require_mock_utils = __commonJS({
       }
     }
     function buildKey(opts) {
-      const { path: path26, method, body, headers, query } = opts;
+      const { path: path28, method, body, headers, query } = opts;
       return {
-        path: path26,
+        path: path28,
         method,
         body,
         headers,
@@ -85678,10 +85946,10 @@ var require_pending_interceptors_formatter = __commonJS({
       }
       format(pendingInterceptors) {
         const withPrettyHeaders = pendingInterceptors.map(
-          ({ method, path: path26, data: { statusCode }, persist, times, timesInvoked, origin }) => ({
+          ({ method, path: path28, data: { statusCode }, persist, times, timesInvoked, origin }) => ({
             Method: method,
             Origin: origin,
-            Path: path26,
+            Path: path28,
             "Status code": statusCode,
             Persistent: persist ? PERSISTENT : NOT_PERSISTENT,
             Invocations: timesInvoked,
@@ -88846,7 +89114,7 @@ var require_fetch = __commonJS({
       function dispatch({ body }) {
         const url = requestCurrentURL(request);
         const agent = fetchParams.controller.dispatcher;
-        return new Promise((resolve20, reject) => agent.dispatch(
+        return new Promise((resolve22, reject) => agent.dispatch(
           {
             path: url.pathname + url.search,
             origin: url.origin,
@@ -88920,7 +89188,7 @@ var require_fetch = __commonJS({
                 }
               }
               const onError = this.onError.bind(this);
-              resolve20({
+              resolve22({
                 status,
                 statusText,
                 headersList,
@@ -88966,7 +89234,7 @@ var require_fetch = __commonJS({
               for (let i = 0; i < rawHeaders.length; i += 2) {
                 headersList.append(bufferToLowerCasedHeaderName(rawHeaders[i]), rawHeaders[i + 1].toString("latin1"), true);
               }
-              resolve20({
+              resolve22({
                 status,
                 statusText: STATUS_CODES[status],
                 headersList,
@@ -90580,9 +90848,9 @@ var require_util6 = __commonJS({
         }
       }
     }
-    function validateCookiePath(path26) {
-      for (let i = 0; i < path26.length; ++i) {
-        const code = path26.charCodeAt(i);
+    function validateCookiePath(path28) {
+      for (let i = 0; i < path28.length; ++i) {
+        const code = path28.charCodeAt(i);
         if (code < 32 || // exclude CTLs (0-31)
         code === 127 || // DEL
         code === 59) {
@@ -92583,8 +92851,8 @@ var require_util8 = __commonJS({
       return true;
     }
     function delay(ms) {
-      return new Promise((resolve20) => {
-        setTimeout(resolve20, ms).unref();
+      return new Promise((resolve22) => {
+        setTimeout(resolve22, ms).unref();
       });
     }
     module2.exports = {
@@ -93192,11 +93460,11 @@ var require_undici = __commonJS({
           if (typeof opts.path !== "string") {
             throw new InvalidArgumentError("invalid opts.path");
           }
-          let path26 = opts.path;
+          let path28 = opts.path;
           if (!opts.path.startsWith("/")) {
-            path26 = `/${path26}`;
+            path28 = `/${path28}`;
           }
-          url = new URL(util.parseOrigin(url).origin + path26);
+          url = new URL(util.parseOrigin(url).origin + path28);
         } else {
           if (!opts) {
             opts = typeof url === "object" ? url : {};
@@ -93386,7 +93654,7 @@ function formatOptions(specs) {
 
 // src/commands.ts
 init_engine_import_meta_url();
-var path25 = __toESM(require("node:path"), 1);
+var path27 = __toESM(require("node:path"), 1);
 
 // src/backend/plan.ts
 init_engine_import_meta_url();
@@ -94075,12 +94343,12 @@ var fs8 = __toESM(require("node:fs"), 1);
 var os = __toESM(require("node:os"), 1);
 var path6 = __toESM(require("node:path"), 1);
 var import_node_child_process = require("node:child_process");
-var spawnRunner = (cmd, args, timeoutMs) => new Promise((resolve20) => {
+var spawnRunner = (cmd, args, timeoutMs) => new Promise((resolve22) => {
   let proc;
   try {
     proc = (0, import_node_child_process.spawn)(cmd, [...args], { stdio: ["ignore", "pipe", "pipe"] });
   } catch (err) {
-    resolve20({ exitCode: null, stdout: "", stderr: "", failure: err.message });
+    resolve22({ exitCode: null, stdout: "", stderr: "", failure: err.message });
     return;
   }
   const out = [];
@@ -94094,11 +94362,11 @@ var spawnRunner = (cmd, args, timeoutMs) => new Promise((resolve20) => {
   proc.stderr.on("data", (d) => errBuf.push(d));
   proc.on("error", (err) => {
     clearTimeout(timer);
-    resolve20({ exitCode: null, stdout: "", stderr: "", failure: err.message });
+    resolve22({ exitCode: null, stdout: "", stderr: "", failure: err.message });
   });
   proc.on("close", (code) => {
     clearTimeout(timer);
-    resolve20({
+    resolve22({
       exitCode: code,
       stdout: decodeConsole(Buffer.concat(out)),
       stderr: decodeConsole(Buffer.concat(errBuf)),
@@ -95217,7 +95485,7 @@ async function readPagesWithVlm(opts) {
   let totals = null;
   const pages = [];
   const stderrTail = [];
-  const finished = new Promise((resolve20, reject) => {
+  const finished = new Promise((resolve22, reject) => {
     let stdout = "";
     let stderr = "";
     let failure = null;
@@ -95287,7 +95555,7 @@ async function readPagesWithVlm(opts) {
 ` + stderrTail.map((l) => `  ${l}`).join("\n")
         ));
       }
-      resolve20();
+      resolve22();
     });
   });
   proc.stdin.write(config);
@@ -95369,7 +95637,7 @@ async function cropPageRenders(opts) {
   });
   const written = [];
   const stderrTail = [];
-  const finished = new Promise((resolve20, reject) => {
+  const finished = new Promise((resolve22, reject) => {
     let stdout = "";
     proc.stdout.setEncoding("utf8");
     proc.stdout.on("data", (chunk) => {
@@ -95402,7 +95670,7 @@ async function cropPageRenders(opts) {
 ` + stderrTail.map((l) => `  ${l}`).join("\n")
         ));
       }
-      resolve20();
+      resolve22();
     });
   });
   proc.stdin.write(config);
@@ -95434,7 +95702,7 @@ async function readPdfTextLayer(opts) {
   });
   const layer = /* @__PURE__ */ new Map();
   const stderrTail = [];
-  const finished = new Promise((resolve20, reject) => {
+  const finished = new Promise((resolve22, reject) => {
     let stdout = "";
     proc.stdout.setEncoding("utf8");
     proc.stdout.on("data", (chunk) => {
@@ -95468,7 +95736,7 @@ async function readPdfTextLayer(opts) {
 ` + stderrTail.map((l) => `  ${l}`).join("\n")
         ));
       }
-      resolve20();
+      resolve22();
     });
   });
   proc.stdin.write(config);
@@ -96620,22 +96888,22 @@ function viterbi(logProbs, switchCost) {
     dp = next;
     back.push(from);
   }
-  const path26 = new Array(n);
+  const path28 = new Array(n);
   let j = argmax(dp);
-  path26[n - 1] = j;
+  path28[n - 1] = j;
   for (let i = n - 2; i >= 0; i -= 1) {
     j = back[i][j];
-    path26[i] = j;
+    path28[i] = j;
   }
-  return path26;
+  return path28;
 }
-function runsOf(path26, state) {
+function runsOf(path28, state) {
   const out = [];
   let i = 0;
-  while (i < path26.length) {
-    if (path26[i] === state) {
+  while (i < path28.length) {
+    if (path28[i] === state) {
       let k = i;
-      while (k < path26.length && path26[k] === state) k += 1;
+      while (k < path28.length && path28[k] === state) k += 1;
       out.push([i, k]);
       i = k;
     } else {
@@ -96701,9 +96969,9 @@ function onOffPath(hot, params) {
   const rows = hot.map((h) => [Math.log(Math.max(1 - h, LOG_FLOOR2)), Math.log(Math.max(h, LOG_FLOOR2)) - params.tau]);
   return viterbi(rows, params.switchCost);
 }
-function mergedRuns(path26, units, params) {
+function mergedRuns(path28, units, params) {
   const out = [];
-  for (const [a, bEx] of runsOf(path26, 1)) {
+  for (const [a, bEx] of runsOf(path28, 1)) {
     const b = bEx - 1;
     const prev = out[out.length - 1];
     if (prev) {
@@ -96765,8 +97033,8 @@ function makeSpan(id, from, to, categories, units, hot) {
 function buildSpans(map, params = DEFAULT_SPAN_PARAMS) {
   if (map.units.length === 0 || map.categories.length === 0) return [];
   const hot = hotness(map, params);
-  const path26 = onOffPath(hot, params);
-  const ranges = mergedRuns(path26, map.units, params);
+  const path28 = onOffPath(hot, params);
+  const ranges = mergedRuns(path28, map.units, params);
   const spans = ranges.map(([a, b], id) => makeSpan(id, a, b, keepCategories(scoreRange(map, a, b, params), params.categoryFloor), map.units, hot));
   return spans.sort(compareSpans);
 }
@@ -97534,18 +97802,18 @@ function stampOf(row, attribute = categoryAttribute(row.category)) {
 function classOf2(align) {
   return align === "" ? "" : ` class="${align}"`;
 }
-function chapterBody(span, notes, column, images, format, heading) {
+function chapterBody(span, notes, column, images, format, heading2) {
   const out = [];
   const headings = [];
   const pagesSeen = /* @__PURE__ */ new Set();
   const openers = openingRun(span);
-  if (openers === 0 && heading !== null) {
+  if (openers === 0 && heading2 !== null) {
     out.push(blockElement(
       "Title",
       { outer: ` data-bf-cat="${categoryAttribute("Title")}"` },
       // The empty string strips a marker from a duplicated heading too —
       // the same ruling `worded` carries, one door over.
-      dotsInline(heading, { noteref: () => "" })
+      dotsInline(heading2, { noteref: () => "" })
     ));
   }
   let linked = 0;
@@ -99663,9 +99931,9 @@ function explodeElement(el, walk, book) {
     made.refs = [];
     return;
   }
-  const heading = HEADINGS.get(el.tag);
-  if (heading !== void 0) {
-    whole(heading);
+  const heading2 = HEADINGS.get(el.tag);
+  if (heading2 !== void 0) {
+    whole(heading2);
     return;
   }
   switch (el.tag) {
@@ -102408,6 +102676,18 @@ var CT_REMOVE_ALSO = {
   placeholder: "<text>",
   describe: "Anything else this book prints that a narrator would not read, described in your own words. Added to the triage question and to the prompt of the cleaner; the model decides what fits."
 };
+var CT_FIXED_READINGS = {
+  name: "fixed-readings",
+  type: "string",
+  placeholder: "<readings.json>",
+  describe: 'A fixed-readings/v1 file: {"format": "fixed-readings/v1", "readings": [{"find": "Wolf IV", "replace": "Wolf Four"}, ...]}. Each find is read wherever it stands as a whole token run, before anything is judged or asked, and the model is never shown it.'
+};
+async function cleanFixedReadings(args) {
+  const file = optionalString(args, "fixed-readings");
+  if (file === void 0) return void 0;
+  const { readFixedReadingsFile: readFixedReadingsFile2 } = await Promise.resolve().then(() => (init_fixed_readings(), fixed_readings_exports));
+  return readFixedReadingsFile2(file);
+}
 async function cleanRemoval(args) {
   const references = optionalString(args, "remove-references");
   if (references !== void 0 && references !== "on" && references !== "off") {
@@ -102448,6 +102728,20 @@ var CTR_CONCURRENCY = {
   placeholder: "<n>",
   describe: "Groups in flight at once (each is one request of many questions). Default 2."
 };
+async function runCleanFormsCommand(args) {
+  const { runCleanForms: runCleanForms2 } = await Promise.resolve().then(() => (init_forms(), forms_exports));
+  runCleanForms2({
+    bookPath: requireString(args, "book", "the book file whose printed forms are listed"),
+    outPath: requireString(args, "out", "where the forms are written"),
+    log
+  });
+}
+var CF_OUT = {
+  name: "out",
+  type: "string",
+  placeholder: "<forms.json>",
+  describe: "Where the printed-forms/v1 file is written."
+};
 async function runCleanTriageCommand(args) {
   const concurrency = optionalString(args, "concurrency");
   if (concurrency !== void 0 && !/^[1-9]\d*$/.test(concurrency)) {
@@ -102455,10 +102749,12 @@ async function runCleanTriageCommand(args) {
   }
   const unit = await cleanUnit(args);
   const removal = await cleanRemoval(args);
+  const fixedReadings = await cleanFixedReadings(args);
   const { runCleanTriage: runCleanTriage2 } = await Promise.resolve().then(() => (init_triage(), triage_exports));
   await runCleanTriage2({
     ...unit === void 0 ? {} : { unit },
     removal,
+    ...fixedReadings === void 0 ? {} : { fixedReadings },
     bookPath: requireString(args, "book", "the book file whose blocks are judged"),
     outPath: requireString(args, "out", "where the verdicts are written"),
     endpoint: requireString(args, "endpoint", "the Crucible whose decide door is asked"),
@@ -102475,6 +102771,7 @@ async function runCleanText2(args) {
   }
   const unit = await cleanUnit(args);
   const removal = await cleanRemoval(args);
+  const fixedReadings = await cleanFixedReadings(args);
   const gateArg = optionalString(args, "gate");
   if (gateArg !== void 0 && gateArg !== "on" && gateArg !== "off" && gateArg !== "light") {
     throw new UsageError(`--gate takes light, on or off, not "${gateArg}"`);
@@ -102482,7 +102779,7 @@ async function runCleanText2(args) {
   const gate = gateArg === void 0 ? void 0 : gateArg === "light" ? "light" : gateArg === "on";
   const epubIn = optionalString(args, "epub");
   if (epubIn !== void 0) {
-    const bookRoute = ["book", "records", "stamp", "generation", "triage", "unit"].filter((name) => optionalString(args, name) !== void 0);
+    const bookRoute = ["book", "records", "stamp", "generation", "triage", "unit", "fixed-readings"].filter((name) => optionalString(args, name) !== void 0);
     if (bookRoute.length > 0) {
       throw new UsageError(
         `--epub is the bare-EPUB failsafe and ${bookRoute.map((n) => `--${n}`).join(", ")} belong${bookRoute.length === 1 ? "s" : ""} to the book-file route. They are two doors onto one pass: the book route writes RECORDS keyed by the row ids a derived book keeps, and this one rewrites a finished file in place of them. Asking for both would mean choosing a source silently and filing the answers under the other one's names. The EPUB route writes its stamp into --out's package document and beside it as <out>.stamp.json; it needs no --records, no --stamp and no --generation.`
@@ -102524,6 +102821,7 @@ async function runCleanText2(args) {
     ...unit === void 0 ? {} : { unit },
     ...gate === void 0 ? {} : { gate },
     removal,
+    ...fixedReadings === void 0 ? {} : { fixedReadings },
     log
   });
 }
@@ -102860,7 +103158,7 @@ async function runAnalyzeRankCommand(args) {
     model: requireString(args, "model", "the resident decide model"),
     log
   });
-  process.stdout.write(`${path25.resolve(outPath)}
+  process.stdout.write(`${path27.resolve(outPath)}
 `);
 }
 function defaultTranslationOut(epubPath, to) {
@@ -102896,12 +103194,12 @@ async function runTranslate(args) {
   }
   const outPath = recordsPath !== void 0 || epubPath === void 0 ? void 0 : named ?? defaultTranslationOut(epubPath, to);
   const input = epubPath ?? bookPath;
-  if (outPath !== void 0 && path25.resolve(outPath) === path25.resolve(input)) {
+  if (outPath !== void 0 && path27.resolve(outPath) === path27.resolve(input)) {
     throw new UsageError(
       `--out ${outPath} is the input itself. foundry reads the one and writes the other; a book overwritten by its own translation is the single input this command cannot get back.`
     );
   }
-  if (recordsPath !== void 0 && path25.resolve(recordsPath) === path25.resolve(input)) {
+  if (recordsPath !== void 0 && path27.resolve(recordsPath) === path27.resolve(input)) {
     throw new UsageError(
       `--records ${recordsPath} is the input itself. The records file is written to; the book is not.`
     );
@@ -102994,7 +103292,7 @@ async function runTranslate(args) {
 async function runEpubFinal(args) {
   const epubPath = requireString(args, "epub", "the working book to finish");
   const outPath = requireString(args, "out", "where the final EPUB is written");
-  if (path25.resolve(outPath) === path25.resolve(epubPath)) {
+  if (path27.resolve(outPath) === path27.resolve(epubPath)) {
     throw new UsageError(
       `--out ${outPath} is the input itself. foundry reads the working book and writes the edition; the working copy is where every cut lives, and a run that overwrites it cannot be run a second time.`
     );
@@ -103046,7 +103344,7 @@ async function runEpubFinal(args) {
 async function runEpubStamp(args) {
   const epubPath = requireString(args, "epub", "the book to stamp");
   const outPath = optionalString(args, "out");
-  if (outPath !== void 0 && path25.resolve(outPath) === path25.resolve(epubPath)) {
+  if (outPath !== void 0 && path27.resolve(outPath) === path27.resolve(epubPath)) {
     throw new UsageError(
       `--out ${outPath} is the input itself. foundry reads the one and writes the other; a directory working copy is stamped in place and takes no --out at all.`
     );
@@ -103082,7 +103380,7 @@ function metaLine(name, value) {
 async function runEpubMeta(args) {
   const epubPath = requireString(args, "epub", "the book whose metadata is being read or written");
   const outPath = optionalString(args, "out");
-  if (outPath !== void 0 && path25.resolve(outPath) === path25.resolve(epubPath)) {
+  if (outPath !== void 0 && path27.resolve(outPath) === path27.resolve(epubPath)) {
     throw new UsageError(
       `--out ${outPath} is the input itself. foundry reads the one and writes the other; a directory working copy is edited in place and takes no --out at all.`
     );
@@ -103169,7 +103467,7 @@ async function runEpubMeta(args) {
 async function runPdfMeta(args) {
   const pdfPath = requireString(args, "pdf", "the PDF whose metadata is being read or written");
   const outPath = optionalString(args, "out");
-  if (outPath !== void 0 && path25.resolve(outPath) === path25.resolve(pdfPath)) {
+  if (outPath !== void 0 && path27.resolve(outPath) === path27.resolve(pdfPath)) {
     throw new UsageError(
       `--out ${outPath} is the input itself. foundry reads the one and writes the other, and this command rewrites the whole file rather than patching it, so there would be nothing left to read.`
     );
@@ -104624,14 +104922,34 @@ var COMMANDS = [
       CT_UNIT,
       CT_GATE,
       CT_REMOVE_REFERENCES,
-      CT_REMOVE_ALSO
+      CT_REMOVE_ALSO,
+      CT_FIXED_READINGS
     ],
     run: runCleanText2
   },
   {
+    name: "clean-forms",
+    summary: "List the printed forms of a book (abbreviations, roman numerals, capitals) with sentences from across it.",
+    usage: "--book <book.jsonl> --out <forms.json>",
+    detail: [
+      "THE INVENTORY HALF OF A BOOK GLOSSARY. Every token a narrator does not read as",
+      "printed \u2014 the light gate's own definition \u2014 grouped into the forms the book",
+      'uses: a roman numeral with the word in front of it ("Wolf IV" is not "Henry',
+      'IV"), a run of capitals outside a heading, an abbreviation (lower-cased, its',
+      "closing period dropped, every printed spelling listed). Each comes with its",
+      "count and up to six sentences spread across the book.",
+      "",
+      "Numbers, brackets, line-break hyphens and typos are not forms: they are read",
+      "sentence by sentence. Nothing here decides a reading. Whoever does hands the",
+      "answers to clean-triage and clean-text as --fixed-readings."
+    ].join("\n"),
+    options: [CT_BOOK_IN, CF_OUT],
+    run: runCleanFormsCommand
+  },
+  {
     name: "clean-triage",
     summary: "Judge which blocks of a book need cleaning at all, before clean-text is run.",
-    usage: "--book <book.jsonl> --out <verdicts.json> --endpoint <crucible url> --model <decide model> [--concurrency <n>] [--unit <sentence|block>] [--remove-references <on|off>] [--remove-also <text>]",
+    usage: "--book <book.jsonl> --out <verdicts.json> --endpoint <crucible url> --model <decide model> [--concurrency <n>] [--unit <sentence|block>] [--remove-references <on|off>] [--remove-also <text>] [--fixed-readings <readings.json>]",
     detail: [
       'THE FIRST HALF OF A TRIAGED CLEANUP. Owen, 2026-09-23: "we create a list of',
       "blocks that need to be cleaned with snap and then we bring snap down and load",
@@ -104657,7 +104975,17 @@ var COMMANDS = [
       "A busy door (chat_queue_full) is waited out; a model that is not resident is",
       "refused by name."
     ].join("\n"),
-    options: [CT_BOOK_IN, CTR_OUT, CTR_ENDPOINT, CTR_MODEL, CTR_CONCURRENCY, CT_UNIT, CT_REMOVE_REFERENCES, CT_REMOVE_ALSO],
+    options: [
+      CT_BOOK_IN,
+      CTR_OUT,
+      CTR_ENDPOINT,
+      CTR_MODEL,
+      CTR_CONCURRENCY,
+      CT_UNIT,
+      CT_REMOVE_REFERENCES,
+      CT_REMOVE_ALSO,
+      CT_FIXED_READINGS
+    ],
     run: runCleanTriageCommand
   },
   {
