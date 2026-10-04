@@ -53,20 +53,30 @@
  * ── Ownership ───────────────────────────────────────────────────────────────
  *
  * Owen: *"foundry is for written texts. bookforge extends foundry's
- * functionality into spoken text"* and *"it should effectively be a part of the
- * cleaning logic"*. So the glossary is this app's; Foundry knows only how to list
- * a book's forms and a list of strings to read at given spots. It runs inside the
- * cleanup's own queue step, by default, before the engine is spawned.
+ * functionality into spoken text"*. So the glossary is this app's; Foundry knows
+ * only how to list a book's forms and a list of strings to read at given spots.
+ *
+ * ── ITS OWN STEP, AND THE CLEANUP ONLY READS IT (Owen, 2026-10-03) ──────────
+ *
+ * *"the glossary building step should be its own process. and if the user wants
+ * to rebuild the glossary from zero, they can"* — and *"cleaning a book with no
+ * guide yet - it runs the guide building step automatically"*. So:
+ *
+ *   · THE GUIDE STEP (`queue-steps/narration-guide.ts`, the tree's "Pronunciation
+ *     guide") builds it, from any step of the book, and may be told to START FROM
+ *     ZERO — every decision dropped, a person's included (*"i dont think they
+ *     should be protected on every clean"*).
+ *   · A CLEANUP never rebuilds it. It reads the guide as it stands, decides only
+ *     what the guide has not (a form or a spot the book did not print when the
+ *     guide was made — all of it, when there is no guide yet), and hands it on.
+ *   · A person reviews it in BookForge's own window (the tree's "Review
+ *     pronunciation"): a reading changed, a form or a spot left to the narrator.
  *
  * ── Cost, and what is never paid twice ──────────────────────────────────────
  *
  * Selective by construction: one chat per form (Hellworld: 3; a history book
- * ~180) and one decide item per occurrence. Decisions belong to the CLEAN that
- * made them — the queue job (`EnsureGlossaryOptions.run`): its triage and its
- * cleanup share them, and a resumed job keeps them, but a clean queued again
- * decides again (Owen: "if i sent it through cleanup again then its because i want
- * to clean it up again"). A PERSON's meanings are never asked again, and an
- * occurrence a person placed is never placed again.
+ * ~180) and one decide item per occurrence. A decision in the guide is never asked
+ * again until the guide is started from zero.
  *
  * ── Its own session, closed before the engine starts ────────────────────────
  *
@@ -86,7 +96,7 @@ import { asSessionWait, takeCrucibleLease, type CrucibleLease } from './crucible
 import { CRUCIBLE_CLIENT_NAME, crucibleClientFor } from './crucible/servers';
 import { isUpstreamModelId } from './crucible/text-acts';
 import { modelFromCapability, processTextVenueHost } from './crucible/text-venue';
-import type { FoundryFormsLister, FoundryJobRequest } from './foundry-host-queue';
+import type { FoundryFormsAtLister, FoundryFormsLister, FoundryJobRequest } from './foundry-host-queue';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // The files
@@ -159,8 +169,11 @@ export interface PlacedOccurrence {
   sense: number | null;
   /** The decide door's confidence in that placing, or null when a person placed it. */
   p: number | null;
-  /** A person placed it: never placed again. */
+  /** A person placed it in the review. */
   byPerson?: true;
+  /** Its sentence and whether it ends it — what the review shows. */
+  sentence?: string;
+  endsSentence?: boolean;
 }
 
 export interface GlossaryEntry {
@@ -173,12 +186,12 @@ export interface GlossaryEntry {
   senses: GlossarySense[];
   /** The model's sentence of evidence, or what went wrong. */
   why: string;
-  /** Who decided the meanings. A PERSON's are never asked again and never overwritten. */
+  /** Who decided the meanings: the model, or a person in the review. */
   by: 'model' | 'person';
   model?: string;
   /** The meanings question's digest — form, samples, prompt version, model. */
   question?: string;
-  /** The placing's digest — meanings and occurrences — so a placing is redone only when either moved. */
+  /** The placing's digest when the model placed it (a record; nothing is redone by it). */
   placed?: string;
   occurrences: PlacedOccurrence[];
   at: string;
@@ -188,21 +201,62 @@ export interface GlossaryFile {
   format: typeof GLOSSARY_FORMAT;
   /** The project key the glossary belongs to. */
   book: string;
-  /**
-   * WHICH CLEAN DECIDED IT — the queue job whose triage and clean share these
-   * decisions. A clean queued again is a new job, and the model's decisions are
-   * made again (Owen, 2026-10-03: "if i sent it through cleanup again then its
-   * because i want to clean it up again"); a resumed job keeps its own.
-   */
-  run?: string;
+  /** When the guide was last started from zero (or first built). */
+  built?: string;
   entries: GlossaryEntry[];
+}
+
+/** Where one book's guide lives: the decisions, and the readings a cleanup is handed. */
+export interface GuideFiles { glossary: string; readings: string; book: string }
+
+/**
+ * WHAT A GUIDE IS MADE FROM — its files, and the book's printed forms as the run
+ * will see them. A cleanup's guide lists the book its request names
+ * (`guideOfRequest`); the guide step's lists the step a person pressed on
+ * (`guideAtStep`). One builder, two doors.
+ */
+export interface GuideSource {
+  files: GuideFiles;
+  list: (onLine?: (line: string) => void) => Promise<unknown>;
+}
+
+export function guideOfRequest(request: FoundryJobRequest, lister: FoundryFormsLister): GuideSource {
+  return { files: glossaryPathsFor(request), list: (onLine) => lister(request, onLine) };
+}
+
+/**
+ * The guide of a project, listed at one of its steps (null: where it stands).
+ * Named from the project's own key — the name every cleanup's records carry.
+ */
+export function guideAtStep(projectDir: string, at: string | null, lister: FoundryFormsAtLister): GuideSource {
+  return { files: guidePathsOfProject(projectDir), list: (onLine) => lister(projectDir, at, onLine) };
+}
+
+/** A project's guide files, from its manifest's key. */
+export function guidePathsOfProject(projectDir: string): GuideFiles {
+  const manifest = path.join(projectDir, 'project.json');
+  const key = (JSON.parse(fs.readFileSync(manifest, 'utf8').replace(/^\uFEFF/, '')) as { key?: unknown }).key;
+  if (typeof key !== 'string' || key.length === 0) {
+    throw new Error(`${manifest} names no project key, so there is no telling what its pronunciation guide is called.`);
+  }
+  const dir = path.join(projectDir, 'readings');
+  return {
+    book: key,
+    glossary: path.join(dir, `${key}.narration-glossary.json`),
+    readings: path.join(dir, `${key}.narration-glossary.readings.json`),
+  };
+}
+
+/** Whether this book has a guide at all — what decides that a cleanup builds one first. */
+export function hasGuide(files: GuideFiles): boolean {
+  return fs.existsSync(files.glossary);
 }
 
 /**
  * WHERE A CLEANUP'S GLOSSARY LIVES — beside its records, named from the same
  * project key, so a cleanup and its triage find one glossary.
  */
-export function glossaryPathsFor(request: FoundryJobRequest): { glossary: string; readings: string; book: string } {
+export function glossaryPathsFor(request: FoundryJobRequest): GuideFiles {
   const named = request.kind === 'clean' ? request.recordsPath
     : request.kind === 'clean-triage' ? request.outputPath : undefined;
   if (typeof named !== 'string' || named.length === 0) {
@@ -245,10 +299,14 @@ export function readGlossary(file: string, book: string): GlossaryFile {
   if (parsed.format !== GLOSSARY_FORMAT || !Array.isArray(parsed.entries)) {
     throw new Error(`${file} is not a ${GLOSSARY_FORMAT} file, so the glossary in it cannot be read. Nothing was asked.`);
   }
-  const run = (parsed as { run?: unknown }).run;
+  const built = (parsed as { built?: unknown }).built;
   return {
-    format: GLOSSARY_FORMAT, book, ...(typeof run === 'string' ? { run } : {}), entries: parsed.entries as GlossaryEntry[],
+    format: GLOSSARY_FORMAT, book, ...(typeof built === 'string' ? { built } : {}), entries: parsed.entries as GlossaryEntry[],
   };
+}
+
+export function writeGlossary(file: string, glossary: GlossaryFile): void {
+  writeAtomically(file, glossary);
 }
 
 function writeAtomically(file: string, body: unknown): void {
@@ -784,14 +842,13 @@ export interface GlossaryOutcome {
 }
 
 export interface EnsureGlossaryOptions {
-  request: FoundryJobRequest;
-  /** The Crucible the cleanup was admitted to, by name. The glossary asks the same machine. */
+  /** The book's guide files and its forms (`guideOfRequest` / `guideAtStep`). */
+  source: GuideSource;
+  /** The Crucible the run was admitted to, by name. The glossary asks the same machine. */
   server: string;
   signal: AbortSignal;
   /** One line for the row and the log. */
   report: (line: string) => void;
-  /** Foundry's lister (`foundryFormsLister()`); injected for the keeper. */
-  listForms: FoundryFormsLister;
   /** Injected for the keeper; production chats. */
   ask?: GlossaryAsker;
   /** Injected for the keeper; production asks the decide door. */
@@ -799,22 +856,27 @@ export interface EnsureGlossaryOptions {
   /** The model's name, when the two are injected. Production asks the server. */
   model?: string;
   /**
-   * THIS CLEAN'S IDENTITY — the queue job id in the app, one per invocation in the
-   * CLI. Decisions the model made for another run are made again; a person's never are.
+   * START FROM ZERO: every decision in the guide is dropped, a person's included,
+   * and the whole book is decided again. Only the guide step is ever told this; a
+   * cleanup keeps the guide as it stands and decides only what it lacks.
    */
-  run: string;
+  fromZero: boolean;
 }
 
 /**
  * MAKE SURE THIS BOOK'S GUIDE ANSWERS EVERY FORM AND EVERY SPOT IT PRINTS, and
  * write the readings the run will be handed. Returns where they are.
+ *
+ * What the guide already decides is KEPT — a form's meanings, and every spot
+ * already placed — and only what it lacks is asked: a form it has never seen, an
+ * occurrence it has not placed. Nothing at all, for a book whose guide is whole.
  */
 export async function ensureNarrationGlossary(opts: EnsureGlossaryOptions): Promise<GlossaryOutcome> {
-  const { request, server, report, signal } = opts;
-  const files = glossaryPathsFor(request);
+  const { server, report, signal } = opts;
+  const files = opts.source.files;
 
   report('glossary: listing the book\'s printed forms');
-  const listed = await opts.listForms(request) as { format?: unknown; forms?: unknown };
+  const listed = await opts.source.list() as { format?: unknown; forms?: unknown };
   if (listed?.format !== 'printed-forms/v1' || !Array.isArray(listed.forms)) {
     throw new Error('Foundry listed the book\'s printed forms in a shape this app does not read (expected printed-forms/v1).');
   }
@@ -843,41 +905,50 @@ export async function ensureNarrationGlossary(opts: EnsureGlossaryOptions): Prom
   const formKey = (f: { kind: string; key: string }): string => `${f.kind}\u0000${f.key}`;
   const formsByKey = new Map(forms.map((f) => [formKey(f), f] as const));
 
+  const existed = hasGuide(files);
   const stored = readGlossary(files.glossary, files.book);
   /*
-   * A CLEAN QUEUED AGAIN DECIDES AGAIN. The model's decisions belong to the run
-   * that made them; a new run keeps only what a PERSON decided, and asks the rest.
+   * FROM ZERO, NOTHING IS KEPT — the model's decisions and a person's alike. A
+   * guide is otherwise the guide: what it decides stands until it is started again.
    */
-  const sameRun = stored.run === opts.run;
-  const glossary: GlossaryFile = {
-    ...stored,
-    run: opts.run,
-    entries: sameRun ? stored.entries : stored.entries.filter((e) => e.by === 'person'),
-  };
-  if (!sameRun && stored.entries.some((e) => e.by === 'model')) {
-    report('glossary: a new clean — the model\'s earlier decisions are made again; yours are kept');
+  const glossary: GlossaryFile = opts.fromZero || !existed
+    ? { format: GLOSSARY_FORMAT, book: files.book, built: new Date().toISOString(), entries: [] }
+    : stored;
+  if (opts.fromZero && stored.entries.length > 0) {
+    report(`glossary: starting from zero — the guide's ${stored.entries.length} decided form(s) are dropped`);
   }
   const had = new Map(glossary.entries.map((e) => [formKey(e), e] as const));
   const listedKeys = new Set(forms.map(formKey));
-  // A person's entry for a form the book no longer prints is kept in the file, unread.
-  const orphans = glossary.entries.filter((e) => e.by === 'person' && !listedKeys.has(formKey(e)));
+  // A decision for a form the book no longer prints is kept in the file, unread.
+  const orphans = glossary.entries.filter((e) => !listedKeys.has(formKey(e)));
 
-  // ── What needs asking ─────────────────────────────────────────────────────
+  const spotKey = (o: { at: string; printed: string; nth: number }): string => `${o.at}\u0000${o.printed}\u0000${o.nth}`;
+  // ── What needs asking: a form the guide has never seen ───────────────────
   const entries = new Map<string, GlossaryEntry>();
   const toAsk: PrintedForm[] = [];
   for (const form of forms) {
     const before = had.get(formKey(form));
-    if (before !== undefined && (before.by === 'person' || before.question === questionDigest(form, model))) {
+    if (before !== undefined) {
       entries.set(formKey(form), { ...before, count: form.count, printed: form.printed });
     } else {
       toAsk.push(form);
     }
   }
+  if (existed && !opts.fromZero) {
+    report(toAsk.length === 0
+      ? `glossary: the book's guide decides all ${forms.length} printed form(s)`
+      : `glossary: the book's guide decides ${forms.length - toAsk.length} of ${forms.length} printed form(s); `
+        + `${toAsk.length} it has not seen are decided now`);
+  }
+  // A form with meanings is placed where the guide has not placed it: every spot, for a form asked now.
   const toPlace = (): PrintedForm[] => forms.filter((form) => {
     const entry = entries.get(formKey(form));
-    return entry !== undefined && entry.senses.length > 0
-      && entry.placed !== placingDigest(entry.senses, form.occurrences, model!);
+    if (entry === undefined || entry.senses.length === 0) return false;
+    const placed = new Set(entry.occurrences.map(spotKey));
+    return form.occurrences.some((o) => !placed.has(spotKey(o)));
   });
+  /** The forms whose meanings were asked in THIS run — only these get a second look or a sense-by-sense read. */
+  const askedNow = new Set<string>();
 
   const save = (): void => {
     const ordered = forms.map((f) => entries.get(formKey(f))).filter((e): e is GlossaryEntry => e !== undefined);
@@ -934,6 +1005,7 @@ export async function ensureNarrationGlossary(opts: EnsureGlossaryOptions): Prom
       let done = 0;
       await pool(toAsk, GLOSSARY_DEPTH, signal, async (form) => {
         entries.set(formKey(form), await meaningsOf(form, null));
+        askedNow.add(formKey(form));
         asked += 1;
         done += 1;
         report(`glossary: meanings ${done}/${toAsk.length}`);
@@ -945,9 +1017,9 @@ export async function ensureNarrationGlossary(opts: EnsureGlossaryOptions): Prom
       const total = placing.reduce((n, f) => n + f.occurrences.length, 0);
       let placedSoFar = 0;
       const placeForm = async (form: PrintedForm, entry: GlossaryEntry): Promise<{ entry: GlossaryEntry; nowhere: string[] }> => {
-        const people = new Map(entry.occurrences.filter((o) => o.byPerson === true)
-          .map((o) => [`${o.at}\u0000${o.printed}\u0000${o.nth}`, o] as const));
-        const open = form.occurrences.filter((o) => !people.has(`${o.at}\u0000${o.printed}\u0000${o.nth}`));
+        // What the guide already placed stands; only the spots it has not placed are asked.
+        const kept = new Map(entry.occurrences.map((o) => [spotKey(o), o] as const));
+        const open = form.occurrences.filter((o) => !kept.has(spotKey(o)));
         let answers: PlacingAnswer[];
         try {
           answers = open.length === 0 ? [] : await place(form, entry.senses, open);
@@ -960,12 +1032,15 @@ export async function ensureNarrationGlossary(opts: EnsureGlossaryOptions): Prom
         }
         const nowhere: string[] = [];
         const placed: PlacedOccurrence[] = form.occurrences.map((o) => {
-          const person = people.get(`${o.at}\u0000${o.printed}\u0000${o.nth}`);
-          if (person !== undefined) return person;
+          const before = kept.get(spotKey(o));
+          if (before !== undefined) return { ...before, sentence: o.sentence, endsSentence: o.endsSentence };
           const answer = answers[open.indexOf(o)]!;
           const sense = placeAnswer(entry.senses, answer);
           if (sense === null && answer.choice === NONE && answer.confidence >= PLACE_CONFIDENCE) nowhere.push(o.sentence);
-          return { at: o.at, nth: o.nth, printed: o.printed, sense, p: answer.confidence };
+          return {
+            at: o.at, nth: o.nth, printed: o.printed, sense, p: answer.confidence,
+            sentence: o.sentence, endsSentence: o.endsSentence,
+          };
         });
         placedNow += open.length;
         placedSoFar += open.length;
@@ -984,7 +1059,7 @@ export async function ensureNarrationGlossary(opts: EnsureGlossaryOptions): Prom
          * again with those sentences, and the form placed again — once. A person's
          * meanings are theirs, so a form they decided is never re-asked.
          */
-        if (first.nowhere.length > 0 && entry.by === 'model') {
+        if (first.nowhere.length > 0 && entry.by === 'model' && askedNow.has(formKey(form))) {
           const again = await meaningsOf(form, { sentences: [...new Set(first.nowhere)].slice(0, 6), meanings: entry.senses });
           asked += 1;
           if (again.senses.length > 0) entry = (await placeForm(form, again)).entry;
@@ -1002,7 +1077,7 @@ export async function ensureNarrationGlossary(opts: EnsureGlossaryOptions): Prom
          * one-meaning question the model answers well, with better evidence than
          * the first samples. A person's meanings are theirs and are not re-read.
          */
-        if (entry.by === 'model' && entry.decision === 'reading' && entry.senses.length > 1) {
+        if (entry.by === 'model' && askedNow.has(formKey(form)) && entry.decision === 'reading' && entry.senses.length > 1) {
           const read: GlossarySense[] = [];
           for (const [i, sense] of entry.senses.entries()) {
             const mine = form.occurrences.filter((o) => entry.occurrences.some((p) => p.sense === i

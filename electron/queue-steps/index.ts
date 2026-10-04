@@ -14,6 +14,7 @@ import { finalDenoiseStep } from './final-denoise';
 import { generateSentencesStep } from './generate-sentences';
 import { foundryExportLandingStep } from './foundry-export-landing';
 import { foundryJobStep } from './foundry-job';
+import { narrationGuideStep } from './narration-guide';
 import {
   footnoteRefsStep, narrationTextStep, simplifyStep, translatePassStep,
 } from './pass';
@@ -44,6 +45,7 @@ export function registerAllStepModules(): void {
     vlmConvertStep,
     foundryJobStep,
     foundryExportLandingStep,
+    narrationGuideStep,
     simplifyStep,
     translatePassStep,
     footnoteRefsStep,

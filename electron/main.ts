@@ -129,12 +129,16 @@ import {
 // the top corner of the hosted window. The reading of a snapshot is pure and
 // lives beside the rows' one, for the same reason.
 import { hostStatusOf, type HostStatus } from './foundry-host-status';
+// The book's pronunciation guide: its own step, and BookForge's review window over it.
+import { guidePathsOfProject, hasGuide } from './narration-glossary';
+import type { NarrationGuideStepConfig } from './queue-steps/narration-guide';
+import type { GuideReviewSave } from '../shared/pronunciation-guide';
 // BookForge's queue, offered to the hosted Foundry window — Owen's ruling of
 // 2026-08-18 that a press inside that window is scheduled here, not there. The
 // mapping and the two pushes live beside the rows' and the chip's, for the same
 // reason they do.
 import {
-  foundryHostQueue, projectDirFromRequest, setFoundrySeam, watchFoundryQueue,
+  foundryFormsAtLister, foundryHostQueue, projectDirFromRequest, setFoundrySeam, watchFoundryQueue,
   type FoundryJobRequest, type FoundryJobRow, type FoundryRunJobOptions, type FoundryRunOutcome,
 } from './foundry-host-queue';
 // This machine's Crucible servers, as the hosted window receives them — Owen's
@@ -322,7 +326,8 @@ interface FoundryImportLanding {
 interface FoundryHostOperation {
   readonly id: string;
   readonly label: string;
-  readonly kind: 'narrate' | 'enhance' | 'assemble';
+  /** `guide` is foundry c6e8824's: the book's pronunciation guide, drawn with our acts and chained onto by none. */
+  readonly kind: 'narrate' | 'enhance' | 'assemble' | 'guide';
   /**
    * What a node must PRODUCE for this to be offered from it.
    *
@@ -779,6 +784,11 @@ interface FoundryMountModule {
    * from. Optional for `runJob`'s reason.
    */
   printedFormsForRun?(request: FoundryJobRequest, onLine?: (line: string) => void): Promise<unknown>;
+  /**
+   * THE PRINTED FORMS OF A BOOK AT ONE STEP (null: where it stands) — foundry
+   * c6e8824, for the pronunciation guide's own step. Optional for `runJob`'s reason.
+   */
+  printedFormsAt?(projectDir: string, at: string | null, onLine?: (line: string) => void): Promise<unknown>;
   /**
    * OUR QUEUE HAS NO FOUNDRY WORK RUNNING — the one signal their vLLM reading
    * server's lifetime hangs on.
@@ -2856,7 +2866,128 @@ const FOUNDRY_HOST_OPERATIONS: readonly FoundryHostOperation[] = [
     invoke: (projectDir, nodeId, settings, context) =>
       invokeFoundryAssemble(projectDir, nodeId, settings, context),
   },
+  /*
+   * THE BOOK'S PRONUNCIATION GUIDE, AS ITS OWN STEP (Owen, 2026-10-03: "the
+   * glossary building step should be its own process. and if the user wants to
+   * rebuild the glossary from zero, they can"). Pressed on any step with words;
+   * a cleanup later reads what it decided, and one with no guide builds it first.
+   *
+   * IT DECLARES A FORM, the one question it has: start from zero or not. That is
+   * also what puts it in Foundry's action menu beside the text acts.
+   */
+  {
+    id: 'bookforge.guide',
+    label: 'Pronunciation guide',
+    kind: 'guide',
+    appliesTo: 'book',
+    submitLabel: 'Add to queue',
+    form: [
+      {
+        key: 'fromZero',
+        label: 'Start from zero',
+        kind: 'toggle',
+        default: false,
+        help: 'Drops every decision in this book\'s guide, yours included, and decides the whole book again. '
+          + 'Off: keeps the guide and decides only what it has not seen.',
+      },
+    ],
+    invoke: (projectDir, nodeId, settings) => invokeFoundryGuide(projectDir, nodeId, settings),
+  },
+  /*
+   * AND ITS REVIEW: "they can go back to foundry when its done and review the
+   * words". No form — it opens BookForge's own window, which is what a formless
+   * act means in this socket ("an operation with no form opens the host's own
+   * window, where the host can ask anything it likes").
+   */
+  {
+    id: 'bookforge.guide-review',
+    label: 'Review pronunciation',
+    kind: 'guide',
+    appliesTo: 'book',
+    invoke: (projectDir) => openPronunciationReview(projectDir),
+  },
 ];
+
+/**
+ * QUEUE THE GUIDE STEP for the book, from the step it was pressed on.
+ *
+ * A ledger step only: the guide lists the words AT that step, and a row of ours
+ * (`bf-node:`) or an export file is not one.
+ */
+function invokeFoundryGuide(projectDir: string, nodeId: string, settings: Record<string, unknown>): void {
+  try {
+    const fromZero = settings['fromZero'];
+    if (typeof fromZero !== 'boolean') {
+      throw new Error('The pronunciation guide was pressed without saying whether to start from zero.');
+    }
+    const manifest = JSON.parse(fsSync.readFileSync(path.join(projectDir, 'project.json'), 'utf8').replace(/^\uFEFF/, '')) as {
+      title?: unknown; ledger?: { steps?: { id?: unknown }[] };
+    };
+    const steps = manifest.ledger?.steps ?? [];
+    if (!steps.some((step) => step.id === nodeId)) {
+      throw new Error('A pronunciation guide is made from a step of the book that has landed. Press it on one '
+        + 'of the book\'s steps, not on a row that is still queued or on an exported file.');
+    }
+    const title = typeof manifest.title === 'string' && manifest.title !== '' ? manifest.title : path.basename(projectDir);
+    const config: NarrationGuideStepConfig = { projectDir, at: nodeId, fromZero, bookTitle: title };
+    queueEngine.enqueue({
+      title,
+      foundry: { projectDir, parentStepId: nodeId },
+      steps: [{
+        type: 'narration-guide',
+        label: fromZero ? 'Pronunciation guide, from zero' : 'Pronunciation guide',
+        config: config as unknown as Record<string, unknown>,
+      }],
+    });
+  } catch (err) {
+    const message = (err as Error).message;
+    console.error(`[foundry-host] pronunciation guide on ${nodeId} was refused: ${message}`);
+    sayToUser('Nothing was queued', 'The pronunciation guide cannot be made from here', message);
+    throw err;
+  }
+}
+
+/** One review window per book, raised rather than opened twice. */
+const pronunciationWindows = new Map<string, BrowserWindow>();
+
+/**
+ * OPEN THE REVIEW for a book — BookForge's own window (Owen's choice, 2026-10-03),
+ * on the `#/pronunciation` route. Refused, by name, when the book has no guide yet.
+ */
+function openPronunciationReview(projectDir: string): void {
+  if (!hasGuide(guidePathsOfProject(projectDir))) {
+    const message = 'This book has no pronunciation guide yet. Make one with "Pronunciation guide", or clean the '
+      + 'book — a cleanup builds it first.';
+    sayToUser('Nothing to review', 'No pronunciation guide yet', message);
+    throw new Error(message);
+  }
+  const existing = pronunciationWindows.get(projectDir);
+  if (existing !== undefined && !existing.isDestroyed()) {
+    if (existing.isMinimized()) existing.restore();
+    existing.show();
+    existing.focus();
+    return;
+  }
+  const win = new BrowserWindow({
+    width: 980,
+    height: 860,
+    minWidth: 560,
+    minHeight: 420,
+    icon: isDev ? path.join(__dirname, '..', '..', 'bookforge-icon.png') : path.join(codeRoot, 'bookforge-icon.png'),
+    webPreferences: { nodeIntegration: false, contextIsolation: true, preload: path.join(__dirname, 'preload.js') },
+    titleBarStyle: 'hiddenInset',
+    backgroundColor: '#0a0a0a',
+  });
+  pronunciationWindows.set(projectDir, win);
+  win.on('closed', () => { pronunciationWindows.delete(projectDir); });
+  win.webContents.on('did-finish-load', () => { win.webContents.setZoomLevel(loadZoomLevel()); });
+  const query = `project=${encodeURIComponent(projectDir)}`;
+  if (isDev) {
+    void win.loadURL(`http://localhost:4250/#/pronunciation?${query}`);
+  } else {
+    void win.loadFile(path.join(codeRoot, 'dist', 'renderer', 'browser', 'index.html'), { hash: `/pronunciation?${query}` });
+  }
+}
 
 /**
  * Open the Foundry window and RECONCILE WHEN IT CLOSES.
@@ -12874,6 +13005,40 @@ ipcMain.handle('narration:text-readiness', async (
     return { success: true, epubs, m4bs };
   });
 
+  /*
+   * THE PRONUNCIATION GUIDE'S REVIEW (electron/pronunciation-review.ts). A guide
+   * built before spots carried their sentence is shown with sentences from a fresh
+   * listing of the book, where it stands.
+   */
+  ipcMain.handle('pronunciation:read', async (_event, projectDir: string) => {
+    try {
+      const { readGuideReview, reviewNeedsSentences } = await import('./pronunciation-review.js');
+      let sentenceOf: ((at: string, printed: string, nth: number) => string | null) | null = null;
+      if (reviewNeedsSentences(projectDir)) {
+        const listed = await foundryFormsAtLister()(projectDir, null) as {
+          forms?: { occurrences?: { at: string; printed: string; nth: number; sentence: string }[] }[];
+        };
+        const sentences = new Map<string, string>();
+        for (const form of listed.forms ?? []) {
+          for (const o of form.occurrences ?? []) sentences.set(`${o.at}\u0000${o.printed}\u0000${o.nth}`, o.sentence);
+        }
+        sentenceOf = (at, printed, nth) => sentences.get(`${at}\u0000${printed}\u0000${nth}`) ?? null;
+      }
+      return { success: true, review: readGuideReview(projectDir, sentenceOf) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('pronunciation:save', async (_event, save: GuideReviewSave) => {
+    try {
+      const { saveGuideReview } = await import('./pronunciation-review.js');
+      return { success: true, ...saveGuideReview(save) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   ipcMain.handle('listen:open-window', async (_event, projectPath: string, audioPath?: string) => {
     const existing = listenWindows.get(projectPath);
     if (existing && !existing.isDestroyed()) {
@@ -13815,6 +13980,9 @@ app.whenReady().then(async () => {
       : null,
     printedForms: typeof foundryMount.printedFormsForRun === 'function'
       ? (request, onLine) => foundryMount.printedFormsForRun!(request, onLine)
+      : null,
+    printedFormsAt: typeof foundryMount.printedFormsAt === 'function'
+      ? (dir, at, onLine) => foundryMount.printedFormsAt!(dir, at, onLine)
       : null,
   });
   /*

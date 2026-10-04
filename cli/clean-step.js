@@ -80,12 +80,16 @@ const USAGE = `usage: clean-step.js (--project <BookForge project dir> | --found
                      [--crucible-server <name>] [--model <tag>] [--concurrency <n>]
                      [--remove-references on|off] [--remove-also <text>]
                      [--keep-server] [--library <root>] [--foundry-dist <dir>] [--dry-run]
-                     [--glossary-only]
+                     [--glossary-only [--from-zero]]
 
-  --glossary-only decides the book's narration glossary exactly as the cleanup
-  would (its own session, the server's analysis model, every decision already in
-  the glossary file reused), prints it, and stops: nothing is cleaned and no step
-  lands. The review before a clean, and the way to see what a clean will be handed.
+  --glossary-only is the app's "Pronunciation guide" step: it builds the book's
+  pronunciation guide (its own session, the server's analysis model), prints it,
+  and stops — nothing is cleaned and no step lands. Every decision already in the
+  guide is kept and only what it lacks is decided; --from-zero drops them all, a
+  person's included, and decides the whole book again.
+
+  Without it, the clean reads the guide as it stands, exactly as the app's cleanup
+  does: it never rebuilds it, and a book with no guide yet has one built first.
 
   --remove-references on|off (default on) and --remove-also <text> are the
   dialog's removal box: references a narrator would never read ("see fig. 1-1",
@@ -492,30 +496,38 @@ async function main() {
   }
 
   /*
-   * ── THE BOOK'S GLOSSARY, AS THE APP'S STEP DECIDES IT ───────────────────────
+   * ── THE BOOK'S PRONUNCIATION GUIDE, AS THE APP READS (AND BUILDS) IT ─────────
    *
-   * `queue-steps/foundry-job.ts` decides the narration glossary in the cleanup's
-   * own step, in its own session on the cleanup's machine, closed before the
-   * engine is spawned — and this door does the same, through the same function
-   * and Foundry's same printed-forms door (`printedFormsForRun`). Every decision
-   * already in the book's glossary file is reused; only new forms are asked.
+   * `queue-steps/foundry-job.ts` reads the guide in the cleanup's own step, in its
+   * own session on the cleanup's machine, closed before the engine is spawned —
+   * and this door does the same, through the same function and Foundry's same
+   * printed-forms door (`printedFormsForRun`). The guide as it stands is kept; a
+   * book with none has it built first. `--glossary-only` is the guide step, and
+   * only it may be told `--from-zero`.
    */
   let fixedReadings;
   const glossaryOnly = args['glossary-only'] === true;
+  const fromZero = args['from-zero'] === true;
+  if (fromZero && !glossaryOnly) {
+    throw new Error('--from-zero rebuilds the pronunciation guide, which only the guide step does '
+      + '(--glossary-only). A cleanup reads the guide as it stands and never starts it again.');
+  }
   if (glossaryOnly && crucible === null) {
     throw new Error('--glossary-only asks a Crucible, and this run goes to the local text engines. '
       + 'Name one with --crucible-server.');
   }
   if (crucible !== null) {
     const glossary = require(path.join(BF_DIST, 'narration-glossary.js'));
+    const source = glossary.guideOfRequest(request, (req, onLine) => jobQueue.printedFormsForRun(req, onLine));
+    if (!glossaryOnly && !glossary.hasGuide(source.files)) {
+      console.log('[clean] glossary: this book has no pronunciation guide yet, so it is built first');
+    }
     const made = await glossary.ensureNarrationGlossary({
-      request,
+      source,
       server: crucible.server,
       signal: controller.signal,
       report: (line) => console.log(`[clean] ${line}`),
-      listForms: (req, onLine) => jobQueue.printedFormsForRun(req, onLine),
-      // One invocation is one clean: the model decides again, and a person's decisions are kept.
-      run: `cli-${require('crypto').randomUUID()}`,
+      fromZero,
     });
     if (made.readingsPath !== null) fixedReadings = made.readingsPath;
     if (glossaryOnly) {

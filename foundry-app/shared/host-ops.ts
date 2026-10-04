@@ -52,10 +52,17 @@ import type { HostNodeState, HostOperationKind, NodeOutput } from './types';
  * kind, because two hosts registering a `narrate` that produced different things
  * would be two hosts disagreeing about what the word means.
  */
-export const PRODUCES_OF: Readonly<Record<HostOperationKind, NodeOutput>> = {
+export const PRODUCES_OF: Readonly<Record<HostOperationKind, NodeOutput | null>> = {
   narrate: 'audio',
   enhance: 'audio',
   assemble: 'audio',
+  /*
+   * NOTHING, said rather than borrowed. A guide is how the host will SAY the
+   * book, read by the host's own cleanup; no act is made from it here, so its
+   * card offers no "from here" — the tree's `produces === null` rule, the one a
+   * row with no words already follows.
+   */
+  guide: null,
 };
 
 /**

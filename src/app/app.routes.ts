@@ -60,6 +60,12 @@ export const routes: Routes = [
     loadComponent: () => import('./features/first-run-setup/first-run-setup.component').then(m => m.FirstRunSetupComponent)
   },
   {
+    // The pronunciation guide's review — its own window, opened from Foundry's
+    // "Review pronunciation" (electron/main.ts openPronunciationReview).
+    path: 'pronunciation',
+    loadComponent: () => import('./features/pronunciation/pronunciation-review.component').then(m => m.PronunciationReviewComponent)
+  },
+  {
     // Listen window (Play / Stream player) - opens in separate Electron window
     path: 'listen',
     loadComponent: () => import('./features/studio/components/listen-window/listen-window.component').then(m => m.ListenWindowComponent)

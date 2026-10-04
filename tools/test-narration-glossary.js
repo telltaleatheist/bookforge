@@ -12,12 +12,16 @@
  *
  *  - one form, two meanings, one book: every spot gets its own meaning's reading,
  *    and a period stays or goes by the meaning and the sentence's end;
- *  - a re-run asks and places NOTHING — the cleanup behind a triage pays nothing;
+ *  - a re-run asks and places NOTHING — the guide is kept as it stands, and a
+ *    cleanup decides only what it lacks (a new spot); only FROM ZERO drops it all,
+ *    a person's decisions included (Owen, 2026-10-03);
  *  - occurrences placed in NO meaning are a meaning the samples missed: the
  *    meanings are asked again with those sentences, once, and placed again;
  *  - an unsure placing, an unusable reading or an unreadable answer leaves the
  *    spot as printed, for the sentence pass, exactly as before the glossary;
- *  - a person's meanings and a person's placings are never redone;
+ *  - a person's meanings and a person's placings are never redone, short of from zero;
+ *  - the review (`pronunciation-review.ts`): a reading changed, a form or a spot
+ *    left to the narrator, is what the next cleanup is handed; a stale save is refused;
  *  - no readings, no file: the run is handed nothing.
  *
  * Runs against the compiled `dist/electron` (tsc -p tsconfig.electron.json).
@@ -33,6 +37,7 @@ process.env.BOOKFORGE_USER_DATA = process.env.BOOKFORGE_USER_DATA
   || fs.mkdtempSync(path.join(os.tmpdir(), 'glossary-userdata-'));
 require(path.join(REPO, 'cli', 'electron-stub.js'));
 const glossary = require(path.join(REPO, 'dist', 'electron', 'narration-glossary.js'));
+const review = require(path.join(REPO, 'dist', 'electron', 'pronunciation-review.js'));
 
 let passed = 0;
 let failed = 0;
@@ -105,21 +110,22 @@ function scratch() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'glossary-'));
   const readings = path.join(dir, 'readings');
   fs.mkdirSync(readings);
+  fs.writeFileSync(path.join(dir, 'project.json'), JSON.stringify({ key: 'book-1', title: 'The Book' }));
   return {
+    dir,
     request: { kind: 'clean', inputPath: path.join(dir, 'book.epub'), recordsPath: path.join(readings, 'book-1.clean.records.jsonl') },
     glossaryFile: path.join(readings, 'book-1.narration-glossary.json'),
     readingsFile: path.join(readings, 'book-1.narration-glossary.readings.json'),
   };
 }
 
-function run(where, forms, { meanings = MEANINGS, placings = PLACINGS, asked = [], placed = [], runId = 'job-1' } = {}) {
+function run(where, forms, { meanings = MEANINGS, placings = PLACINGS, asked = [], placed = [], fromZero = false } = {}) {
   return glossary.ensureNarrationGlossary({
-    run: runId,
-    request: where.request,
+    fromZero,
+    source: { files: glossary.glossaryPathsFor(where.request), list: async () => ({ format: 'printed-forms/v1', source: 'book.jsonl', forms }) },
     server: 'test-crucible',
     signal: new AbortController().signal,
     report: () => {},
-    listForms: async () => ({ format: 'printed-forms/v1', source: 'book.jsonl', forms }),
     model: 'test-27b',
     ask: async (form, secondLook, focus) => {
       if (focus !== null) {
@@ -180,7 +186,7 @@ const entries = (where) => JSON.parse(fs.readFileSync(where.glossaryFile, 'utf8'
     assert.strictEqual(entries(where)[0].key, 'Wolf IV', 'the book\'s order');
   });
 
-  await test('a re-run asks and places nothing; a new occurrence is placed, nothing re-asked', async () => {
+  await test('a re-run asks and places nothing; a new occurrence is placed alone, nothing re-asked', async () => {
     const where = scratch();
     await run(where, BOOK);
     const asked = [];
@@ -196,7 +202,9 @@ const entries = (where) => JSON.parse(fs.readFileSync(where.glossaryFile, 'utf8'
     const placed2 = [];
     await run(where, grown, { asked: asked2, placed: placed2 });
     assert.deepStrictEqual(asked2, []);
-    assert.deepStrictEqual(placed2, [['Wolf IV', 3]]);
+    // Only the spot the guide has not placed: the two it placed stand.
+    assert.deepStrictEqual(placed2, [['Wolf IV', 1]]);
+    assert.strictEqual(read(where).filter((r) => r.find === 'Wolf IV').length, 3);
   });
 
   await test('occurrences that fit no meaning are asked about again, once, as evidence', async () => {
@@ -301,8 +309,8 @@ const entries = (where) => JSON.parse(fs.readFileSync(where.glossaryFile, 'utf8'
     const placed = [];
     await run(where, BOOK, { asked, placed });
     assert.deepStrictEqual(asked, [], 'no meanings were asked again');
-    // Their new meaning moves the placing's digest, so Wolf IV is placed again under it; esp is not.
-    assert.deepStrictEqual(placed, [['Wolf IV', 2]]);
+    // Their meaning keeps the spots placed in it: nothing is placed again.
+    assert.deepStrictEqual(placed, []);
     assert.ok(guide(where).every((r) => r.find !== 'Wolf IV' || r.replace === 'Wolf the Fourth'));
     assert.deepStrictEqual(guide(where).find((r) => r.at === 'e-900'), { find: 'esp', replace: 'especially', at: 'e-900', nth: 0 });
   });
@@ -324,23 +332,67 @@ const entries = (where) => JSON.parse(fs.readFileSync(where.glossaryFile, 'utf8'
     await assert.rejects(run(where, [NO]), /holding a person's decisions/);
   });
 
-  await test('a clean queued again decides again; the same clean resumes; a person\'s decisions stay', async () => {
+  await test('a cleanup keeps the guide; only from zero drops it, a person\'s decisions included', async () => {
     const where = scratch();
-    await run(where, BOOK, { runId: 'job-1' });
+    await run(where, BOOK);
     // Make one decision a person's.
     const file = JSON.parse(fs.readFileSync(where.glossaryFile, 'utf8'));
     Object.assign(file.entries.find((e) => e.key === 'no'), { by: 'person' });
     fs.writeFileSync(where.glossaryFile, JSON.stringify(file));
 
-    const same = [];
-    await run(where, BOOK, { runId: 'job-1', asked: same });
-    assert.deepStrictEqual(same, [], 'the same job (its triage, then its clean; or a resume) asks nothing');
+    const again = [];
+    await run(where, BOOK, { asked: again });
+    assert.deepStrictEqual(again, [], 'a cleanup (or a guide step not from zero) asks nothing the guide decides');
 
     const fresh = [];
-    await run(where, BOOK, { runId: 'job-2', asked: fresh });
-    assert.deepStrictEqual(fresh.filter((a) => a[1] !== 'focus').map((a) => a[0]).sort(), ['Wolf IV', 'esp'],
-      'a new clean asks the model again about every form but the one a person decided');
-    assert.strictEqual(JSON.parse(fs.readFileSync(where.glossaryFile, 'utf8')).run, 'job-2');
+    await run(where, BOOK, { asked: fresh, fromZero: true });
+    assert.deepStrictEqual(fresh.filter((a) => a[1] !== 'focus').map((a) => a[0]).sort(), ['Wolf IV', 'esp', 'no'],
+      'from zero asks about every form again, the one a person decided included');
+    assert.ok(entries(where).every((e) => e.by === 'model'));
+    assert.match(JSON.parse(fs.readFileSync(where.glossaryFile, 'utf8')).built, /^\d{4}-/);
+  });
+
+  await test('the guide of a project is found by its key, as a cleanup\'s records name it', () => {
+    const where = scratch();
+    assert.deepStrictEqual(glossary.guidePathsOfProject(where.dir), glossary.glossaryPathsFor(where.request));
+    assert.strictEqual(glossary.hasGuide(glossary.guidePathsOfProject(where.dir)), false);
+  });
+
+  await test('the review: what a person changes is what the next cleanup is handed', async () => {
+    const where = scratch();
+    await run(where, BOOK);
+    const shown = review.readGuideReview(where.dir, null);
+    assert.strictEqual(shown.title, 'The Book');
+    const wolf = shown.forms.find((f) => f.key === 'Wolf IV');
+    assert.strictEqual(wolf.spots[1].sentence, 'Never a dull moment on Wolf IV, said Hunter.', 'each spot carries its sentence');
+
+    const edit = (f) => ({ key: f.key, kind: f.kind, decision: f.decision, senses: f.senses.map((s) => ({ ...s })),
+      spots: f.spots.map((o) => ({ at: o.at, nth: o.nth, printed: o.printed, sense: o.sense })) });
+    const forms = shown.forms.map(edit);
+    // A reading changed; one spot left to the narrator; a whole form left to the narrator.
+    forms.find((f) => f.key === 'Wolf IV').senses[0].reading = 'Wolf Quatre';
+    const esp = forms.find((f) => f.key === 'esp');
+    esp.senses.push({ meaning: 'As printed — left to the narrator', reading: '', periodIsPart: false });
+    esp.spots.find((o) => o.at === 'e-900').sense = esp.senses.length - 1;
+    Object.assign(forms.find((f) => f.key === 'no'), { decision: 'as-printed', senses: [], spots: [] });
+
+    const out = review.saveGuideReview({ projectDir: where.dir, version: shown.version, forms });
+    // "no" was already as printed with no meanings: leaving it to the narrator changes nothing.
+    assert.deepStrictEqual(out, { forms: 2, spots: 1 });
+    assert.throws(() => review.saveGuideReview({ projectDir: where.dir, version: shown.version, forms }),
+      /changed while you were reviewing/, 'a review of a guide that changed underneath is refused');
+
+    const asked = [];
+    const placed = [];
+    await run(where, BOOK, { asked, placed });
+    assert.deepStrictEqual([asked, placed], [[], []], 'the cleanup decides nothing the review decided');
+    assert.ok(read(where).filter((r) => r.find === 'Wolf IV').every((r) => r.replace === 'Wolf Quatre'));
+    assert.deepStrictEqual(guide(where).find((r) => r.at === 'e-900'), { find: 'esp', replace: 'esp', at: 'e-900', nth: 0 },
+      'left to the narrator: kept, and protected');
+    assert.deepStrictEqual(kept(where).filter((r) => r.find === 'no'), [{ find: 'no', replace: 'no', at: 'e-9', nth: 0 }]);
+    const byKey = Object.fromEntries(entries(where).map((e) => [e.key, e]));
+    assert.strictEqual(byKey['Wolf IV'].by, 'person');
+    assert.strictEqual(byKey.esp.occurrences.find((o) => o.at === 'e-900').byPerson, true);
   });
 
   await test('an acronym is said as printed, never expanded or re-cased (Owen: esp is said essp)', () => {

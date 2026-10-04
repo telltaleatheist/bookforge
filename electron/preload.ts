@@ -6,6 +6,7 @@ import type {
   InstallProgress,
   EnvDiagnosticResult,
 } from './components/component-types';
+import type { GuideReview, GuideReviewSave } from '../shared/pronunciation-guide';
 import type { DoctorReport } from './doctor';
 import type { ComponentUpdateStatus } from './update/component-updater';
 import type { StartupUpgradeReport } from './components/startup-upgrade-check';
@@ -2365,6 +2366,11 @@ export interface ElectronAPI {
   analysis: {
     delete: (projectDir: string) => Promise<{ success: boolean; error?: string }>;
   };
+  /** The book's pronunciation guide, for BookForge's review window (electron/pronunciation-review.ts). */
+  pronunciation: {
+    read: (projectDir: string) => Promise<{ success: boolean; review?: GuideReview | null; error?: string }>;
+    save: (save: GuideReviewSave) => Promise<{ success: boolean; forms?: number; spots?: number; error?: string }>;
+  };
   /**
    * The Versions page's entry payload, and the push that finishes it.
    *
@@ -4014,6 +4020,10 @@ const electronAPI: ElectronAPI = {
   analysis: {
     delete: (projectDir: string) =>
       ipcRenderer.invoke('analysis:delete', projectDir),
+  },
+  pronunciation: {
+    read: (projectDir: string) => ipcRenderer.invoke('pronunciation:read', projectDir),
+    save: (save: GuideReviewSave) => ipcRenderer.invoke('pronunciation:save', save),
   },
   versions: {
     pageData: (projectId: string) =>

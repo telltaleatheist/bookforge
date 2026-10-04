@@ -501,6 +501,7 @@ let runner: FoundryRunner | null = null;
 let pushRows: ((projectDir: string, rows: readonly FoundryJobRow[]) => void) | null = null;
 let sayDrained: (() => void) | null = null;
 let formsLister: FoundryFormsLister | null = null;
+let formsAtLister: FoundryFormsAtLister | null = null;
 
 /**
  * THE PRINTED FORMS OF THE BOOK A CLEANUP WILL READ — their `printedFormsForRun`:
@@ -510,14 +511,24 @@ let formsLister: FoundryFormsLister | null = null;
 export type FoundryFormsLister =
   (request: FoundryJobRequest, onLine?: (line: string) => void) => Promise<unknown>;
 
+/**
+ * THE PRINTED FORMS OF A BOOK AT ONE STEP of its ledger (null: where it stands) —
+ * their `printedFormsAt`, for the pronunciation guide's own step, which is made
+ * from the row a person pressed on rather than from a cleanup's request.
+ */
+export type FoundryFormsAtLister =
+  (projectDir: string, at: string | null, onLine?: (line: string) => void) => Promise<unknown>;
+
 export function setFoundrySeam(seam: {
   runJob: FoundryRunner | null;
   setQueueRows: ((projectDir: string, rows: readonly FoundryJobRow[]) => void) | null;
   drained: (() => void) | null;
   printedForms?: FoundryFormsLister | null;
+  printedFormsAt?: FoundryFormsAtLister | null;
 }): void {
   runner = seam.runJob;
   formsLister = seam.printedForms ?? null;
+  formsAtLister = seam.printedFormsAt ?? null;
   pushRows = seam.setQueueRows;
   sayDrained = seam.drained;
 }
@@ -535,6 +546,17 @@ export function foundryFormsLister(): FoundryFormsLister {
     );
   }
   return formsLister;
+}
+
+/** The step lister, or the sentence saying the vendored Foundry predates it. */
+export function foundryFormsAtLister(): FoundryFormsAtLister {
+  if (formsAtLister === null) {
+    throw new Error(
+      'This version of the Foundry engine cannot list a book\'s printed forms at a step, so BookForge cannot '
+      + 'build a pronunciation guide on its own. Update Foundry — printedFormsAt arrives with it.',
+    );
+  }
+  return formsAtLister;
 }
 
 /**

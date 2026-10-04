@@ -10,10 +10,24 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\<user>\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **10fa4c9** — *clean: a cleanup pressed again cleans again; only an unfinished run resumes*, on f66a126 *clean: every spot a book's guide decided is protected from the sentence pass*, on 0546538 *clean-forms: capitals are not numerals, and a capitalised lead-in is not acronyms*, on 5e2f51a *clean: readings at a spot, and every occurrence named — one form, two meanings*, on 7aae5ad *clean-forms: a heading's capitals are not forms, by its category too*, on 737cb30 *clean: fixed readings and printed forms for a host's book glossary (n19)* (see the entry below). Before them: 9872791 |
+| Source sha | **c6e8824** — *host: a pronunciation guide is a host card that makes nothing; forms listed at any step*, on 10fa4c9 *clean: a cleanup pressed again cleans again; only an unfinished run resumes*, on f66a126 *clean: every spot a book's guide decided is protected from the sentence pass*, on 0546538 *clean-forms: capitals are not numerals, and a capitalised lead-in is not acronyms*, on 5e2f51a *clean: readings at a spot, and every occurrence named — one form, two meanings*, on 7aae5ad *clean-forms: a heading's capitals are not forms, by its category too*, on 737cb30 *clean: fixed readings and printed forms for a host's book glossary (n19)* (see the entry below). Before them: 9872791 |
 | Engine | **VENDORED, in `engine/`** since 1927563 (2026-09-24): `engine/foundry-engine.cjs` plus its four fonts, built from Foundry's `src/` by Foundry's `tools/build-engine.mjs` and checked against those sources by Foundry's test suite. Run by BookForge's own Electron as Node (`ELECTRON_RUN_AS_NODE=1`) from BOTH doors — this copy's `electron/engine.ts` and BookForge's `electron/foundry-bridge.ts`. **Ask it: `node foundry-app/engine/foundry-engine.cjs --version`** → `foundry X.Y.Z (src <digest>)`. There is no downloaded engine any more; `FOUNDRY_BIN` still overrides in both doors. |
-| Copied on | 2026-09-19 (five times: 3738c01, 3436fc5, 806d44b, f349771, ca4754c), 2026-09-20 (98a4344, 9e0b27d, dccc144, 7b98004, cc5fc5b, 93010d8, 77e1d6d) 2026-09-21 (753dca8, 3e26e53, f9bebb6, 95593b0, 8ee48b7) and 2026-09-22 (7185764, 7912022, 19fa7a9, df63f9f) and 2026-09-23 (acf63c2, 4835411), 2026-09-24 (b4c7346, 1927563, e2481dc, a1138f6, 72c6b08, b7ba2a8, 0eb12de), 2026-09-28 (1115cea), 2026-10-02 (06c28b5), 2026-10-02 (9872791), 2026-10-03 (737cb30, 7aae5ad, 5e2f51a, 0546538, f66a126, 10fa4c9) |
-| Copied by | Mechanical source sync, verified against Foundry `10fa4c9:app/` (index blob shas: 205 match, 0 problems; nothing tracked here but this file and `IPC-CHANNELS.md`); details below |
+| Copied on | 2026-09-19 (five times: 3738c01, 3436fc5, 806d44b, f349771, ca4754c), 2026-09-20 (98a4344, 9e0b27d, dccc144, 7b98004, cc5fc5b, 93010d8, 77e1d6d) 2026-09-21 (753dca8, 3e26e53, f9bebb6, 95593b0, 8ee48b7) and 2026-09-22 (7185764, 7912022, 19fa7a9, df63f9f) and 2026-09-23 (acf63c2, 4835411), 2026-09-24 (b4c7346, 1927563, e2481dc, a1138f6, 72c6b08, b7ba2a8, 0eb12de), 2026-09-28 (1115cea), 2026-10-02 (06c28b5), 2026-10-02 (9872791), 2026-10-03 (737cb30, 7aae5ad, 5e2f51a, 0546538, f66a126, 10fa4c9, c6e8824) |
+| Copied by | Mechanical source sync, verified against Foundry `c6e8824:app/` (index blob shas: 205 match, 0 problems; nothing tracked here but this file and `IPC-CHANNELS.md`); details below |
+
+## The `10fa4c9 → c6e8824` re-vendor — the pronunciation guide becomes its own step (2026-10-03, night)
+
+Owen: *"the glossary building step should be its own process. and if the user wants to rebuild the glossary
+from zero, they can"* — a step the user may take alone, and review afterwards from the Foundry window. Foundry
+learns one word and one door, nothing about pronunciation:
+
+- **`HostOperationKind` grows `guide`**, drawn with `ft-tag`. `PRODUCES_OF.guide` is **null**: a guide card offers
+  no "from here", the tree's own rule for a row with no words. BookForge registers "Pronunciation guide" (a form:
+  start from zero) and "Review pronunciation" (formless: opens BookForge's own window) on `book` steps.
+- **`printedFormsAt(dir, step)`** on the mount: the book's printed forms at any ledger step (null: where it
+  stands), outside any cleanup. `printedFormsForRun` is now that, with the run's step.
+- **Verification:** 205 blobs match at c6e8824, 0 problems. Deps unchanged; the engine bundle did not move.
+  `npm run build` is clean. Foundry: `bun test` on the host and clean tests 17/0.
 
 ## The `9872791 → 737cb30 → 7aae5ad → 5e2f51a → 0546538 → f66a126 → 10fa4c9` re-vendor — the book glossary's engine half (2026-10-03)
 

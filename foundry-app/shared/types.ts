@@ -3453,8 +3453,16 @@ export type NodeOutput = 'book' | 'audio' | 'export';
  * (the m4b). Foundry does none of them and knows nothing about how any of them
  * work — what it knows is that they are audio work, which is why they are drawn
  * in amber rather than in the accent this app spends on the text.
+ *
+ * `guide` IS THE FOURTH, and it is not audio: a host's PRONUNCIATION GUIDE for
+ * the book — how the narrator will say the forms the author printed ("Wolf IV",
+ * "esp."), decided once for the whole book (Owen, 2026-10-03: *"the glossary
+ * building step should be its own process"*). It is drawn with the host's acts
+ * because it is the host's, and it PRODUCES nothing this tree chains onto
+ * (`PRODUCES_OF.guide` is null): the guide is read by the host's own cleanup,
+ * never handed to another act from here.
  */
-export type HostOperationKind = 'narrate' | 'enhance' | 'assemble';
+export type HostOperationKind = 'narrate' | 'enhance' | 'assemble' | 'guide';
 
 /** Where a host node has got to. See `HostNode`. */
 export type HostNodeState = 'queued' | 'running' | 'done' | 'failed';

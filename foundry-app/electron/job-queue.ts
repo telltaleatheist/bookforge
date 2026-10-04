@@ -7031,6 +7031,22 @@ export async function printedFormsForRun(
   }
   const deferred = deferralOf(request);
   const named = deferred !== undefined ? deferred.from : request.at ?? null;
+  return printedFormsAt(dir, named, onLine);
+}
+
+/**
+ * THE PRINTED FORMS OF A BOOK AT ONE STEP of its ledger (null: the standing
+ * position) — the same listing, asked by a host OUTSIDE any cleanup: BookForge's
+ * pronunciation guide is its own step (Owen, 2026-10-03: *"the glossary building
+ * step should be its own process"*), made from the row a person pressed on, and
+ * the cleanup later reads what it decided. `printedFormsForRun` is this, with the
+ * step a run's request names.
+ */
+export async function printedFormsAt(
+  dir: string,
+  named: string | null,
+  onLine?: (line: string) => void,
+): Promise<unknown> {
   const ledger = ledgerOf(await readManifest(dir));
   const step = named === null ? null : ledger.steps.find((row) => row.id === named) ?? null;
   if (named !== null && step === null) {

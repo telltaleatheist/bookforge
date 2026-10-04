@@ -75,6 +75,7 @@ import type {
   FoundryStandaloneSource,
 } from '@shared/foundry/adopt-types';
 import type { PassDiffFile } from '../models/diff.types';
+import type { GuideReview, GuideReviewSave } from '@shared/pronunciation-guide';
 
 // Lightweight match rectangle for custom category highlights
 interface MatchRect {
@@ -2854,6 +2855,18 @@ export class ElectronService {
     if (this.isElectron) {
       return (window as any).electron.dialog.saveFileCopy(sourcePath, defaultName);
     }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /** A book's pronunciation guide, as the review window shows it (null review: no guide yet). */
+  async readPronunciationGuide(projectDir: string): Promise<{ success: boolean; review?: GuideReview | null; error?: string }> {
+    if (this.isElectron) return (window as any).electron.pronunciation.read(projectDir);
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /** Write a person's review of a pronunciation guide; refused when the guide changed underneath. */
+  async savePronunciationGuide(save: GuideReviewSave): Promise<{ success: boolean; forms?: number; spots?: number; error?: string }> {
+    if (this.isElectron) return (window as any).electron.pronunciation.save(save);
     return { success: false, error: 'Not running in Electron' };
   }
 

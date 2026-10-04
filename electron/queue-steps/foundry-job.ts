@@ -484,19 +484,21 @@ export const foundryJobStep: StepModule = {
     const recorded: { server: string; jobId: string }[] = [];
 
     /*
-     * ── THE BOOK'S GLOSSARY, DECIDED BEFORE THE CLEANUP READS IT ───────────────
+     * ── THE BOOK'S PRONUNCIATION GUIDE, READ BEFORE THE CLEANUP ────────────────
      *
-     * Owen, 2026-10-03: *"it should effectively be a part of the cleaning
-     * logic."* A cleanup and its triage are handed the book's fixed readings
-     * ("Wolf IV" → "Wolf Four", "esp" → "ESP"), decided once for the whole book
-     * from sentences across it (`narration-glossary.ts`). Here, in the step that
-     * runs the cleanup, so it cannot be skipped and has no row of its own; on the
-     * machine the cleanup was admitted to; in its OWN session, closed before the
+     * A cleanup and its triage are handed the book's fixed readings ("Wolf IV" →
+     * "Wolf Four", "esp" kept as printed), decided once for the whole book
+     * (`narration-glossary.ts`). The guide is its OWN step (Owen, 2026-10-03:
+     * *"the glossary building step should be its own process"*), and a cleanup
+     * NEVER rebuilds it: it reads the guide as it stands and decides only what the
+     * guide lacks — a form or a spot the book did not print when it was made.
+     * *"cleaning a book with no guide yet - it runs the guide building step
+     * automatically"*: with no guide at all, that is the whole book, here, on the
+     * machine the cleanup was admitted to, in its OWN session, closed before the
      * engine is spawned so Foundry's session is not queued behind it.
      *
-     * The triage in front of a cleanup decides it; the cleanup behind finds every
-     * decision made and asks nothing. A wait in it (a card held, weather past its
-     * budget) is the row's wait, with every decision already made kept.
+     * A wait in it (a card held, weather past its budget) is the row's wait, with
+     * every decision already made kept.
      */
     let fixedReadings: string | undefined;
     if (kind === 'clean' || kind === 'clean-triage') {
@@ -506,15 +508,19 @@ export const foundryJobStep: StepModule = {
           + 'ask. Every cleanup runs on a Crucible; add or switch one on under Settings › Crucible Servers.',
         );
       }
-      const { ensureNarrationGlossary } = await import('../narration-glossary.js');
+      const { ensureNarrationGlossary, guideOfRequest, hasGuide } = await import('../narration-glossary.js');
+      const source = guideOfRequest(config.request, foundryFormsLister());
+      if (!hasGuide(source.files)) {
+        const said = 'glossary: this book has no pronunciation guide yet, so it is built first';
+        ctx.report({ message: said, detail: said });
+      }
       const made = await ensureNarrationGlossary({
-        request: config.request,
+        source,
         server: venueServer,
         signal: ctx.signal,
         report: (line) => ctx.report({ message: line, detail: line }),
-        listForms: foundryFormsLister(),
-        // The queue job: its triage and its clean share one guide; a clean queued again decides again.
-        run: ctx.job.id,
+        // A cleanup never starts the guide from zero; only the guide step does.
+        fromZero: false,
       });
       if (made.readingsPath !== null) fixedReadings = made.readingsPath;
     }

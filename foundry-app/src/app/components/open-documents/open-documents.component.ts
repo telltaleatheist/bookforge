@@ -4673,10 +4673,11 @@ function iconForStep(step: LedgerStep): string {
   return 'ft-scan';
 }
 
-/** The host's three acts, and the marks they wear on cards and on buttons alike. */
+/** The host's acts, and the marks they wear on cards and on buttons alike. */
 function iconForHostKind(kind: HostNode['kind']): string {
   if (kind === 'narrate') return 'ft-mic';
   if (kind === 'enhance') return 'ft-wave';
+  if (kind === 'guide') return 'ft-tag';
   return 'ft-disc';
 }
 

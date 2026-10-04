@@ -549,6 +549,7 @@ export class JobStepComponent {
       case 'vlm-convert': return 'Convert to EPUB';
       case 'foundry-job': return 'Foundry';
       case 'foundry-export-landing': return 'Exported book';
+      case 'narration-guide': return 'Pronunciation guide';
     }
   }
 

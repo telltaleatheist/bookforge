@@ -17,7 +17,7 @@
 // `#/alignment` was here until 2026-09-05. It opened the sentence-alignment
 // popup, which only the bilingual translate pipeline ever raised; the route, its
 // component and the window that loaded it all went with that feature.
-const STANDALONE_ROUTES = ['#/editor', '#/listen'] as const;
+const STANDALONE_ROUTES = ['#/editor', '#/listen', '#/pronunciation'] as const;
 
 /**
  * True in a popup window (listen / editor), false in the main one.

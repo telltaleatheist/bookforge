@@ -63,6 +63,7 @@ export const JOB_GERUND: Record<JobType, string> = {
   // carries which act it is.
   'foundry-job': 'Making',
   'foundry-export-landing': 'Waiting for',
+  'narration-guide': 'Deciding pronunciation',
 };
 
 /** What a finished job of this type produced — the tray card's kicker. */
@@ -95,4 +96,5 @@ export const JOB_PRODUCT: Record<JobType, string> = {
   // records. Each is a page of the book the window is making.
   'foundry-job': 'Foundry work',
   'foundry-export-landing': 'exported book',
+  'narration-guide': 'Pronunciation guide',
 };

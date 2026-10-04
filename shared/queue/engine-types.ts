@@ -141,7 +141,14 @@ export type JobType =
    * the narration an `epub` artifact — the same thing a pressed export row would
    * have been. CPU, seconds, no engine: it waits and it looks up.
    */
-  | 'foundry-export-landing';
+  | 'foundry-export-landing'
+  /**
+   * THE BOOK'S PRONUNCIATION GUIDE, BUILT AS ITS OWN STEP (Owen, 2026-10-03:
+   * "the glossary building step should be its own process"). Pressed on a step in
+   * the hosted Foundry tree; the cleanup reads what it decides
+   * (electron/queue-steps/narration-guide.ts).
+   */
+  | 'narration-guide';
 
 /** The job types that are processing passes, for a runtime membership test. */
 export const PASS_JOB_TYPES: ReadonlySet<JobType> = new Set<JobType>([
