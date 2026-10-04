@@ -189,7 +189,7 @@ const KIND_WORD: Record<GuideReviewForm['kind'], string> = {
     .problem { grid-column: 1 / -1; font-size: 11px; color: var(--error-text); }
     .toggle { margin-top: 10px; background: none; border: none; padding: 0; color: var(--text-accent); font-size: 12px; cursor: pointer; }
     .spots { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
-    .spot { display: grid; grid-template-columns: minmax(0, 1fr) 240px; gap: 10px; align-items: center;
+    .spot { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 10px; align-items: center;
       padding: 6px 8px; border-radius: 6px; background: var(--bg-sunken); }
     .spot.undecided { box-shadow: inset 3px 0 0 var(--accent); }
     .sentence { font-size: 13px; line-height: 1.45; color: var(--text-secondary); }
@@ -332,16 +332,29 @@ export class PronunciationReviewComponent {
     this.update(d, { choices });
   }
 
+  /**
+   * A SPOT'S CHOICES, NAMED BY WHAT THE NARRATOR SAYS (Owen, 2026-10-03: "i cant
+   * read the dropdowns. what are the options?"). A meaning is `Say "Wolf Four"`;
+   * its description goes in the hover, and into the label only when two meanings
+   * would otherwise read alike. "As printed" is offered on its own only when no
+   * meaning already says it as printed — otherwise it is the same choice twice.
+   */
   optionsFor(d: FormDraft): DesktopSelectOption[] {
     const meanings = d.form.senses
-      .map((s, i) => ({ s, i }))
-      .filter(({ s }) => s.meaning !== LEFT_TO_NARRATOR_MEANING)
-      .map(({ s, i }) => ({ value: i, label: `${s.meaning} — "${d.readings[i] === '' ? d.form.key : d.readings[i]}"` }));
-    return [
-      ...meanings,
-      { value: 'narrator', label: 'Leave to the narrator (as printed)' },
-      { value: 'cleaner', label: 'Undecided — the cleaner reads it in its sentence' },
-    ];
+      .map((s, i) => ({ s, i, said: d.readings[i] === '' ? `"${d.form.key}" (as printed)` : `"${d.readings[i]}"` }))
+      .filter(({ s }) => s.meaning !== LEFT_TO_NARRATOR_MEANING);
+    const alike = (said: string): boolean => meanings.filter((m) => m.said === said).length > 1;
+    const options: DesktopSelectOption[] = meanings.map(({ s, i, said }) => ({
+      value: i,
+      label: `Say ${said}${alike(said) ? ` — ${s.meaning}` : ''}`,
+      title: s.meaning,
+    }));
+    const printedAlready = meanings.some((m) => d.readings[m.i] === '');
+    if (!printedAlready || d.choices.includes('narrator')) {
+      options.push({ value: 'narrator', label: `Say "${d.form.key}" (as printed)`, title: 'Left to the narrator: the cleaner cannot change it' });
+    }
+    options.push({ value: 'cleaner', label: 'Undecided — the cleaner guesses', title: 'The cleaner reads this spot in its sentence and decides' });
+    return options;
   }
 
   /** The spots, undecided first, each with its sentence split around the printed form. */
