@@ -2214,6 +2214,23 @@ export function translationTarget(
     parent: ask.parent,
     params: translatedInto(ask.language, ask.rewrite),
   });
+  /*
+   * ── A CLEANUP PRESSED AGAIN CLEANS AGAIN (Owen, 2026-10-03) ─────────────────
+   *
+   * *"if we have a completed cleanup step, and it goes back through cleanup
+   * again, it should just do cleanup again. it should never use a completed stage
+   * as a justification to skip it. it should only ever pick up where it left off
+   * if it isnt completed yet."* A replace aimed at the finished step's own records
+   * file would find every block answered and ask nothing. So a cleanup that
+   * replaces a landed step writes a FILE OF ITS OWN, named for this press
+   * (`<key>.clean.<id8>.records.jsonl`): it starts empty, an interrupted run of it
+   * resumes from it (the row carries the path), and when it lands it replaces the
+   * step and the old file is `displaced` — destroyed only after the new one is
+   * recorded. Translate and simplify keep re-asking only what changed.
+   */
+  if (target !== null && ask.action === 'clean') {
+    return { stepId: target.id, records: `readings/${named(id8(minted))}`, replaces: target };
+  }
   if (target !== null) {
     return {
       stepId: target.id,

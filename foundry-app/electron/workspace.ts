@@ -1958,15 +1958,12 @@ async function rewriteLanguage(
  * here regardless, because a feature half-built in two repositories is worse than
  * one built in the repository that owns the ledger.
  *
- * ── THE SEED, WHICH IT SPENDS ON `planSimplification`'s ARGUMENT ────────────
+ * ── NO SEED (Owen, 2026-10-03) ──────────────────────────────────────────────
  *
- * A cleanup is never a chain: it reads the book at the position and asks about the
- * paragraphs in front of it, so a sibling cleanup's answers are true answers about
- * the same paragraphs and are worth every block they save. The keys hash the source
- * paragraph, so a cleanup made of a GERMAN book seeded into a cleanup of the
- * HUNGARIAN translation of it would simply miss on every block — which is why the
- * seed is looked for among cleanups of the same book and nowhere wider
- * (`newestCleanRecords`).
+ * A cleanup used to start with the newest finished cleanup's answers, so a re-clean
+ * asked only what had changed. *"if i sent it through cleanup again then its
+ * because i want to clean it up again"*: a finished cleanup is never a reason to
+ * skip one. Only this run's own records file, left by an interrupted run, resumes.
  */
 export async function identifyCleanup(
   inputPath: string,
@@ -2024,12 +2021,7 @@ export async function identifyCleanup(
  * THE SAME CLEANUP, AT THE SPAWN — `materializeTranslation`'s half, one act over
  * and with nothing about a language in it.
  *
- * THE SEED IS LOOKED FOR AMONG CLEANUPS OF THIS BOOK AND NOWHERE WIDER. A cleanup
- * is never a chain: it reads the book at the row and asks about the paragraphs in
- * front of it, so a sibling cleanup's answers are true answers about the same
- * paragraphs. The keys hash the source paragraph, which is why a cleanup made of a
- * GERMAN book seeded into a cleanup of the HUNGARIAN translation of it would miss
- * on every block (`newestCleanRecords`).
+ * NO SEED — see `identifyCleanup`: a cleanup pressed again cleans again.
  */
 export async function materializeCleanup(
   inputPath: string,
@@ -2042,7 +2034,14 @@ export async function materializeCleanup(
   const planned = await recordsForTextPass(
     dir, 'clean', '', undefined, at === null ? undefined : at.id, minted,
   );
-  const seed = seedRecordsPath(dir, newestCleanRecords(ledger, planned.records), 'cleanup');
+  /*
+   * NO SEED. A cleanup was seeded with the newest finished cleanup's answers, so a
+   * re-clean asked only what had changed. Owen, 2026-10-03: *"if i sent it through
+   * cleanup again then its because i want to clean it up again"* — a finished
+   * cleanup is never a reason to skip one. What still resumes is THIS run's own
+   * records file, which an interrupted run left and the row still names.
+   */
+  const seed: string | null = null;
   const generation = readingGenerationOf(ledger, manifest);
   await fsp.mkdir(path.join(dir, 'readings'), { recursive: true });
   const derived = await materializeBook(dir, at);
@@ -2286,51 +2285,6 @@ function newestRecordsInto(
     const said = step.params?.language ?? '';
     if (said.length === 0 || !sameTag(said, language)) continue;
     if (step.params?.rewrite !== rewrite) continue;
-    const records = translationRecordsOf(step);
-    if (records === null || records === writing) continue;
-    found = records;
-  }
-  return found;
-}
-
-/**
- * THE NEWEST OTHER CLEANUP OF THIS BOOK, or null — what a second one starts life
- * holding.
- *
- * ── Why it is a function beside `newestRecordsInto` and not that one ────────
- *
- * Because the whole of that function's search is a LANGUAGE and a MODE, and a
- * cleanup has neither. Passed through it, every candidate would fail the first
- * test — `params.language` is absent on a `clean` row by design — and a cleanup
- * would have seeded from nothing forever: the second one paying full model price
- * for a book whose cleaned paragraphs were sitting one row away. Threading an
- * "and if there is no language, match on the action instead" clause into that body
- * would have made one search answer two questions with a branch in the middle,
- * which is exactly the shape the two namers next door were split to avoid.
- *
- * ── WHAT MAKES A SIBLING'S ANSWERS TRUE HERE ────────────────────────────────
- *
- * `planTranslation`'s seed argument, unchanged: a records row is keyed by the
- * block's own text and remembered by the block's own position, so a sibling
- * cleanup's answer about a paragraph is the same true answer about the same
- * paragraph. Struck blocks are simply never looked up, and a paragraph somebody
- * edited since asks a new question and gets a new key.
- *
- * AND WHAT MAKES IT SAFE ACROSS LANGUAGES WITHOUT ASKING ABOUT THEM. A cleanup of
- * a Hungarian translation and a cleanup of the German original are two `clean`
- * rows in one project, and this would offer either as a seed for the other — which
- * costs nothing and is not wrong: the keys hash the SOURCE PARAGRAPH, so every
- * block of the German file misses against every question the Hungarian run asks,
- * and the run pays for the book it was going to pay for anyway. What it must never
- * do is HIT wrongly, and it cannot: two different paragraphs never hash alike.
- *
- * NEWEST WINS by array order, which is append order — `orphanedBanks`' own
- * reliance and this file's throughout.
- */
-function newestCleanRecords(ledger: ProjectLedger, writing: string): string | null {
-  let found: string | null = null;
-  for (const step of ledger.steps) {
-    if (step.action !== 'clean') continue;
     const records = translationRecordsOf(step);
     if (records === null || records === writing) continue;
     found = records;

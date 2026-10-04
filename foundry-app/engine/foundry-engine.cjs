@@ -5113,6 +5113,14 @@ function ruleSpansInApplied(ruled) {
   }
   return spans;
 }
+function toAppliedOffset(ruled, at) {
+  let shift = 0;
+  for (const edit of ruled.rewrites) {
+    if (edit.at + edit.find.length <= at) shift += edit.replace.length - edit.find.length;
+    else break;
+  }
+  return at + shift;
+}
 function toOriginalOffset(spans, at) {
   let shift = 0;
   for (const span of spans) {
@@ -5274,11 +5282,15 @@ async function askAboutEach(asks, runner, pass, systemPrompt2, onProgress, ask =
       return;
     }
     const spans = ruleSpansInApplied(ruled);
+    const decided = (one.protected ?? []).map((p) => ({
+      at: toAppliedOffset(ruled, p.at),
+      end: toAppliedOffset(ruled, p.end)
+    }));
     const { accepted, records } = validateNumberEdits(
       ruled.text,
       ruled.segments,
       [...own, ...incoming],
-      spans,
+      [...spans, ...decided],
       judged
     );
     for (const record2 of records) {
@@ -31126,7 +31138,7 @@ var init_version = __esm({
     init_engine_import_meta_url();
     init_package();
     VERSION = package_default.version;
-    GIT_COMMIT = "src cc7119f337d6".length > 0 ? "src cc7119f337d6" : null;
+    GIT_COMMIT = "src 1e91d0b28a1d".length > 0 ? "src 1e91d0b28a1d" : null;
   }
 });
 
@@ -73206,6 +73218,7 @@ __export(fixed_readings_exports, {
   applyFixedReadings: () => applyFixedReadings,
   applyFixedToAll: () => applyFixedToAll,
   fixedKeyField: () => fixedKeyField,
+  protectedWithin: () => protectedWithin,
   readFixedReadingsFile: () => readFixedReadingsFile,
   validateFixedReadings: () => validateFixedReadings,
   wholeTokenOffsets: () => wholeTokenOffsets
@@ -73262,7 +73275,7 @@ function validateFixedReadings(list, where = "fixed readings") {
         throw new CleanTextError(`${where}: "${find}" is read twice at ${one.at} #${one.nth}. One spot, one reading.`);
       }
       spots.add(spot);
-      if (find !== replace) out.push({ find, replace, at: one.at, nth: one.nth });
+      out.push({ find, replace, at: one.at, nth: one.nth });
       return;
     }
     const earlier = bookWide.get(find);
@@ -73338,29 +73351,49 @@ function applyFixedReadings(text, readings, at) {
   edits.sort((a, b) => b.at - a.at);
   let out = text;
   let floor = Infinity;
+  let spans = [];
+  let kept = 0;
   for (const edit of edits) {
     if (edit.at + edit.length > floor) {
       missed.push(spots.find((s) => s.find === edit.find));
       continue;
     }
     out = out.slice(0, edit.at) + edit.replace + out.slice(edit.at + edit.length);
+    const delta = edit.replace.length - edit.length;
+    spans = spans.map((span) => ({ at: span.at + delta, end: span.end + delta }));
+    spans.push({ at: edit.at, end: edit.at + edit.replace.length });
     floor = edit.at;
-    applied.set(edit.find, (applied.get(edit.find) ?? 0) + 1);
+    if (edit.replace !== edit.find) applied.set(edit.find, (applied.get(edit.find) ?? 0) + 1);
+    else kept += 1;
   }
+  spans.sort((a, b) => a.at - b.at);
   const matcher = matcherFor(bookWide);
-  if (matcher === null) return { text: out, applied, missed };
+  if (matcher === null) return { text: out, applied, missed, protected: spans, kept };
   const byFind = new Map(bookWide.map((r) => [r.find, r.replace]));
   let result = "";
   let from = 0;
+  let shift = 0;
+  const shifted = [];
+  let nextSpan = 0;
   for (const hit of occurrences(out, matcher)) {
     const replace = byFind.get(hit.find);
     const end = hit.at + hit.find.length;
+    if (spans.some((span) => hit.at < span.end && span.at < end)) continue;
+    while (nextSpan < spans.length && spans[nextSpan].end <= hit.at) {
+      shifted.push({ at: spans[nextSpan].at + shift, end: spans[nextSpan].end + shift });
+      nextSpan += 1;
+    }
     const keepsStop = hit.find.endsWith(".") && !replace.endsWith(".") && /^["'’”)\]]*\s*$/u.test(out.slice(end));
-    result += out.slice(from, hit.at) + replace + (keepsStop ? "." : "");
+    const said = replace + (keepsStop ? "." : "");
+    result += out.slice(from, hit.at) + said;
+    shift += said.length - hit.find.length;
     from = end;
     applied.set(hit.find, (applied.get(hit.find) ?? 0) + 1);
   }
-  return { text: result + out.slice(from), applied, missed };
+  for (; nextSpan < spans.length; nextSpan += 1) {
+    shifted.push({ at: spans[nextSpan].at + shift, end: spans[nextSpan].end + shift });
+  }
+  return { text: result + out.slice(from), applied, missed, protected: shifted, kept };
 }
 function fixedKeyField(text, readings, at) {
   const { spots, bookWide } = forBlock(readings, at);
@@ -73378,16 +73411,23 @@ function fixedKeyField(text, readings, at) {
 function applyFixedToAll(texts, readings) {
   const applied = {};
   const missed = [];
+  const protectedBy = /* @__PURE__ */ new Map();
+  let kept = 0;
   if (readings.length > 0) {
     for (const [key, text] of texts) {
       const one = applyFixedReadings(text, readings, key);
       for (const spot of one.missed) missed.push({ at: spot.at, find: spot.find, nth: spot.nth });
-      if (one.applied.size === 0) continue;
+      if (one.protected.length > 0) protectedBy.set(key, one.protected);
+      kept += one.kept;
       texts.set(key, one.text);
       for (const [find, n] of one.applied) applied[find] = (applied[find] ?? 0) + n;
     }
   }
-  return { given: readings.length, applied, missed };
+  return { record: { given: readings.length, applied, missed, kept }, protected: protectedBy };
+}
+function protectedWithin(spans, start, end) {
+  if (spans === void 0) return [];
+  return spans.filter((s) => s.at >= start && s.end <= end).map((s) => ({ at: s.at - start, end: s.end - start }));
 }
 var fs27, path21, FIXED_READINGS_FORMAT, MARKUP, WORD;
 var init_fixed_readings = __esm({
@@ -75158,11 +75198,11 @@ async function runCleanText(opts) {
   for (const block of outstanding) {
     cleanText.set(block.target.key, punctuated.text.get(block.target.key));
   }
-  const fixedRecord = applyFixedToAll(cleanText, fixed);
+  const { record: fixedRecord, protected: fixedSpans } = applyFixedToAll(cleanText, fixed);
   if (fixed.length > 0) {
     const reads = Object.values(fixedRecord.applied).reduce((n, k) => n + k, 0);
     opts.log(
-      `clean-text: ${fixed.length} fixed reading(s) handed in; ${reads} occurrence(s) read across the blocks this run cleans.`
+      `clean-text: ${fixed.length} fixed reading(s) handed in; ${reads} occurrence(s) read and ${fixedRecord.kept} kept as printed across the blocks this run cleans \u2014 every one protected from the model.`
     );
     for (const spot of fixedRecord.missed) {
       opts.log(
@@ -75228,10 +75268,14 @@ async function runCleanText(opts) {
   const orderOf = new Map(pieces.map((piece, index) => [piece.key, index]));
   const asks = askedPieces.map((piece) => {
     const index = orderOf.get(piece.key);
+    const blockSpans = fixedSpans.get(piece.block.target.key);
+    const span = piece.sentence === void 0 ? null : sentencesOf.get(piece.block.target.key)[piece.sentence];
+    const reserved = span === null ? protectedWithin(blockSpans, 0, piece.text.length) : protectedWithin(blockSpans, span.start, span.end);
     return {
       key: piece.key,
       text: piece.text,
       segments: segmentsAfter(piece.text),
+      ...reserved.length > 0 ? { protected: reserved } : {},
       /*
        * The neighbours are the pieces either side IN THE PLAN'S OWN ORDER — the
        * sentences either side at `--unit sentence`, crossing into the next block
