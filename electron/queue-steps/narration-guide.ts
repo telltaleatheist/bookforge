@@ -58,7 +58,7 @@ export const narrationGuideStep: StepModule = {
       throw new Error('This pronunciation-guide row names no book, so there is nothing to build it for.');
     }
     if (typeof config.fromZero !== 'boolean') {
-      throw new Error('This pronunciation-guide row does not say whether to start from zero; it was composed wrongly.');
+      throw new Error('This pronunciation-guide row does not say whether to start over; it was composed wrongly.');
     }
     const { decideWhereTextActRuns, processTextVenueHost } = await import('../crucible/text-venue.js');
     const { runVenueOfRow } = await import('../crucible/step-venue.js');

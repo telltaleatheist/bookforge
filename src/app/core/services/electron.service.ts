@@ -2870,6 +2870,12 @@ export class ElectronService {
     return { success: false, error: 'Not running in Electron' };
   }
 
+  /** Queue a new pronunciation guide made from step `at`; `startOver` drops every decision first. */
+  async buildPronunciationGuide(projectDir: string, at: string, startOver: boolean): Promise<{ success: boolean; error?: string }> {
+    if (this.isElectron) return (window as any).electron.pronunciation.build(projectDir, at, startOver);
+    return { success: false, error: 'Not running in Electron' };
+  }
+
   /** Delete a project's content-analysis report (report + in-progress checkpoint). */
   async deleteAnalysis(projectDir: string): Promise<{ success: boolean; error?: string }> {
     if (this.isElectron) {

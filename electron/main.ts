@@ -129,8 +129,7 @@ import {
 // the top corner of the hosted window. The reading of a snapshot is pure and
 // lives beside the rows' one, for the same reason.
 import { hostStatusOf, type HostStatus } from './foundry-host-status';
-// The book's pronunciation guide: its own step, and BookForge's review window over it.
-import { guidePathsOfProject, hasGuide } from './narration-glossary';
+// The book's pronunciation guide: its own step, and BookForge's window over it.
 import type { NarrationGuideStepConfig } from './queue-steps/narration-guide';
 import type { GuideReviewSave } from '../shared/pronunciation-guide';
 // BookForge's queue, offered to the hosted Foundry window — Owen's ruling of
@@ -2867,98 +2866,76 @@ const FOUNDRY_HOST_OPERATIONS: readonly FoundryHostOperation[] = [
       invokeFoundryAssemble(projectDir, nodeId, settings, context),
   },
   /*
-   * THE BOOK'S PRONUNCIATION GUIDE, AS ITS OWN STEP (Owen, 2026-10-03: "the
-   * glossary building step should be its own process. and if the user wants to
-   * rebuild the glossary from zero, they can"). Pressed on any step with words;
-   * a cleanup later reads what it decided, and one with no guide builds it first.
+   * THE BOOK'S PRONUNCIATION GUIDE — ONE TILE, AND IT OPENS THE GUIDE.
    *
-   * IT DECLARES A FORM, the one question it has: start from zero or not. That is
-   * also what puts it in Foundry's action menu beside the text acts.
+   * Owen, 2026-10-03: *"it shouldnt have pronunciation guide and review
+   * pronunciation as separate tiles. glossary should be a modal. within the modal
+   * you can view the options or have it run a new job."* So the tile declares no
+   * form — a formless act opens the host's own window ("where the host can ask
+   * anything it likes") — and the window, a modal over Foundry's, shows the guide
+   * and is where a new guide is queued (`pronunciation:build`). A cleanup reads
+   * the guide and builds one first when there is none.
    */
   {
     id: 'bookforge.guide',
     label: 'Pronunciation guide',
     kind: 'guide',
     appliesTo: 'book',
-    submitLabel: 'Add to queue',
-    form: [
-      {
-        key: 'fromZero',
-        label: 'Start from zero',
-        kind: 'toggle',
-        default: false,
-        help: 'Drops every decision in this book\'s guide, yours included, and decides the whole book again. '
-          + 'Off: keeps the guide and decides only what it has not seen.',
-      },
-    ],
-    invoke: (projectDir, nodeId, settings) => invokeFoundryGuide(projectDir, nodeId, settings),
-  },
-  /*
-   * AND ITS REVIEW: "they can go back to foundry when its done and review the
-   * words". No form — it opens BookForge's own window, which is what a formless
-   * act means in this socket ("an operation with no form opens the host's own
-   * window, where the host can ask anything it likes").
-   */
-  {
-    id: 'bookforge.guide-review',
-    label: 'Review pronunciation',
-    kind: 'guide',
-    appliesTo: 'book',
-    invoke: (projectDir) => openPronunciationReview(projectDir),
+    invoke: (projectDir, nodeId) => openPronunciationGuide(projectDir, nodeId),
   },
 ];
 
+/** The project's manifest, as far as the guide needs it. */
+function guideManifestOf(projectDir: string): { title: string; steps: string[] } {
+  const manifest = JSON.parse(fsSync.readFileSync(path.join(projectDir, 'project.json'), 'utf8').replace(/^\uFEFF/, '')) as {
+    title?: unknown; ledger?: { steps?: { id?: unknown }[] };
+  };
+  return {
+    title: typeof manifest.title === 'string' && manifest.title !== '' ? manifest.title : path.basename(projectDir),
+    steps: (manifest.ledger?.steps ?? []).map((step) => String(step.id)),
+  };
+}
+
 /**
- * QUEUE THE GUIDE STEP for the book, from the step it was pressed on.
+ * QUEUE A GUIDE for the book, made from the step the tile was pressed on.
+ * `startOver` drops every decision first, a person's included (Owen: "i meant it
+ * should start over"); otherwise the guide keeps what it has and decides only
+ * what is new.
+ */
+function queuePronunciationGuide(projectDir: string, at: string, startOver: boolean): void {
+  const { title, steps } = guideManifestOf(projectDir);
+  if (!steps.includes(at)) {
+    throw new Error('The step this guide was opened from is no longer in the book, so there is nothing to make it '
+      + 'from. Open the guide again from one of the book\'s steps.');
+  }
+  const config: NarrationGuideStepConfig = { projectDir, at, fromZero: startOver, bookTitle: title };
+  queueEngine.enqueue({
+    title,
+    foundry: { projectDir, parentStepId: at },
+    steps: [{
+      type: 'narration-guide',
+      label: startOver ? 'Pronunciation guide, starting over' : 'Pronunciation guide',
+      config: config as unknown as Record<string, unknown>,
+    }],
+  });
+}
+
+/** One guide window per book, raised rather than opened twice. */
+const pronunciationWindows = new Map<string, BrowserWindow>();
+
+/**
+ * OPEN THE GUIDE for a book — BookForge's own window on `#/pronunciation`, MODAL
+ * over the Foundry window it was pressed in. It opens whether or not the book has
+ * a guide yet: with none, it is where the first one is queued.
  *
  * A ledger step only: the guide lists the words AT that step, and a row of ours
  * (`bf-node:`) or an export file is not one.
  */
-function invokeFoundryGuide(projectDir: string, nodeId: string, settings: Record<string, unknown>): void {
-  try {
-    const fromZero = settings['fromZero'];
-    if (typeof fromZero !== 'boolean') {
-      throw new Error('The pronunciation guide was pressed without saying whether to start from zero.');
-    }
-    const manifest = JSON.parse(fsSync.readFileSync(path.join(projectDir, 'project.json'), 'utf8').replace(/^\uFEFF/, '')) as {
-      title?: unknown; ledger?: { steps?: { id?: unknown }[] };
-    };
-    const steps = manifest.ledger?.steps ?? [];
-    if (!steps.some((step) => step.id === nodeId)) {
-      throw new Error('A pronunciation guide is made from a step of the book that has landed. Press it on one '
-        + 'of the book\'s steps, not on a row that is still queued or on an exported file.');
-    }
-    const title = typeof manifest.title === 'string' && manifest.title !== '' ? manifest.title : path.basename(projectDir);
-    const config: NarrationGuideStepConfig = { projectDir, at: nodeId, fromZero, bookTitle: title };
-    queueEngine.enqueue({
-      title,
-      foundry: { projectDir, parentStepId: nodeId },
-      steps: [{
-        type: 'narration-guide',
-        label: fromZero ? 'Pronunciation guide, from zero' : 'Pronunciation guide',
-        config: config as unknown as Record<string, unknown>,
-      }],
-    });
-  } catch (err) {
-    const message = (err as Error).message;
-    console.error(`[foundry-host] pronunciation guide on ${nodeId} was refused: ${message}`);
-    sayToUser('Nothing was queued', 'The pronunciation guide cannot be made from here', message);
-    throw err;
-  }
-}
-
-/** One review window per book, raised rather than opened twice. */
-const pronunciationWindows = new Map<string, BrowserWindow>();
-
-/**
- * OPEN THE REVIEW for a book — BookForge's own window (Owen's choice, 2026-10-03),
- * on the `#/pronunciation` route. Refused, by name, when the book has no guide yet.
- */
-function openPronunciationReview(projectDir: string): void {
-  if (!hasGuide(guidePathsOfProject(projectDir))) {
-    const message = 'This book has no pronunciation guide yet. Make one with "Pronunciation guide", or clean the '
-      + 'book — a cleanup builds it first.';
-    sayToUser('Nothing to review', 'No pronunciation guide yet', message);
+function openPronunciationGuide(projectDir: string, nodeId: string): void {
+  if (!guideManifestOf(projectDir).steps.includes(nodeId)) {
+    const message = 'A pronunciation guide is made from a step of the book that has landed. Open it from one of '
+      + 'the book\'s steps, not from a row that is still queued or from an exported file.';
+    sayToUser('Nothing to open', 'The pronunciation guide cannot be opened from here', message);
     throw new Error(message);
   }
   const existing = pronunciationWindows.get(projectDir);
@@ -2968,11 +2945,13 @@ function openPronunciationReview(projectDir: string): void {
     existing.focus();
     return;
   }
+  const parent = foundryMount.foundryWindow() ?? undefined;
   const win = new BrowserWindow({
     width: 980,
     height: 860,
     minWidth: 560,
     minHeight: 420,
+    ...(parent === undefined ? {} : { parent, modal: true }),
     icon: isDev ? path.join(__dirname, '..', '..', 'bookforge-icon.png') : path.join(codeRoot, 'bookforge-icon.png'),
     webPreferences: { nodeIntegration: false, contextIsolation: true, preload: path.join(__dirname, 'preload.js') },
     titleBarStyle: 'hiddenInset',
@@ -2981,7 +2960,7 @@ function openPronunciationReview(projectDir: string): void {
   pronunciationWindows.set(projectDir, win);
   win.on('closed', () => { pronunciationWindows.delete(projectDir); });
   win.webContents.on('did-finish-load', () => { win.webContents.setZoomLevel(loadZoomLevel()); });
-  const query = `project=${encodeURIComponent(projectDir)}`;
+  const query = `project=${encodeURIComponent(projectDir)}&at=${encodeURIComponent(nodeId)}`;
   if (isDev) {
     void win.loadURL(`http://localhost:4250/#/pronunciation?${query}`);
   } else {
@@ -13025,6 +13004,15 @@ ipcMain.handle('narration:text-readiness', async (
         sentenceOf = (at, printed, nth) => sentences.get(`${at}\u0000${printed}\u0000${nth}`) ?? null;
       }
       return { success: true, review: readGuideReview(projectDir, sentenceOf) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  ipcMain.handle('pronunciation:build', async (_event, projectDir: string, at: string, startOver: boolean) => {
+    try {
+      queuePronunciationGuide(projectDir, at, startOver === true);
+      return { success: true };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }

@@ -212,7 +212,7 @@ export function nodeTitle(step: QueueStep, kind: HostOperationKind): string {
     return model === null ? 'Enhance the narration' : `Enhance with ${model}`;
   }
   if (kind === 'guide') {
-    return step.config['fromZero'] === true ? 'Pronunciation guide, from zero' : 'Pronunciation guide';
+    return step.config['fromZero'] === true ? 'Pronunciation guide, starting over' : 'Pronunciation guide';
   }
   return 'Assemble the audiobook';
 }

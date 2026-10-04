@@ -1,6 +1,9 @@
 /**
- * THE PRONUNCIATION GUIDE'S REVIEW — BookForge's own window over a book's guide
- * (`#/pronunciation?project=<dir>`, opened from Foundry's "Review pronunciation").
+ * THE PRONUNCIATION GUIDE — BookForge's own window over a book's guide, modal over
+ * Foundry's (`#/pronunciation?project=<dir>&at=<step>`, Foundry's one "Pronunciation
+ * guide" tile). Owen, 2026-10-03: *"glossary should be a modal. within the modal you
+ * can view the options or have it run a new job"* — so it shows the guide, and it is
+ * where a guide is queued: the first one, or one that STARTS OVER.
  *
  * Owen, 2026-10-03: *"they can go back to foundry when its done and review the
  * words"* — every printed form the guide decided, how the narrator will say it,
@@ -9,7 +12,7 @@
  * untouched"*. What is saved is what the next cleanup is handed
  * (electron/pronunciation-review.ts).
  */
-import { ChangeDetectionStrategy, Component, computed, inject, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, DestroyRef, computed, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { ActivatedRoute } from '@angular/router';
 
@@ -56,12 +59,25 @@ const KIND_WORD: Record<GuideReviewForm['kind'], string> = {
         </div>
         <div class="actions">
           @if (saved()) { <span class="saved">{{ saved() }}</span> }
-          <desktop-button variant="ghost" size="sm" (click)="load()" [disabled]="busy()">Reload</desktop-button>
-          <desktop-button variant="primary" size="sm" (click)="save()" [disabled]="busy() || !dirty()">Save</desktop-button>
+          @if (review()) {
+            @if (confirmingStartOver()) {
+              <span class="confirm">Drop every decision, yours included, and decide the whole book again?</span>
+              <desktop-button variant="ghost" size="sm" (click)="confirmingStartOver.set(false)">Cancel</desktop-button>
+              <desktop-button variant="danger" size="sm" (click)="build(true)" [disabled]="busy()">Start over</desktop-button>
+            } @else {
+              <desktop-button variant="ghost" size="sm" (click)="confirmingStartOver.set(true)" [disabled]="busy()">Start over…</desktop-button>
+              <desktop-button variant="primary" size="sm" (click)="save()" [disabled]="busy() || !dirty()">Save</desktop-button>
+            }
+          }
         </div>
       </header>
 
       @if (error()) { <div class="error">{{ error() }}</div> }
+      @if (queued()) { <div class="queued">{{ queued() }}</div> }
+      @if (stale()) {
+        <div class="queued">The guide changed while you had edits open.
+          <button class="link" type="button" (click)="load()">Reload it</button> to see it (your unsaved edits are dropped).</div>
+      }
 
       @if (review(); as r) {
         <div class="summary">
@@ -70,7 +86,7 @@ const KIND_WORD: Record<GuideReviewForm['kind'], string> = {
         </div>
         <p class="note">
           A reading left empty is said as printed. "Leave to the narrator" sends the printed text to the narrator
-          untouched — the cleaner cannot change it. Your decisions last until the guide is started from zero.
+          untouched — the cleaner cannot change it. Your decisions last until the guide starts over.
         </p>
 
         <div class="forms">
@@ -132,7 +148,12 @@ const KIND_WORD: Record<GuideReviewForm['kind'], string> = {
           }
         </div>
       } @else if (!busy() && !error()) {
-        <div class="empty">This book has no pronunciation guide yet.</div>
+        <div class="empty">
+          <p>This book has no pronunciation guide yet. Cleaning the book builds one first, or build it now:
+            it decides how the narrator says the forms the book prints — numerals after a name, capitals,
+            abbreviations — once for the whole book.</p>
+          <desktop-button variant="primary" size="sm" (click)="build(false)" [disabled]="busy()">Build the guide</desktop-button>
+        </div>
       }
     </div>
   `,
@@ -173,18 +194,27 @@ const KIND_WORD: Record<GuideReviewForm['kind'], string> = {
     .spot.undecided { box-shadow: inset 3px 0 0 var(--accent); }
     .sentence { font-size: 13px; line-height: 1.45; color: var(--text-secondary); }
     mark { background: var(--accent-subtle); color: var(--text-primary); border-radius: 3px; padding: 0 2px; }
-    .empty { color: var(--text-secondary); font-size: 13px; margin-top: 24px; }
+    .empty { color: var(--text-secondary); font-size: 13px; margin-top: 24px; line-height: 1.5; }
+    .confirm { font-size: 12px; color: var(--text-secondary); }
+    .queued { background: var(--info-bg); color: var(--info-text); padding: 10px 12px; border-radius: 6px; margin: 8px 0; font-size: 13px; }
+    .link { background: none; border: none; padding: 0; color: inherit; text-decoration: underline; cursor: pointer; font: inherit; }
   `],
 })
 export class PronunciationReviewComponent {
   private readonly route = inject(ActivatedRoute);
   private readonly electron = inject(ElectronService);
+  private readonly destroyRef = inject(DestroyRef);
 
   readonly review = signal<GuideReview | null>(null);
   readonly drafts = signal<FormDraft[]>([]);
   readonly busy = signal(false);
   readonly error = signal<string | null>(null);
   readonly saved = signal<string | null>(null);
+  /** What was queued, said until the guide it makes arrives. */
+  readonly queued = signal<string | null>(null);
+  /** The guide changed on disk while there were edits here that a reload would drop. */
+  readonly stale = signal(false);
+  readonly confirmingStartOver = signal(false);
   /** The drafts as last read or saved, for "is there anything to save". */
   private readonly baseline = signal('');
 
@@ -193,27 +223,59 @@ export class PronunciationReviewComponent {
   readonly dirty = computed(() => this.review() !== null && this.snapshot(this.drafts()) !== this.baseline());
 
   private projectDir = '';
+  /** The book's step the window was opened from — what a new guide is made from. */
+  private at = '';
 
   constructor() {
     const project = this.route.snapshot.queryParamMap.get('project');
-    if (project === null || project === '') {
-      this.error.set('This window was opened without a book.');
+    const at = this.route.snapshot.queryParamMap.get('at');
+    if (project === null || project === '' || at === null || at === '') {
+      this.error.set('This window was opened without a book step.');
       return;
     }
     this.projectDir = project;
+    this.at = at;
+    /*
+     * A GUIDE STEP THAT FINISHES says so on `project:files-changed`; the list is
+     * read again then — unless there are unsaved edits, which are not dropped
+     * behind the person's back.
+     */
+    this.destroyRef.onDestroy(this.electron.onProjectFilesChanged((dir) => {
+      if (dir !== this.projectDir) return;
+      if (this.dirty()) { this.stale.set(true); return; }
+      void this.load();
+    }));
     void this.load();
+  }
+
+  /** Queue a guide: the first one, or one that starts over. */
+  async build(startOver: boolean): Promise<void> {
+    this.busy.set(true);
+    this.error.set(null);
+    try {
+      const res = await this.electron.buildPronunciationGuide(this.projectDir, this.at, startOver);
+      if (!res.success) { this.error.set(res.error ?? 'The guide could not be queued.'); return; }
+      this.confirmingStartOver.set(false);
+      this.queued.set(`${startOver ? 'A new guide, starting over, is' : 'The guide is'} in BookForge's queue. `
+        + 'This window shows it when it finishes.');
+    } finally {
+      this.busy.set(false);
+    }
   }
 
   async load(): Promise<void> {
     this.busy.set(true);
     this.error.set(null);
     this.saved.set(null);
+    this.stale.set(false);
     try {
       const res = await this.electron.readPronunciationGuide(this.projectDir);
       if (!res.success) { this.error.set(res.error ?? 'The guide could not be read.'); return; }
       const review = res.review ?? null;
       this.review.set(review);
       const drafts = review === null ? [] : this.order(review.forms.map((form) => this.draftOf(form)));
+      // A guide has arrived since one was queued: the note has said what it had to.
+      if (review !== null && this.review()?.version !== review.version) this.queued.set(null);
       this.drafts.set(drafts);
       this.baseline.set(this.snapshot(drafts));
     } finally {

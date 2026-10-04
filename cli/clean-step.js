@@ -80,12 +80,12 @@ const USAGE = `usage: clean-step.js (--project <BookForge project dir> | --found
                      [--crucible-server <name>] [--model <tag>] [--concurrency <n>]
                      [--remove-references on|off] [--remove-also <text>]
                      [--keep-server] [--library <root>] [--foundry-dist <dir>] [--dry-run]
-                     [--glossary-only [--from-zero]]
+                     [--glossary-only [--start-over]]
 
   --glossary-only is the app's "Pronunciation guide" step: it builds the book's
   pronunciation guide (its own session, the server's analysis model), prints it,
   and stops — nothing is cleaned and no step lands. Every decision already in the
-  guide is kept and only what it lacks is decided; --from-zero drops them all, a
+  guide is kept and only what it lacks is decided; --start-over drops them all, a
   person's included, and decides the whole book again.
 
   Without it, the clean reads the guide as it stands, exactly as the app's cleanup
@@ -503,13 +503,13 @@ async function main() {
    * and this door does the same, through the same function and Foundry's same
    * printed-forms door (`printedFormsForRun`). The guide as it stands is kept; a
    * book with none has it built first. `--glossary-only` is the guide step, and
-   * only it may be told `--from-zero`.
+   * only it may be told `--start-over`.
    */
   let fixedReadings;
   const glossaryOnly = args['glossary-only'] === true;
-  const fromZero = args['from-zero'] === true;
+  const fromZero = args['start-over'] === true;
   if (fromZero && !glossaryOnly) {
-    throw new Error('--from-zero rebuilds the pronunciation guide, which only the guide step does '
+    throw new Error('--start-over rebuilds the pronunciation guide, which only the guide step does '
       + '(--glossary-only). A cleanup reads the guide as it stands and never starts it again.');
   }
   if (glossaryOnly && crucible === null) {

@@ -6,7 +6,7 @@
  * WHAT A PERSON CHANGES BECOMES THEIRS. A form whose meanings or readings they
  * changed is `by: 'person'`; a spot they moved is `byPerson`. A cleanup reads the
  * guide as it stands, so an edit here is what the next cleanup is handed — and it
- * lasts until the guide is started from zero, which drops a person's decisions
+ * lasts until the guide STARTS OVER, which drops a person's decisions
  * with the model's (*"i dont think they should be protected on every clean"*).
  *
  * "LEAVE TO THE NARRATOR" means the printed text reaches the narrator untouched:

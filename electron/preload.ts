@@ -2370,6 +2370,8 @@ export interface ElectronAPI {
   pronunciation: {
     read: (projectDir: string) => Promise<{ success: boolean; review?: GuideReview | null; error?: string }>;
     save: (save: GuideReviewSave) => Promise<{ success: boolean; forms?: number; spots?: number; error?: string }>;
+    /** Queue a new guide made from step `at`; `startOver` drops every decision first. */
+    build: (projectDir: string, at: string, startOver: boolean) => Promise<{ success: boolean; error?: string }>;
   };
   /**
    * The Versions page's entry payload, and the push that finishes it.
@@ -4024,6 +4026,8 @@ const electronAPI: ElectronAPI = {
   pronunciation: {
     read: (projectDir: string) => ipcRenderer.invoke('pronunciation:read', projectDir),
     save: (save: GuideReviewSave) => ipcRenderer.invoke('pronunciation:save', save),
+    build: (projectDir: string, at: string, startOver: boolean) =>
+      ipcRenderer.invoke('pronunciation:build', projectDir, at, startOver),
   },
   versions: {
     pageData: (projectId: string) =>

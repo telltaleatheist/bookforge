@@ -31138,7 +31138,7 @@ var init_version = __esm({
     init_engine_import_meta_url();
     init_package();
     VERSION = package_default.version;
-    GIT_COMMIT = "src 1e91d0b28a1d".length > 0 ? "src 1e91d0b28a1d" : null;
+    GIT_COMMIT = "src f1a8b52725bd".length > 0 ? "src f1a8b52725bd" : null;
   }
 });
 
@@ -73861,7 +73861,13 @@ function formOf(tokens, i, heading2) {
   if (new RegExp("^\\p{Lu}{2,}$", "u").test(unstopped)) return heading2 ? null : { kind: "caps", key: unstopped, printed: unstopped };
   if (/^[ivxlcdm]+$/.test(unstopped) && romanValue(unstopped) === null) return null;
   if (!/^[\p{L}.]+$/u.test(bare)) return null;
-  return { kind: "abbreviation", key: unstopped.toLowerCase(), printed: bare };
+  const key = unstopped.toLowerCase();
+  if (WORDS_TOO.has(key) && !bare.endsWith(".")) {
+    const next = i + 1 < tokens.length ? core2(tokens[i + 1]) : "";
+    const title = TITLES_TOO.has(key) && new RegExp("^\\p{Lu}", "u").test(unstopped) && new RegExp("^\\p{Lu}\\p{Ll}", "u").test(next) && token === bare;
+    if (!title) return null;
+  }
+  return { kind: "abbreviation", key, printed: bare };
 }
 function spread(items, n) {
   if (items.length <= n) return [...items];
@@ -73952,7 +73958,7 @@ function runCleanForms(opts) {
   );
   return file;
 }
-var fs28, path23, PRINTED_FORMS_FORMAT, SAMPLES, DETERMINERS;
+var fs28, path23, PRINTED_FORMS_FORMAT, SAMPLES, WORDS_TOO, TITLES_TOO, DETERMINERS;
 var init_forms = __esm({
   "src/clean/forms.ts"() {
     "use strict";
@@ -73970,6 +73976,31 @@ var init_forms = __esm({
     init_tts_spoken_forms();
     PRINTED_FORMS_FORMAT = "printed-forms/v1";
     SAMPLES = 6;
+    WORDS_TOO = /* @__PURE__ */ new Set([
+      "no",
+      "nos",
+      "art",
+      "sec",
+      "rep",
+      "co",
+      "ed",
+      "col",
+      "rev",
+      "gen",
+      "mar",
+      "trans",
+      "ave",
+      "fig",
+      "figs",
+      "al",
+      "hon",
+      "sept",
+      "ser",
+      "pl",
+      "sen",
+      "maj"
+    ]);
+    TITLES_TOO = /* @__PURE__ */ new Set(["rev", "gen", "col", "sen", "hon", "maj"]);
     DETERMINERS = /* @__PURE__ */ new Set([
       "the",
       "a",

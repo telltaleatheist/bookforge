@@ -352,6 +352,18 @@ const entries = (where) => JSON.parse(fs.readFileSync(where.glossaryFile, 'utf8'
     assert.match(JSON.parse(fs.readFileSync(where.glossaryFile, 'utf8')).built, /^\d{4}-/);
   });
 
+  await test('a spot the book no longer lists as a form leaves the guide; its decision stays', async () => {
+    const where = scratch();
+    await run(where, BOOK);
+    const fewer = BOOK.map((f) => (f.key === 'esp' ? { ...f, count: 2, occurrences: f.occurrences.slice(0, 2) } : f));
+    const asked = [];
+    await run(where, fewer, { asked });
+    assert.deepStrictEqual(asked, []);
+    const esp = entries(where).find((e) => e.key === 'esp');
+    assert.deepStrictEqual(esp.occurrences.map((o) => o.at), ['e-344', 'e-586']);
+    assert.strictEqual(esp.senses.length, 2, 'the meanings are the guide\'s still');
+  });
+
   await test('the guide of a project is found by its key, as a cleanup\'s records name it', () => {
     const where = scratch();
     assert.deepStrictEqual(glossary.guidePathsOfProject(where.dir), glossary.glossaryPathsFor(where.request));

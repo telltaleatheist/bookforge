@@ -915,7 +915,7 @@ export async function ensureNarrationGlossary(opts: EnsureGlossaryOptions): Prom
     ? { format: GLOSSARY_FORMAT, book: files.book, built: new Date().toISOString(), entries: [] }
     : stored;
   if (opts.fromZero && stored.entries.length > 0) {
-    report(`glossary: starting from zero — the guide's ${stored.entries.length} decided form(s) are dropped`);
+    report(`glossary: starting over — the guide's ${stored.entries.length} decided form(s) are dropped`);
   }
   const had = new Map(glossary.entries.map((e) => [formKey(e), e] as const));
   const listedKeys = new Set(forms.map(formKey));
@@ -929,7 +929,12 @@ export async function ensureNarrationGlossary(opts: EnsureGlossaryOptions): Prom
   for (const form of forms) {
     const before = had.get(formKey(form));
     if (before !== undefined) {
-      entries.set(formKey(form), { ...before, count: form.count, printed: form.printed });
+      // Its decisions stand; a spot the book no longer lists as this form is dropped from it.
+      const listedSpots = new Set(form.occurrences.map(spotKey));
+      entries.set(formKey(form), {
+        ...before, count: form.count, printed: form.printed,
+        occurrences: before.occurrences.filter((o) => listedSpots.has(spotKey(o))),
+      });
     } else {
       toAsk.push(form);
     }
