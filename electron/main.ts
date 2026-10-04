@@ -2916,6 +2916,8 @@ function queuePronunciationGuide(projectDir: string, at: string, startOver: bool
       type: 'narration-guide',
       label: startOver ? 'Pronunciation guide, starting over' : 'Pronunciation guide',
       config: config as unknown as Record<string, unknown>,
+      // It reads the book its config names, inside Foundry's project — no earlier step of ours (foundry-job's shape).
+      sourceRef: { kind: 'none' },
     }],
   });
 }
