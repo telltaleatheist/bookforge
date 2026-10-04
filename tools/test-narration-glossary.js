@@ -112,8 +112,9 @@ function scratch() {
   };
 }
 
-function run(where, forms, { meanings = MEANINGS, placings = PLACINGS, asked = [], placed = [] } = {}) {
+function run(where, forms, { meanings = MEANINGS, placings = PLACINGS, asked = [], placed = [], runId = 'job-1' } = {}) {
   return glossary.ensureNarrationGlossary({
+    run: runId,
     request: where.request,
     server: 'test-crucible',
     signal: new AbortController().signal,
@@ -143,6 +144,9 @@ function run(where, forms, { meanings = MEANINGS, placings = PLACINGS, asked = [
 }
 
 const guide = (where) => JSON.parse(fs.readFileSync(where.readingsFile, 'utf8')).readings;
+/** The spots the guide READ — a kept spot (replace = find) is said as printed, and protected. */
+const read = (where) => guide(where).filter((r) => r.replace !== r.find);
+const kept = (where) => guide(where).filter((r) => r.replace === r.find);
 const entries = (where) => JSON.parse(fs.readFileSync(where.glossaryFile, 'utf8')).entries;
 
 (async () => {
@@ -158,7 +162,7 @@ const entries = (where) => JSON.parse(fs.readFileSync(where.glossaryFile, 'utf8'
     assert.deepStrictEqual(asked.filter((a) => a[1] === 'focus'), [['esp', 'focus'], ['esp', 'focus']]);
     // "no" is as printed: nothing to place.
     assert.deepStrictEqual(placed.map((p) => p[0]).sort(), ['Wolf IV', 'esp']);
-    assert.deepStrictEqual(guide(where), [
+    assert.deepStrictEqual(read(where), [
       { find: 'Wolf IV', replace: 'Wolf Four', at: 'e-5', nth: 0 },
       { find: 'Wolf IV', replace: 'Wolf Four', at: 'e-491', nth: 0 },
       { find: 'esp', replace: 'ESP', at: 'e-344', nth: 0 },
@@ -168,7 +172,9 @@ const entries = (where) => JSON.parse(fs.readFileSync(where.glossaryFile, 'utf8'
       { find: 'esp.', replace: 'especially', at: 'e-700', nth: 0 },
       { find: 'esp', replace: 'ESP', at: 'e-900', nth: 0 },
     ]);
-    assert.deepStrictEqual(out, { readingsPath: where.readingsFile, forms: 3, asked: 5, placed: 6, readings: 6, unplaced: 0 });
+    // "no", decided as printed outright, is KEPT at its spot, so the sentence pass cannot rewrite it.
+    assert.deepStrictEqual(kept(where), [{ find: 'no', replace: 'no', at: 'e-9', nth: 0 }]);
+    assert.deepStrictEqual(out, { readingsPath: where.readingsFile, forms: 3, asked: 5, placed: 6, readings: 7, unplaced: 0 });
     const esp = entries(where).find((e) => e.key === 'esp');
     assert.deepStrictEqual(esp.occurrences.map((o) => o.sense), [0, 0, 1, 0]);
     assert.strictEqual(entries(where)[0].key, 'Wolf IV', 'the book\'s order');
@@ -181,7 +187,7 @@ const entries = (where) => JSON.parse(fs.readFileSync(where.glossaryFile, 'utf8'
     const placed = [];
     const out = await run(where, BOOK, { asked, placed });
     assert.deepStrictEqual([asked, placed], [[], []]);
-    assert.strictEqual(out.readings, 6);
+    assert.strictEqual(out.readings, 7);
 
     const grown = BOOK.map((f) => (f.key === 'Wolf IV'
       ? { ...f, count: 3, occurrences: [...f.occurrences, occ('e-1200', 0, 'Wolf IV', 'They left Wolf IV behind.')] }
@@ -242,8 +248,10 @@ const entries = (where) => JSON.parse(fs.readFileSync(where.glossaryFile, 'utf8'
         : { choice: 's0', confidence: 0.95 })),
     });
     assert.deepStrictEqual(asked.filter((a) => a[1] !== 'focus'), [['no', 0], ['no', 1]]);
-    assert.deepStrictEqual(guide(where), [{ find: 'No.', replace: 'Number', at: 'b3', nth: 0 }]);
-    assert.strictEqual(out.readings, 1);
+    assert.deepStrictEqual(read(where), [{ find: 'No.', replace: 'Number', at: 'b3', nth: 0 }]);
+    // The word "no" is placed in its as-printed meaning: kept, and protected.
+    assert.deepStrictEqual(kept(where).map((r) => r.at), ['b1', 'b2']);
+    assert.strictEqual(out.readings, 3);
   });
 
   await test('an unsure placing, an unusable reading and an unreadable answer leave spots as printed', async () => {
@@ -265,8 +273,13 @@ const entries = (where) => JSON.parse(fs.readFileSync(where.glossaryFile, 'utf8'
       // Unsure about the second Wolf IV.
       placings: (form, senses, occurrences) => occurrences.map((o) => ({ choice: 's0', confidence: o.at === 'e-491' ? 0.3 : 0.9 })),
     });
-    assert.deepStrictEqual(guide(where), [{ find: 'Wolf IV', replace: 'Wolf Four', at: 'e-5', nth: 0 }]);
-    assert.strictEqual(out.unplaced, 2, 'the unsure Wolf IV, and Pius IX placed in a meaning whose reading is unusable');
+    // One reading: the unsure Wolf IV is still Wolf Four — there was nothing to choose between.
+    assert.deepStrictEqual(read(where), [
+      { find: 'Wolf IV', replace: 'Wolf Four', at: 'e-5', nth: 0 },
+      { find: 'Wolf IV', replace: 'Wolf Four', at: 'e-491', nth: 0 },
+    ]);
+    assert.strictEqual(out.unplaced, 1, 'Pius IX, placed in a meaning whose reading is unusable, goes to its sentence');
+    assert.ok(!guide(where).some((r) => r.find === 'Pius IX'), 'and is not protected');
     const byKey = Object.fromEntries(entries(where).map((e) => [e.key, e]));
     assert.match(byKey['Pius IX'].senses[0].problem, /does not keep "Pius"/);
     assert.strictEqual(byKey.v.decision, 'as-printed');
@@ -294,16 +307,40 @@ const entries = (where) => JSON.parse(fs.readFileSync(where.glossaryFile, 'utf8'
     assert.deepStrictEqual(guide(where).find((r) => r.at === 'e-900'), { find: 'esp', replace: 'especially', at: 'e-900', nth: 0 });
   });
 
-  await test('nothing read differently, no guide; and the first build\'s file is started afresh', async () => {
+  await test('nothing read differently is still kept and protected; and the first build\'s file is started afresh', async () => {
     const where = scratch();
     fs.writeFileSync(where.glossaryFile, JSON.stringify({ format: 'narration-glossary/v1', book: 'book-1', entries: [{ key: 'no', by: 'model' }] }));
     const out = await run(where, [NO]);
-    assert.strictEqual(out.readingsPath, null);
-    assert.ok(!fs.existsSync(where.readingsFile));
+    assert.strictEqual(out.readingsPath, where.readingsFile);
+    assert.deepStrictEqual(read(where), []);
+    assert.deepStrictEqual(kept(where), [{ find: 'no', replace: 'no', at: 'e-9', nth: 0 }]);
+    // A book that prints no form at all is handed nothing.
+    const empty = scratch();
+    assert.strictEqual((await run(empty, [])).readingsPath, null);
+    assert.ok(!fs.existsSync(empty.readingsFile));
     assert.strictEqual(JSON.parse(fs.readFileSync(where.glossaryFile, 'utf8')).format, 'narration-glossary/v2');
 
     fs.writeFileSync(where.glossaryFile, JSON.stringify({ format: 'narration-glossary/v1', book: 'book-1', entries: [{ key: 'no', by: 'person' }] }));
     await assert.rejects(run(where, [NO]), /holding a person's decisions/);
+  });
+
+  await test('a clean queued again decides again; the same clean resumes; a person\'s decisions stay', async () => {
+    const where = scratch();
+    await run(where, BOOK, { runId: 'job-1' });
+    // Make one decision a person's.
+    const file = JSON.parse(fs.readFileSync(where.glossaryFile, 'utf8'));
+    Object.assign(file.entries.find((e) => e.key === 'no'), { by: 'person' });
+    fs.writeFileSync(where.glossaryFile, JSON.stringify(file));
+
+    const same = [];
+    await run(where, BOOK, { runId: 'job-1', asked: same });
+    assert.deepStrictEqual(same, [], 'the same job (its triage, then its clean; or a resume) asks nothing');
+
+    const fresh = [];
+    await run(where, BOOK, { runId: 'job-2', asked: fresh });
+    assert.deepStrictEqual(fresh.filter((a) => a[1] !== 'focus').map((a) => a[0]).sort(), ['Wolf IV', 'esp'],
+      'a new clean asks the model again about every form but the one a person decided');
+    assert.strictEqual(JSON.parse(fs.readFileSync(where.glossaryFile, 'utf8')).run, 'job-2');
   });
 
   await test('an acronym is said as printed, never expanded or re-cased (Owen: esp is said essp)', () => {
@@ -336,6 +373,8 @@ const entries = (where) => JSON.parse(fs.readFileSync(where.glossaryFile, 'utf8'
     const street = { meaning: 'Street', kind: 'abbreviation', reading: 'Street', periodIsPart: true };
     assert.strictEqual(glossary.placeAnswer([saint, street], split), null, 'two readings are two choices');
     assert.strictEqual(glossary.placeAnswer([saint], { choice: 'none', confidence: 0.6, probabilities: { s0: 0.4, none: 0.6 } }), null);
+    // One way of saying it, and the door unsure rather than sure it is something else: that way.
+    assert.strictEqual(glossary.placeAnswer([saint], { choice: 's0', confidence: 0.4, probabilities: { s0: 0.4, none: 0.35 } }), 0);
     const leopold = { key: 'Leopold II', kind: 'roman', count: 9, printed: { 'Leopold II': 9 }, samples: [], occurrences: [] };
     assert.strictEqual(glossary.acronymRead(leopold, { meaning: 'king', kind: 'numeral', reading: 'the Second', periodIsPart: false }).reading,
       'Leopold the Second');

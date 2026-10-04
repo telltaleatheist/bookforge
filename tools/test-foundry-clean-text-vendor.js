@@ -489,7 +489,14 @@ const VENDOR_LEAVES = '770480d';
  * the same diff: electron/light-gate.ts is Foundry's 737cb30 copy byte for byte, and the normalizer the
  * same two lines.
  */
-const ONE_DOOR_BASELINE = '737cb30';
+/*
+ * MOVED 2026-10-03 (evening), 737cb30 → f66a126, read in full: ONE commit touches these files. f66a126
+ * (a book's pronunciation guide protects every spot it decided): `NormalizerAsk.protected` — spans the
+ * caller reserves, refused OVERLAPS_APPLIED exactly as the rules' own spans — and `toAppliedOffset` to
+ * move them onto the rule-applied text. NOT a rule move: without fixed readings nothing is reserved that
+ * was not before, so NORMALIZER_VERSION stays n19. This side took the same lines in its serial driver.
+ */
+const ONE_DOOR_BASELINE = 'f66a126';
 const FROZEN_SINCE_BASELINE = [
   'src/clean/tts-number-normalizer.ts',
   'src/clean/tts-spoken-forms.ts',
@@ -551,7 +558,7 @@ const FILES = [
     theirs: 'src/clean/tts-number-normalizer.ts',
     vendoredAt: VENDOR_PASS,
     shipped: {
-      sha256: 'ccf48b020f075b08bcd596b88615cfc49b4f228ec71be2a4ccd04da619ce51ee',
+      sha256: 'aff3b2343b515906064a9fc6d7d027a491eb4e0f41192f2f552aa1823f26899e',
       why: 'the type-only `epub-processor.js` import retargeted to `./targets.js`; '
         + '`askAboutEach` exported so the engine\'s door is a third caller rather than a second '
         + 'copy of the retry rules; `normalizeNarrationNumbers` deleted (291 lines, all about a '
@@ -598,7 +605,9 @@ const FILES = [
         + 'askForEdits\'s rewrap and is not re-rolled. Not a rule move; the same lines here. '
         + 'REPINNED 2026-10-03 for 737cb30 (n19): the version constant and its comment — the light '
         + 'gate no longer takes "did" or "civil" for a numeral, nor hides "Wolf IV." behind its '
-        + 'period. A RULE MOVE; the same lines here, and electron/light-gate.ts is Foundry\'s copy.',
+        + 'period. A RULE MOVE; the same lines here, and electron/light-gate.ts is Foundry\'s copy. '
+        + 'REPINNED 2026-10-03 (evening) for f66a126: NormalizerAsk.protected (spans a caller reserves) and '
+        + 'toAppliedOffset. Not a rule move; the same lines here.',
     },
   },
   {

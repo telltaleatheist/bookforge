@@ -514,6 +514,8 @@ async function main() {
       signal: controller.signal,
       report: (line) => console.log(`[clean] ${line}`),
       listForms: (req, onLine) => jobQueue.printedFormsForRun(req, onLine),
+      // One invocation is one clean: the model decides again, and a person's decisions are kept.
+      run: `cli-${require('crypto').randomUUID()}`,
     });
     if (made.readingsPath !== null) fixedReadings = made.readingsPath;
     if (glossaryOnly) {

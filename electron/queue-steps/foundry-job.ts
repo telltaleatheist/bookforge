@@ -513,6 +513,8 @@ export const foundryJobStep: StepModule = {
         signal: ctx.signal,
         report: (line) => ctx.report({ message: line, detail: line }),
         listForms: foundryFormsLister(),
+        // The queue job: its triage and its clean share one guide; a clean queued again decides again.
+        run: ctx.job.id,
       });
       if (made.readingsPath !== null) fixedReadings = made.readingsPath;
     }

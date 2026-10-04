@@ -35,10 +35,10 @@
  *      meaning the samples missed shows up as "none of these".
  *   4. ONE SECOND LOOK — when occurrences came back "none of these", the chat is
  *      asked again with THOSE sentences as evidence, and the form is placed again.
- *   5. THE GUIDE — every placed occurrence becomes a reading AT ITS SPOT
- *      (`--fixed-readings` with `at`/`nth`), handed to the triage and the
- *      cleanup alike. An occurrence nobody could place confidently is left as
- *      printed, to the sentence pass, exactly as before the glossary existed.
+ *   5. THE GUIDE — every placed occurrence becomes a spot (`--fixed-readings`
+ *      with `at`/`nth`): a reading, or the form KEPT as printed. Foundry applies
+ *      them and protects every one from the sentence pass, in the triage and the
+ *      cleanup alike. An occurrence nothing decided goes to the sentence pass.
  *
  * ── Measured before it was built (2026-10-03, Hellworld + The Pursuit of Power) ──
  *
@@ -61,12 +61,12 @@
  * ── Cost, and what is never paid twice ──────────────────────────────────────
  *
  * Selective by construction: one chat per form (Hellworld: 3; a history book
- * ~180) and one decide item per occurrence of a form with a reading. Meanings are
- * cached under the exact question they answered (form, samples, prompt version,
- * model); placings under the meanings and the occurrence list. So the cleanup
- * behind a triage asks nothing, and a re-clean asks only what its edits changed.
- * A PERSON's meanings are never asked again, and an occurrence a person placed is
- * never placed again.
+ * ~180) and one decide item per occurrence. Decisions belong to the CLEAN that
+ * made them — the queue job (`EnsureGlossaryOptions.run`): its triage and its
+ * cleanup share them, and a resumed job keeps them, but a clean queued again
+ * decides again (Owen: "if i sent it through cleanup again then its because i want
+ * to clean it up again"). A PERSON's meanings are never asked again, and an
+ * occurrence a person placed is never placed again.
  *
  * ── Its own session, closed before the engine starts ────────────────────────
  *
@@ -123,8 +123,8 @@ export interface PrintedForm {
 
 /**
  * WHAT A MEANING IS — the model's classification, from which one reading follows
- * by rule: an ACRONYM is said as its capitals ("esp" → "ESP"), whatever the model
- * offered as its reading. Measured 2026-10-03: told in the prompt never to expand
+ * by rule: an ACRONYM is said as printed, whatever the model offered as its
+ * reading (`acronymRead`). Measured 2026-10-03: told in the prompt never to expand
  * an acronym, the 27B still read the psychic sense "extrasensory perception" once
  * the same book also used "esp." as an abbreviation — so the rule moved out of the
  * prompt's hope and into the classification the model is good at.
@@ -188,6 +188,13 @@ export interface GlossaryFile {
   format: typeof GLOSSARY_FORMAT;
   /** The project key the glossary belongs to. */
   book: string;
+  /**
+   * WHICH CLEAN DECIDED IT — the queue job whose triage and clean share these
+   * decisions. A clean queued again is a new job, and the model's decisions are
+   * made again (Owen, 2026-10-03: "if i sent it through cleanup again then its
+   * because i want to clean it up again"); a resumed job keeps its own.
+   */
+  run?: string;
   entries: GlossaryEntry[];
 }
 
@@ -238,7 +245,10 @@ export function readGlossary(file: string, book: string): GlossaryFile {
   if (parsed.format !== GLOSSARY_FORMAT || !Array.isArray(parsed.entries)) {
     throw new Error(`${file} is not a ${GLOSSARY_FORMAT} file, so the glossary in it cannot be read. Nothing was asked.`);
   }
-  return { format: GLOSSARY_FORMAT, book, entries: parsed.entries as GlossaryEntry[] };
+  const run = (parsed as { run?: unknown }).run;
+  return {
+    format: GLOSSARY_FORMAT, book, ...(typeof run === 'string' ? { run } : {}), entries: parsed.entries as GlossaryEntry[],
+  };
 }
 
 function writeAtomically(file: string, body: unknown): void {
@@ -560,12 +570,15 @@ export interface PlacingAnswer {
  * unplaced) is a confident "Saint". It goes to the likeliest of the pooled meanings.
  */
 export function placeAnswer(senses: readonly GlossarySense[], answer: PlacingAnswer): number | null {
+  const said = (s: GlossarySense): string => `${s.reading}\u0000${s.reading.length > 0 && s.periodIsPart}`;
   const p = answer.probabilities;
   if (p === undefined) {
     const index = /^s(\d+)$/.exec(answer.choice);
-    return index !== null && answer.confidence >= PLACE_CONFIDENCE ? Number(index[1]) : null;
+    if (index === null) return null;
+    // One way of saying it (see below): any meaning the door picked is that way.
+    if (new Set(senses.map(said)).size === 1) return Number(index[1]);
+    return answer.confidence >= PLACE_CONFIDENCE ? Number(index[1]) : null;
   }
-  const said = (s: GlossarySense): string => `${s.reading}\u0000${s.reading.length > 0 && s.periodIsPart}`;
   const pooled = new Map<string, { mass: number; best: number; bestP: number }>();
   senses.forEach((sense, i) => {
     const one = p[`s${i}`] ?? 0;
@@ -577,6 +590,15 @@ export function placeAnswer(senses: readonly GlossarySense[], answer: PlacingAns
   let top: { mass: number; best: number } | null = null;
   for (const group of pooled.values()) if (top === null || group.mass > top.mass) top = group;
   const none = p[NONE] ?? 0;
+  /*
+   * ONE WAY OF SAYING IT: the form has a single reading, so an occurrence is
+   * that reading unless the door is confident it is something else. Placing is a
+   * choice between readings; with one there is nothing to choose, and an unsure
+   * answer handed to the sentence pass is a guess where the book had already
+   * decided (measured 2026-10-03: Hellworld's 25th "Wolf IV", unsure at 0.4, was
+   * read "Wolf the Fourth" there).
+   */
+  if (pooled.size === 1 && top !== null && !(answer.choice === NONE && none >= PLACE_CONFIDENCE)) return top.best;
   return top !== null && top.mass >= PLACE_CONFIDENCE && top.mass > none ? top.best : null;
 }
 
@@ -610,21 +632,36 @@ export function spotReplace(occurrence: Pick<FormOccurrence, 'printed' | 'endsSe
 
 export interface SpotReading { find: string; replace: string; at: string; nth: number }
 
+/**
+ * THE GUIDE'S SPOTS: every occurrence the guide DECIDED, read or kept.
+ *
+ * A spot whose meaning is said as printed is handed over too, as a KEPT spot
+ * (`replace` = `find`), because Foundry protects every spot from the sentence
+ * pass. Measured 2026-10-03, Hellworld's first clean with the guide: Owen's "esp",
+ * decided as printed, was still rewritten "especial" twice and "ESP" once by the
+ * sentence pass — a decision that changed nothing had protected nothing. A form a
+ * person decided as printed outright (no meanings) keeps every occurrence. What
+ * is NOT handed over is an occurrence nothing decided — placed nowhere, or in a
+ * meaning whose reading cannot be given to the book — which the sentence pass
+ * reads, as before the guide.
+ */
 export function spotReadingsOf(entries: readonly GlossaryEntry[], forms: ReadonlyMap<string, PrintedForm>): SpotReading[] {
   const out: SpotReading[] = [];
   for (const entry of entries) {
-    if (entry.decision !== 'reading') continue;
     const form = forms.get(`${entry.kind}\u0000${entry.key}`);
     if (form === undefined) continue;
+    if (entry.senses.length === 0 && entry.decision === 'as-printed') {
+      for (const o of form.occurrences) out.push({ find: o.printed, replace: o.printed, at: o.at, nth: o.nth });
+      continue;
+    }
     const where = new Map(form.occurrences.map((o) => [`${o.at}\u0000${o.printed}\u0000${o.nth}`, o] as const));
     for (const placed of entry.occurrences) {
       if (placed.sense === null) continue;
       const sense = entry.senses[placed.sense];
-      if (sense === undefined || sense.reading.length === 0 || sense.problem !== undefined) continue;
+      if (sense === undefined || sense.problem !== undefined) continue;
       const occurrence = where.get(`${placed.at}\u0000${placed.printed}\u0000${placed.nth}`);
       if (occurrence === undefined) continue;
-      const replace = spotReplace(occurrence, sense);
-      if (replace === occurrence.printed) continue;
+      const replace = sense.reading.length === 0 ? occurrence.printed : spotReplace(occurrence, sense);
       out.push({ find: occurrence.printed, replace, at: occurrence.at, nth: occurrence.nth });
     }
   }
@@ -761,6 +798,11 @@ export interface EnsureGlossaryOptions {
   place?: GlossaryPlacer;
   /** The model's name, when the two are injected. Production asks the server. */
   model?: string;
+  /**
+   * THIS CLEAN'S IDENTITY — the queue job id in the app, one per invocation in the
+   * CLI. Decisions the model made for another run are made again; a person's never are.
+   */
+  run: string;
 }
 
 /**
@@ -801,7 +843,20 @@ export async function ensureNarrationGlossary(opts: EnsureGlossaryOptions): Prom
   const formKey = (f: { kind: string; key: string }): string => `${f.kind}\u0000${f.key}`;
   const formsByKey = new Map(forms.map((f) => [formKey(f), f] as const));
 
-  const glossary = readGlossary(files.glossary, files.book);
+  const stored = readGlossary(files.glossary, files.book);
+  /*
+   * A CLEAN QUEUED AGAIN DECIDES AGAIN. The model's decisions belong to the run
+   * that made them; a new run keeps only what a PERSON decided, and asks the rest.
+   */
+  const sameRun = stored.run === opts.run;
+  const glossary: GlossaryFile = {
+    ...stored,
+    run: opts.run,
+    entries: sameRun ? stored.entries : stored.entries.filter((e) => e.by === 'person'),
+  };
+  if (!sameRun && stored.entries.some((e) => e.by === 'model')) {
+    report('glossary: a new clean — the model\'s earlier decisions are made again; yours are kept');
+  }
   const had = new Map(glossary.entries.map((e) => [formKey(e), e] as const));
   const listedKeys = new Set(forms.map(formKey));
   // A person's entry for a form the book no longer prints is kept in the file, unread.
@@ -994,11 +1049,12 @@ export async function ensureNarrationGlossary(opts: EnsureGlossaryOptions): Prom
   const outcome = { forms: forms.length, asked, placed: placedNow, readings: readings.length, unplaced };
   if (readings.length === 0) {
     fs.rmSync(files.readings, { force: true });
-    report(`glossary: ${forms.length} printed form(s), none read differently from how it is printed`);
+    report(`glossary: ${forms.length} printed form(s), and no spot the guide decided`);
     return { readingsPath: null, ...outcome };
   }
   writeAtomically(files.readings, { format: FIXED_READINGS_FORMAT, readings });
-  report(`glossary: ${readings.length} spot(s) read across ${final.filter((e) => e.decision === 'reading').length} form(s)`
+  const read = readings.filter((r) => r.replace !== r.find).length;
+  report(`glossary: ${read} spot(s) read and ${readings.length - read} kept as printed across ${forms.length} form(s)`
     + `${unplaced > 0 ? `; ${unplaced} occurrence(s) left to their sentence` : ''}`
     + `${asked === 0 && placedNow === 0 ? ' (every decision already made)' : ''}`);
   return { readingsPath: files.readings, ...outcome };
