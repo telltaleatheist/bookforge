@@ -239,8 +239,15 @@ export class PronunciationReviewComponent {
 
   kindWord(kind: GuideReviewForm['kind']): string { return KIND_WORD[kind]; }
 
+  /**
+   * Spots that need a decision — only of a form the guide reads differently. A
+   * form said as printed in every meaning is said as printed wherever it falls,
+   * so its unplaced spots are not news (the run's own "left to their sentence"
+   * counts the same way).
+   */
   undecidedIn(d: FormDraft): number {
-    return d.leftWhole ? 0 : d.choices.filter((c) => c === 'cleaner').length;
+    if (d.leftWhole || d.form.decision !== 'reading') return 0;
+    return d.choices.filter((c) => c === 'cleaner').length;
   }
 
   spotsIn(d: FormDraft, sense: number): number {
