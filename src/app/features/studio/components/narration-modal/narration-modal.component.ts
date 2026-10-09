@@ -2036,11 +2036,19 @@ export class NarrationModalComponent {
             + 'text cleanup has run, so there is nothing to ask you about. Nothing was queued.');
         }
         const file = readiness.fileState ?? null;
-        const cleaned = file === null ? readiness.cleanupDone : file.ok;
+        /*
+         * ASKED ONLY OF A BOOK NEVER CLEANED. A STALE stamp — cleaned by an
+         * older rule version (Mutineers' Moon, cleaned at n6 on 2026-09-07,
+         * narrated under n19) — is a book that WAS cleaned, and the ruling this
+         * dialog serves (Owen, 2026-09-05) asks only "if that flag isn't set".
+         * Owen, 2026-10-09: "the system sometimes asks if i want to narrate as
+         * printed or if i want to clean first, even though i already cleaned
+         * it." A newer cleaner is a re-run worth offering on the version row,
+         * not a question at Narrate; the render reads the cleaned text either way.
+         */
+        const cleaned = file === null ? readiness.cleanupDone : file.ok || file.state === 'stale';
         if (!cleaned) {
-          // The gate's OWN sentence, because "it has never been cleaned" and
-          // "it was cleaned by rules this build no longer reads by" are
-          // different things to a user who believes they already did it.
+          // The gate's OWN sentence, for the one case asked about: never cleaned.
           const why = file !== null && !file.ok
             ? file.reason
             : `${book.title || 'This book'} has not been through the narration text cleanup, so `
