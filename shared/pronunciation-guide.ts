@@ -50,6 +50,8 @@ export interface GuideReviewForm {
 
 export interface GuideReview {
   projectDir: string;
+  /** The step the guide belongs to — a guide is one step's, never the whole book's. */
+  at: string;
   /** The book's title, for the window. */
   title: string;
   /**
@@ -74,6 +76,7 @@ export interface GuideReviewFormEdit {
 
 export interface GuideReviewSave {
   projectDir: string;
+  at: string;
   version: string;
   forms: GuideReviewFormEdit[];
 }

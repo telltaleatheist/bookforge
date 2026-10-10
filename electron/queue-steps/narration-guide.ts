@@ -1,5 +1,5 @@
 /**
- * narration-guide — the book's PRONUNCIATION GUIDE, built as its own step.
+ * narration-guide — a step's PRONUNCIATION GUIDE, built as its own step.
  *
  * Owen, 2026-10-03: *"the glossary building step should be its own process. and
  * if the user wants to rebuild the glossary from zero, they can"* — *"the glossary
@@ -7,15 +7,16 @@
  * alone, they can go back to foundry when its done and review the words.
  * otherwise everything is autonomous"*.
  *
- * So this step is the tree's "Pronunciation guide", pressed on any step of a
- * book: it lists the book's printed forms AT THAT STEP (Foundry's
- * `printedFormsAt`) and decides how each is said (`narration-glossary.ts`). Told
- * `fromZero`, it drops every decision first — a person's included. A cleanup
- * later reads the guide it made and never rebuilds it; one with no guide builds
- * it first, through the same builder, inside its own row.
+ * So this step is the tree's "Pronunciation guide", pressed on a step of a book
+ * (a greyed one too, when it waits behind the run that lands it): it lists the
+ * printed forms AT THAT STEP (Foundry's `printedFormsAt`) and decides how each
+ * is said (`narration-glossary.ts`). The guide is THAT STEP's (Owen, 2026-10-10).
+ * Told `fromZero`, it drops every decision first — a person's included. A cleanup
+ * made from that step reads the guide and never rebuilds it; one whose step has no
+ * guide builds it first, through the same builder, inside its own row.
  *
  * Nothing is chained onto it and it produces no file another step reads: the
- * guide is found by the cleanup by the project's key, where this step wrote it.
+ * guide is found by the cleanup by the project's key and the step, where this step wrote it.
  */
 import type { StepModule, StepRunContext } from '../queue-engine';
 import type { ArtifactRef } from '../../shared/queue/engine-types';
@@ -25,9 +26,9 @@ import { broadcastToAllWindows } from '../document-stage-run';
 export interface NarrationGuideStepConfig {
   /** The Foundry project the guide is for. */
   projectDir: string;
-  /** The ledger step pressed on — the book the forms are listed from. Null: where the book stands. */
-  at: string | null;
-  /** Drop every decision first, a person's included, and decide the whole book again. */
+  /** The ledger step pressed on — the text the forms are listed from, and whose guide this is. */
+  at: string;
+  /** Drop every decision first, a person's included, and decide the whole step again. */
   fromZero: boolean;
   /** The book's title, for the row. */
   bookTitle: string;

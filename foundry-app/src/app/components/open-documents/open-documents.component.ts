@@ -2548,7 +2548,18 @@ export class OpenDocumentsComponent {
         const under = pendingByParent.get(id) ?? [];
         const shown = !collapsed.has(key);
         const file = exportOfNodeId(id);
+        /*
+         * THE HOST'S WORK CHAINED ONTO THIS PROMISE, drawn under it as under a landed
+         * step (Owen, 2026-10-10: *"steps apply to the one above them"*). A host
+         * that chains work onto a greyed step names the step the promise MINTS as
+         * its parent — the id it will keep once it lands, so nothing re-parents.
+         * A file promise's host work is `hostedOnExports`', drawn by `emitExport`.
+         */
+        const jobs = file === null ? nodesByStep.get(id) ?? [] : [];
         const node = pendingStepOf(promise);
+        const title = node !== null
+          ? promisedTitle(node, promise)
+          : exportLabel(EXPORT_LABEL_OF[promise.kind] ?? 'epub');
         /*
          * WHAT THE CARD SAYS WHILE IT WAITS. The dot is the host row's own
          * vocabulary — `hostRow` passes four states straight onto four of the dot's
@@ -2581,9 +2592,7 @@ export class OpenDocumentsComponent {
           // that will say it — so the card does not change its wording when the
           // promise becomes a fact. See `promisedTitle` for the two facts that
           // reach it off the ROW rather than off the params a promise has none of.
-          title: node !== null
-            ? promisedTitle(node, promise)
-            : exportLabel(EXPORT_LABEL_OF[promise.kind] ?? 'epub'),
+          title,
           state,
           icon: node !== null ? iconForStep(node) : 'ft-out',
           tint: node !== null ? 'text' : 'plain',
@@ -2619,10 +2628,11 @@ export class OpenDocumentsComponent {
           nodeId: file !== null ? id : null,
           current: id === standing,
           planned: true,
-          expanded: under.length === 0 ? null : shown,
+          expanded: under.length + jobs.length === 0 ? null : shown,
         });
         if (!shown) return;
         for (const kid of under) walkPending(kid, depth + 1);
+        for (const hosted of jobs) rows.push(hostRow(project, hosted, title, depth + 1));
       };
 
       const emitExport = (row: Row, depth: number): void => {

@@ -65,7 +65,7 @@ export interface HostNodeProgress {
   eta: string;
 }
 
-/** Which act a row or tile is, which picks its icon. `guide` (foundry c6e8824) is a tile only, never a row. */
+/** Which act a row is, which is what picks its icon on the tree. `guide`: foundry c6e8824. */
 export type HostOperationKind = 'narrate' | 'enhance' | 'assemble' | 'guide';
 
 /**
@@ -152,9 +152,9 @@ export const NODE_KIND_OF: Partial<Readonly<Record<JobType, HostOperationKind>>>
   'tts-conversion': 'narrate',
   'rvc-enhancement': 'enhance',
   'reassembly': 'assemble',
-  // NOT 'narration-guide'. A row under a step says it was made from that step, and a
-  // guide makes no version of the book (Owen, 2026-10-10: "steps apply to the one above
-  // them"). Its run shows in the guide's own window and in BookForge's queue.
+  // A step's pronunciation guide, drawn under the step it is made from (Owen, 2026-10-10:
+  // "steps apply to the one above them" — and a guide is one step's). Chained onto by none.
+  'narration-guide': 'guide',
 };
 
 /**
@@ -212,6 +212,9 @@ export function nodeTitle(step: QueueStep, kind: HostOperationKind): string {
     const model = textConfig(step, 'rvcModel') ?? textConfig(step, 'modelName');
     return model === null ? 'Enhance the narration' : `Enhance with ${model}`;
   }
+  if (kind === 'guide') {
+    return step.config['fromZero'] === true ? 'Pronunciation guide, starting over' : 'Pronunciation guide';
+  }
   return 'Assemble the audiobook';
 }
 
@@ -261,6 +264,8 @@ export function nodeDetail(
     case 'running':
       return step.progress.message ?? step.progress.detail ?? 'running';
     case 'done':
+      // A guide writes no file of its own to name; its last line says what it decided.
+      if (step.type === 'narration-guide') return step.progress.message ?? 'finished';
       return step.outputPath === undefined ? 'finished' : `finished · ${fileName(step.outputPath)}`;
     case 'failed':
       return step.error ?? 'failed, and the run recorded no reason.';
@@ -354,7 +359,8 @@ export function nodeProgress(step: QueueStep, now: number): HostNodeProgress | u
  *
  * A job with no `foundry` lineage contributes nothing — that is the whole
  * gate, and it is why an ordinary narration started from the versions page never
- * appears on anybody's tree.
+ * appears on anybody's tree. The one exception is a pronunciation guide chained
+ * into such a run, which names its own step (`lineageOf`).
  */
 export function hostNodeSets(
   snapshot: QueueSnapshot,
@@ -376,17 +382,23 @@ export function hostNodeSets(
   }
 
   const sets = new Map<string, HostNode[]>();
+  const setOf = (projectDir: string): HostNode[] => {
+    const nodes = sets.get(projectDir) ?? [];
+    sets.set(projectDir, nodes);
+    return nodes;
+  };
   for (const job of snapshot.jobs) {
-    const lineage = job.foundry;
-    if (lineage === undefined) continue;
-    const nodes = sets.get(lineage.projectDir) ?? [];
+    // A run of ours on the tree names its project even when none of its steps draws a row.
+    if (job.foundry !== undefined) setOf(job.foundry.projectDir);
     for (const step of job.steps) {
+      const lineage = lineageOf(job, step);
+      if (lineage === null) continue;
       const kind = NODE_KIND_OF[step.type];
       if (kind === undefined) continue;
       const state = NODE_STATE_OF[step.status];
       if (state === null) continue;
       const progress = nodeProgress(step, now);
-      nodes.push({
+      setOf(lineage.projectDir).push({
         id: encodeNodeId(job.id, step.id),
         parentStepId: lineage.parentStepId,
         title: nodeTitle(step, kind),
@@ -398,9 +410,24 @@ export function hostNodeSets(
         ...(progress === undefined ? {} : { progress }),
       });
     }
-    sets.set(lineage.projectDir, nodes);
   }
   return sets;
+}
+
+/**
+ * WHERE ONE STEP'S ROW HANGS: its run's lineage — except a pronunciation guide,
+ * which hangs under the step its own config names. A guide may be chained into a
+ * run that is not ours to draw (a cleanup that lands the greyed step it was pressed
+ * on), and the step it names is the id that step keeps once it lands. Null: on
+ * nobody's tree.
+ */
+function lineageOf(job: QueueJob, step: QueueStep): { projectDir: string; parentStepId: string } | null {
+  if (step.type === 'narration-guide') {
+    const projectDir = textConfig(step, 'projectDir');
+    const at = textConfig(step, 'at');
+    return projectDir === null || at === null ? null : { projectDir, parentStepId: at };
+  }
+  return job.foundry ?? null;
 }
 
 /**

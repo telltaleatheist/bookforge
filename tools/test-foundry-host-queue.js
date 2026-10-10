@@ -511,6 +511,8 @@ const textPass = (kind, key = 't1', project = PROJ) => ({
   kind,
   inputPath: `${project}\\archive\\book.epub`,
   bookPath: `${project}\\readings\\bank.book.jsonl`,
+  // The ledger row it is made from, pinned at the press, as every Foundry plan pins it.
+  at: 'step-1',
   recordsPath: `${project}\\records\\${key}.records.jsonl`,
   ...(kind === 'clean' ? { stampPath: `${project}\\records\\${key}.stamp.json` } : {}),
   ...(kind === 'simplify' ? { rewrite: 'natural', to: 'en', from: 'en' } : {}),

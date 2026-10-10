@@ -113,9 +113,9 @@ function scratch() {
   fs.writeFileSync(path.join(dir, 'project.json'), JSON.stringify({ key: 'book-1', title: 'The Book' }));
   return {
     dir,
-    request: { kind: 'clean', inputPath: path.join(dir, 'book.epub'), recordsPath: path.join(readings, 'book-1.clean.records.jsonl') },
-    glossaryFile: path.join(readings, 'book-1.narration-glossary.json'),
-    readingsFile: path.join(readings, 'book-1.narration-glossary.readings.json'),
+    request: { kind: 'clean', inputPath: path.join(dir, 'book.epub'), at: 'step-a', recordsPath: path.join(readings, 'book-1.clean.records.jsonl') },
+    glossaryFile: path.join(readings, 'book-1.step-a.narration-glossary.json'),
+    readingsFile: path.join(readings, 'book-1.step-a.narration-glossary.readings.json'),
   };
 }
 
@@ -364,16 +364,22 @@ const entries = (where) => JSON.parse(fs.readFileSync(where.glossaryFile, 'utf8'
     assert.strictEqual(esp.senses.length, 2, 'the meanings are the guide\'s still');
   });
 
-  await test('the guide of a project is found by its key, as a cleanup\'s records name it', () => {
+  await test('a guide is one step\'s: found by the key and the step a cleanup is made from', () => {
     const where = scratch();
-    assert.deepStrictEqual(glossary.guidePathsOfProject(where.dir), glossary.glossaryPathsFor(where.request));
-    assert.strictEqual(glossary.hasGuide(glossary.guidePathsOfProject(where.dir)), false);
+    assert.deepStrictEqual(glossary.guidePathsOfStep(where.dir, 'step-a'), glossary.glossaryPathsFor(where.request));
+    assert.strictEqual(glossary.hasGuide(glossary.guidePathsOfStep(where.dir, 'step-a')), false);
+    // Owen, 2026-10-10: a translation or a simplify is a different text, so another step is another guide.
+    assert.notStrictEqual(glossary.guidePathsOfStep(where.dir, 'step-b').glossary, where.glossaryFile);
+    // A cleanup made from a greyed step reads the guide of the step it waits on.
+    const deferred = { ...where.request, at: undefined, deferred: { from: 'step-b' } };
+    assert.deepStrictEqual(glossary.glossaryPathsFor(deferred), glossary.guidePathsOfStep(where.dir, 'step-b'));
+    assert.throws(() => glossary.glossaryPathsFor({ ...where.request, at: null }), /names no step it is made from/);
   });
 
   await test('the review: what a person changes is what the next cleanup is handed', async () => {
     const where = scratch();
     await run(where, BOOK);
-    const shown = review.readGuideReview(where.dir, null);
+    const shown = review.readGuideReview(where.dir, 'step-a', null);
     assert.strictEqual(shown.title, 'The Book');
     const wolf = shown.forms.find((f) => f.key === 'Wolf IV');
     assert.strictEqual(wolf.spots[1].sentence, 'Never a dull moment on Wolf IV, said Hunter.', 'each spot carries its sentence');
@@ -388,10 +394,10 @@ const entries = (where) => JSON.parse(fs.readFileSync(where.glossaryFile, 'utf8'
     esp.spots.find((o) => o.at === 'e-900').sense = esp.senses.length - 1;
     Object.assign(forms.find((f) => f.key === 'no'), { decision: 'as-printed', senses: [], spots: [] });
 
-    const out = review.saveGuideReview({ projectDir: where.dir, version: shown.version, forms });
+    const out = review.saveGuideReview({ projectDir: where.dir, at: 'step-a', version: shown.version, forms });
     // "no" was already as printed with no meanings: leaving it to the narrator changes nothing.
     assert.deepStrictEqual(out, { forms: 2, spots: 1 });
-    assert.throws(() => review.saveGuideReview({ projectDir: where.dir, version: shown.version, forms }),
+    assert.throws(() => review.saveGuideReview({ projectDir: where.dir, at: 'step-a', version: shown.version, forms }),
       /changed while you were reviewing/, 'a review of a guide that changed underneath is refused');
 
     const asked = [];
@@ -460,7 +466,7 @@ const entries = (where) => JSON.parse(fs.readFileSync(where.glossaryFile, 'utf8'
 
     const where = scratch();
     const triage = glossary.glossaryPathsFor({
-      kind: 'clean-triage', inputPath: where.request.inputPath,
+      kind: 'clean-triage', inputPath: where.request.inputPath, at: 'step-a',
       outputPath: where.request.recordsPath.replace('.clean.records.jsonl', '.clean.triage.json'),
     });
     assert.deepStrictEqual(triage, glossary.glossaryPathsFor(where.request));

@@ -1,5 +1,5 @@
 /**
- * THE PRONUNCIATION GUIDE — BookForge's own window over a book's guide, modal over
+ * THE PRONUNCIATION GUIDE — BookForge's own window over ONE STEP's guide, modal over
  * Foundry's (`#/pronunciation?project=<dir>&at=<step>`, Foundry's one "Pronunciation
  * guide" tile). Owen, 2026-10-03: *"glossary should be a modal. within the modal you
  * can view the options or have it run a new job"* — so it shows the guide, and it is
@@ -150,9 +150,9 @@ const KIND_WORD: Record<GuideReviewForm['kind'], string> = {
         </div>
       } @else if (!busy() && !error()) {
         <div class="empty">
-          <p>This book has no pronunciation guide yet. Cleaning the book builds one first, or build it now:
-            it decides how the narrator says the forms the book prints — numerals after a name, capitals,
-            abbreviations — once for the whole book.</p>
+          <p>This step has no pronunciation guide yet. Cleaning from this step builds one first, or build it
+            now: it decides how the narrator says the forms the text prints here — numerals after a name,
+            capitals, abbreviations — once for every place they appear.</p>
           <desktop-button variant="primary" size="sm" (click)="build(false)" [disabled]="busy() || building() !== null">Build the guide</desktop-button>
         </div>
       }
@@ -212,8 +212,8 @@ export class PronunciationReviewComponent {
   readonly error = signal<string | null>(null);
   readonly saved = signal<string | null>(null);
   /**
-   * THIS BOOK'S GUIDE RUN, said in a line while it is in BookForge's queue — the
-   * only place it shows, since it draws no row on Foundry's tree (Owen, 2026-10-10).
+   * THIS STEP'S GUIDE RUN, said in a line while it is in BookForge's queue (its card
+   * on Foundry's tree says the same, under the step).
    */
   readonly building = signal<string | null>(null);
   /** The guide changed on disk while there were edits here that a reload would drop. */
@@ -254,18 +254,21 @@ export class PronunciationReviewComponent {
     void this.load();
   }
 
-  /** A sentence about this book's guide run in the queue, or null when there is none waiting or running. */
+  /** A sentence about this step's guide run in the queue, or null when there is none waiting or running. */
   private guideRunIn(snapshot: QueueSnapshot): string | null {
     for (const job of snapshot.jobs) {
       for (const step of job.steps) {
-        if (step.type !== 'narration-guide' || step.config['projectDir'] !== this.projectDir) continue;
+        if (step.type !== 'narration-guide' || step.config['projectDir'] !== this.projectDir
+          || step.config['at'] !== this.at) continue;
         const over = step.config['fromZero'] === true ? ', starting over' : '';
         switch (step.status) {
           case 'running':
             return `Building the guide${over} — ${step.progress.message ?? 'starting'}`;
           case 'queued':
           case 'waiting':
-            return `The guide${over} is queued in BookForge. This window shows it when it finishes.`;
+            return step.parentStepId === 'source'
+              ? `The guide${over} is queued in BookForge. This window shows it when it finishes.`
+              : `The guide${over} waits for this step to land, then runs. This window shows it when it finishes.`;
           case 'held':
             return `The guide${over} is in BookForge's queue, not started — press Start there.`;
           default:
@@ -295,7 +298,7 @@ export class PronunciationReviewComponent {
     this.saved.set(null);
     this.stale.set(false);
     try {
-      const res = await this.electron.readPronunciationGuide(this.projectDir);
+      const res = await this.electron.readPronunciationGuide(this.projectDir, this.at);
       if (!res.success) { this.error.set(res.error ?? 'The guide could not be read.'); return; }
       const review = res.review ?? null;
       this.review.set(review);
@@ -314,7 +317,7 @@ export class PronunciationReviewComponent {
     this.error.set(null);
     try {
       const forms = this.drafts().map((d) => this.editOf(d));
-      const res = await this.electron.savePronunciationGuide({ projectDir: review.projectDir, version: review.version, forms });
+      const res = await this.electron.savePronunciationGuide({ projectDir: review.projectDir, at: review.at, version: review.version, forms });
       if (!res.success) { this.error.set(res.error ?? 'The review could not be saved.'); return; }
       await this.load();
       this.saved.set(`Saved — ${res.forms ?? 0} form(s) and ${res.spots ?? 0} spot(s) changed`);

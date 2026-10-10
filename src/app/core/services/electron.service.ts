@@ -2859,9 +2859,9 @@ export class ElectronService {
     return { success: false, error: 'Not running in Electron' };
   }
 
-  /** A book's pronunciation guide, as the review window shows it (null review: no guide yet). */
-  async readPronunciationGuide(projectDir: string): Promise<{ success: boolean; review?: GuideReview | null; error?: string }> {
-    if (this.isElectron) return (window as any).electron.pronunciation.read(projectDir);
+  /** A step's pronunciation guide, as the review window shows it (null review: no guide yet). */
+  async readPronunciationGuide(projectDir: string, at: string): Promise<{ success: boolean; review?: GuideReview | null; error?: string }> {
+    if (this.isElectron) return (window as any).electron.pronunciation.read(projectDir, at);
     return { success: false, error: 'Not running in Electron' };
   }
 

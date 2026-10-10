@@ -63,14 +63,17 @@
  * guide yet - it runs the guide building step automatically"*. So:
  *
  *   · THE GUIDE STEP (`queue-steps/narration-guide.ts`, the tree's "Pronunciation
- *     guide") builds it, from any step of the book, and may be told to START FROM
- *     ZERO — every decision dropped, a person's included (*"i dont think they
- *     should be protected on every clean"*).
- *   · A CLEANUP never rebuilds it. It reads the guide as it stands, decides only
- *     what the guide has not (a form or a spot the book did not print when the
+ *     guide") builds it, and may be told to START FROM ZERO — every decision
+ *     dropped, a person's included (*"i dont think they should be protected on
+ *     every clean"*).
+ *   · A GUIDE IS ONE STEP'S (Owen, 2026-10-10): made from the text at that step,
+ *     and read by a cleanup made from that step. A translation or a simplify is a
+ *     different text, so its steps have guides of their own (`GuideFiles`).
+ *   · A CLEANUP never rebuilds it. It reads its step's guide as it stands, decides
+ *     only what the guide has not (a form or a spot the text did not print when the
  *     guide was made — all of it, when there is no guide yet), and hands it on.
- *   · A person reviews it in BookForge's own window (the tree's "Review
- *     pronunciation"): a reading changed, a form or a spot left to the narrator.
+ *   · A person reviews it in BookForge's own window (the tree's "Pronunciation
+ *     guide" tile): a reading changed, a form or a spot left to the narrator.
  *
  * ── Cost, and what is never paid twice ──────────────────────────────────────
  *
@@ -206,8 +209,15 @@ export interface GlossaryFile {
   entries: GlossaryEntry[];
 }
 
-/** Where one book's guide lives: the decisions, and the readings a cleanup is handed. */
-export interface GuideFiles { glossary: string; readings: string; book: string }
+/**
+ * Where ONE STEP'S guide lives: the decisions, and the readings a cleanup of that step is handed.
+ *
+ * A GUIDE BELONGS TO A STEP, NOT TO THE BOOK (Owen, 2026-10-10: *"sometimes we change books
+ * pretty dramatically in cleanup, in translation, in simplify, etc. maybe it should be a step
+ * specific thing. in fact, i think it should"*). It is made from the text at `step`, and a
+ * cleanup made from `step` reads it — a translation's guide is never the original's.
+ */
+export interface GuideFiles { glossary: string; readings: string; book: string; step: string }
 
 /**
  * WHAT A GUIDE IS MADE FROM — its files, and the book's printed forms as the run
@@ -224,37 +234,42 @@ export function guideOfRequest(request: FoundryJobRequest, lister: FoundryFormsL
   return { files: glossaryPathsFor(request), list: (onLine) => lister(request, onLine) };
 }
 
-/**
- * The guide of a project, listed at one of its steps (null: where it stands).
- * Named from the project's own key — the name every cleanup's records carry.
- */
-export function guideAtStep(projectDir: string, at: string | null, lister: FoundryFormsAtLister): GuideSource {
-  return { files: guidePathsOfProject(projectDir), list: (onLine) => lister(projectDir, at, onLine) };
+/** The guide of one step of a project, listed at that step. */
+export function guideAtStep(projectDir: string, at: string, lister: FoundryFormsAtLister): GuideSource {
+  return { files: guidePathsOfStep(projectDir, at), list: (onLine) => lister(projectDir, at, onLine) };
 }
 
-/** A project's guide files, from its manifest's key. */
-export function guidePathsOfProject(projectDir: string): GuideFiles {
+/** A step's guide files, named from the project's own key — the name every cleanup's records carry. */
+export function guidePathsOfStep(projectDir: string, step: string): GuideFiles {
   const manifest = path.join(projectDir, 'project.json');
   const key = (JSON.parse(fs.readFileSync(manifest, 'utf8').replace(/^\uFEFF/, '')) as { key?: unknown }).key;
   if (typeof key !== 'string' || key.length === 0) {
     throw new Error(`${manifest} names no project key, so there is no telling what its pronunciation guide is called.`);
   }
-  const dir = path.join(projectDir, 'readings');
+  return guidePaths(path.join(projectDir, 'readings'), key, step);
+}
+
+/** `readings/<key>.<step>.narration-glossary.json`, and its readings beside it. */
+function guidePaths(dir: string, book: string, step: string): GuideFiles {
+  if (step === '' || /[\\/:]/.test(step)) {
+    throw new Error(`"${step}" is not a step id, so there is no telling which step's pronunciation guide is meant.`);
+  }
   return {
-    book: key,
-    glossary: path.join(dir, `${key}.narration-glossary.json`),
-    readings: path.join(dir, `${key}.narration-glossary.readings.json`),
+    book,
+    step,
+    glossary: path.join(dir, `${book}.${step}.narration-glossary.json`),
+    readings: path.join(dir, `${book}.${step}.narration-glossary.readings.json`),
   };
 }
 
-/** Whether this book has a guide at all — what decides that a cleanup builds one first. */
+/** Whether this step has a guide — what decides that a cleanup made from it builds one first. */
 export function hasGuide(files: GuideFiles): boolean {
   return fs.existsSync(files.glossary);
 }
 
 /**
- * WHERE A CLEANUP'S GLOSSARY LIVES — beside its records, named from the same
- * project key, so a cleanup and its triage find one glossary.
+ * WHERE A CLEANUP'S GUIDE LIVES — beside its records, named from the same project
+ * key and the step the cleanup is made from, so a cleanup and its triage find one guide.
  */
 export function glossaryPathsFor(request: FoundryJobRequest): GuideFiles {
   const named = request.kind === 'clean' ? request.recordsPath
@@ -272,11 +287,15 @@ export function glossaryPathsFor(request: FoundryJobRequest): GuideFiles {
     throw new Error(`${named} is not named <book>.clean.…, so the glossary cannot tell which book it is for.`);
   }
   const book = base.slice(0, cut);
-  return {
-    book,
-    glossary: path.join(dir, `${book}.narration-glossary.json`),
-    readings: path.join(dir, `${book}.narration-glossary.readings.json`),
-  };
+  // The step it is made from: pinned at the press, or the greyed row it waits on.
+  const deferred = request['deferred'] as { from?: unknown } | undefined;
+  const step = typeof request['at'] === 'string' ? request['at']
+    : typeof deferred?.from === 'string' ? deferred.from : null;
+  if (step === null) {
+    throw new Error(`This ${request.kind} names no step it is made from, so there is no telling which step's `
+      + 'pronunciation guide it reads. Press it again from one of the book\'s steps.');
+  }
+  return guidePaths(dir, book, step);
 }
 
 /**
@@ -842,7 +861,7 @@ export interface GlossaryOutcome {
 }
 
 export interface EnsureGlossaryOptions {
-  /** The book's guide files and its forms (`guideOfRequest` / `guideAtStep`). */
+  /** The step's guide files and its forms (`guideOfRequest` / `guideAtStep`). */
   source: GuideSource;
   /** The Crucible the run was admitted to, by name. The glossary asks the same machine. */
   server: string;
@@ -941,8 +960,8 @@ export async function ensureNarrationGlossary(opts: EnsureGlossaryOptions): Prom
   }
   if (existed && !opts.fromZero) {
     report(toAsk.length === 0
-      ? `glossary: the book's guide decides all ${forms.length} printed form(s)`
-      : `glossary: the book's guide decides ${forms.length - toAsk.length} of ${forms.length} printed form(s); `
+      ? `glossary: this step's guide decides all ${forms.length} printed form(s)`
+      : `glossary: this step's guide decides ${forms.length - toAsk.length} of ${forms.length} printed form(s); `
         + `${toAsk.length} it has not seen are decided now`);
   }
   // A form with meanings is placed where the guide has not placed it: every spot, for a form asked now.

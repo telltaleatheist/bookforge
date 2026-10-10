@@ -520,7 +520,7 @@ async function main() {
     const glossary = require(path.join(BF_DIST, 'narration-glossary.js'));
     const source = glossary.guideOfRequest(request, (req, onLine) => jobQueue.printedFormsForRun(req, onLine));
     if (!glossaryOnly && !glossary.hasGuide(source.files)) {
-      console.log('[clean] glossary: this book has no pronunciation guide yet, so it is built first');
+      console.log('[clean] glossary: the step this is made from has no pronunciation guide yet, so it is built first');
     }
     const made = await glossary.ensureNarrationGlossary({
       source,

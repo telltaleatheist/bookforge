@@ -2866,15 +2866,19 @@ const FOUNDRY_HOST_OPERATIONS: readonly FoundryHostOperation[] = [
       invokeFoundryAssemble(projectDir, nodeId, settings, context),
   },
   /*
-   * THE BOOK'S PRONUNCIATION GUIDE — ONE TILE, AND IT OPENS THE GUIDE.
+   * A STEP'S PRONUNCIATION GUIDE — ONE TILE, AND IT OPENS THE GUIDE.
    *
    * Owen, 2026-10-03: *"it shouldnt have pronunciation guide and review
    * pronunciation as separate tiles. glossary should be a modal. within the modal
    * you can view the options or have it run a new job."* So the tile declares no
    * form — a formless act opens the host's own window ("where the host can ask
    * anything it likes") — and the window, a modal over Foundry's, shows the guide
-   * and is where a new guide is queued (`pronunciation:build`). A cleanup reads
-   * the guide and builds one first when there is none.
+   * and is where a new guide is queued (`pronunciation:build`).
+   *
+   * A GUIDE IS ONE STEP'S (Owen, 2026-10-10: *"maybe it should be a step specific
+   * thing. in fact, i think it should"*): made from the text at the step pressed,
+   * read by a cleanup made from that step, which builds one first when it has none.
+   * Pressed on a greyed step, its guide waits behind the work that lands it.
    */
   {
     id: 'bookforge.guide',
@@ -2896,52 +2900,65 @@ function guideManifestOf(projectDir: string): { title: string; steps: string[] }
   };
 }
 
+/** The live queue row that will land greyed step `nodeId` — a text pass that mints it — or null. */
+function promisedRowOf(projectDir: string, nodeId: string): FoundryJobRow | null {
+  return foundryHostQueue.rows(projectDir).find((r) => r.mints === nodeId
+    && r.state !== 'done' && r.state !== 'failed' && r.state !== 'cancelled') ?? null;
+}
+
 /**
- * QUEUE A GUIDE for the book, made from the step the tile was pressed on.
- * `startOver` drops every decision first, a person's included (Owen: "i meant it
- * should start over"); otherwise the guide keeps what it has and decides only
- * what is new.
+ * QUEUE A GUIDE for step `at`: a landed step's runs on its own; a greyed step's is
+ * appended to the run that lands it, under that row, so it waits for the text it is
+ * made from and goes with it if that work is removed (Owen, 2026-10-10: *"it should
+ * be able to be applied to a ghost item so it can chain behind the other job on the
+ * gpu"*). `startOver` drops every decision first, a person's included (Owen: "i
+ * meant it should start over"); otherwise the guide keeps what it has and decides
+ * only what is new.
  */
 function queuePronunciationGuide(projectDir: string, at: string, startOver: boolean): void {
   const { title, steps } = guideManifestOf(projectDir);
-  if (!steps.includes(at)) {
-    throw new Error('The step this guide was opened from is no longer in the book, so there is nothing to make it '
-      + 'from. Open the guide again from one of the book\'s steps.');
-  }
   const config: NarrationGuideStepConfig = { projectDir, at, fromZero: startOver, bookTitle: title };
-  // No `foundry` lineage: that would draw it as a row under step `at`, which says a version
-  // of the book was made from there (Owen, 2026-10-10). The guide window watches the queue.
-  queueEngine.enqueue({
-    title,
-    steps: [{
-      type: 'narration-guide',
-      label: startOver ? 'Pronunciation guide, starting over' : 'Pronunciation guide',
-      config: config as unknown as Record<string, unknown>,
-      // It reads the book its config names, inside Foundry's project — no earlier step of ours (foundry-job's shape).
-      sourceRef: { kind: 'none' },
-    }],
-  });
+  const step = {
+    type: 'narration-guide' as const,
+    label: startOver ? 'Pronunciation guide, starting over' : 'Pronunciation guide',
+    config: config as unknown as Record<string, unknown>,
+    // It reads the book its config names, inside Foundry's project — no earlier step of ours (foundry-job's shape).
+    sourceRef: { kind: 'none' as const },
+  };
+  if (steps.includes(at)) {
+    queueEngine.enqueue({ title, foundry: { projectDir, parentStepId: at }, steps: [step] });
+    return;
+  }
+  const row = promisedRowOf(projectDir, at);
+  if (row === null) {
+    throw new Error('The step this guide was opened from is not in the book, and nothing in the queue is making it '
+      + 'any more. Open the guide again from one of the book\'s steps.');
+  }
+  const owner = queueEngine.snapshot().jobs.find((j) => j.steps.some((s) => s.id === row.id));
+  if (!owner) throw new Error(`The queue holds row ${row.id} in no run, which cannot happen.`);
+  queueEngine.appendStep(owner.id, { ...step, parentStepId: row.id });
 }
 
-/** One guide window per book, raised rather than opened twice. */
+/** One guide window per step, raised rather than opened twice. */
 const pronunciationWindows = new Map<string, BrowserWindow>();
 
 /**
- * OPEN THE GUIDE for a book — BookForge's own window on `#/pronunciation`, MODAL
- * over the Foundry window it was pressed in. It opens whether or not the book has
- * a guide yet: with none, it is where the first one is queued.
+ * OPEN A STEP'S GUIDE — BookForge's own window on `#/pronunciation`, MODAL over
+ * the Foundry window it was pressed in. It opens whether or not the step has a
+ * guide yet: with none, it is where the first one is queued.
  *
- * A ledger step only: the guide lists the words AT that step, and a row of ours
- * (`bf-node:`) or an export file is not one.
+ * A step of the book, landed or greyed (the queue is making it): the guide lists
+ * the words AT that step. A row of ours (`bf-node:`) or an export file is not one.
  */
 function openPronunciationGuide(projectDir: string, nodeId: string): void {
-  if (!guideManifestOf(projectDir).steps.includes(nodeId)) {
-    const message = 'A pronunciation guide is made from a step of the book that has landed. Open it from one of '
-      + 'the book\'s steps, not from a row that is still queued or from an exported file.';
+  if (!guideManifestOf(projectDir).steps.includes(nodeId) && promisedRowOf(projectDir, nodeId) === null) {
+    const message = 'A pronunciation guide is made from a step of the book. Open it from one of the book\'s steps '
+      + '(a greyed one the queue is making is fine), not from an exported file or a row of narration.';
     sayToUser('Nothing to open', 'The pronunciation guide cannot be opened from here', message);
     throw new Error(message);
   }
-  const existing = pronunciationWindows.get(projectDir);
+  const windowKey = `${projectDir}\u0000${nodeId}`;
+  const existing = pronunciationWindows.get(windowKey);
   if (existing !== undefined && !existing.isDestroyed()) {
     if (existing.isMinimized()) existing.restore();
     existing.show();
@@ -2960,8 +2977,8 @@ function openPronunciationGuide(projectDir: string, nodeId: string): void {
     titleBarStyle: 'hiddenInset',
     backgroundColor: '#0a0a0a',
   });
-  pronunciationWindows.set(projectDir, win);
-  win.on('closed', () => { pronunciationWindows.delete(projectDir); });
+  pronunciationWindows.set(windowKey, win);
+  win.on('closed', () => { pronunciationWindows.delete(windowKey); });
   win.webContents.on('did-finish-load', () => { win.webContents.setZoomLevel(loadZoomLevel()); });
   const query = `project=${encodeURIComponent(projectDir)}&at=${encodeURIComponent(nodeId)}`;
   if (isDev) {
@@ -12990,14 +13007,14 @@ ipcMain.handle('narration:text-readiness', async (
   /*
    * THE PRONUNCIATION GUIDE'S REVIEW (electron/pronunciation-review.ts). A guide
    * built before spots carried their sentence is shown with sentences from a fresh
-   * listing of the book, where it stands.
+   * listing of its step.
    */
-  ipcMain.handle('pronunciation:read', async (_event, projectDir: string) => {
+  ipcMain.handle('pronunciation:read', async (_event, projectDir: string, at: string) => {
     try {
       const { readGuideReview, reviewNeedsSentences } = await import('./pronunciation-review.js');
       let sentenceOf: ((at: string, printed: string, nth: number) => string | null) | null = null;
-      if (reviewNeedsSentences(projectDir)) {
-        const listed = await foundryFormsAtLister()(projectDir, null) as {
+      if (reviewNeedsSentences(projectDir, at)) {
+        const listed = await foundryFormsAtLister()(projectDir, at) as {
           forms?: { occurrences?: { at: string; printed: string; nth: number; sentence: string }[] }[];
         };
         const sentences = new Map<string, string>();
@@ -13006,7 +13023,7 @@ ipcMain.handle('narration:text-readiness', async (
         }
         sentenceOf = (at, printed, nth) => sentences.get(`${at}\u0000${printed}\u0000${nth}`) ?? null;
       }
-      return { success: true, review: readGuideReview(projectDir, sentenceOf) };
+      return { success: true, review: readGuideReview(projectDir, at, sentenceOf) };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }

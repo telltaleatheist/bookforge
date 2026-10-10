@@ -2368,7 +2368,7 @@ export interface ElectronAPI {
   };
   /** The book's pronunciation guide, for BookForge's review window (electron/pronunciation-review.ts). */
   pronunciation: {
-    read: (projectDir: string) => Promise<{ success: boolean; review?: GuideReview | null; error?: string }>;
+    read: (projectDir: string, at: string) => Promise<{ success: boolean; review?: GuideReview | null; error?: string }>;
     save: (save: GuideReviewSave) => Promise<{ success: boolean; forms?: number; spots?: number; error?: string }>;
     /** Queue a new guide made from step `at`; `startOver` drops every decision first. */
     build: (projectDir: string, at: string, startOver: boolean) => Promise<{ success: boolean; error?: string }>;
@@ -4024,7 +4024,7 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('analysis:delete', projectDir),
   },
   pronunciation: {
-    read: (projectDir: string) => ipcRenderer.invoke('pronunciation:read', projectDir),
+    read: (projectDir: string, at: string) => ipcRenderer.invoke('pronunciation:read', projectDir, at),
     save: (save: GuideReviewSave) => ipcRenderer.invoke('pronunciation:save', save),
     build: (projectDir: string, at: string, startOver: boolean) =>
       ipcRenderer.invoke('pronunciation:build', projectDir, at, startOver),

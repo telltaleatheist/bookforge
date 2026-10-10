@@ -134,13 +134,20 @@ test('work that is not audio work is never mirrored back onto the tree', () => {
   assert.deepStrictEqual(sets.get(PROJECT), []);
 });
 
-test('a pronunciation guide draws no row, even with a lineage, because it makes no version of the book', () => {
-  // Owen, 2026-10-10: "steps apply to the one above them" — a guide under a step read as one.
+test('a pronunciation guide hangs under the step it is made from, even chained into a run that is not ours', () => {
+  // Owen, 2026-10-10: a guide is one step's, and "steps apply to the one above them".
+  const guideStep = (over) => step({ type: 'narration-guide', label: 'Pronunciation guide', status: 'waiting',
+    config: { projectDir: PROJECT, at: 'step-greyed' }, ...over });
+  // Chained behind a cleanup that lands the greyed step: that run has no lineage of its own.
   const sets = nodes.hostNodeSets(snap([job([
-    step({ id: 's1', type: 'narration-guide', label: 'Pronunciation guide', status: 'running' }),
-  ])]));
-  assert.deepStrictEqual(sets.get(PROJECT), []);
-  assert.strictEqual(nodes.NODE_KIND_OF['narration-guide'], undefined);
+    step({ id: 's1', type: 'foundry-job', label: 'Clean text', status: 'running' }),
+    guideStep({ id: 's2', parentStepId: 's1' }),
+  ], { foundry: undefined })]));
+  assert.deepStrictEqual(sets.get(PROJECT).map((n) => [n.kind, n.parentStepId, n.title]),
+    [['guide', 'step-greyed', 'Pronunciation guide']]);
+  // Its own run on a landed step: under that step, whatever the run's lineage says.
+  const own = nodes.hostNodeSets(snap([job([guideStep({ id: 's3', status: 'queued' })])]));
+  assert.deepStrictEqual(own.get(PROJECT).map((n) => n.parentStepId), ['step-greyed']);
 });
 
 test('a cancelled step draws nothing; a failed one stays, with its reason', () => {

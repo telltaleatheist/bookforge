@@ -19,7 +19,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 
 import {
-  guidePathsOfProject, readGlossary, writeGlossary,
+  guidePathsOfStep, readGlossary, writeGlossary,
   type GlossaryEntry, type GlossarySense, type PlacedOccurrence,
 } from './narration-glossary';
 import type {
@@ -43,12 +43,12 @@ function titleOf(projectDir: string): string {
 }
 
 /**
- * The guide as the review shows it, or null when the book has none yet.
+ * Step `at`'s guide as the review shows it, or null when that step has none yet.
  * `sentenceOf` fills a spot the guide stored without its sentence (a guide built
  * before spots carried one).
  */
-export function readGuideReview(projectDir: string, sentenceOf: SentenceOf | null): GuideReview | null {
-  const files = guidePathsOfProject(projectDir);
+export function readGuideReview(projectDir: string, at: string, sentenceOf: SentenceOf | null): GuideReview | null {
+  const files = guidePathsOfStep(projectDir, at);
   if (!fs.existsSync(files.glossary)) return null;
   const glossary = readGlossary(files.glossary, files.book);
   const forms: GuideReviewForm[] = glossary.entries.map((entry) => ({
@@ -69,6 +69,7 @@ export function readGuideReview(projectDir: string, sentenceOf: SentenceOf | nul
   }));
   return {
     projectDir,
+    at,
     title: titleOf(projectDir),
     version: versionOf(files.glossary),
     built: glossary.built ?? null,
@@ -77,8 +78,8 @@ export function readGuideReview(projectDir: string, sentenceOf: SentenceOf | nul
 }
 
 /** Whether a review needs the book listed to show its sentences. */
-export function reviewNeedsSentences(projectDir: string): boolean {
-  const files = guidePathsOfProject(projectDir);
+export function reviewNeedsSentences(projectDir: string, at: string): boolean {
+  const files = guidePathsOfStep(projectDir, at);
   if (!fs.existsSync(files.glossary)) return false;
   return readGlossary(files.glossary, files.book).entries.some((e) => e.occurrences.some((o) => o.sentence === undefined));
 }
@@ -97,9 +98,9 @@ function sameSenses(a: readonly GlossarySense[], b: readonly GuideReviewSense[])
  * written over another nobody saw.
  */
 export function saveGuideReview(save: GuideReviewSave): { forms: number; spots: number } {
-  const files = guidePathsOfProject(save.projectDir);
+  const files = guidePathsOfStep(save.projectDir, save.at);
   if (!fs.existsSync(files.glossary)) {
-    throw new Error('This book has no pronunciation guide any more, so there is nothing to save the review into.');
+    throw new Error('This step has no pronunciation guide any more, so there is nothing to save the review into.');
   }
   if (versionOf(files.glossary) !== save.version) {
     throw new Error('The pronunciation guide changed while you were reviewing it (a guide step ran). Nothing was '

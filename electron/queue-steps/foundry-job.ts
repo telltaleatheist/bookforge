@@ -511,7 +511,7 @@ export const foundryJobStep: StepModule = {
       const { ensureNarrationGlossary, guideOfRequest, hasGuide } = await import('../narration-glossary.js');
       const source = guideOfRequest(config.request, foundryFormsLister());
       if (!hasGuide(source.files)) {
-        const said = 'glossary: this book has no pronunciation guide yet, so it is built first';
+        const said = 'glossary: the step this is made from has no pronunciation guide yet, so it is built first';
         ctx.report({ message: said, detail: said });
       }
       const made = await ensureNarrationGlossary({
