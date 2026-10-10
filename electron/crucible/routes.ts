@@ -60,6 +60,7 @@ import { engineOf } from '@crucible/client';
 import type { EngineRef, ServerInfo } from '@crucible/client';
 import type { CrucibleRouteKind, CrucibleTextActName } from '../../shared/crucible/settings-wire';
 import type { EngineRole, EngineUpstreams } from '../../shared/queue/slot-sets';
+import { renameSyncWithRetry } from '../fs-retry';
 
 /** What this record can say about one class on one engine. */
 export type CrucibleRouteAnswer = CrucibleRouteKind | 'unknown';
@@ -358,7 +359,7 @@ function saveUpstreams(): void {
     fs.mkdirSync(path.dirname(file), { recursive: true });
     const temp = `${file}.tmp`;
     fs.writeFileSync(temp, `${JSON.stringify(record, null, 2)}\n`, 'utf-8');
-    fs.renameSync(temp, file);
+    renameSyncWithRetry(temp, file);
   } catch (err) {
     console.log(
       `[CRUCIBLE] could not remember which engines have an upstream (${file}): `

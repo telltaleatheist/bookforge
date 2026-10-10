@@ -55,6 +55,7 @@ import { narrationCarryRefusal, type NarrationDeletionsCarry } from '../shared/v
 import { providerConfigOf } from './queue-steps/ai-provider';
 import { NARRATION_TEXT_FAILSAFE_NOTICE } from '../shared/processing/narration-text-notice';
 import type { AppliedPass } from './manifest-types';
+import { renameWithRetry } from './fs-retry';
 import type {
   PassJobConfig,
   PassJobResult,
@@ -289,7 +290,7 @@ async function renameLanded(
 ): Promise<boolean> {
   try {
     if (waitingCouldHelp(destination)) await renameOntoDestination(fromAbsPath, toAbsPath);
-    else await fs.promises.rename(fromAbsPath, toAbsPath);
+    else await renameWithRetry(fromAbsPath, toAbsPath);
     return true;
   } catch {
     return false;
@@ -361,19 +362,8 @@ async function statOrNull(absPath: string): Promise<fs.Stats | null> {
  * unlucky instant became a failed adoption.
  */
 export async function renameOntoDestination(fromAbsPath: string, toAbsPath: string): Promise<void> {
-  const HOLDS = new Set(['EPERM', 'EACCES', 'EBUSY']);
-  const DELAYS_MS = [50, 100, 200, 400, 600, 700];
-  for (let attempt = 0; ; attempt++) {
-    try {
-      await fs.promises.rename(fromAbsPath, toAbsPath);
-      return;
-    } catch (err) {
-      const code = (err as NodeJS.ErrnoException).code;
-      const transient = process.platform === 'win32' && code !== undefined && HOLDS.has(code);
-      if (!transient || attempt >= DELAYS_MS.length) throw err;
-      await new Promise((resolve) => setTimeout(resolve, DELAYS_MS[attempt]));
-    }
-  }
+  // The ladder this had of its own is electron/fs-retry.ts's now — one policy, every rename (2026-10-10).
+  await renameWithRetry(fromAbsPath, toAbsPath);
 }
 
 /**

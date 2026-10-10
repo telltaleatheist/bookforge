@@ -21,6 +21,7 @@
 import * as os from 'os';
 import * as path from 'path';
 import * as fs from 'fs';
+import { renameSyncWithRetry } from './fs-retry';
 
 const VENDOR = 'OwenMorgan';
 
@@ -129,7 +130,7 @@ export function migrateLegacyDir(legacyDir: string, sharedName: string): string 
       // existing dir fails on Windows and on non-empty dirs everywhere).
       fs.rmSync(shared, { recursive: true, force: true });
       try {
-        fs.renameSync(legacyDir, shared);            // same volume → atomic
+        renameSyncWithRetry(legacyDir, shared);            // same volume → atomic
       } catch {
         fs.cpSync(legacyDir, shared, { recursive: true }); // cross-volume → copy, leave legacy
       }

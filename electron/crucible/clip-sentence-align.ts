@@ -46,6 +46,7 @@ import {
 import { buildBookIndex, locateClip, splitHeardByClip, stitchPlan, STITCH_GAP_S, type ClipLocation } from '../../shared/sentence-align/clip-locate';
 import { endEdge, FRAME_S, startEdge, type LevelEnvelope } from '../../shared/sentence-align/cue-edges';
 import { MIN_CUE_S, trimOverlaps } from '../../shared/sentence-align/overlaps';
+import { renameSyncWithRetry } from '../fs-retry';
 
 export const CLIP_ALIGN_STAGES = ['stitch', 'transcribe', 'locate', 'align', 'edges', 'write'] as const;
 export type ClipAlignStage = (typeof CLIP_ALIGN_STAGES)[number];
@@ -172,7 +173,7 @@ function writeStitched(file: string, clips: readonly Float32Array[], gapS: numbe
     if (k < clips.length - 1) o += gap * 2;   // Buffer.alloc zero-fills: the gap is digital silence
   });
   const tmp = `${file}.${process.pid}.part`;
-  fs.writeFileSync(tmp, buf); fs.renameSync(tmp, file);
+  fs.writeFileSync(tmp, buf); renameSyncWithRetry(tmp, file);
 }
 
 export async function runClipSentenceAlign(o: RunClipSentenceAlignOptions): Promise<ClipSentenceAlignOutcome> {

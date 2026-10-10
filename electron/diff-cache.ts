@@ -13,6 +13,7 @@ import { promises as fsPromises } from 'fs';
 import path from 'path';
 import { diffWords } from 'diff';
 import { hydratePassDiff } from '../shared/document/pass-diff.js';
+import { renameWithRetry } from './fs-retry';
 
 /**
  * Write the diff cache JSON atomically: stage on the same volume, then rename
@@ -27,7 +28,7 @@ async function writeDiffCacheAtomic(diffPath: string, cache: DiffCacheFile): Pro
   const stagePath = `${diffPath}.${process.pid}.tmp`;
   try {
     await fsPromises.writeFile(stagePath, JSON.stringify(cache, null, 2), 'utf-8');
-    await fsPromises.rename(stagePath, diffPath);
+    await renameWithRetry(stagePath, diffPath);
   } catch (err) {
     await fsPromises.unlink(stagePath).catch(() => {});
     throw err;

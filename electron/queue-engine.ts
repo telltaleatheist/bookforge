@@ -163,6 +163,7 @@ import { busyLineOf, projectDirForStep, removedLineOf, transientLineOf } from '.
  * console only.
  */
 import { getMainLogger } from './rolling-logger';
+import { renameWithRetry } from './fs-retry';
 
 // ────────────────────────────────────────────────────────────────────────────
 // The step-module contract
@@ -1039,7 +1040,7 @@ async function atomicWrite(target: string, content: string): Promise<void> {
   } finally {
     await handle.close();
   }
-  await fs.rename(tmp, target);
+  await renameWithRetry(tmp, target);
 }
 
 /**
@@ -5701,7 +5702,7 @@ async function loadState(): Promise<LoadVerdict> {
     // The file existed and could not be understood. It is PRESERVED under a name
     // that says so, because the next mutation would otherwise write over it.
     const corrupt = `${stateFile()}.corrupt-${Date.now()}`;
-    await fs.rename(stateFile(), corrupt).catch(() => { /* naming it is best-effort */ });
+    await renameWithRetry(stateFile(), corrupt).catch(() => { /* naming it is best-effort */ });
     // AND SAID WHERE SOMEBODY WILL SEE IT. The rename alone was silent: the
     // renderer showed an empty queue and nothing anywhere said a queue had
     // been set aside, let alone under what name.
@@ -5910,7 +5911,7 @@ export async function migrateLegacyQueue(): Promise<QueueJob[]> {
   const migrated = buildJobsFromLegacy(legacy);
 
   // Kept, not deleted. It is the only record of what was queued at upgrade time.
-  await fs.rename(legacyFile(), `${legacyFile()}.bak`).catch((err) => {
+  await renameWithRetry(legacyFile(), `${legacyFile()}.bak`).catch((err) => {
     console.error('[QUEUE-ENGINE] the old queue file could not be renamed to .bak:', err);
   });
 

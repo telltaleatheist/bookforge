@@ -54,6 +54,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import type { ManifestEditorState } from './manifest-types.js';
 import { atomicWriteFile } from './manifest-service.js';
+import { renameSyncWithRetry } from './fs-retry.js';
 
 /** The sidecar's name, beside manifest.json in the project directory. */
 export const EDITOR_STATE_FILENAME = 'editor-state.json';
@@ -210,7 +211,7 @@ export function writeEditorStateSync(projectDir: string, state: ManifestEditorSt
   const target = editorStatePath(projectDir);
   const temp = `${target}.tmp`;
   fs.writeFileSync(temp, JSON.stringify(state));
-  fs.renameSync(temp, target);
+  renameSyncWithRetry(temp, target);
 }
 
 /** Write a project's editor state, compact and atomically. */

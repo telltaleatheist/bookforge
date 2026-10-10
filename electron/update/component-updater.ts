@@ -30,6 +30,7 @@ import {
   defaultEntryRel,
 } from './managed-bins';
 import { gt, satisfies } from './semver';
+import { renameSyncWithRetry } from '../fs-retry';
 
 const BASE_DIR = MANAGED_BINS_DIR;
 
@@ -146,7 +147,7 @@ export async function installComponent(
     );
 
     fs.rmSync(finalDir, { recursive: true, force: true });
-    fs.renameSync(staging, finalDir);
+    renameSyncWithRetry(staging, finalDir);
 
     // Resolve + record the executable, and ensure it's runnable (tar usually preserves the
     // exec bit, but be defensive on non-Windows).

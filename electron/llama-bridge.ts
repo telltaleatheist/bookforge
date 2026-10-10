@@ -28,6 +28,7 @@ import { LLAMA_CUDA_ID } from './components/llama-cuda';
 import { getManagedBinaryPath } from './update/managed-bins';
 import { migrateLegacyDir } from './shared-paths';
 import { acquireGpu, releaseGpu, GPU_OWNER_LLAMA } from './gpu-arbiter';
+import { renameSyncWithRetry } from './fs-retry';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Catalog (Cogito GGUFs — bartowski quants on HuggingFace, direct resolve URLs)
@@ -224,7 +225,7 @@ function getActiveModelId(): string | null {
 function setActiveModelId(modelId: string | null): void {
   const tmp = getActiveConfigPath() + '.tmp';
   fs.writeFileSync(tmp, JSON.stringify({ activeModelId: modelId }, null, 2));
-  fs.renameSync(tmp, getActiveConfigPath());
+  renameSyncWithRetry(tmp, getActiveConfigPath());
 }
 
 function isDownloaded(entry: CatalogEntry): boolean {
@@ -356,7 +357,7 @@ async function downloadModel(
       controller.signal,
     );
 
-    fs.renameSync(tmp, dest);
+    renameSyncWithRetry(tmp, dest);
     downloads.delete(modelId);
 
     // First model downloaded becomes the active one automatically.

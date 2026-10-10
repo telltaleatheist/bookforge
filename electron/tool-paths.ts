@@ -18,6 +18,7 @@ import { createHash } from 'crypto';
 import { app } from 'electron';
 import { getActiveToolsEnvPath, relocatableBinaryPath, relocatablePythonPath } from './tools-env-bootstrap';
 import { getManagedBinaryPath } from './update/managed-bins';
+import { renameSyncWithRetry } from './fs-retry';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -280,7 +281,7 @@ export function loadConfig(): ToolPathsConfig {
     const message = err instanceof Error ? err.message : String(err);
     try {
       const backupPath = `${configPath}.corrupt-${Date.now()}`;
-      fs.renameSync(configPath, backupPath);
+      renameSyncWithRetry(configPath, backupPath);
       console.error(`[TOOL-PATHS] tool-paths.json is corrupt — preserved at ${backupPath}. Config writes are disabled until the app restarts with a readable (or absent) config file. Load error: ${message}`);
     } catch (renameErr) {
       console.error(`[TOOL-PATHS] tool-paths.json is corrupt AND could not be backed up (config writes disabled until restart). Load error: ${message}. Backup error:`, renameErr);

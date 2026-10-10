@@ -41,6 +41,7 @@ import { getFfmpegPath, getFfprobePath } from './tool-paths';
 import { getBfpCachedSession } from './reassembly-bridge';
 import { readVttCueText } from './vtt-cue-text';
 import { ParallelTtsSettings } from './parallel-tts-bridge';
+import { renameWithRetry } from './fs-retry';
 
 const execFileAsync = promisify(execFile);
 
@@ -193,7 +194,7 @@ async function matchSampleFmtInPlace(flacPath: string, targetFmt: string): Promi
     '-c:a', 'flac', '-sample_fmt', targetFmt, '-ar', '24000', '-ac', '1',
     tmp,
   ]);
-  await fs.promises.rename(tmp, flacPath);
+  await renameWithRetry(tmp, flacPath);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -446,7 +447,7 @@ async function writeStoredChunk(processDir: string, index: number, storedText: s
       chapter[index - offset] = storedText;
       const tmp = `${statePath}.correct.tmp`;
       await fs.promises.writeFile(tmp, JSON.stringify(state, null, 2), 'utf-8');
-      await fs.promises.rename(tmp, statePath);
+      await renameWithRetry(tmp, statePath);
       return;
     }
     offset += chapter.length;
@@ -800,7 +801,7 @@ export async function commitSentence(params: CommitParams): Promise<{ success: b
     const staged = `${dest}.new.tmp.flac`;
     await fs.promises.copyFile(sourceFlacPath, staged);
     await matchSampleFmtInPlace(staged, session.sampleFmt || 's16');
-    await fs.promises.rename(staged, dest);
+    await renameWithRetry(staged, dest);
   } catch (err: any) {
     return { success: false, error: err?.message || String(err) };
   }
@@ -858,7 +859,7 @@ export async function revertSentence(projectDir: string, index: number): Promise
   try {
     const staged = `${dest}.revert.tmp.flac`;
     await fs.promises.copyFile(backupPath, staged);
-    await fs.promises.rename(staged, dest);
+    await renameWithRetry(staged, dest);
   } catch (err: any) {
     return { success: false, error: err?.message || String(err) };
   }

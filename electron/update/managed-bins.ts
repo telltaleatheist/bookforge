@@ -13,6 +13,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { workerData } from 'worker_threads';
 import { migrateLegacyDir } from '../shared-paths';
+import { renameSyncWithRetry } from '../fs-retry';
 
 /**
  * Resolve the userData base dir WITHOUT a static `import { app } from 'electron'`.
@@ -73,7 +74,7 @@ export function writeState(state: ManagedBinState): void {
   fs.mkdirSync(MANAGED_BINS_DIR, { recursive: true });
   const tmp = STATE_PATH + '.tmp';
   fs.writeFileSync(tmp, JSON.stringify(state, null, 2));
-  fs.renameSync(tmp, STATE_PATH);
+  renameSyncWithRetry(tmp, STATE_PATH);
 }
 
 export function recordInstalled(id: string, record: InstalledBinary): void {

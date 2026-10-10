@@ -50,6 +50,7 @@
 import { app } from 'electron';
 import * as fs from 'fs';
 import * as path from 'path';
+import { renameWithRetry } from './fs-retry';
 
 /** What the store holds for one file, beside the fact derived from it. */
 interface CacheEntry {
@@ -262,7 +263,7 @@ export async function flushDerivationCache(): Promise<void> {
     // Written beside and renamed on: a half-written cache is the one shape that
     // would cost a startup for every project rather than one.
     await fs.promises.writeFile(temp, JSON.stringify(store), 'utf-8');
-    await fs.promises.rename(temp, file);
+    await renameWithRetry(temp, file);
     dirty = false;
   } catch (err) {
     console.warn(

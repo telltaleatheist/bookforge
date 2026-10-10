@@ -46,6 +46,7 @@ import * as path from 'path';
 import { CrucibleRefused, type CrucibleClient } from '@crucible/client';
 
 import { CRUCIBLE_CLIENT_NAME, crucibleClientFor } from './servers';
+import { renameSyncWithRetry } from '../fs-retry';
 
 /** Where a session keeps its render-hold records. */
 export const RENDER_HOLDS_DIR = 'crucible-renders';
@@ -90,7 +91,7 @@ export function writeRenderHoldRecord(
   };
   const tmp = `${file}.${process.pid}.part`;
   fs.writeFileSync(tmp, JSON.stringify(record), 'utf-8');
-  fs.renameSync(tmp, file);
+  renameSyncWithRetry(tmp, file);
 }
 
 /** Every record this session holds, oldest first. */

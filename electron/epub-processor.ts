@@ -33,6 +33,7 @@ import { blockCategoryForVlm } from '../shared/vlm/conversion';
 import { isFootnoteMarkerSupText, stripFootnoteMarkerSups } from '../shared/text/sup-markers';
 import { spliceForCollapsedText } from '../shared/document/element-text-edit';
 import type { UnnamedChapterOpeningKind } from '../shared/document/chapter-opening-report';
+import { renameWithRetry } from './fs-retry.js';
 import {
   narrationDocumentKey,
   narrationElementKey,
@@ -981,6 +982,7 @@ async function copyTempToOutput(tempPath: string, outputPath: string): Promise<v
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     try {
       await fs.copyFile(tempPath, stagePath);   // onto the destination's volume
+      // fs-retry: own policy — this loop waits out a holder of the copy and the replace together.
       await fs.rename(stagePath, outputPath);   // atomic same-volume replace
       await fs.unlink(tempPath);
       return;

@@ -40,6 +40,7 @@ import type { EpubChapter } from './epub-writer';
 import { verifyAudiobookAnalysis } from './audiobook-analysis-protocol';
 import { readBinding, resolveSidecars, sidecarPathsFor, type SidecarAssetKind } from './sidecar-binding';
 import { regenerateBoundSidecars } from './sidecar-migration';
+import { renameWithRetry, renameSyncWithRetry } from './fs-retry';
 import {
   BookRecord, BookPosition, BookHeard, BookmarkOp,
   anchorForAbsolutePath, anchorForLegacyKey, currentPathOfAnchor,
@@ -2478,7 +2479,7 @@ export class BookshelfServer {
     fsSync.mkdirSync(bookId ? this.bookDir(bookId) : this.booksRoot(), { recursive: true });
     const tmp = `${file}.tmp`;
     fsSync.writeFileSync(tmp, JSON.stringify(store), 'utf-8');
-    fsSync.renameSync(tmp, file);
+    renameSyncWithRetry(tmp, file);
   }
 
   /**
@@ -4121,7 +4122,7 @@ export class BookshelfServer {
         const tmpPath = `${absPath}.${crypto.randomBytes(4).toString('hex')}.tmp`;
         try {
           await fs.writeFile(tmpPath, bytes);
-          await fs.rename(tmpPath, absPath);
+          await renameWithRetry(tmpPath, absPath);
         } catch (writeErr) {
           await fs.unlink(tmpPath).catch(() => {});
           throw writeErr;

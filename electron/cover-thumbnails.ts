@@ -34,6 +34,7 @@ import * as crypto from 'crypto';
 import * as fs from 'fs/promises';
 import * as fsSync from 'fs';
 import * as path from 'path';
+import { renameWithRetry } from './fs-retry';
 
 /** sharp is a native module. Loaded on first use so importing this file (from a
  *  CLI tool or a keeper) costs nothing until a thumbnail is actually made. */
@@ -194,7 +195,7 @@ async function writeThumbnailAtomically(
   try {
     await fs.mkdir(cacheDir, { recursive: true });
     await fs.writeFile(tmp, buffer);
-    await fs.rename(tmp, target);
+    await renameWithRetry(tmp, target);
   } catch (err) {
     await fs.unlink(tmp).catch(() => {});
     // A cache we could not write is a slow shelf, not a broken one — the bytes

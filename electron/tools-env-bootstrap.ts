@@ -54,6 +54,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 
 import { downloadFile, sha256File, osTarBin } from './components/downloader';
+import { renameSyncWithRetry } from './fs-retry';
 
 const TARBALL_NAME = 'tools-env.tar.gz';
 const READY_MARKER = '.bookforge-env-ready.json';
@@ -282,7 +283,7 @@ function removeDirRobust(dir: string): void {
   if (!fs.existsSync(dir)) return;
   const trash = `${dir}.trash-${Date.now()}`;
   try {
-    fs.renameSync(dir, trash);
+    renameSyncWithRetry(dir, trash);
     try { fs.rmSync(trash, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); }
     catch { /* a held file delays it — swept on a later run */ }
     return;
@@ -508,7 +509,7 @@ async function doEnsureToolsEnv(onProgress?: (message: string) => void): Promise
       'utf-8',
     );
     removeDirRobust(envDir);            // clear any stale/corrupt live dir (frees the name)
-    fs.renameSync(tempDir, envDir);     // atomic on the same volume
+    renameSyncWithRetry(tempDir, envDir);     // atomic on the same volume
 
     // Build succeeded — the cached download is no longer needed; reclaim ~1.8 GB.
     try { fs.rmSync(tarball, { force: true }); } catch { /* ignore */ }

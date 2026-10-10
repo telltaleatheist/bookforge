@@ -98,6 +98,7 @@
 import * as fs from 'fs';
 import * as fsp from 'fs/promises';
 import * as path from 'path';
+import { renameSyncWithRetry } from './fs-retry';
 
 /** Which pass produced a set. The dir name and the manifest both carry it. */
 export type DerivedKind = 'denoise' | 'rvc';
@@ -466,7 +467,7 @@ export async function commitDerivedSentences(
   };
   fs.writeFileSync(path.join(partial, DERIVED_MANIFEST_NAME), JSON.stringify(manifest, null, 2), 'utf-8');
   fs.rmSync(dir, { recursive: true, force: true });
-  fs.renameSync(partial, dir);
+  renameSyncWithRetry(partial, dir);
   return manifest;
 }
 

@@ -24,6 +24,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import { digestAudiobookCues, parseAudiobookVttStrict } from './audiobook-analysis-canonical';
+import { renameWithRetry } from './fs-retry';
 import {
   listEpubTreeEntries,
   resolveEpubEntryPath,
@@ -530,7 +531,7 @@ export async function writeFileAtomic(targetPath: string, data: Buffer | string)
   // ~240 chars) so temp + suffix never overflows the 255-byte filename limit.
   const tmp = path.join(dir, `.bftmp-${process.pid}-${crypto.randomBytes(5).toString('hex')}`);
   await fs.promises.writeFile(tmp, data);
-  await fs.promises.rename(tmp, targetPath);
+  await renameWithRetry(tmp, targetPath);
 }
 
 export async function writeBinding(bindingPath: string, binding: SidecarBinding): Promise<void> {

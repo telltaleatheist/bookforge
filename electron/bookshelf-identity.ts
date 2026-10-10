@@ -56,6 +56,7 @@ import {
 } from './manifest-service';
 import { normalizeFsPath } from './path-utils';
 import type { ProjectManifest, ProjectVariant } from './manifest-types.js';
+import { renameSyncWithRetry } from './fs-retry.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Record shapes (shared with bookshelf-server.ts, which stores them)
@@ -389,7 +390,7 @@ export function writeAliasEntries(
   fsSync.mkdirSync(aliasesDir(bookshelfDir), { recursive: true });
   const tmp = `${file}.tmp`;
   fsSync.writeFileSync(tmp, JSON.stringify(next, null, 2), 'utf-8');
-  fsSync.renameSync(tmp, file);
+  renameSyncWithRetry(tmp, file);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

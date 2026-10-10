@@ -53,6 +53,7 @@ import { correctToHeard, MIN_AGREEMENT, wordKey } from '../../shared/sentence-al
 import { recheckPieces, touchesDecodeLoop } from '../../shared/sentence-align/recheck';
 import { repeatedRuns } from '../../shared/sentence-align/repeat-loops';
 import { MIN_CUE_S, trimOverlaps } from '../../shared/sentence-align/overlaps';
+import { renameSyncWithRetry } from '../fs-retry';
 
 export const SENTENCE_ASR_MODEL = 'qwen3-asr-1.7b';
 export const SENTENCE_ALIGN_MODEL = 'qwen3-aligner';
@@ -386,7 +387,7 @@ function writeCompacted(ffmpeg: string, audio: string, pieces: readonly KeptPiec
       try { padTo(total); } finally { fs.closeSync(fd); }
       if (signal?.aborted) { fs.rmSync(tmp, { force: true }); return reject(new Error('cancelled')); }
       if (code !== 0) { fs.rmSync(tmp, { force: true }); return reject(new Error(`ffmpeg could not decode ${audio} to compact it (exit ${code}): ${err.trim().slice(-300)}`)); }
-      fs.renameSync(tmp, out); resolve();
+      renameSyncWithRetry(tmp, out); resolve();
     });
   });
 }
@@ -741,7 +742,7 @@ export async function runSentenceAlign(o: RunSentenceAlignOptions): Promise<Sent
       written++;
     }
     const tmp = `${o.outVttPath}.${process.pid}.part`;
-    fs.writeFileSync(tmp, lines.join('\n'), 'utf-8'); fs.renameSync(tmp, o.outVttPath);
+    fs.writeFileSync(tmp, lines.join('\n'), 'utf-8'); renameSyncWithRetry(tmp, o.outVttPath);
 
     const stats = {
       ...diff.stats,

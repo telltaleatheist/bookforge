@@ -29,6 +29,7 @@ import { promisify } from 'util';
 
 import { getConfig, updateConfig, getFfprobePath, getFfmpegPath } from './tool-paths';
 import { runChain, Recipe, validateRecipe, StepRecord, listEngines } from './clipforge-chain';
+import { renameWithRetry } from './fs-retry';
 
 const execFileAsync = promisify(execFile);
 
@@ -356,7 +357,7 @@ async function writeManifest(root: string, name: string, manifest: ClipforgeMani
   const tmp = path.join(dir, `.clipforge-manifest-${Date.now()}-${Math.random().toString(36).slice(2)}.tmp`);
   try {
     await fs.writeFile(tmp, JSON.stringify(manifest, null, 2), 'utf-8');
-    await fs.rename(tmp, mp);
+    await renameWithRetry(tmp, mp);
   } catch (err) {
     try { await fs.unlink(tmp); } catch { /* ignore cleanup failure */ }
     throw err;

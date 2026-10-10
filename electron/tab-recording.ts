@@ -32,6 +32,7 @@ import { ChildProcess, spawn } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { renameWithRetry } from './fs-retry';
 import {
   DEFAULT_RECORDINGS_DIR,
   RECORDER,
@@ -481,7 +482,7 @@ export class TabRecordingSession {
     try {
       await this.encoder!.finish();
       // Same directory, so this is a same-volume rename and cannot answer EXDEV.
-      await fs.promises.rename(this.partialPath, this.finalPath);
+      await renameWithRetry(this.partialPath, this.finalPath);
       await this.writeSidecar();
     } catch (err) {
       this.state = 'failed';
@@ -538,7 +539,7 @@ export class TabRecordingSession {
     const target = path.join(path.dirname(this.finalPath), sidecarFileName(path.basename(this.finalPath)));
     const temp = `${target}.tmp-${process.pid}`;
     await fs.promises.writeFile(temp, JSON.stringify(sidecar, null, 2), 'utf-8');
-    await fs.promises.rename(temp, target);
+    await renameWithRetry(temp, target);
   }
 }
 

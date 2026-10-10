@@ -50,6 +50,7 @@
 import { app } from 'electron';
 import * as fs from 'fs';
 import * as path from 'path';
+import { renameSyncWithRetry } from '../fs-retry';
 
 /** The record file, under `<userData>`. */
 export const CRUCIBLE_IN_FLIGHT_FILE = 'crucible-in-flight.json';
@@ -250,7 +251,7 @@ function writeInFlightLedger(entries: readonly CrucibleInFlightEntry[]): void {
   try {
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(temp, serializeInFlightLedger(entries), 'utf-8');
-    fs.renameSync(temp, file);
+    renameSyncWithRetry(temp, file);
   } catch (err) {
     // Never fatal to the job being submitted: a render that cannot write its
     // own receipt is still a render the user asked for. Loud, because what it

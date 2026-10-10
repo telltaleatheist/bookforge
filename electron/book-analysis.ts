@@ -28,6 +28,7 @@ import {
   type AudiobookAnalysisBinding,
 } from './audiobook-analysis-protocol.js';
 import { atomicWriteFile } from './manifest-service.js';
+import { renameWithRetry } from './fs-retry.js';
 import {
   fuzzyQuoteMatchesTranscript,
   locateAudiobookQuoteCueRange,
@@ -535,7 +536,7 @@ async function saveCheckpoint(
   const tmpPath = checkpointPath + '.tmp';
   checkpoint.updatedAt = new Date().toISOString();
   await fs.writeFile(tmpPath, JSON.stringify(checkpoint, null, 2), 'utf-8');
-  await fs.rename(tmpPath, checkpointPath);
+  await renameWithRetry(tmpPath, checkpointPath);
 }
 
 async function deleteCheckpoint(outputDir: string): Promise<void> {
@@ -806,7 +807,7 @@ export async function analyzeBook(
     const outputPath = path.join(outputDir, 'analysis.json');
     const tmpPath = outputPath + '.tmp';
     await fs.writeFile(tmpPath, JSON.stringify(report, null, 2), 'utf-8');
-    await fs.rename(tmpPath, outputPath);
+    await renameWithRetry(tmpPath, outputPath);
 
     // Delete checkpoint on success
     await deleteCheckpoint(outputDir);

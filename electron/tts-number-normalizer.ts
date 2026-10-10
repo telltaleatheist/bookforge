@@ -69,6 +69,7 @@ import { promises as fs } from 'fs';
 import * as path from 'path';
 
 import { hasLetter } from './ai-cleanup-prepass.js';
+import { renameWithRetry } from './fs-retry.js';
 import { lightGateRefusal, unspacedDashReading } from './light-gate.js';
 import {
   applyNumberRules, bareWord, CANONICAL_BOOK_NAMES, cardinalWords, scriptureSpans,
@@ -3039,8 +3040,8 @@ export async function normalizeNarrationNumbers(
     units,
   };
   await fs.writeFile(stagingRecord, JSON.stringify(record, null, 2), 'utf8');
-  await fs.rename(stagingRecord, recordPath);
-  await fs.rename(stagingEpub, epubPath);
+  await renameWithRetry(stagingRecord, recordPath);
+  await renameWithRetry(stagingEpub, epubPath);
 
   console.log(
     `[TTS-NUMBERS] ${written.rewrittenSpans} number(s) read as words over `
@@ -3232,8 +3233,8 @@ export async function normalizeTextBlocks(
     units,
   };
   await fs.writeFile(stagingRecord, JSON.stringify(record, null, 2), 'utf8');
-  await fs.rename(stagingRecord, recordPath);
-  await fs.rename(stagingText, textPath);
+  await renameWithRetry(stagingRecord, recordPath);
+  await renameWithRetry(stagingText, textPath);
 
   console.log(
     `[TTS-NUMBERS] ${appliedSpans} number(s) read as words over `

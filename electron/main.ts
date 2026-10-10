@@ -173,6 +173,7 @@ import { componentManager, runInstaller as runExternalInstaller, listInstallable
 import { systemProbe } from './components/system-probe';
 import { listManagedComponents, checkComponentUpdates, installComponent } from './update/component-updater';
 import { getStarterStatus, installStarterLibrary } from './update/starter-library';
+import { renameWithRetry } from './fs-retry.js';
 
 // Normalize the app's data directory. Electron derives userData from the app
 // name, which defaults to package.json `name` ("bookforge-app") — inconsistent
@@ -3288,7 +3289,7 @@ async function migrateBookshelfConfig(): Promise<void> {
   const legacyPath = path.join(getLibraryRoot(), 'library-server.json');
   if (fsSync.existsSync(legacyPath)) {
     try {
-      await fs.rename(legacyPath, newPath);
+      await renameWithRetry(legacyPath, newPath);
       console.log('[BookshelfServer] Migrated config from library-server.json to bookshelf.json');
     } catch (err) {
       console.error('[BookshelfServer] Config migration failed:', err);
@@ -5192,7 +5193,7 @@ function setupIpcHandlers(): void {
             if (sanitizedDesired && sanitizedDesired !== fileBasename) {
               const newM4bPath = path.join(path.dirname(m4bPath), sanitizedDesired);
               try {
-                await fs.rename(m4bPath, newM4bPath);
+                await renameWithRetry(m4bPath, newM4bPath);
                 renamedM4bPaths.push({ oldRel: rel, newRel: `${dirPrefix}${sanitizedDesired}` });
                 m4bPath = newM4bPath;
                 console.log(`[project:update-metadata] Renamed M4B: ${rel} → ${dirPrefix}${sanitizedDesired}`);

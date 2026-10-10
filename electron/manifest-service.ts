@@ -73,6 +73,7 @@ import {
 } from '../shared/book-digest';
 import { passesAfterEpubEvent } from '../shared/document/pass-lifecycle';
 import { WORKING_COPY_SUFFIX } from '../shared/document/book-path';
+import { renameWithRetry } from './fs-retry.js';
 import {
   describeLedgerDeletion,
   ledgerAfterDeleting,
@@ -341,7 +342,7 @@ export async function atomicWriteFile(targetPath: string, content: string): Prom
 
   try {
     await fs.promises.writeFile(tempPath, content, 'utf-8');
-    await fs.promises.rename(tempPath, targetPath);
+    await renameWithRetry(tempPath, targetPath);
   } catch (error) {
     // Clean up temp file on error
     try {
@@ -365,7 +366,7 @@ export async function atomicCopyFile(sourcePath: string, targetPath: string): Pr
 
   try {
     await fs.promises.copyFile(sourcePath, tempPath);
-    await fs.promises.rename(tempPath, targetPath);
+    await renameWithRetry(tempPath, targetPath);
   } catch (error) {
     try {
       await fs.promises.unlink(tempPath);
@@ -386,7 +387,7 @@ export async function atomicMoveDirectory(sourceDir: string, targetDir: string):
 
     // Try atomic rename first
     try {
-      await fs.promises.rename(sourceDir, targetDir);
+      await renameWithRetry(sourceDir, targetDir);
     } catch (renameError: any) {
       if (renameError.code === 'EXDEV') {
         // Cross-filesystem: recursive copy then delete
@@ -1722,13 +1723,13 @@ export async function migrateWorkingEpubNaming(
   const ttsRecorded = family.ttsEpub?.path ?? null;
   const ttsTargetRel = narrationEpubRelPath(targetRel);
 
-  await fs.promises.rename(fromAbs, toAbsPath);
+  await renameWithRetry(fromAbs, toAbsPath);
   let ttsMoved = false;
   if (ttsRecorded !== null && ttsRecorded !== ttsTargetRel) {
     const ttsFromAbs = toAbs(projectDir, ttsRecorded);
     const ttsToAbs = toAbs(projectDir, ttsTargetRel);
     if (fs.existsSync(ttsFromAbs) && !fs.existsSync(ttsToAbs)) {
-      await fs.promises.rename(ttsFromAbs, ttsToAbs);
+      await renameWithRetry(ttsFromAbs, ttsToAbs);
     }
     ttsMoved = true;
   }
@@ -6280,7 +6281,7 @@ export async function renameProjectFolder(
     return currentPath;
   }
 
-  await fs.promises.rename(currentPath, targetPath);
+  await renameWithRetry(currentPath, targetPath);
   const newProjectId = path.basename(targetPath);
   console.log(`[ManifestService] Renamed project folder: ${path.basename(currentPath)} → ${newProjectId}`);
 

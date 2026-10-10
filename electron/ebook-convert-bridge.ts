@@ -14,6 +14,7 @@ import * as fsSync from 'fs';
 import * as crypto from 'crypto';
 import { app } from 'electron';
 import { componentManager } from './components/component-manager';
+import { renameWithRetry } from './fs-retry';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -357,7 +358,7 @@ export async function convertToLibrary(inputPath: string): Promise<ConversionRes
     }
 
     // Move from temp to library
-    await fs.rename(convertResult.outputPath, destPath);
+    await renameWithRetry(convertResult.outputPath, destPath);
     console.log('[EbookConvert] Saved to library:', destPath);
 
     return { success: true, outputPath: destPath };

@@ -12,7 +12,7 @@ import { narratorScratchRoot, wslToWindowsPath } from './narrator-paths';
 import { buildNarratorSpawn, narratorPythonRoot } from './narrator-spawn';
 import * as os from 'os';
 import { getMetadataToolPath, applyMetadata, AudiobookMetadata, optimizeCoverForM4b, embedAndVerifyVtt, deleteSidecarsForM4b, probeAudio, isEmbedTempFileName } from './metadata-tools';
-import { renameWithRetry, unlinkWithRetry, isTransientFsError } from './fs-retry';
+import { renameWithRetry, unlinkWithRetry, isTransientFsError, renameSyncWithRetry } from './fs-retry';
 import { uniqueOutputStem, uniqueOutputPath } from './output-naming';
 import { getReassemblyLogger } from './rolling-logger';
 import * as manifestService from './manifest-service';
@@ -493,7 +493,7 @@ export async function copyIntoLibrary(
   onBytes: (copiedSoFar: number) => void,
 ): Promise<void> {
   try {
-    await fs.promises.rename(src, dest);
+    await renameWithRetry(src, dest);
     onBytes(fs.statSync(dest).size);
     return;
   } catch (err) {
@@ -2437,7 +2437,7 @@ export async function startReassembly(
           if (newPath !== outputPath) {
             try {
               emitStage('metadata', 70, `Renaming to ${sanitized}...`);
-              fs.renameSync(outputPath, newPath);
+              renameSyncWithRetry(outputPath, newPath);
               console.log(`[REASSEMBLY] Renamed output file: ${outputPath} -> ${newPath}`);
               outputPath = newPath;
             } catch (renameErr) {

@@ -61,6 +61,7 @@ import type { NarrationTextCleanupChoice } from '../shared/queue/narration-run';
 // used, like every other crucible door here: a render that never asks must not
 // pull the registry (and its bearer tokens) into the process.
 import type { GenerationVenue } from './crucible/generation-venue';
+import { renameWithRetry } from './fs-retry';
 import type {
   PrepAssignedServer, PrepPackedBecause, PrepPacking,
 } from './crucible/prep-band';
@@ -787,7 +788,7 @@ export async function cacheSessionToBfp(
     }
 
     // Rename temp dir to final name (atomic on same filesystem)
-    await fs.rename(tempDestDir, destDir);
+    await renameWithRetry(tempDestDir, destDir);
     console.log(`[PARALLEL-TTS] Session cached to: ${destDir}`);
 
     // Remove original from e2a tmp
@@ -1153,7 +1154,7 @@ export async function cacheSessionToProject(
       let moved = false;
       if (handingOver && !(isWslSession && process.platform === 'win32')) {
         try {
-          await fs.rename(sessionDir, tempDestDir);
+          await renameWithRetry(sessionDir, tempDestDir);
           moved = true;
         } catch (err) {
           if ((err as NodeJS.ErrnoException).code !== 'EXDEV') throw err;
@@ -1849,7 +1850,7 @@ export async function postProcessOutput(
   if (fsSync.existsSync(beside)) return { audioPath: m4bPath, vttPath: beside };
   const inSubfolder = filedTranscriptFor(outputDir, m4bPath);
   if (fsSync.existsSync(inSubfolder)) {
-    await fs.rename(inSubfolder, beside);
+    await renameWithRetry(inSubfolder, beside);
     return { audioPath: m4bPath, vttPath: beside };
   }
   return { audioPath: m4bPath };
@@ -1894,7 +1895,7 @@ async function promoteFromAssemblyDir(p: string, asmDir: string, outputDir: stri
     const dest = m4bStem !== undefined && stemOf(name) === m4bStem
       ? path.join(outputDir, `${finalStem}${path.extname(name)}`)
       : uniqueOutputPath(path.join(outputDir, name));
-    await fs.rename(src, dest);
+    await renameWithRetry(src, dest);
     if (name === m4bName) finalM4b = dest;
   }
   try {
@@ -8059,7 +8060,7 @@ async function prepareNarrationCopy(epubPath: string, jobId: string): Promise<st
     stripSupMarkers: true,
     rewrites,
   });
-  await fs.rename(staging, cutPath);
+  await renameWithRetry(staging, cutPath);
   await logger.log('INFO', jobId,
     `${written.excludedCaptions} caption(s), ${written.excludedFootnotes} note(s) and `
     + `${written.removedSupMarkers} reference number(s) excluded from the narration; `

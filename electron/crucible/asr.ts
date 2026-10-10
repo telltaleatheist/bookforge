@@ -72,6 +72,7 @@ import {
 } from './job';
 import type { VenueHost } from './generation-venue';
 import { venueForRunStep, type RunVenue, type StepVenue } from './step-venue';
+import { renameSyncWithRetry } from '../fs-retry';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // The model id table
@@ -516,7 +517,7 @@ export async function runCrucibleAsr(options: RunCrucibleAsrOptions): Promise<Cr
     // that exists half-written is a track that verifies short.
     const tmp = `${outVttPath}.${process.pid}.part`;
     fs.writeFileSync(tmp, vtt, 'utf-8');
-    fs.renameSync(tmp, outVttPath);
+    renameSyncWithRetry(tmp, outVttPath);
 
     const fingerprint = written.provenance.model?.fingerprint ?? `${transcript.model}@${transcript.revision}`;
     log(`crucible "${server}" transcribed ${filename}: ${cues} cue(s), ${transcript.duration_s.toFixed(0)}s, `

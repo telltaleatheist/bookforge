@@ -78,6 +78,7 @@ import { announceCrucibleRecordChanged, forgetCrucibleRoutes } from './routes';
 import { engineClientFor, forgetResolvedEngine } from './engine-resolve';
 import { LOCAL_WORK_SET, LONGFORM_ALIGN_SET } from '../../shared/queue/slot-sets';
 import { RETIRED_LOCAL_NARRATOR_VENUE, WAIT_FOR_ANY } from '../../shared/queue/wait-for';
+import { renameSyncWithRetry } from '../fs-retry';
 
 /**
  * What this app calls itself to a Crucible — `bookforge@<host>`, one name per
@@ -387,7 +388,7 @@ export class ServerRegistry {
     const temp = `${file}.tmp`;
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(temp, `${JSON.stringify(registry, null, 2)}\n`, { encoding: 'utf-8', mode: 0o600 });
-    fs.renameSync(temp, file);
+    renameSyncWithRetry(temp, file);
   }
 
   /** Every server, tokens masked. The listing type cannot carry one. */

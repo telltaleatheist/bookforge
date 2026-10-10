@@ -13,6 +13,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { renameWithRetry } from './fs-retry';
 
 // Maximum log file size before rotation (2MB)
 const MAX_LOG_SIZE = 2 * 1024 * 1024;
@@ -176,7 +177,7 @@ class RollingLogger {
 
     // Move current to backup
     try {
-      await fs.promises.rename(this.logPath, this.backupPath);
+      await renameWithRetry(this.logPath, this.backupPath);
     } catch (err) {
       // Current doesn't exist, that's fine
     }

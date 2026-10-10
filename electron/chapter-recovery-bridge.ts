@@ -19,6 +19,7 @@ import * as cheerio from 'cheerio';
 import { getFfmpegPath, getFfprobePath } from './tool-paths';
 import { resolveReadableVtt } from './metadata-tools';
 import { stripVttCueTags } from './vtt-cue-text';
+import { renameWithRetry } from './fs-retry';
 
 const MAX_STDERR_BYTES = 10 * 1024;
 function appendCapped(buf: string, chunk: string): string {
@@ -603,7 +604,7 @@ export async function applyChaptersToM4b(
           // either fully replaces the file or fails leaving the original intact; a
           // locked file (EBUSY/EPERM on the Syncthing-synced drive) fails loudly.
           try {
-            await fs.rename(chapteredTmp, m4bPath);
+            await renameWithRetry(chapteredTmp, m4bPath);
             resolve({
               success: true,
               outputPath: m4bPath,

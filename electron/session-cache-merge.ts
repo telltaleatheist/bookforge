@@ -36,6 +36,7 @@ import { promises as fs, type Dirent } from 'node:fs';
 import * as path from 'node:path';
 
 import { COPY_CONCURRENCY, retryWeather, runBounded } from './bounded-copy';
+import { renameWithRetry } from './fs-retry';
 
 /**
  * The extensions a rendered chunk can have. `.flac` is what every engine writes
@@ -176,7 +177,7 @@ export async function copyFileAtomic(sourcePath: string, destPath: string): Prom
   await fs.mkdir(dir, { recursive: true });
   try {
     await fs.copyFile(sourcePath, temp);
-    await fs.rename(temp, destPath);
+    await renameWithRetry(temp, destPath);
   } catch (err) {
     await fs.rm(temp, { force: true }).catch(() => undefined);
     throw err;
@@ -238,7 +239,7 @@ export interface MergeReport {
 export async function moveFileAtomic(sourcePath: string, destPath: string): Promise<void> {
   await fs.mkdir(path.dirname(destPath), { recursive: true });
   try {
-    await fs.rename(sourcePath, destPath);
+    await renameWithRetry(sourcePath, destPath);
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== 'EXDEV') throw err;
     // Different filesystems: the only way across is through this process.

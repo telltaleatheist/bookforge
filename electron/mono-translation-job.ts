@@ -38,6 +38,7 @@ import {
 } from './epub-processor.js';
 import * as cheerio from 'cheerio';
 import { discardLibraryTree } from './library-trash';
+import { renameWithRetry } from './fs-retry.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Skip Marker Detection
@@ -287,7 +288,7 @@ async function saveTranslationCheckpoint(translateDir: string, checkpoint: MonoT
   const checkpointPath = getTranslationCheckpointPath(translateDir);
   const tmpPath = checkpointPath + '.tmp';
   await fs.writeFile(tmpPath, JSON.stringify(checkpoint, null, 2), 'utf-8');
-  await fs.rename(tmpPath, checkpointPath);
+  await renameWithRetry(tmpPath, checkpointPath);
 }
 
 async function deleteTranslationCheckpoint(translateDir: string): Promise<void> {
@@ -316,7 +317,7 @@ async function saveChapterCache(translateDir: string, zipPath: string, xhtml: st
   const cachePath = getChapterCachePath(translateDir, zipPath);
   const tmpPath = cachePath + '.tmp';
   await fs.writeFile(tmpPath, xhtml, 'utf-8');
-  await fs.rename(tmpPath, cachePath);
+  await renameWithRetry(tmpPath, cachePath);
 }
 
 async function loadChapterCache(translateDir: string, zipPath: string): Promise<string> {

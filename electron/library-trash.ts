@@ -76,6 +76,7 @@ import * as os from 'node:os';
 import * as crypto from 'node:crypto';
 
 import { isWeather } from './bounded-copy';
+import { renameWithRetry } from './fs-retry';
 
 /** The one directory name. Everything that scans the library skips it. */
 export const TRASH_DIR_NAME = '.trash';
@@ -286,6 +287,7 @@ export async function discardLibraryTree(
 
   const attempt = async (): Promise<NodeJS.ErrnoException | null> => {
     try {
+      // fs-retry: own policy — a holder is answered at once, by marking the tree in place (isHeld below).
       await fs.rename(target, dest);
       return null;
     } catch (err) {
@@ -345,7 +347,7 @@ async function markDiscardedInPlace(
   const tmpPath = `${finalPath}.${crypto.randomBytes(3).toString('hex')}.tmp`;
   try {
     await fs.writeFile(tmpPath, JSON.stringify(marker, null, 2), 'utf-8');
-    await fs.rename(tmpPath, finalPath);
+    await renameWithRetry(tmpPath, finalPath);
   } catch (err) {
     throw new Error(
       `Discarding ${target} for ${reason} failed: the folder could not be moved `
@@ -642,6 +644,7 @@ export async function drainLibraryTrashOnce(deps: RemoverDeps = {}): Promise<Dra
     try {
       const dest = path.join(d.trash, trashNameFor(dir));
       await fs.mkdir(d.trash, { recursive: true });
+      // fs-retry: own policy — still held means drain it in place, not wait for it.
       await fs.rename(dir, dest);
       d.log(`[library-trash] ${label} was released; moved to ${TRASH_DIR_NAME}/${path.basename(dest)}`);
       continue;

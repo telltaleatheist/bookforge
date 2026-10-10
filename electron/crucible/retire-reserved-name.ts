@@ -79,6 +79,7 @@ import {
   type CrucibleServerEntry,
 } from './servers';
 import { getWslDistro } from '../tool-paths';
+import { renameSyncWithRetry } from '../fs-retry';
 
 /**
  * THE RETIRED NAME, SPELLED ONCE, HERE.
@@ -368,7 +369,7 @@ function readJson(file: string): unknown {
 function writeJson(file: string, value: unknown): void {
   const temp = `${file}.tmp`;
   fs.writeFileSync(temp, `${JSON.stringify(value, null, 2)}\n`, 'utf-8');
-  fs.renameSync(temp, file);
+  renameSyncWithRetry(temp, file);
 }
 
 function routingNamesIt(record: unknown): boolean {

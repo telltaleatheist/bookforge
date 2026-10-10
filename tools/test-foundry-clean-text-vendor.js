@@ -496,7 +496,13 @@ const VENDOR_LEAVES = '770480d';
  * move them onto the rule-applied text. NOT a rule move: without fixed readings nothing is reserved that
  * was not before, so NORMALIZER_VERSION stays n19. This side took the same lines in its serial driver.
  */
-const ONE_DOOR_BASELINE = 'f66a126';
+/*
+ * MOVED 2026-10-10, f66a126 → afba881, read in full: ONE commit touches these files. afba881 (every
+ * engine product replaced into place waits out a holder): tts-number-normalizer.ts's two `fs.rename`
+ * calls become `replaceFile` from src/fs-replace.ts, plus its import. I/O, NOT a rule move — n19 stays.
+ * This side took the same two lines through electron/fs-retry.ts's `renameWithRetry`.
+ */
+const ONE_DOOR_BASELINE = 'afba881';
 const FROZEN_SINCE_BASELINE = [
   'src/clean/tts-number-normalizer.ts',
   'src/clean/tts-spoken-forms.ts',
@@ -558,7 +564,7 @@ const FILES = [
     theirs: 'src/clean/tts-number-normalizer.ts',
     vendoredAt: VENDOR_PASS,
     shipped: {
-      sha256: 'aff3b2343b515906064a9fc6d7d027a491eb4e0f41192f2f552aa1823f26899e',
+      sha256: '9613c21f1ad0596fae586c7bcac4e97ffeb1104e3e83039586fd23f9ef2e9376',
       why: 'the type-only `epub-processor.js` import retargeted to `./targets.js`; '
         + '`askAboutEach` exported so the engine\'s door is a third caller rather than a second '
         + 'copy of the retry rules; `normalizeNarrationNumbers` deleted (291 lines, all about a '
@@ -607,7 +613,10 @@ const FILES = [
         + 'gate no longer takes "did" or "civil" for a numeral, nor hides "Wolf IV." behind its '
         + 'period. A RULE MOVE; the same lines here, and electron/light-gate.ts is Foundry\'s copy. '
         + 'REPINNED 2026-10-03 (evening) for f66a126: NormalizerAsk.protected (spans a caller reserves) and '
-        + 'toAppliedOffset. Not a rule move; the same lines here.',
+        + 'toAppliedOffset. Not a rule move; the same lines here. '
+        + 'REPINNED 2026-10-10 for afba881: the two renames that put the record and the text in place go '
+        + 'through src/fs-replace.ts (a holder on the library share waited out) and its import. Not a rule '
+        + 'move — I/O only; the same lines here, through electron/fs-retry.ts.',
     },
   },
   {

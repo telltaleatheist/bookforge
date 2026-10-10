@@ -46,6 +46,7 @@ import type {
   EnvDiagnosticResult,
 } from './component-types';
 import { getMainLogger } from '../rolling-logger';
+import { renameSyncWithRetry } from '../fs-retry';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Logging — tee to BOTH the console (dev) AND the rolling file logger, so component
@@ -108,7 +109,7 @@ function readManifest(): InstalledManifest {
   // manually-configured external component paths — preserve it FIRST.
   const backupPath = `${manifestPath}.corrupt-${Date.now()}`;
   try {
-    fs.renameSync(manifestPath, backupPath);
+    renameSyncWithRetry(manifestPath, backupPath);
   } catch (renameErr) {
     cerror(`[COMPONENTS] installed.json is corrupt (${corruptReason}) AND could not be backed up — refusing to treat it as empty:`, renameErr);
     throw new Error(
@@ -128,7 +129,7 @@ function writeManifest(manifest: InstalledManifest): void {
     fs.mkdirSync(base, { recursive: true });
     const tmp = path.join(base, `installed.json.${process.pid}.${Date.now()}.tmp`);
     fs.writeFileSync(tmp, JSON.stringify(manifest, null, 2));
-    fs.renameSync(tmp, manifestPath);
+    renameSyncWithRetry(tmp, manifestPath);
   } catch (err) {
     cerror('[COMPONENTS] Failed to write installed.json:', err);
     throw err;
@@ -928,7 +929,7 @@ async function install(
       fs.rmSync(finalDir, { recursive: true, force: true });
     }
     try {
-      fs.renameSync(tempDir, finalDir);
+      renameSyncWithRetry(tempDir, finalDir);
     } catch {
       // Cross-device rename can fail (temp on a different volume) — fall back to
       // a recursive copy.

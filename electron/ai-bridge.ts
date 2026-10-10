@@ -49,6 +49,7 @@ import {
 } from '@crucible/client';
 import { CRUCIBLE_CHAT_QUEUE, crucibleRemovalDisposition, crucibleRemovedLine } from '../shared/crucible/server-queue';
 import { waitFieldsOf } from './queue-steps/runtime';
+import { renameWithRetry } from './fs-retry.js';
 
 // Power save blocker ID - prevents system sleep during AI cleanup
 let aiPowerBlockerId: number | null = null;
@@ -362,7 +363,7 @@ async function saveCheckpoint(outputDir: string, checkpoint: CleanupCheckpoint):
   const checkpointPath = getCheckpointPath(outputDir);
   const tmpPath = checkpointPath + '.tmp';
   await fsPromises.writeFile(tmpPath, JSON.stringify(checkpoint, null, 2), 'utf-8');
-  await fsPromises.rename(tmpPath, checkpointPath);
+  await renameWithRetry(tmpPath, checkpointPath);
 }
 
 async function deleteCheckpoint(outputDir: string): Promise<void> {

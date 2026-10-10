@@ -65,6 +65,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { listServers } from './servers';
 import { announceCrucibleRecordChanged } from './routes';
+import { renameSyncWithRetry } from '../fs-retry';
 // The wire shapes, owned once in shared/ because the settings row reads them
 // too (see that file's header). This module owns the RECORD; the view it hands
 // back is the wire's.
@@ -246,7 +247,7 @@ export class Routing {
     const temp = `${file}.tmp`;
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(temp, `${JSON.stringify(record, null, 2)}\n`, 'utf-8');
-    fs.renameSync(temp, file);
+    renameSyncWithRetry(temp, file);
   }
 
   /**

@@ -31,6 +31,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { renameWithRetry } from './fs-retry';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // The surface, taken from the call sites
@@ -416,21 +417,12 @@ async function bytesAlreadyThere(abs: string, data: Buffer): Promise<boolean> {
 async function writeFileAtomically(abs: string, data: Buffer): Promise<void> {
   const temp = `${abs}.bookforge-entry-tmp`;
   await fs.promises.writeFile(temp, data);
-  const HOLDS = new Set(['EPERM', 'EACCES', 'EBUSY']);
-  const DELAYS_MS = [50, 100, 200, 400];
-  for (let attempt = 0; ; attempt++) {
-    try {
-      await fs.promises.rename(temp, abs);
-      return;
-    } catch (err) {
-      const code = (err as NodeJS.ErrnoException).code;
-      const transient = process.platform === 'win32' && code !== undefined && HOLDS.has(code);
-      if (!transient || attempt >= DELAYS_MS.length) {
-        await fs.promises.rm(temp, { force: true });
-        throw err;
-      }
-      await new Promise((resolve) => setTimeout(resolve, DELAYS_MS[attempt]));
-    }
+  try {
+    // The hold is waited out by fs-retry, the one policy for it.
+    await renameWithRetry(temp, abs);
+  } catch (err) {
+    await fs.promises.rm(temp, { force: true });
+    throw err;
   }
 }
 

@@ -40,6 +40,7 @@ import * as fsSync from 'fs';
 import * as path from 'path';
 
 import { setLibraryBasePath } from './manifest-service';
+import { renameSyncWithRetry } from './fs-retry';
 import {
   AliasEntry, BookRecord,
   anchorForLegacyKey, anchorForMovedFile, bookIdFromKey, clearVariantsCache, isVariantKey,
@@ -377,5 +378,5 @@ function writeFileAtomic(file: string, content: string): void {
   const tmp = `${file}.migrate.tmp`;
   fsSync.mkdirSync(path.dirname(file), { recursive: true });
   fsSync.writeFileSync(tmp, content, 'utf-8');
-  fsSync.renameSync(tmp, file);
+  renameSyncWithRetry(tmp, file);
 }
