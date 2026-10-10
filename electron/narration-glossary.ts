@@ -99,6 +99,7 @@ import { asSessionWait, takeCrucibleLease, type CrucibleLease } from './crucible
 import { CRUCIBLE_CLIENT_NAME, crucibleClientFor } from './crucible/servers';
 import { isUpstreamModelId } from './crucible/text-acts';
 import { modelFromCapability, processTextVenueHost } from './crucible/text-venue';
+import { renameWithRetry } from './fs-retry';
 import type { FoundryFormsAtLister, FoundryFormsLister, FoundryJobRequest } from './foundry-host-queue';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -324,14 +325,20 @@ export function readGlossary(file: string, book: string): GlossaryFile {
   };
 }
 
-export function writeGlossary(file: string, glossary: GlossaryFile): void {
-  writeAtomically(file, glossary);
+export function writeGlossary(file: string, glossary: GlossaryFile): Promise<void> {
+  return writeAtomically(file, glossary);
 }
 
-function writeAtomically(file: string, body: unknown): void {
+/**
+ * Write beside, then replace. THE REPLACE IS RETRIED: on Windows any other holder of
+ * the file (a sync client, the indexer, a scanner — the library is on a share)
+ * refuses it for a moment with EPERM, and that is weather, not a failure (Pursuit of
+ * Power's guide, 2026-10-10). `fs-retry` is the one policy for it.
+ */
+async function writeAtomically(file: string, body: unknown): Promise<void> {
   const partial = `${file}.partial`;
   fs.writeFileSync(partial, `${JSON.stringify(body, null, 2)}\n`, 'utf8');
-  fs.renameSync(partial, file);
+  await renameWithRetry(partial, file);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -974,9 +981,17 @@ export async function ensureNarrationGlossary(opts: EnsureGlossaryOptions): Prom
   /** The forms whose meanings were asked in THIS run — only these get a second look or a sense-by-sense read. */
   const askedNow = new Set<string>();
 
-  const save = (): void => {
+  /*
+   * ONE WRITE AT A TIME. The pool saves from several workers, and a write that is
+   * waiting out a held file must not have the next one write the same `.partial`
+   * underneath it. Each save takes the entries as they stand when it is called.
+   */
+  let saving: Promise<void> = Promise.resolve();
+  const save = (): Promise<void> => {
     const ordered = forms.map((f) => entries.get(formKey(f))).filter((e): e is GlossaryEntry => e !== undefined);
-    writeAtomically(files.glossary, { ...glossary, entries: [...ordered, ...orphans] });
+    const body = { ...glossary, entries: [...ordered, ...orphans] };
+    saving = saving.then(() => writeAtomically(files.glossary, body));
+    return saving;
   };
 
   let asked = 0;
@@ -1033,7 +1048,7 @@ export async function ensureNarrationGlossary(opts: EnsureGlossaryOptions): Prom
         asked += 1;
         done += 1;
         report(`glossary: meanings ${done}/${toAsk.length}`);
-        save();
+        await save();
       });
 
       // ── Steps 3 and 4: placing, with one second look ──────────────────────
@@ -1131,13 +1146,13 @@ export async function ensureNarrationGlossary(opts: EnsureGlossaryOptions): Prom
           entry = { ...entry, senses: read };
         }
         entries.set(formKey(form), entry);
-        save();
+        await save();
       });
     } finally {
       await lease?.release();
     }
   }
-  save();
+  await save();
 
   // ── Step 5: the guide ─────────────────────────────────────────────────────
   const final = forms.map((f) => entries.get(formKey(f))!);
@@ -1151,7 +1166,7 @@ export async function ensureNarrationGlossary(opts: EnsureGlossaryOptions): Prom
     report(`glossary: ${forms.length} printed form(s), and no spot the guide decided`);
     return { readingsPath: null, ...outcome };
   }
-  writeAtomically(files.readings, { format: FIXED_READINGS_FORMAT, readings });
+  await writeAtomically(files.readings, { format: FIXED_READINGS_FORMAT, readings });
   const read = readings.filter((r) => r.replace !== r.find).length;
   report(`glossary: ${read} spot(s) read and ${readings.length - read} kept as printed across ${forms.length} form(s)`
     + `${unplaced > 0 ? `; ${unplaced} occurrence(s) left to their sentence` : ''}`

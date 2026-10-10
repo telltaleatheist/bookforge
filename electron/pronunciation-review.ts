@@ -97,7 +97,7 @@ function sameSenses(a: readonly GlossarySense[], b: readonly GuideReviewSense[])
  * review read it — the review is reopened rather than one set of decisions
  * written over another nobody saw.
  */
-export function saveGuideReview(save: GuideReviewSave): { forms: number; spots: number } {
+export async function saveGuideReview(save: GuideReviewSave): Promise<{ forms: number; spots: number }> {
   const files = guidePathsOfStep(save.projectDir, save.at);
   if (!fs.existsSync(files.glossary)) {
     throw new Error('This step has no pronunciation guide any more, so there is nothing to save the review into.');
@@ -149,6 +149,6 @@ export function saveGuideReview(save: GuideReviewSave): { forms: number; spots: 
       at: new Date().toISOString(),
     };
   });
-  writeGlossary(files.glossary, { ...glossary, entries });
+  await writeGlossary(files.glossary, { ...glossary, entries });
   return { forms: formsChanged, spots: spotsChanged };
 }

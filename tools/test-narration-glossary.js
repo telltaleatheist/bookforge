@@ -364,6 +364,28 @@ const entries = (where) => JSON.parse(fs.readFileSync(where.glossaryFile, 'utf8'
     assert.strictEqual(esp.senses.length, 2, 'the meanings are the guide\'s still');
   });
 
+  await test('a guide file held for a moment by another process is waited out, not failed (EPERM on a share)', async () => {
+    // Pursuit of Power, 2026-10-10: the replace of its guide was refused EPERM once and the run died.
+    const where = scratch();
+    const real = fs.renameSync;
+    let refused = 0;
+    fs.renameSync = (from, to) => {
+      if (refused < 2 && String(to).endsWith('.narration-glossary.json')) {
+        refused += 1;
+        throw Object.assign(new Error('EPERM: operation not permitted, rename'), { code: 'EPERM' });
+      }
+      return real(from, to);
+    };
+    try {
+      await run(where, BOOK);
+    } finally {
+      fs.renameSync = real;
+    }
+    assert.strictEqual(refused, 2, 'the replace was refused twice');
+    assert.strictEqual(entries(where).length, 3, 'and the guide was written anyway');
+    assert.strictEqual(fs.existsSync(`${where.glossaryFile}.partial`), false);
+  });
+
   await test('a guide is one step\'s: found by the key and the step a cleanup is made from', () => {
     const where = scratch();
     assert.deepStrictEqual(glossary.guidePathsOfStep(where.dir, 'step-a'), glossary.glossaryPathsFor(where.request));
@@ -394,10 +416,10 @@ const entries = (where) => JSON.parse(fs.readFileSync(where.glossaryFile, 'utf8'
     esp.spots.find((o) => o.at === 'e-900').sense = esp.senses.length - 1;
     Object.assign(forms.find((f) => f.key === 'no'), { decision: 'as-printed', senses: [], spots: [] });
 
-    const out = review.saveGuideReview({ projectDir: where.dir, at: 'step-a', version: shown.version, forms });
+    const out = await review.saveGuideReview({ projectDir: where.dir, at: 'step-a', version: shown.version, forms });
     // "no" was already as printed with no meanings: leaving it to the narrator changes nothing.
     assert.deepStrictEqual(out, { forms: 2, spots: 1 });
-    assert.throws(() => review.saveGuideReview({ projectDir: where.dir, at: 'step-a', version: shown.version, forms }),
+    await assert.rejects(() => review.saveGuideReview({ projectDir: where.dir, at: 'step-a', version: shown.version, forms }),
       /changed while you were reviewing/, 'a review of a guide that changed underneath is refused');
 
     const asked = [];

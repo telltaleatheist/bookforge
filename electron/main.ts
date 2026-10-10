@@ -13043,7 +13043,7 @@ ipcMain.handle('narration:text-readiness', async (
   ipcMain.handle('pronunciation:save', async (_event, save: GuideReviewSave) => {
     try {
       const { saveGuideReview } = await import('./pronunciation-review.js');
-      return { success: true, ...saveGuideReview(save) };
+      return { success: true, ...(await saveGuideReview(save)) };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
