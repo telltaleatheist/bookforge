@@ -2267,9 +2267,11 @@ async function narrateFromFoundry(
     const landingStep = existing ?? queueEngine.appendStep(owner.id, {
       type: 'foundry-export-landing',
       // THE ACT, NOT THE FILE (Owen, 2026-09-22: *"book for narration is
-      // unnecessary. change it to 'narrate'"*). The card above the ladder already
-      // names the book; `config.fileName` still carries the file.
-      label: implied ? 'Narrate' : 'Exported book',
+      // unnecessary"*). It was "Narrate" until it sat in the ladder above the TTS
+      // steps it only makes the file for (Owen, 2026-10-10: *"what is narrate? i
+      // thought narrate WAS tts"* — *"rename it to make the epub"*). The card above
+      // the ladder already names the book; `config.fileName` still carries the file.
+      label: implied ? 'Make the EPUB' : 'Exported book',
       parentStepId: row.id,
       config: {
         bookDir, projectKey: key, fileName,
