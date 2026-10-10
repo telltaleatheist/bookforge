@@ -98,3 +98,16 @@ export const JOB_PRODUCT: Record<JobType, string> = {
   'foundry-export-landing': 'exported book',
   'narration-guide': 'Pronunciation guide',
 };
+
+/**
+ * Step types that finish in moments, and so draw NO PROGRESS BAR — only their
+ * state. Owen, 2026-10-10, of the export a narration reads: *"progress bars are
+ * intended for very long tasks. this is nearly instant"*. A bar that is empty and
+ * then full a second later says nothing a "now" does not.
+ */
+export const BRIEF_STEP_TYPES: ReadonlySet<JobType> = new Set<JobType>(['foundry-export-landing']);
+
+/** `BRIEF_STEP_TYPES`, asked by a surface whose own type list is wider than the engine's (the renderer's adds 'audiobook'). */
+export function isBriefStepType(type: string): boolean {
+  return (BRIEF_STEP_TYPES as ReadonlySet<string>).has(type);
+}

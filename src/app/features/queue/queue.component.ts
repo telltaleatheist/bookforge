@@ -162,6 +162,7 @@ import { CdkScrollable } from '@angular/cdk/scrolling';
 import { prepFraction, prepLabel } from '@shared/queue/bench';
 import type { BookPlan, FinishedRun, PlannedStep, StillReason } from '@shared/queue/bench';
 import type { JobType, ServerReach, ServerShadow, StepStatus } from '@shared/queue/engine-types';
+import { BRIEF_STEP_TYPES } from '@shared/queue/job-words';
 import { LOCAL_WORK_SET, LONGFORM_ALIGN_SET } from '@shared/queue/slot-sets';
 import {
   QUEUE_STATE_CONTROL, SERVER_STATE_CONTROL, serverHeldByMaster,
@@ -350,6 +351,8 @@ interface ChainRung {
   percent: number | null;
   /** Finished successfully — the part of the chain a Stop would keep. */
   done: boolean;
+  /** Over in moments: drawn with its state and no bar (`BRIEF_STEP_TYPES`). */
+  brief: boolean;
 }
 
 @Component({
@@ -1209,7 +1212,9 @@ interface ChainRung {
                     <div class="rung" [class.now]="rung.status === 'running'" [class.done]="rung.done">
                       <span class="rdot" aria-hidden="true"></span>
                       <span class="rname">{{ rung.label }}</span>
-                      @if (rung.status === 'running') {
+                      @if (rung.status === 'running' && rung.brief) {
+                        <span class="rval span">now</span>
+                      } @else if (rung.status === 'running') {
                         <span class="bar thin"><i [style.width.%]="rung.percent ?? 0"></i></span>
                         <span class="rval">
                           @if (rung.percent !== null) { {{ rung.percent | number:'1.0-0' }}% } @else { now }
@@ -4804,6 +4809,7 @@ export class QueueComponent {
       type: step.type,
       percent: step.progress.percent ?? null,
       done: step.status === 'done',
+      brief: BRIEF_STEP_TYPES.has(step.type),
     }));
   }
 

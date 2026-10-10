@@ -16,6 +16,7 @@
 import { Component, computed, inject, input, output } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { engineDisplayName } from '@shared/tts/engine-caps';
+import { isBriefStepType } from '@shared/queue/job-words';
 import { JobType, ParallelWorkerProgress, QueueJob } from '../../models/queue.types';
 import { stagesFor } from '../../models/job-stages';
 import { JobEtaService } from '../../services/job-eta.service';
@@ -49,15 +50,18 @@ import { StageBarsComponent } from '../stage-bars/stage-bars.component';
         }
         <span class="spacer"></span>
         <span class="step-pct">
-          @if (job().status === 'complete') { 100% }
+          @if (brief()) { }
+          @else if (job().status === 'complete') { 100% }
           @else if (job().status === 'processing') { {{ overallPct() | number:'1.0-0' }}% }
           @else { -- }
         </span>
       </button>
 
-      <div class="step-track">
-        <div class="step-fill" [style.width.%]="overallPct()"></div>
-      </div>
+      @if (!brief()) {
+        <div class="step-track">
+          <div class="step-fill" [style.width.%]="overallPct()"></div>
+        </div>
+      }
 
       @if (expanded()) {
         <div class="step-body">
@@ -351,6 +355,9 @@ export class JobStepComponent {
   readonly toggle = output<string>();
 
   readonly stages = computed(() => stagesFor(this.job()));
+
+  /** Over in moments: its state icon says enough, with no bar or percentage (`BRIEF_STEP_TYPES`). */
+  readonly brief = computed(() => isBriefStepType(this.job().type));
 
   /**
    * Live detail for the running stage — only while the job is actually running. A
