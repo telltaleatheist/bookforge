@@ -364,6 +364,18 @@ const entries = (where) => JSON.parse(fs.readFileSync(where.glossaryFile, 'utf8'
     assert.strictEqual(esp.senses.length, 2, 'the meanings are the guide\'s still');
   });
 
+  await test('a form the text no longer lists: the model\'s decision is dropped, a person\'s is kept', async () => {
+    // The Pursuit of Power, 2026-10-10: "m" and "c" stopped being forms and must not linger in the review.
+    const where = scratch();
+    await run(where, BOOK);
+    const stored = JSON.parse(fs.readFileSync(where.glossaryFile, 'utf8'));
+    stored.entries.find((e) => e.key === 'esp').by = 'person';
+    fs.writeFileSync(where.glossaryFile, JSON.stringify(stored));
+    await run(where, [WOLF]);
+    assert.deepStrictEqual(entries(where).map((e) => e.key).sort(), ['Wolf IV', 'esp'],
+      '"no" (the model\'s) is gone; "esp" (a person\'s) is kept, unread');
+  });
+
   await test('a guide file held for a moment by another process is waited out, not failed (EPERM on a share)', async () => {
     // Pursuit of Power, 2026-10-10: the replace of its guide was refused EPERM once and the run died.
     const where = scratch();

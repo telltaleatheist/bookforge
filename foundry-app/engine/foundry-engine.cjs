@@ -31173,7 +31173,7 @@ var init_version = __esm({
     init_engine_import_meta_url();
     init_package();
     VERSION = package_default.version;
-    GIT_COMMIT = "src 6e7901c16aca".length > 0 ? "src 6e7901c16aca" : null;
+    GIT_COMMIT = "src 383327340f94".length > 0 ? "src 383327340f94" : null;
   }
 });
 
@@ -73889,6 +73889,7 @@ function formOf(tokens, i, heading2) {
   if (new RegExp("^\\p{L}\\.$", "u").test(bare)) return null;
   if (new RegExp("\\p{Script=Han}|\\p{Script=Cyrillic}|\\p{Script=Greek}", "u").test(bare)) return null;
   const unstopped = bare.replace(/\.$/, "");
+  if (new RegExp("^\\p{L}$", "u").test(unstopped)) return null;
   if (/^[IVXLCDM]+$/.test(unstopped) && romanValue(unstopped) !== null) {
     const before = i > 0 ? core2(tokens[i - 1]).replace(/['’]s$/, "") : "";
     const named = new RegExp("^\\p{Lu}[\\p{L}'\u2019-]+$", "u").test(before) && romanValue(before.toUpperCase()) === null && /^[IVX]+$/.test(unstopped) && !DETERMINERS.has(before.toLowerCase());

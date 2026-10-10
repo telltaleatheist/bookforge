@@ -118,7 +118,7 @@ const KIND_WORD: Record<GuideReviewForm['kind'], string> = {
                       <input class="reading" type="text" [ngModel]="d.readings[i]" (ngModelChange)="setReading(d, i, $event)"
                         placeholder="as printed" [attr.aria-label]="'Reading for ' + sense.meaning" />
                       <span class="spots-in">{{ spotsIn(d, i) }} spot(s)</span>
-                      @if (sense.problem) { <div class="problem">Not given to the book: {{ sense.problem }}</div> }
+                      @if (sense.problem) { <div class="problem">Refused, so its spots go to the cleaner: {{ sense.problem }}</div> }
                     </div>
                   }
                 </div>
@@ -130,7 +130,7 @@ const KIND_WORD: Record<GuideReviewForm['kind'], string> = {
                 @if (d.open) {
                   <ol class="spots">
                     @for (spot of orderedSpots(d); track spot.index) {
-                      <li class="spot" [class.undecided]="d.choices[spot.index] === 'cleaner'">
+                      <li class="spot" [class.undecided]="goesToCleaner(d, d.choices[spot.index]!)">
                         <div class="sentence">
                           @if (spot.sentence === null) {
                             <em>(this spot is no longer printed where the guide saw it)</em>
@@ -336,7 +336,14 @@ export class PronunciationReviewComponent {
    */
   undecidedIn(d: FormDraft): number {
     if (d.leftWhole || d.form.decision !== 'reading') return 0;
-    return d.choices.filter((c) => c === 'cleaner').length;
+    return d.choices.filter((c) => this.goesToCleaner(d, c)).length;
+  }
+
+  /** Undecided, or placed in a meaning whose reading was refused — either way the cleaner reads it in its sentence. */
+  goesToCleaner(d: FormDraft, c: SpotChoice): boolean {
+    if (c === 'cleaner') return true;
+    // A refused reading the person has since edited is theirs to judge: only the stored one is known refused.
+    return typeof c === 'number' && d.form.senses[c]?.problem !== undefined && d.readings[c] === d.form.senses[c]!.reading;
   }
 
   spotsIn(d: FormDraft, sense: number): number {
@@ -371,10 +378,18 @@ export class PronunciationReviewComponent {
       .map((s, i) => ({ s, i, said: d.readings[i] === '' ? `"${d.form.key}" (as printed)` : `"${d.readings[i]}"` }))
       .filter(({ s }) => s.meaning !== LEFT_TO_NARRATOR_MEANING);
     const alike = (said: string): boolean => meanings.filter((m) => m.said === said).length > 1;
+    /*
+     * A REFUSED MEANING IS NOT SAID (Owen, 2026-10-10, of "AG" → "Aktiengesellschaft"):
+     * its reading is never given to the book, and a spot placed in it goes to the
+     * cleaner like an undecided one. So it is labelled by what happens, not by the
+     * reading nobody will hear.
+     */
     const options: DesktopSelectOption[] = meanings.map(({ s, i, said }) => ({
       value: i,
-      label: `Say ${said}${alike(said) ? ` — ${s.meaning}` : ''}`,
-      title: s.meaning,
+      label: s.problem !== undefined
+        ? `Undecided — "${s.reading}" was refused, so the cleaner guesses`
+        : `Say ${said}${alike(said) ? ` — ${s.meaning}` : ''}`,
+      title: s.problem !== undefined ? `${s.meaning}: ${s.problem}` : s.meaning,
     }));
     const printedAlready = meanings.some((m) => d.readings[m.i] === '');
     if (!printedAlready || d.choices.includes('narrator')) {
@@ -394,7 +409,8 @@ export class PronunciationReviewComponent {
         ? { index, sentence, before: sentence, mark: '', after: '' }
         : { index, sentence, before: sentence.slice(0, at), mark: spot.printed, after: sentence.slice(at + spot.printed.length) };
     });
-    return [...rows.filter((r) => d.choices[r.index] === 'cleaner'), ...rows.filter((r) => d.choices[r.index] !== 'cleaner')];
+    return [...rows.filter((r) => this.goesToCleaner(d, d.choices[r.index]!)),
+      ...rows.filter((r) => !this.goesToCleaner(d, d.choices[r.index]!))];
   }
 
   private draftOf(form: GuideReviewForm): FormDraft {
@@ -409,7 +425,7 @@ export class PronunciationReviewComponent {
       leftWhole,
       readings: form.senses.map((s) => s.reading),
       choices,
-      open: choices.some((c) => c === 'cleaner'),
+      open: choices.some((c) => c === 'cleaner' || (typeof c === 'number' && form.senses[c]?.problem !== undefined)),
     };
   }
 

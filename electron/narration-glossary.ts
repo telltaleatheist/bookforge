@@ -945,8 +945,16 @@ export async function ensureNarrationGlossary(opts: EnsureGlossaryOptions): Prom
   }
   const had = new Map(glossary.entries.map((e) => [formKey(e), e] as const));
   const listedKeys = new Set(forms.map(formKey));
-  // A decision for a form the book no longer prints is kept in the file, unread.
-  const orphans = glossary.entries.filter((e) => !listedKeys.has(formKey(e)));
+  /*
+   * A FORM THE TEXT NO LONGER LISTS: a person's decision about it is kept in the file,
+   * unread, in case it comes back. The model's is dropped — it answered a question
+   * nobody is asking now, and kept it would sit in the review as a form with nothing
+   * behind it (The Pursuit of Power, 2026-10-10: "m" and "c", once the collector
+   * stopped taking a lone letter for a numeral).
+   */
+  const orphans = glossary.entries.filter((e) => !listedKeys.has(formKey(e)) && e.by === 'person');
+  const dropped = glossary.entries.filter((e) => !listedKeys.has(formKey(e)) && e.by !== 'person').length;
+  if (dropped > 0) report(`glossary: ${dropped} decided form(s) the text no longer lists are dropped`);
 
   const spotKey = (o: { at: string; printed: string; nth: number }): string => `${o.at}\u0000${o.printed}\u0000${o.nth}`;
   // ── What needs asking: a form the guide has never seen ───────────────────
