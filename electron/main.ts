@@ -2909,9 +2909,10 @@ function queuePronunciationGuide(projectDir: string, at: string, startOver: bool
       + 'from. Open the guide again from one of the book\'s steps.');
   }
   const config: NarrationGuideStepConfig = { projectDir, at, fromZero: startOver, bookTitle: title };
+  // No `foundry` lineage: that would draw it as a row under step `at`, which says a version
+  // of the book was made from there (Owen, 2026-10-10). The guide window watches the queue.
   queueEngine.enqueue({
     title,
-    foundry: { projectDir, parentStepId: at },
     steps: [{
       type: 'narration-guide',
       label: startOver ? 'Pronunciation guide, starting over' : 'Pronunciation guide',

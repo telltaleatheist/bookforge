@@ -25,6 +25,7 @@ import {
   LEFT_TO_NARRATOR_MEANING,
   type GuideReview, type GuideReviewForm, type GuideReviewFormEdit, type GuideReviewSense,
 } from '@shared/pronunciation-guide';
+import type { QueueSnapshot } from '@shared/queue/engine-types';
 
 /** A spot's choice in the review: a meaning by index, left to the narrator, or left to the cleaner. */
 type SpotChoice = number | 'narrator' | 'cleaner';
@@ -63,9 +64,9 @@ const KIND_WORD: Record<GuideReviewForm['kind'], string> = {
             @if (confirmingStartOver()) {
               <span class="confirm">Drop every decision, yours included, and decide the whole book again?</span>
               <desktop-button variant="ghost" size="sm" (click)="confirmingStartOver.set(false)">Cancel</desktop-button>
-              <desktop-button variant="danger" size="sm" (click)="build(true)" [disabled]="busy()">Start over</desktop-button>
+              <desktop-button variant="danger" size="sm" (click)="build(true)" [disabled]="busy() || building() !== null">Start over</desktop-button>
             } @else {
-              <desktop-button variant="ghost" size="sm" (click)="confirmingStartOver.set(true)" [disabled]="busy()">Start over…</desktop-button>
+              <desktop-button variant="ghost" size="sm" (click)="confirmingStartOver.set(true)" [disabled]="busy() || building() !== null">Start over…</desktop-button>
               <desktop-button variant="primary" size="sm" (click)="save()" [disabled]="busy() || !dirty()">Save</desktop-button>
             }
           }
@@ -73,7 +74,7 @@ const KIND_WORD: Record<GuideReviewForm['kind'], string> = {
       </header>
 
       @if (error()) { <div class="error">{{ error() }}</div> }
-      @if (queued()) { <div class="queued">{{ queued() }}</div> }
+      @if (building(); as b) { <div class="queued">{{ b }}</div> }
       @if (stale()) {
         <div class="queued">The guide changed while you had edits open.
           <button class="link" type="button" (click)="load()">Reload it</button> to see it (your unsaved edits are dropped).</div>
@@ -152,7 +153,7 @@ const KIND_WORD: Record<GuideReviewForm['kind'], string> = {
           <p>This book has no pronunciation guide yet. Cleaning the book builds one first, or build it now:
             it decides how the narrator says the forms the book prints — numerals after a name, capitals,
             abbreviations — once for the whole book.</p>
-          <desktop-button variant="primary" size="sm" (click)="build(false)" [disabled]="busy()">Build the guide</desktop-button>
+          <desktop-button variant="primary" size="sm" (click)="build(false)" [disabled]="busy() || building() !== null">Build the guide</desktop-button>
         </div>
       }
     </div>
@@ -210,8 +211,11 @@ export class PronunciationReviewComponent {
   readonly busy = signal(false);
   readonly error = signal<string | null>(null);
   readonly saved = signal<string | null>(null);
-  /** What was queued, said until the guide it makes arrives. */
-  readonly queued = signal<string | null>(null);
+  /**
+   * THIS BOOK'S GUIDE RUN, said in a line while it is in BookForge's queue — the
+   * only place it shows, since it draws no row on Foundry's tree (Owen, 2026-10-10).
+   */
+  readonly building = signal<string | null>(null);
   /** The guide changed on disk while there were edits here that a reload would drop. */
   readonly stale = signal(false);
   readonly confirmingStartOver = signal(false);
@@ -245,7 +249,31 @@ export class PronunciationReviewComponent {
       if (this.dirty()) { this.stale.set(true); return; }
       void this.load();
     }));
+    this.destroyRef.onDestroy(this.electron.onQueueChanged((snapshot) => this.building.set(this.guideRunIn(snapshot))));
+    void this.electron.listQueue().then((res) => { if (res.success && res.data) this.building.set(this.guideRunIn(res.data)); });
     void this.load();
+  }
+
+  /** A sentence about this book's guide run in the queue, or null when there is none waiting or running. */
+  private guideRunIn(snapshot: QueueSnapshot): string | null {
+    for (const job of snapshot.jobs) {
+      for (const step of job.steps) {
+        if (step.type !== 'narration-guide' || step.config['projectDir'] !== this.projectDir) continue;
+        const over = step.config['fromZero'] === true ? ', starting over' : '';
+        switch (step.status) {
+          case 'running':
+            return `Building the guide${over} — ${step.progress.message ?? 'starting'}`;
+          case 'queued':
+          case 'waiting':
+            return `The guide${over} is queued in BookForge. This window shows it when it finishes.`;
+          case 'held':
+            return `The guide${over} is in BookForge's queue, not started — press Start there.`;
+          default:
+            continue;
+        }
+      }
+    }
+    return null;
   }
 
   /** Queue a guide: the first one, or one that starts over. */
@@ -256,8 +284,6 @@ export class PronunciationReviewComponent {
       const res = await this.electron.buildPronunciationGuide(this.projectDir, this.at, startOver);
       if (!res.success) { this.error.set(res.error ?? 'The guide could not be queued.'); return; }
       this.confirmingStartOver.set(false);
-      this.queued.set(`${startOver ? 'A new guide, starting over, is' : 'The guide is'} in BookForge's queue. `
-        + 'This window shows it when it finishes.');
     } finally {
       this.busy.set(false);
     }
@@ -274,8 +300,6 @@ export class PronunciationReviewComponent {
       const review = res.review ?? null;
       this.review.set(review);
       const drafts = review === null ? [] : this.order(review.forms.map((form) => this.draftOf(form)));
-      // A guide has arrived since one was queued: the note has said what it had to.
-      if (review !== null && this.review()?.version !== review.version) this.queued.set(null);
       this.drafts.set(drafts);
       this.baseline.set(this.snapshot(drafts));
     } finally {

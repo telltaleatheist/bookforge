@@ -11,6 +11,7 @@ import type {
 } from '@shared/processing/pass-types';
 import type { BookResetSummary } from '@shared/processing/reset-book';
 import type { NarrateTarget } from '@shared/queue/narrate-target';
+import type { QueueSnapshot } from '@shared/queue/engine-types';
 import type {
   VlmConvertRequest,
   VlmConvertResult,
@@ -2874,6 +2875,18 @@ export class ElectronService {
   async buildPronunciationGuide(projectDir: string, at: string, startOver: boolean): Promise<{ success: boolean; error?: string }> {
     if (this.isElectron) return (window as any).electron.pronunciation.build(projectDir, at, startOver);
     return { success: false, error: 'Not running in Electron' };
+  }
+
+  /** The whole queue, as main holds it — for a window that watches one kind of step. */
+  async listQueue(): Promise<{ success: boolean; data?: QueueSnapshot; error?: string }> {
+    if (this.isElectron) return (window as any).electron.queue.list();
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /** The whole queue, every time it changes. */
+  onQueueChanged(callback: (snapshot: QueueSnapshot) => void): () => void {
+    if (!this.isElectron) return () => {};
+    return (window as any).electron.queue.onChanged(callback);
   }
 
   /** Delete a project's content-analysis report (report + in-progress checkpoint). */

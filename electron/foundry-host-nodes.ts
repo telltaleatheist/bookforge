@@ -65,7 +65,7 @@ export interface HostNodeProgress {
   eta: string;
 }
 
-/** Which act a row is, which is what picks its icon on the tree. `guide`: foundry c6e8824. */
+/** Which act a row or tile is, which picks its icon. `guide` (foundry c6e8824) is a tile only, never a row. */
 export type HostOperationKind = 'narrate' | 'enhance' | 'assemble' | 'guide';
 
 /**
@@ -152,8 +152,9 @@ export const NODE_KIND_OF: Partial<Readonly<Record<JobType, HostOperationKind>>>
   'tts-conversion': 'narrate',
   'rvc-enhancement': 'enhance',
   'reassembly': 'assemble',
-  // The book's pronunciation guide (Owen, 2026-10-03): drawn with our acts, chained onto by none.
-  'narration-guide': 'guide',
+  // NOT 'narration-guide'. A row under a step says it was made from that step, and a
+  // guide makes no version of the book (Owen, 2026-10-10: "steps apply to the one above
+  // them"). Its run shows in the guide's own window and in BookForge's queue.
 };
 
 /**
@@ -211,9 +212,6 @@ export function nodeTitle(step: QueueStep, kind: HostOperationKind): string {
     const model = textConfig(step, 'rvcModel') ?? textConfig(step, 'modelName');
     return model === null ? 'Enhance the narration' : `Enhance with ${model}`;
   }
-  if (kind === 'guide') {
-    return step.config['fromZero'] === true ? 'Pronunciation guide, starting over' : 'Pronunciation guide';
-  }
   return 'Assemble the audiobook';
 }
 
@@ -263,8 +261,6 @@ export function nodeDetail(
     case 'running':
       return step.progress.message ?? step.progress.detail ?? 'running';
     case 'done':
-      // A guide writes no file of its own to name; its last line says what it decided.
-      if (step.type === 'narration-guide') return step.progress.message ?? 'finished';
       return step.outputPath === undefined ? 'finished' : `finished · ${fileName(step.outputPath)}`;
     case 'failed':
       return step.error ?? 'failed, and the run recorded no reason.';

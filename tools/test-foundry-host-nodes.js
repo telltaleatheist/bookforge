@@ -134,6 +134,15 @@ test('work that is not audio work is never mirrored back onto the tree', () => {
   assert.deepStrictEqual(sets.get(PROJECT), []);
 });
 
+test('a pronunciation guide draws no row, even with a lineage, because it makes no version of the book', () => {
+  // Owen, 2026-10-10: "steps apply to the one above them" — a guide under a step read as one.
+  const sets = nodes.hostNodeSets(snap([job([
+    step({ id: 's1', type: 'narration-guide', label: 'Pronunciation guide', status: 'running' }),
+  ])]));
+  assert.deepStrictEqual(sets.get(PROJECT), []);
+  assert.strictEqual(nodes.NODE_KIND_OF['narration-guide'], undefined);
+});
+
 test('a cancelled step draws nothing; a failed one stays, with its reason', () => {
   const sets = nodes.hostNodeSets(snap([job([
     step({ id: 's1', status: 'cancelled' }),
