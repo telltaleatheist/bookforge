@@ -53,6 +53,7 @@
  * sweeps or repairs on startup: a download is a thing a person chooses.
  */
 import type { ComponentStatus } from './components/component-types';
+import type { ToolsEnvIntegrity } from './tools-env-bootstrap';
 
 /** How healthy one necessary thing is. */
 export type DoctorState = 'ok' | 'missing' | 'broken';
@@ -104,24 +105,35 @@ type ToolStatus = { configured: boolean; detected: boolean; path: string };
  * directory that is not there is BROKEN — somebody configured something and it
  * has since moved — and the fix is different from never having had one.
  */
-function toolsEnvCheck(status: ToolStatus | undefined, hasManaged: boolean): DoctorCheck {
+function toolsEnvCheck(
+  status: ToolStatus | undefined,
+  integrity: ToolsEnvIntegrity | null,
+  hasManaged: boolean,
+): DoctorCheck {
   const found = status?.detected === true;
   const stated = status?.configured === true;
+  // DAMAGED is the third case: the interpreter is there but the env cannot do
+  // its job (it cannot import PyMuPDF, say). That reads broken, and a managed
+  // env offers the re-download — which is how a damaged one is repaired.
+  const damaged = found && integrity !== null && !integrity.ok;
   return {
     id: 'tools-env',
     name: 'Tools Python environment',
-    description: 'Runs audiobook assembly, session resume, whisper and the metadata tools.',
-    state: found ? 'ok' : stated ? 'broken' : 'missing',
-    detail: found
-      ? (stated ? 'Using the environment you pointed at.' : 'Installed and working.')
-      : stated
-        ? 'You pointed BookForge at an environment that is no longer there.'
-        : 'Not installed on this computer.',
+    description: 'Renders PDF pages for the page reader, and runs audiobook assembly, session resume and the metadata tools.',
+    state: damaged ? 'broken' : found ? 'ok' : stated ? 'broken' : 'missing',
+    detail: damaged
+      ? `Damaged: ${integrity!.detail}`
+      : found
+        ? (stated ? 'Using the environment you pointed at.' : 'Installed and working.')
+        : stated
+          ? 'You pointed BookForge at an environment that is no longer there.'
+          : 'Not installed on this computer.',
     path: found ? (status?.path ?? null) : null,
     // Only offer a download where there IS one to download. A dev checkout runs
     // on its own interpreter and has nothing published to fetch; offering the
-    // button there would fail in a way that looks like a broken download.
-    fix: found ? 'none' : hasManaged ? 'reinstall-env' : 'none',
+    // button there would fail in a way that looks like a broken download. An env
+    // somebody POINTED at is theirs: re-downloading ours would not repair it.
+    fix: (found && !damaged) ? 'none' : (hasManaged && !(damaged && stated)) ? 'reinstall-env' : 'none',
     required: true,
   };
 }
@@ -193,6 +205,8 @@ function componentCheck(
 
 export interface DoctorInputs {
   readonly tools: Record<string, ToolStatus> | null;
+  /** The found tools env's import check, or null when none was found to check. */
+  readonly toolsEnvIntegrity: ToolsEnvIntegrity | null;
   readonly components: readonly ComponentStatus[];
   readonly hasManagedEnv: boolean;
   /** Component ids `componentManager.install()` can fetch on this platform. */
@@ -211,7 +225,7 @@ export function composeReport(inputs: DoctorInputs): DoctorReport {
   const component = (id: string): ComponentStatus | undefined =>
     inputs.components.find((row) => row.component?.id === id);
 
-  const env = toolsEnvCheck(tool('toolsEnv'), inputs.hasManagedEnv);
+  const env = toolsEnvCheck(tool('toolsEnv'), inputs.toolsEnvIntegrity, inputs.hasManagedEnv);
   const checks: DoctorCheck[] = [
     env,
     ffmpegCheck(tool('ffmpeg'), env.state === 'ok', inputs.hasManagedEnv),

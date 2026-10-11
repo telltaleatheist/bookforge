@@ -9565,12 +9565,17 @@ function setupIpcHandlers(): void {
     try {
       const { composeReport } = await import('./doctor.js');
       const { getToolStatus } = await import('./tool-paths.js');
-      const { hasManagedEnv } = await import('./tools-env-bootstrap.js');
+      const { hasManagedEnv, toolsEnvIntegrity } = await import('./tools-env-bootstrap.js');
       const components = await componentManager.listStatus();
+      const tools = getToolStatus() as Record<string, { configured: boolean; detected: boolean; path: string }>;
+      const envStatus = tools['toolsEnv'];
       return {
         success: true,
         data: composeReport({
-          tools: getToolStatus() as Record<string, { configured: boolean; detected: boolean; path: string }>,
+          tools,
+          // An env that is there is also IMPORTED from, so a damaged one reads
+          // broken and offers the re-download rather than "Installed and working".
+          toolsEnvIntegrity: envStatus?.detected ? toolsEnvIntegrity(envStatus.path) : null,
           components,
           hasManagedEnv: hasManagedEnv(),
           // TWO DIFFERENT LISTS, and they were briefly the same expression here

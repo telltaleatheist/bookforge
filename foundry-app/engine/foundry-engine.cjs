@@ -31173,7 +31173,7 @@ var init_version = __esm({
     init_engine_import_meta_url();
     init_package();
     VERSION = package_default.version;
-    GIT_COMMIT = "src 383327340f94".length > 0 ? "src 383327340f94" : null;
+    GIT_COMMIT = "src cf1667fbaeeb".length > 0 ? "src cf1667fbaeeb" : null;
   }
 });
 
@@ -94780,9 +94780,8 @@ function defaultLocalPythonCandidates() {
     path6.join(home, "anaconda3")
   ];
   const conda = roots.flatMap((root) => process.platform === "win32" ? [path6.join(root, "envs", "vlmtest", "python.exe")] : [path6.join(root, "envs", "vlmtest", "bin", "python")]);
-  const bookforgeRuntime = process.platform === "win32" ? path6.join(process.env["APPDATA"] ?? path6.join(home, "AppData", "Roaming"), "bookforge", "runtime", "e2a-env", "python.exe") : process.platform === "darwin" ? path6.join(home, "Library", "Application Support", "bookforge", "runtime", "e2a-env", "bin", "python") : path6.join(home, ".config", "bookforge", "runtime", "e2a-env", "bin", "python");
-  const e2aCheckout = process.platform === "win32" ? path6.join(home, "Projects", "ebook2audiobook", "python_env", "python.exe") : path6.join(home, "Projects", "ebook2audiobook", "python_env", "bin", "python");
-  return [...conda, bookforgeRuntime, e2aCheckout];
+  const bookforgeRuntime = process.platform === "win32" ? path6.join(process.env["APPDATA"] ?? path6.join(home, "AppData", "Roaming"), "bookforge", "runtime", "tools-env", "python.exe") : process.platform === "darwin" ? path6.join(home, "Library", "Application Support", "bookforge", "runtime", "tools-env", "bin", "python") : path6.join(home, ".config", "bookforge", "runtime", "tools-env", "bin", "python");
+  return [...conda, bookforgeRuntime];
 }
 async function probeLocalPython(module2, settings, run = spawnRunner) {
   const explicit = settings.backend?.python ?? process.env["FOUNDRY_VLM_PYTHON"];

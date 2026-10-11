@@ -308,19 +308,50 @@ function sweepStale(baseDir: string): void {
 }
 
 /**
- * Fast integrity check: the relocated interpreter must actually start. Catches
+ * The modules this env exists to provide, imported by the integrity check.
+ * `fitz` is PyMuPDF, which turns every PDF page into a picture for the page
+ * reader (BookForge's Convert to EPUB and the Foundry engine both); `numpy` is
+ * under most of the rest. Both carry compiled libraries, so a truncated extract
+ * or a quarantined DLL fails here even when the interpreter itself starts.
+ */
+const ENV_ESSENTIAL_MODULES = ['fitz', 'numpy'] as const;
+
+export interface ToolsEnvIntegrity {
+  ok: boolean;
+  /** What was observed, in a sentence: shown by the doctor and logged on repair. */
+  detail: string;
+}
+
+/**
+ * Is this env whole? The interpreter must start AND import the modules the env
+ * exists for. Starting alone was the old test, and it called an env healthy
+ * that could not render one PDF page: the marker said ready, the doctor said
+ * "Installed and working", and the repair never ran because there was nothing
+ * it could see to repair. About a second.
+ */
+export function toolsEnvIntegrity(envDir: string): ToolsEnvIntegrity {
+  const python = relocatablePythonPath(envDir);
+  if (!fs.existsSync(python)) return { ok: false, detail: `${python} does not exist.` };
+  const res = spawnSync(python, ['-c', `import ${ENV_ESSENTIAL_MODULES.join(', ')}`], {
+    timeout: 60_000, windowsHide: true, cwd: envDir, encoding: 'utf-8',
+  });
+  if (res.error) return { ok: false, detail: `${python} would not start: ${res.error.message}` };
+  if (res.status !== 0) {
+    const said = (res.stderr || '').trim().split(/\r?\n/).pop() || `exit code ${res.status}`;
+    return { ok: false, detail: `${python} cannot import ${ENV_ESSENTIAL_MODULES.join(', ')}: ${said}` };
+  }
+  return { ok: true, detail: 'Installed and working.' };
+}
+
+/**
+ * Integrity before an env may go live, and on every packaged launch: catches
  * the common Windows corruption (missing python3xx.dll / VCRUNTIME, a truncated
- * extract) that the size+mtime marker can't see. Cheap (~a few hundred ms).
+ * extract, a quarantined module DLL) that the version+sha marker can't see.
  */
 function smokeTestEnv(envDir: string): boolean {
-  const python = relocatablePythonPath(envDir);
-  if (!fs.existsSync(python)) return false;
-  try {
-    const res = spawnSync(python, ['--version'], { timeout: 30000, windowsHide: true, cwd: envDir });
-    return res.status === 0;
-  } catch {
-    return false;
-  }
+  const integrity = toolsEnvIntegrity(envDir);
+  if (!integrity.ok) console.warn(`[TOOLS-ENV] ${integrity.detail}`);
+  return integrity.ok;
 }
 
 /**
