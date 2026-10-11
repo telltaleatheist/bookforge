@@ -1719,6 +1719,22 @@ const foundryJobSpec = (kind, title) => ({
   }],
 });
 
+test('a pronunciation guide stages into Pending, held, like any model reading a book', async () => {
+  // Owen, 2026-10-10: "when it adds the pronunciation guide to the queue, it should go to pending".
+  const guide = fakeModule('narration-guide', { produces: 'none', machines: () => 'any' });
+  await fresh('guide-stages', [guide]);
+  const job = engine.enqueue({
+    title: 'The Book',
+    steps: [{ type: 'narration-guide', label: 'Pronunciation guide', config: {}, sourceRef: { kind: 'none' } }],
+  });
+  await settle();
+  assert.strictEqual(job.pending, true, 'a guide asks a card: it stages');
+  assert.strictEqual(stepsOf(job.id)[0].status, 'held');
+  engine.start();
+  await settle();
+  assert.strictEqual(guide.runs.length, 0, 'Start must not run a guide still in Pending');
+});
+
 test('a hosted Foundry TEXT ACT stages into Pending, held, with a machine still to choose', async () => {
   const foundry = fakeModule('foundry-job', { produces: 'none', machines: foundryMachines });
   await fresh('foundry-stages', [foundry]);

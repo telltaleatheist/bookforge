@@ -227,6 +227,10 @@ export const PASS_JOB_TYPES: ReadonlySet<JobType> = new Set<JobType>([
 export const STAGED_JOB_TYPES: ReadonlySet<JobType> = new Set<JobType>([
   'tts-conversion',
   'foundry-job',
+  // A pronunciation guide is a model reading a whole book too — the same WHICH CARD question
+  // (Owen, 2026-10-10: "when it adds the pronunciation guide to the queue, it should go to
+  // pending"). Chained onto a greyed step it joins that run's decision, as above.
+  'narration-guide',
 ]);
 
 /**
