@@ -200,6 +200,30 @@ const { check, summary } = makeChecker();
     assert.strictEqual(lease.asSessionWait(err, 'mac', 'clean'), err);
   });
 
+  // 2026-10-16: a cleanup and a pronunciation guide were taken out of BookForge's
+  // queue as "removed by an operator" because a game held 4 GiB of the card and
+  // the server refused the session's KV cache. Refused is the server saying no.
+  const refusedSession = (code, message) => new sdk.CrucibleSessionClosed(409, message,
+    { session_id: 'ses-7', reason: 'refused', error: { code, message } },
+    { sessionId: 'ses-7', reason: 'refused' });
+
+  await check('a session refused for no room on the card WAITS with the server\'s sentence', () => {
+    const said = 'cannot give qwen3.5-9b a KV cache at 16384 tokens: … This card affords 12_904 tokens';
+    const wait = lease.asSessionWait(refusedSession('insufficient_kv_cache', said), 'pc', 'clean');
+    assert.ok(wait instanceof lease.CrucibleSessionWait, `got ${wait}`);
+    assert.strictEqual(wait.removedLine, undefined, 'a refusal is never an operator removal');
+    assert.ok(wait.busyLine.includes(said), wait.busyLine);
+    assert.match(wait.busyLine, /no room on its card/);
+  });
+
+  await check('any other refused session is that refusal, by its own code', () => {
+    const got = lease.asSessionWait(refusedSession('model_not_installed', 'qwen3.5-9b is not installed'), 'pc', 'clean');
+    assert.ok(!(got instanceof lease.CrucibleSessionWait), 'not a wait and not a removal');
+    assert.ok(got instanceof sdk.CrucibleRefused, `got ${got}`);
+    assert.strictEqual(got.code, 'model_not_installed');
+    assert.strictEqual(got.serverMessage, 'qwen3.5-9b is not installed');
+  });
+
   await check('another client\'s session_open is a wait carrying the holder\'s own line', async () => {
     const fake = await startFakeCrucible(async (req, res) => {
       const refusal = sessionHeldRefusal({

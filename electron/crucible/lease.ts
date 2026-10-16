@@ -77,9 +77,11 @@ import {
 } from '@crucible/client';
 import {
   CRUCIBLE_BATCH_QUEUE,
+  crucibleNoRoomLine,
   crucibleQueuedLine,
   crucibleRemovalDisposition,
   crucibleRemovedLine,
+  crucibleSessionRefusalIsWeather,
 } from '../../shared/crucible/server-queue';
 import { CRUCIBLE_CLIENT_NAME, crucibleClientFor } from './servers';
 
@@ -422,6 +424,14 @@ export class CrucibleSessionWait extends Error {
   }
 }
 
+/** The named refusal a `refused` session carries in its frame's `error`. */
+function refusalOf(err: CrucibleSessionClosed): { code: string | null; message: string } {
+  const error = (err.details as { error?: { code?: unknown; message?: unknown } } | undefined)?.error;
+  const code = typeof error?.code === 'string' ? error.code : null;
+  const message = typeof error?.message === 'string' && error.message.trim() !== '' ? error.message : err.serverMessage;
+  return { code, message };
+}
+
 export function asSessionWait(err: unknown, server: string, act: string): unknown {
   if (err instanceof CrucibleSessionHeld) {
     return new CrucibleSessionWait(
@@ -434,6 +444,17 @@ export function asSessionWait(err: unknown, server: string, act: string): unknow
       `crucible "${server}" would not open a session for ${act}: ${err.busyLine}`,
       { busyLine: err.busyLine },
     );
+  }
+  // REFUSED at the front of the line is the server saying no, not a person
+  // removing it (crucibleSessionRefusalIsWeather): no room on the card waits;
+  // any other refusal travels by its OWN code, as the misconfiguration it names.
+  if (err instanceof CrucibleSessionClosed && err.reason === 'refused') {
+    const refusal = refusalOf(err);
+    if (crucibleSessionRefusalIsWeather(refusal.code)) {
+      const line = crucibleNoRoomLine(server, refusal.message);
+      return new CrucibleSessionWait(line, { busyLine: line });
+    }
+    return new CrucibleRefused(err.status, refusal.code ?? err.code, refusal.message, err.details);
   }
   if (err instanceof CrucibleSessionClosed && err.reason !== 'load_failed') {
     const line = crucibleRemovedLine(server, err.reason, err.message);

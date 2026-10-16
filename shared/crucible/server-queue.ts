@@ -117,6 +117,32 @@ export function crucibleRemovalDisposition(reason: string): CrucibleRemovalDispo
   return 'operator';
 }
 
+/**
+ * A QUEUE SESSION THE SERVER REFUSED WHEN IT REACHED THE FRONT (`closed` /
+ * `removed {reason: "refused"}`, crucible jobs/line.py `fail`). Nobody removed
+ * it: the server tried to open it and said no, with a named refusal in the
+ * frame's `error`. So it is never an operator's removal, which is what it read
+ * as until 2026-10-16 — a cleanup and a pronunciation guide were taken out of
+ * BookForge's queue as "removed by an operator" because a game held 4 GiB of
+ * the card.
+ *
+ *  - `insufficient_kv_cache`: WEATHER. The forecast is made from the card's
+ *    FREE memory, which the desktop shares (crucible vram.py). The row waits
+ *    with the server's sentence and asks again.
+ *  - anything else: the refusal as it is, by its own code — something a person
+ *    repairs (a model not installed, a context the model does not take).
+ */
+const CARD_ROOM_REFUSALS: ReadonlySet<string> = new Set(['insufficient_kv_cache']);
+
+export function crucibleSessionRefusalIsWeather(code: string | null): boolean {
+  return code !== null && CARD_ROOM_REFUSALS.has(code);
+}
+
+/** "crucible "X" has no room on its card for this yet: … — waiting, then asking again". */
+export function crucibleNoRoomLine(server: string, message: string): string {
+  return `crucible "${server}" has no room on its card for this yet: ${message.trim()} — waiting, then asking again`;
+}
+
 /** The sentence a row shows after a `removed`, built from the server's own message. */
 export function crucibleRemovedLine(server: string, reason: string, message: string): string {
   const said = message.trim() === '' ? '' : `: ${message.trim()}`;
