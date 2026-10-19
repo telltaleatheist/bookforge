@@ -424,65 +424,66 @@ async function main() {
     } finally { await noDoor.close(); }
   });
 
-  await check('the connect also reads WHETHER THAT ENGINE HAS AN UPSTREAM — the bench\'s cloud lane', async () => {
+  await check('the connect decides the cloud lane from the ROUTES it already read, not from a key', async () => {
     /*
-     * A FOURTH READ, AND IT IS INVISIBLE EVERYWHERE ELSE TOO.
-     *
-     * The queue draws an engine's `[cloud]` lane only when that engine has an
-     * upstream configured (`shared/queue/slot-sets.ts`, `SlotSetFacts.upstreams`),
-     * and the scheduler answers that inside a synchronous pump — so the fact is
-     * read at the moments it can change and held in `crucible/routes.ts`. This
-     * is one of the two moments (the other being a settings write's own answer).
-     * Dropped, the only symptom would be four CPU rows on the bench for lanes
-     * that can never fill, which is exactly the defect this pins.
-     *
-     * The three arms are the three answers, and the third is the one that is
-     * not an omission: a server with no settings door at all is UNKNOWN and
-     * keeps its lane, because absence of knowledge is not absence of an
-     * upstream — and it is still `stocked`, because a bench row is not a
-     * reason to call a working Crucible unreachable.
+     * Owen, 2026-10-18, on a PC bench with two "routed elsewhere" slots: the
+     * engine had an Anthropic key configured and every route `local`, so the
+     * lane could never fill. *"only draw the lane when one route is actually
+     * set to upstream."* So the fact is derived from the capability record's
+     * `route` (read on every connect anyway) and `GET /v1/settings` is no
+     * longer read for it at all.
      */
     const routes = require(path.join(REPO, 'dist', 'electron', 'crucible', 'routes.js'));
 
     coordinate.resetCoordinationForTests();
     routes.forgetCrucibleRoutes();
-    const withKey = await startFake({ settings: { upstreams: { anthropic: { key: 'sk-ant-1234' } } } });
+    const keyOnly = await startFake({ settings: { upstreams: { anthropic: { key: 'sk-ant-1234' } } } });
     try {
-      const name = registerFake(withKey.url);
+      const name = registerFake(keyOnly.url);
       const state = await coordinate.coordinateServer(name, deps());
       assert.strictEqual(state.phase, 'stocked', `phase was ${state.phase}`);
-      assert.strictEqual(withKey.settings.reads, 1,
-        'the document is read once, on the same connect — not on a timer of its own');
-      assert.strictEqual(routes.crucibleUpstreamsOf(name), 'configured',
-        'a key on any of the three means the engine CAN forward work, so the lane is drawn');
-    } finally { await withKey.close(); }
+      assert.strictEqual(routes.crucibleUpstreamsOf(name), 'none',
+        'THE DEFECT: a key nothing is routed to forwards nothing, so there is no lane');
+      assert.strictEqual(keyOnly.settings.reads, 0,
+        'the settings document is not read for the lane any more — capability already said');
+    } finally { await keyOnly.close(); }
+
+    coordinate.resetCoordinationForTests();
+    routes.forgetCrucibleRoutes();
+    const routed = await startFake({ settings: {
+      upstreams: { anthropic: { key: 'sk-ant-1234' } },
+      routes: { translate: 'anthropic/claude-sonnet' },
+    } });
+    try {
+      const name = registerFake(routed.url);
+      const state = await coordinate.coordinateServer(name, deps());
+      assert.strictEqual(state.phase, 'stocked', `phase was ${state.phase}`);
+      assert.strictEqual(routes.crucibleUpstreamsOf(name), 'routed',
+        'one class routed upstream is forwarded work, and forwarded work has the lane');
+    } finally { await routed.close(); }
 
     coordinate.resetCoordinationForTests();
     routes.forgetCrucibleRoutes();
     const bare = await startFake({});
     try {
       const name = registerFake(bare.url);
-      const state = await coordinate.coordinateServer(name, deps());
-      assert.strictEqual(state.phase, 'stocked', `phase was ${state.phase}`);
-      assert.strictEqual(routes.crucibleUpstreamsOf(name), 'none',
-        'nowhere to forward anything: a lane here would be a row nothing can fill');
+      await coordinate.coordinateServer(name, deps());
+      assert.strictEqual(routes.crucibleUpstreamsOf(name), 'none');
     } finally { await bare.close(); }
 
-    coordinate.resetCoordinationForTests();
+    // A settings WRITE re-derives it from its own answer: routing a class
+    // upstream draws the lane, routing it back takes the lane away.
     routes.forgetCrucibleRoutes();
-    const noDoor = await startFake({ settings: { noSettingsDoor: true } });
-    try {
-      const name = registerFake(noDoor.url);
-      const state = await coordinate.coordinateServer(name, deps());
-      assert.strictEqual(state.phase, 'stocked',
-        'a pre-phase-15 Crucible is perfectly usable; a bench row is not a reason to refuse it');
-      assert.strictEqual(routes.crucibleUpstreamsOf(name), 'unknown',
-        "it could not say, so today's behaviour is kept and the lane stays");
-    } finally { await noDoor.close(); }
+    routes.noteCrucibleRoutes('pc', { clean: 'local', translate: 'local', pages: 'local' });
+    assert.strictEqual(routes.crucibleUpstreamsOf('pc'), 'none');
+    routes.noteCrucibleRouteSubset('pc', { translate: 'upstream' });
+    assert.strictEqual(routes.crucibleUpstreamsOf('pc'), 'routed');
+    routes.noteCrucibleRouteSubset('pc', { translate: 'local' });
+    assert.strictEqual(routes.crucibleUpstreamsOf('pc'), 'none',
+      'the last upstream route going back to local takes the lane with it');
 
     // …and a server that is FORGOTTEN is forgotten in both halves of the
-    // record at once: a name pruned from one and answered from the other is
-    // the two-owners defect the record exists as one module to avoid.
+    // record at once.
     routes.forgetCrucibleRoutes();
     assert.strictEqual(routes.crucibleUpstreamsOf('anything'), 'unknown');
   });
@@ -559,7 +560,7 @@ async function main() {
       routes.unbindCrucibleUpstreamsFile();
       assert.throws(() => routes.loadCrucibleUpstreams(file),
         /crucible_upstreams_record_corrupt: .*"mac" is "yes"/s,
-        'an engine either has an upstream configured or it does not');
+        'an engine either routes a class upstream or it does not');
     } finally {
       routes.unbindCrucibleUpstreamsFile();
       routes.forgetCrucibleRoutes();
@@ -588,7 +589,9 @@ async function main() {
     routes.forgetCrucibleRoutes();
     coordinate.resetCoordinationForTests();
 
-    const withKey = await startFake({ settings: { upstreams: { openai: { key: 'sk-oai-9' } } } });
+    const withKey = await startFake({ settings: {
+      upstreams: { openai: { key: 'sk-oai-9' } }, routes: { clean: 'openai/gpt-5' },
+    } });
     const bare = await startFake({});
     try {
       const a = registerFake(withKey.url);
@@ -597,7 +600,7 @@ async function main() {
 
       assert.deepStrictEqual(asked, [a, b],
         'every enabled server is asked, and there is no row that is asked differently');
-      assert.strictEqual(routes.crucibleUpstreamsOf(a), 'configured');
+      assert.strictEqual(routes.crucibleUpstreamsOf(a), 'routed');
       assert.strictEqual(routes.crucibleUpstreamsOf(b), 'none',
         'and this is the row that used to be drawn as a phantom cloud lane');
       /*
@@ -610,8 +613,8 @@ async function main() {
       assert.strictEqual(routes.crucibleRoleOf(b), 'engine');
       assert.strictEqual(routes.crucibleEngineBehind(a), null,
         'an engine fronts nothing — the ref belongs to an orchestrator');
-      assert.strictEqual(withKey.settings.reads, 1, 'once each, and nothing polls');
-      assert.strictEqual(bare.settings.reads, 1);
+      assert.strictEqual(withKey.settings.capabilityReads, 1, 'once each, and nothing polls');
+      assert.strictEqual(bare.settings.capabilityReads, 1);
       assert.strictEqual(withKey.seen.posts.length + bare.seen.posts.length, 0,
         'ASK, THEN ACT: both engines are stocked, so the comparison stops and no module task is '
         + 'posted to anybody at startup');

@@ -37,7 +37,7 @@
  *
  * ── One of the three facts here is remembered on disk ─────────────────────
  *
- * Whether an engine has an UPSTREAM configured is written to
+ * Whether any of an engine's classes is ROUTED UPSTREAM is written to
  * `<userData>/crucible-upstreams.json` and read back at start, because
  * otherwise `unknown` was not a rare state but the state of every launch — see
  * {@link upstreamsFile}. The per-class ROUTE is not: coordination reads it from
@@ -108,20 +108,18 @@ type ServerServed = Readonly<Record<string, boolean>>;
 const servedByServer = new Map<string, ServerServed>();
 
 /**
- * …AND WHETHER EACH ENGINE HAS ANYWHERE TO SEND WORK AT ALL.
+ * …AND WHETHER ANY CLASS ON EACH ENGINE IS ROUTED UPSTREAM.
  *
- * A second fact in the same record, and deliberately not a second module: it is
- * read at the same two moments (coordination, and a settings write's own
- * answer), it is answered inside the same synchronous pump, and
- * {@link forgetCrucibleRoutes} must forget both together — a server removed
- * while one of the two records still named it would be answered about from the
- * half that had not been pruned.
+ * Derived from the routes above, never recorded on its own: it is rewritten
+ * every time {@link byServer} is (`noteCrucibleRoutes`,
+ * `noteCrucibleRouteSubset`), so the two cannot disagree about one engine.
+ * It is kept as a map of its own for one reason — it is REMEMBERED across
+ * restarts ({@link upstreamsFile}) and the routes are not.
  *
  * It is what the queue's cloud lane is drawn on
- * (`shared/queue/slot-sets.ts`'s `SlotSetFacts.upstreams`, which carries the
- * whole argument for why this fact and not `route`). Absent means `unknown`,
- * the record's own third value, and NOT "no upstream": nobody has read that
- * engine's settings yet.
+ * (`shared/queue/slot-sets.ts`'s `SlotSetFacts.upstreams`). Absent means
+ * `unknown`, the record's own third value, and NOT "nothing routed": nobody has
+ * read that engine's routes yet.
  */
 const upstreamsByServer = new Map<string, boolean>();
 
@@ -245,8 +243,8 @@ function recordChanged(): void {
  * `unknown` draws the lane. Every fresh launch looked like that until something
  * happened to connect to each machine — phantom lanes as the default.
  *
- * Whether an engine has an upstream is a fact about that MACHINE, not about this
- * process, and it changes when somebody pastes a key into a field. So it is
+ * Whether an engine routes a class upstream is a fact about that MACHINE, not
+ * about this process, and it changes when somebody re-routes a class. So it is
  * written beside the routing record and read back at start
  * (`<userData>/crucible-upstreams.json`), and only a server this app has
  * genuinely never read is `unknown`.
@@ -288,7 +286,7 @@ interface UpstreamsRecord {
  * Throws on a file that exists and is not this record — a learned fact is not
  * silently replaced any more than a chosen one is, and the caller says so in the
  * log. The path is bound BEFORE the parse, so the next
- * {@link noteCrucibleUpstreams} rewrites the bad file rather than leaving it to
+ * routes read ({@link deriveUpstreamRouted}) rewrites the bad file rather than leaving it to
  * fail every launch; until then every engine answers `unknown`, which is the
  * behaviour this app had before the file existed.
  */
@@ -308,7 +306,7 @@ export function loadCrucibleUpstreams(file: string): void {
   } catch (err) {
     throw new Error(
       `crucible_upstreams_record_corrupt: ${file} is not valid JSON (${(err as Error).message}). `
-        + 'It remembers which engines have an upstream configured; nothing here will replace it '
+        + 'It remembers which engines route a class upstream; nothing here will replace it '
         + 'silently. Until it is repaired or the next read of a server rewrites it, every engine '
         + 'is "unknown" and keeps its cloud lane.',
     );
@@ -326,7 +324,7 @@ export function loadCrucibleUpstreams(file: string): void {
       upstreamsByServer.clear();
       throw new Error(
         `crucible_upstreams_record_corrupt: ${file}: "${server}" is `
-          + `${JSON.stringify(configured)}, and an engine either has an upstream configured or it `
+          + `${JSON.stringify(configured)}, and an engine either routes a class upstream or it `
           + 'does not. Repair or delete the file by hand.',
       );
     }
@@ -362,7 +360,7 @@ function saveUpstreams(): void {
     renameSyncWithRetry(temp, file);
   } catch (err) {
     console.log(
-      `[CRUCIBLE] could not remember which engines have an upstream (${file}): `
+      `[CRUCIBLE] could not remember which engines route a class upstream (${file}): `
         + `${err instanceof Error ? err.message : String(err)}. This session is unaffected; the `
         + 'next launch will ask each server again.',
     );
@@ -381,7 +379,8 @@ export function noteCrucibleRoutes(server: string, routes: Readonly<Record<strin
   const before = byServer.get(server);
   const hadFailure = readFailures.delete(server);
   byServer.set(server, { ...routes });
-  if (hadFailure || before === undefined || !sameRoutes(before, routes)) recordChanged();
+  const laneChanged = deriveUpstreamRouted(server);
+  if (hadFailure || laneChanged || before === undefined || !sameRoutes(before, routes)) recordChanged();
 }
 
 /**
@@ -403,7 +402,8 @@ export function noteCrucibleRouteSubset(
   const before = byServer.get(server) ?? {};
   const after = { ...before, ...routes };
   byServer.set(server, after);
-  if (!sameRoutes(before, after)) recordChanged();
+  const laneChanged = deriveUpstreamRouted(server);
+  if (laneChanged || !sameRoutes(before, after)) recordChanged();
 }
 
 /**
@@ -541,25 +541,29 @@ export function forgetCrucibleRoutes(server?: string): void {
 }
 
 /**
- * Record whether one engine has ANY upstream configured.
+ * Re-derive whether any class on one engine routes upstream, out of the routes
+ * just recorded for it. Returns whether the answer changed; the caller fires
+ * the one `recordChanged` for both facts.
  *
- * One caller: {@link projectSettings} in `engine-settings.ts`, which is the one
- * funnel every settings document this app reads passes through — the GET at
- * coordination and the whole-document answer to a PUT alike. Recorded there
- * rather than at each call site for the reason `noteCrucibleRoutes` has two
- * callers and no third: a reader that forgot would leave the bench drawing a
- * lane the operator has just taken away, or hiding one they have just made.
+ * Owen, 2026-10-18, on a PC bench showing two "routed elsewhere" slots for an
+ * engine that had an Anthropic key and every route `local`: *"only draw the
+ * lane when one route is actually set to upstream."* It used to be "has an
+ * upstream CONFIGURED", read off `GET /v1/settings` — a lane for work the
+ * engine could forward but never would, which is a row nothing can fill.
  */
-export function noteCrucibleUpstreams(server: string, configured: boolean): void {
+function deriveUpstreamRouted(server: string): boolean {
+  const table = byServer.get(server);
+  if (table === undefined) return false;
+  const routed = Object.values(table).some((route) => route === 'upstream');
   const before = upstreamsByServer.get(server);
-  upstreamsByServer.set(server, configured);
+  upstreamsByServer.set(server, routed);
   // Remembered across restarts: see {@link upstreamsFile}. Written on every note
   // rather than on a shutdown hook — there is no moment an app is guaranteed to
-  // get, and this is one small file per settings read.
+  // get, and this is one small file per routes read.
   saveUpstreams();
   // `unknown` becoming an answer is the change that matters most: it is what
   // takes a phantom cloud lane off a bench nothing else would redraw.
-  if (before !== configured) recordChanged();
+  return before !== routed;
 }
 
 /**
@@ -622,13 +626,12 @@ export function crucibleEngineBehind(server: string): EngineRef | null {
 }
 
 /**
- * Can this engine send work elsewhere at all — `configured`, `none`, or
- * `unknown` because nobody has read its settings.
+ * Does this engine route any class upstream — `routed`, `none`, or `unknown`
+ * because nobody has read its routes.
  *
  * `unknown` is a stated third value and not a shrug: an engine that has not
- * been asked, did not answer, or predates the settings door keeps the cloud
- * lane it has always had, because absence of knowledge is not absence of an
- * upstream.
+ * been asked or did not answer keeps the cloud lane it has always had, because
+ * absence of knowledge is not absence of a route.
  *
  * SINCE 2026-09-15 this answers from what the LAST run learned as well as this
  * one ({@link loadCrucibleUpstreams}), so `unknown` means "this app has never
@@ -636,9 +639,9 @@ export function crucibleEngineBehind(server: string): EngineRef | null {
  * process". That is the difference between a rare state and every launch.
  */
 export function crucibleUpstreamsOf(server: string): EngineUpstreams {
-  const configured = upstreamsByServer.get(server);
-  if (configured === undefined) return 'unknown';
-  return configured ? 'configured' : 'none';
+  const routed = upstreamsByServer.get(server);
+  if (routed === undefined) return 'unknown';
+  return routed ? 'routed' : 'none';
 }
 
 /** Every engine this app has read routes from, for a log line and for keepers. */

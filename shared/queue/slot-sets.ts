@@ -27,9 +27,8 @@
  * Ollama on the operator's account — a ROUTE, set before any request, never a
  * fallback. Such a run holds no card anywhere: it costs the engine a socket.
  *
- * A lane is drawn for an engine that HAS AN UPSTREAM CONFIGURED, and that is
- * {@link SlotSetFacts.upstreams}. See its own note for why that fact and not
- * the per-class route.
+ * A lane is drawn for an engine that ROUTES AT LEAST ONE CLASS UPSTREAM, and
+ * that is {@link SlotSetFacts.upstreams}. See its own note for why.
  *
  * Making it wait behind a nine-hour narration would be the queue punishing a
  * job for the company it keeps — the same argument that used to give a
@@ -812,24 +811,24 @@ export function longformAlignCharged(
 }
 
 /**
- * WHETHER ONE ENGINE CAN SEND WORK ELSEWHERE AT ALL — three values, and the
- * third is not a shrug.
+ * WHETHER ONE ENGINE SENDS ANY WORK ELSEWHERE — three values, and the third is
+ * not a shrug.
  *
- * `configured` — at least one of its three upstreams has a key or a url on it
- * (`GET /v1/settings`'s `upstreams[*].configured`, crucible
- * `docs/PHASE15-HOST.md` §3.1). The engine CAN forward a class, whether or not
- * any class is routed today.
+ * `routed` — at least one of its classes routes `upstream` (the capability
+ * record's `route`, crucible `docs/PHASE15-HOST.md` §3.3). Work of that class
+ * is forwarded and holds no card, so it gets the lane.
  *
- * `none` — the document was read and all three are unconfigured. There is
- * nowhere for that engine to forward anything, so a lane on the bench would be
- * a row the scheduler can never fill (crucible `docs/ARCHITECTURE.md` R3:
- * nothing is told "maybe").
+ * `none` — its routes were read and every one is `local`. Nothing queued can
+ * ever be forwarded, so a lane on the bench would be a row the scheduler can
+ * never fill (crucible `docs/ARCHITECTURE.md` R3: nothing is told "maybe") —
+ * even when an upstream KEY is configured on it. A key nothing is routed to
+ * forwards nothing.
  *
- * `unknown` — nobody has read that engine's settings yet, it did not answer, or
- * it predates the settings door. **Absence of knowledge is not absence of an
- * upstream**, so an unknown engine keeps the lane it has always had.
+ * `unknown` — nobody has read that engine's routes yet, or it did not answer.
+ * **Absence of knowledge is not absence of a route**, so an unknown engine keeps
+ * the lane it has always had.
  */
-export type EngineUpstreams = 'configured' | 'none' | 'unknown';
+export type EngineUpstreams = 'routed' | 'none' | 'unknown';
 
 /**
  * WHICH HALF OF THE ORCHESTRATOR/ENGINE RELATION A REGISTERED NAME IS — and
@@ -894,42 +893,30 @@ export interface SlotSetFacts {
   readonly rankedServers: readonly RankedServer[];
 
   /**
-   * PER ENGINE: can it send work elsewhere at all. One entry for every name in
+   * PER ENGINE: does it route any class upstream. One entry for every name in
    * {@link rankedServers} — a name missing from here is REFUSED BY NAME rather
    * than assumed either way, because the two guesses are a lane that never
    * fills and a lane that vanishes under a running row.
    *
-   * ── WHY THIS FACT AND NOT THE PER-CLASS ROUTE ─────────────────────────────
+   * ── WHY THE ROUTE, AND NOT WHETHER AN UPSTREAM IS CONFIGURED ─────────────
    *
-   * The lane used to be drawn unconditionally, and the argument for that was
-   * sound as far as it went: whether a particular class is routed upstream is
-   * the ENGINE's setting, it can change between two pumps from the engine's own
-   * page or from the other app, and a lane that appeared and vanished with it
-   * would make the bench flicker and make a row's placement depend on when the
-   * scheduler last happened to read. The capability record's `route` field
-   * (`electron/crucible/routes.ts`) is the fact that argument is about, and it
-   * is the one already in hand — coordination reads `GET /v1/capability` on
-   * every connect, so deriving "some class is routed" from it costs nothing.
+   * From 2026-09-15 to 2026-10-18 the lane hung off "this engine has an
+   * upstream configured" (a key or url in `GET /v1/settings`), one level above
+   * the route, so the bench would not flicker as an operator re-routed a class.
+   * That drew two "routed elsewhere" slots on the PC for an engine with an
+   * Anthropic key and every route `local` — slots nothing queued could ever
+   * want. Owen, 2026-10-18: *"only draw the lane when one route is actually set
+   * to upstream."*
    *
-   * It is still the wrong fact, and Owen ruled on the level rather than the
-   * mechanism (2026-09-15): *"local shouldnt be an option because it's driven
-   * fully and completely through crucible"* — a bench row must correspond to
-   * something real. "Some class happens to be routed right now" is a setting an
-   * operator flips while reading a book; "this engine has an upstream" is a
-   * deliberate, rare act (a key pasted into a field, tested, saved). So the
-   * same anti-flicker argument is kept and raised one level: the lane exists
-   * exactly when the engine CAN forward work, which is stable across the
-   * route changes that used to be the worry, and which is true of every engine
-   * on which a route could be set at all — `route_upstream_unconfigured` (§3.2)
-   * is the server refusing to route a class to an upstream it has not got, so
-   * `configured` is implied by any route and never the other way round. A lane
-   * cannot be stranded under a running row by this: both facts are read at the
-   * same two moments (coordination, and a settings write's own answer), so they
-   * cannot come to disagree about one engine.
-   *
-   * The cost is one extra read of a document the app already speaks, at a
-   * moment it is already talking to that machine. That is what buys a bench
-   * with no rows on it that nothing can ever use.
+   * The flicker worry does not survive a look at what a route change does: a
+   * re-route is a deliberate act on a settings page, and when it happens the
+   * lane appearing or going IS the bench being right. Nothing can be stranded
+   * by it — a running upstream row's venue is `<server>:cloud`, and
+   * {@link slotSets} keeps an occupied set on the bench (`retiring`) whatever
+   * this says. The routes are read at the moments they can change
+   * (coordination's `GET /v1/capability`, and a settings write's own answer),
+   * and this fact is derived from them in the same call, so the two cannot
+   * disagree about one engine (`electron/crucible/routes.ts`).
    */
   readonly upstreams: Readonly<Record<string, EngineUpstreams>>;
   /**
@@ -1005,8 +992,8 @@ export function slotSets(facts: SlotSetFacts): SlotSet[] {
   if (facts.upstreams === undefined || facts.upstreams === null) {
     throw new Error(
       'slotSets: `upstreams` was not supplied. Every enabled server needs one of '
-        + "'configured' | 'none' | 'unknown', because a cloud lane is drawn for an engine that "
-        + 'CAN forward work and for one nobody has asked yet, and for no other.',
+        + "'routed' | 'none' | 'unknown', because a cloud lane is drawn for an engine that "
+        + 'routes a class upstream and for one nobody has asked yet, and for no other.',
     );
   }
 
@@ -1155,17 +1142,15 @@ export function slotSets(facts: SlotSetFacts): SlotSet[] {
       continue;
     }
     /*
-     * ITS CLOUD LANE — WHEN THE ENGINE HAS SOMEWHERE TO SEND WORK, and still
-     * not conditional on a particular class being routed there today. The whole
-     * argument, and why this is one level up from the route, is on
-     * {@link SlotSetFacts.upstreams}.
+     * ITS CLOUD LANE — WHEN THE ENGINE ROUTES AT LEAST ONE CLASS UPSTREAM. The
+     * argument is on {@link SlotSetFacts.upstreams}.
      */
     const upstreams = facts.upstreams[name];
     if (upstreams === undefined) {
       throw new Error(
-        `slotSets: nothing was said about whether "${name}" has an upstream configured. `
+        `slotSets: nothing was said about whether "${name}" routes any class upstream. `
           + 'Every enabled server needs an entry in `upstreams` — a name with no entry is a '
-          + 'caller that forgot, not an engine with no upstream.',
+          + 'caller that forgot, not an engine that routes nothing upstream.',
       );
     }
     /*

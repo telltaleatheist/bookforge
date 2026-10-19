@@ -13802,13 +13802,13 @@ app.whenReady().then(async () => {
    *
    * A corrupt file is REPORTED and not repaired: every engine is `unknown` for
    * this launch, which is the behaviour the app had before the file existed, and
-   * the next settings read rewrites it.
+   * the next routes read rewrites it.
    */
   try {
     const { loadCrucibleUpstreams, CRUCIBLE_UPSTREAMS_FILE } = await import('./crucible/routes.js');
     loadCrucibleUpstreams(path.join(app.getPath('userData'), CRUCIBLE_UPSTREAMS_FILE));
   } catch (err) {
-    logger.warn('Could not read which Crucible engines have an upstream configured', {
+    logger.warn('Could not read which Crucible engines route a class upstream', {
       error: (err as Error).message,
     });
   }

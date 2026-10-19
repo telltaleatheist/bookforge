@@ -272,23 +272,25 @@ test('a cloud lane hangs off its engine, holds no card, and is two wide', () => 
   assert.strictEqual(lane.label, 'mac — routed elsewhere');
 });
 
-// ── The cloud lane is drawn on ONE fact: has this engine an upstream at all ──
+// ── The cloud lane is drawn on ONE fact: does this engine route a class upstream ──
 //
 // Owen, 2026-09-15: *"i thought CPU work was done locally. so there would only
 // be two cpu slots, and we would have as many gpu slots as we have connected
 // crucible serves"* — four CPU rows were being drawn for lanes that can never
 // fill, because the lane used to be unconditional. The four cases below are the
-// whole of the new rule.
+// whole of the new rule. Since 2026-10-18 the fact is the ROUTE, not whether a
+// key is configured (Owen: *"only draw the lane when one route is actually set
+// to upstream"*); the derivation is pinned in test-crucible-coordinate.js.
 
-test('an engine WITH an upstream configured draws its cloud lane', () => {
-  const sets = slots.slotSets(factsOf({ servers: ['mac'], upstreams: { mac: 'configured' } }));
+test('an engine that ROUTES a class upstream draws its cloud lane', () => {
+  const sets = slots.slotSets(factsOf({ servers: ['mac'], upstreams: { mac: 'routed' } }));
   const lane = sets.find((s) => s.id === 'mac:cloud');
-  assert.ok(lane, 'a key or a url on any of the three upstreams means it CAN forward work');
+  assert.ok(lane, 'a class routed upstream is forwarded work, and forwarded work has this lane');
   assert.strictEqual(lane.cpu, slots.CLOUD_LANE_SLOTS);
   assert.strictEqual(lane.gpu, 0);
 });
 
-test('an engine with NO upstream configured draws no lane at all', () => {
+test('an engine that routes NOTHING upstream draws no lane at all', () => {
   const sets = slots.slotSets(factsOf({
     servers: ['local', 'mac'],
     upstreams: { local: 'none', mac: 'none' },
@@ -315,7 +317,7 @@ test('a server the caller said NOTHING about is refused by name, never defaulted
       rankedServers: [{ name: 'mac', enabled: true }], upstreams: {}, roles: { mac: 'engine' },
       occupied: [], alignerCharged: false,
     }),
-    /nothing was said about whether "mac" has an upstream/,
+    /nothing was said about whether "mac" routes any class upstream/,
     'the two guesses are a lane that never fills and a lane that vanishes under a running row',
   );
   assert.throws(
@@ -424,7 +426,7 @@ test('a registered ORCHESTRATOR draws no GPU row and no cloud lane', () => {
   const sets = slots.slotSets(factsOf({
     servers: ['tray', 'mac'],
     roles: { tray: 'orchestrator', mac: 'engine' },
-    upstreams: { tray: 'configured', mac: 'none' },
+    upstreams: { tray: 'routed', mac: 'none' },
   }));
   assert.deepStrictEqual(sets.map((s) => s.id), ['mac', slots.LOCAL_WORK_SET],
     'a GPU slot for a process that serves no job types is a lane nothing can fill');
@@ -1172,11 +1174,11 @@ test('a host address uses its engine lane, and registering that engine twice nev
         name: 'native-engine', url: 'http://127.0.0.1:7100', backend: 'llama-windows', owner: 'native',
       } });
       routes.noteCrucibleEngineUrl('tray', 'http://127.0.0.1:7100');
-      routes.noteCrucibleUpstreams('tray', false);
+      routes.noteCrucibleRoutes('tray', { clean: 'local' });
       if (direct) {
         routes.noteCrucibleRole('gpu', { role: 'engine' });
         routes.noteCrucibleEngineUrl('gpu', 'http://127.0.0.1:7100');
-        routes.noteCrucibleUpstreams('gpu', false);
+        routes.noteCrucibleRoutes('gpu', { clean: 'local' });
       }
       const first = enqueueSent(narrate('First', 'tray'));
       enqueueSent(narrate('Second', direct ? 'gpu' : 'tray'));
@@ -1306,8 +1308,8 @@ test('THE BENCH REDRAWS WHEN THE RECORD LEARNS — nothing else would ever redra
   );
 
   // The two reads land. NOTHING is queued, so no pump, no step, no structural change.
-  routes.noteCrucibleUpstreams('local', false);
-  routes.noteCrucibleUpstreams('mac', false);
+  routes.noteCrucibleRoutes('local', { clean: 'local' });
+  routes.noteCrucibleRoutes('mac', { clean: 'local' });
 
   assert.strictEqual(published.length, 2, 'each answer is news exactly once');
   const last = published[published.length - 1];
@@ -1316,7 +1318,7 @@ test('THE BENCH REDRAWS WHEN THE RECORD LEARNS — nothing else would ever redra
   assert.ok(!bench.benchLanes(last).some((l) => l.setLabel.includes('routed elsewhere')));
 
   // Re-recording the SAME answer is not news: coordination runs on every connect.
-  routes.noteCrucibleUpstreams('mac', false);
+  routes.noteCrucibleRoutes('mac', { clean: 'local' });
   assert.strictEqual(published.length, 2, 'a listener fired on every connect would be a timer');
 
   // A role landing is news too — and takes the orchestrator's row off the bench.
