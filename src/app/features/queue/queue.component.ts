@@ -162,6 +162,7 @@ import { CdkScrollable } from '@angular/cdk/scrolling';
 import { prepFraction, prepLabel } from '@shared/queue/bench';
 import type { BookPlan, FinishedRun, PlannedStep, StillReason } from '@shared/queue/bench';
 import type { JobType, ServerReach, ServerShadow, StepStatus } from '@shared/queue/engine-types';
+import { runElapsedSeconds } from '@shared/queue/job-timing';
 import { BRIEF_STEP_TYPES } from '@shared/queue/job-words';
 import { LOCAL_WORK_SET, LONGFORM_ALIGN_SET } from '@shared/queue/slot-sets';
 import {
@@ -287,6 +288,8 @@ interface FinishedBlock {
   status: 'done' | 'failed' | 'cancelled';
   /** The latest finish in the group. */
   finishedAt?: string;
+  /** Every step's own duration, added up: how long the book's work took. */
+  took: string;
 }
 
 /**
@@ -724,6 +727,7 @@ interface ChainRung {
                               <div class="title-row"><h3>{{ block.title }}</h3></div>
                               <div class="sub">
                                 {{ block.runs.length }} step{{ block.runs.length === 1 ? '' : 's' }}
+                                · took {{ block.took }}
                                 @if (block.finishedAt) {
                                   · finished {{ block.finishedAt | date:'shortTime' }}
                                 }
@@ -1251,6 +1255,15 @@ interface ChainRung {
             }
             @if (lane.elapsed) {
               <div class="ro"><div class="k">Elapsed</div><div class="v">{{ lane.elapsed }}</div></div>
+            }
+            <!-- THE WHOLE RUN'S CLOCK. Elapsed above is this step's; a book
+                 that narrated for an hour and is now assembling would read a
+                 few minutes there. Total is every step of the run, added up
+                 (Owen, 2026-10-18: "i'd like to be able to look at the time
+                 elapsed total to see how long the whole job took"). A run of
+                 one step has no second number to show. -->
+            @if (runTotal(busy.jobId); as total) {
+              <div class="ro"><div class="k">Total</div><div class="v">{{ total }}</div></div>
             }
             <!-- Last, and pushed to the right edge so it lands under the stage
                  rows' "done" column. Elapsed and ETA end up beside each other,
@@ -3450,6 +3463,7 @@ export class QueueComponent {
           cover: null,
           runs: [],
           status: 'done',
+          took: '',
         };
         order.push(block);
         byTitle.set(titleKey, block);
@@ -3474,6 +3488,10 @@ export class QueueComponent {
       block.runs.sort((a, b) => finishedMs(a) - finishedMs(b));
       const last = block.runs[block.runs.length - 1];
       block.finishedAt = last?.finishedAt;
+      block.took = formatDuration(runElapsedSeconds(
+        block.runs.map(r => ({ startedAt: r.startedAt, completedAt: r.finishedAt })),
+        Date.now(),
+      ));
     }
 
     return order;
@@ -4811,6 +4829,22 @@ export class QueueComponent {
       done: step.status === 'done',
       brief: BRIEF_STEP_TYPES.has(step.type),
     }));
+  }
+
+  /**
+   * HOW LONG THE WHOLE RUN HAS BEEN WORKING, ticking — every step's own
+   * duration added up (`runElapsedSeconds`, which says why a sum and not the
+   * wall clock). Null for a run of one step, where it would only repeat that
+   * step's Elapsed.
+   */
+  runTotal(jobId: string): string | null {
+    this.eta.tick();
+    const job = this.queueService.snapshot().jobs.find((row) => row.id === jobId);
+    if (job === undefined || job.steps.length < 2) return null;
+    return formatDuration(runElapsedSeconds(
+      job.steps.map((step) => ({ startedAt: step.startedAt, completedAt: step.finishedAt })),
+      Date.now(),
+    ));
   }
 
   /** The plan a run belongs to, or null while the snapshot catches up. */
