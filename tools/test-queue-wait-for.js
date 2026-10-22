@@ -755,35 +755,63 @@ test('the picker refuses a server this machine does not have, by name', async ()
   assert.strictEqual(jobOf(job.id).waitFor, 'local', 'and it changed nothing');
 });
 
-test('the picker refuses a book that has already been assigned (§4.3)', async () => {
+test('a book on a server MOVES when the operator says so: the running step finishes, the rest follows', async () => {
+  /*
+   * Owen, 2026-10-22: "it isnt a limit for the user, it's a limit for the
+   * system's logic." The picker used to refuse a book once a card had taken it
+   * (`venue_fixed_at_admission`). One book, one server is the SCHEDULER's rule;
+   * a move the operator makes is carried out — the running step is atomic and
+   * finishes where it was placed, and the next step goes where they said.
+   */
   const gpu = fakeModule('tts-conversion', { travels: true });
   const host = fakeHost({
-    ranked: TWO_SERVERS, defaultWaitFor: 'mac', reach: { mac: { reachable: true } },
+    ranked: TWO_SERVERS, defaultWaitFor: 'mac',
+    reach: { mac: { reachable: true }, local: { reachable: true } },
   });
   await fresh('pick-assigned', [gpu], host);
-  const job = enqueueSent(narrate('Assigned'));
+  const job = enqueueSent({
+    title: 'Assigned',
+    steps: [
+      { type: 'tts-conversion', label: 'Narrate', config: {}, sourceRef: { kind: 'epub', path: '/a.epub' } },
+      { type: 'tts-conversion', label: 'Narrate again', config: {}, sourceRef: { kind: 'epub', path: '/a.epub' } },
+    ],
+  });
   engine.start();
   await settle();
   assert.strictEqual(jobOf(job.id).waitForResolved, 'mac');
-  /*
-   * THE EDIT/ADMISSION RACE, SETTLED BY NAME — Owen's rule
-   * (docs/PENDING-QUEUE-AND-GPU-DIAL.md, "Mutability"): an edit that arrives
-   * after admission is REFUSED, naming the row and the server it went to, never
-   * silently applied to a running job and never silently dropped.
-   *
-   * All three halves are pinned: the CODE a caller can branch on, the ROW and
-   * the SERVER in the words, and the fact that the book did not move.
-   */
-  assert.throws(() => engine.setWaitFor(job.id, 'local'), (err) => {
-    assert.strictEqual(err.name, 'QueueRoutingRefusal');
-    assert.strictEqual(err.code, 'venue_fixed_at_admission');
-    assert.match(err.message, /Assigned/, 'the refusal names the row');
-    assert.match(err.message, /on mac/, 'and the server it went to');
-    assert.match(err.message, /Nothing here has been altered/);
-    return true;
+  assert.strictEqual(gpu.runs.length, 1, 'one step at a time: the book is serial');
+
+  engine.setWaitFor(job.id, 'local');
+  assert.strictEqual(jobOf(job.id).waitFor, 'local', 'the move is recorded');
+  assert.strictEqual(jobOf(job.id).waitForResolved, 'mac', 'and the running step stays where it was placed');
+
+  gpu.runs[0].resolve();
+  await settle();
+  assert.strictEqual(gpu.runs.length, 2, 'the next step ran');
+  assert.strictEqual(jobOf(job.id).waitForResolved, 'local', 'on the server the book was moved to');
+});
+
+test('"any" on a book that is already on a server is not a move: it stays and finishes there', async () => {
+  const gpu = fakeModule('tts-conversion', { travels: true });
+  const host = fakeHost({
+    ranked: TWO_SERVERS, defaultWaitFor: 'mac',
+    reach: { mac: { reachable: true }, local: { reachable: true } },
   });
-  assert.strictEqual(jobOf(job.id).waitFor, 'mac', 'and nothing was applied');
-  assert.strictEqual(jobOf(job.id).waitForResolved, 'mac');
+  await fresh('pick-any-stays', [gpu], host);
+  const job = enqueueSent({
+    title: 'Stays together',
+    steps: [
+      { type: 'tts-conversion', label: 'Narrate', config: {}, sourceRef: { kind: 'epub', path: '/a.epub' } },
+      { type: 'tts-conversion', label: 'Narrate again', config: {}, sourceRef: { kind: 'epub', path: '/a.epub' } },
+    ],
+  });
+  engine.start();
+  await settle();
+  engine.setWaitFor(job.id, 'any');
+  gpu.runs[0].resolve();
+  await settle();
+  assert.strictEqual(gpu.runs.length, 2);
+  assert.strictEqual(jobOf(job.id).waitForResolved, 'mac', 'a serial book does not change servers unasked');
 });
 
 test('the picker refuses a run with nothing that travels', async () => {

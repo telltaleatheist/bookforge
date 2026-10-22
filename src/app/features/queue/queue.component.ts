@@ -1009,19 +1009,19 @@ interface ChainRung {
                           class="card narrow"
                           cdkDrag
                           [cdkDragData]="plan"
-                          [cdkDragDisabled]="isLocked(plan)"
                           (cdkDragStarted)="dragStarted(plan)"
                           (cdkDragEnded)="dragEnded()"
                         >
-                          @if (!isLocked(plan)) {
-                            <button
-                              type="button"
-                              class="grip"
-                              cdkDragHandle
-                              aria-label="Drag this book to another machine, or up and down this lane"
-                              title="Drag this book to another machine, or up and down this lane"
-                            >⠿</button>
-                          }
+                          <!-- A RUNNING BOOK CAN BE MOVED TOO (Owen, 2026-10-22): its
+                               running step finishes here and the rest of the book
+                               follows it to the lane it is dropped on. -->
+                          <button
+                            type="button"
+                            class="grip"
+                            cdkDragHandle
+                            aria-label="Drag this book to another machine, or up and down this lane"
+                            title="Drag this book to another machine, or up and down this lane"
+                          >⠿</button>
                           <ng-container
                             [ngTemplateOutlet]="bookCard"
                             [ngTemplateOutletContext]="{ $implicit: plan, staged: false, lane: lane }"
@@ -3650,26 +3650,13 @@ export class QueueComponent {
      * done at different times with different chains, its perfectly fine for it to
      * take any gpu. the chain stays on one gpu while its active."* The hold is a
      * fact about a CHAIN (an engine job, `waitForResolved` set once at launch),
-     * never about the book. So re-pinning a book moves only the chains still free
-     * to move; a chain already taken by a card keeps it (§4.3, it finishes where
-     * it started) and is SKIPPED rather than refused — which is what lets a
-     * clean/tts chain go to the WSL card while an OCR chain of the same book runs
-     * or already ran on the Mac. It also stops one running chain in the group
-     * from failing the whole re-pin, which is the bug Owen hit.
+     * never about the book.
      */
-    const jobs = this.queueService.snapshot().jobs;
-    const fixed = (jobId: string): boolean =>
-      jobs.find((row) => row.id === jobId)?.waitForResolved !== undefined;
-    const movable = plan.jobIds.filter((jobId) => !fixed(jobId));
-    if (movable.length === 0) {
-      // Every chain of this book is already on a card, so there is genuinely
-      // nothing to move. Re-pin the first anyway, so main answers with the
-      // cancel-and-re-queue refusal in its own words rather than the drop
-      // silently doing nothing.
-      if (plan.jobIds.length > 0) await this.queueService.setWaitFor(plan.jobIds[0], value);
-      return;
-    }
-    for (const jobId of movable) await this.queueService.setWaitFor(jobId, value);
+    // EVERY chain moves now. The engine carries a move out on a chain a card has
+    // already taken, too: its running step finishes where it is and the rest
+    // follows (Owen, 2026-10-22: "it isnt a limit for the user, it's a limit for
+    // the system's logic").
+    for (const jobId of plan.jobIds) await this.queueService.setWaitFor(jobId, value);
   }
 
   // ── Running / Paused ─────────────────────────────────────────────────────
@@ -4040,18 +4027,17 @@ export class QueueComponent {
   }
 
   /**
-   * A BOOK THAT HOLDS A CARD CANNOT BE MOVED, and this says why.
+   * WHAT A BOOK RUNNING A STEP ON A CARD CAN AND CANNOT DO, in one sentence.
    *
-   * `waitForResolved` is the engine's own record that the work WENT somewhere
-   * (§4.3), and a running step is the same fact happening. Either way the
-   * answer to "put it on the other machine" is not one the engine can give, so
-   * the card carries no grip at all rather than a grip that silently refuses.
-   * The sentence is on the ⋯ button's tooltip and inside the menu, which is
-   * where a hand that failed to drag it looks next.
+   * It can be moved to another server — the running step finishes where it is
+   * and the rest follows (2026-10-22) — but not to Pending or Up next while the
+   * step runs: that is Stop's job, which gives the card up properly. The
+   * sentence is on the "on a card" pill and on the columns that refuse it.
    */
   lockedReason(plan: BookPlan): string | null {
     if (!this.isLocked(plan)) return null;
-    return 'This book is on a card right now. Stop it first; it keeps what it has finished.';
+    return 'This book is running a step on a card. Drag it to another server and the rest of it '
+      + 'follows once that step lands, or Stop it to send it to Pending; it keeps what it has finished.';
   }
 
   /**
@@ -4089,7 +4075,8 @@ export class QueueComponent {
     if (!plan.travels) {
       return `${plan.title} runs on this machine's CPU slots. It cannot be pinned to a card.`;
     }
-    if (this.isLocked(plan)) return this.lockedReason(plan);
+    // A RUNNING book is taken too: its running step finishes where it is and the
+    // rest of the book follows (`followMove` in the queue engine).
     // A PAUSED LANE TAKES WORK (Owen, 2026-09-22: *"i should be able to drag
     // something to a gpu slot even if it's paused. it should stay there until i
     // start the slot's queue rather than moving to another"*). Pausing is the
@@ -4209,9 +4196,8 @@ export class QueueComponent {
        * the drop actually asked for, so a book dropped on the WSL slot flipped to
        * "any" and ran on the Mac. Pinning while the row is still editable makes
        * it START on the slot it was dropped on. A row already taken by a card is
-       * refused HERE by name (`setWaitFor` throws `venue_fixed_at_admission`)
-       * with NOTHING released — the cancel-and-re-queue path §4.3 requires, not a
-       * second start on the wrong card.
+       * MOVED (2026-10-22): its running step finishes where it is and the rest
+       * of the book follows to this lane (`followMove` in the queue engine).
        */
       const memo = {
         waitFor: this.waitForValue(plan) || 'any',

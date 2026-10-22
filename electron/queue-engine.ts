@@ -2227,13 +2227,25 @@ export function setWaitFor(jobId: string, value: string): void {
       + 'wait for. Only the narration step travels today.',
     );
   }
-  if (job.waitForResolved !== undefined) {
-    throw new QueueRoutingRefusal(
-      'venue_fixed_at_admission',
-      `${job.title} was taken by a GPU on ${job.waitForResolved} before this change arrived, and a `
-      + 'book finishes on the machine it started on. Nothing here has been altered. Cancel it and '
-      + 'queue it again to send it somewhere else.',
-    );
+  /*
+   * A BOOK ALREADY ON A SERVER CAN STILL BE MOVED — by the person, never by the
+   * scheduler. Owen, 2026-10-22: *"it isnt a limit for the user, it's a limit
+   * for the system's logic."* This refused once a step had launched ("a book
+   * finishes on the machine it started on"), which made the one-book-one-server
+   * rule a wall in front of the operator. The rule is the SCHEDULER's: under
+   * `any` a book takes the next free server and every later step follows it
+   * there ({@link assignRunVenue}). A move to a named server is the operator
+   * saying where the rest of it goes, and {@link followMove} carries it out —
+   * at once if nothing is running, after the running step lands if one is.
+   *
+   * `any` on a book that already has a server is NOT a move: there is no point
+   * in a serial book changing servers mid-way unless somebody asked for it, so
+   * the book stays where it is and finishes there.
+   */
+  if (job.waitForResolved !== undefined && value === WAIT_FOR_ANY) {
+    job.waitFor = value;
+    changed();
+    return;
   }
   if (value !== WAIT_FOR_ANY) {
     const host = crucibleHost;
@@ -2253,6 +2265,7 @@ export function setWaitFor(jobId: string, value: string): void {
     }
   }
   job.waitFor = value;
+  followMove(job);
   // The hold on its steps was about the OLD answer. Retiring it here rather
   // than leaving it for the next pump keeps the row from showing "waiting for
   // mac: disabled" one tick after the operator moved it off mac.
@@ -2623,6 +2636,37 @@ export function clearFinished(): void {
  * per-server enable switch — so a retry restores the QUESTION rather than
  * answering it differently.
  */
+/**
+ * THE OPERATOR MOVED A BOOK THAT IS ALREADY ON A SERVER: the rest of it goes
+ * where they said.
+ *
+ * Fires when the row's own choice (`waitFor`) names a server other than the one
+ * the run is on (`waitForResolved`). A RUNNING step is atomic and finishes where
+ * it was placed — so while one runs this waits, and the pump calls it again on
+ * every pass, which is how the move lands the moment that step does. Then the
+ * assignment is released and the next step is placed by the ordinary path,
+ * which reads `waitFor` and pins the run to the new server.
+ *
+ * Steps that finished keep their venue: where work happened is history.
+ * Returns whether it moved anything, so the pump knows to publish.
+ */
+function followMove(job: QueueJob): boolean {
+  if (job.waitForResolved === undefined) return false;
+  // A row still on the DELETED local narrator holds with its own sentence and
+  // is queued again by hand (`step-venue.ts`); it is not a move to carry out.
+  if (job.waitForResolved === RETIRED_LOCAL_NARRATOR_VENUE) return false;
+  const chosen = job.waitFor;
+  if (chosen === undefined || chosen === WAIT_FOR_ANY || chosen === job.waitForResolved) return false;
+  if (job.steps.some((step) => step.status === 'running')) return false;
+  job.waitForResolved = undefined;
+  for (const step of job.steps) {
+    if (TERMINAL_STEP_STATUSES.has(step.status)) continue;
+    clearAdmissionHold(step);
+    step.venue = undefined;
+  }
+  return true;
+}
+
 function releaseVenueIfNothingStands(job: QueueJob): void {
   if (job.waitForResolved === undefined) return;
   if (job.steps.some((step) => isTravellingGpuStep(step)
@@ -4303,6 +4347,8 @@ export function pump(): void {
    * row in turn.
    */
   const sets = currentSlotSets();
+  /** Whether {@link followMove} carried out a move this pass, so it is published. */
+  let moved = false;
 
   // A `waiting` step whose parent has landed becomes runnable. Done here rather
   // than at completion so there is ONE place that decides what is runnable.
@@ -4325,6 +4371,8 @@ export function pump(): void {
      * delete without a test noticing.
      */
     if (isPending(job)) continue;
+    // A move the operator made while a step was running lands once it has.
+    if (followMove(job)) moved = true;
     for (const step of job.steps) {
       if (step.status !== 'queued') continue;
       const parent = parentOf(step);
@@ -4732,6 +4780,9 @@ export function pump(): void {
     clearTimeout(heldTailRecheckTimer);
     heldTailRecheckTimer = null;
   }
+
+  // A move carried out on this pass is a change of record like any other.
+  if (moved) changed();
 
   /*
    * The decision is made; anyone who needs to read "what is running now" may.

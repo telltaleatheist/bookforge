@@ -359,8 +359,9 @@ async function venueDoor() {
     });
   }
   {
-    // The queue row says one server, the session's record another: refused by
-    // name, nothing submitted anywhere.
+    // The queue row says one server, the session's record another: THE ROW WINS.
+    // Owen, 2026-10-22: a book narrated on one server, sent back to Pending and
+    // moved to another, runs its later steps on the one it was moved to.
     const a = await startFake('run');
     const b = await startFake('run');
     const aName = registerFake(a.url);
@@ -375,11 +376,12 @@ async function venueDoor() {
       await a.close();
       await b.close();
     }
-    await check('a row whose venue disagrees with the session\'s record is refused by name — two answers for one run', () => {
-      assert.strictEqual(result.success, false);
-      assert.ok(/crucible_align_venue_disagrees/.test(result.error), result.error);
-      assert.strictEqual(a.state.submitted.length + b.state.submitted.length, 0);
-      assert.strictEqual(result.venue, undefined);
+    await check('a row moved to another server aligns THERE, whatever server the session rendered on', () => {
+      assert.ok(!/venue_disagrees/.test(result.error ?? ''), result.error);
+      assert.strictEqual(a.state.submitted.length, 0, 'the server the session rendered on was never asked');
+      assert.ok(b.state.submitted.length > 0, 'the row\'s server took the alignment');
+      assert.deepStrictEqual(result.venue,
+        { where: 'crucible', server: bName, origin: 'the run', because: "the run's venue (the queue row)" });
     });
   }
   {

@@ -104,7 +104,6 @@ import {
   NO_SENTENCE_GAP,
   type SentenceGapPlan,
 } from './sentence-gap';
-import { describeRunVenue, sameRunVenue } from './crucible/step-venue';
 import type { RunVenue } from './crucible/step-venue';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -282,30 +281,11 @@ export async function runRvcEnhancement(
    */
   const { venueForRunStep } = await import('./crucible/step-venue.js');
   const { processVenueHost } = await import('./crucible/generation-venue.js');
-  const { readSessionRunVenue } = await import('./coverage-align-job.js');
+  const { runVenueForStep } = await import('./coverage-align-job.js');
   let venue: import('./crucible/step-venue').StepVenue;
   try {
-    /*
-     * TWO RECORDS OF ONE FACT, AND THEY MUST AGREE. The session says where the
-     * RENDER went; the row says where the QUEUE assigned this run. Ranking them
-     * would be inventing a precedence nobody stated, so a disagreement is
-     * refused by name — the same rule and the same shape
-     * `coverage-align-job.ts` uses (`crucible_align_venue_disagrees`).
-     */
-    const sessionVenue = readSessionRunVenue(config.processDir);
-    if (sessionVenue !== undefined
-      && config.runVenue !== undefined
-      && !sameRunVenue(sessionVenue, config.runVenue)) {
-      return {
-        success: false,
-        error: 'crucible_rvc_venue_disagrees: this conversion\'s row says its run went to '
-          + `${describeRunVenue(config.runVenue)}, but the session's own record `
-          + `(session_state.json) says ${describeRunVenue(sessionVenue)}. One book, one GPU: two `
-          + 'answers for one run are refused, not ranked. The rendered audio is intact.',
-      };
-    }
-    const runVenue = sessionVenue ?? config.runVenue;
-    const runVenueSource = sessionVenue !== undefined ? 'session_state.json' : 'the queue row';
+    // The row's assignment, else the session's record — one owner for the rule.
+    const { runVenue, runVenueSource } = runVenueForStep(config.processDir, config.runVenue);
     venue = await venueForRunStep({
       ...(runVenue === undefined ? {} : { runVenue, runVenueSource }),
       ...(config.crucible === undefined ? {} : { callerNamed: config.crucible }),

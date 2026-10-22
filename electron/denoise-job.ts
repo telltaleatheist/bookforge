@@ -87,7 +87,6 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-import { describeRunVenue, sameRunVenue } from './crucible/step-venue';
 import type { RunVenue } from './crucible/step-venue';
 import { denoiseSentences, finalDenoiseReady } from './denoise-bridge';
 import { acquireGpu, releaseGpu, warnProceedingWithoutGpu } from './gpu-arbiter';
@@ -495,26 +494,9 @@ export async function runFinalDenoise(
      */
     const { denoiseAtVenue } = await import('./crucible/denoise.js');
     const { processVenueHost } = await import('./crucible/generation-venue.js');
-    const { readSessionRunVenue } = await import('./coverage-align-job.js');
-    /*
-     * TWO RECORDS OF ONE FACT, AND THEY MUST AGREE — the session says where the
-     * RENDER went, the row says where the QUEUE assigned this run. Ranking them
-     * would invent a precedence nobody stated, so a disagreement is refused by
-     * name, the same shape `coverage-align-job.ts` and `rvc-job.ts` use.
-     */
-    const sessionVenue = readSessionRunVenue(config.processDir);
-    if (sessionVenue !== undefined
-      && config.runVenue !== undefined
-      && !sameRunVenue(sessionVenue, config.runVenue)) {
-      throw new Error(
-        'crucible_denoise_venue_disagrees: this hiss pass\'s row says its run went to '
-        + `${describeRunVenue(config.runVenue)}, but the session's own record `
-        + `(session_state.json) says ${describeRunVenue(sessionVenue)}. One book, one GPU: two `
-        + 'answers for one run are refused, not ranked. The rendered audio is intact.',
-      );
-    }
-    const runVenue = sessionVenue ?? config.runVenue;
-    const runVenueSource = sessionVenue !== undefined ? 'session_state.json' : 'the queue row';
+    const { runVenueForStep } = await import('./coverage-align-job.js');
+    // The row's assignment, else the session's record — one owner for the rule.
+    const { runVenue, runVenueSource } = runVenueForStep(config.processDir, config.runVenue);
     const at = await denoiseAtVenue<DerivedSet>({
       ...(runVenue === undefined ? {} : { runVenue, runVenueSource }),
       ...(config.crucible === undefined ? {} : { crucible: config.crucible }),

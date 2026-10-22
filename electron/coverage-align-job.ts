@@ -111,7 +111,6 @@ import { systemProbe } from './components/system-probe';
 // keepers without the routing record, the registry or the network behind it.
 import type { VenueHost } from './crucible/generation-venue';
 import type { RunVenue, StepVenue } from './crucible/step-venue';
-import { describeRunVenue, sameRunVenue } from './crucible/step-venue';
 
 export interface CoverageAlignConfig {
   /**
@@ -622,30 +621,18 @@ export async function runCoverageAlign(
    *
    * Found live, 2026-09-14: a render sent to `mac` was followed by this step
    * deciding its own venue (top-ranked → `local`) and loading the aligner on
-   * the PC's card, which somebody else owned. A later step FOLLOWS its run
-   * (PHASE7-LANES.md §4.4, one book = one GPU). Two sources of the run's
-   * venue: the session's own record — what the render bridge persisted, and
-   * the one the post-render phase (which passes no venue) reaches — and the
-   * caller's `runVenue` (a queue row's `waitForResolved`). They must agree.
+   * the PC's card, which somebody else owned. A later step FOLLOWS its run:
+   * the row's assignment, else the session's record ({@link runVenueForStep}).
    */
-  let sessionVenue: RunVenue | undefined;
+  let placed: { runVenue?: RunVenue; runVenueSource?: string };
   try {
-    sessionVenue = readSessionRunVenue(config.processDir);
+    placed = runVenueForStep(config.processDir, config.runVenue);
   } catch (err) {
     const error = `${err instanceof Error ? err.message : String(err)} The rendered audio is intact.`;
     sendProgress(mainWindow, stepId, { phase: 'error', percentage: 0, error, message: error });
     return { success: false, error };
   }
-  if (sessionVenue !== undefined && config.runVenue !== undefined && !sameRunVenue(sessionVenue, config.runVenue)) {
-    const error = 'crucible_align_venue_disagrees: this alignment\'s row says its run went to '
-      + `${describeRunVenue(config.runVenue)}, but the session's own record (session_state.json) says `
-      + `${describeRunVenue(sessionVenue)}. One book, one GPU: two answers for one run are refused, not `
-      + 'ranked. The rendered audio is intact.';
-    sendProgress(mainWindow, stepId, { phase: 'error', percentage: 0, error, message: error });
-    return { success: false, error };
-  }
-  const runVenue = sessionVenue ?? config.runVenue;
-  const runVenueSource = sessionVenue !== undefined ? 'session_state.json' : 'the queue row';
+  const { runVenue, runVenueSource } = placed;
 
   const { processVenueHost } = await import('./crucible/generation-venue.js');
   const { venueForRunStep } = await import('./crucible/step-venue.js');
@@ -702,6 +689,35 @@ export function readSessionRunVenue(processDir: string): RunVenue | undefined {
       + 'the run\'s venue is unreadable and is not guessed.');
   }
   return { where: 'crucible', server: server.trim() };
+}
+
+/**
+ * WHERE A RUN'S LATER STEP GOES: THE ROW'S ASSIGNMENT, ELSE THE SESSION'S RECORD.
+ *
+ * Owen, 2026-10-22: *"if it starts on one crucible server it doesnt have to
+ * finish on that server … each step is atomic and stays where it was assigned.
+ * but if i decide i want to run bonhoeffer on wsl instead and i send it back to
+ * pending and then move it to wsl, it should start there without issue."*
+ *
+ * The rule this replaces read BOTH records and refused when they disagreed
+ * (`crucible_*_venue_disagrees`), so a book narrated on the Mac and moved to WSL
+ * could never align, denoise or convert there. What one-book-one-GPU protects —
+ * steps scattered across two servers by `any` — is the row's assignment
+ * (`waitForResolved`), which pins every step once the first launches and is
+ * released only by Pending. So the ROW WINS whenever it has one. The session's
+ * `settings.crucible.server` is history (where the render ran) and decides only
+ * for a press with no row behind it, such as the post-render phase.
+ *
+ * The session is read only when it is the answer, so a malformed record cannot
+ * block a step the row has already placed.
+ */
+export function runVenueForStep(
+  processDir: string,
+  rowVenue: RunVenue | undefined,
+): { runVenue?: RunVenue; runVenueSource?: string } {
+  if (rowVenue !== undefined) return { runVenue: rowVenue, runVenueSource: 'the queue row' };
+  const sessionVenue = readSessionRunVenue(processDir);
+  return sessionVenue === undefined ? {} : { runVenue: sessionVenue, runVenueSource: 'session_state.json' };
 }
 
 /*
