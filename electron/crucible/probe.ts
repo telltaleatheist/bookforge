@@ -123,7 +123,7 @@ function discoveredRow(
       present: true,
       serverName: found.name,
       url: found.url,
-      tokenMasked: maskToken(found.token),
+      tokenMasked: found.token === null ? null : maskToken(found.token),
       configPath: found.configPath,
       via: found.via,
       registeredAs: already === undefined ? null : already.name,
@@ -519,7 +519,11 @@ export async function residentClipOn(
   try {
     const response = await fetch(`${entry.url}/v1/activity`, {
       method: 'GET',
-      headers: { Authorization: `Bearer ${entry.token}`, 'X-Crucible-Api': '1' },
+      // An open server is sent no Authorization header at all.
+      headers: {
+        ...(entry.token === null ? {} : { Authorization: `Bearer ${entry.token}` }),
+        'X-Crucible-Api': '1',
+      },
     });
     if (!response.ok) {
       return {

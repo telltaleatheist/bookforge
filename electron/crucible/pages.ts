@@ -183,10 +183,10 @@ export function cruciblePagesEndpoint(url: string): string {
  * present itself as a text act at the type level, which is the lie the four-act
  * split exists to prevent. Same three headers, one different act.
  */
-export function pagesEndpointHeaderMap(token: string): Record<string, string> {
+export function pagesEndpointHeaderMap(token: string | null): Record<string, string> {
   if (token === '') {
-    // A Crucible has no anonymous mode, so an empty token is not a quieter
-    // request — it is a 401 with nothing saying why.
+    // An open server's token is null, not ''. An EMPTY one is a token somebody
+    // meant to give and did not — a 401 with nothing saying why.
     throw new CruciblePagesError(
       'crucible_empty_token',
       'the page reader\'s header map would carry an empty bearer token. Every Crucible route but '
@@ -195,7 +195,8 @@ export function pagesEndpointHeaderMap(token: string): Record<string, string> {
     );
   }
   return {
-    Authorization: `Bearer ${token}`,
+    // An open server (`[auth] mode = "none"`) is sent no Authorization at all.
+    ...(token === null ? {} : { Authorization: `Bearer ${token}` }),
     'X-Crucible-Api': CRUCIBLE_API_VERSION,
     [CRUCIBLE_ACT_HEADER]: CRUCIBLE_PAGES_ACT,
     // This install's name: the reader's requests are items of the page read's
@@ -205,7 +206,7 @@ export function pagesEndpointHeaderMap(token: string): Record<string, string> {
 }
 
 /** The env OVERLAY for ONE `runFoundry` spawn — never a write to `process.env`. */
-export function pagesEndpointHeadersEnv(token: string): Record<string, string> {
+export function pagesEndpointHeadersEnv(token: string | null): Record<string, string> {
   return { [FOUNDRY_ENDPOINT_HEADERS_VAR]: JSON.stringify(pagesEndpointHeaderMap(token)) };
 }
 

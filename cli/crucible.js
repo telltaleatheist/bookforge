@@ -38,7 +38,7 @@
  * why that is a prefill and not a second kind of server.
  *
  * Usage:
- *   node cli/crucible.js --add --name <n> --url <u> (--token <t> | --token-file <path>)
+ *   node cli/crucible.js --add --name <n> --url <u> [--token <t> | --token-file <path>]  # no token: an open server
  *   node cli/crucible.js --remove --name <n>
  *   node cli/crucible.js --list                       # every registered server
  *   node cli/crucible.js --discovered                 # a Crucible on THIS computer, if any
@@ -211,6 +211,9 @@ async function run(args) {
   }
   const servers = require(path.join(DIST, 'crucible', 'servers.js'));
 
+  /** "token ****abcd", or "open" for a server that asks for no token. */
+  const keyWords = (masked) => (masked === null ? 'open' : `token ${masked}`);
+
   // ── --add ─────────────────────────────────────────────────────────────────
   if (args.add) {
     const name = required(args, 'name', 'the name this machine will know the server by');
@@ -220,20 +223,18 @@ async function run(args) {
     if (hasToken && hasTokenFile) {
       throw new UsageError('--token and --token-file both name the bearer token; pass one');
     }
-    if (!hasToken && !hasTokenFile) {
-      throw new UsageError('--add needs the bearer token: --token <t>, or --token-file <path> so '
-        + 'it does not sit in your shell history');
-    }
-    let token;
+    // No token at all is an OPEN server (`[auth] mode = "none"`), which answers
+    // like Ollama and is protected by its firewall.
+    let token = null;
     if (hasTokenFile) {
       const file = path.resolve(required(args, 'token-file', 'the file holding the bearer token'));
       if (!fs.existsSync(file)) throw new UsageError(`no such token file: ${file}`);
       token = fs.readFileSync(file, 'utf8').trim();
-    } else {
+    } else if (hasToken) {
       token = String(required(args, 'token', 'the bearer token `crucible token --show` prints'));
     }
     const added = servers.addServer({ name, url, token });
-    console.log(`added ${added.name}  ${added.url}  token ${added.tokenMasked}`);
+    console.log(`added ${added.name}  ${added.url}  ${keyWords(added.tokenMasked)}`);
     return;
   }
 
@@ -251,7 +252,7 @@ async function run(args) {
   if (args.list) {
     const rows = servers.listServers();
     for (const row of rows) {
-      console.log(`${row.name}\t${row.url}\ttoken ${row.tokenMasked}\tadded ${row.added}`);
+      console.log(`${row.name}\t${row.url}\t${keyWords(row.tokenMasked)}\tadded ${row.added}`);
     }
     console.log(`\n${rows.length} server(s)  —  ${servers.registryPath()}`);
     return;
@@ -277,12 +278,12 @@ async function run(args) {
     if (args['add-discovered']) {
       const name = required(args, 'name', 'what this machine will call the engine on it');
       const added = servers.addServer({ name, url: found.url, token: found.token });
-      console.log(`added ${added.name}  ${added.url}  token ${added.tokenMasked}`);
+      console.log(`added ${added.name}  ${added.url}  ${keyWords(added.tokenMasked)}`);
       return;
     }
     const already = servers.listServers()
       .find((row) => row.url.replace(/\/+$/, '') === found.url.replace(/\/+$/, ''));
-    console.log(`${found.name}\t${found.url}\ttoken ${servers.maskToken(found.token)}`
+    console.log(`${found.name}\t${found.url}\t${keyWords(found.token === null ? null : servers.maskToken(found.token))}`
       + `\tvia ${found.via}  (${found.configPath})`);
     console.log(already === undefined
       ? '\nNot registered. Add it:  node cli/crucible.js --add-discovered --name "<name>"'

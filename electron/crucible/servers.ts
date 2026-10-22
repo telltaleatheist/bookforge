@@ -60,6 +60,11 @@
  * Making the list path structurally unable to leak is worth more than
  * remembering not to print it.
  *
+ * A server with NO token is an open one (`[auth] mode = "none"`), which
+ * answers like Ollama and is protected by its firewall, not by a credential.
+ * Its token is recorded as `null` — not `""`, which would be a typo — and
+ * its client sends no `Authorization` header at all (client 2.0).
+ *
  * ── No fallbacks ────────────────────────────────────────────────────────────
  *
  * Every refusal here is by name, with a {@link CrucibleRegistryError} whose
@@ -102,8 +107,8 @@ export interface CrucibleServerEntry {
   name: string;
   /** The base URL, WITHOUT `/v1` — the SDK appends the version prefix itself. */
   url: string;
-  /** The bearer token `crucible init` minted on that host. */
-  token: string;
+  /** The bearer token `crucible init` minted on that host, or null for an open server. */
+  token: string | null;
   /** When it was added, ISO 8601. */
   added: string;
 }
@@ -116,7 +121,8 @@ export interface ResolvedServer {
   /** The name it is filed under. */
   name: string;
   url: string;
-  token: string;
+  /** Null for an open server, which asks for no token. */
+  token: string | null;
 }
 
 /**
@@ -127,8 +133,11 @@ export interface ResolvedServer {
 export interface CrucibleServerListing {
   name: string;
   url: string;
-  /** `****abcd` — enough to tell two tokens apart, not enough to use one. */
-  tokenMasked: string;
+  /**
+   * `****abcd` — enough to tell two tokens apart, not enough to use one. Null
+   * for an open server, which has no token to mask.
+   */
+  tokenMasked: string | null;
   added: string;
 }
 
@@ -314,7 +323,7 @@ function listingOf(entry: CrucibleServerEntry): CrucibleServerListing {
   return {
     name: entry.name,
     url: entry.url,
-    tokenMasked: maskToken(entry.token),
+    tokenMasked: entry.token === null ? null : maskToken(entry.token),
     added: entry.added,
   };
 }
@@ -364,10 +373,12 @@ export class ServerRegistry {
       const row = entry as Partial<CrucibleServerEntry> | null;
       for (const key of ['name', 'url', 'token', 'added'] as const) {
         if (typeof row?.[key] === 'string' && row[key] !== '') continue;
+        // An open server's token is recorded as null. The key is still required.
+        if (key === 'token' && row !== null && row.token === null) continue;
         throw new CrucibleRegistryError(
           'corrupt_registry',
-          `${file} holds an entry with no "${key}": every server needs a name, a url, a token and `
-            + 'an added timestamp. Repair or delete the file by hand.',
+          `${file} holds an entry with no "${key}": every server needs a name, a url, a token (null `
+            + 'for an open server) and an added timestamp. Repair or delete the file by hand.',
         );
       }
     }
@@ -426,8 +437,8 @@ export class ServerRegistry {
    *  - a name already in the registry, compared case-insensitively (replacing it
    *    would silently repoint every later call at a different machine),
    *  - a URL with no scheme, or one carrying the `/v1` the SDK appends itself,
-   *  - an empty token — a Crucible has no anonymous mode, so an entry without one
-   *    is an entry that can only 401.
+   *  - an EMPTY token. `null` is an open server and is recorded as one; `""`
+   *    is a token somebody meant to type and did not.
    *
    * A LOOPBACK URL IS ORDINARY HERE. It used to be refused
    * (`local_is_not_registered`), because the server on this machine was read
@@ -435,10 +446,10 @@ export class ServerRegistry {
    * `127.0.0.1` is added exactly like one across the tailnet, and the token
    * recorded here is the only copy this app keeps of it either way.
    */
-  add(server: { name: string; url: string; token: string }): CrucibleServerListing {
+  add(server: { name: string; url: string; token: string | null }): CrucibleServerListing {
     const name = validateServerName(server.name);
     const url = server.url.trim();
-    const token = server.token.trim();
+    const token = server.token === null ? null : server.token.trim();
 
     if (!/^https?:\/\//.test(url)) {
       throw new CrucibleRegistryError(
@@ -456,8 +467,8 @@ export class ServerRegistry {
     if (token === '') {
       throw new CrucibleRegistryError(
         'empty_token',
-        `no token for "${name}". Every Crucible route except /v1/ping needs the bearer token `
-          + '`crucible token --show` prints on that host; there is no anonymous mode',
+        `an empty token for "${name}". Give the token \`crucible token --show\` prints on that `
+          + 'host, or none at all for a server that runs open ([auth] mode = "none")',
       );
     }
 
@@ -572,7 +583,7 @@ export function getServer(name: string): ResolvedServer {
  * door, and a record announces where it is written rather than at each of the
  * places that might change it (docs/QUEUE-CRUCIBLE-BUG-HUNT-2026-09-19.md, A3).
  */
-export function addServer(server: { name: string; url: string; token: string }): CrucibleServerListing {
+export function addServer(server: { name: string; url: string; token: string | null }): CrucibleServerListing {
   const added = defaultRegistry().add(server);
   announceCrucibleRecordChanged();
   return added;

@@ -98,8 +98,8 @@ export interface DiscoveredCrucible {
   name: string;
   /** Base URL to connect to, without `/v1`. Derived from `[server] host`/`port`. */
   url: string;
-  /** `[auth] token`, verbatim. */
-  token: string;
+  /** `[auth] token`, verbatim, or null for a server with `[auth] mode = "none"`. */
+  token: string | null;
   /** The file this was read from, as the reading side names it. */
   configPath: string;
   /** Which of the two doors answered. See the header. */
@@ -224,16 +224,33 @@ export function parseCrucibleConfig(
   const name = requireKey(table, 'server', 'name', 'string', configPath) as string;
   const host = requireKey(table, 'server', 'host', 'string', configPath) as string;
   const port = requireKey(table, 'server', 'port', 'integer', configPath) as number;
+  const token = configToken(table, configPath);
+  const urlHost = connectHost(host);
+  const url = `http://${urlHost.includes(':') ? `[${urlHost}]` : urlHost}:${port}`;
+  return { name, url, token, configPath, via };
+}
+
+/**
+ * The token an app should send, or null for an OPEN server.
+ *
+ * `[auth] mode = "none"` answers like Ollama — its firewall is its protection —
+ * and `crucible init` still leaves a token in the file. Recording that token
+ * for a server that asks for none would make a credential look load-bearing
+ * when it is not, so an open server is recorded as open.
+ */
+function configToken(table: Record<string, unknown>, configPath: string): string | null {
+  const auth = table['auth'];
+  const mode = auth !== null && typeof auth === 'object' ? (auth as Record<string, unknown>)['mode'] : undefined;
+  if (mode === 'none') return null;
   const token = requireKey(table, 'auth', 'token', 'string', configPath) as string;
   if (token.trim() === '') {
     throw new CrucibleDiscoveryError(
       'config_missing_key',
-      `${configPath}: auth.token is empty. A Crucible has no anonymous mode; run \`crucible init\` on that host.`,
+      `${configPath}: auth.token is empty and [auth] mode is not "none". Run \`crucible init\` on `
+        + 'that host, or set [auth] mode = "none" to run it open.',
     );
   }
-  const urlHost = connectHost(host);
-  const url = `http://${urlHost.includes(':') ? `[${urlHost}]` : urlHost}:${port}`;
-  return { name, url, token, configPath, via };
+  return token;
 }
 
 function requireKey(
@@ -280,20 +297,6 @@ export function discoverCrucible(host: DiscoveryHost): DiscoveredCrucible {
    */
   const paired = readCruciblePairingFile(host.pairing);
   if (paired !== null) {
-    /*
-     * A CONNECT CODE WITH NO TOKEN is a server set to `[auth] mode = "none"`
-     * (client 2.0's `CruciblePairing.token`). That is a real Crucible, but this
-     * app's registry records a bearer token for every server, so it is refused
-     * by name rather than recorded with an empty one.
-     */
-    if (paired.pairing.token === null) {
-      throw new CrucibleDiscoveryError(
-        'config_missing_key',
-        `${paired.file}: this Crucible runs with [auth] mode = "none" and its connect code carries no `
-        + 'token. BookForge records a token for every server, so it cannot add this one yet — give that '
-        + 'server a token (`crucible init`) to add it.',
-      );
-    }
     return {
       name: paired.pairing.name,
       url: paired.pairing.url,

@@ -181,7 +181,8 @@ export async function startPairing(typed: string): Promise<PairingStart> {
 
 /** Where a poll ended up. `approved` is the only one that carries a token. */
 export type PairingOutcome =
-  | { readonly status: 'approved'; readonly name: string; readonly token: string }
+  /** `token` is null for an open server (`[auth] mode = "none"`), which asks for none. */
+  | { readonly status: 'approved'; readonly name: string; readonly token: string | null }
   | { readonly status: 'denied' }
   | { readonly status: 'expired' };
 
@@ -217,7 +218,9 @@ export async function pollForToken(
     if (!response.ok) throw await refusalFrom(response, start.url);
     const body = await response.json() as { status?: unknown; name?: unknown; token?: unknown };
     if (body?.status === 'approved') {
-      if (typeof body.token !== 'string' || body.token === '') {
+      // `token: null` is an OPEN server: approved at once, nothing to hold. A
+      // missing key or an empty string is a server that lost one.
+      if (body.token !== null && (typeof body.token !== 'string' || body.token === '')) {
         throw new Error(`${start.name} approved this connection but sent no token.`);
       }
       return {

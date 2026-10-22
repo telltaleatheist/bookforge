@@ -51,7 +51,8 @@ export type DiscoveredCrucibleRow =
       /** `[server] name`, or the connect code's name, e.g. `crucible@example-pc-wsl`. */
       serverName: string;
       url: string;
-      tokenMasked: string;
+      /** Null for an open server (`[auth] mode = "none"`), which has no token. */
+      tokenMasked: string | null;
       /** The file this was read from; prefixed `<distro>:` when read through WSL. */
       configPath: string;
       via: CrucibleDiscoveryVia;
@@ -73,7 +74,8 @@ export type DiscoveredCrucibleRow =
 export interface CrucibleServerRow {
   name: string;
   url: string;
-  tokenMasked: string;
+  /** Null for an open server (`[auth] mode = "none"`), which has no token. */
+  tokenMasked: string | null;
   /** ISO 8601. */
   added: string;
 }

@@ -36,7 +36,7 @@ import type {
   VoiceInfo,
   VoiceReference,
 } from '@crucible/client';
-import { clientName, type ServerEntry } from './servers';
+import { authHeaders, clientName, type ServerEntry } from './servers';
 
 /** What `Test` shows for one server: is it there, and what is on its card. */
 export interface ServerProbe {
@@ -208,7 +208,7 @@ export interface ResidentClip {
 export async function residentClipOf(entry: ServerEntry): Promise<ResidentClip | null> {
   const response = await fetch(`${entry.url}/v1/activity`, {
     method: 'GET',
-    headers: { Authorization: `Bearer ${entry.token}`, 'X-Crucible-Api': '1' },
+    headers: { ...authHeaders(entry), 'X-Crucible-Api': '1' },
   });
   if (!response.ok) {
     throw new Error(

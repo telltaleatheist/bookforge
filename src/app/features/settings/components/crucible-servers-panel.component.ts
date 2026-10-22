@@ -219,7 +219,7 @@ import { coordinationWords } from './crucible-words';
           </div>
 
           @if (urlOf(row.name); as url) {
-            <p class="cru-meta">{{ url }} · token {{ maskOf(row.name) }}</p>
+            <p class="cru-meta">{{ url }} · {{ maskOf(row.name) }}</p>
           }
           <app-crucible-engine-controls [server]="row.name" [enabled]="row.enabled" />
 
@@ -607,8 +607,11 @@ export class CrucibleServersPanelComponent {
     return this.view()?.servers.find((row) => row.name === name)?.url ?? null;
   }
 
+  /** "token ****abcd", or "open" for a server that asks for no token. */
   maskOf(name: string): string {
-    return this.view()?.servers.find((row) => row.name === name)?.tokenMasked ?? '';
+    const row = this.view()?.servers.find((entry) => entry.name === name);
+    if (row === undefined) return '';
+    return row.tokenMasked === null ? 'open' : `token ${row.tokenMasked}`;
   }
 
   /** Did WE submit this? A foreign job is drawn as somebody else's (§5). */

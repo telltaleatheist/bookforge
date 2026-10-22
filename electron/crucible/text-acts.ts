@@ -150,17 +150,18 @@ export function crucibleChatBase(url: string): string {
 }
 
 /** The map itself. Values are never rendered anywhere but {@link maskEndpointHeaders}. */
-export function endpointHeaderMap(token: string, act: CrucibleTextAct): Record<string, string> {
+export function endpointHeaderMap(token: string | null, act: CrucibleTextAct): Record<string, string> {
   if (token === '') {
-    // A Crucible has no anonymous mode, so an empty token is not a quieter
-    // request — it is a 401 with nothing saying why.
+    // An open server's token is null, not ''. An EMPTY one is a token somebody
+    // meant to give and did not — a 401 with nothing saying why.
     throw new Error(
       'crucible_empty_token: the endpoint header map would carry an empty bearer token. Every '
       + 'Crucible route but /v1/ping needs one; the local server\'s comes from its own config.toml '
       + 'and a remote\'s from the registry.');
   }
   return {
-    Authorization: `Bearer ${token}`,
+    // An open server (`[auth] mode = "none"`) is sent no Authorization at all.
+    ...(token === null ? {} : { Authorization: `Bearer ${token}` }),
     'X-Crucible-Api': CRUCIBLE_API_VERSION,
     [CRUCIBLE_ACT_HEADER]: act,
     // THIS INSTALL'S NAME, so the engine's chats are items of the queue session
@@ -178,7 +179,7 @@ export function endpointHeaderMap(token: string, act: CrucibleTextAct): Record<s
  * child that does not need it" made mechanical rather than remembered.
  */
 export function endpointHeadersEnv(
-  token: string,
+  token: string | null,
   act: CrucibleTextAct,
 ): Record<string, string> {
   return { [FOUNDRY_ENDPOINT_HEADERS_VAR]: JSON.stringify(endpointHeaderMap(token, act)) };

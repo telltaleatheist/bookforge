@@ -68,7 +68,11 @@ export interface HostCrucibleServer {
   name: string;
   /** The base URL as the registry stores it — no `/v1`, no `/openai`. */
   url: string;
-  /** The bearer token. Never empty: a Crucible has no anonymous mode. */
+  /**
+   * The bearer token, or `''` for an open server. Foundry's entry spells "no
+   * token" as the empty string (its `cleanHostServers`: "a server on a trusted
+   * network has none"), so the registry's `null` is written in its spelling.
+   */
   token: string;
   /** Whether the queue may place work on it. Disabled entries still cross. */
   enabled: boolean;
@@ -163,7 +167,7 @@ export function refreshHostCrucibleRegistry(
     servers.push({
       name: row.name,
       url: resolved.url,
-      token: resolved.token,
+      token: resolved.token ?? '',
       enabled: row.enabled,
     });
   }

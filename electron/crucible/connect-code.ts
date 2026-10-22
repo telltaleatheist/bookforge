@@ -61,7 +61,7 @@ import { getServer } from './servers';
  * lenient parser reads the fragment as part of the authority and a strict one
  * refuses the line.
  */
-export function connectCodeFor(name: string, url: string, token: string): string {
+export function connectCodeFor(name: string, url: string, token: string | null): string {
   const authority = new URL(url).host;
   if (authority === '') {
     throw new Error(
@@ -69,7 +69,10 @@ export function connectCodeFor(name: string, url: string, token: string): string
       + 'from. A connect code names the address an app should reach, and there is none here.',
     );
   }
-  return `crucible://${encodeURIComponent(name)}@${authority}/#${encodeURIComponent(token)}`;
+  // An open server's line has no `#<token>`: that is how the SDK's
+  // `parsePairing` reads one back as `token: null`.
+  const base = `crucible://${encodeURIComponent(name)}@${authority}/`;
+  return token === null ? base : `${base}#${encodeURIComponent(token)}`;
 }
 
 /**

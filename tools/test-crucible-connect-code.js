@@ -75,5 +75,9 @@ check('a token with reserved characters survives the round trip', () => {
   assert.ok(!fragment.includes('#'), 'an unencoded # would truncate the token');
 });
 
+check('an OPEN server\'s code has no fragment, which is how parsePairing reads token null', () => {
+  assert.strictEqual(connectCodeFor('crucible@mac', 'http://box:7100', null), 'crucible://crucible%40mac@box:7100/');
+});
+
 console.log(`\ncrucible connect code: ${ran} check(s), ${failed} failed`);
 process.exitCode = failed === 0 ? 0 : 1;

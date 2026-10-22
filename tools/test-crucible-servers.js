@@ -94,6 +94,16 @@ check('a missing key is refused by name, exactly as the server refuses it', () =
   refuses(() => discovery.parseCrucibleConfig(CONFIG.replace('token = "abcdefghijklmnop"', 'token = ""'), 'x', 'file'), discovery.CrucibleDiscoveryError, 'config_missing_key');
 });
 
+check('AN OPEN SERVER ([auth] mode = "none") is discovered with no token, though the file keeps one', () => {
+  // Owen, 2026-10-22: "we dont need to pair with an auth code anymore. thats not
+  // how ollama works either." crucible init still writes a token; the mode says
+  // nobody is asked for it.
+  const open = CONFIG.replace('token = "abcdefghijklmnop"', ['token = "abcdefghijklmnop"', 'mode = "none"'].join('\n'));
+  assert.strictEqual(discovery.parseCrucibleConfig(open, 'x', 'file').token, null);
+  const noToken = CONFIG.replace('token = "abcdefghijklmnop"', 'mode = "none"');
+  assert.strictEqual(discovery.parseCrucibleConfig(noToken, 'x', 'file').token, null);
+});
+
 check('not-TOML is config_unreadable, never an empty server', () => {
   refuses(() => discovery.parseCrucibleConfig('[server\nname = ', 'x', 'file'), discovery.CrucibleDiscoveryError, 'config_unreadable');
 });
@@ -192,6 +202,16 @@ check('A LOOPBACK URL IS ORDINARY — added, listed and resolved like any other'
   assert.deepStrictEqual(reg.get('3090 Ti'), { name: '3090 Ti', url: 'http://127.0.0.1:7100', token: 'here-secret-JXn0' });
   assert.deepStrictEqual(reg.get('mac'), { name: 'mac', url: 'http://mac.example.test:7100', token: 'mac-secret-KCK0' });
   assert.deepStrictEqual(Object.keys(reg.get('mac')).sort(), ['name', 'token', 'url']);
+});
+
+check('AN OPEN SERVER is recorded with token null, listed as such, and survives a re-read', () => {
+  const reg = fresh();
+  const added = reg.add({ name: 'wsl', url: 'http://127.0.0.1:7100', token: null });
+  assert.strictEqual(added.tokenMasked, null, 'nothing to mask');
+  assert.deepStrictEqual(reg.get('wsl'), { name: 'wsl', url: 'http://127.0.0.1:7100', token: null });
+  assert.strictEqual(JSON.parse(fs.readFileSync(file, 'utf8')).servers[0].token, null,
+    'written as null, never as "" — an empty string is a token that went missing');
+  assert.deepStrictEqual(new servers.ServerRegistry(file).list().map((r) => r.tokenMasked), [null]);
 });
 
 check('a listing cannot carry a plaintext token', () => {

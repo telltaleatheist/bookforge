@@ -107,8 +107,12 @@ export interface ServerEntry {
   readonly name: string;
   /** Base URL, no trailing slash and no `/v1` — `CrucibleClient`'s shape. */
   readonly url: string;
-  /** The bearer token. Never logged, never shown, never put in an error. */
-  readonly token: string;
+  /**
+   * The bearer token. Never logged, never shown, never put in an error. NULL
+   * for an open server (`[auth] mode = "none"`), which answers like Ollama and
+   * is protected by its firewall: it is sent no Authorization header at all.
+   */
+  readonly token: string | null;
   /** ISO 8601, for the Options list. */
   readonly added: string;
 }
@@ -151,16 +155,21 @@ export async function loadRegistry(): Promise<Registry> {
   const servers: ServerEntry[] = [];
   for (const entry of raw) {
     for (const key of ['name', 'url', 'token', 'added'] as const) {
-      if (typeof (entry as Record<string, unknown>)?.[key] !== 'string'
-          || (entry as Record<string, string>)[key] === '') {
+      const value = (entry as Record<string, unknown>)?.[key];
+      // An open server's token is stored as null. The key is still required.
+      if (key === 'token' && value === null) continue;
+      if (typeof value !== 'string' || value === '') {
         throw new Error(
-          `A stored Crucible entry has no "${key}". Every server needs a name, a url, a token and `
-          + 'an added date; an entry missing one cannot be used and is not guessed at.',
+          `A stored Crucible entry has no "${key}". Every server needs a name, a url, a token (null `
+          + 'for an open server) and an added date; an entry missing one cannot be used and is not '
+          + 'guessed at.',
         );
       }
     }
-    const e = entry as Record<string, string>;
-    servers.push({ name: e['name'], url: e['url'], token: e['token'], added: e['added'] });
+    const e = entry as Record<string, string | null>;
+    servers.push({
+      name: e['name'] as string, url: e['url'] as string, token: e['token'], added: e['added'] as string,
+    });
   }
   const selected = typeof stored[SELECTED_KEY] === 'string' ? stored[SELECTED_KEY] as string : null;
   return { servers, selected };
@@ -223,8 +232,9 @@ export async function addFromPairing(line: string): Promise<ServerEntry> {
  * makes Remove, Test and select work the same for both.
  */
 export async function addPairedServer(
-  name: string, url: string, token: string,
+  name: string, url: string, token: string | null,
 ): Promise<ServerEntry> {
+  // A null token is an open server. An EMPTY one is a token that went missing.
   for (const [label, value] of [['name', name], ['url', url], ['token', token]] as const) {
     if (value === '') {
       throw new Error(`A paired Crucible arrived with no ${label}, which cannot be stored.`);
@@ -255,6 +265,15 @@ export async function selectServer(name: string): Promise<void> {
     throw new Error(`No Crucible named "${name}" is registered in this extension.`);
   }
   await saveRegistry({ servers: registry.servers, selected: name });
+}
+
+/**
+ * The headers that authenticate a raw `fetch` to this server: a bearer for one
+ * with a token, NOTHING for an open one. Written once, so no caller sends
+ * `Bearer null`.
+ */
+export function authHeaders(entry: ServerEntry): Record<string, string> {
+  return entry.token === null ? {} : { Authorization: `Bearer ${entry.token}` };
 }
 
 /**

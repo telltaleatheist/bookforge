@@ -59,7 +59,8 @@ import { noteCrucibleEngineUrl, noteCrucibleRole } from './routes';
 export interface EngineEntry {
   readonly name: string;
   readonly url: string;
-  readonly token: string;
+  /** Null for an open server: the client then sends no Authorization header. */
+  readonly token: string | null;
 }
 
 /** Where the work goes, and what was in front of it. */

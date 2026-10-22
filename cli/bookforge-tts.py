@@ -46,7 +46,7 @@ THE COMMANDS. Exactly one is required.
   --generate-sentences  audio -> a sentence VTT (whisper, or epub-align with the book as truth)
   --generate-epub       read a project's PDF into its book (foundry vlm-convert)
   --rvc                 convert ONE finished audio file through an RVC voice, memory-safely
-  --crucible-add        record a Crucible inference server (name, url, bearer token)
+  --crucible-add        record a Crucible inference server (name, url, optional token)
   --crucible-remove     forget one
   --crucible-list       every registered server, tokens masked
   --crucible-ping       is there a Crucible at that address? (unauthenticated)
@@ -1730,7 +1730,9 @@ def cmd_crucible_add(args):
 
     Drives crucible/servers.addServer — the same function the app will call when
     phase 2 gives this a settings row. Refuses a duplicate name, a URL with no
-    scheme and an empty token, each by name; nothing here is defaulted.
+    scheme and an empty token, each by name; nothing here is defaulted. No
+    token at all is an OPEN server ([auth] mode = "none"), which answers like
+    Ollama and is protected by its firewall.
     """
     _require(not args.server,
              "--crucible-add: --crucible-add is what CREATES the entry the other commands "
@@ -1738,9 +1740,6 @@ def cmd_crucible_add(args):
     _require(bool(args.name), "--name <n> is required for --crucible-add")
     _require(bool(args.url), "--url <u> is required for --crucible-add "
                              "(the base URL, without /v1)")
-    _require(bool(args.token) or bool(args.token_file),
-             "--crucible-add needs the bearer token: --token <t>, or --token-file <path> "
-             "so it does not sit in your shell history")
     _require(not (args.token and args.token_file),
              "--token and --token-file both name the bearer token; pass one")
 
@@ -1750,7 +1749,7 @@ def cmd_crucible_add(args):
         token_file = str(_user_path(args.token_file))
         argv += ["--token-file", token_file]
         shown += ["--token-file", token_file]
-    else:
+    elif args.token:
         argv += ["--token", args.token]
         shown += ["--token", "****"]
     return _crucible(args, argv, f"add {args.name}", redacted=shown)
@@ -2581,7 +2580,7 @@ over a session's per-sentence cache.""",
         ],
     },
     "crucible-add": {
-        "usage": "bookforge-tts --crucible-add --name N --url U (--token T | --token-file FILE)",
+        "usage": "bookforge-tts --crucible-add --name N --url U [--token T | --token-file FILE]",
         "doc": """Record a Crucible inference server: its name, base URL and bearer token.
 
 Crucible is one inference server for all of Owen's apps — it runs models and
@@ -2590,8 +2589,9 @@ C:\\Users\\<user>\\Projects\\crucible\\docs\\DESIGN.md). This writes the entry t
 other --crucible-* commands read, through the app's own compiled registry
 (electron/crucible/servers.ts → <userData>/crucible-servers.json).
 
-Prefer --token-file: a token typed on a command line is a token in the shell
-history. Nothing is defaulted — a duplicate name, a URL with no scheme and an
+Leave the token out for an open server ([auth] mode = "none"), which answers
+like Ollama. Prefer --token-file for one that has a token: a token typed on a
+command line is a token in the shell history. Nothing is defaulted — a duplicate name, a URL with no scheme and an
 empty token are each refused by name.""",
         "reads": ["--config", "--dry-run", "--name", "--url", "--token", "--token-file"],
         "refuses": [

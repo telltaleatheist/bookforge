@@ -80,6 +80,7 @@ import {
 } from '../../shared/listen-client/index';
 import {
   NO_SERVER_SELECTED,
+  authHeaders,
   clientFor,
   adoptClientName,
   clientName,
@@ -1231,7 +1232,7 @@ async function evictOwnSession(sessionId: string): Promise<void> {
   try {
     await fetch(`${entry.url}/v1/tts/stream/${encodeURIComponent(sessionId)}`, {
       method: 'DELETE',
-      headers: { Authorization: `Bearer ${entry.token}`, 'X-Crucible-Api': '1' },
+      headers: { ...authHeaders(entry), 'X-Crucible-Api': '1' },
     });
   } catch (err) {
     console.warn('[BFR] could not close the stale session:', err);

@@ -239,7 +239,7 @@ import { CrucibleInstallProgressComponent } from './crucible-install-progress.co
                 <p class="ok"><strong>{{ d.serverName }}</strong> at {{ d.url }}</p>
                 <p class="hint">
                   {{ discoveredSourceWords(d.via) }} <code>{{ d.configPath }}</code>{{ d.via === 'wsl' ? ' inside WSL' : '' }},
-                  key {{ d.tokenMasked }}.
+                  {{ d.tokenMasked === null ? 'open, no key' : 'key ' + d.tokenMasked }}.
                 </p>
                 @if (d.registeredAs; as name) {
                   <p class="hint">

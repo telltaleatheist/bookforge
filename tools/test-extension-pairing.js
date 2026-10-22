@@ -205,10 +205,21 @@ function localEngine() {
     console.log(`  --  this engine pairs ${openly ? 'OPENLY' : 'with an APPROVAL step'}.`);
 
     if (openly) {
-      await checkAsync('reaching the engine is the whole of it: a token, no approval', async () => {
+      await checkAsync('reaching the engine is the whole of it: no approval, and a token only if it asks for one', async () => {
+        /*
+         * An OPEN engine (`[auth] mode = "none"`, Owen 2026-10-22: "thats not how
+         * ollama works either") answers `token: null` — there is nothing to hold.
+         * One that still has auth hands over its own token. Which one this engine
+         * is comes from its own ping, never from this keeper's guess.
+         */
+        const ping = await fetch(`${engine.url}/v1/ping`).then((r) => r.json());
         const outcome = await pair.pollForToken(started);
         assert.strictEqual(outcome.status, 'approved');
-        assert.strictEqual(outcome.token, engine.token, 'the token is the engine\'s own');
+        if (ping.auth === 'none') {
+          assert.strictEqual(outcome.token, null, 'an open engine sends no token');
+        } else {
+          assert.strictEqual(outcome.token, engine.token, 'the token is the engine\'s own');
+        }
         assert.ok(outcome.name.startsWith('crucible@'));
       });
 
