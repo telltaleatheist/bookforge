@@ -97,6 +97,7 @@ import { CrucibleBusy, CrucibleUnreachable } from '@crucible/client';
 
 import { asSessionWait, takeCrucibleLease, type CrucibleLease } from './crucible/lease';
 import { CRUCIBLE_CLIENT_NAME, crucibleClientFor } from './crucible/servers';
+import { CRUCIBLE_BATCH_QUEUE } from '../shared/crucible/server-queue';
 import { isUpstreamModelId } from './crucible/text-acts';
 import { modelFromCapability, processTextVenueHost } from './crucible/text-venue';
 import { renameWithRetry } from './fs-retry';
@@ -767,6 +768,14 @@ const GLOSSARY_DEPTH = 8;
 const PLACE_DEPTH = 4;
 
 /**
+ * A GUIDE IS A QUEUE ROW, SO ITS QUESTIONS WAIT IN THE SERVER'S LINE
+ * ({@link CRUCIBLE_BATCH_QUEUE}). It keeps {@link GLOSSARY_DEPTH} questions in
+ * flight and an engine admits what it admits — the Mac's mlx-lm took 4 — so
+ * with this app's default of "never queue" the rest were refused
+ * `chat_queue_full` on every wave, the four tries below ran out in ~14 s, and
+ * the row parked (2026-10-22). Busy is the server's line to hold, not a
+ * refusal to retry here.
+ *
  * WEATHER ON ONE REQUEST IS RETRIED, then waited on with a sentence. Four tries
  * over ~14 s; past it the row waits and asks again, and every decision already
  * made is in the file, so the resume asks only what is left.
@@ -794,7 +803,7 @@ async function withWeather<T>(signal: AbortSignal, call: () => Promise<T>): Prom
 
 function chatAsker(server: string, model: string, signal: AbortSignal): GlossaryAsker {
   return async (form, secondLook, focus) => {
-    const client = await crucibleClientFor(server, CRUCIBLE_CLIENT_NAME);
+    const client = await crucibleClientFor(server, CRUCIBLE_CLIENT_NAME, CRUCIBLE_BATCH_QUEUE);
     const reply = await withWeather(signal, () => client.chat({
       model,
       act: 'analysis',
@@ -818,7 +827,7 @@ function chatAsker(server: string, model: string, signal: AbortSignal): Glossary
 
 function decidePlacer(server: string, model: string, signal: AbortSignal): GlossaryPlacer {
   return async (form, senses, occurrences) => {
-    const client = await crucibleClientFor(server, CRUCIBLE_CLIENT_NAME);
+    const client = await crucibleClientFor(server, CRUCIBLE_CLIENT_NAME, CRUCIBLE_BATCH_QUEUE);
     const options = placingOptions(senses);
     const state = placingState(form);
     const out: PlacingAnswer[] = [];
