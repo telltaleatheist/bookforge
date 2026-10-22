@@ -307,15 +307,12 @@ export function writeCrucibleServers(edits: readonly CrucibleServerEdit[]): Cruc
       );
     }
     const carried = stored.get(name.toLowerCase());
+    // An EMPTY token is an OPEN server (`[auth] mode = "none"`), which answers
+    // like Ollama and is protected by its firewall (Owen, 2026-10-22: "it should
+    // just connect if it isnt behind a firewall").
     const token = typeof edit.token === 'string' && edit.token.trim().length > 0
       ? edit.token.trim()
       : carried?.token ?? '';
-    if (token.length === 0) {
-      throw new Error(
-        `"${name}" needs a token. A Crucible has no anonymous mode — run \`crucible token --show\` `
-        + 'on that machine and paste what it prints.',
-      );
-    }
     next.push({ name, url, token, enabled: edit.enabled !== false });
   }
   /*
@@ -363,8 +360,10 @@ export function writeCrucibleServers(edits: readonly CrucibleServerEdit[]): Cruc
  * It THROWS, like every other refusal this file makes, because the doors that
  * call it already print what they catch. There is no arm for "added it anyway".
  */
-export function addCrucibleServer(name: string, url: string, token: string): CrucibleServerView[] {
+export function addCrucibleServer(name: string, url: string, token: string | null): CrucibleServerView[] {
   const label = tidySlotName(name);
+  // A pairing's `null` is an OPEN server; this registry spells that `''`.
+  const stored = token ?? '';
   const clash = crucibleServers().find(
     (entry) => entry.name.toLowerCase() !== label.toLowerCase()
       && sameCrucibleAddress(entry.url, url),
@@ -381,7 +380,7 @@ export function addCrucibleServer(name: string, url: string, token: string): Cru
     .map((entry): CrucibleServerEdit => {
       if (entry.name.toLowerCase() === label.toLowerCase()) {
         replaced = true;
-        return { name: entry.name, url, enabled: entry.enabled, token };
+        return { name: entry.name, url, enabled: entry.enabled, token: stored };
       }
       return {
       name: entry.name,
@@ -392,7 +391,7 @@ export function addCrucibleServer(name: string, url: string, token: string): Cru
       token: null,
       };
     });
-  if (!replaced) updated.push({ name: label, url, enabled: true, token });
+  if (!replaced) updated.push({ name: label, url, enabled: true, token: stored });
   return writeCrucibleServers(updated);
 }
 
@@ -709,7 +708,9 @@ export interface ClientOptions {
 export function clientFor(entry: CrucibleServerEntry, options: ClientOptions = {}): CrucibleClient {
   return new CrucibleClient({
     url: entry.url,
-    token: entry.token,
+    // `''` is an open server here; the client wants `null`, and sends no
+    // Authorization header for it (client 2.0 refuses an empty token).
+    token: entry.token === '' ? null : entry.token,
     clientName: CRUCIBLE_CLIENT_NAME,
     timeoutMs: options.timeoutMs,
     queue: CRUCIBLE_QUEUE,
@@ -1127,7 +1128,7 @@ export async function probeCrucible(name: string): Promise<CrucibleProbe> {
  * IPC from a box the person is typing in, is used for one request, and is
  * dropped; only a later `crucible:save` writes it anywhere.
  */
-export async function probeCrucibleAt(url: string, token: string): Promise<CrucibleProbe> {
+export async function probeCrucibleAt(url: string, token: string | null): Promise<CrucibleProbe> {
   const clamped = clampCrucibleUrl(url);
   if (clamped === null) {
     return {
@@ -1136,14 +1137,8 @@ export async function probeCrucibleAt(url: string, token: string): Promise<Cruci
         + 'without /v1 on the end.',
     };
   }
-  if (token.trim().length === 0) {
-    return {
-      outcome: 'failed',
-      message: 'A Crucible has no anonymous mode. Run `crucible token --show` on that machine and '
-        + 'paste what it prints.',
-    };
-  }
-  return probeEntry({ name: clamped, url: clamped, token: token.trim(), enabled: true });
+  // No token is an OPEN server, probed with none.
+  return probeEntry({ name: clamped, url: clamped, token: (token ?? '').trim(), enabled: true });
 }
 
 /**

@@ -10,10 +10,31 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\<user>\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **fe3ed69** — *vlm: the rasteriser finds BookForge's tools env by its current name*, on 3f97514 *clean-forms: a lone letter is never a form*, on afba881 *engine: every product replaced into place waits out a holder (fs-replace)*, on b1ef0d1 *tree: a host's work chained onto a greyed step is drawn under it*, on a520939 *clean-triage --unit sentence: the criteria move into the state, so every question ends with its sentence and the engine reuses the prefix*, on c19342b *clean-forms: an abbreviation that is also a word is a form only where printed as one*, on c6e8824 *host: a pronunciation guide is a host card that makes nothing; forms listed at any step*, on 10fa4c9 *clean: a cleanup pressed again cleans again; only an unfinished run resumes*, on f66a126 *clean: every spot a book's guide decided is protected from the sentence pass*, on 0546538 *clean-forms: capitals are not numerals, and a capitalised lead-in is not acronyms*, on 5e2f51a *clean: readings at a spot, and every occurrence named — one form, two meanings*, on 7aae5ad *clean-forms: a heading's capitals are not forms, by its category too*, on 737cb30 *clean: fixed readings and printed forms for a host's book glossary (n19)* (see the entry below). Before them: 9872791 |
+| Source sha | **b2b38d3** — *crucible: pin 2.0.20; an open server connects with no token*, on 64a5efa *queue: a failed row wears the engine's sentence, not its whole stderr*, on fe3ed69 *vlm: the rasteriser finds BookForge's tools env by its current name*, on 3f97514 *clean-forms: a lone letter is never a form*, on afba881 *engine: every product replaced into place waits out a holder (fs-replace)*, on b1ef0d1 *tree: a host's work chained onto a greyed step is drawn under it*, on a520939 *clean-triage --unit sentence: the criteria move into the state, so every question ends with its sentence and the engine reuses the prefix*, on c19342b *clean-forms: an abbreviation that is also a word is a form only where printed as one*, on c6e8824 *host: a pronunciation guide is a host card that makes nothing; forms listed at any step*, on 10fa4c9 *clean: a cleanup pressed again cleans again; only an unfinished run resumes*, on f66a126 *clean: every spot a book's guide decided is protected from the sentence pass*, on 0546538 *clean-forms: capitals are not numerals, and a capitalised lead-in is not acronyms*, on 5e2f51a *clean: readings at a spot, and every occurrence named — one form, two meanings*, on 7aae5ad *clean-forms: a heading's capitals are not forms, by its category too*, on 737cb30 *clean: fixed readings and printed forms for a host's book glossary (n19)* (see the entry below). Before them: 9872791 |
 | Engine | **VENDORED, in `engine/`** since 1927563 (2026-09-24): `engine/foundry-engine.cjs` plus its four fonts, built from Foundry's `src/` by Foundry's `tools/build-engine.mjs` and checked against those sources by Foundry's test suite. Run by BookForge's own Electron as Node (`ELECTRON_RUN_AS_NODE=1`) from BOTH doors — this copy's `electron/engine.ts` and BookForge's `electron/foundry-bridge.ts`. **Ask it: `node foundry-app/engine/foundry-engine.cjs --version`** → `foundry X.Y.Z (src <digest>)`. There is no downloaded engine any more; `FOUNDRY_BIN` still overrides in both doors. |
-| Copied on | 2026-09-19 (five times: 3738c01, 3436fc5, 806d44b, f349771, ca4754c), 2026-09-20 (98a4344, 9e0b27d, dccc144, 7b98004, cc5fc5b, 93010d8, 77e1d6d) 2026-09-21 (753dca8, 3e26e53, f9bebb6, 95593b0, 8ee48b7) and 2026-09-22 (7185764, 7912022, 19fa7a9, df63f9f) and 2026-09-23 (acf63c2, 4835411), 2026-09-24 (b4c7346, 1927563, e2481dc, a1138f6, 72c6b08, b7ba2a8, 0eb12de), 2026-09-28 (1115cea), 2026-10-02 (06c28b5), 2026-10-02 (9872791), 2026-10-03 (737cb30, 7aae5ad, 5e2f51a, 0546538, f66a126, 10fa4c9, c6e8824, c19342b), 2026-10-10 (a520939, b1ef0d1, afba881, 3f97514), 2026-10-11 (fe3ed69) |
-| Copied by | Mechanical source sync, verified against Foundry `fe3ed69:app/` (index blob shas: 205 match, 0 problems; nothing tracked here but this file and `IPC-CHANNELS.md`); details below |
+| Copied on | 2026-09-19 (five times: 3738c01, 3436fc5, 806d44b, f349771, ca4754c), 2026-09-20 (98a4344, 9e0b27d, dccc144, 7b98004, cc5fc5b, 93010d8, 77e1d6d) 2026-09-21 (753dca8, 3e26e53, f9bebb6, 95593b0, 8ee48b7) and 2026-09-22 (7185764, 7912022, 19fa7a9, df63f9f) and 2026-09-23 (acf63c2, 4835411), 2026-09-24 (b4c7346, 1927563, e2481dc, a1138f6, 72c6b08, b7ba2a8, 0eb12de), 2026-09-28 (1115cea), 2026-10-02 (06c28b5), 2026-10-02 (9872791), 2026-10-03 (737cb30, 7aae5ad, 5e2f51a, 0546538, f66a126, 10fa4c9, c6e8824, c19342b), 2026-10-10 (a520939, b1ef0d1, afba881, 3f97514), 2026-10-11 (fe3ed69), 2026-10-22 (b2b38d3) |
+| Copied by | Mechanical source sync, verified against Foundry `b2b38d3:app/` (index blob shas: 207 match, 0 problems; nothing tracked here but this file and `IPC-CHANNELS.md`); details below |
+
+## The `fe3ed69 → b2b38d3` re-vendor — Crucible 2.0.20, open servers, a short failed row (2026-10-22)
+
+Two Foundry commits. **64a5efa**: a 968-page reading that failed at its model check put the whole
+stderr — 968 `page N/968: rendered` lines — in the row's error. The row now carries only the engine's
+closing `foundry: …` sentence (`engineSentence`), and the full stderr still goes to the console.
+**b2b38d3**: Foundry's Crucible pin moves 1.0.88 → 2.0.20, the fleet's release. Until this copy the hosted
+Foundry ran client 1.0.88 against 2.0.20 servers. An OPEN server (`[auth] mode = "none"`; Owen: *"thats
+not how ollama works either"*) is Foundry's empty token: kept by the settings clamp, accepted by the
+probe and pairing doors, given a client with token `null` (client 2.0 refuses `''`), and sent no
+Authorization header by dispatch. BookForge's host registry already sends an open server as `''`
+(`electron/crucible/host-registry.ts`), so the seam needs no change on this side. The held-card
+`waiting` coordination phase is removed, as BookForge removed its own (a 2.0 module task is never
+refused `server_busy`).
+
+No mount-seam export or host callback moved (`mount.ts` and `shared/host-ops.ts` are unchanged
+blob-for-blob). Verification: 207 blobs match, 0 problems. Deps moved, so `npm ci` was run (`@crucible/client`
+and `@crucible/bootstrap` both 2.0.20). `npm run build` was clean, with BookForge not running and only the
+known bundle-budget warning. Keepers: `test-ipc-collision` 7/7, `test-foundry-hosted-crucible-seam` 32/0,
+and every `test-crucible-*` passes. Foundry: `app` bun test 133/0, `ng build` clean, live probe of an open
+2.0.20 server ok.
 
 ## The `3f97514 → fe3ed69` re-vendor — the page reader finds the tools env (2026-10-11)
 

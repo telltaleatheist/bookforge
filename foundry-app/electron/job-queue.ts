@@ -4705,6 +4705,30 @@ interface RunWires {
 const lastEngineStderr = new Map<string, string>();
 
 /**
+ * WHAT THE ENGINE SAID WHEN IT STOPPED, out of everything it said on the way.
+ *
+ * The CLI prints its one closing sentence as `foundry: <message>` (src/cli.ts),
+ * possibly over several lines, possibly with a stack behind FOUNDRY_STACK, and
+ * nothing after it. So the sentence is the LAST line that opens `foundry: `
+ * and everything below it, with the prefix dropped. A stderr with no such line
+ * is a child that died some other way (a crash, a signal), and its last
+ * non-empty line is the nearest thing it has to a sentence. Empty for an empty
+ * stderr — the caller says the engine had nothing to say.
+ *
+ * The whole stderr still goes to the console and to `lastEngineStderr`: this is
+ * the row's sentence, not the diagnostic.
+ */
+export function engineSentence(stderr: string): string {
+  const lines = stderr.trim().split(/\r?\n/);
+  for (let at = lines.length - 1; at >= 0; at -= 1) {
+    if (lines[at]!.startsWith('foundry: ')) {
+      return lines.slice(at).join('\n').replace(/^foundry: /, '').trim();
+    }
+  }
+  return lines.reverse().find((line) => line.trim().length > 0)?.trim() ?? '';
+}
+
+/**
  * THE SCHEDULER: fill every slot that can be filled, then say whether the board
  * has gone quiet.
  *
@@ -6796,7 +6820,7 @@ async function carry(
        */
       const line = result.stderr.trim().split(/\r?\n/).reverse().find((one) => /^foundry: parked:/.test(one));
       const sentence = (line ?? '').replace(/^foundry: /, '')
-        || result.stderr.trim()
+        || engineSentence(result.stderr)
         || `The engine parked (exit ${result.code}) with nothing to say.`;
       next.state = 'queued';
       next.message = sentence;
@@ -6807,10 +6831,13 @@ async function carry(
       console.log(`\n[job] ${next.kind} PARKED — ${path.basename(next.inputPath)}\n${sentence}\n`);
     } else {
       next.state = 'failed';
-      // foundry's own stderr is the message a user needs — it names the missing
+      // foundry's own sentence is the message a user needs — it names the missing
       // Python, the model it could not load, the page it choked on. Never
-      // paraphrased, and never replaced with an exit code.
-      next.error = result.stderr.trim() || `The engine exited ${result.code} with nothing to say.`;
+      // paraphrased, and never replaced with an exit code. The SENTENCE, not the
+      // whole stderr: a reading's stderr carries a `page N/M: rendered` line per
+      // page, and a 968-page book put all 968 on the row. See `engineSentence`.
+      next.error = engineSentence(result.stderr)
+        || `The engine exited ${result.code} with nothing to say.`;
       /*
        * AND A COPY THE ROW CANNOT LOSE. `next.error` is erased by a resumable stop
        * on the host's side (BookForge P6), and a host's log is the only place a
@@ -6836,7 +6863,7 @@ async function carry(
        */
       console.error(
         `\n[job] ${next.kind} FAILED — exit ${result.code} — ${path.basename(next.inputPath)}\n`
-        + `${next.error}\n`,
+        + `${result.stderr.trim() || next.error}\n`,
       );
     }
   } finally {

@@ -285,17 +285,6 @@ function phaseWords(state: CrucibleCoordinationState): string {
     case 'preparing':
       return preparingWords(state);
 
-    case 'waiting':
-      // §5.4: the holder is shown VERBATIM and never as a generic failure. A
-      // person told only "busy" concludes the app is broken; a person told who
-      // has it concludes the system is working, which it is.
-      // A server that named no holder is said as much — nothing is invented.
-      return state.stopped
-        ? `Still busy after half an hour (${state.holder.fact})${holderWords(state.holder.who)}. `
-          + 'Foundry stopped asking; it will try again the next time it reaches this engine.'
-        : `Waiting: another app is using this engine (${state.holder.fact})${holderWords(state.holder.who)}. `
-          + 'Foundry carries on as soon as it lands.';
-
     case 'refused':
       return `This engine refused what Foundry asked for (${state.code}): ${state.message}`;
 
@@ -342,11 +331,6 @@ function preparingWords(
   return total === null
     ? `${head} — downloading${file} ${done} GB`
     : `${head} — downloading${file} ${done} of ${total} GB`;
-}
-
-/** ` — <the server's words>`, or nothing where the server named no holder. */
-function holderWords(who: string | null): string {
-  return who === null ? '' : ` — ${who}`;
 }
 
 /*

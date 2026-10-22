@@ -31,9 +31,7 @@
  * A module is idempotent (installed entries come back `skipped`), so posting
  * one on every connect would have been *correct* and still wrong: a Crucible
  * runs ONE task at a time, so a task whose whole content is `skipped` events is
- * a task the other app on this machine collides with (`task_busy`), and one
- * Foundry itself would be refused `server_busy` by its OWN lease while its own
- * translation is running. The cheapest correct thing and the cheapest thing are
+ * a task the other app on this machine collides with (`task_busy`). The cheapest correct thing and the cheapest thing are
  * the same thing here, which is why the read comes first.
  *
  * ── NOTHING TO PRESS, ON ANY SERVER ────────────────────────────────────────
@@ -53,20 +51,15 @@
  * REGISTRY'S ORDER — the operator's own drag rank — rather than putting an
  * address at the front of the queue.
  *
- * ── THE FOUR THINGS THAT CAN COME BACK, AND WHY EACH IS ITS OWN ACT ────────
+ * ── THE THREE THINGS THAT CAN COME BACK, AND WHY EACH IS ITS OWN ACT ───────
  *
  * - **`task_busy`** — a task is already running on that server. It is FOLLOWED,
  *   never re-posted: there is no queue for tasks (PHASE13 §3.3), so a second
  *   post is simply refused again, and joining the stream of the one in flight
  *   is the only way to end up drawing the truth.
- * - **`server_busy`** — a lease, a job, the claim or a chat holds the card. A
- *   WAIT, with the holder shown verbatim, and a retry when the card settles.
- *   The shape is the queue's admission hold: a named sentence about a named
- *   machine, never a silent stall, and never a tight poll — the settle check is
- *   one `GET /v1/activity` on a slow cadence, reading the server's OWN
- *   composition of "nobody holds the card"
- *   (`slots.accelerated.acceptsWork`) rather than recomposing the four facts
- *   here (R1).
+ * - **A held card is not one of them.** Since Crucible 2.0 a module task is
+ *   never refused `server_busy`: it downloads beside whatever holds the card,
+ *   so there is nothing here to wait for.
  * - **A refusal about the REQUEST** — `invalid_module`, `unknown_subject`. It
  *   fails ONCE, by name, and is remembered for the rest of the session: the
  *   vendored file cannot change while the app runs, so re-posting it would be
@@ -95,7 +88,6 @@
 import {
   CrucibleAuthError,
   CrucibleCapabilityUndecided,
-  CrucibleCardHeld,
   CrucibleNotACrucible,
   CrucibleProtocolError,
   CrucibleRefused,
@@ -159,19 +151,6 @@ export function foundryModuleForBackend(backend: string | null, source: ScopedMo
     subjects: source.subjects.filter(supported).map(entry => ({ kind: entry.kind, id: entry.id })),
   };
 }
-
-/**
- * How long between two asks about a held card, and how many asks.
- *
- * Twenty seconds is slow enough that a whole afternoon of waiting costs the
- * other machine a few hundred bytes, and quick enough that a two-minute chat
- * is not waited out for five. Ninety of them is half an hour, after which the
- * wait STOPS with the holder still named: the next connect starts it again, and
- * an app that polled somebody else's server for ever would be holding an
- * opinion about their afternoon.
- */
-export const SETTLE_POLL_MS = 20_000;
-export const SETTLE_POLL_ATTEMPTS = 90;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // The session's memory: one state per server, one run at a time, one refusal
@@ -429,9 +408,9 @@ export function coordinateServer(server: string): Promise<CrucibleCoordinationSt
  * them in. So a sweep that asked in any other order would be this app inventing
  * a second opinion about which server matters most.
  *
- * STARTED IN ORDER, NOT AWAITED IN ORDER. A run can end in a half-hour WAIT on
- * a held card, and a sweep that awaited each server in turn would leave the
- * Mac unasked until the PC's chat finished. The synchronous prefix of
+ * STARTED IN ORDER, NOT AWAITED IN ORDER. A run can follow a long download, and
+ * a sweep that awaited each server in turn would leave the Mac unasked until
+ * the PC's download finished. The synchronous prefix of
  * {@link coordinateServer} runs before its first `await`, so iterating really
  * does put the top row's `GET /v1/info` on the wire first; after that they
  * proceed together.
@@ -571,103 +550,51 @@ async function prepare(
   missing: readonly CrucibleMissingEntry[],
   unmet: readonly CrucibleUnmetClass[],
 ): Promise<CrucibleCoordinationState> {
-  let attempts = 0;
-
-  // The wait loop. Every turn of it is one POST attempt; a `server_busy` turns
-  // into one slow settle check, never a tight poll.
-  for (;;) {
-    let taskId: string;
-    let followed = false;
-    try {
-      taskId = await postFoundryModule(server);
-    } catch (err) {
-      if (err instanceof CrucibleCardHeld) {
-        attempts += 1;
-        const holder = { fact: err.fact, who: err.who };
-        const stopped = attempts >= SETTLE_POLL_ATTEMPTS;
-        const waiting = report({
-          server, phase: 'waiting', missing, unmet, holder, attempts, stopped,
-        });
-        if (stopped) return waiting;
-        await waitForSettle(server);
-        continue;
-      }
-      if (err instanceof CrucibleRefused && err.code === 'task_busy') {
-        // FOLLOWED, NOT RE-POSTED. A Crucible has no queue for tasks, so the
-        // one in flight is the only one there will be until it lands.
-        const other = await runningTaskId(server);
-        if (other === null) {
-          /*
-           * `task_busy` and then no running task in the listing: it landed in
-           * the moment between the two calls. Ask again from the top — the
-           * catalog read is what decides whether there is still anything to do,
-           * and it may well have been that very task that did it.
-           */
-          return runCoordination(server);
-        }
-        taskId = other;
-        followed = true;
-      } else if (err instanceof CrucibleRefused) {
-        // A refusal about the REQUEST: `invalid_module`, `unknown_subject`, or
-        // any other name this build has not met. Once, and remembered.
-        requestRefusals.set(server, { code: err.code, message: err.message });
-        return report({ server, phase: 'refused', code: err.code, message: err.message });
-      } else {
-        return report({ server, phase: 'unreachable', message: describeRead(err, server) });
-      }
-    }
-
-    const progress0: CrucibleModuleProgress = {
-      server, taskId, state: 'running',
-      step: null, line: null, bytes: null, skipped: null, jobTypes: null, error: null, unmet: null,
-    };
-    report({ server, phase: 'preparing', missing, unmet, progress: progress0, followed });
-
-    const last = await followTask(server, taskId, (progress) => {
-      report({ server, phase: 'preparing', missing, unmet, progress, followed });
-    });
-    // A shared engine may have been preparing the OTHER app's module. Its
-    // success only releases the task slot; it says nothing about our demand,
-    // so re-read the catalog before deciding whether a task of our own is
-    // still needed. Never blindly repeat an accepted task.
-    if (followed && last.state === 'done') return runCoordination(server);
-    return report({ server, phase: 'preparing', missing, unmet, progress: last, followed });
-  }
-}
-
-/**
- * Wait until the card is free, by asking the server rather than by guessing.
- *
- * `slots.accelerated.acceptsWork` is the server's OWN composition of "the lane
- * is free AND nobody holds the card", derived once so that three clients do not
- * each invent it and disagree (R1). Reading `true` is not permission — the
- * post is still the only authority — it is simply the cheapest honest signal
- * that asking again is worth a round trip.
- */
-async function waitForSettle(server: string): Promise<void> {
-  await sleep(SETTLE_POLL_MS);
+  let taskId: string;
+  let followed = false;
   try {
-    const entry = crucibleServerNamed(server);
-    if (entry === null) return;
-    const client = await engineClientFor(entry);
-    for (;;) {
-      const activity = await client.activity();
-      if (activity.slots.accelerated.acceptsWork) return;
-      await sleep(SETTLE_POLL_MS);
+    taskId = await postFoundryModule(server);
+  } catch (err) {
+    if (err instanceof CrucibleRefused && err.code === 'task_busy') {
+      // FOLLOWED, NOT RE-POSTED. A Crucible has no queue for tasks, so the
+      // one in flight is the only one there will be until it lands.
+      const other = await runningTaskId(server);
+      if (other === null) {
+        /*
+         * `task_busy` and then no running task in the listing: it landed in
+         * the moment between the two calls. Ask again from the top — the
+         * catalog read is what decides whether there is still anything to do,
+         * and it may well have been that very task that did it.
+         */
+        return runCoordination(server);
+      }
+      taskId = other;
+      followed = true;
+    } else if (err instanceof CrucibleRefused) {
+      // A refusal about the REQUEST: `invalid_module`, `unknown_subject`, or
+      // any other name this build has not met. Once, and remembered.
+      requestRefusals.set(server, { code: err.code, message: err.message });
+      return report({ server, phase: 'refused', code: err.code, message: err.message });
+    } else {
+      return report({ server, phase: 'unreachable', message: describeRead(err, server) });
     }
-  } catch {
-    /*
-     * The settle check could not be made. Returning is right: the POST that
-     * follows is the thing with an authoritative answer, and it will produce
-     * either the same named wait or the real refusal. Swallowing the read's own
-     * error here is not hiding a failure — it is declining to invent a second
-     * outcome for a question the next line asks properly.
-     */
   }
-}
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => { setTimeout(resolve, ms); });
+  const progress0: CrucibleModuleProgress = {
+    server, taskId, state: 'running',
+    step: null, line: null, bytes: null, skipped: null, jobTypes: null, error: null, unmet: null,
+  };
+  report({ server, phase: 'preparing', missing, unmet, progress: progress0, followed });
+
+  const last = await followTask(server, taskId, (progress) => {
+    report({ server, phase: 'preparing', missing, unmet, progress, followed });
+  });
+  // A shared engine may have been preparing the OTHER app's module. Its
+  // success only releases the task slot; it says nothing about our demand,
+  // so re-read the catalog before deciding whether a task of our own is
+  // still needed. Never blindly repeat an accepted task.
+  if (followed && last.state === 'done') return runCoordination(server);
+  return report({ server, phase: 'preparing', missing, unmet, progress: last, followed });
 }
 
 /** The id of whatever task is running on this server, or null. */
@@ -728,9 +655,9 @@ function report(state: CrucibleCoordinationState): CrucibleCoordinationState {
  * Post the module. Answers the task id; THROWS every refusal untranslated.
  *
  * The refusal is not described here on purpose: {@link prepare} discriminates
- * `server_busy` (a wait), `task_busy` (follow the other one) and a refusal
- * about the request (fail once by name), and each of those is a different act.
- * A function that flattened all three into an `Error` would force the caller to
+ * `task_busy` (follow the other one) and a refusal about the request (fail
+ * once by name), and each of those is a different act. A function that
+ * flattened them into an `Error` would force the caller to
  * read the sentence back out of it.
  */
 async function postFoundryModule(server: string): Promise<string> {

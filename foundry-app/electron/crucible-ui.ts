@@ -110,7 +110,8 @@ export function openCrucibleUi(name: string): void {
    * otherwise cut it in half.
    */
   const base = entry.url.replace(/\/+$/, '');
-  const target = `${base}/#token=${encodeURIComponent(entry.token)}`;
+  // An open server's console needs no token, so its address carries none.
+  const target = entry.token === '' ? `${base}/` : `${base}/#token=${encodeURIComponent(entry.token)}`;
 
   const win = new BrowserWindow({
     width: 1100,

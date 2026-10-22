@@ -21,8 +21,7 @@
  * is a read and nothing else — no task is posted at all. That is not an
  * optimisation: a Crucible runs ONE task at a time, so a task whose whole
  * content would be `skipped` events is a task two apps arriving at once collide
- * on (`task_busy`), and one Foundry would be refused `server_busy` by its OWN
- * lease while its own translation is running. Only
+ * on (`task_busy`). Only
  * {@link CrucibleCoordinationState} `preparing` involves a POST.
  *
  * ── AND NOTHING TO PRESS, ANYWHERE ─────────────────────────────────────────
@@ -294,10 +293,10 @@ export interface CrucibleModuleProgress {
  *
  * ── `unmet` RIDES ON EVERY PHASE THAT COMPARED ────────────────────────────
  *
- * The three phases that have read that engine's capability record — `stocked`,
- * `preparing`, `waiting` — all carry {@link CrucibleUnmetClass}, because the
+ * The two phases that have read that engine's capability record — `stocked`
+ * and `preparing` — both carry {@link CrucibleUnmetClass}, because the
  * classes this engine does not serve are true of it whatever the downloads are
- * doing, and a half-hour wait is exactly when somebody wants to be told. **A
+ * doing. **A
  * server with nothing missing and two unmet classes is `stocked`** with the two
  * named: nothing is missing, which is what the word means, and Foundry posts
  * nothing — the engine cannot be made to serve a class by downloading anything.
@@ -323,26 +322,6 @@ export type CrucibleCoordinationState =
       readonly progress: CrucibleModuleProgress;
       /** True when this task was already running and we joined it (`task_busy`). */
       readonly followed: boolean;
-    }
-  /**
-   * `409 server_busy`: the card is held. A WAIT with the holder named, never a
-   * failure — the queue's admission hold, one layer out.
-   */
-  | {
-      readonly server: string;
-      readonly phase: 'waiting';
-      readonly missing: readonly CrucibleMissingEntry[];
-      /** What the capability record said this engine does not serve. */
-      readonly unmet: readonly CrucibleUnmetClass[];
-      readonly holder: CrucibleCoordinationHolder;
-      /** How many times the card has been asked about. 1 on the first refusal. */
-      readonly attempts: number;
-      /**
-       * The wait gave up asking. Not a failure and not a timeout on the work:
-       * the next connect starts it again. A wait that polled for ever would be
-       * an app holding an opinion about somebody else's afternoon.
-       */
-      readonly stopped: boolean;
     }
   /**
    * A refusal about the REQUEST — `invalid_module`, `unknown_subject`. Fails

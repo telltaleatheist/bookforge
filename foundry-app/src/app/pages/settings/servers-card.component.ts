@@ -193,8 +193,7 @@ interface EditableServer extends CrucibleServerView {
                 engine (Owen, 2026-09-14), so this is where a person goes to
                 install a job type, pull weights or read what is resident.
               -->
-              <button class="ghost" [disabled]="!row.tokenSet"
-                      (click)="openUi(row.name)">Advanced engine console</button>
+              <button class="ghost" (click)="openUi(row.name)">Advanced engine console</button>
             </div>
             @if (probes()[row.name]; as probe) {
               @if (probe.outcome === 'ok') {

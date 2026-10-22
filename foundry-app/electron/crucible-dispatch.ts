@@ -1504,7 +1504,8 @@ function upstreamOf(row: CapabilityRow): string | null {
  */
 function headerMapFor(entry: CrucibleServerEntry, capability: CapabilityClass): string {
   return JSON.stringify({
-    Authorization: `Bearer ${entry.token}`,
+    // An open server (token `''`) is sent no Authorization header at all.
+    ...(entry.token === '' ? {} : { Authorization: `Bearer ${entry.token}` }),
     'X-Crucible-Api': '1',
     'X-Crucible-Act': capability,
     // THIS INSTALL'S NAME, so the engine's chats and decisions are items of the

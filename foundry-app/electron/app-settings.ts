@@ -500,9 +500,8 @@ export function clampWslDistro(value: unknown): string {
  * A row is DROPPED, and every drop is a row that could otherwise be picked in a
  * `waitFor` and then fail at the spawn with something unreadable:
  *
- *   * No name, no URL or no token. A Crucible has no anonymous mode, so an entry
- *     without a token is not a server this app could ever reach; storing it
- *     would put a dead name in the picker.
+ *   * No name or no URL. An EMPTY token is kept: it is an OPEN server
+ *     (`[auth] mode = "none"`), which answers like Ollama with no token at all.
  *   * A URL that is not http(s), or that already carries `/v1`. The SDK is
  *     explicit that its `url` is the base WITHOUT the version prefix and refuses
  *     one that has it — better to drop the row here, where the settings card can
@@ -530,7 +529,7 @@ export function clampCrucibleServers(value: unknown): CrucibleServerEntry[] {
     const name = tidySlotName(entry['name']);
     const url = clampCrucibleUrl(entry['url']);
     const token = typeof entry['token'] === 'string' ? entry['token'].trim() : '';
-    if (slotNameRefusal(name, 'server') !== null || url === null || token.length === 0) continue;
+    if (slotNameRefusal(name, 'server') !== null || url === null) continue;
     const key = name.toLowerCase();
     if (seen.has(key)) continue;
     seen.add(key);
