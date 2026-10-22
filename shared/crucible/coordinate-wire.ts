@@ -178,20 +178,6 @@ export type CrucibleMissingEntry =
     };
 
 /**
- * Who is holding the card, out of a `409 server_busy`'s `details` (PHASE13
- * §3.3). Both halves travel untranslated: `fact` is which of the four things
- * holds it and `who` is the server's own sentence about the holder.
- */
-export interface CrucibleCoordinationHolder {
-  /** `a job`, `a lease`, `the claim` or `a chat`. */
-  readonly fact: string;
-  /**
-   * The server's own words. Shown verbatim — §5.4 forbids a generic failure.
-   */
-  readonly who: string;
-}
-
-/**
  * Where coordination with one server stands.
  *
  * A server with NO state is the fifth case and is deliberately not a member:
@@ -200,11 +186,10 @@ export interface CrucibleCoordinationHolder {
  *
  * ── `unmet` RIDES ON EVERY PHASE THAT COMPARED ────────────────────────────
  *
- * The three phases that have read that engine's capability record — `stocked`,
- * `preparing`, `waiting` — all carry {@link CrucibleUnmetClass}, because the
+ * The two phases that have read that engine's capability record — `stocked`
+ * and `preparing` — both carry {@link CrucibleUnmetClass}, because the
  * classes an engine does not serve are true of it whatever the downloads are
- * doing, and a half-hour wait is exactly when somebody wants to be told. **A
- * server with nothing missing and an unmet class is `stocked`** with the class
+ * doing. **A server with nothing missing and an unmet class is `stocked`** with the class
  * named: nothing is missing, which is what the word means, and BookForge posts
  * nothing — no download makes an engine serve a class it does not serve.
  */
@@ -228,26 +213,6 @@ export type CrucibleCoordinationState =
       readonly progress: CrucibleModuleProgress;
       /** True when this task was already running and we joined it (`task_busy`). */
       readonly followed: boolean;
-    }
-  /**
-   * `409 server_busy`: the card is held. A WAIT with the holder named, never a
-   * failure — the queue's admission hold, one layer out.
-   */
-  | {
-      readonly server: string;
-      readonly phase: 'waiting';
-      readonly missing: readonly CrucibleMissingEntry[];
-      /** What the capability record said this engine does not serve. */
-      readonly unmet: readonly CrucibleUnmetClass[];
-      readonly holder: CrucibleCoordinationHolder;
-      /** How many times the card has been asked about. 1 on the first refusal. */
-      readonly attempts: number;
-      /**
-       * The wait gave up asking. Not a failure and not a timeout on the work:
-       * the next connect starts it again. A wait that polled for ever would be
-       * an app holding an opinion about somebody else's afternoon.
-       */
-      readonly stopped: boolean;
     }
   /**
    * A refusal about the REQUEST — `invalid_module`, `unknown_subject`. Fails

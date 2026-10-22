@@ -35,7 +35,6 @@ import { promises as fsPromises } from 'fs';
 import {
   CrucibleAuthError,
   CrucibleBusy,
-  CrucibleCardHeld,
   CrucibleConfigError,
   CrucibleNotACrucible,
   CrucibleProtocolError,
@@ -2643,7 +2642,7 @@ export async function crucibleChatOnce(options: {
 
 /** A refusal that means "busy right now" — worth a place in the server's line. */
 function chatRefusedAsBusy(err: unknown): boolean {
-  if (err instanceof CrucibleBusy || err instanceof CrucibleSessionHeld || err instanceof CrucibleCardHeld) return true;
+  if (err instanceof CrucibleBusy || err instanceof CrucibleSessionHeld) return true;
   if (err instanceof CrucibleRefused) return err.code === 'model_not_resident' || err.code === 'engine_in_use';
   if (err instanceof CrucibleServerError) return err.code === 'chat_queue_full';
   return false;
@@ -2701,7 +2700,12 @@ async function crucibleChatAttempt(
         queue,
         signal: controller.signal,
       });
-      return { content: answer.content, finishReason: answer.finishReason };
+      // Client 2.0 says `null` where the engine gave no reason; this function's
+      // type says the same thing by leaving the field out.
+      return {
+        content: answer.content,
+        ...(answer.finishReason !== null ? { finishReason: answer.finishReason } : {}),
+      };
     } catch (err) {
       if (timedOut) {
         throw new Error(`Crucible timeout: no answer from "${server}" within ${deadlineMs / 1000}s `

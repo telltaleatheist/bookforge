@@ -626,7 +626,7 @@ async function droppedStreamSweepsItsOwnServer() {
       // lane is clear and submits no unload.
       send(res, 200, {
         server: { name: 'fake-crucible', version: '0.5.0', api_version: 1, backend: 'cuda-linux', uptime_s: 99 },
-        resident: null, stopping: null, warming: null, claim: null, streaming: null, session: null,
+        resident: null, stopping: null, updating: null, warming: null, claim: null, streaming: null, session: null,
         chat: { in_flight: 0, rows: [] },
         slots: { accelerated: { busy: 0, of: 1, queue_depth: 0, accepts_work: true } },
         running: [], queued: [],

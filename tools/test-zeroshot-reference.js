@@ -339,7 +339,7 @@ function refusal(fn) {
             held_by: null, unclaimed_since: '2026-09-14T00:00:00Z', engine_exit_code: null,
             reference: state.residentReference,
           },
-          stopping: null, warming: null, claim: null, streaming: null,
+          stopping: null, updating: null, warming: null, claim: null, streaming: null,
           chat: { in_flight: 0, max_in_flight: null, max_in_flight_basis: null, rows: [] },
           session: null, slots: { accelerated: { busy: 0, of: 1, queue_depth: 0, accepts_work: true } },
           running: [], queued: [],

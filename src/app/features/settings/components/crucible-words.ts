@@ -151,11 +151,6 @@ export function subjectWords(
 }
 
 /** "8.5 GB", or "size not declared" — never "0 GB", which nobody measured. */
-/** ` — <holder>`, the server's words for who holds the card. */
-function whoWords(who: string): string {
-  return ` — ${who}`;
-}
-
 export function sizeWords(bytes: number | null): string {
   if (bytes === null) return 'size not declared';
   return `${(bytes / 1024 ** 3).toFixed(1)} GB`;
@@ -640,18 +635,6 @@ function phaseWords(state: CrucibleCoordinationState): string {
 
     case 'preparing':
       return preparingWords(state);
-
-    case 'waiting':
-      // §5.4: the holder is shown VERBATIM and never as a generic failure. A
-      // person told only "busy" concludes the app is broken; a person told who
-      // has it concludes the system is working, which it is.
-      // A server that did not name the holder says only the fact (§5.4 still
-      // holds: the fact is the server's, and nothing is made up in its place).
-      return state.stopped
-        ? `Still busy after half an hour (${state.holder.fact})${whoWords(state.holder.who)}. `
-          + 'BookForge stopped asking; it will try again the next time it reaches this engine.'
-        : `Waiting: another app is using this engine (${state.holder.fact})${whoWords(state.holder.who)}. `
-          + 'BookForge carries on as soon as it lands.';
 
     case 'refused':
       return `This engine refused what BookForge asked for (${state.code}): ${state.message}`;

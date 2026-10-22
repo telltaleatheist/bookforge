@@ -402,7 +402,7 @@ function startFakeCrucible(route, options = {}) {
     }
 
     if (routePath === '/v1/ping' && req.method === 'GET') {
-      return send(res, 200, { crucible: true, name: 'fake-crucible', api_version: 1 });
+      return send(res, 200, { crucible: true, name: 'fake-crucible', api_version: 1, auth: 'token' });
     }
 
     if (routePath === '/v1/uploads' && req.method === 'POST') {
@@ -590,8 +590,8 @@ function sessionRoutes(behaviour = {}) {
   const stamp = '2026-10-01T00:00:00+00:00';
   const doc = (id, status, attempt, more = {}) => ({
     session_id: id, status, act: attempt.act, client: attempt.client, model: attempt.model,
-    position: null, idle_s: attempt.idleS, max_wait_s: attempt.maxWaitS, created: stamp,
-    opened_at: status === 'queued' ? null : stamp, idle_deadline: null, max_hold_deadline: null,
+    context: null, position: null, idle_s: attempt.idleS, max_wait_s: attempt.maxWaitS, created: stamp,
+    opened_at: status === 'queued' ? null : stamp, idle_deadline: null, first_work_deadline: null, max_hold_deadline: null,
     items_run: 0, in_flight: [], stream_session: null, load_job: null, closed_at: null,
     reason: null, message: null, error: null, ...more,
   });
@@ -1298,7 +1298,7 @@ function faultyJobRoutes(behaviour = {}) {
                 : null,
               engine_exit_code: null,
             },
-          stopping: null,
+          stopping: null, updating: null,
           warming: card.warming === null ? (a.warming === undefined ? null : a.warming) : card.warming,
           claim: a.holder ? { held_by: a.holder } : null,
           streaming: null,

@@ -109,6 +109,7 @@ function activityBody(state) {
       engine_exit_code: null,
     },
     stopping: state.stopping ?? null,
+    updating: null,
     warming: null,
     claim: state.claim ?? null,
     streaming: null,

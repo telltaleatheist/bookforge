@@ -280,6 +280,20 @@ export function discoverCrucible(host: DiscoveryHost): DiscoveredCrucible {
    */
   const paired = readCruciblePairingFile(host.pairing);
   if (paired !== null) {
+    /*
+     * A CONNECT CODE WITH NO TOKEN is a server set to `[auth] mode = "none"`
+     * (client 2.0's `CruciblePairing.token`). That is a real Crucible, but this
+     * app's registry records a bearer token for every server, so it is refused
+     * by name rather than recorded with an empty one.
+     */
+    if (paired.pairing.token === null) {
+      throw new CrucibleDiscoveryError(
+        'config_missing_key',
+        `${paired.file}: this Crucible runs with [auth] mode = "none" and its connect code carries no `
+        + 'token. BookForge records a token for every server, so it cannot add this one yet — give that '
+        + 'server a token (`crucible init`) to add it.',
+      );
+    }
     return {
       name: paired.pairing.name,
       url: paired.pairing.url,

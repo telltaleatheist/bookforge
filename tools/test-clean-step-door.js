@@ -247,7 +247,7 @@ function modelRow(id, resident) {
     id, family: 'qwen3.5', params_b: 9, revision: 'abc1234', fingerprint: `${id}@abc1234`,
     modalities: ['text'], backend_supported: true, installed: true, weights_of: null, resident,
     loadable: true, reason: null, memory_bytes_estimate: 19000000000,
-    context_default: 32768, max_model_len: 32768,
+    context_default: 32768, max_model_len: 32768, form: null, form_reason: null, forms: null,
   };
 }
 

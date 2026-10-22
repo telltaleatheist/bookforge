@@ -17,15 +17,14 @@
  *     `/v1/tasks`. This is the amendment Foundry's review produced: a module
  *     whose every entry would come back `skipped` must not be posted on a
  *     server that runs ONE task at a time, or two apps starting together
- *     collide on `task_busy` and a running book refuses its own app with
- *     `server_busy`.
+ *     collide on `task_busy`.
  *  2. **One missing subject → exactly one POST**, and the task's frames reach
  *     the state.
  *  3. **`task_busy` is FOLLOWED, not re-posted.** Tasks have no queue, so a
  *     second post is refused again; the running one's events are joined.
- *  4. **`server_busy` is a WAIT with the holder named**, retried when
- *     `/v1/activity` says the card is free — never a tight poll, never a
- *     generic failure (§5.4: a lease means another app is mid-run).
+ *  4. **There is no held-card wait.** Since Crucible 2.0 a module task is
+ *     never refused `server_busy`; it downloads beside whatever holds the
+ *     card, so coordination never reads `/v1/activity`.
  *  5. **A refusal about the REQUEST fails ONCE by name.** `invalid_module` is
  *     remembered for the session and not re-posted on the next connect.
  *  6. **THE CONNECT IS THREE READS, AND THE THIRD IS THE SCHEDULER'S**
@@ -120,11 +119,10 @@ function capabilityRow(capability, overrides) {
   }, overrides || {});
 }
 
-/** Deps with no real clock: a keeper must not wait twenty seconds for a settle. */
+/** Deps with no real clock. */
 function deps(overrides) {
   return Object.assign({
     isEnabled: () => true,
-    sleep: async () => {},
     now: () => '2026-09-14T12:00:00Z',
   }, overrides || {});
 }
@@ -158,7 +156,7 @@ function deps(overrides) {
 function startFake(options) {
   const opts = Object.assign({
     missing: [], uncatalogued: [], jobTypes: MODULE.job_types.map((j) => j.type), refuse: null,
-    acceptsWorkAfter: 0, settings: {}, taskUnmet: undefined,
+    settings: {}, taskUnmet: undefined,
     /*
      * EXTRA KEYS ON `/v1/info`, in the server's own spelling — PHASE17's `role`,
      * `managed_by` and `engine`. Absent by default, which is exactly what a
@@ -167,7 +165,7 @@ function startFake(options) {
     info: {},
   }, options);
   const seen = {
-    info: 0, catalog: 0, posts: [], taskLists: 0, eventStreams: [], activity: 0, cancelled: [],
+    info: 0, catalog: 0, posts: [], taskLists: 0, eventStreams: [], cancelled: [],
     taskReads: [],
   };
   const settings = settingsRoutes(opts.settings);
@@ -222,6 +220,8 @@ function startFake(options) {
         license: null,
         source: `hf:fake/${subject.id}`,
         resident: false,
+        form: null,
+        form_reason: null,
       }));
       for (const id of Object.values(CLASS_MODELS)) {
         if (opts.uncatalogued.includes(id)) continue;
@@ -239,33 +239,11 @@ function startFake(options) {
           license: null,
           source: `hf:fake/${id}`,
           resident: false,
+          form: null,
+          form_reason: null,
         });
       }
       send(res, 200, { rows });
-      return true;
-    }
-
-    if (route === '/v1/activity' && req.method === 'GET') {
-      seen.activity += 1;
-      send(res, 200, {
-        server: { name: 'fake-crucible', version: '0.6.0', api_version: 1, backend: 'cuda-linux', uptime_s: 10 },
-        resident: null, warming: null, claim: null, streaming: null,
-        chat: { in_flight: 0, max_in_flight: null, max_in_flight_basis: null, rows: [] }, session: null,
-        slots: { accelerated: { busy: 0, of: 1, queue_depth: 0, accepts_work: seen.activity >= opts.acceptsWorkAfter } },
-        running: [], queued: [],
-        /*
-         * REQUIRED SINCE CRUCIBLE 1.0.5 — `activity has no field "stopping"`,
-         * and it must be an object or null (a boolean is refused by name).
-         *
-         * A fake that omits it does not merely fail a shape check: `client
-         * .activity()` THROWS, `waitForSettle` catches and returns true, and
-         * the caller POSTs again immediately. That is how this keeper read 90
-         * posts where it expects 1 — a protocol disagreement wearing the
-         * costume of a tight poll, which is the exact behaviour the module
-         * under test exists to prevent.
-         */
-        stopping: null,
-      });
       return true;
     }
 
@@ -348,18 +326,6 @@ function startFake(options) {
     return false;
   }).then((fake) => Object.assign(fake, { seen, settings: settings.settings }));
 }
-
-const BUSY = {
-  status: 409,
-  code: 'server_busy',
-  message: 'a lease holds the card',
-  details: {
-    fact: 'a lease',
-    who: "foundry/example-pc for 'translate' on qwen3.8-27b-4bit until 03:12",
-    lease_id: 'lease-1', kind: 'llm', client: 'foundry/example-pc', act: 'translate',
-    subject: 'qwen3.8-27b-4bit', since: '2026-09-14T03:00:00Z', expires_at: '2026-09-14T03:12:00Z',
-  },
-};
 
 async function main() {
   // ── 1. A stocked engine: a READ and nothing else ─────────────────────────
@@ -944,68 +910,6 @@ async function main() {
     } finally { await fake.close(); }
   });
 
-  await check('continuous activity polling has a bounded wait and preserves the holder', async () => {
-    coordinate.resetCoordinationForTests();
-    const fake = await startFake({ missing: ['denoise-roformer'], refuse: BUSY, acceptsWorkAfter: Infinity });
-    let sleeps = 0;
-    try {
-      const state = await coordinate.coordinateServer(registerFake(fake.url), deps({ sleep: async () => {
-        if (++sleeps > coordinate.SETTLE_POLL_ATTEMPTS) throw Error('activity wait exceeded its bound');
-      } }));
-      assert.strictEqual(state.phase, 'waiting');
-      assert.strictEqual(state.stopped, true);
-      assert.strictEqual(state.holder.who, BUSY.details.who);
-      assert.strictEqual(fake.seen.posts.length, 1, 'a continuously held card must not receive repeated POSTs');
-    } finally { await fake.close(); }
-  });
-
-  // ── 4. server_busy is a WAIT with the holder named ───────────────────────
-  await check('server_busy waits with the holder verbatim and retries on settle', async () => {
-    coordinate.resetCoordinationForTests();
-    const fake = await startFake({
-      missing: ['denoise-roformer'],
-      refuse: (n) => (n === 1 ? BUSY : null),
-      acceptsWorkAfter: 2,
-    });
-    try {
-      const name = registerFake(fake.url);
-      const waits = [];
-      const stop = coordinate.onCoordination((state) => {
-        if (state.phase === 'waiting') waits.push(state);
-      });
-      let slept = 0;
-      const state = await coordinate.coordinateServer(name, deps({
-        sleep: async () => { slept += 1; },
-      }));
-      stop();
-      assert.strictEqual(waits.length, 1, `one wait was drawn, got ${waits.length}`);
-      assert.strictEqual(waits[0].holder.fact, 'a lease');
-      assert.strictEqual(waits[0].holder.who, BUSY.details.who,
-        'the holder is the server\'s own sentence, verbatim');
-      assert.strictEqual(waits[0].stopped, false);
-      assert.strictEqual(waits[0].attempts, 1);
-      assert.ok(slept >= 2, `the wait slept rather than spinning (slept ${slept})`);
-      assert.ok(fake.seen.activity >= 2, 'the card was asked about, not guessed at');
-      assert.strictEqual(fake.seen.posts.length, 2, 'one refused post, one accepted');
-      assert.strictEqual(state.phase, 'preparing');
-      assert.strictEqual(state.progress.state, 'done');
-    } finally { await fake.close(); }
-  });
-
-  await check('a card held for ever STOPS being asked about, with the holder still named', async () => {
-    coordinate.resetCoordinationForTests();
-    const fake = await startFake({ missing: ['denoise-roformer'], refuse: BUSY, acceptsWorkAfter: 0 });
-    try {
-      const name = registerFake(fake.url);
-      const state = await coordinate.coordinateServer(name, deps({ sleep: async () => {} }));
-      assert.strictEqual(state.phase, 'waiting');
-      assert.strictEqual(state.stopped, true);
-      assert.strictEqual(state.attempts, coordinate.SETTLE_POLL_ATTEMPTS);
-      assert.strictEqual(state.holder.who, BUSY.details.who);
-      assert.strictEqual(fake.seen.posts.length, coordinate.SETTLE_POLL_ATTEMPTS);
-    } finally { await fake.close(); }
-  });
-
   // ── 5. A refusal about the REQUEST fails ONCE, by name ───────────────────
   await check('invalid_module fails once by name and is not posted again', async () => {
     coordinate.resetCoordinationForTests();
@@ -1133,7 +1037,9 @@ async function main() {
      */
     coordinate.resetCoordinationForTests();
     const unmet = [{ class: 'clean', reason: 'nothing on this card fits' }];
-    const fake = await startFake({ missing: ['denoise-roformer'], taskUnmet: unmet });
+    // The wire row also names the module `entry`; BookForge keeps class and reason.
+    const fake = await startFake({ missing: ['denoise-roformer'],
+      taskUnmet: unmet.map((need) => ({ ...need, entry: 'qwen3.5-9b' })) });
     try {
       const name = registerFake(fake.url);
       const state = await coordinate.coordinateServer(name, deps());
@@ -1180,23 +1086,6 @@ async function main() {
       assert.strictEqual(state.progress.state, 'done',
         'a task that ran to done is a task that ran to done');
       assert.strictEqual(state.progress.unmet, null, 'and nobody said what was unmet');
-    } finally { await fake.close(); }
-  });
-
-  await check('a WAIT carries the unmet classes too — half an hour is when it matters', async () => {
-    coordinate.resetCoordinationForTests();
-    const reason = 'no mlx-darwin block for qwen3.5-9b';
-    const fake = await startFake({
-      missing: ['denoise-roformer'],
-      refuse: BUSY,
-      acceptsWorkAfter: 0,
-      settings: { disableClasses: { clean: reason } },
-    });
-    try {
-      const name = registerFake(fake.url);
-      const state = await coordinate.coordinateServer(name, deps({ sleep: async () => {} }));
-      assert.strictEqual(state.phase, 'waiting');
-      assert.deepStrictEqual(state.unmet, [{ class: 'clean', reason }]);
     } finally { await fake.close(); }
   });
 

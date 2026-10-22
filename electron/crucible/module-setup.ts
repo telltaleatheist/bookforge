@@ -32,16 +32,11 @@
  * post race; it is NOT a licence to post one on every connect, which is the
  * thing §4a's amendment forbids.
  *
- * ── THE REFUSAL THAT MUST NOT READ AS A FAULT ──────────────────────────────
+ * ── NO HELD-CARD REFUSAL ──────────────────────────────────────────────────
  *
- * §5.4, verbatim: when the post is refused `server_busy` because a LEASE is
- * open, the row shows the holder — *"held by foundry — translate,
- * qwen3.8-27b-4bit"* — and NOT a generic failure. A lease means another app on
- * the same machine is mid-run, which is the system working; an operator shown
- * a dead control with no name concludes it is broken. The SDK's
- * `CrucibleCardHeld` carries `fact` (`a job`, `a lease`, `the claim`, `a chat`)
- * and `who` (the server's own sentence), and both travel to the row
- * untranslated.
+ * Since Crucible 2.0 a module task is never refused `server_busy`: it
+ * downloads beside whatever holds the card. `task_busy` (one task at a time)
+ * is the only "busy" a post can meet, and `coordinate.ts` follows that task.
  */
 import type { CrucibleModule } from '@crucible/client';
 
