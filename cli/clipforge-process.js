@@ -1692,7 +1692,7 @@ TRAINING_HELP.mix = [
   '  --out <dir>      the data directory to write   --build-root <dir>  where the tiers live',
   '  --long <tier> --short <tier> [--heading <tier>]',
   '  --rows-l / --rows-s / --rows-h <json>',
-  '  --served-cap-chars <n> [--served-cap-strict]',
+  '  --no-pause-cap (always, for now)   [--short-rows-frac --short-prefer-min --short-max --max-hours]',
   '',
   '  NO BED. --nobed is passed always. The -70 dB bed is an Orpheus/SNAC EOS fix that does NOT',
   '  transfer to v3: coverage 90.9 vs 90.7, early stops 14 vs 13, runaways 0 vs 0 (field notes 4f).',
@@ -1702,9 +1702,11 @@ TRAINING_HELP.mix = [
   '  first flag had 38.5% of rows in band against the base model own 34.3% - the experiment would',
   '  have compared a model to itself (4n.37.16). Pass BOTH zeros for a deliberate long-only build.',
   '',
-  '  --served-cap-strict REFUSES a cap above the train rows p75. If it fires, the CORPUS is wrong',
-  '  for the cap, not the flag: by 4n.37.19 a model is safe to about its corpus median, so serving',
-  '  above p75 means truncating exactly where you render. Re-slice; do not drop the flag.',
+  '  CURRENT RECIPE (field notes 3.6): --no-pause-cap, rows up to 1000 chars. Pass it: the worker',
+  '  caps interior pauses at 1.5/2.5 s unless told not to, and the cap cost Third Reich its prosody.',
+  '',
+  '  --served-cap-chars / --served-cap-strict: DEPRECATED (Owen 2026-10-12, "Rule 2 is deprecated").',
+  '  The p75 check stopped the mb v18 mix for nothing; the served cap comes from the ladder. Do not pass them.',
 ].join('\n');
 
 async function runMix(args) {
@@ -1718,11 +1720,13 @@ async function runMix(args) {
   const python = machinePath(args.python, '--python', 'CLIPFORGE_GPU_PYTHON',
     'the higgs3 python in the guest');
   const pass = ['out', 'build-root', 'long', 'short', 'heading', 'rows-l', 'rows-s', 'rows-h',
-    'short-rows-frac', 'short-frac', 'short-prefer-min', 'short-max', 'served-cap-chars',
-    'max-hours', 'workers', 'device', 'mode-name', 'seed'];
+    'short-rows-frac', 'short-frac', 'short-prefer-min', 'short-min', 'short-max', 'served-cap-chars',
+    'micro-max', 'micro-rows-frac', 'long-max-s', 'max-hours', 'workers', 'device', 'mode-name', 'seed'];
   const argv = ['--nobed'];
   for (const k of pass) if (args[k] !== undefined && args[k] !== true) argv.push('--' + k, String(args[k]));
-  if (args['served-cap-strict']) argv.push('--served-cap-strict');
+  // Switches pass through too. --no-pause-cap was silently dropped until 2026-10-23, so a mix built through
+  // this verb got the 1.5/2.5 s pause cap the current recipe rules out (no cap; field notes 3.6).
+  for (const k of ['no-pause-cap', 'served-cap-strict', 'select-only']) if (args[k]) argv.push('--' + k);
   if (args['short-rows-frac'] !== undefined && args['short-frac'] === undefined) {
     console.log('[mix] NOTE: --short-rows-frac given without --short-frac. --short-frac still');
     console.log('[mix]       defaults to 0.25 of DURATION, which is ~59% of ROWS (4n.37.16).');

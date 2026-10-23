@@ -79,6 +79,9 @@ const SPECS = {
       '  The mistborn rule (2026-09-23, Owen: "EQ sounds fine"): the reference is 12 x 30 s from EACH book\'s RAW master,',
       '  so every book lands on the set\'s own mean tone. Premiere Enhance darkens the top end by 2-8 dB; this puts it',
       '  back. Zero-phase FIR per block, loudness-neutral, clamped.',
+      '  [--headroom-db N] comes off the WHOLE master (default 0 with --ref, 2 with --curve). Blocks are never levelled on',
+      '  their own (until 2026-10-23 a hot block was turned down alone: a level step per seam). If the log says samples',
+      '  clipped, raise --headroom-db and re-run. Lossy sources decode over 0 dBFS: decode to float, never straight to int.',
     ],
   },
   'invented': {
