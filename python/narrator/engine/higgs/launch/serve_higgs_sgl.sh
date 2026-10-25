@@ -70,6 +70,16 @@ HIGGS_SGL_CUDA_GRAPH_MAX_BS="${HIGGS_SGL_CUDA_GRAPH_MAX_BS:-$HIGGS_MAX_NUM_SEQS}
 # on this stack is the hard-coded 4096-token context (prompt + max_new_tokens),
 # which narrator sizes every request against (sgl_served.frame_cap).
 HIGGS_SGL_MAX_NEW_TOKENS="${HIGGS_SGL_MAX_NEW_TOKENS:-7500}"
+# THE VOCODER DECODES IN FLOAT32. sglang_omni's create_vocoder_executor defaults to
+# dtype="bfloat16", and nothing above it overrides that, so the codec that turns
+# codes into audio ran in bf16 - against the codec's own config ("dtype": "float32")
+# and its own docstring ("decode ConvTranspose is unstable in bf16"). MEASURED
+# 2026-10-25 on the same Mistborn codes through sglang's own HiggsAudioCodec: bf16
+# lays a flat broadband floor 15-18 dB above fp32 in 4-11 kHz (difference -64 dBFS
+# under -29 dBFS speech), the hiss Owen heard on every PC voice and never on the Mac
+# (MLX) or plain-PyTorch renders; fp32 matches both. Owen confirmed by ear. The
+# reference-audio encoder stage keeps its own bf16 codec; only decode changes.
+HIGGS_SGL_VOCODER_DTYPE="${HIGGS_SGL_VOCODER_DTYPE:-float32}"
 # THE CONTEXT WINDOW, and the one thing on this stack that is not a flag.
 # sglang_omni's Higgs builder hard-codes it as a class attribute
 # (models/higgs_tts/engine_builder.py:29, `context_length = 4096`); the three
@@ -173,6 +183,7 @@ echo "BIND=$HIGGS_SGL_HOST:$HIGGS_SGL_PORT"
 echo "MEM_FRACTION_STATIC=$HIGGS_SGL_MEM_FRACTION"
 echo "MAX_RUNNING_REQUESTS=$HIGGS_MAX_NUM_SEQS CUDA_GRAPH_MAX_BS=$HIGGS_SGL_CUDA_GRAPH_MAX_BS"
 echo "FACTORY_MAX_NEW_TOKENS=$HIGGS_SGL_MAX_NEW_TOKENS"
+echo "VOCODER_DTYPE=$HIGGS_SGL_VOCODER_DTYPE"
 echo "CONTEXT_LENGTH=$HIGGS_CONTEXT_LENGTH"
 
 # --model-name higgs-v3-ds, DELIBERATELY NOT vllm-omni's higgs-v3: it is the
@@ -186,4 +197,5 @@ exec "$HIGGS_SGL_ENV/bin/python" "$SGL_ENTRY" serve \
   --mem-fraction-static "$HIGGS_SGL_MEM_FRACTION" \
   --tts_engine.factory.max_running_requests "$HIGGS_MAX_NUM_SEQS" \
   --tts_engine.factory.cuda_graph_max_bs "$HIGGS_SGL_CUDA_GRAPH_MAX_BS" \
-  --tts_engine.factory.max_new_tokens "$HIGGS_SGL_MAX_NEW_TOKENS"
+  --tts_engine.factory.max_new_tokens "$HIGGS_SGL_MAX_NEW_TOKENS" \
+  --vocoder.factory.dtype "$HIGGS_SGL_VOCODER_DTYPE"
