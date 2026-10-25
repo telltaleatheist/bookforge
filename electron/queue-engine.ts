@@ -5444,6 +5444,29 @@ function settleStep(job: QueueJob, step: QueueStep, outcome: StepOutcome): void 
     if (said !== undefined && said !== '') step.lastError = said;
     step.error = undefined;
     if (askedBy === 'user') stoppedRunToPending(job);
+  } else if (!outcome.ok && stopAskedBy === 'closed') {
+    /*
+     * THE APP CLOSING ENDS NOTHING — it interrupts, whatever the step is (Owen,
+     * 2026-10-25: a narration's implied EPUB vanished after a quit).
+     *
+     * A step that cannot resume (`prepare`) used to fall to the arms below: a
+     * close-stop made it `cancelled`, a worker killed by the teardown made it
+     * `failed`, and either way its descendants were cascaded. Both are
+     * TERMINAL, so on the next start the scratch sweep (`scratchNamesWantedBy`)
+     * saw nothing live naming the run's `implied-<uuid>` EPUB and deleted it —
+     * and the Start that followed refused with "No EPUB at …". A hard kill
+     * never did this: `reviveInterrupted` holds whatever was running. So a
+     * clean quit now lands where a kill lands — held, interrupted, closed —
+     * and the run is untouched. Prepare starts again from the top on Start;
+     * that is all "cannot resume" ever meant.
+     */
+    step.status = 'held';
+    step.wasInterrupted = true;
+    step.stopReason = 'closed';
+    step.progress = { message: stopSentence('closed') };
+    const said = step.error ?? outcome.error;
+    if (said !== undefined && said !== '') step.lastError = said;
+    step.error = undefined;
   } else if (stopped && stopKeepsRun && stopAskedBy === 'user' && jobIsStageable(job)) {
     /*
      * A STOP OF WORK THAT CANNOT RESUME — `prepare` is the case: nothing it

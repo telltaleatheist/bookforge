@@ -678,6 +678,53 @@ test('S12: a closed-interrupted step behind an unfinished parent stays WAITING',
     'and the step behind it waits on it, exactly as it did before the app went');
 });
 
+/*
+ * A QUIT DURING PREPARE KEEPS THE RUN (Owen, 2026-10-25). `prepare` cannot
+ * resume, so a close-stop used to CANCEL it (and a teardown-killed worker FAIL
+ * it), cascading the chain. Terminal rows name nothing to the scratch sweep, so
+ * the next start deleted the run's `implied-<uuid>` EPUB and Start then refused
+ * "No EPUB at …". Both doors now land where a hard kill lands.
+ */
+for (const [door, end] of [
+  ['stopped by the close', async (job) => {
+    await engine.shutdown();
+    await engine.cancel({ stepId: stepAt(job.id, 0).id }, 'BookForge is closing.', {});
+  }],
+  ['its worker killed by the teardown', async (job, mods) => {
+    await engine.shutdown();
+    mods.prep.runs[0].reject(new Error('the prep process exited'));
+  }],
+]) {
+  test(`a prepare ${door} is HELD, interrupted — the run and its scratch stay live`, async () => {
+    const scratchSweep = require(path.join(DIST, 'scratch-sweep.js'));
+    const narratorPaths = require(path.join(DIST, 'narrator-paths.js'));
+    const mods = chainModules();
+    await fresh(`close-during-prepare-${door.split(' ')[0]}`, Object.values(mods));
+    const root = path.join(SCRATCH, 'scratch-root');
+    narratorPaths.setNarratorScratchRoot(root);
+    const implied = path.join(root, 'implied-abc', 'The Sin of Empathy.epub');
+    const job = sendChain('The Sin of Empathy', [
+      { type: 'prepare', label: 'Prepare', config: {}, sourceRef: { kind: 'epub', path: implied } },
+      { type: 'tts-conversion', label: 'Narrate', config: {}, parentIndex: 0 },
+    ]);
+    engine.start();
+    await settle();
+    assert.strictEqual(stepAt(job.id, 0).status, 'running', 'precondition: prepare is running');
+
+    await end(job, mods);
+    await settle();
+
+    const prep = stepAt(job.id, 0);
+    assert.strictEqual(prep.status, 'held', 'THE FINDING: not cancelled, not failed');
+    assert.strictEqual(prep.wasInterrupted, true);
+    assert.strictEqual(prep.stopReason, 'closed');
+    assert.strictEqual(stepAt(job.id, 1).status, 'waiting', 'and nothing behind it was cascaded');
+    const wanted = scratchSweep.scratchNamesWantedBy(jobOf(job.id).steps);
+    assert.ok(wanted.has('implied-abc'), 'so the next start\'s sweep keeps the book it reads');
+    narratorPaths.setNarratorScratchRoot(null);
+  });
+}
+
 test('S12: `shutdown` stamps what it is on the work it is ending', async () => {
   const mods = chainModules();
   mods.tts.stopIsResumable = true;
