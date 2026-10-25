@@ -25,6 +25,7 @@ import {
   initializeLoggers, getMainLogger, getTTSLogger, closeLoggers, machineLogDirectory,
 } from './rolling-logger';
 import { startupFailureHtml, startupFailureLine } from './startup-failure';
+import { installTray, hasTray, noteHiddenToTray } from './tray';
 import { Quire } from '../packages/quire/src';
 import {
   setupQuireViewerIpc, closeAllBooksForViewer, closeViewerDocumentsUnder,
@@ -3678,9 +3679,37 @@ function createWindow(): void {
     void runStartupUpgradeCheck();
   });
 
+  // The ✕ hides; quitting is the tray's "Quit BookForge" or Ctrl/Cmd+Q (tray.ts
+  // says why). Registered HERE, not after startup, so a window recreated by
+  // `showMainWindow` keeps the rule. A Mac with no tray still hides — the dock
+  // brings it back — but anywhere else without one, a hidden window would be a
+  // running app nobody can reach, so the close goes through.
+  mainWindow.on('close', (event) => {
+    if (isQuitting) return;
+    if (process.platform !== 'darwin' && !hasTray()) return;
+    event.preventDefault();
+    mainWindow?.hide();
+    noteHiddenToTray();
+  });
+
+  // Windows logging off or shutting down is a quit, not a close to hide from —
+  // refusing it would hold up the shutdown.
+  mainWindow.on('session-end', () => { isQuitting = true; });
+
   mainWindow.on('closed', () => {
     mainWindow = null;
   });
+}
+
+/** Bring the main window back from the tray, the dock or a minimise. */
+function showMainWindow(): void {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    createWindow();
+    return;
+  }
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -13274,10 +13303,8 @@ if (isPrimaryInstance) {
       openClipforgeWindow();
       return;
     }
-    if (mainWindow) {
-      if (mainWindow.isMinimized()) mainWindow.restore();
-      mainWindow.focus();
-    }
+    // Launching BookForge again while it sits in the tray opens it.
+    showMainWindow();
   });
 }
 
@@ -14124,16 +14151,8 @@ app.whenReady().then(async () => {
   // a half-ready runtime.
 
   // ─────────────────────────────────────────────────────────────────────────────
-  // Window management: Cmd+W hides, Cmd+Q double-press to quit
+  // Window management: closing hides (createWindow), Cmd/Ctrl+Q double-press quits
   // ─────────────────────────────────────────────────────────────────────────────
-
-  // Cmd+W: hide the main window instead of closing
-  mainWindow!.on('close', (event) => {
-    if (!isQuitting && process.platform === 'darwin') {
-      event.preventDefault();
-      mainWindow?.hide();
-    }
-  });
 
   // Cmd+Q: Chrome-style double-press to quit
   let quitWarningTimeout: NodeJS.Timeout | null = null;
@@ -14159,7 +14178,7 @@ app.whenReady().then(async () => {
             t.style.cssText = 'position:fixed;bottom:32px;left:50%;transform:translateX(-50%);background:rgba(255,255,255,0.12);backdrop-filter:blur(20px);color:#fff;padding:10px 24px;border-radius:10px;font:13px/1.4 -apple-system,system-ui,sans-serif;z-index:999999;pointer-events:none;transition:opacity 0.25s;border:1px solid rgba(255,255,255,0.1);';
             document.body.appendChild(t);
           }
-          t.textContent = 'Press \\u2318Q again to quit';
+          t.textContent = ${JSON.stringify(process.platform === 'darwin' ? 'Press \u2318Q again to quit' : 'Press Ctrl+Q again to quit')};
           t.style.opacity = '1';
         })()
       `).catch(() => {});
@@ -14343,12 +14362,18 @@ app.whenReady().then(async () => {
   Menu.setApplicationMenu(menu);
 
   app.on('activate', () => {
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.show();
-    } else {
-      createWindow();
-    }
+    showMainWindow();
   });
+
+  installTray(
+    isDev ? path.join(__dirname, '..', '..', 'bookforge-icon.png') : path.join(codeRoot, 'bookforge-icon.png'),
+    {
+      showMain: showMainWindow,
+      openClipforge: () => { openClipforgeWindow(); },
+      // A menu item picked on purpose: no double-press, straight to before-quit.
+      quit: () => { isQuitting = true; app.quit(); },
+    },
+  );
   startingUp('running');
 }).catch((err) => {
   /*
@@ -14421,8 +14446,9 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
 }
 
 app.on('window-all-closed', () => {
-  // On macOS, don't quit when all windows close (app stays in dock)
-  if (process.platform !== 'darwin') {
+  // Closing every window is not quitting: the app stays in the tray (tray.ts),
+  // or in the dock on a Mac. Only a platform with neither quits here.
+  if (process.platform !== 'darwin' && !hasTray()) {
     app.quit();
   }
 });
