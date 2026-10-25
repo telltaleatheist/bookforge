@@ -212,3 +212,35 @@ export function chapterOrder<T>(
   close();
   return out;
 }
+
+/**
+ * EVERY BLOCK A CHAPTER HOLDS — the rows "Remove all" strikes.
+ *
+ * Owen, 2026-10-25: *"i want to be able to right-click the "notes" chapter and
+ * hit "remove all" and itll delete every item in the chapter and the chapter
+ * marker itself."* A chapter is its opening row and every row after it up to
+ * the next division, in the replay's order — the same cut `chapterOrder` makes,
+ * which only reorders inside a span, so a chapter's notes are inside it here
+ * too. The last chapter runs to the end of the book.
+ *
+ * Shelved rows are skipped (they are not in the flow, so they are in no
+ * chapter), and so are rows already struck: striking one twice is an op that
+ * says nothing. Empty for an id that opens no chapter — there is nothing a
+ * press could honestly remove.
+ */
+export function chapterSpan(
+  rows: readonly ReplayedRow[],
+  opens: ReadonlySet<string>,
+  chapter: string,
+): string[] {
+  if (!opens.has(chapter)) return [];
+  const out: string[] = [];
+  let inside = false;
+  for (const row of rows) {
+    if (row.id === chapter) inside = true;
+    else if (inside && opens.has(row.id)) break;
+    if (!inside || row.shelf !== undefined || row.struck === true) continue;
+    out.push(row.id);
+  }
+  return out;
+}

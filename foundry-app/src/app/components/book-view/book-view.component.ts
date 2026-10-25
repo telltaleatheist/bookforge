@@ -44,7 +44,7 @@ import { BookStacksService, type BookStack } from '../../core/book-stacks.servic
 import { type Tab } from '../../core/documents.service';
 import { NoticeService } from '../../core/notice.service';
 import { editionFlow, editionPieces } from './edition';
-import { chapterOrder, flowNeighbours, seamJoins, sharedAnchor } from './flow';
+import { chapterOrder, chapterSpan, flowNeighbours, seamJoins, sharedAnchor } from './flow';
 import { readTable, type TableRow } from './table';
 
 /**
@@ -497,6 +497,12 @@ const SCROLL_SETTLE_MS = 400;
  */
 type Gesture =
   | { kind: 'op' }
+  /**
+   * SEVERAL OPS THAT ARE ONE ACT — "Remove all" on a chapter is its marker and
+   * every block under it, and one Ctrl+Z takes the whole of it back. `what` is
+   * the sentence the undo notice says about it.
+   */
+  | { kind: 'ops'; count: number; what: string }
   | { kind: 'words'; id: string; before: string; after: string };
 
 type WordsGesture = Extract<Gesture, { kind: 'words' }>;
@@ -1212,7 +1218,7 @@ const OP_GESTURE: Gesture = { kind: 'op' };
               </div>
             }
             @if (line.chapter; as title) {
-              <div class="chapter">
+              <div class="chapter" (contextmenu)="chapterRuleMenu($event, line.row.id, title)">
                 <div class="chapter-head">
                   @if (renaming() === line.row.id) {
                     <!--
@@ -1670,6 +1676,33 @@ const OP_GESTURE: Gesture = { kind: 'op' };
               Strike {{ open.unstruck.length === 1 ? 'the 1' : 'all ' + open.unstruck.length }} {{ open.plural }}
             </button>
           }
+        </div>
+      }
+      <!--
+        THE CHAPTER RULE'S OWN MENU — *"right-click the 'notes' chapter and hit
+        'remove all' and itll delete every item in the chapter and the chapter
+        marker itself"* (Owen, 2026-10-25). The back matter a book should not
+        read aloud is usually a whole chapter, and striking it block by block
+        was the only way. One gesture, so Ctrl+Z brings the chapter back whole.
+      -->
+      @if (chapterMenu(); as open) {
+        <div class="menu-scrim" (click)="chapterMenu.set(null)" (contextmenu)="chapterMenu.set(null)"></div>
+        <div
+          class="menu"
+          role="menu"
+          [attr.aria-label]="'About the chapter ' + open.title"
+          [style.left.px]="open.x"
+          [style.top.px]="open.y"
+          (keydown.escape)="chapterMenu.set(null)"
+        >
+          <button role="menuitem" (click)="removeChapterAll()">
+            <span class="swatch" style="background: var(--ink-chapter)"></span>
+            Remove all — "{{ open.title }}" and its {{ open.ids.length === 1 ? '1 block' : open.ids.length + ' blocks' }}
+          </button>
+          <button role="menuitem" (click)="dropChapterFromMenu()">
+            <span class="swatch" style="background: var(--ink-chapter)"></span>
+            Remove only the chapter marker
+          </button>
         </div>
       }
     </div>
@@ -5771,6 +5804,15 @@ export class BookViewComponent {
    * would put an op back into a book it was never about.
    */
   private push(...ops: readonly BookOp[]): void {
+    this.pushOps(ops, null);
+  }
+
+  /** Several ops as ONE gesture on the undo stack, described as `what`. */
+  private pushAsOne(what: string, ops: readonly BookOp[]): void {
+    this.pushOps(ops, what);
+  }
+
+  private pushOps(ops: readonly BookOp[], grouped: string | null): void {
     if (ops.length === 0) return;
     /*
      * AN EXPORT VIEW TAKES NO DECISIONS, and the panels are the one door that
@@ -5808,7 +5850,12 @@ export class BookViewComponent {
     this.undone.set([]);
     // One marker per op, so the journal's order matches the stack's — and the
     // redo pile of BOTH kinds goes, for the rule at the top of this docblock.
-    this.did.update((held) => [...held, ...ops.map((): Gesture => OP_GESTURE)]);
+    this.did.update((held) => [
+      ...held,
+      ...(grouped !== null && ops.length > 1
+        ? [{ kind: 'ops', count: ops.length, what: grouped } satisfies Gesture]
+        : ops.map((): Gesture => OP_GESTURE)),
+    ]);
     this.rewound.set([]);
     this.remember();
   }
@@ -5908,6 +5955,19 @@ export class BookViewComponent {
       return;
     }
     const held = this.pending();
+    if (last.kind === 'ops') {
+      // The group comes off whole. `undone` is a stack read from its end, so the
+      // ops go onto it last-first, exactly as one undo per op would have left it.
+      if (held.length < last.count) return;
+      const popped = held.slice(held.length - last.count);
+      this.did.set(journal.slice(0, -1));
+      this.rewound.update((taken) => [...taken, last]);
+      this.pending.set(held.slice(0, held.length - last.count));
+      this.undone.update((taken) => [...taken, ...[...popped].reverse()]);
+      this.remember();
+      this.replayedFeedback(popped[0]!, 'undo', last.what);
+      return;
+    }
     const popped = held[held.length - 1];
     if (popped === undefined) return;
     this.did.set(journal.slice(0, -1));
@@ -5931,6 +5991,17 @@ export class BookViewComponent {
       return;
     }
     const taken = this.undone();
+    if (last.kind === 'ops') {
+      if (taken.length < last.count) return;
+      const back = taken.slice(taken.length - last.count).reverse();
+      this.rewound.set(pile.slice(0, -1));
+      this.did.update((held) => [...held, last]);
+      this.undone.set(taken.slice(0, taken.length - last.count));
+      this.pending.update((held) => [...held, ...back]);
+      this.remember();
+      this.replayedFeedback(back[0]!, 'redo', last.what);
+      return;
+    }
     const op = taken[taken.length - 1];
     if (op === undefined) return;
     this.rewound.set(pile.slice(0, -1));
@@ -5995,13 +6066,13 @@ export class BookViewComponent {
    * there by doing nothing, which is right for the one op with no block at all
    * (a chapter reset).
    */
-  private replayedFeedback(op: BookOp, direction: 'undo' | 'redo'): void {
+  private replayedFeedback(op: BookOp, direction: 'undo' | 'redo', what?: string): void {
     const left = this.waiting();
     const tail = left === 0
       ? ' — nothing is waiting now'
       : left === 1 ? ' — 1 change is still waiting' : ` — ${left} changes are still waiting`;
     this.notices.notice.set(
-      `${direction === 'undo' ? 'Took back' : 'Put back'} ${this.describeOp(op)}${tail}.`,
+      `${direction === 'undo' ? 'Took back' : 'Put back'} ${what ?? this.describeOp(op)}${tail}.`,
     );
     const target = this.opAnchor(op, direction);
     if (target === null) return;
@@ -6664,6 +6735,62 @@ export class BookViewComponent {
    */
   protected dropChapter(id: string): void {
     this.push({ op: 'chapter', remove: id });
+  }
+
+  /** The chapter rule's right-click menu: which division, and what it holds. */
+  protected readonly chapterMenu = signal<{
+    x: number;
+    y: number;
+    id: string;
+    title: string;
+    /** Every unstruck block in the chapter, its opening block first (`chapterSpan`). */
+    ids: string[];
+  } | null>(null);
+
+  protected chapterRuleMenu(event: MouseEvent, id: string, title: string): void {
+    if (this.edition()) return;
+    const target = event.target as HTMLElement | null;
+    // The chip mid-rename is a text field, and its own menu is the browser's.
+    if (target !== null && target.isContentEditable) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const replayed = this.view();
+    if (replayed === null) return;
+    const opens = new Set(replayed.chapters.map((chapter) => chapter.id));
+    this.context.set(null);
+    this.chapterMenu.set({
+      x: event.clientX, y: event.clientY, id, title,
+      ids: chapterSpan(replayed.rows, opens, id),
+    });
+  }
+
+  /**
+   * REMOVE ALL: the division and every block under it, as ONE gesture.
+   *
+   * The marker goes first, then each block is struck — the same strike Delete
+   * pushes, so the blocks are cancelled rather than destroyed and one Ctrl+Z
+   * brings the chapter back, title and all. The order matters: the division is
+   * removed while its opening block still flows, which is the only place the
+   * replay takes a `chapter` op from.
+   */
+  protected removeChapterAll(): void {
+    const open = this.chapterMenu();
+    this.chapterMenu.set(null);
+    if (open === null) return;
+    const blocks = open.ids.length === 1 ? '1 block' : `${open.ids.length} blocks`;
+    this.pushAsOne(`removing the chapter "${open.title}" and its ${blocks}`, [
+      { op: 'chapter', remove: open.id },
+      ...open.ids.map((id): BookOp => ({ op: 'strike', id })),
+    ]);
+    this.chosen.set(new Set(open.ids));
+  }
+
+  /** The same ✕ the rule carries, offered beside Remove all. */
+  protected dropChapterFromMenu(): void {
+    const open = this.chapterMenu();
+    this.chapterMenu.set(null);
+    if (open === null) return;
+    this.dropChapter(open.id);
   }
 
   /**
