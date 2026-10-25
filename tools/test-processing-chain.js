@@ -177,6 +177,39 @@ test('the pass settings travel into the job config verbatim', async () => {
   assert.strictEqual(plan.jobs[0].config.projectDir, dir);
 });
 
+/*
+ * THE CLEANUP'S CHOSEN MODEL (Owen, 2026-10-25: "put the option the user can
+ * pick in a dropdown on the modal that configures the job"). The window that
+ * queues a narration text cleanup sends `chosenModel` on the pass; the planner
+ * is the one place it lands on the row, so it is checked here: carried
+ * trimmed, dropped when empty (absent IS automatic), and refused on a pass
+ * that does not read it.
+ */
+test('a cleanup\'s chosen model lands on its row, trimmed', async () => {
+  const dir = project('clean-chosen');
+  const plan = await chain.planProcessingChain({
+    projectDir: dir, passes: [{ kind: 'narration-text', chosenModel: '  anthropic/claude-sonnet-5-5 ' }],
+  });
+  assert.strictEqual(plan.jobs[0].jobType, 'narration-text');
+  assert.strictEqual(plan.jobs[0].config.chosenModel, 'anthropic/claude-sonnet-5-5');
+});
+
+test('an AUTOMATIC cleanup (empty or absent) carries no chosenModel at all', async () => {
+  const dir = project('clean-automatic');
+  for (const pass of [{ kind: 'narration-text', chosenModel: '' }, { kind: 'narration-text' }]) {
+    const plan = await chain.planProcessingChain({ projectDir: dir, passes: [pass] });
+    assert.ok(!('chosenModel' in plan.jobs[0].config),
+      `an automatic choice was stored as ${JSON.stringify(plan.jobs[0].config.chosenModel)}`);
+  }
+});
+
+test('a chosenModel on a pass that does not read it is refused, by name', async () => {
+  const dir = project('chosen-wrong-pass');
+  assert.match(
+    await refusal({ projectDir: dir, passes: [{ ...SIMPLIFY, chosenModel: 'qwen3.5-9b' }] }),
+    /"simplify" pass was given a chosenModel/);
+});
+
 // ── refusals ────────────────────────────────────────────────────────────────
 
 test('a project with no book says what makes one', async () => {

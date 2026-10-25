@@ -273,6 +273,8 @@ const api: FoundryApi = {
     offerStart: () => ask<'start' | 'later'>('crucible:offer-start', null, 'later'),
     startCrucible: () => ipcRenderer.invoke('crucible:start'),
     catalog: (server) => ipcRenderer.invoke('crucible:catalog', server),
+    jobModels: (kind, server) => ipcRenderer.invoke('crucible:job-models', kind, server),
+    rememberJobModel: (kind, value) => ipcRenderer.invoke('crucible:remember-job-model', kind, value),
     pull: (server, kind, id) => ipcRenderer.invoke('crucible:pull', server, kind, id),
     // NOT named `ask`: that is the helper on the line below, and a parameter of
     // that name shadows it into something with no call signature.

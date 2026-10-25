@@ -53,6 +53,17 @@ const engine = require(path.join(DIST, 'queue-engine.js'));
 const routes = require(path.join(DIST, 'crucible', 'routes.js'));
 
 const SCRATCH = fs.mkdtempSync(path.join(os.tmpdir(), 'bf-queue-lifecycle-'));
+/*
+ * THE SCRATCH-SWEEP CHECKS LOAD `narrator-paths`, and through it the component
+ * catalog, which asks Electron's `app` for userData the moment it loads. There
+ * is no Electron here, so the keeper installs the CLI's stub — pointed at a
+ * userData INSIDE SCRATCH, never Owen's real one — before anything requires it.
+ * `BOOKFORGE_USERDATA_DIR` is managed-bins' own name for the same folder.
+ */
+process.env.BOOKFORGE_USER_DATA = path.join(SCRATCH, 'userData');
+process.env.BOOKFORGE_USERDATA_DIR = process.env.BOOKFORGE_USER_DATA;
+fs.mkdirSync(process.env.BOOKFORGE_USER_DATA, { recursive: true });
+require(path.join(REPO, 'cli', 'electron-stub.js'));
 
 let passed = 0;
 const failures = [];

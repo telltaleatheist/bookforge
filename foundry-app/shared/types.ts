@@ -930,6 +930,16 @@ export interface TranslateRequest {
   /** `--endpoint`: overwritten by the placement. See the header. */
   ollama: string;
   /**
+   * THE MODEL A PERSON CHOSE FOR THIS JOB in its dialog (Owen, 2026-10-25:
+   * *"put the option the user can pick in a dropdown on the modal that configures
+   * the job"*). A model on the server's own card (`qwen3.5-9b`), or an upstream
+   * account's `<upstream>/<model>`, which the server forwards — *"cloud accounts
+   * should be listed as an option in every model dropdown if its available"*.
+   * Absent is the server's own pick at this app's ceiling, `APP_SIZED_MODELS` in
+   * electron/crucible-dispatch.ts. Read by the placement, never by the engine.
+   */
+  chosenModel?: string;
+  /**
    * WHICH DIALECT — and it is no longer a field, because it is no longer
    * anybody's preference.
    *
@@ -1182,6 +1192,16 @@ export interface CleanRequest {
    */
   model: string;
   ollama: string;
+  /**
+   * THE MODEL A PERSON CHOSE FOR THIS JOB in its dialog (Owen, 2026-10-25:
+   * *"put the option the user can pick in a dropdown on the modal that configures
+   * the job"*). A model on the server's own card (`qwen3.5-9b`), or an upstream
+   * account's `<upstream>/<model>`, which the server forwards — *"cloud accounts
+   * should be listed as an option in every model dropdown if its available"*.
+   * Absent is the server's own pick at this app's ceiling, `APP_SIZED_MODELS` in
+   * electron/crucible-dispatch.ts. Read by the placement, never by the engine.
+   */
+  chosenModel?: string;
   /**
    * WHICH DIALECT — and it is no longer a field, because it is no longer
    * anybody's preference.
@@ -1468,6 +1488,16 @@ export type TextPassRequest = TranslateRequest | SimplifyRequest | CleanRequest;
  */
 export interface AnalyzeRequest {
   kind: 'analysis';
+  /**
+   * THE MODEL A PERSON CHOSE FOR THIS JOB in its dialog (Owen, 2026-10-25:
+   * *"put the option the user can pick in a dropdown on the modal that configures
+   * the job"*). A model on the server's own card (`qwen3.5-9b`), or an upstream
+   * account's `<upstream>/<model>`, which the server forwards — *"cloud accounts
+   * should be listed as an option in every model dropdown if its available"*.
+   * Absent is the server's own pick at this app's ceiling, `APP_SIZED_MODELS` in
+   * electron/crucible-dispatch.ts. Read by the placement, never by the engine.
+   */
+  chosenModel?: string;
   /**
    * The document the person had open when they asked — the job's identity and
    * not its input, exactly as `TranslateRequest.inputPath` is. Main admitted it,

@@ -19,18 +19,30 @@
  *     only then is it drawn as something to press. `Job.waitFor` has always been
  *     the per-job slot pin, so choosing here is a field on the request the queue
  *     already honours rather than new machinery.
- *   * **THE MODEL IS INFORMATION.** It was going to be buttons. It is not,
- *     because there is no per-run model override in the contract: for a Crucible
- *     act the model comes from that engine's own capability record, chosen by
- *     the class setting. Buttons here would have had to write the ENGINE's
- *     setting — a global effect from a local-looking control, changing what
- *     every future run on that server uses. Owen, told that: *"if theres no
- *     per-model override then scrap it. just let the user move forward. it isnt
- *     an option they can pick, it just tells them whats happening."*
+ *   * **THE MODEL IS INFORMATION HERE, FOR A PAGE READ.** It was going to be
+ *     buttons, and on 2026-09-17 it was not, because there was no per-run model
+ *     in the contract: buttons would have had to write the ENGINE's class
+ *     setting. Owen then: *"if theres no per-model override then scrap it."*
  *
- * That second rule is the load-bearing one and it is why this file is small. A
- * control that cannot change anything is not a control, and dressing a fact up
- * as one teaches somebody that they chose something they did not.
+ * ── AND FOR THE FOUR TEXT JOBS IT IS A CHOICE NOW (Owen, 2026-10-25) ──────
+ *
+ * *"put the option the user can pick in a dropdown on the modal that configures
+ * the job"*; *"cloud accounts should be listed as an option in every model
+ * dropdown if its available, just like 27b or 9b or anything else. however,
+ * bookforge should use the last used model as the default. the ideal is that the
+ * user wont need to use cloud models because theyre expensive. but it should be
+ * there if their system is too weak to run a local model"*; *"keep it at 27b as
+ * the max right now"*.
+ *
+ * There IS a per-run model now — `chosenModel` on the request — and a clean, a
+ * translation, a simplify and an analysis no longer read the server's class row
+ * at all (crucible-dispatch.ts sizes them, or takes the choice). So for those
+ * four acts this component says nothing about the model and does not gate on
+ * the class row: the dropdown beside it (job-model.component.ts) is where the
+ * model is chosen and said, and a "Runs on" line here would name the row the
+ * placement no longer reads. A control that cannot change anything is still not
+ * a control — which is why the dropdown arrived with the contract field, not
+ * before it.
  *
  * ── AND WHEN THE ACT CANNOT RUN AT ALL, IT SAYS SO HERE ──────────────────
  *
@@ -64,6 +76,13 @@ const ACT_WORDS: Readonly<Record<string, string>> = {
   simplify: 'simplify',
   analysis: 'analyse',
 };
+
+/**
+ * THE ACTS WHOSE MODEL IS CHOSEN IN THE DIALOG (Owen, 2026-10-25) — the four
+ * `JobModelKind`s. Their placement reads no class row, so neither does this
+ * component's gate or sentence; see the header.
+ */
+const DIALOG_CHOSEN: ReadonlySet<string> = new Set(['clean', 'translate', 'simplify', 'analysis']);
 import { api, hosted } from '../../core/foundry';
 
 @Component({
@@ -157,7 +176,7 @@ import { api, hosted } from '../../core/foundry';
           person reads them in.
         -->
         @if (runnable()) {
-          <p class="says">{{ says() }}</p>
+          @if (says(); as line) { <p class="says">{{ line }}</p> }
         } @else {
           <p class="says warn">{{ cannot() }}</p>
           @if (reason(); as why) { <p class="because">{{ why }}</p> }
@@ -281,6 +300,9 @@ export class RunTargetComponent {
     // ours to consult, and consulting one would dark a button that works.
     if (hosted()) return true;
     if (this.servers().length === 0) return false;
+    // A text job places without the class row (crucible-dispatch.ts), so only a
+    // server that could not be asked at all stops it here.
+    if (DIALOG_CHOSEN.has(this.act())) return this.problem() === null;
     const row = this.row();
     // Unread is not refused: a capability that has not answered yet must not
     // dark the button, or every dialog opens disabled for a moment and a person
@@ -306,6 +328,8 @@ export class RunTargetComponent {
      * twice, six pixels apart.
      */
     if (this.problem() !== null) return `Could not be asked what it runs: ${this.problem()}`;
+    // The dropdown beside this says the model for a text job; see the header.
+    if (DIALOG_CHOSEN.has(this.act())) return null;
     const row = this.row();
     if (row === null) return 'Asking what it runs…';
     const model = row.selected.length > 0 ? row.selected : 'a model it chooses itself';

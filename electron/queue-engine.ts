@@ -130,10 +130,10 @@ import {
   type SlotSet,
 } from '../shared/queue/slot-sets';
 import {
-  crucibleRouteOf, crucibleRouteReadFailure, crucibleServedClassesOf, crucibleServesClass,
-  crucibleUpstreamsOf,
+  crucibleServedClassesOf, crucibleServesClass,
   onCrucibleRecordChanged,
 } from './crucible/routes';
+import { isUpstreamModelId } from './crucible/text-acts';
 import { engineLanes } from './crucible/engine-lanes';
 import { JOB_GERUND } from '../shared/queue/job-words';
 // The rate anchor's rule lives beside the window it opens — see `rateAnchor`.
@@ -378,6 +378,16 @@ export interface StepModule {
    * must not reach the network: it is called synchronously inside the pump.
    */
   crucibleClass?(config: Record<string, unknown>): string | null;
+  /**
+   * THE MODEL A PERSON CHOSE FOR THIS STEP in the modal that configured it
+   * (Owen, 2026-10-25: *"put the option the user can pick in a dropdown on the
+   * modal that configures the job"*), or `null` for the server's own pick. An
+   * `<upstream>/<model>` id is forwarded by the server on its account and holds
+   * no card, which is the one thing the scheduler reads it for: such a step
+   * takes its engine's `[cloud]` lane. MUST NOT THROW and must not reach the
+   * network, for `crucibleClass`'s reason.
+   */
+  chosenModel?(config: Record<string, unknown>): string | null;
   /**
    * Whether stopping this step leaves work that can be picked up. TTS does — the
    * rendered sentences are on disk and a resume skips them — so a stop leaves the
@@ -713,18 +723,29 @@ function currentSlotSets(): SlotSet[] {
 
   /*
    * ONE ENTRY PER ENABLED SERVER, always, because `slotSets` refuses a name it
-   * was told nothing about. The record always answers — `unknown` for an engine
-   * nobody has read yet — so this map is complete by construction, and a name
-   * missing from it could only be a defect here rather than a machine that has
-   * not spoken.
+   * was told nothing about.
    *
-   * Read straight from `crucible/routes.ts` rather than through the injected
-   * host, for the same reason `crucibleRouteOf` is: it is a synchronous
-   * in-memory record with no Electron, no registry and no HTTP in it, so it
-   * costs this file none of the properties the injected seams exist to keep.
+   * ── THE CLOUD LANE IS DRAWN FOR OUR OWN WORK, NOT FOR A SERVER ROUTE ──────
+   *
+   * It used to be drawn when a server routed one of its classes upstream —
+   * Owen, 2026-10-18: *"only draw the lane when one route is actually set to
+   * upstream"*, after a bench showed two "routed elsewhere" slots that nothing
+   * could fill. On 2026-10-25 the route left the server and became the JOB's
+   * choice (*"put the option the user can pick in a dropdown on the modal that
+   * configures the job"*), so the same ruling now reads: draw the lane while a
+   * step of ours that is not finished has chosen an upstream model. With none,
+   * no server has a lane and the bench is as clean as the 10-18 ruling wanted;
+   * with one, every enabled server has the lane it could be admitted into,
+   * because which server a waiting row lands on is not decided until it does.
    */
+  const cloudWanted = jobs.some((job) => job.steps.some((step) => {
+    if (TERMINAL_STEP_STATUSES.has(step.status)) return false;
+    const chosen = modules.get(step.type)?.chosenModel?.(step.config ?? {}) ?? null;
+    return chosen !== null && isUpstreamModelId(chosen);
+  }));
+  const upstreamsNow: EngineUpstreams = cloudWanted ? 'routed' : 'none';
   const upstreams: Record<string, EngineUpstreams> = {};
-  for (const name of enabledServers) upstreams[name] = crucibleUpstreamsOf(name);
+  for (const name of enabledServers) upstreams[name] = upstreamsNow;
 
   /*
    * …AND WHICH OF THEM HAS A CARD AT ALL. A registered address can be an
@@ -737,7 +758,7 @@ function currentSlotSets(): SlotSet[] {
   const lanes = engineLanes(rankedServers, undefined, occupied.map((id) => serverOfCloudLane(id) ?? id));
   const roles = lanes.roles;
   rankedServers = lanes.ranked;
-  for (const row of rankedServers) if (row.enabled) upstreams[row.name] = crucibleUpstreamsOf(row.name);
+  for (const row of rankedServers) if (row.enabled) upstreams[row.name] = upstreamsNow;
 
   /*
    * AND WHETHER THE LEGACY GPU ROW EXISTS AT ALL — read off the same jobs the
@@ -3011,7 +3032,8 @@ export interface CrucibleLeaseHost {
    */
   reserveRow?(
     row: string,
-    where: { server: string; act: string },
+    /** `model`: the one a person chose for the step, when it is on the server's card. */
+    where: { server: string; act: string; model?: string },
     /** The server's line, while the session waits in it ("waiting, #2 of 3 in …"). */
     onWait?: (line: string) => void,
   ): Promise<void>;
@@ -3093,19 +3115,6 @@ let resumableStopReason: unknown;
 
 export function setResumableStopReason(reason: unknown): void {
   resumableStopReason = reason;
-}
-
-/**
- * WHO TO ASK WHEN A ROW'S ROUTE IS UNKNOWN — main wires `crucible/route-read.ts`.
- *
- * Handed in rather than imported, for `setResumableStopReason`'s reason: this
- * module imports no Electron and no SDK, and the keepers run it bare. Unset in
- * a keeper, where a route is filled by the test itself (`noteCrucibleRoutes`).
- */
-let routeReader: ((server: string) => void) | null = null;
-
-export function setCrucibleRouteReader(reader: ((server: string) => void) | null): void {
-  routeReader = reader;
 }
 
 export function setCrucibleRoutingHost(host: CrucibleRoutingHost | null): void {
@@ -3938,6 +3947,14 @@ function reserveBeforeLaunch(job: QueueJob, step: QueueStep, server: string): Re
    * for it again would be this app taking a second lease against itself.
    */
   if (host.leaseHeld(job.id) !== null) return 'go';
+  /*
+   * THE MODEL THE STEP WAS TOLD (Owen, 2026-10-25). A cloud model holds no card,
+   * so there is nothing to reserve; a local one is what the session must open
+   * with resident — reserving the act's AUTOMATIC model instead would load one
+   * model and then run the step against another that is not on the card.
+   */
+  const chosen = modules.get(step.type)?.chosenModel?.(step.config ?? {}) ?? null;
+  if (chosen !== null && isUpstreamModelId(chosen)) return 'go';
   if (reservingSteps.has(step.id)) return 'waiting';
   const until = reserveHolds.get(step.id);
   if (until !== undefined) {
@@ -3947,7 +3964,7 @@ function reserveBeforeLaunch(job: QueueJob, step: QueueStep, server: string): Re
 
   reservingSteps.set(step.id, { jobId: job.id, server });
   sayOnStep(step, `Reserving ${server} for this book's ${act}…`);
-  void host.reserveRow(job.id, { server, act }, (line) => {
+  void host.reserveRow(job.id, { server, act, ...(chosen === null ? {} : { model: chosen }) }, (line) => {
     // The step is still `queued` and still this reserve's: say where it stands.
     if (reservingSteps.has(step.id)) sayOnStep(step, `${line} for this book's ${act}`);
   })
@@ -4555,33 +4572,19 @@ export function pump(): void {
         // always taken.
         const routableClass = stepClass ?? null;
         let venue = routed.venue;
+        /*
+         * ── THE JOB SAYS WHETHER IT IS FORWARDED, NOT THE SERVER (2026-10-25) ──
+         *
+         * This used to read the SERVER's route for the step's class, and a class
+         * routed upstream took the `[cloud]` lane. Owen moved the choice onto the
+         * job — *"put the option the user can pick in a dropdown on the modal
+         * that configures the job"* — so the server has no route to read: a step
+         * whose chosen model is `<upstream>/<model>` is forwarded, holds no card
+         * and takes the lane; every other step is on the card.
+         */
         if (routableClass !== null && routed.venue !== LONGFORM_ALIGN_SET) {
-          const route = crucibleRouteOf(routed.venue, routableClass);
-          if (route === 'unknown') {
-            /*
-             * ASK, DON'T WAIT FOR SOMEBODY ELSE TO (Owen, 2026-09-24). The read
-             * used to come only from a connect, and a switch-on whose
-             * coordination stopped early left this row waiting for a connect
-             * that never came. The reader dedupes per server and keeps its own
-             * budget and cooldown (`crucible/route-read.ts`), so asking on every
-             * pass costs nothing.
-             */
-            if (routeReader !== null) routeReader(routed.venue);
-            const failed = crucibleRouteReadFailure(routed.venue);
-            const reason = failed === null
-              ? `Waiting: BookForge has not yet read where "${routed.venue}" runs `
-                + `${routableClass} work. It is asking that engine now; this clears as soon `
-                + 'as it answers.'
-              : `Waiting: BookForge could not read where "${routed.venue}" runs `
-                + `${routableClass} work (${failed}). It keeps asking; this clears as soon as it answers.`;
-            admissionBlocked = true;
-            if (step.progress.admissionHold !== reason) {
-              step.progress = { ...step.progress, message: reason, admissionHold: reason };
-              touchProgress();
-            }
-            continue;
-          }
-          if (route === 'upstream') {
+          const chosen = modules.get(step.type)?.chosenModel?.(step.config ?? {}) ?? null;
+          if (chosen !== null && isUpstreamModelId(chosen)) {
             venue = cloudLaneOf(routed.venue);
             /*
              * The RESOURCE changes with the venue, and both are written here

@@ -23,7 +23,7 @@ import type { JobType } from '../../shared/queue/engine-types';
 import type { StepModule, StepRunContext } from '../queue-engine';
 import type { ArtifactRef, StepResource } from '../../shared/queue/engine-types';
 import { queueMainWindow, resourceForProvider, stepFailure } from './runtime';
-import { machinesForAiStep, type AiJobConfig } from './ai-provider';
+import { chosenModelOf, machinesForAiStep, type AiJobConfig } from './ai-provider';
 
 /**
  * THE AI BLOCK OF A PASS ROW, or null where the pass asks no provider.
@@ -150,6 +150,17 @@ function passModule(type: JobType): StepModule {
      * `footnote-refs` declares nothing and so answers false: an hour is not
      * what it takes, but neither is a model.
      */
+    /**
+     * THE MODEL A PERSON CHOSE FOR THE CLEANUP in the window that queued it, or
+     * null for AUTOMATIC (Owen, 2026-10-25). Only `narration-text` carries the
+     * choice on the pass; simplify and translate-pass name their model on their
+     * own params, which is not this hook's question. Never throws, never asks a
+     * server.
+     */
+    chosenModel: (config: Record<string, unknown>): string | null => {
+      const pass = config as unknown as PassJobConfig;
+      return pass?.kind === 'narration-text' ? chosenModelOf(pass.chosenModel) : null;
+    },
     leasesModel: (config: Record<string, unknown>): boolean => {
       const pass = config as unknown as PassJobConfig;
       if (pass?.kind === 'narration-text') return true;

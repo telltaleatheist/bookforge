@@ -9,6 +9,7 @@ import {
   DEFAULT_OLLAMA_ENDPOINT as DEFAULT_OLLAMA,
   DEFAULT_TRANSLATE_MODEL as DEFAULT_MODEL,
 } from '@shared/pipeline';
+import { withChosenModel } from '@shared/job-model-offer';
 import type { TranslateRequest } from '@shared/types';
 
 import { LedgerService } from '../../core/ledger.service';
@@ -19,6 +20,7 @@ import { StageService } from '../../core/stage.service';
 import { UiService } from '../../core/ui.service';
 import { RunProgressComponent } from '../run-progress/run-progress.component';
 import { RunTargetComponent } from '../run-target/run-target.component';
+import { JobModelComponent } from '../job-model/job-model.component';
 import { api, hosted } from '../../core/foundry';
 
 /*
@@ -51,11 +53,13 @@ import { api, hosted } from '../../core/foundry';
  *   nothing to work on — so the dialog says where to stand rather than offering
  *   to translate photographs of pages.
  *
- *   **There is no model field and no endpoint field**, and there were both. They
- *   described where the work ran, and it runs on a connected GPU engine, which
- *   names its own model per class (Owen, 2026-09-15: *"crucible handles all model
- *   orchestration"*). A control that cannot change the run is a control that
- *   lies to whoever uses it.
+ *   **There is no endpoint field, and the model is a dropdown again.** Both
+ *   fields went on 2026-09-15 (*"crucible handles all model orchestration"*),
+ *   because neither could change the run — a control that cannot is a control
+ *   that lies. The MODEL came back on 2026-10-25, as a real choice this time
+ *   (`chosenModel` on the request, honoured by the placement for this job
+ *   only): *"put the option the user can pick in a dropdown on the modal that
+ *   configures the job"*. job-model.component.ts carries the whole ruling.
  *
  *   **Translator instructions are free text and they matter.** Terminology is
  *   per-book — which words stay in the source language, whether loaded
@@ -65,7 +69,7 @@ import { api, hosted } from '../../core/foundry';
  */
 @Component({
   selector: 'app-translate-dialog',
-  imports: [FormsModule, RunProgressComponent, RunTargetComponent],
+  imports: [FormsModule, RunProgressComponent, RunTargetComponent, JobModelComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="scrim" (click)="ui.closeTranslate()"></div>
@@ -86,10 +90,20 @@ import { api, hosted } from '../../core/foundry';
         @if (watched(); as job) {
           <app-run-progress [job]="job" verb="Translating" />
         } @else {
-          <!-- WHERE IT WILL RUN, AND WHAT WILL RUN IT. The child draws the one
-               real choice and states the rest — run-target.component.ts carries
-               the ruling about why the model is not a button. -->
+          <!-- WHERE IT WILL RUN, AND WHAT WILL RUN IT. Two choices now, and
+               both are real. The model is a dropdown on Owen's ruling of
+               2026-10-25, verbatim: "put the option the user can pick in a
+               dropdown on the modal that configures the job"; "cloud accounts
+               should be listed as an option in every model dropdown if its
+               available, just like 27b or 9b or anything else. however,
+               bookforge should use the last used model as the default. the
+               ideal is that the user wont need to use cloud models because
+               theyre expensive. but it should be there if their system is too
+               weak to run a local model"; "keep it at 27b as the max right
+               now". job-model.component.ts carries the rest. -->
           <app-run-target act="translate" [(server)]="server" (ready)="canRun.set($event)" />
+          <app-job-model kind="translate" [server]="server()" [(value)]="chosenModel"
+                         (ready)="modelReady.set($event)" />
           <!--
             THE BOOK'S NAME, WHICH IS WHAT THE FIELD IS CALLED. It held the whole
             path — a workspace directory, a project key with eight hex characters
@@ -273,11 +287,11 @@ import { api, hosted } from '../../core/foundry';
               card never becomes a progress view it has no business being.
             -->
             <button [class.ghost]="!hosted()" [class.primary]="hosted()"
-                    [disabled]="busy() || !canRun()" (click)="add(false)">
+                    [disabled]="busy() || !canRun() || !modelReady()" (click)="add(false)">
               {{ busy() === 'queue' ? 'Working...' : 'Add to queue' }}
             </button>
             @if (!hosted()) {
-            <button class="primary" [disabled]="busy() || !canRun() || to().length === 0 || fromUnresolved() || sameLanguage()" (click)="add(true)">
+            <button class="primary" [disabled]="busy() || !canRun() || !modelReady() || to().length === 0 || fromUnresolved() || sameLanguage()" (click)="add(true)">
               {{ busy() === 'start' ? 'Starting…' : 'Start' }}
             </button>
           }
@@ -618,14 +632,14 @@ export class TranslateDialogComponent {
     return languageTagFor(standing).toLowerCase() === languageTagFor(wanted).toLowerCase();
   });
   /*
-   * ── NO MODEL SIGNAL, NO OLLAMA SIGNAL, AND NO `server` ONE EITHER ────────
+   * ── NO OLLAMA SIGNAL; THE MODEL AND THE SERVER ARE CHOSEN ABOVE ─────────
    *
    * All three were fields on this window at one time or another, and all three
-   * described where the work ran. It runs on a connected GPU engine now, which
-   * chooses its own model (Owen, 2026-09-15: *"crucible handles all model
-   * orchestration"*), and WHERE is picked on the job's own queue row — a
-   * per-book choice this dialog deliberately does not make, for the same reason
-   * it no longer makes the other one.
+   * went when the work moved onto a connected GPU engine (Owen, 2026-09-15:
+   * *"crucible handles all model orchestration"*). The ENGINE came back as the
+   * run-target's chips, and the MODEL came back on 2026-10-25 as the dropdown
+   * (`chosenModel` below; job-model.component.ts quotes the ruling) — each a
+   * real choice for this job. The Ollama endpoint stays gone.
    */
   protected readonly instructions = signal('');
   protected readonly problem = signal<string | null>(null);
@@ -639,6 +653,10 @@ export class TranslateDialogComponent {
   protected readonly server = signal('');
   /** May this act run on that engine at all — the child's verdict. */
   protected readonly canRun = signal(false);
+  /** The model row chosen in the dropdown; empty is Automatic. The child preselects the last one used. */
+  protected readonly chosenModel = signal('');
+  /** Has the dropdown read a list and chosen from it — the child's verdict. */
+  protected readonly modelReady = signal(false);
   /**
    * THE ROW THIS CARD IS WATCHING, or null when it is a form. An id rather than
    * the job: the job is re-pushed whole on every change, and a held copy would
@@ -723,11 +741,11 @@ export class TranslateDialogComponent {
          * ── THE MODEL AND THE ENDPOINT ARE DECLARED CONSTANTS NOW ───────────
          *
          * Owen, 2026-09-15: *"we dont have any local models. crucible handles
-         * all model orchestration."* The ENGINE's capability record names the
-         * model a request runs (crucible docs/PHASE15-HOST.md §3.3) and the
-         * placement applies it at the spawn, over the top of these two
-         * (`doorArgs`, electron/job-queue.ts) — so a field here let somebody
-         * choose something that was then ignored, and it is gone.
+         * all model orchestration."* The PLACEMENT names the model a request
+         * runs — the one chosen in this dialog's dropdown (`chosenModel`, Owen
+         * 2026-10-25), else the biggest that fits up to 27B — and applies it
+         * at the spawn, over the top of these two (`doorArgs`,
+         * electron/job-queue.ts). So these two are never the choice.
          *
          * THE REQUEST FIELDS ARE NOT GONE, because one caller still reads them:
          * a DRY RUN has no server to ask, so `argsFor` defaults to `UNPLACED`
@@ -795,10 +813,13 @@ export class TranslateDialogComponent {
        * door owns it. A blank server means nothing was chosen and the row keeps
        * the default it was admitted with.
        */
-      const { outcome, id } = await this.queue.enqueueTextPassNamed(request);
+      const { outcome, id } = await this.queue.enqueueTextPassNamed(withChosenModel(request, this.chosenModel()));
       if (id !== null && this.server().length > 0) {
         await this.queue.setWaitFor(id, this.server());
       }
+      // THE NEXT ONE OPENS ON THIS ONE'S MODEL (Owen: "use the last used model
+      // as the default") — only once a row was really added. Automatic too.
+      if (id !== null && outcome !== 'already') await api.crucible.rememberJobModel('translate', this.chosenModel());
       if (outcome === 'already') {
         /*
          * A DUPLICATE IS STILL A RUN SOMEBODY CAN WATCH. Main answers with the

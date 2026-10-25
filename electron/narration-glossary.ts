@@ -99,7 +99,7 @@ import { asSessionWait, takeCrucibleLease, type CrucibleLease } from './crucible
 import { CRUCIBLE_CLIENT_NAME, crucibleClientFor } from './crucible/servers';
 import { CRUCIBLE_BATCH_QUEUE } from '../shared/crucible/server-queue';
 import { isUpstreamModelId } from './crucible/text-acts';
-import { modelFromCapability, processTextVenueHost } from './crucible/text-venue';
+import { modelForAct, processTextVenueHost } from './crucible/text-venue';
 import { renameWithRetry } from './fs-retry';
 import type { FoundryFormsAtLister, FoundryFormsLister, FoundryJobRequest } from './foundry-host-queue';
 
@@ -821,6 +821,8 @@ function chatAsker(server: string, model: string, signal: AbortSignal): Glossary
       signal,
     }));
     if (reply.finishReason === 'length') return 'the answer was cut off before it finished';
+    // Null only when the model called tools (client 2.0.30), and none were offered.
+    if (reply.content === null) return 'the answer was tool calls with no text, and no tools were offered';
     return parseAnswer(reply.content);
   };
 }
@@ -931,11 +933,10 @@ export async function ensureNarrationGlossary(opts: EnsureGlossaryOptions): Prom
     return { readingsPath: null, forms: 0, asked: 0, placed: 0, readings: 0, unplaced: 0 };
   }
 
-  // The model the server names for this class, unless the keeper named one.
+  // The model this app sizes the analysis act at, unless the keeper named one.
   let model = opts.model;
   if (model === undefined) {
-    const host = processTextVenueHost();
-    model = modelFromCapability(await host.capability(server), 'analysis', server);
+    model = await modelForAct(server, 'analysis', processTextVenueHost());
   }
   const formKey = (f: { kind: string; key: string }): string => `${f.kind}\u0000${f.key}`;
   const formsByKey = new Map(forms.map((f) => [formKey(f), f] as const));

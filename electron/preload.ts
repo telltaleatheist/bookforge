@@ -37,6 +37,7 @@ import type {
   ProcessingChainRequest,
 } from '../shared/processing/pass-types';
 import type { BookResetSummary } from '../shared/processing/reset-book';
+import type { JobModelChoices } from '../shared/crucible/job-models';
 import type { NarrateTarget as FoundryNarrateTarget } from '../shared/queue/narrate-target';
 import type {
   QueueNotice,
@@ -1411,6 +1412,19 @@ export interface ElectronAPI {
       data?: CrucibleUpstreamTestResult;
       error?: string;
       refusal?: CrucibleEngineSettingsRefusal;
+    }>;
+
+    /**
+     * WHAT A JOB'S MODEL DROPDOWN OFFERS (Owen, 2026-10-25): AUTOMATIC, the
+     * local chat models up to 27B, then every cloud model a configured
+     * upstream account serves. `name` is the server the job will run on, or
+     * null for the one an unassigned text act would be placed on. A failed
+     * call names the server; an unreadable cloud list is `cloudNote` instead.
+     */
+    jobModels: (name: string | null) => Promise<{
+      success: boolean;
+      data?: JobModelChoices;
+      error?: string;
     }>;
 
     /*
@@ -3084,6 +3098,7 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('bookforge:crucible-engine-settings-write', name, patch),
     testUpstream: (name: string, upstream: CrucibleUpstreamName, probe: CrucibleUpstreamProbe) =>
       ipcRenderer.invoke('crucible:upstream-test', name, upstream, probe),
+    jobModels: (name: string | null) => ipcRenderer.invoke('bookforge:crucible-job-models', name),
     // The operator door. `coordination`, `coordinate`, `cancel-setup`,
     // `module` and `parse-pairing` are names the hosted Foundry's `crucible:`
     // family does not have (foundry-app/IPC-CHANNELS.md), which

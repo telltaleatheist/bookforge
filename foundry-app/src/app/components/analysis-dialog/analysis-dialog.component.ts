@@ -15,6 +15,7 @@ import {
   DEFAULT_OLLAMA_ENDPOINT as DEFAULT_OLLAMA,
   DEFAULT_TRANSLATE_MODEL as DEFAULT_MODEL,
 } from '@shared/pipeline';
+import { withChosenModel } from '@shared/job-model-offer';
 import type { AnalyzeRequest } from '@shared/types';
 
 import { LedgerService } from '../../core/ledger.service';
@@ -25,6 +26,7 @@ import { StageService } from '../../core/stage.service';
 import { UiService } from '../../core/ui.service';
 import { RunProgressComponent } from '../run-progress/run-progress.component';
 import { RunTargetComponent } from '../run-target/run-target.component';
+import { JobModelComponent } from '../job-model/job-model.component';
 import { api, hosted } from '../../core/foundry';
 
 /*
@@ -103,7 +105,7 @@ import { api, hosted } from '../../core/foundry';
  */
 @Component({
   selector: 'app-analysis-dialog',
-  imports: [FormsModule, RunProgressComponent, RunTargetComponent],
+  imports: [FormsModule, RunProgressComponent, RunTargetComponent, JobModelComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="scrim" (click)="ui.closeAnalysis()"></div>
@@ -124,10 +126,20 @@ import { api, hosted } from '../../core/foundry';
         @if (watched(); as job) {
           <app-run-progress [job]="job" [verb]="job.kind === 'analysis-rank' ? 'Scoring the sentences' : 'Checking the passages'" />
         } @else {
-          <!-- WHERE IT WILL RUN, AND WHAT WILL RUN IT. The child draws the one
-               real choice and states the rest — run-target.component.ts carries
-               the ruling about why the model is not a button. -->
+          <!-- WHERE IT WILL RUN, AND WHAT WILL RUN IT. Two choices now, and
+               both are real. The model is a dropdown on Owen's ruling of
+               2026-10-25, verbatim: "put the option the user can pick in a
+               dropdown on the modal that configures the job"; "cloud accounts
+               should be listed as an option in every model dropdown if its
+               available, just like 27b or 9b or anything else. however,
+               bookforge should use the last used model as the default. the
+               ideal is that the user wont need to use cloud models because
+               theyre expensive. but it should be there if their system is too
+               weak to run a local model"; "keep it at 27b as the max right
+               now". job-model.component.ts carries the rest. -->
           <app-run-target act="analysis" [(server)]="server" (ready)="canRun.set($event)" />
+          <app-job-model kind="analysis" [server]="server()" [(value)]="chosenModel"
+                         (ready)="modelReady.set($event)" />
           <!--
             THE BOOK'S NAME AND NOT ITS PATH, the Translate dialog's own rule: the
             book's title is what the tab, the tree and the window already call it,
@@ -310,11 +322,11 @@ import { api, hosted } from '../../core/foundry';
               card never becomes a progress view it has no business being.
             -->
             <button [class.ghost]="!hosted()" [class.primary]="hosted()"
-                    [disabled]="busy() || !canRun()" (click)="add(false)">
+                    [disabled]="busy() || !canRun() || !modelReady()" (click)="add(false)">
               {{ busy() === 'queue' ? 'Working...' : 'Add to queue' }}
             </button>
             @if (!hosted()) {
-            <button class="primary" [disabled]="busy() || !canRun() || picked().size === 0" (click)="add(true)">
+            <button class="primary" [disabled]="busy() || !canRun() || !modelReady() || picked().size === 0" (click)="add(true)">
               {{ busy() === 'start' ? 'Starting…' : 'Start' }}
             </button>
           }
@@ -608,8 +620,10 @@ export class AnalysisDialogComponent {
   );
 
   /*
-   * NO MODEL, NO OLLAMA AND NO `server` SIGNAL. See the Translate dialog, where
-   * all three are argued. Verification is hundreds of tiny closed questions over
+   * NO OLLAMA SIGNAL. See the Translate dialog, where it is argued; the model
+   * and the engine are both chosen above (`chosenModel`, `server`), the model on
+   * Owen's ruling of 2026-10-25, which job-model.component.ts quotes. The
+   * ranking row keeps its own 9B whatever is chosen. Verification is hundreds of tiny closed questions over
    * one loaded model, which is the shape a batching server gains most on; the
    * way to get one is to place the row on an engine slot, on its own row.
    */
@@ -624,6 +638,10 @@ export class AnalysisDialogComponent {
   protected readonly server = signal('');
   /** May this act run on that engine at all — the child's verdict. */
   protected readonly canRun = signal(false);
+  /** The model row chosen in the dropdown; empty is Automatic. The child preselects the last one used. */
+  protected readonly chosenModel = signal('');
+  /** Has the dropdown read a list and chosen from it — the child's verdict. */
+  protected readonly modelReady = signal(false);
   /**
    * THE ROWS THIS CARD IS WATCHING, or null when it is a form — the ranking and
    * the check behind it. Ids rather than jobs: a job is re-pushed whole on every
@@ -878,11 +896,11 @@ export class AnalysisDialogComponent {
          * ── THE MODEL AND THE ENDPOINT ARE DECLARED CONSTANTS NOW ───────────
          *
          * Owen, 2026-09-15: *"we dont have any local models. crucible handles
-         * all model orchestration."* The ENGINE's capability record names the
-         * model a request runs (crucible docs/PHASE15-HOST.md §3.3) and the
-         * placement applies it at the spawn, over the top of these two
-         * (`doorArgs`, electron/job-queue.ts) — so a field here let somebody
-         * choose something that was then ignored, and it is gone.
+         * all model orchestration."* The PLACEMENT names the model a request
+         * runs — the one chosen in this dialog's dropdown (`chosenModel`, Owen
+         * 2026-10-25), else the biggest that fits up to 27B — and applies it
+         * at the spawn, over the top of these two (`doorArgs`,
+         * electron/job-queue.ts). So these two are never the choice.
          *
          * THE REQUEST FIELDS ARE NOT GONE, because one caller still reads them:
          * a DRY RUN has no server to ask, so `argsFor` defaults to `UNPLACED`
@@ -916,7 +934,7 @@ export class AnalysisDialogComponent {
        * door owns it. A blank server means nothing was chosen and the row keeps
        * the default it was admitted with.
        */
-      const { outcome, id, rankId } = await this.queue.enqueueAnalysisNamed(request);
+      const { outcome, id, rankId } = await this.queue.enqueueAnalysisNamed(withChosenModel(request, this.chosenModel()));
       /*
        * BOTH ROWS GO WHERE THE CARD SAID — the ranking on that server's decide
        * model and the check on its analysis model — as the Clean dialog pins its
@@ -926,6 +944,9 @@ export class AnalysisDialogComponent {
         if (rankId !== null) await this.queue.setWaitFor(rankId, this.server());
         await this.queue.setWaitFor(id, this.server());
       }
+      // THE NEXT ONE OPENS ON THIS ONE'S MODEL (Owen: "use the last used model
+      // as the default") — only once a row was really added. Automatic too.
+      if (id !== null && outcome !== 'already') await api.crucible.rememberJobModel('analysis', this.chosenModel());
       if (outcome === 'already') {
         /*
          * A DUPLICATE IS STILL A RUN SOMEBODY CAN WATCH. Main answers with the

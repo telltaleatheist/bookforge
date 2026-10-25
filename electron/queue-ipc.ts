@@ -35,7 +35,6 @@ import { activityOf, pingServer } from './crucible/probe';
 import { crucibleLeaseSeam, ownCrucibleSessionIds } from './crucible/lease';
 import { readCard } from './crucible/card-shadow';
 import { ownCrucibleJobIds } from './crucible/in-flight-ledger';
-import { readCrucibleRoutes } from './crucible/route-read';
 import { getMainLogger } from './rolling-logger';
 import { WAIT_FOR_ANY, type WaitForServer } from '../shared/queue/wait-for';
 
@@ -198,14 +197,6 @@ export async function startQueueEngine(): Promise<void> {
   // whether it travels and then reports the runs that carry one and say
   // nothing about where — see `waitForMigrationReport`.
   engine.setCrucibleRoutingHost(crucibleRoutingHost());
-  // A row whose route is unknown ASKS for it (`crucible/route-read.ts`), rather
-  // than waiting for a connect that may never come (Owen, 2026-09-24).
-  engine.setCrucibleRouteReader((server) => {
-    readCrucibleRoutes(server, 'a queued row needs it', (level, message) => {
-      if (level === 'warn') getMainLogger().warn(message);
-      else getMainLogger().info(message);
-    });
-  });
   /*
    * ONE LEASE PER ROW. The scheduler is the only thing that knows a RUN is a
    * sequence of acts, so it is the only thing that can hold ONE lease across

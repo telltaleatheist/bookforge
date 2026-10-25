@@ -36,6 +36,8 @@ import {
   customCategoryId,
   type CustomAnalysisCategory,
 } from '../shared/analysis-categories';
+import { JOB_MODEL_KINDS } from '../shared/job-model-offer';
+import type { JobModelKind } from '../shared/job-models';
 
 /**
  * ONE REGISTERED CRUCIBLE, AS IT IS STORED — the only shape in this app that
@@ -325,6 +327,19 @@ export interface AppSettings {
    * a wizard step into a migration.
    */
   setupSkipped: string[];
+  /**
+   * THE MODEL EACH KIND OF JOB WAS LAST SENT WITH — Owen, 2026-10-25: *"bookforge
+   * should use the last used model as the default."*
+   *
+   * A model id on a server's card, an `<upstream>/<model>`, or `''` for AUTOMATIC
+   * (shared/job-models.ts). Written by the dialog after its enqueue succeeds
+   * (`rememberJobModel`, electron/crucible-models.ts), read when one opens, and
+   * only ever a DEFAULT: a value the list no longer offers — a model removed, a
+   * dialog aimed at another server — opens on AUTOMATIC (`defaultJobModel`).
+   * So a stale entry is harmless and is kept rather than pruned at the read; an
+   * absent kind is a job never sent.
+   */
+  lastJobModels: Partial<Record<JobModelKind, string>>;
 
 }
 
@@ -738,6 +753,23 @@ export function clampSkipped(value: unknown): string[] {
   return [...seen];
 }
 
+/**
+ * The four kinds this build knows, each a model id of sane length (or `''`,
+ * AUTOMATIC). A kind this build does not know, or a value that is not a string,
+ * is not one — the next press writes the kind again. Not trimmed: an id is
+ * compared exactly against the server's list, and a space is not ours to drop.
+ */
+export function clampLastJobModels(value: unknown): Partial<Record<JobModelKind, string>> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return {};
+  const raw = value as Record<string, unknown>;
+  const out: Partial<Record<JobModelKind, string>> = {};
+  for (const kind of JOB_MODEL_KINDS) {
+    const id = raw[kind];
+    if (typeof id === 'string' && id.length <= 200) out[kind] = id;
+  }
+  return out;
+}
+
 export function readAppSettings(): AppSettings {
   const raw = readRaw();
   return {
@@ -750,6 +782,7 @@ export function readAppSettings(): AppSettings {
     wslDistro: clampWslDistro(raw?.['wslDistro']),
     setupCompleted: raw?.['setupCompleted'] === true,
     setupSkipped: clampSkipped(raw?.['setupSkipped']),
+    lastJobModels: clampLastJobModels(raw?.['lastJobModels']),
   };
 }
 
@@ -787,6 +820,9 @@ export function writeAppSettings(patch: Partial<AppSettings>): AppSettings {
   }
   if (patch.setupSkipped !== undefined) {
     root['setupSkipped'] = clampSkipped(patch.setupSkipped);
+  }
+  if (patch.lastJobModels !== undefined) {
+    root['lastJobModels'] = clampLastJobModels(patch.lastJobModels);
   }
   /*
    * NULL IS A VALUE HERE and clears the receipt — which is what re-installing

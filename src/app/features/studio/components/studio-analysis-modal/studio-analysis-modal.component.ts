@@ -1,11 +1,9 @@
 import { Component, HostListener, computed, inject, input, output, signal } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { SettingsService } from '../../../../core/services/settings.service';
-import { ElectronService } from '../../../../core/services/electron.service';
 import { QueueService } from '../../../queue/services/queue.service';
 import { AIProvider, isAIProvider } from '../../../../core/models/ai-config.types';
-import { capabilityWords } from '../../../settings/components/crucible-words';
-import type { CrucibleCapabilityView } from '@shared/crucible/settings-wire';
+import { JobModelFieldComponent } from '../../../../shared/job-model-field.component';
 import { StudioItem } from '../../models/studio.types';
 import { AnalysisCategory, DEFAULT_ANALYSIS_CATEGORIES } from '../../analysis-categories';
 import { StudioAnalysisTarget, studioManifestProjectId } from '../../analysis-target';
@@ -33,7 +31,7 @@ const ANALYSIS_AI_SELECTION_KEY = 'bookforge-analysis-ai-selection';
 @Component({
   selector: 'app-studio-analysis-modal',
   standalone: true,
-  imports: [CommonModule],
+  imports: [CommonModule, JobModelFieldComponent],
   template: `
     <div class="backdrop" (click)="close.emit()">
       <section class="modal" role="dialog" aria-modal="true" aria-labelledby="analysis-modal-title"
@@ -69,7 +67,12 @@ const ANALYSIS_AI_SELECTION_KEY = 'bookforge-analysis-ai-selection';
 
           <div class="config-section">
             <label class="field-label">Model</label>
-            <div class="hint">{{ modelLine() }}</div>
+            @if (crucibleServer(); as server) {
+              <app-job-model-field kind="analysis" label="" [server]="server"
+                                   (chosen)="chosenModel.set($event)" />
+            } @else {
+              <div class="hint">No engine chosen yet — pick one in Settings → AI.</div>
+            }
           </div>
 
           <div class="config-section">
@@ -188,7 +191,6 @@ const ANALYSIS_AI_SELECTION_KEY = 'bookforge-analysis-ai-selection';
 })
 export class StudioAnalysisModalComponent {
   private readonly settings = inject(SettingsService);
-  private readonly electron = inject(ElectronService);
   private readonly queue = inject(QueueService);
   private analysisSelection: AnalysisAISelection = { provider: 'crucible' };
 
@@ -213,17 +215,16 @@ export class StudioAnalysisModalComponent {
    * surviving provider has a model for this modal to pick.
    */
 
-  /** The engine's capability record, or null before it has been asked for. */
-  readonly capability = signal<CrucibleCapabilityView | null>(null);
-
   /** The engine this app is pointed at, or '' when none has been chosen. */
   readonly crucibleServer = computed(() => this.settings.getAIConfig().crucible?.server ?? '');
 
-  /** THE MODEL, as its owner states it. Never a control. */
-  readonly modelLine = computed(() => {
-    if (!this.crucibleServer()) return 'No engine chosen yet — pick one in Settings → AI.';
-    return capabilityWords(this.capability(), 'analysis');
-  });
+  /*
+   * THE MODEL IS A CONTROL AGAIN (Owen, 2026-10-25): *"put the option the user
+   * can pick in a dropdown on the modal that configures the job"*. The engine's
+   * per-class record no longer owns a text job's model; the job carries the
+   * choice as `chosenModel` ('' = AUTOMATIC, the biggest that fits up to 27B).
+   */
+  readonly chosenModel = signal<string>('');
 
   readonly enabledCount = computed(() => this.categories().filter(category => category.enabled).length);
   // An engine has to have been chosen: there is no bundled model to fall back
@@ -247,16 +248,6 @@ export class StudioAnalysisModalComponent {
     // One provider. The modal still records the selection so a queued job
     // carries what it ran on, but there is nothing left to prefer between.
     this.selectProvider('crucible', false);
-    await this.loadCapability();
-  }
-
-  private async loadCapability(): Promise<void> {
-    const server = this.crucibleServer();
-    if (!server) return;
-    const res = await this.electron.crucible.capability(server);
-    // Never an empty record on failure — an empty class list reads as "this
-    // engine serves nothing", which is a different and false claim.
-    if (res.success && res.data) this.capability.set(res.data);
   }
 
   selectProvider(provider: AIProvider, persist = true): void {
@@ -327,6 +318,7 @@ export class StudioAnalysisModalComponent {
       const source = target.kind === 'audiobook'
         ? { kind: 'audiobook' as const, projectId: target.projectId, variantId: target.variantId }
         : { kind: 'document' as const, epubPath: target.path };
+      const chosenModel = this.chosenModel();
       await this.queue.addJob({
         type: 'book-analysis',
         epubPath: source.kind === 'document' ? source.epubPath : undefined,
@@ -337,10 +329,10 @@ export class StudioAnalysisModalComponent {
           projectDir: this.projectDir(),
           source,
           aiProvider: this.provider(),
-          // Empty because neither provider's model is this modal's to name:
-          // the engine's is its capability record and the bundled one is the
-          // active local model.
+          // Informational only (the legacy local arm's field). What the run
+          // uses is `chosenModel`; absent is AUTOMATIC, as on an old row.
           aiModel: '',
+          ...(chosenModel === '' ? {} : { chosenModel }),
           categories: this.categories().filter(category => category.enabled),
           testMode: target.kind === 'document' && this.testMode(),
           testModeChunks: target.kind === 'document' && this.testMode() ? this.testChunks() : undefined,
@@ -349,6 +341,8 @@ export class StudioAnalysisModalComponent {
             : undefined,
         },
       });
+      // The last-used default is written on SUBMIT, AUTOMATIC included.
+      this.settings.setLastJobModel('analysis', chosenModel);
       this.queued.emit();
       this.close.emit();
     } catch (err) {

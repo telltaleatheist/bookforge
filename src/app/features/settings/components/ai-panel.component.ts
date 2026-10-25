@@ -17,7 +17,6 @@ import {
   type CrucibleEngineSettingsRefusal,
   type CrucibleLocalModelChoice,
   type CrucibleModuleProgress,
-  type CrucibleTextActName,
   type CrucibleUpstreamName,
   type CrucibleUpstreamProbe,
 } from '@shared/crucible/settings-wire';
@@ -27,13 +26,9 @@ import {
   ENGINE_SETTINGS_REFUSED_LEAD,
   bytesWords,
   capabilityClassWords,
-  capabilityWords,
-  localRouteWords,
-  routeWords,
   sizeWords,
   upstreamCredentialField,
   upstreamFieldWords,
-  upstreamRouteWords,
   upstreamStateWords,
   upstreamTestedWords,
   upstreamWordsLeading,
@@ -72,7 +67,14 @@ const JOB_GROUPS: ReadonlyArray<{
    */
   readonly asSubjects?: CrucibleSubjectKind;
 }> = [
-  { title: 'Text', classes: ['clean', 'translate', 'simplify', 'analysis'] },
+  /*
+   * NO "Text" GROUP SINCE 2026-10-25. Owen: *"put the option the user can pick
+   * in a dropdown on the modal that configures the job"*. Clean, translate,
+   * simplify and analysis choose their own model in the window that starts
+   * each one (shared/crucible/job-models.ts), so a per-class row here would be
+   * a second place to choose the same thing -- and the one the job no longer
+   * reads. The page says so in one line instead (TEXT_JOBS_NOTE).
+   */
   { title: 'Documents', classes: ['pages'] },
   /*
    * NARRATION IS DRAWN AS ITS VOICES, NOT AS A JOB WITH VOICE CHIPS.
@@ -121,8 +123,6 @@ interface JobOption {
   readonly progress: string | null;
   /** For `use`: the model id, or null for Automatic. */
   readonly model: string | null;
-  /** True when applying it means ROUTING the class, not choosing a local model. */
-  readonly route: boolean;
   /** For `download`: the catalog row to pull. */
   readonly row: CrucibleCatalogRow | null;
 }
@@ -168,6 +168,17 @@ interface JobOption {
  * on is the engine's answer, asked at the start of a run and stamped onto that
  * run's provenance -- which is what every comment in ai-bridge.ts already said
  * was true and, until 2026-09-17, was not.
+ *
+ * -- AND THE TEXT JOBS LEFT THIS PAGE ALTOGETHER (2026-10-25) ---------------
+ *
+ * Owen: *"put the option the user can pick in a dropdown on the modal that
+ * configures the job"*; *"cloud accounts should be listed as an option in every
+ * model dropdown if its available"*. A clean, a translate, a simplify or an
+ * analysis now carries its own model, chosen in the window that starts it, so
+ * the four class rows, their per-class model writes and their account routes
+ * are gone from here. The Accounts card stays: a cloud model is offered in a
+ * job's dropdown only when an account is set up on the engine, and this is
+ * where that is done.
  */
 @Component({
   selector: 'app-ai-panel',
@@ -239,6 +250,11 @@ interface JobOption {
             <p class="aip-warn">{{ CAPABILITY_UNDECIDED }}</p>
           }
 
+          <section class="aip-sec">
+            <h3>Text</h3>
+            <p class="aip-note">{{ TEXT_JOBS_NOTE }}</p>
+          </section>
+
           @for (group of jobGroups(); track group.title) {
             <section class="aip-sec">
               <h3>{{ group.title }}</h3>
@@ -284,13 +300,7 @@ interface JobOption {
                   @if (jobProgress(job); as line) {
                     <p class="aip-option-progress">{{ line }}</p>
                   }
-                  @if (isAct(job) && !anyAccountConfigured()) {
-                    <p class="aip-hint">{{ ACCOUNT_HINT }}</p>
-                  }
                   @if (fieldRefusal('local_models.' + job); as r) {
-                    <p class="aip-bad"><span class="aip-code">{{ r.code }}</span> {{ r.message }}</p>
-                  }
-                  @if (fieldRefusal('routes.' + job); as r) {
                     <p class="aip-bad"><span class="aip-code">{{ r.code }}</span> {{ r.message }}</p>
                   }
                 </div>
@@ -574,7 +584,6 @@ export class AiPanelComponent implements OnInit {
   private readonly ai = inject(AiService);
   private readonly destroyRef = inject(DestroyRef);
 
-  readonly ACTS = CRUCIBLE_TEXT_ACT_NAMES;
   readonly UPSTREAMS = CRUCIBLE_UPSTREAM_NAMES;
   /*
    * THE FOUR EXPLANATORY PARAGRAPHS ARE CUT (2026-09-17). Owen, reading the
@@ -592,16 +601,12 @@ export class AiPanelComponent implements OnInit {
    * for the first time. A settings page is not a first meeting.
    */
   /**
-   * WHERE THE ACCOUNT ROWS COME FROM, said only when there are none.
-   *
-   * This replaced a free-text box asking for `<account>/<model id>` -- a
-   * control whose placeholder was its own documentation and which Owen could
-   * not answer: *"what would a person even type in that?"* The ids are the
-   * account's own, and the only thing that knows them is a Test.
+   * WHERE THE TEXT JOBS' MODELS ARE CHOSEN NOW -- the one line that replaced
+   * their four rows (2026-10-25; see the class header).
    */
-  readonly ACCOUNT_HINT =
-    'To run this on Anthropic, OpenAI or an Ollama server instead, set one up under Accounts '
-    + 'below and press Test. The models that account offers then appear here.';
+  readonly TEXT_JOBS_NOTE =
+    "Cleanup, translation, simplification and analysis choose their model in each job's own "
+    + 'window. Accounts set up below appear there as cloud options.';
 
   readonly KEYS_NOTE = 'Keys go to the engine, which is what calls the account. BookForge stores none.';
   readonly REFUSED_LEAD = ENGINE_SETTINGS_REFUSED_LEAD;
@@ -614,8 +619,6 @@ export class AiPanelComponent implements OnInit {
    * given. They remain in `crucible-words.ts` for the wizard, which still draws
    * the select they were written for.
    */
-  /** The value that means "on this engine's own card". The server's spelling. */
-  readonly LOCAL_ROUTE = 'local';
   readonly CAPABILITY_UNDECIDED = ENGINE_CAPABILITY_UNDECIDED;
 
 
@@ -693,19 +696,18 @@ export class AiPanelComponent implements OnInit {
   });
 
   /**
-   * EVERY CLASS THIS ENGINE OFFERS A CHOICE FOR, the four text acts first.
+   * EVERY CLASS THIS ENGINE OFFERS A CHOICE FOR, except the four text acts —
+   * which choose in each job's own window since 2026-10-25 (see the header).
    *
-   * NOT just the four. `localModels.choices` is keyed by capability class and
+   * The history below is why the OTHER classes are here at all: NOT just the four. `localModels.choices` is keyed by capability class and
    * there are more of them than there are text acts — `pages` reads documents,
    * `tts` narrates, `asr` transcribes — and each has weights that a person may
    * want to choose. Owen named translate and simplify because those are the
    * two he wanted; drawing only those would have silently deleted the others'
    * pickers, which is not what asking for two of them means.
    *
-   * The engine's key order is whatever a dict iterated in; the four acts are
-   * put first because they are the ones a person came here for, and the rest
-   * follow in the engine's own order rather than being sorted into an order
-   * this app invented.
+   * The classes follow the engine's own key order rather than being sorted
+   * into an order this app invented.
    */
   /**
    * The groups, with only the classes THIS engine actually offers, and only
@@ -776,18 +778,12 @@ export class AiPanelComponent implements OnInit {
   }
 
   /** Is any account set up? Decides whether to explain where account rows come from. */
-  anyAccountConfigured(): boolean {
-    const doc = this.engine();
-    if (doc === null) return false;
-    return this.UPSTREAMS.some((name) => doc.upstreams[name].configured);
-  }
-
   readonly modelClasses = computed<readonly string[]>(() => {
     const choices = this.engine()?.localModels?.choices ?? {};
-    const present = Object.keys(choices);
-    const acts = (CRUCIBLE_TEXT_ACT_NAMES as readonly string[]).filter((a) => present.includes(a));
-    const rest = present.filter((key) => !(CRUCIBLE_TEXT_ACT_NAMES as readonly string[]).includes(key));
-    return [...acts, ...rest];
+    // THE FOUR TEXT ACTS ARE LEFT OUT, not merely ungrouped: without this they
+    // would land under "Other" and the rows the header retires would be back.
+    return Object.keys(choices)
+      .filter((key) => !(CRUCIBLE_TEXT_ACT_NAMES as readonly string[]).includes(key));
   });
 
   /**
@@ -947,26 +943,6 @@ export class AiPanelComponent implements OnInit {
   }
 
   actWords(act: string): string { return capabilityClassWords(act); }
-
-  /**
-   * Is this one of the four text acts?
-   *
-   * Only those four can be pointed at an upstream account (PHASE15 §3.3:
-   * *"every non-llm class answers local"*), so only those four can have a
-   * route chip. Reading a route for `pages` or `tts` would be reading a field
-   * the contract says is always the same value.
-   */
-  isAct(cls: string): cls is CrucibleTextActName {
-    return (CRUCIBLE_TEXT_ACT_NAMES as readonly string[]).includes(cls);
-  }
-
-  /** The upstream this act is pointed at, or null when it runs on the card. */
-  upstreamFor(act: string): string | null {
-    if (!this.isAct(act)) return null;
-    const row = this.engine()?.routes[act];
-    if (row === undefined || row.route !== 'upstream') return null;
-    return upstreamRouteWords(row.model ?? '');
-  }
 
   choicesFor(act: string): readonly CrucibleLocalModelChoice[] {
     return this.engine()?.localModels?.choices[act] ?? [];
@@ -1150,25 +1126,16 @@ export class AiPanelComponent implements OnInit {
    * where nobody can tell which control it refers to.
    */
   /**
-   * Run this job on this engine, on this model -- or hand the model choice back.
+   * Run this class on this model -- or hand the model choice back.
    *
-   * ONE PATCH, BOTH HALVES. Picking a model here is picking THIS ENGINE, which
-   * is what makes the models and the accounts peers in one row of buttons
-   * rather than two lists asking two halves of one question. For a text act
-   * that means the route goes to `local` in the same request: section 3.2
-   * applies a patch whole or not at all, so the model and the route cannot end
-   * up disagreeing, and a class that was pointed at Anthropic comes back to the
-   * card in one press instead of two.
-   *
-   * The non-llm classes have no route at all (every one of them answers
-   * `local`), so sending one would be refused `route_not_routable` -- correctly,
-   * and pointlessly. They get the model half alone.
+   * THE MODEL HALF ALONE. Every class still drawn here is a non-llm one, and
+   * those have no route (every one of them answers `local`), so sending one
+   * would be refused `route_not_routable`. The text acts, which did carry a
+   * route in the same patch, left this page on 2026-10-25 (see the header).
    */
   async chooseModel(job: string, model: string | null): Promise<void> {
-    if (this.isChosenModel(job, model) && this.routeIsLocal(job)) return;
-    await this.write('local_models.' + job, this.isAct(job)
-      ? { localModels: { [job]: model }, routes: { [job]: this.LOCAL_ROUTE } }
-      : { localModels: { [job]: model } });
+    if (this.isChosenModel(job, model)) return;
+    await this.write('local_models.' + job, { localModels: { [job]: model } });
   }
 
   /**
@@ -1177,8 +1144,8 @@ export class AiPanelComponent implements OnInit {
    * Automatic first, because handing the choice back is the answer most people
    * want and it is the one the engine keeps up to date by itself. Then this
    * engine's models -- installed ones offering Use, the rest offering Download,
-   * in the engine's own order -- and then the accounts, which only the four
-   * text acts can reach at all.
+   * in the engine's own order. (The accounts used to follow, for the four text
+   * acts only; those choose in each job's own window now.)
    *
    * THE DOWNLOAD LIST IS NOT A SEPARATE EXPANDER ANY MORE. It was "N more
    * models this engine can download" under its own button, which put the model
@@ -1195,7 +1162,6 @@ export class AiPanelComponent implements OnInit {
       action: this.isAutomatic(job) ? 'none' : 'use',
       progress: null,
       model: null,
-      route: false,
       row: null,
     }];
 
@@ -1217,7 +1183,6 @@ export class AiPanelComponent implements OnInit {
           action: this.isChosenModel(job, choice.id) ? 'none' : 'use',
           progress: null,
           model: choice.id,
-          route: false,
           row: null,
         });
         continue;
@@ -1236,26 +1201,10 @@ export class AiPanelComponent implements OnInit {
         action: 'download',
         progress: task === undefined ? null : this.pullWords(task),
         model: null,
-        route: false,
         row,
       });
     }
 
-    if (this.isAct(job)) {
-      for (const id of this.upstreamModelChoices()) {
-        options.push({
-          key: 'route:' + id,
-          title: this.upstreamRouteLabel(id),
-          detail: 'an account, not this engine',
-          chosen: this.routeValue(job as CrucibleTextActName) === id,
-          action: this.routeValue(job as CrucibleTextActName) === id ? 'none' : 'use',
-          progress: null,
-          model: id,
-          route: true,
-          row: null,
-        });
-      }
-    }
     return options;
   }
 
@@ -1300,10 +1249,6 @@ export class AiPanelComponent implements OnInit {
 
   /** Apply one option: a local model (and the route home), or an account. */
   async useOption(job: string, option: JobOption): Promise<void> {
-    if (option.route) {
-      await this.chooseRoute(job as CrucibleTextActName, option.model as string);
-      return;
-    }
     await this.chooseModel(job, option.model);
   }
 
@@ -1321,23 +1266,17 @@ export class AiPanelComponent implements OnInit {
   jobSummary(job: string): string {
     const now = this.jobNow(job);
     if (now === null) return 'This engine has not said what runs this.';
-    if (this.isAct(job) && !this.routeIsLocal(job)) return 'Runs on ' + now;
     return this.isAutomatic(job) ? now + ' (chosen by the engine)' : now;
   }
 
-  /** Is this the model the engine is set to use, AND is the job running here? */
+  /** Is this the model the engine is set to use for this class? */
   isChosenModel(job: string, id: string | null): boolean {
-    return this.selectedFor(job) === id && this.routeIsLocal(job);
+    return this.selectedFor(job) === id;
   }
 
-  /** Automatic: no model named, and not pointed at an account. */
+  /** Automatic: no model named for this class. */
   isAutomatic(job: string): boolean {
-    return this.selectedFor(job) === null && this.routeIsLocal(job);
-  }
-
-  private routeIsLocal(job: string): boolean {
-    if (!this.isAct(job)) return true;   // every non-llm class answers `local`.
-    return this.routeValue(job as CrucibleTextActName) === this.LOCAL_ROUTE;
+    return this.selectedFor(job) === null;
   }
 
   /**
@@ -1353,81 +1292,7 @@ export class AiPanelComponent implements OnInit {
     const row = this.capability()?.classes.find((entry) => entry.capability === job);
     if (row === undefined) return null;
     if (!row.enabled) return row.reason;
-    if (row.route === 'upstream') return upstreamRouteWords(row.selected);
     return row.selected === '' ? null : this.modelLabel(job, row.selected);
-  }
-
-  // -- Where each job runs ---------------------------------------------------
-
-  /** The engine's own sentence about where this act runs TODAY. */
-  runsOnNow(act: CrucibleTextActName): string {
-    return routeWords(this.capability(), act) ?? capabilityWords(this.capability(), act);
-  }
-
-  /** `this engine - qwen3.5-9b`, or `this engine - nothing on it fits`. */
-  localOptionFor(act: CrucibleTextActName): string {
-    const doc = this.engine();
-    /*
-     * NO DOCUMENT IS NOT "NOTHING FITS". `localRouteWords(null)` says *"this
-     * engine - nothing on it fits"*, which is a measured verdict; saying it
-     * about an engine that has not been read would tell somebody their card is
-     * too small because their Mac was asleep.
-     */
-    if (doc === null) return 'this engine';
-    const row = doc.routes[act];
-    /*
-     * The local model for a class CURRENTLY routed upstream is not in the
-     * document -- section 3.1 puts the selected local model on a `local` row
-     * only -- so the honest answer there is "nothing said", not a guess.
-     */
-    return row.route === 'local' ? localRouteWords(row) : localRouteWords(null);
-  }
-
-  upstreamRouteLabel(id: string): string { return upstreamRouteWords(id); }
-
-  /**
-   * EVERY UPSTREAM MODEL ID THIS PANEL CAN OFFER, and where each came from.
-   *
-   * Two sources, both facts rather than a catalog: the ids the document's own
-   * routes already name (so routing a second class to the model a first one
-   * uses needs no typing), and the ids a Test got back from the account itself.
-   * There is no third source, because a third source would be this app shipping
-   * a list of somebody else's models -- which goes stale and which
-   * `tools/test-no-cloud-doors.js` forbids by name.
-   */
-  upstreamModelChoices(): string[] {
-    const ids = new Set<string>();
-    const doc = this.engine();
-    if (doc !== null) {
-      for (const act of this.ACTS) {
-        const row = doc.routes[act];
-        if (row.route === 'upstream' && row.model !== null) ids.add(row.model);
-      }
-    }
-    for (const models of Object.values(this.testedModels())) {
-      for (const id of models) ids.add(id);
-    }
-    return [...ids];
-  }
-
-  routeValue(act: CrucibleTextActName): string {
-    const doc = this.engine();
-    if (doc === null) return this.LOCAL_ROUTE;
-    const row = doc.routes[act];
-    return row.route === 'upstream' && row.model !== null ? row.model : this.LOCAL_ROUTE;
-  }
-
-  /**
-   * Route one class, to this engine's card or to an account's model.
-   *
-   * The value is the SERVER's own vocabulary either way -- `local`, or
-   * `<account>/<model id>` -- and is passed through untranslated. An id the
-   * account does not sell is refused `route_bad_model` and the sentence lands
-   * under this act's row.
-   */
-  async chooseRoute(act: CrucibleTextActName, value: string): Promise<void> {
-    if (this.routeValue(act) === value) return;
-    await this.write('routes.' + act, { routes: { [act]: value } });
   }
 
   // -- The three accounts ----------------------------------------------------

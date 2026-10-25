@@ -24,6 +24,8 @@ import type {
 } from './engine-settings';
 import type { BookOp, PendingOutcome, PendingStack } from './ops';
 import type { CrucibleCatalogRow, CruciblePullProgress } from './model-wire';
+import type { JobModelOffer } from './job-model-offer';
+import type { JobModelKind } from './job-models';
 import type { ReReadPrompt } from './reread';
 import type {
   CloudProbe,
@@ -1534,6 +1536,15 @@ export interface FoundryApi {
     startCrucible(): Promise<CrucibleStartResult>;
     /** What this engine holds and could hold. A read; it fetches nothing. */
     catalog(server: string): Promise<CrucibleCatalogRow[]>;
+    /**
+     * WHAT A JOB'S MODEL DROPDOWN OFFERS, and the row it opens on (Owen,
+     * 2026-10-25). `server` is the engine the dialog pinned, or null for the
+     * top-ranked Crucible. A LIVE read; a server that cannot be asked rejects
+     * with its own sentence, which the dialog prints.
+     */
+    jobModels(kind: JobModelKind, server: string | null): Promise<JobModelOffer>;
+    /** Remember the model this kind of job was just sent with — `''` (Automatic) too. */
+    rememberJobModel(kind: JobModelKind, value: string): Promise<void>;
     /**
      * Start fetching one subject. Answers the TASK ID — the pull itself reports
      * on {@link onPullProgress}, because a model is gigabytes and no invoke

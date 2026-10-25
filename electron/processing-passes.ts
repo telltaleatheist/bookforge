@@ -1093,6 +1093,11 @@ async function runNarrationTextPass(
       epubPath: readable,
       outPath: produced,
       ...(crucibleServer === undefined ? {} : { crucibleServer }),
+      // The model the person chose in the window that queued this pass (Owen,
+      // 2026-10-25). Absent — every row queued before the field existed, and
+      // every AUTOMATIC choice — lets the server size it, up to 27B.
+      ...(config.chosenModel === undefined || config.chosenModel === ''
+        ? {} : { chosenModel: config.chosenModel }),
       onProgress: (done, total, label) => {
         // The same `queue:progress` bridge event the row's step module is already
         // listening on (electron/queue-steps/pass.ts), so the bar this draws is

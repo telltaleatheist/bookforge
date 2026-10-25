@@ -20,6 +20,7 @@ import {
   type CrucibleUpstreamName,
   type CrucibleUpstreamProbe,
 } from '@shared/crucible/settings-wire';
+import type { JobModelChoices } from '@shared/crucible/job-models';
 import {
   ENGINE_CAPABILITY_UNDECIDED,
   ENGINE_FIT_CAVEAT,
@@ -754,11 +755,22 @@ export class AiSetupWizardComponent implements OnInit, OnDestroy {
    * What first run actually needs to know is narrower and is a yes or a no:
    * can this engine do the cleanup class at all. The id that answers it today
    * is the engine's to change tomorrow.
+   *
+   * ASKED OF THE JOB'S OWN LIST SINCE 2026-10-25, not of the `clean` row of
+   * the capability record. That row is retired for text jobs: a cleanup now
+   * runs on the model its window chose (Owen: *"put the option the user can
+   * pick in a dropdown on the modal that configures the job"*), so "can this
+   * engine clean" means "would that dropdown offer anything real" — at least
+   * one local chat model up to 27B, or one cloud model an account on the engine
+   * serves (`jobModelChoices`, shared/crucible/job-models.ts).
    */
   readonly canClean = computed(() => {
-    const clean = this.capability()?.classes.find((row) => row.capability === 'clean');
-    return clean?.enabled === true;
+    const list = this.jobModelList();
+    return list !== null && list.choices.some((c) => c.kind === 'local' || c.kind === 'cloud');
   });
+
+  /** The cleanup dropdown's list for the chosen server, or null until it has been read. */
+  readonly jobModelList = signal<JobModelChoices | null>(null);
 
   crucibleServer(): string { return this.settings.getAIConfig().crucible?.server ?? ''; }
 
@@ -822,6 +834,7 @@ export class AiSetupWizardComponent implements OnInit, OnDestroy {
     // The capability record belongs to the server too — a 24 GB box and a
     // 12 GB box answer differently — so it is re-asked, never carried over.
     this.capability.set(null);
+    this.jobModelList.set(null);
     // AND SO DOES THE SETTINGS DOCUMENT, which is even less transferable: it
     // holds another machine's routes and another operator's accounts. Dropped
     // here through the one draw function, which also empties the key boxes —
@@ -866,7 +879,7 @@ export class AiSetupWizardComponent implements OnInit, OnDestroy {
 
   private async loadCapability(): Promise<void> {
     const server = this.crucibleServer();
-    if (!server) { this.capability.set(null); return; }
+    if (!server) { this.capability.set(null); this.jobModelList.set(null); return; }
     const res = await this.electron.crucible.capability(server);
     if (server !== this.crucibleServer()) return;
     if (!res.success || !res.data) {
@@ -880,6 +893,17 @@ export class AiSetupWizardComponent implements OnInit, OnDestroy {
       return;
     }
     this.capability.set(res.data);
+    const models = await this.electron.crucible.jobModels(server);
+    if (server !== this.crucibleServer()) return;
+    if (!models.success || !models.data) {
+      this.jobModelList.set(null);
+      this.crucibleStatus.set({
+        ok: false,
+        message: models.error ?? `crucible "${server}" could not be asked which models a cleanup could use.`,
+      });
+      return;
+    }
+    this.jobModelList.set(models.data);
     if (this.wizard() && this.canClean()
       && (this.usingCrucible() || !this.ai.localUsable())) {
       this.useCrucible();

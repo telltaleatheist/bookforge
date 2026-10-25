@@ -5199,7 +5199,11 @@ async function placeRun(
     });
     let outcome: Awaited<ReturnType<typeof placeJob>>;
     try {
-      outcome = await placeJob(request.kind, next.waitFor, say, claim, placementAbort.signal);
+      // The model a person chose in the job's dialog, on the kinds that carry one
+      // (translate, simplify, clean, analysis); absent everywhere else.
+      const chosenModel = 'chosenModel' in request ? request.chosenModel : undefined;
+      outcome = await placeJob(
+        request.kind, next.waitFor, say, claim, placementAbort.signal, chosenModel);
     } finally {
       wires.release();
     }

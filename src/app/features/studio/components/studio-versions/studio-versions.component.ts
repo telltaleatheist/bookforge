@@ -6,6 +6,8 @@ import { FormsModule } from '@angular/forms';
 import { ElectronService, WhisperModelStatus } from '../../../../core/services/electron.service';
 import { ComponentService } from '../../../../core/services/component.service';
 import { NoticeService } from '../../../../core/services/notice.service';
+import { SettingsService } from '../../../../core/services/settings.service';
+import { JobModelFieldComponent } from '../../../../shared/job-model-field.component';
 import { QueueService, type DirectPassRunResult } from '../../../queue/services/queue.service';
 import { VariantImportService } from '../../services/variant-import.service';
 import { DiffViewComponent } from '../../../audiobook/components/diff-view/diff-view.component';
@@ -140,7 +142,7 @@ const AUDIO_EXTS = new Set([
   standalone: true,
   imports: [
     CommonModule, FormsModule, DiffViewComponent, MetadataEditorComponent, DesktopSelectComponent,
-    StudioConvertModalComponent,
+    StudioConvertModalComponent, JobModelFieldComponent,
   ],
   host: { '[class.comparing]': '!!comparing()' },
   template: `
@@ -697,6 +699,32 @@ const AUDIO_EXTS = new Set([
       </div>
     }
 
+    <!--
+      "Clean text…" — the cost, and the model, before it runs. This was a system
+      confirm until 2026-10-25, when the model became the job's to choose (Owen:
+      "put the option the user can pick in a dropdown on the modal that
+      configures the job"), and a system dialog cannot hold a control. No server
+      is named: the cleanup row is placed by the queue, so the list is read from
+      the server an unassigned text act goes to.
+    -->
+    @if (cleanPicker(); as cp) {
+      <div class="gs-backdrop" (click)="closeCleanPicker()">
+        <div class="gs-modal" (click)="$event.stopPropagation()">
+          <h3 class="gs-title">Clean this version's text</h3>
+          <p class="gs-sub">The punctuation and the numbers of “{{ variantTitle(cp.variant) }}” will be
+            read into the form a narrator says.</p>
+          <app-job-model-field kind="clean" [server]="null"
+                               (chosen)="cleanModel.set($event)" />
+          <div class="gs-note">{{ failsafeNotice }}</div>
+          <div class="gs-actions">
+            <button class="act" (click)="closeCleanPicker()">Cancel</button>
+            <button class="act primary" [disabled]="cleanQueueing()"
+                    (click)="queueCleanText()">{{ cleanQueueing() ? 'Queueing…' : 'Clean text' }}</button>
+          </div>
+        </div>
+      </div>
+    }
+
     <!-- A window ONTO the conversion, never the conversion itself. Closing it
          backgrounds the run; the row keeps its indicator and opens this again. -->
     @if (convertModalOpen()) {
@@ -1191,6 +1219,7 @@ export class StudioVersionsComponent {
   private readonly dialog = inject(DialogService);
   /** Where receipts go now that they no longer stop the user. See NoticeService. */
   private readonly notices = inject(NoticeService);
+  private readonly settings = inject(SettingsService);
 
   readonly projectDir = input<string>('');
   readonly item = input<StudioItem | null>(null);
@@ -1517,24 +1546,54 @@ export class StudioVersionsComponent {
      * loses it. Cancelling here is a real answer: the standard method is the
      * Clean text step in the Foundry window, and somebody who reads this
      * sentence may well decide to do it there instead.
+     *
+     * The statement and the MODEL are one window since 2026-10-25 (the
+     * template's Clean text window): the model is the job's to choose, and a
+     * system confirm cannot hold a dropdown.
      */
-    const go = await this.electron.showConfirmDialog({
-      title: 'Clean this version\'s text',
-      message: 'The punctuation and the numbers of this book will be read into the form a '
-        + 'narrator says.',
-      detail: NARRATION_TEXT_FAILSAFE_NOTICE,
-      confirmLabel: 'Clean text',
-      cancelLabel: 'Cancel',
-      type: 'question',
-    });
-    if (!go.confirmed) return;
-    // The FILE is what names the chain: a project can hold two, and the planner
-    // resolves which one from the version the button was pressed on.
-    const run = await this.queue.submitProcessingRun({
-      projectDir: dir,
-      sourcePath: abs,
-      passes: [{ kind: 'narration-text' }],
-    });
+    this.cleanModel.set('');
+    this.cleanPicker.set({ variant: v, abs, dir });
+  }
+
+  /** The Clean text window's version, file and project — null while it is shut. */
+  readonly cleanPicker = signal<{ variant: ResolvedProjectVariant; abs: string; dir: string } | null>(null);
+  /** The model the cleanup will run on; '' is AUTOMATIC. Set by the field on open. */
+  readonly cleanModel = signal<string>('');
+  readonly cleanQueueing = signal(false);
+  readonly failsafeNotice = NARRATION_TEXT_FAILSAFE_NOTICE;
+
+  closeCleanPicker(): void {
+    if (!this.cleanQueueing()) this.cleanPicker.set(null);
+  }
+
+  /** "Clean text" pressed in the window: queue the pass with the chosen model. */
+  async queueCleanText(): Promise<void> {
+    const picked = this.cleanPicker();
+    if (picked === null || this.cleanQueueing()) return;
+    const chosenModel = this.cleanModel();
+    this.cleanQueueing.set(true);
+    let run: Awaited<ReturnType<QueueService['submitProcessingRun']>>;
+    try {
+      // The FILE is what names the chain: a project can hold two, and the planner
+      // resolves which one from the version the button was pressed on.
+      run = await this.queue.submitProcessingRun({
+        projectDir: picked.dir,
+        sourcePath: picked.abs,
+        passes: [{
+          kind: 'narration-text',
+          // Absent is AUTOMATIC — the same answer an old row without it gets.
+          ...(chosenModel === '' ? {} : { chosenModel }),
+        }],
+      });
+    } catch (err) {
+      // The door's own sentence, shown in the same dialog a refusal gets.
+      run = { success: false, error: err instanceof Error ? err.message : String(err) };
+    } finally {
+      this.cleanQueueing.set(false);
+    }
+    this.cleanPicker.set(null);
+    // The last-used default is written when the job is queued, AUTOMATIC included.
+    if (run.success) this.settings.setLastJobModel('clean', chosenModel);
     await this.electron.showMessageDialog(run.success
       ? {
         title: 'Narration text cleanup queued',

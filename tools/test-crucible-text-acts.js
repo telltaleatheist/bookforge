@@ -114,25 +114,6 @@ const TOKEN = 'crux_secret_token_abcd';
  * `processTextVenueHost()`; this is the same interface, which is why that
  * interface exists.
  */
-/**
- * A `CapabilityRecord` in the SDK's camelCase shape, which is what the client
- * hands a caller — the host seam is typed against the SDK, not the wire.
- */
-function capabilityRecord(rows) {
-  return {
-    backendKind: 'cuda-linux',
-    totalBytes: 25_769_803_776,
-    desktopAllowanceBytes: 2_147_483_648,
-    classes: rows.map((r) => ({
-      capability: r.capability,
-      enabled: r.enabled,
-      selected: r.selected,
-      reason: r.reason || (r.enabled ? 'selected' : 'the smallest candidate does not fit'),
-      shortfallBytes: r.shortfallBytes || 0,
-    })),
-  };
-}
-
 function scriptedHost(over) {
   return Object.assign({
     view: () => ({
@@ -157,17 +138,30 @@ function scriptedHost(over) {
       { id: 'dots-ocr', resident: false, loadable: true },
     ],
     loadModel: async () => { throw new Error('loadModel must not be called unless loadFirst'); },
-    // `capability` replaced `modelFor` on 2026-09-14: the per-class model is
-    // `GET /v1/capability`'s answer, not a record this app keeps. The DECISION
-    // is pure (`modelFromCapability`), which is why all three of its refusals
-    // are drivable below with no server at all.
-    capability: async () => capabilityRecord([
-      { capability: 'clean', enabled: true, selected: 'qwen3.5-9b' },
-      { capability: 'translate', enabled: true, selected: 'qwen3.8-27b-4bit' },
-      { capability: 'simplify', enabled: true, selected: 'qwen3.8-27b-4bit' },
-      { capability: 'analysis', enabled: true, selected: 'qwen3.8-27b-4bit' },
-    ]),
+    // EVERY TEXT ACT IS SIZED BY THIS APP (Owen, 2026-10-25): the biggest chat
+    // model up to 27B, asked of `GET /v1/resolve`. Answered as the PC's card does.
+    // There is no capability read on the host any more.
+    resolve: async () => resolvePreview('qwen3.8-27b-4bit'),
   }, over || {});
+}
+
+/** A `ResolvePreview` in the SDK's camelCase shape: a model that fits, or a refusal. */
+function resolvePreview(model, extra) {
+  return Object.assign({
+    verb: 'generate',
+    door: 'POST /v1/openai/chat/completions',
+    model,
+    source: 'max_params_b',
+    paramsB: 27,
+    bits: 4,
+    engine: 'vllm',
+    form: null,
+    installed: true,
+    resident: false,
+    fit: { fits: true, needBytes: 20_314_737_593, availableBytes: 22_535_995_392, contextTokens: 8192, concurrency: 1 },
+    facts: null,
+    refused: null,
+  }, extra || {});
 }
 
 async function main() {
@@ -257,7 +251,7 @@ async function main() {
     engine = await venue.resolveCrucibleTextEngine(
       'clean', 'local', scriptedHost(), { headerReach: 'spawn' });
     assert.strictEqual(engine.endpoint, 'http://127.0.0.1:7100/openai');
-    assert.strictEqual(engine.model, 'qwen3.5-9b');
+    assert.strictEqual(engine.model, 'qwen3.8-27b-4bit');
     assert.strictEqual(engine.act, 'clean');
     assert.deepStrictEqual(Object.keys(engine.env), ['FOUNDRY_ENDPOINT_HEADERS']);
     const map = JSON.parse(engine.env.FOUNDRY_ENDPOINT_HEADERS);
@@ -272,7 +266,7 @@ async function main() {
       { endpoint: engine.endpoint, model: engine.model });
     const line = argv.join(' ');
     assert.ok(line.includes('--endpoint http://127.0.0.1:7100/openai'), line);
-    assert.ok(line.includes('--model qwen3.5-9b'), line);
+    assert.ok(line.includes('--model qwen3.8-27b-4bit'), line);
     assert.ok(!line.includes(TOKEN), `the token reached the command line: ${line}`);
     assert.ok(!/FOUNDRY_ENDPOINT_HEADERS/.test(line), line);
     // The local Ollama tag must not survive onto a Crucible line: a run named
@@ -293,8 +287,8 @@ async function main() {
     let loaded = false;
     const host = scriptedHost({
       models: async () => [
-        { id: 'qwen3.5-9b', resident: false, loadable: true },
-        { id: 'qwen3.8-27b-4bit', resident: true, loadable: true },
+        { id: 'qwen3.5-9b', resident: true, loadable: true },
+        { id: 'qwen3.8-27b-4bit', resident: false, loadable: true },
       ],
       loadModel: async () => { loaded = true; },
     });
@@ -302,26 +296,21 @@ async function main() {
       () => venue.resolveCrucibleTextEngine('clean', 'local', host, { headerReach: 'spawn' }),
       (err) => {
         assert.strictEqual(err.code, 'crucible_model_not_resident');
-        assert.ok(err.message.includes('qwen3.5-9b'), err.message);
+        assert.ok(err.message.includes('qwen3.8-27b-4bit'), err.message);
         assert.ok(err.message.includes('clean'), err.message);
         assert.ok(err.message.includes('local'), err.message);
         // It must say what IS resident: "nothing is resident" and "the wrong
         // one is" are different problems with different fixes.
-        assert.ok(err.message.includes('qwen3.8-27b-4bit'), err.message);
+        assert.ok(err.message.includes('qwen3.5-9b'), err.message);
         return true;
       });
     assert.strictEqual(loaded, false, 'a text act loaded a model on somebody\'s card');
   });
 
-  await check('a model the server has never heard of refuses as UNKNOWN, not as absent', async () => {
-    // The record and the model list DISAGREE on that server: capability names
-    // an id `GET /v1/models` does not advertise. That is a fact about the
-    // server, reported rather than worked around.
-    const host = scriptedHost({
-      capability: async () => capabilityRecord([
-        { capability: 'translate', enabled: true, selected: 'llama9000' },
-      ]),
-    });
+  await check('a model the server names and does not list refuses as UNKNOWN, not as absent', async () => {
+    // Resolve names an id `GET /v1/models` does not advertise. That is a fact
+    // about the server, reported rather than worked around.
+    const host = scriptedHost({ resolve: async () => resolvePreview('llama9000') });
     await assert.rejects(
       () => venue.resolveCrucibleTextEngine('translate', 'mac', host, { headerReach: 'spawn' }),
       (err) => {
@@ -332,62 +321,77 @@ async function main() {
   });
 
   /*
-   * THE THREE WAYS A CAPABILITY RECORD CAN FAIL TO NAME A MODEL, and they are
-   * three different pieces of news (2026-09-14). This replaced one check
-   * against `crucible_text_model_not_set`, which was a refusal about a record
-   * THIS APP kept; the record is deleted and the server owns the mapping,
-   * because `crucible install` measured the card to make it.
+   * EVERY TEXT ACT IS SIZED BY THIS APP, NOT BY THE SERVER'S ROW (Owen,
+   * 2026-10-25): *"maximum of 27b. but whatever is the biggest model we can get
+   * up to that point"*, and for translate, simplify and analysis the same day,
+   * *"keep it at 27b as the max right now"*. The row is not read at all — a
+   * stale `clean` selection on a server must not put a cleanup back on the 9B,
+   * and a stale route must not send a translation to an account nobody chose.
    */
-  await check('a class the server has never measured refuses `undecided`, not `off`', async () => {
+  await check('every act asks for the biggest CHAT model up to 27B, and the host has no row to read', async () => {
+    const asked = [];
     const host = scriptedHost({
-      capability: async () => capabilityRecord([
-        { capability: 'clean', enabled: true, selected: 'qwen3.5-9b' },
-      ]),
+      resolve: async (server, options) => { asked.push([server, options]); return resolvePreview('qwen3.8-27b-4bit'); },
+    });
+    assert.strictEqual(host.capability, undefined, 'the scripted host still offers the capability read');
+    for (const act of acts.CRUCIBLE_TEXT_ACTS) {
+      const engine = await venue.resolveCrucibleTextEngine(act, 'local', host, { headerReach: 'spawn' });
+      assert.strictEqual(engine.model, 'qwen3.8-27b-4bit', act);
+      assert.strictEqual(venue.TEXT_ACT_CEILING_B[act], 27, act);
+    }
+    assert.deepStrictEqual(asked, acts.CRUCIBLE_TEXT_ACTS.map(() => ['local', { verb: 'generate', maxParamsB: 27 }]));
+  });
+
+  /*
+   * A JOB TOLD ITS MODEL RUNS ON IT (Owen, 2026-10-25: *"they should be able to
+   * go to claude … put the option the user can pick in a dropdown on the modal
+   * that configures the job"*). An upstream id is forwarded by the server, so it
+   * is neither sized nor proved resident.
+   */
+  await check('a job told an upstream model runs on it — no sizing, no residency', async () => {
+    let resolved = false;
+    let listed = false;
+    const host = scriptedHost({
+      resolve: async () => { resolved = true; return resolvePreview('x'); },
+      models: async () => { listed = true; return []; },
+    });
+    const engine = await venue.resolveCrucibleTextEngine(
+      'translate', 'local', host, { headerReach: 'spawn', model: 'anthropic/claude-sonnet-5-5' });
+    assert.strictEqual(engine.model, 'anthropic/claude-sonnet-5-5');
+    assert.strictEqual(resolved, false, 'a job that named its model was sized anyway');
+    assert.strictEqual(listed, false, 'an upstream id was looked for in the card\'s model list');
+  });
+
+  await check('a resolve the server REFUSES is refused by name, in the server\'s words', async () => {
+    const host = scriptedHost({
+      resolve: async () => resolvePreview(null, {
+        refused: { status: 409, code: 'no_model_fits', message: 'no generate model up to 27B fits this card', details: null },
+        fit: null,
+      }),
     });
     await assert.rejects(
-      () => venue.resolveCrucibleTextEngine('analysis', 'local', host, { headerReach: 'spawn' }),
+      () => venue.resolveCrucibleTextEngine('clean', 'local', host, { headerReach: 'spawn' }),
       (err) => {
-        assert.strictEqual(err.code, 'crucible_capability_undecided');
-        assert.ok(err.message.includes('analysis'), err.message);
-        // "Undecided" is deliberately different news from "nothing": it says
-        // the card has never been measured, and names what measures it.
-        assert.ok(/capability --write/.test(err.message), err.message);
+        assert.strictEqual(err.code, 'crucible_resolve_refused');
+        assert.ok(err.message.includes('no generate model up to 27B fits this card'), err.message);
+        assert.ok(err.message.includes('no_model_fits'), err.message);
+        assert.ok(err.message.includes('27B'), err.message);
         return true;
       });
   });
 
-  await check('a class the server turned OFF refuses with its own reason and shortfall', async () => {
+  await check('a resolved model that does not fit the card is refused, with the shortfall', async () => {
     const host = scriptedHost({
-      capability: async () => capabilityRecord([{
-        capability: 'translate',
-        enabled: false,
-        selected: '',
-        reason: 'the smallest candidate does not fit',
-        shortfallBytes: 8_589_934_592,
-      }]),
+      resolve: async () => resolvePreview('qwen3.8-27b-4bit', {
+        fit: { fits: false, needBytes: 20 * 1024 ** 3, availableBytes: 8 * 1024 ** 3, contextTokens: 8192, concurrency: 1 },
+      }),
     });
     await assert.rejects(
-      () => venue.resolveCrucibleTextEngine('translate', 'local', host, { headerReach: 'spawn' }),
+      () => venue.resolveCrucibleTextEngine('clean', 'local', host, { headerReach: 'spawn' }),
       (err) => {
-        assert.strictEqual(err.code, 'crucible_capability_disabled');
-        // The SERVER's own sentence, AND the number that turned the class off:
-        // a reason is never load-bearing on its own (ARCHITECTURE.md R4).
-        assert.ok(err.message.includes('the smallest candidate does not fit'), err.message);
-        assert.ok(err.message.includes('8.0 GB'), err.message);
-        return true;
-      });
-  });
-
-  await check('a row that says enabled and names nothing is REPORTED, not repaired', async () => {
-    const host = scriptedHost({
-      capability: async () => capabilityRecord([
-        { capability: 'simplify', enabled: true, selected: '' },
-      ]),
-    });
-    await assert.rejects(
-      () => venue.resolveCrucibleTextEngine('simplify', 'local', host, { headerReach: 'spawn' }),
-      (err) => {
-        assert.strictEqual(err.code, 'crucible_capability_no_model');
+        assert.strictEqual(err.code, 'crucible_resolve_refused');
+        assert.ok(err.message.includes('qwen3.8-27b-4bit'), err.message);
+        assert.ok(err.message.includes('12.0 GB short'), err.message);
         return true;
       });
   });
@@ -429,19 +433,13 @@ async function main() {
       + 'are read from two doors rather than one');
   });
 
-  await check('an UPSTREAM-routed class follows the hop too — an orchestrator forwards nothing', async () => {
+  await check('a job told an UPSTREAM model follows the hop too — an orchestrator forwards nothing', async () => {
     const host = scriptedHost({
       server: (name) => ({ name, url: 'http://127.0.0.1:7101', token: TOKEN, source: 'local' }),
       engineUrl: async () => 'http://127.0.0.1:7100',
-      capability: async () => capabilityRecord([
-        { capability: 'clean', enabled: true, selected: 'anthropic/claude-sonnet-4' },
-        { capability: 'translate', enabled: true, selected: 'qwen3.8-27b-4bit' },
-        { capability: 'simplify', enabled: true, selected: 'qwen3.8-27b-4bit' },
-        { capability: 'analysis', enabled: true, selected: 'qwen3.8-27b-4bit' },
-      ]),
     });
     const engine = await venue.resolveCrucibleTextEngine(
-      'clean', 'mac', host, { headerReach: 'spawn' });
+      'translate', 'mac', host, { headerReach: 'spawn', model: 'anthropic/claude-sonnet-4' });
     assert.strictEqual(engine.model, 'anthropic/claude-sonnet-4', 'this is the upstream arm');
     assert.strictEqual(engine.endpoint, acts.crucibleChatBase('http://127.0.0.1:7100'),
       'the forwarding is done BY an engine; the process in front of one forwards nothing');

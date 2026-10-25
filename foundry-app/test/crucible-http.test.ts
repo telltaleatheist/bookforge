@@ -11,6 +11,13 @@ const dispatch=await import('../electron/crucible-dispatch');
 afterEach(()=>mock.restore());
 const classes=['pages','clean','translate','simplify','analysis','decide'];
 const chosen=(cls:string)=>cls==='pages'?'dots-ocr':cls==='clean'?'qwen3.5-9b':cls==='decide'?'qwen3.5-2b':'qwen3.8-27b-4bit';
+/*
+ * WHAT A PLACEMENT ENDS UP ON. Every chat act and the triage are sized by this
+ * app (Owen, 2026-10-25): the biggest chat model up to 27B, and decide up to 9B,
+ * asked of `GET /v1/resolve` — so the `clean` row's 9B and the `decide` row's 2B
+ * above are a stale server setting these must NOT take.
+ */
+const placed=(cls:string)=>cls==='pages'?chosen(cls):cls==='decide'?'qwen3.5-9b':'qwen3.8-27b-4bit';
 
 /** A card wait (Crucible 1.0.83): first in line, the card held by a process the server does not own. */
 const CARD_WAIT={code:'accelerator_busy',message:'the card is held by another process (pid 4242); checking again every 10 s',details:null,since:'2026-10-02T22:00:00Z',next_check_at:'2026-10-02T22:00:10Z'};
@@ -36,6 +43,11 @@ function fixture(options:{missing?:boolean;competing?:boolean;competitorStocks?:
     const url=new URL(req.url);const p=url.pathname;const body=req.method==='POST'?await req.json().catch(()=>null):null;calls.push({method:req.method,path:p,body});
     if(p==='/v1/info')return Response.json(info());
     if(p==='/v1/capability')return Response.json(capability());
+    if(p==='/v1/resolve'){
+      const ceiling=Number(url.searchParams.get('max_params_b'));
+      const id=ceiling>=27?'qwen3.8-27b-4bit':'qwen3.5-9b';
+      return Response.json({verb:url.searchParams.get('verb'),door:'POST /v1/openai/chat/completions',request:{model:null,verb:url.searchParams.get('verb'),max_params_b:url.searchParams.get('max_params_b'),form:null,images:null},model:id,source:'max_params_b',params_b:ceiling>=27?27:9,bits:ceiling>=27?4:16,engine:'llama-server',form:null,installed:true,resident:false,fit:{fits:true,need_bytes:1,available_bytes:2,context_tokens:8192,concurrency:1},facts:null,refused:null});
+    }
     // `chat.max_in_flight` is spelled as Crucible 1.0.10 spells it on the wire.
     // `noActivity` is a server older than that route: it answers 404, which is
     // "it did not say" and must leave the placement on its own default.
@@ -115,9 +127,12 @@ for(const [kind,cls] of [['read','pages'],['clean','clean'],['translate','transl
     const f=fixture();try{
       const result=await dispatch.placeJob(kind,f.entry.name,()=>{},()=>true);
       expect(result.verdict).toBe('go');if(result.verdict!=='go')throw Error(JSON.stringify(result));
-      try{expect(result.placement.model).toBe(chosen(cls));expect(result.placement.endpoint).toBe(`${f.entry.url}/openai`);
+      try{expect(result.placement.model).toBe(placed(cls));expect(result.placement.endpoint).toBe(`${f.entry.url}/openai`);
         const opened=f.calls.find(c=>c.path==='/v1/queue/sessions'&&c.method==='POST')!;
-        expect(opened.body).toEqual({act:cls,model:chosen(cls),idle_s:300,max_wait_s:86400});
+        expect(opened.body).toEqual({act:cls,model:placed(cls),idle_s:300,max_wait_s:86400});
+        // Every chat act is sized by this app; only a reading still takes its row.
+        const resolves=f.calls.filter(c=>c.path==='/v1/resolve');
+        expect(resolves.length).toBe(cls==='pages'?0:1);
         expect(result.placement.session?.id).toBe('ses-1');
         expect(f.calls.some(c=>c.path==='/v1/jobs'||c.path.includes('/lease'))).toBe(false);
         const headers=JSON.parse(result.placement.env['FOUNDRY_ENDPOINT_HEADERS']!);
@@ -231,16 +246,19 @@ test('real HTTP a server whose activity document this build cannot read still pl
  * wrong door.
  */
 /**
- * A CLEANUP'S TRIAGE RUNS ON THE CLEANER'S MODEL (2026-09-25). The server's `decide`
- * class picks the 2B here and its `clean` class the 9B; the triage takes the 9B —
- * measured the model that separates, and the one the cleanup is about to use —
- * while the session's act stays `decide`, which is what the door is asked as.
+ * A CLEANUP'S TRIAGE STAYS ON THE 9B (Owen, 2026-10-25: *"triage should stay on
+ * 9b for now"*). The server's `decide` row picks the 2B here, which measured as
+ * near-random for triage; the placement asks for the biggest chat model up to 9B
+ * instead, while the session's act stays `decide`, which is what the door is
+ * asked as.
  */
-test('real HTTP a clean-triage is placed on the clean class model, in a session opened as decide',async()=>{
+test('real HTTP a clean-triage is placed on the biggest model up to 9B, in a session opened as decide',async()=>{
   const f=fixture();try{
     const result=await dispatch.placeJob('clean-triage',f.entry.name,()=>{},()=>true);
     expect(result.verdict).toBe('go');if(result.verdict!=='go')throw Error(JSON.stringify(result));
     try{expect(result.placement.model).toBe('qwen3.5-9b');
+      const asked=f.calls.filter(c=>c.path==='/v1/resolve');
+      expect(asked).toHaveLength(1);
       const opened=f.calls.find(c=>c.path==='/v1/queue/sessions')!;
       expect(opened.body.model).toBe('qwen3.5-9b');
       expect(opened.body.act).toBe('decide');
@@ -254,6 +272,46 @@ test('real HTTP a reading placement states no chat depth and does not ask for on
     expect(result.verdict).toBe('go');if(result.verdict!=='go')throw Error(JSON.stringify(result));
     try{expect(result.placement.concurrency).toBeNull();
       expect(f.calls.some(c=>c.path==='/v1/activity')).toBe(false);
+    }finally{await result.placement.session?.release();}
+  }finally{f.close();}
+});
+
+/**
+ * A JOB A PERSON SENT TO CLAUDE (Owen, 2026-10-25: *"they should be able to go to
+ * claude … put the option the user can pick in a dropdown on the modal that
+ * configures the job"*). The chosen `<upstream>/<model>` is forwarded by the
+ * server: no sizing, no residency listing, no session, the `[cloud]` lane.
+ */
+test('real HTTP a job told an upstream model forwards it — no resolve, no session, the cloud lane',async()=>{
+  const f=fixture();const claimed:string[]=[];try{
+    const result=await dispatch.placeJob('translate',f.entry.name,()=>{},(lane)=>{claimed.push(lane);return true;},undefined,'anthropic/claude-sonnet-5-5');
+    expect(result.verdict).toBe('go');if(result.verdict!=='go')throw Error(JSON.stringify(result));
+    expect(result.placement.model).toBe('anthropic/claude-sonnet-5-5');
+    expect(result.placement.via).toBe('anthropic');
+    expect(result.placement.session).toBeNull();
+    expect(result.placement.endpoint).toBe(`${f.entry.url}/openai`);
+    expect(claimed).toEqual([`${f.entry.name}:cloud`]);
+    expect(f.calls.some(c=>c.path==='/v1/resolve'||c.path==='/v1/models'||c.path==='/v1/queue/sessions')).toBe(false);
+  }finally{f.close();}
+});
+
+test('real HTTP a decision keeps its own 9B, whatever the job was told',async()=>{
+  const f=fixture();try{
+    const result=await dispatch.placeJob('clean-triage',f.entry.name,()=>{},()=>true,undefined,'anthropic/claude-sonnet-5-5');
+    expect(result.verdict).toBe('go');if(result.verdict!=='go')throw Error(JSON.stringify(result));
+    try{expect(result.placement.model).toBe('qwen3.5-9b');expect(result.placement.via).toBeNull();}
+    finally{await result.placement.session?.release();}
+  }finally{f.close();}
+});
+
+test('real HTTP a job told a LOCAL model runs on it, resident, and is not sized',async()=>{
+  const f=fixture();try{
+    const result=await dispatch.placeJob('clean',f.entry.name,()=>{},()=>true,undefined,'qwen3.5-9b');
+    expect(result.verdict).toBe('go');if(result.verdict!=='go')throw Error(JSON.stringify(result));
+    try{expect(result.placement.model).toBe('qwen3.5-9b');
+      expect(f.calls.some(c=>c.path==='/v1/resolve')).toBe(false);
+      const opened=f.calls.find(c=>c.path==='/v1/queue/sessions'&&c.method==='POST')!;
+      expect(opened.body.model).toBe('qwen3.5-9b');
     }finally{await result.placement.session?.release();}
   }finally{f.close();}
 });

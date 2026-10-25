@@ -403,6 +403,13 @@ const SUITES = [
   // run BEFORE any spawn and never loads one on somebody's card, and an engine
   // that cannot address a Crucible says so rather than 404ing an hour in.
   'test-crucible-text-acts',
+  // A TEXT JOB CHOOSES ITS OWN MODEL (Owen, 2026-10-25: "put the option the user
+  // can pick in a dropdown on the modal that configures the job"). The list
+  // (AUTOMATIC, local chat models up to 27B, then cloud rows), the door that
+  // reads it off a fake 2.0.31 server, and the choice carried onto the row and
+  // into the cleanup — each link fails silently when broken: the server's own
+  // pick simply runs instead of the person's.
+  'test-job-model-choices',
   // THE HOSTED half of that same seam, and the only suite in this list whose
   // subject is somebody else's SOURCE. `foundry-app/` is a vendored subtree, so
   // every claim BookForge makes about what the hosted window can do is a fact

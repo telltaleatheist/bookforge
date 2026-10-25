@@ -7,6 +7,7 @@ import {
   DEFAULT_OLLAMA_ENDPOINT as DEFAULT_OLLAMA,
   DEFAULT_TRANSLATE_MODEL as DEFAULT_MODEL,
 } from '@shared/pipeline';
+import { withChosenModel } from '@shared/job-model-offer';
 import type { RewriteMode, SimplifyRequest } from '@shared/types';
 
 import { LedgerService } from '../../core/ledger.service';
@@ -17,6 +18,7 @@ import { StageService } from '../../core/stage.service';
 import { UiService } from '../../core/ui.service';
 import { RunProgressComponent } from '../run-progress/run-progress.component';
 import { RunTargetComponent } from '../run-target/run-target.component';
+import { JobModelComponent } from '../job-model/job-model.component';
 import { api, hosted } from '../../core/foundry';
 
 /**
@@ -83,7 +85,7 @@ const REWRITES: readonly { mode: RewriteMode; name: string; what: string }[] = [
  */
 @Component({
   selector: 'app-simplify-dialog',
-  imports: [FormsModule, RunProgressComponent, RunTargetComponent],
+  imports: [FormsModule, RunProgressComponent, RunTargetComponent, JobModelComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="scrim" (click)="ui.closeSimplify()"></div>
@@ -104,10 +106,20 @@ const REWRITES: readonly { mode: RewriteMode; name: string; what: string }[] = [
         @if (watched(); as job) {
           <app-run-progress [job]="job" verb="Rewriting" />
         } @else {
-          <!-- WHERE IT WILL RUN, AND WHAT WILL RUN IT. The child draws the one
-               real choice and states the rest — run-target.component.ts carries
-               the ruling about why the model is not a button. -->
+          <!-- WHERE IT WILL RUN, AND WHAT WILL RUN IT. Two choices now, and
+               both are real. The model is a dropdown on Owen's ruling of
+               2026-10-25, verbatim: "put the option the user can pick in a
+               dropdown on the modal that configures the job"; "cloud accounts
+               should be listed as an option in every model dropdown if its
+               available, just like 27b or 9b or anything else. however,
+               bookforge should use the last used model as the default. the
+               ideal is that the user wont need to use cloud models because
+               theyre expensive. but it should be there if their system is too
+               weak to run a local model"; "keep it at 27b as the max right
+               now". job-model.component.ts carries the rest. -->
           <app-run-target act="simplify" [(server)]="server" (ready)="canRun.set($event)" />
+          <app-job-model kind="simplify" [server]="server()" [(value)]="chosenModel"
+                         (ready)="modelReady.set($event)" />
           <!--
             The book's own name, as the tab, the pane and the window are already
             calling it. The path is on the tooltip for the one person who wants
@@ -212,11 +224,11 @@ const REWRITES: readonly { mode: RewriteMode; name: string; what: string }[] = [
               card never becomes a progress view it has no business being.
             -->
             <button [class.ghost]="!hosted()" [class.primary]="hosted()"
-                    [disabled]="busy() || !canRun()" (click)="add(false)">
+                    [disabled]="busy() || !canRun() || !modelReady()" (click)="add(false)">
               {{ busy() === 'queue' ? 'Working...' : 'Add to queue' }}
             </button>
             @if (!hosted()) {
-            <button class="primary" [disabled]="busy() || !canRun()" (click)="add(true)">
+            <button class="primary" [disabled]="busy() || !canRun() || !modelReady()" (click)="add(true)">
               {{ busy() === 'start' ? 'Starting…' : 'Start' }}
             </button>
           }
@@ -466,9 +478,9 @@ export class SimplifyDialogComponent {
 
   protected readonly mode = signal<RewriteMode>('dejargon');
   /*
-   * NO MODEL, NO OLLAMA AND NO `server` SIGNAL. See the Translate dialog, where
-   * all three are argued: the engine chooses the model and the queue row chooses
-   * the engine.
+   * NO OLLAMA SIGNAL. See the Translate dialog, where it is argued. The model
+   * and the engine are both chosen above (`chosenModel`, `server`) — the model
+   * on Owen's ruling of 2026-10-25, which job-model.component.ts quotes.
    */
   protected readonly instructions = signal('');
   protected readonly problem = signal<string | null>(null);
@@ -482,6 +494,10 @@ export class SimplifyDialogComponent {
   protected readonly server = signal('');
   /** May this act run on that engine at all — the child's verdict. */
   protected readonly canRun = signal(false);
+  /** The model row chosen in the dropdown; empty is Automatic. The child preselects the last one used. */
+  protected readonly chosenModel = signal('');
+  /** Has the dropdown read a list and chosen from it — the child's verdict. */
+  protected readonly modelReady = signal(false);
   /**
    * THE ROW THIS CARD IS WATCHING, or null when it is a form. An id rather than
    * the job: the job is re-pushed whole on every change, and a held copy would
@@ -604,11 +620,11 @@ export class SimplifyDialogComponent {
          * ── THE MODEL AND THE ENDPOINT ARE DECLARED CONSTANTS NOW ───────────
          *
          * Owen, 2026-09-15: *"we dont have any local models. crucible handles
-         * all model orchestration."* The ENGINE's capability record names the
-         * model a request runs (crucible docs/PHASE15-HOST.md §3.3) and the
-         * placement applies it at the spawn, over the top of these two
-         * (`doorArgs`, electron/job-queue.ts) — so a field here let somebody
-         * choose something that was then ignored, and it is gone.
+         * all model orchestration."* The PLACEMENT names the model a request
+         * runs — the one chosen in this dialog's dropdown (`chosenModel`, Owen
+         * 2026-10-25), else the biggest that fits up to 27B — and applies it
+         * at the spawn, over the top of these two (`doorArgs`,
+         * electron/job-queue.ts). So these two are never the choice.
          *
          * THE REQUEST FIELDS ARE NOT GONE, because one caller still reads them:
          * a DRY RUN has no server to ask, so `argsFor` defaults to `UNPLACED`
@@ -648,10 +664,13 @@ export class SimplifyDialogComponent {
        * door owns it. A blank server means nothing was chosen and the row keeps
        * the default it was admitted with.
        */
-      const { outcome, id } = await this.queue.enqueueTextPassNamed(request);
+      const { outcome, id } = await this.queue.enqueueTextPassNamed(withChosenModel(request, this.chosenModel()));
       if (id !== null && this.server().length > 0) {
         await this.queue.setWaitFor(id, this.server());
       }
+      // THE NEXT ONE OPENS ON THIS ONE'S MODEL (Owen: "use the last used model
+      // as the default") — only once a row was really added. Automatic too.
+      if (id !== null && outcome !== 'already') await api.crucible.rememberJobModel('simplify', this.chosenModel());
       if (outcome === 'already') {
         /*
          * A DUPLICATE IS STILL A RUN SOMEBODY CAN WATCH. Main answers with the

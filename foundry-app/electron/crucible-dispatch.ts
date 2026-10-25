@@ -707,6 +707,12 @@ export async function placeJob(
   say: PlacementProgress,
   claim: LaneClaim,
   signal?: AbortSignal,
+  /**
+   * The model a person chose for THIS job in its dialog (Owen, 2026-10-25) — one
+   * on the server's card, or an `<upstream>/<model>` the server forwards. Absent
+   * is the server's own pick at this app's ceiling ({@link APP_SIZED_MODELS}).
+   */
+  chosenModel?: string,
 ): Promise<PlacementOutcome> {
   const available = slotAvailability();
   const slots = available.slots;
@@ -857,7 +863,7 @@ export async function placeJob(
      * twice a minute until somebody noticed the row. It FAILS, with the server's
      * own reason and the two things a person can do about it.
      */
-    const outcome = await placeOn(slot, capability, say, claim, signal);
+    const outcome = await placeOn(slot, capability, say, claim, signal, chosenModel);
     return outcome.verdict === 'wait' && outcome.standing
       ? { verdict: 'refuse', reason: `${outcome.reason}. ${whatToDoAbout(capability)}` }
       : outcome;
@@ -885,7 +891,7 @@ export async function placeJob(
       reasons.push(`"${slot.name}" is a cloud provider, and cloud slots are chosen on purpose`);
       continue;
     }
-    const outcome = await placeOn(slot, capability, say, claim, signal);
+    const outcome = await placeOn(slot, capability, say, claim, signal, chosenModel);
     if (outcome.verdict === 'go') return outcome;
     if (outcome.verdict === 'refuse') return outcome;
     if (!outcome.standing) allStanding = false;
@@ -1005,6 +1011,7 @@ async function placeOn(
   say: PlacementProgress,
   claim: LaneClaim,
   signal?: AbortSignal,
+  chosenModel?: string,
 ): Promise<PlacementOutcome> {
   if (signal?.aborted) return transientWait('The request was cancelled.');
   if (slot.kind === 'cloud') {
@@ -1019,7 +1026,7 @@ async function placeOn(
     return transientWait(`"${slot.name}" is no longer registered`);
   }
   try {
-    return await placeOnCrucible(entry, slot, capability, say, claim, signal);
+    return await placeOnCrucible(entry, slot, capability, say, claim, signal, chosenModel);
   } catch (err) {
     // A STOP WHILE THE SESSION WAITED IN THE LINE: the SDK has already taken it
     // out of the line and throws the abort itself, which is our own gesture and
@@ -1196,6 +1203,7 @@ async function placeOnCrucible(
   say: PlacementProgress,
   claim: LaneClaim,
   signal?: AbortSignal,
+  chosenModel?: string,
 ): Promise<PlacementOutcome> {
   /*
    * ── THE ADDRESS IN THE REGISTRY MAY NOT BE THE ENGINE'S ───────────────────
@@ -1228,26 +1236,63 @@ async function placeOnCrucible(
    * be a model that server may have refused — which is why there is no model
    * field on a registry entry and no picker showing one.
    */
-  const record = await readCapability(entry);
   /*
-   * ── A CLEANUP'S TRIAGE IS ASKED OF THE CLEANER'S OWN MODEL (2026-09-25) ────
+   * ── A CLEANUP AND ITS TRIAGE ARE SIZED BY THIS APP (Owen, 2026-10-25) ─────
    *
-   * The act is still `decide` — the door, the lease and `X-Crucible-Act` — but the
-   * MODEL is the one the server serves `clean` with, not the shared `decide`
-   * class's pick. Measured on Working Towards the Führer and Pursuit of Power:
-   * qwen3.5-2b's yes/no never separated sentences that need cleaning from ones
-   * that do not (AUC 0.55–0.82, nearly everything flagged); qwen3.5-9b did (AUC
-   * 0.89 and 0.976, 331 of 335 caught). The 9B is also the cleaner, so the press
-   * never swaps models between its two rows. Owen: "go ahead and use that for
-   * cleanup triage if its best for it". The shared `decide` setting is left
-   * alone — Briefcase and snap choose it for their own work.
+   * *"i think bookforge should make the decision about which model is used for
+   * cleanup. we should just call the model in chat. maximum of 27b. but whatever
+   * is the biggest model we can get up to that point."* And of the triage:
+   * *"should stay on 9b for now."*
    *
-   * THE ANALYSIS'S RANKING TAKES THE SAME ROW (Owen, 2026-09-25: *"9b for
-   * triage"*), which is why this reads the act rather than the job kind: every
-   * decide job Foundry places is asked of the model its server cleans with.
+   * So neither reads the server's `clean` row any more. Each asks its own verb
+   * for the biggest model at or under its ceiling — Crucible's own lever, which
+   * only ever lowers the server's pick — and goes on with that id exactly as it
+   * went on with `row.selected`. The ceiling is the ACT's, not the job kind's,
+   * which is why a decide (the cleanup's triage, and the analysis's ranking,
+   * which took the cleaner's row for the same reason) is 9 and a clean is 27. A
+   * resolved model is on the server's own card, so these acts never forward to
+   * an upstream.
    */
-  const modelClass = capability === 'decide' ? 'clean' : capability;
-  const row = record.classes.find((entry_) => entry_.capability === modelClass);
+  /*
+   * ── A MODEL THE JOB WAS TOLD (Owen, 2026-10-25) ───────────────────────────
+   *
+   * A person picked it in the job's dialog, so it is neither sized nor checked
+   * against a ceiling: an upstream id is forwarded, and a local one goes the
+   * resident way, where a model that server does not list is refused by name.
+   * Only a chat act takes a choice; a decide or a page keeps this app's sizing,
+   * since a dialog never offers one for it.
+   */
+  if (chosenModel !== undefined && chosenModel !== '' && (LLM_CLASSES as readonly string[]).includes(capability)) {
+    return chosenModel.includes('/')
+      ? placeUpstream(engine, slot, capability, chosenModel, say, claim)
+      : placeResidentModel(engine, slot, capability, chosenModel, say, claim, signal);
+  }
+
+  const sized = APP_SIZED_MODELS[capability];
+  if (sized !== undefined) {
+    const pick = await client.resolve({ verb: sized.verb, maxParamsB: sized.ceilingB });
+    signal?.throwIfAborted();
+    const asked = `the biggest ${sized.verb === 'decide' ? 'decision' : 'chat'} model up to ${sized.ceilingB}B`;
+    if (pick.refused !== null || pick.model === null || pick.model === '') {
+      /*
+       * A STANDING WAIT, for the reason a disabled row is one: it is this
+       * server's answer about its own card, and the next machine in the ranking
+       * is a different question.
+       */
+      const why = pick.refused === null ? 'it named none' : pick.refused.message;
+      return standingWait(`"${slot.name}" has no ${asked} for ${CAPABILITY_WORDS[capability].noun} work — ${why}`);
+    }
+    if (pick.fit !== null && !pick.fit.fits) {
+      const short = (pick.fit.needBytes - pick.fit.availableBytes) / 1024 ** 3;
+      return standingWait(
+        `"${slot.name}" named ${pick.model} as ${asked} and it does not fit its card (${short.toFixed(1)} GiB short)`,
+      );
+    }
+    return placeResidentModel(engine, slot, capability, pick.model, say, claim, signal);
+  }
+
+  const record = await readCapability(entry);
+  const row = record.classes.find((entry_) => entry_.capability === capability);
   if (row === undefined) {
     return {
       verdict: 'refuse',
@@ -1281,96 +1326,51 @@ async function placeOnCrucible(
     );
   }
 
-  /*
-   * ── AN UPSTREAM ROUTE: THE SAME DOOR, AND NOTHING ON THE CARD ─────────────
-   *
-   * PHASE15 §3.3 — the row says `route`, and `selected` is the model id an app
-   * sends whether it is resident or not. §3.4 — a `model` with a slash is
-   * FORWARDED by the server on the operator's account, *"no lease, no lane, the
-   * settlement untouched (nothing was on the card)"*, and a lease or a
-   * `load-model` naming one is refused `lease_not_needed`. Owen, the same day:
-   * *"one contract, one SDK, one API, one communication method."*
-   *
-   * So the three things the local path does BELOW are all skipped, each because
-   * it would be a request about a model that is not on anybody's card:
-   *
-   *   * NO `models()` — `GET /v1/openai/models` lists a routed upstream model,
-   *     but `client.models()` is the RESIDENCY listing and an upstream model is
-   *     never in it. Checking would refuse a working server by name.
-   *   * NO `loadModel` — refused `lease_not_needed`'s sibling, and there is
-   *     nothing to warm.
-   *   * NO `takeLease` — refused by name, and there is nothing to protect: a
-   *     load on that server cannot evict a model it never loaded.
-   *
-   * WHAT IS IDENTICAL IS THE SEAM. The same `/openai` endpoint, the same header
-   * map with `X-Crucible-Act` still naming the act (so `/v1/activity` says
-   * "translating on anthropic", §3.4), the same door. That is the whole point of
-   * the phase: the app does not know or care where the answer came from.
-   *
-   * AND THE LANE IS THE SERVER'S `[cloud]` ONE, claimed here — the first moment
-   * anything in this process knows which of the slot's two lanes this run wants.
-   */
-  const via = upstreamOf(row);
-  if (via !== null) {
-    /*
-     * ── ONLY A ROUTABLE CLASS IS FORWARDED, AND THE CONTRACT SAYS WHICH ──────
-     *
-     * PHASE15 §1: *"Only the four `llm` classes … can route upstream; every other
-     * class is `local` and refuses anything else (`route_not_routable`)."* That
-     * list is `LLM_CLASSES` (shared/engine-settings.ts), and it is what the
-     * settings card offers a route for. So a record that routes any other class
-     * upstream is the server contradicting its own contract — for `decide` most
-     * of all, whose answer is read off a resident model's logits and which no
-     * upstream can serve (Crucible's lineup marks it not routable, and
-     * `POST /v1/decide` refuses an upstream id by name).
-     *
-     * REFUSED HERE, BY NAME, because this is the one place a route is honoured:
-     * the branch below would otherwise put a forwarded model id on a run that
-     * cannot use one and send it into the `[cloud]` lane. A refusal rather than a
-     * wait, because the record will say the same thing on every pass until
-     * somebody changes that server's settings.
-     */
-    if (!(LLM_CLASSES as readonly string[]).includes(capability)) {
-      return {
-        verdict: 'refuse',
-        reason: `"${slot.name}" says it forwards ${CAPABILITY_WORDS[capability].noun} work to `
-          + `${via}, and that work cannot be forwarded — it has to run on a model on the server's `
-          + 'own card. Set it back to run locally in that server\'s settings.',
-      };
-    }
-    const lane = upstreamLaneName(slot.name);
-    if (!claim(lane)) {
-      return transientWait(
-        `"${slot.name}" is already forwarding as many jobs of yours to ${via} as it will at once`,
-      );
-    }
-    say(`Sending ${capability} to ${slot.name} via ${via} (${row.selected})`);
-    return {
-      verdict: 'go',
-      placement: {
-        slot,
-        session: null,
-        via,
-        door: 'openai',
-        /*
-         * The depth this app keeps against a door it does not own. The SERVER's
-         * own admission limit when it states one, four when it does not — an
-         * upstream rations by an account's rate limit rather than by a card, so
-         * a forwarding Crucible usually states nothing and four stands (ruling
-         * 4). `chatDepthFor` carries the argument and says which happened.
-         */
-        concurrency: await chatDepthFor(engine, capability, say),
-        // THE ENGINE'S ADDRESS, not the registered one — see the hop at the top
-        // of this function. A `<orchestrator>/openai` would be a spawn pointed
-        // at a process with no route to serve it.
-        endpoint: `${engine.url}/openai`,
-        // The same engine, stated bare. See `Placement.origin`.
-        origin: engine.url,
-        model: row.selected,
-        env: { FOUNDRY_ENDPOINT_HEADERS: headerMapFor(engine, capability) },
-      },
-    };
-  }
+  return placeResidentModel(engine, slot, capability, row.selected, say, claim, signal);
+}
+
+/**
+ * THE MODELS THIS APP SIZES ITSELF: the verb asked, and a ceiling in billions of
+ * parameters on it (Owen, 2026-10-25 — see `placeOnCrucible`). A cleanup, a
+ * translation, a simplify and an analysis are chats (`generate`): *"it should
+ * probably call crucible's chat verb"*, *"keep it at 27b as the max right now"*.
+ * A triage and a ranking are decisions, asked of the decide verb's own lineup
+ * (Crucible 2.0.30 gave it the ceiling). Only `pages` still takes its server's
+ * capability row.
+ *
+ * `decide` IS 9 BECAUSE THE TRIAGE MEASURED THERE (2026-09-25): qwen3.5-2b's
+ * yes/no never separated sentences that need cleaning from ones that do not
+ * (AUC 0.55–0.82, nearly everything flagged); qwen3.5-9b did (AUC 0.89 and
+ * 0.976, 331 of 335 caught). It used to be reached by asking the decide door
+ * for the `clean` row's model; that row is no longer read, so the 9B is said
+ * here. The analysis's ranking is a decide too (Owen: *"9b for triage"*), so
+ * it takes the same ceiling — the act, not the job kind, is what is sized.
+ *
+ * The id the server names is what the decide is then sent with, as before.
+ */
+const APP_SIZED_MODELS: Readonly<Partial<Record<CapabilityClass, { verb: 'generate' | 'decide'; ceilingB: number }>>> = {
+  clean: { verb: 'generate', ceilingB: 27 },
+  translate: { verb: 'generate', ceilingB: 27 },
+  simplify: { verb: 'generate', ceilingB: 27 },
+  analysis: { verb: 'generate', ceilingB: 27 },
+  decide: { verb: 'decide', ceilingB: 9 },
+};
+
+/**
+ * EVERYTHING AFTER THE MODEL IS CHOSEN, for a model on the server's own card:
+ * the card lane, the listing check, the session and the depth. Whoever chose it
+ * — the capability row or this app's ceiling — the placement is the same.
+ */
+async function placeResidentModel(
+  engine: CrucibleServerEntry,
+  slot: ComputeSlot,
+  capability: CapabilityClass,
+  selected: string,
+  say: PlacementProgress,
+  claim: LaneClaim,
+  signal?: AbortSignal,
+): Promise<PlacementOutcome> {
+  const client = clientFor(engine);
 
   /*
    * THE CARD LANE, TAKEN BEFORE A MODEL IS LOADED ONTO IT. Below this line
@@ -1384,18 +1384,19 @@ async function placeOnCrucible(
   /*
    * ── THE MODEL MUST BE ONE THE SERVER LISTS ────────────────────────────────
    *
-   * Its own capability record selected it, so a listing without it is the
-   * server disagreeing with itself. Whether it is RESIDENT no longer matters
-   * here: the session below opens with it loaded (Crucible 1.0.76 — `model` on
-   * `POST /v1/queue/sessions`, loaded by the server for the session).
+   * The server chose it — its capability record, or its answer to this app's
+   * ceiling — so a listing without it is the server disagreeing with itself.
+   * Whether it is RESIDENT no longer matters here: the session below opens with
+   * it loaded (Crucible 1.0.76 — `model` on `POST /v1/queue/sessions`, loaded
+   * by the server for the session).
    */
   const models = await client.models();
   signal?.throwIfAborted();
-  const listed = models.find((model) => model.id === row.selected);
+  const listed = models.find((model) => model.id === selected);
   if (listed === undefined) {
     return {
       verdict: 'refuse',
-      reason: `"${slot.name}" selected ${row.selected} for ${capability} work and then did not list it. `
+      reason: `"${slot.name}" selected ${selected} for ${capability} work and then did not list it. `
         + 'That is its own record disagreeing with itself; nothing here can fix it.',
     };
   }
@@ -1405,7 +1406,7 @@ async function placeOnCrucible(
    *
    * Crucible 1.0.76 replaced the load-then-lease pair with ONE act: a queue
    * session (crucible docs/QUEUE.md, sdk/ts/MIGRATION.md). It waits in the
-   * server's line — first come, first served — and opens with `row.selected`
+   * server's line — first come, first served — and opens with `selected`
    * resident; while it is open nothing from any other client runs there. So the
    * two windows the old pair had to close by hand are gone: there is no moment
    * between a load and its lease, and a load cancelled by a Stop is the server's
@@ -1418,8 +1419,8 @@ async function placeOnCrucible(
    */
   say(listed.resident
     ? `Asking ${slot.name} for its turn…`
-    : `Asking ${slot.name} for its turn and loading ${row.selected}…`);
-  const session = await openSession(engine, row.selected, capability, slot.name, say, signal);
+    : `Asking ${slot.name} for its turn and loading ${selected}…`);
+  const session = await openSession(engine, selected, capability, slot.name, say, signal);
 
   /*
    * ── THE DEPTH IS ASKED FOR AFTER THE MODEL IS RESIDENT ─────────────────
@@ -1459,7 +1460,7 @@ async function placeOnCrucible(
        * pointed at (`/v1/decide`). See `Placement.origin`.
        */
       origin: engine.url,
-      model: row.selected,
+      model: selected,
       env: { FOUNDRY_ENDPOINT_HEADERS: headerMapFor(engine, capability) },
       /** A resident model on that machine's card. Nothing was forwarded. */
       via: null,
@@ -1468,26 +1469,95 @@ async function placeOnCrucible(
 }
 
 /**
- * THE UPSTREAM A ROW IS ROUTED TO, or null for a model on the server's own card.
+ * A JOB FORWARDED TO AN UPSTREAM ACCOUNT: the same door, and nothing on the card.
  *
- * TWO FACTS AGREE AND EITHER WOULD DO, which is why this is one function rather
- * than a test written at each of the three places that asks. PHASE15 §1: an
- * upstream model id is `<upstream>/<model>` and *"a local model id never contains
- * `/`"* (checked at manifest load, `manifest_model_id_slash`). §3.3: the row also
- * says `route` outright.
+ * The model is the one a person chose for this job in its dialog — it used to be
+ * the server's route for the whole class, and that route is retired with the
+ * class (Owen, 2026-10-25).
  *
- * THE SLASH IS WHAT IS READ, and `route` is the guard. A pre-PHASE15 server — the
- * one on Owen's desk today — sends no `route` at all and `readCapability` reads
- * that absence as `local`, so a row from it can never take this path however its
- * `selected` is spelled. A PHASE15 server that said `upstream` and then selected
- * something with no slash has contradicted itself, and the honest answer to that
- * is the LOCAL path, which will refuse by name against the residency listing
- * rather than composing an upstream name out of half a string.
+ * PHASE15 §3.4 — a `model` with a slash is FORWARDED by the server on the
+ * operator's account, *"no lease, no lane, the settlement untouched (nothing was
+ * on the card)"*, and a lease or a `load-model` naming one is refused
+ * `lease_not_needed`. Owen, the same day: *"one contract, one SDK, one API, one
+ * communication method."* So the three things the local path does are all
+ * skipped, each because it would be a request about a model on nobody's card:
+ * no `models()` (the RESIDENCY listing never holds an upstream model), no load
+ * (nothing to warm) and no session (a load there cannot evict what it never
+ * loaded).
+ *
+ * WHAT IS IDENTICAL IS THE SEAM. The same `/openai` endpoint, the same header
+ * map with `X-Crucible-Act` still naming the act (so `/v1/activity` says
+ * "translating on anthropic"), the same door. The app does not know or care
+ * where the answer came from.
+ *
+ * AND THE LANE IS THE SERVER'S `[cloud]` ONE, claimed here — the first moment
+ * anything in this process knows which of the slot's two lanes this run wants.
  */
-function upstreamOf(row: CapabilityRow): string | null {
-  if (row.route !== 'upstream') return null;
-  const cut = row.selected.indexOf('/');
-  return cut > 0 ? row.selected.slice(0, cut) : null;
+async function placeUpstream(
+  engine: CrucibleServerEntry,
+  slot: ComputeSlot,
+  capability: CapabilityClass,
+  model: string,
+  say: PlacementProgress,
+  claim: LaneClaim,
+): Promise<PlacementOutcome> {
+  const cut = model.indexOf('/');
+  if (cut <= 0) {
+    // A dialog only ever offers `<upstream>/<model>`, so a bare id here is a
+    // caller's mistake, refused by name rather than read as a local model.
+    return {
+      verdict: 'refuse',
+      reason: `"${model}" was asked to be forwarded and names no upstream (it should read <upstream>/<model>).`,
+    };
+  }
+  const via = model.slice(0, cut);
+  /*
+   * ── ONLY A CHAT CAN BE FORWARDED ──────────────────────────────────────────
+   *
+   * A decide is read off a resident model's logits and a page off a vision
+   * model on the card; no upstream serves either (`POST /v1/decide` refuses an
+   * upstream id by name). `LLM_CLASSES` is the four chat acts. A refusal rather
+   * than a wait: the job says the same thing on every pass.
+   */
+  if (!(LLM_CLASSES as readonly string[]).includes(capability)) {
+    return {
+      verdict: 'refuse',
+      reason: `${CAPABILITY_WORDS[capability].noun} work cannot be forwarded to ${via} — it has to `
+        + "run on a model on the server's own card.",
+    };
+  }
+  const lane = upstreamLaneName(slot.name);
+  if (!claim(lane)) {
+    return transientWait(
+      `"${slot.name}" is already forwarding as many jobs of yours to ${via} as it will at once`,
+    );
+  }
+  say(`Sending ${capability} to ${slot.name} via ${via} (${model})`);
+  return {
+    verdict: 'go',
+    placement: {
+      slot,
+      session: null,
+      via,
+      door: 'openai',
+      /*
+       * The depth this app keeps against a door it does not own. The SERVER's
+       * own admission limit when it states one, four when it does not — an
+       * upstream rations by an account's rate limit rather than by a card, so
+       * a forwarding Crucible usually states nothing and four stands (ruling
+       * 4). `chatDepthFor` carries the argument and says which happened.
+       */
+      concurrency: await chatDepthFor(engine, capability, say),
+      // THE ENGINE'S ADDRESS, not the registered one — see the hop at the top
+      // of `placeOnCrucible`. A `<orchestrator>/openai` would be a spawn pointed
+      // at a process with no route to serve it.
+      endpoint: `${engine.url}/openai`,
+      // The same engine, stated bare. See `Placement.origin`.
+      origin: engine.url,
+      model,
+      env: { FOUNDRY_ENDPOINT_HEADERS: headerMapFor(engine, capability) },
+    },
+  };
 }
 
 /**

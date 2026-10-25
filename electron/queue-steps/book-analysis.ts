@@ -12,7 +12,7 @@ import type { StepModule, StepRunContext } from '../queue-engine';
 import type { ArtifactRef } from '../../shared/queue/engine-types';
 import { queueMainWindow, resourceForProvider, stepFailure } from './runtime';
 import {
-  machinesForAiStep, providerConfigOf, type AiJobConfig,
+  chosenModelOf, machinesForAiStep, providerConfigOf, type AiJobConfig,
 } from './ai-provider';
 
 interface AnalysisProgressEvent {
@@ -69,6 +69,12 @@ export const bookAnalysisStep: StepModule = {
    * the queue reasons about are one fact.
    */
   crucibleClass: (): string => 'analysis',
+  /**
+   * THE MODEL A PERSON CHOSE FOR THIS STEP in its window, or null for AUTOMATIC
+   * (Owen, 2026-10-25). Read off the config only — never throws, never asks a
+   * server. `chosenModelOf` is the one reader of the field's shape.
+   */
+  chosenModel: (config: Record<string, unknown>): string | null => chosenModelOf(config['chosenModel']),
   /**
    * IT LEASES ITS MODEL when its provider is a Crucible.
    *

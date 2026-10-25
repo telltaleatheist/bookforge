@@ -83,6 +83,31 @@ export function machinesForAiStep(config: Record<string, unknown>): 'local' | 'a
 export interface AiJobConfig {
   aiProvider: 'local' | 'crucible';
   aiModel: string;
+  /**
+   * THE MODEL A PERSON CHOSE FOR THIS JOB in the window that configured it
+   * (Owen, 2026-10-25: *"put the option the user can pick in a dropdown on the
+   * modal that configures the job"*). A local Crucible id, or
+   * `<upstream>/<model>` for a cloud account the server forwards to.
+   *
+   * Absent (or empty) is AUTOMATIC: the server names the biggest chat model
+   * that fits its card, up to 27B (`text-venue.ts modelForAct`). A row queued
+   * before this field existed has none, and means exactly that.
+   */
+  chosenModel?: string;
+}
+
+/**
+ * THE CHOSEN MODEL OF A STEP CONFIG, or null for AUTOMATIC.
+ *
+ * The one reader of the field's shape, so the provider block below and every
+ * step module's `chosenModel` hook agree on what "chose nothing" looks like:
+ * absent, empty, whitespace or not a string. Pure — it never throws and never
+ * touches the network, which the scheduler's hook requires.
+ */
+export function chosenModelOf(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed === '' ? null : trimmed;
 }
 
 /**
@@ -133,12 +158,14 @@ export function providerConfigOf(
        * instead. A default here — the top-ranked server, the last used — would
        * be the manufactured instruction §4.2.1a exists to prevent.
        *
-       * THE MODEL IS NOT HERE. PHASE15 §5.3: a text door sends
-       * `capability.selected` for its class and nothing else. The id is read
-       * from the server this run was placed on, at the door, because
-       * `crucible install` probed THAT machine's card to choose it — an id
-       * carried from a queue row would be this app's second opinion about a
-       * decision that already has an owner.
+       * THE MODEL IS THE JOB'S CHOICE WHEN IT MADE ONE (Owen, 2026-10-25).
+       * The per-class record on the server no longer owns a text job's model:
+       * the window that configured the job offers a list and the row carries
+       * `chosenModel`. When it did not choose — AUTOMATIC, or a row from
+       * before the field — no model goes on the block and the door asks the
+       * server for the biggest that fits, up to 27B (`crucibleActModel`).
+       * A chosen local id is proved resident at the door, and a cloud one is
+       * forwarded on the server's account; neither is decided here.
        */
       if (assignedVenue === undefined || assignedVenue === WAIT_FOR_ANY) {
         throw new Error(
@@ -153,7 +180,11 @@ export function providerConfigOf(
         // every door that reads a raw `waitForResolved` uses.
         throw new Error(`legacy_venue_retired: ${retiredVenueReason()}`);
       }
-      return { provider: 'crucible', crucible: { server: assignedVenue, act } };
+      const model = chosenModelOf(config.chosenModel);
+      return {
+        provider: 'crucible',
+        crucible: { server: assignedVenue, act, ...(model === null ? {} : { model }) },
+      };
     }
     default:
       /*

@@ -246,12 +246,21 @@ export interface AIProviderConfig {
    * Crucible refuses a run that lies about what it is doing. Neither is
    * guessed: see {@link crucibleConfigOf}, which refuses both by name.
    *
-   * `model` is OUTPUT and nothing reads it to decide anything. The MODEL a
-   * class runs on is the SERVER's decision — `crucible install` probes that
-   * card and picks what fits, a per-HOST fact — so the preflight reads
-   * `capability.selected` and stamps it here for the reporting sites (the
-   * resume checkpoint's model string, the analytics `modelName`, the job log)
-   * to name what actually ran.
+   * `model` is INPUT AND OUTPUT, and was output only until 2026-10-25.
+   *
+   * INPUT: the model a person chose for this job in the window that configured
+   * it (Owen, 2026-10-25: *"put the option the user can pick in a dropdown on
+   * the modal that configures the job"*). `providerConfigOf`
+   * (queue-steps/ai-provider.ts) puts the row's `chosenModel` here, and only
+   * when it is non-empty — a local Crucible id, proved resident before the
+   * first chat, or `<upstream>/<model>`, forwarded on that account.
+   *
+   * OUTPUT: when the job chose nothing (AUTOMATIC, or a row from before the
+   * field), the field arrives absent and `crucibleActModel` stamps the model
+   * the server names for this app's ceiling on the act (the biggest that fits,
+   * up to 27B), so the reporting sites (the resume checkpoint's model string,
+   * the analytics `modelName`, the job log) name what actually ran. A preset
+   * value is returned as-is and is never overwritten by that read.
    */
   crucible?: {
     server: string;
@@ -2700,6 +2709,13 @@ async function crucibleChatAttempt(
         queue,
         signal: controller.signal,
       });
+      // Client 2.0.30: `content` is null only when the model CALLED TOOLS and
+      // wrote no text. This chat sends none, so a null is the server breaking
+      // its own contract — refused by name rather than read as an empty answer.
+      if (answer.content === null) {
+        throw new Error(`crucible "${server}" answered a chat that offered no tools with tool calls `
+          + `and no text (${answer.toolCalls.length} call(s)).`);
+      }
       // Client 2.0 says `null` where the engine gave no reason; this function's
       // type says the same thing by leaving the field out.
       return {
@@ -3961,12 +3977,11 @@ export async function cleanupEpub(
 
   if (providerConfig.provider !== 'crucible' || noModelNeeded) return run();
 
-  // The server and the act by name, then the model READ from that server's
-  // capability record, all BEFORE the lease — a lease has to say which model it
-  // holds, and this app is not the thing that decides which one that is. Every
-  // refusal on this road (`crucible_server_not_named`, `crucible_act_not_named`,
-  // `crucible_capability_undecided`, `crucible_capability_disabled`,
-  // `crucible_capability_no_model`) throws a message carrying its own code, and
+  // The server and the act by name, then the model the server names for this
+  // app's ceiling on the act (or the one the job was told), all BEFORE the lease
+  // — a lease has to say which model it holds. Every refusal on this road
+  // (`crucible_server_not_named`, `crucible_act_not_named`,
+  // `crucible_resolve_refused`) throws a message carrying its own code, and
   // this door reports it as a result rather than throwing where every caller
   // expects one. See stampCrucibleModelForRun.
   let named: { server: string; act: CrucibleTextAct; model: string };

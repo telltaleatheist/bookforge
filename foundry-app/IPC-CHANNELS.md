@@ -1,5 +1,14 @@
 # Foundry's IPC channels — the whole list, for the collision audit
 
+## Each text job's model, chosen in its own dialog (2026-10-25)
+
+Two doors arrived, none left.
+
+| Channel | Request/result |
+| --- | --- |
+| `crucible:job-models` | `(kind: JobModelKind, server: string \| null)` → `JobModelOffer` = `{list: JobModelChoices, preselected: string}`. The dropdown's rows for one server (Automatic, local chat models ≤27B, cloud `<upstream>/<model>`), and the last value used for that kind of job when the list still offers it. `server` null is the top-ranked Crucible slot. |
+| `crucible:remember-job-model` | `(kind: JobModelKind, value: string)` → `void`. Records the value a dialog enqueued with (`''` is Automatic) in `AppSettings.lastJobModels`. |
+
 ## A cleanup with its triage in front of it (2026-09-23)
 
 **COUNTED BY SCRIPT OVER `app/electron/ipc.ts`: 143 `ipcMain.handle` call sites,

@@ -10,6 +10,7 @@ import type {
   ProcessingChainRequest,
 } from '@shared/processing/pass-types';
 import type { BookResetSummary } from '@shared/processing/reset-book';
+import type { JobModelChoices } from '@shared/crucible/job-models';
 import type { NarrateTarget } from '@shared/queue/narrate-target';
 import type { QueueSnapshot } from '@shared/queue/engine-types';
 import type {
@@ -4259,6 +4260,18 @@ export class ElectronService {
     testUpstream: (name: string, upstream: CrucibleUpstreamName, probe: CrucibleUpstreamProbe): Promise<{ success: boolean; data?: CrucibleUpstreamTestResult; error?: string; refusal?: CrucibleEngineSettingsRefusal }> =>
       this.isElectron
         ? (window as any).electron.crucible.testUpstream(name, upstream, probe)
+        : Promise.resolve({ success: false, error: 'Not running in Electron' }),
+
+    /**
+     * THE MODEL DROPDOWN OF A JOB'S OWN MODAL (Owen, 2026-10-25): *"put the
+     * option the user can pick in a dropdown on the modal that configures the
+     * job"*. `name` is the server the job will run on, or null for the one an
+     * unassigned text act would be placed on; the answer names it either way.
+     * Read whenever the modal opens or Re-check is pressed — cached nowhere.
+     */
+    jobModels: (name: string | null): Promise<{ success: boolean; data?: JobModelChoices; error?: string }> =>
+      this.isElectron
+        ? (window as any).electron.crucible.jobModels(name)
         : Promise.resolve({ success: false, error: 'Not running in Electron' }),
 
     /*

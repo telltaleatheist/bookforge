@@ -547,6 +547,13 @@ export interface CleanTextEpubOptions {
    * card. Wired for the UI/queue gesture that means "load it first".
    */
   loadFirst?: boolean;
+  /**
+   * The model a person chose for this cleanup in the window that queued it
+   * (Owen, 2026-10-25): a local id, proved resident, or `<upstream>/<model>`,
+   * forwarded on that account. Absent is AUTOMATIC — the biggest chat model
+   * that fits the server's card, up to 27B ({@link resolveCrucibleTextEngine}).
+   */
+  chosenModel?: string;
 }
 
 export interface CleanTextEpubResult {
@@ -644,7 +651,11 @@ export async function cleanTextEpub(opts: CleanTextEpubOptions): Promise<CleanTe
     venueHost,
     // `spawn`: THIS door owns the spawn and hands `runFoundry` an explicit
     // `env` below, so the credential reaches that child and no other.
-    { headerReach: 'spawn', ...(opts.loadFirst === true ? { loadFirst: true } : {}) },
+    {
+      headerReach: 'spawn',
+      ...(opts.loadFirst === true ? { loadFirst: true } : {}),
+      ...(opts.chosenModel === undefined || opts.chosenModel === '' ? {} : { model: opts.chosenModel }),
+    },
   );
 
   // A stale sidecar from a previous run at this name would be read back as this

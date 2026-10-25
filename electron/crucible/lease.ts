@@ -553,12 +553,14 @@ export function crucibleRowLease(row: string): CrucibleLease | null {
  * {@link asSessionWait} so the scheduler parks, removes or holds by its own
  * rules.
  *
- * Which model: the SERVER's answer for the act (`crucibleActModel`, the one
- * owner), so the session opens with it resident.
+ * Which model: the one the step was told, when a person chose one in its modal
+ * (Owen, 2026-10-25), else the server's answer for this app's ceiling on the act
+ * (`crucibleActModel`, the one owner) — so the session opens with the model the
+ * step will actually use resident.
  */
 export async function reserveCrucibleRowLease(
   row: string,
-  where: { server: string; act: string },
+  where: { server: string; act: string; model?: string },
   onWait?: (line: string) => void,
 ): Promise<void> {
   // LAZY: text-venue imports this module and this needs text-venue's resolver.
@@ -567,6 +569,7 @@ export async function reserveCrucibleRowLease(
     const model = await crucibleActModel({
       server: where.server,
       act: where.act as Parameters<typeof crucibleActModel>[0]['act'],
+      ...(where.model === undefined ? {} : { model: where.model }),
     });
     await withRowLease(
       row,
@@ -591,7 +594,7 @@ export async function reserveCrucibleRowLease(
  */
 export function crucibleLeaseSeam(): {
   withRowScope<T>(row: string, fn: () => Promise<T>): Promise<T>;
-  reserveRow(row: string, where: { server: string; act: string }, onWait?: (line: string) => void): Promise<void>;
+  reserveRow(row: string, where: { server: string; act: string; model?: string }, onWait?: (line: string) => void): Promise<void>;
   closeRow(row: string): Promise<void>;
   leaseHeld(row: string): { server: string; act: string } | null;
 } {

@@ -7,6 +7,7 @@ import {
   DEFAULT_CLEAN_TEXT_MODEL as DEFAULT_MODEL,
   DEFAULT_OLLAMA_ENDPOINT as DEFAULT_OLLAMA,
 } from '@shared/pipeline';
+import { withChosenModel } from '@shared/job-model-offer';
 import type { CleanRequest } from '@shared/types';
 
 import { LedgerService } from '../../core/ledger.service';
@@ -17,6 +18,7 @@ import { StageService } from '../../core/stage.service';
 import { UiService } from '../../core/ui.service';
 import { RunProgressComponent } from '../run-progress/run-progress.component';
 import { RunTargetComponent } from '../run-target/run-target.component';
+import { JobModelComponent } from '../job-model/job-model.component';
 import { api, hosted } from '../../core/foundry';
 
 /**
@@ -102,7 +104,7 @@ function triageRemembered(): boolean {
  */
 @Component({
   selector: 'app-clean-dialog',
-  imports: [FormsModule, RunProgressComponent, RunTargetComponent],
+  imports: [FormsModule, RunProgressComponent, RunTargetComponent, JobModelComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="scrim" (click)="ui.closeClean()"></div>
@@ -123,10 +125,22 @@ function triageRemembered(): boolean {
         @if (watched(); as job) {
           <app-run-progress [job]="job" [verb]="job.kind === 'clean-triage' ? 'Checking which paragraphs need it' : 'Cleaning'" />
         } @else {
-          <!-- WHERE IT WILL RUN, AND WHAT WILL RUN IT. The child draws the one
-               real choice and states the rest — run-target.component.ts carries
-               the ruling about why the model is not a button. -->
+          <!-- WHERE IT WILL RUN, AND WHAT WILL RUN IT. Two choices now, and
+               both are real. The model is a dropdown on Owen's ruling of
+               2026-10-25, verbatim: "put the option the user can pick in a
+               dropdown on the modal that configures the job"; "cloud accounts
+               should be listed as an option in every model dropdown if its
+               available, just like 27b or 9b or anything else. however,
+               bookforge should use the last used model as the default. the
+               ideal is that the user wont need to use cloud models because
+               theyre expensive. but it should be there if their system is too
+               weak to run a local model"; "keep it at 27b as the max right
+               now". job-model.component.ts carries the rest. The quick check
+               below is NOT in this dropdown: it stays on its own 9B (Owen:
+               "should stay on 9b for now"). -->
           <app-run-target act="clean" [(server)]="server" (ready)="canRun.set($event)" />
+          <app-job-model kind="clean" [server]="server()" [(value)]="chosenModel"
+                         (ready)="modelReady.set($event)" />
           <!--
             The book's own name, as the tab, the pane and the window are already
             calling it. The path is on the tooltip for the one person who wants
@@ -232,11 +246,11 @@ function triageRemembered(): boolean {
               card never becomes a progress view it has no business being.
             -->
             <button [class.ghost]="!hosted()" [class.primary]="hosted()"
-                    [disabled]="busy() || !canRun()" (click)="add(false)">
+                    [disabled]="busy() || !canRun() || !modelReady()" (click)="add(false)">
               {{ busy() === 'queue' ? 'Working...' : 'Add to queue' }}
             </button>
             @if (!hosted()) {
-            <button class="primary" [disabled]="busy() || !canRun()" (click)="add(true)">
+            <button class="primary" [disabled]="busy() || !canRun() || !modelReady()" (click)="add(true)">
               {{ busy() === 'start' ? 'Starting…' : 'Start' }}
             </button>
           }
@@ -438,10 +452,11 @@ export class CleanDialogComponent {
   });
 
   /*
-   * NO MODEL PICKER, NO OLLAMA FIELD AND NO `server` SIGNAL. See the Translate
-   * dialog, where all three are argued. The three-tag list this window offered
-   * — 8-bit, 16-bit, 27B — was Foundry choosing a model, which is the engine's
-   * decision now (Owen, 2026-09-15).
+   * NO OLLAMA FIELD. The three-tag list this window once offered — 8-bit,
+   * 16-bit, 27B — was retired on 2026-09-15 as Foundry choosing a model behind
+   * the engine's back. The MODEL is back as a choice on Owen's ruling of
+   * 2026-10-25 (the template note quotes it), and this time it is a real one:
+   * `chosenModel` on the request, which the placement honours for this job only.
    */
   protected readonly problem = signal<string | null>(null);
   /** The plan materialises the position's whole book before it answers. Not instant. */
@@ -454,8 +469,12 @@ export class CleanDialogComponent {
   protected readonly server = signal('');
   /** May this act run on that engine at all — the child's verdict. */
   protected readonly canRun = signal(false);
+  /** The model row chosen in the dropdown; empty is Automatic. The child preselects the last one used. */
+  protected readonly chosenModel = signal('');
+  /** Has the dropdown read a list and chosen from it — the child's verdict. */
+  protected readonly modelReady = signal(false);
   /**
-   * THE BOX: a quick check first, and the cleaner asked only about what it flags.
+   * THE BOX:a quick check first, and the cleaner asked only about what it flags.
    * ON unless this machine last said otherwise — see the class note.
    */
   protected readonly triaged = signal(triageRemembered());
@@ -617,7 +636,10 @@ export class CleanDialogComponent {
         );
         return;
       }
-      const request: CleanRequest = {
+      // THE MODEL CHOSEN ABOVE, on the request only when it is not Automatic
+      // (`withChosenModel`, shared/job-model-offer.ts). The triage row made from
+      // this request keeps its own 9B whatever it says (crucible-dispatch.ts).
+      const request: CleanRequest = withChosenModel<CleanRequest>({
         kind: 'clean',
         inputPath: plan.inputPath,
         // WHERE THE ANSWERS GO, and the whole of what this run makes. The BOOK it
@@ -632,11 +654,11 @@ export class CleanDialogComponent {
          * ── THE MODEL AND THE ENDPOINT ARE DECLARED CONSTANTS NOW ───────────
          *
          * Owen, 2026-09-15: *"we dont have any local models. crucible handles
-         * all model orchestration."* The ENGINE's capability record names the
-         * model a request runs (crucible docs/PHASE15-HOST.md §3.3) and the
-         * placement applies it at the spawn, over the top of these two
-         * (`doorArgs`, electron/job-queue.ts) — so a field here let somebody
-         * choose something that was then ignored, and it is gone.
+         * all model orchestration."* The PLACEMENT names the model a request
+         * runs — the one chosen in this dialog's dropdown (`chosenModel`, Owen
+         * 2026-10-25), else the biggest that fits up to 27B — and applies it
+         * at the spawn, over the top of these two (`doorArgs`,
+         * electron/job-queue.ts). So these two are never the choice.
          *
          * THE REQUEST FIELDS ARE NOT GONE, because one caller still reads them:
          * a DRY RUN has no server to ask, so `argsFor` defaults to `UNPLACED`
@@ -657,7 +679,7 @@ export class CleanDialogComponent {
         stepId: plan.stepId,
         // WHAT IT TAKES OUT — said to the model in the check and the cleanup alike.
         removal: { references: this.removeReferences(), also: this.removeAlso().trim() },
-      };
+      }, this.chosenModel());
 
       // A refusal is not a success: the queue dedupes on the records path and
       // answers with the row that already exists, so a second press has queued
@@ -696,6 +718,9 @@ export class CleanDialogComponent {
         if (rows.triage !== null) await this.queue.setWaitFor(rows.triage, this.server());
         await this.queue.setWaitFor(rows.clean, this.server());
       }
+      // THE NEXT CLEANUP OPENS ON THIS ONE'S MODEL (Owen: "use the last used
+      // model as the default") — only once a row was really added.
+      if (rows !== null && outcome !== 'already') await api.crucible.rememberJobModel('clean', this.chosenModel());
       if (outcome === 'already') {
         /*
          * A DUPLICATE IS STILL A RUN SOMEBODY CAN WATCH. Main answers with the

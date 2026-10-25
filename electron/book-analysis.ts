@@ -403,13 +403,12 @@ function analysisProviderRefusal(provider: string): Error {
  *
  * ── IT ASKS THE SERVER, THROUGH THE ONE OWNER ─────────────────────────────
  *
- * crucible `docs/PHASE15-HOST.md` §5.3: an analysis sends `capability.selected`
- * for the `analysis` class on the server the row was placed on, and nothing
- * else. `crucibleActModel` is the one owner of that read and of the stamp that
- * memoises it onto this run's provider block, so the checkpoint's name, every
- * chat's model and the analytics row are one id, asked for once. It refuses
- * three ways (`crucible_capability_undecided`, `…_disabled`, `…_no_model`),
- * each naming what a person would do about it.
+ * An analysis runs on the model this job was told, or the one the server names
+ * for this app's ceiling on the `analysis` act (Owen, 2026-10-25), on the server
+ * the row was placed on. `crucibleActModel` is the one owner of that read and of
+ * the stamp that memoises it onto this run's provider block, so the checkpoint's
+ * name, every chat's model and the analytics row are one id, asked for once. It
+ * refuses by name (`crucible_resolve_refused`), saying what a person would do.
  *
  * Refusing here, at the top of the run, is worth failing the whole job over:
  * `analyzeBook`'s per-chunk catch swallows errors and would otherwise turn a

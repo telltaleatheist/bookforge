@@ -11,15 +11,13 @@ import { Router } from '@angular/router';
 import { DesktopButtonComponent } from '../../../../creamsicle-desktop';
 import { QueueService } from '../../../queue/services/queue.service';
 import { SettingsService } from '../../../../core/services/settings.service';
-import { ElectronService } from '../../../../core/services/electron.service';
 import { AIProvider } from '../../../../core/models/ai-config.types';
-import { capabilityWords } from '../../../settings/components/crucible-words';
-import type { CrucibleCapabilityView } from '@shared/crucible/settings-wire';
+import { JobModelFieldComponent } from '../../../../shared/job-model-field.component';
 
 @Component({
   selector: 'app-translation-panel',
   standalone: true,
-  imports: [CommonModule, DesktopButtonComponent],
+  imports: [CommonModule, DesktopButtonComponent, JobModelFieldComponent],
   template: `
     <div class="translation-panel">
       <div class="panel-header">
@@ -56,11 +54,14 @@ import type { CrucibleCapabilityView } from '@shared/crucible/settings-wire';
         }
       </div>
 
-      <!-- The model, as its owner states it -->
-      <div class="model-section">
-        <label class="field-label">Model</label>
-        <div class="no-models">{{ modelLine() }}</div>
-      </div>
+      <!-- The model, chosen HERE (Owen, 2026-10-25): AUTOMATIC, the engine's
+           own chat models up to 27B, then any cloud account it forwards to. -->
+      @if (crucibleServer(); as server) {
+        <div class="model-section">
+          <app-job-model-field kind="translate" [server]="server"
+                               (chosen)="chosenModel.set($event)" />
+        </div>
+      }
 
       <!-- Actions -->
       <div class="actions">
@@ -237,18 +238,6 @@ import type { CrucibleCapabilityView } from '@shared/crucible/settings-wire';
       margin-bottom: 0.25rem;
     }
 
-    /* .model-select and .loading-indicator went with the model picker and the
-       Claude model fetch it waited on. .no-models stayed: it is now the one
-       line that states the model rather than offering one. */
-    .no-models {
-      padding: 0.75rem;
-      font-size: 0.8125rem;
-      color: var(--text-secondary);
-      background: var(--bg-subtle);
-      border-radius: 6px;
-      line-height: 1.5;
-    }
-
     .actions {
       display: flex;
       gap: 0.75rem;
@@ -258,7 +247,6 @@ import type { CrucibleCapabilityView } from '@shared/crucible/settings-wire';
 export class TranslationPanelComponent implements OnInit {
   private readonly queueService = inject(QueueService);
   private readonly settingsService = inject(SettingsService);
-  private readonly electronService = inject(ElectronService);
   private readonly router = inject(Router);
 
   // Inputs
@@ -297,17 +285,17 @@ export class TranslationPanelComponent implements OnInit {
    */
   readonly selectedProvider = signal<AIProvider>('crucible');
 
-  /** The engine's capability record, or null before it has been asked for. */
-  readonly capability = signal<CrucibleCapabilityView | null>(null);
-
   /** The engine this app is pointed at, or '' when none has been chosen. */
   readonly crucibleServer = computed(() => this.settingsService.getAIConfig().crucible?.server ?? '');
 
-  /** THE MODEL, as its owner states it. Never a control. */
-  readonly modelLine = computed(() => {
-    if (!this.crucibleServer()) return 'No engine chosen yet — pick one in Settings → AI.';
-    return capabilityWords(this.capability(), 'translate');
-  });
+  /*
+   * THE MODEL IS A CONTROL AGAIN (Owen, 2026-10-25): *"put the option the user
+   * can pick in a dropdown on the modal that configures the job"*. It stopped
+   * being one on 2026-09-14 because the engine's per-class record owned it;
+   * that record is retired for text jobs, and the job carries the choice as
+   * `chosenModel` ('' = AUTOMATIC, the biggest that fits up to 27B).
+   */
+  readonly chosenModel = signal<string>('');
 
   // Computed: can add to queue
   readonly canAddToQueue = computed(() => {
@@ -319,16 +307,6 @@ export class TranslationPanelComponent implements OnInit {
 
   ngOnInit(): void {
     this.selectedProvider.set(this.settingsService.getAIConfig().provider);
-    void this.loadCapability();
-  }
-
-  private async loadCapability(): Promise<void> {
-    const server = this.crucibleServer();
-    if (!server) return;
-    const res = await this.electronService.crucible.capability(server);
-    // Never an empty record on failure — an empty class list reads as "this
-    // engine serves nothing", which is a different and false claim.
-    if (res.success && res.data) this.capability.set(res.data);
   }
 
   goToSettings(): void {
@@ -340,6 +318,7 @@ export class TranslationPanelComponent implements OnInit {
     if (!path || !this.canAddToQueue()) return;
 
     const provider = this.selectedProvider();
+    const chosenModel = this.chosenModel();
 
     this.addingToQueue.set(true);
 
@@ -351,12 +330,15 @@ export class TranslationPanelComponent implements OnInit {
         config: {
           type: 'translation',
           aiProvider: provider,
-          // Empty because neither provider's model is this panel's to name:
-          // the engine's is its capability record and the bundled one is the
-          // active local model. A string typed here would be a second opinion.
-          aiModel: ''
+          // Informational only (the legacy local arm's field). What the run
+          // uses is `chosenModel` below.
+          aiModel: '',
+          // Absent is AUTOMATIC — the same answer an old row without the field gets.
+          ...(chosenModel === '' ? {} : { chosenModel }),
         }
       });
+      // The last-used default is written on SUBMIT, AUTOMATIC included.
+      this.settingsService.setLastJobModel('translate', chosenModel);
       this.addedToQueue.set(true);
       this.translationQueued.emit();
       setTimeout(() => this.addedToQueue.set(false), 3000);

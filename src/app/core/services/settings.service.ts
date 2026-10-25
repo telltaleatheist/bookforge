@@ -12,6 +12,7 @@ import {
   type VlmEndpointConfig,
 } from '@shared/vlm/conversion';
 import { resolveSavedTtsEngine, type TTSEngine } from '@shared/tts/engine-caps';
+import type { JobModelKind } from '@shared/crucible/job-models';
 
 /**
  * Default selections the processing pipeline (LL wizard) seeds itself from, so a
@@ -1011,6 +1012,39 @@ export class SettingsService {
 
   updatePipelineDefaults(updates: Partial<PipelineDefaults>): void {
     this.setPipelineDefaults({ ...this.getPipelineDefaults(), ...updates });
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // The model each kind of text job last ran on
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  /**
+   * THE LAST MODEL A PERSON CHOSE FOR THIS KIND OF JOB, or undefined when they
+   * never have.
+   *
+   * Owen, 2026-10-25: *"bookforge should use the last used model as the
+   * default."* Per KIND, because a clean and an analysis are different
+   * questions — somebody who sends analysis to Claude because it reads a whole
+   * book has not said anything about where a cleanup goes. AUTOMATIC is stored
+   * too (as `''`): choosing it is a choice, and the next window must open on it
+   * rather than on whatever cloud model was used the time before.
+   *
+   * Renderer-only, like the rest of this blob, and deliberately: only the
+   * modals read it, and what a JOB runs on travels on the job (`chosenModel`).
+   * `defaultJobModel` (shared/crucible/job-models.ts) decides whether the value
+   * is still offered; this only remembers it.
+   */
+  getLastJobModel(kind: JobModelKind): string | undefined {
+    const stored = this.values()['lastJobModels'] as Partial<Record<JobModelKind, string>> | undefined;
+    const value = stored?.[kind];
+    return typeof value === 'string' ? value : undefined;
+  }
+
+  /** Written when a job is SUBMITTED with that choice — a choice scrolled past is not one. */
+  setLastJobModel(kind: JobModelKind, value: string): void {
+    const stored = (this.values()['lastJobModels'] ?? {}) as Partial<Record<JobModelKind, string>>;
+    this.values.update(v => ({ ...v, lastJobModels: { ...stored, [kind]: value } }));
+    this.saveSettings();
   }
 
   // ─────────────────────────────────────────────────────────────────────────────

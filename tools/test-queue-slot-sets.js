@@ -1301,10 +1301,13 @@ test('THE BENCH REDRAWS WHEN THE RECORD LEARNS — nothing else would ever redra
   const published = [];
   const stop = engine.onQueueChanged((snap) => { published.push(snap); });
 
+  // No cloud lane at launch: since 2026-10-25 a lane is drawn for a job of ours
+  // that chose a cloud model, never for a server's route, so an idle queue has
+  // none whatever the record knows.
   assert.deepStrictEqual(
     engine.snapshot().slotSets.map((s) => s.id),
-    ['local', 'local:cloud', 'mac', 'mac:cloud', slots.LOCAL_WORK_SET],
-    'the launch bench is the conservative one BY DESIGN — this is the snapshot the window got',
+    ['local', 'mac', slots.LOCAL_WORK_SET],
+    'an idle queue draws no cloud lane',
   );
 
   // The two reads land. NOTHING is queued, so no pump, no step, no structural change.
@@ -1571,19 +1574,32 @@ test('a step records the venue it was admitted to, and the bench reads it', asyn
   assert.strictEqual(lanes.find((l) => l.setId === 'mac').occupant.title, 'Mistborn');
 });
 
-// ── The route decides the lane (crucible PHASE15 5.3) ──────────────────────
+// ── The job's chosen model decides the lane (Owen, 2026-10-25) ───────────
 
 const routes = require(path.join(REPO, 'dist', 'electron', 'crucible', 'routes.js'));
 
-function translatePass(title, waitFor) {
+function translatePass(title, waitFor, chosenModel) {
   return {
     title,
     ...(waitFor === undefined ? {} : { waitFor }),
     steps: [{
-      type: 'translation', label: 'Translate', config: {},
+      type: 'translation', label: 'Translate',
+      config: chosenModel === undefined ? {} : { chosenModel },
       sourceRef: { kind: 'epub', path: '/a.epub' },
     }],
   };
+}
+
+/** A Claude model, as the job's own dropdown sends it (Owen, 2026-10-25). */
+const CLAUDE = 'anthropic/claude-sonnet-5-5';
+
+/** A translation step module that reads its job's chosen model, as the real one does. */
+function translationModule() {
+  const ai = fakeModule('translation', { travels: true });
+  ai.crucibleClass = () => 'translate';
+  ai.chosenModel = (config) => (typeof config.chosenModel === 'string' && config.chosenModel !== ''
+    ? config.chosenModel : null);
+  return ai;
 }
 
 test('a settings write speaks for its four classes and leaves the rest of the table alone', () => {
@@ -1601,22 +1617,20 @@ test('a settings write speaks for its four classes and leaves the rest of the ta
   routes.forgetCrucibleRoutes();
 });
 
-test('a class the engine ROUTES UPSTREAM takes its cloud lane, not its card', async () => {
+test('a job that CHOSE a cloud model takes its cloud lane, not its card', async () => {
   /*
-   * The end of the story that starts in `electron/crucible/routes.ts`: the
-   * engine says `translate` goes to Anthropic, so the run holds no card. It
-   * must not sit behind a narration waiting for one, and it must not occupy
-   * the Mac's GPU slot while it does not use it.
+   * Owen, 2026-10-25: the model is the job's choice, in its own dropdown, and a
+   * Claude model is forwarded by the engine on its account — so the run holds no
+   * card. It must not sit behind a narration waiting for one, and it must not
+   * occupy the Mac's GPU slot while it does not use it.
    */
-  const ai = fakeModule('translation', { travels: true });
-  ai.crucibleClass = () => 'translate';
+  const ai = translationModule();
   const gpu = fakeModule('tts-conversion', { travels: true });
   const host = fakeHost({ ranked: TWO, defaultWaitFor: 'mac', reach: REACHABLE });
   await fresh('cloud-lane', [ai, gpu], host);
   routes.forgetCrucibleRoutes();
-  routes.noteCrucibleRoutes('mac', { translate: 'upstream', clean: 'local' });
 
-  const a = enqueueSent(translatePass('Mistborn', 'mac'));
+  const a = enqueueSent(translatePass('Mistborn', 'mac', CLAUDE));
   engine.start();
   await settle(40);
 
@@ -1629,11 +1643,11 @@ test('a class the engine ROUTES UPSTREAM takes its cloud lane, not its card', as
   const b = enqueueSent(narrate('Wool', 'mac'));
   await settle(40);
   assert.strictEqual(gpu.runs.length, 1,
-    'a routed-upstream translation must not block a render on the same engine');
+    'a translation on Claude must not block a render on the same engine');
   assert.strictEqual(jobById(b.id).steps[0].venue, 'mac');
 });
 
-test("a render HOLDING the engine's card does not block a routed translation", async () => {
+test("a render HOLDING the engine's card does not block a translation on Claude", async () => {
   /*
    * The direction that actually matters, and the one a naive implementation
    * gets wrong: every gate after placement is about a CARD — the engine's GPU
@@ -1643,36 +1657,32 @@ test("a render HOLDING the engine's card does not block a routed translation", a
    * exactly what the lane exists to stop.
    */
   const gpu = fakeModule('tts-conversion', { travels: true });
-  const ai = fakeModule('translation', { travels: true });
-  ai.crucibleClass = () => 'translate';
+  const ai = translationModule();
   const host = fakeHost({ ranked: TWO, defaultWaitFor: 'mac', reach: REACHABLE });
   await fresh('cloud-beside-render', [gpu, ai], host);
   routes.forgetCrucibleRoutes();
-  routes.noteCrucibleRoutes('mac', { translate: 'upstream' });
 
   enqueueSent(narrate('Mistborn', 'mac'));
   engine.start();
   await settle(40);
   assert.strictEqual(gpu.runs.length, 1, "the render took the Mac's card");
 
-  const b = enqueueSent(translatePass('Wool', 'mac'));
+  const b = enqueueSent(translatePass('Wool', 'mac', CLAUDE));
   await settle(40);
   assert.strictEqual(ai.runs.length, 1,
-    'the routed translation waited for a card it was never going to touch');
+    'the Claude translation waited for a card it was never going to touch');
   assert.strictEqual(jobById(b.id).steps[0].venue, 'mac:cloud');
 });
 
-test('the cloud lane is TWO wide, and a third routed row waits for it', async () => {
-  const ai = fakeModule('translation', { travels: true });
-  ai.crucibleClass = () => 'translate';
+test('the cloud lane is TWO wide, and a third Claude row waits for it', async () => {
+  const ai = translationModule();
   const host = fakeHost({ ranked: TWO, defaultWaitFor: 'mac', reach: REACHABLE });
   await fresh('cloud-width', [ai], host);
   routes.forgetCrucibleRoutes();
-  routes.noteCrucibleRoutes('mac', { translate: 'upstream' });
 
-  enqueueSent(translatePass('One', 'mac'));
-  enqueueSent(translatePass('Two', 'mac'));
-  const third = enqueueSent(translatePass('Three', 'mac'));
+  enqueueSent(translatePass('One', 'mac', CLAUDE));
+  enqueueSent(translatePass('Two', 'mac', CLAUDE));
+  const third = enqueueSent(translatePass('Three', 'mac', CLAUDE));
   engine.start();
   await settle(40);
   assert.strictEqual(ai.runs.length, 2, "CLOUD_LANE_SLOTS is the queue's own appetite, and it is 2");
@@ -1683,13 +1693,40 @@ test('the cloud lane is TWO wide, and a third routed row waits for it', async ()
   assert.strictEqual(jobById(third.id).steps[0].venue, 'mac:cloud');
 });
 
-test('a class the engine runs LOCALLY still takes its GPU slot', async () => {
-  const ai = fakeModule('translation', { travels: true });
-  ai.crucibleClass = () => 'translate';
+test('the cloud lane exists while a job of ours chose a cloud model, and only then', async () => {
+  /*
+   * Owen, 2026-10-18: *"only draw the lane when one route is actually set to
+   * upstream"* — a lane nothing can fill is a row the bench must not draw. With
+   * the route gone from the server (2026-10-25), the job's own choice is what
+   * can fill one, so a Claude row draws the lane on every enabled server (it is
+   * not decided yet which one it lands on), and finishing it takes the lane away.
+   */
+  const ai = translationModule();
+  const host = fakeHost({ ranked: TWO, defaultWaitFor: 'mac', reach: REACHABLE });
+  await fresh('cloud-lane-exists', [ai], host);
+  routes.forgetCrucibleRoutes();
+  const ids = () => engine.snapshot().slotSets.map((x) => x.id);
+
+  enqueueSent(translatePass('Local', 'mac'));
+  assert.ok(!ids().some((id) => id.endsWith(':cloud')), 'a local job drew a cloud lane');
+
+  const a = enqueueSent(translatePass('Claude', 'mac', CLAUDE));
+  assert.deepStrictEqual(ids().filter((id) => id.endsWith(':cloud')), ['local:cloud', 'mac:cloud']);
+
+  engine.start();
+  await settle(40);
+  assert.strictEqual(jobById(a.id).steps[0].venue.endsWith(':cloud'), true);
+  for (const r of ai.runs) r.resolve({ kind: 'epub', path: '/out/done' });
+  await settle(40);
+  assert.ok(!ids().some((id) => id.endsWith(':cloud')), 'the lane outlived the only job that wanted it');
+});
+
+test('a job on a LOCAL model (or Automatic) takes its GPU slot, with nothing to read first', async () => {
+  // No route is read and none is waited for: the job says where its model is.
+  const ai = translationModule();
   const host = fakeHost({ ranked: TWO, defaultWaitFor: 'mac', reach: REACHABLE });
   await fresh('local-route', [ai], host);
   routes.forgetCrucibleRoutes();
-  routes.noteCrucibleRoutes('mac', { translate: 'local' });
 
   const a = enqueueSent(translatePass('Mistborn', 'mac'));
   engine.start();
@@ -1699,49 +1736,6 @@ test('a class the engine runs LOCALLY still takes its GPU slot', async () => {
   assert.strictEqual(step.resource, 'gpu');
 });
 
-test('an engine whose routes nobody has read yet is a WAIT, never a guess', async () => {
-  /*
-   * Assuming `local` would park an upstream-routed class on a card nothing
-   * runs on, with a render waiting behind it and nothing saying why;
-   * assuming `upstream` would do the mirror. So the row waits with a sentence
-   * until coordination has read that engine — which is one connect away and
-   * never a poll.
-   */
-  const ai = fakeModule('translation', { travels: true });
-  ai.crucibleClass = () => 'translate';
-  const host = fakeHost({ ranked: TWO, defaultWaitFor: 'mac', reach: REACHABLE });
-  await fresh('unknown-route', [ai], host);
-  routes.forgetCrucibleRoutes();
-  // THE ROW ASKS (Owen, 2026-09-24): a switch-on whose coordination stopped
-  // early left this hold waiting for a connect that never came.
-  const asked = [];
-  engine.setCrucibleRouteReader((server) => { asked.push(server); });
-
-  const a = enqueueSent(translatePass('Mistborn', 'mac'));
-  engine.start();
-  await settle(40);
-
-  assert.strictEqual(ai.runs.length, 0, 'nothing ran on a lane nobody has chosen');
-  const step = jobById(a.id).steps[0];
-  assert.match(step.progress.admissionHold, /has not yet read where "mac" runs translate work/);
-  assert.ok(asked.includes('mac'), 'the held row asked for the read itself');
-
-  // A read that fails says so in the hold, instead of "has not yet read".
-  routes.noteCrucibleRouteReadFailed('mac', 'connection refused');
-  engine.pump();
-  await settle(40);
-  assert.match(jobById(a.id).steps[0].progress.admissionHold,
-    /could not read where "mac" runs translate work \(connection refused\)/);
-  engine.setCrucibleRouteReader(null);
-
-  // The read lands, and the next pass places it — no restart, no poll.
-  routes.noteCrucibleRoutes('mac', { translate: 'upstream' });
-  engine.pump();
-  await settle(40);
-  assert.strictEqual(ai.runs.length, 1);
-  assert.strictEqual(jobById(a.id).steps[0].venue, 'mac:cloud');
-});
-
 test('a RESTART does not split the venue from the resource it was placed with', async () => {
   /*
    * The pair is written together at admission and the VENUE persists (§4.3, a
@@ -1749,21 +1743,18 @@ test('a RESTART does not split the venue from the resource it was placed with', 
    * the resource on load would leave a `gpu` step sitting on a lane whose gpu
    * count is 0: never admitted again, and nothing saying why.
    */
-  const ai = fakeModule('translation', { travels: true });
-  ai.crucibleClass = () => 'translate';
+  const ai = translationModule();
   const host = fakeHost({ ranked: TWO, defaultWaitFor: 'mac', reach: REACHABLE });
   const dir = await fresh('cloud-restart', [ai], host);
   routes.forgetCrucibleRoutes();
-  routes.noteCrucibleRoutes('mac', { translate: 'upstream' });
 
-  const a = enqueueSent(translatePass('Mistborn', 'mac'));
+  const a = enqueueSent(translatePass('Mistborn', 'mac', CLAUDE));
   engine.start();
   await settle(40);
   assert.strictEqual(jobById(a.id).steps[0].venue, 'mac:cloud');
 
   // Same state directory, a fresh engine: exactly what a restart is.
-  const ai2 = fakeModule('translation', { travels: true });
-  ai2.crucibleClass = () => 'translate';
+  const ai2 = translationModule();
   engine.clearStepModules();
   engine.registerStepModule(ai2);
   engine.setCrucibleRoutingHost(host.host);

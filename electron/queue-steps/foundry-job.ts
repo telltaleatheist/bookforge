@@ -55,6 +55,7 @@ import type { FoundryJobStepConfig, FoundryRunOutcome } from '../foundry-host-qu
 import { recordInFlight, settleInFlight } from '../crucible/in-flight-ledger';
 import { FOUNDRY_SESSION_JOB_TYPE } from '../crucible/in-flight-sweep';
 import { stepFailure } from './runtime';
+import { chosenModelOf } from './ai-provider';
 /*
  * NOTHING IS IMPORTED FROM `text-server.ts` OR `narration-clean-text.ts` HERE
  * ANY MORE, and the absence is the statement.
@@ -226,6 +227,18 @@ export const foundryJobStep: StepModule = {
       case 'simplify': return 'simplify';
       default: return null;
     }
+  },
+  /**
+   * THE MODEL A PERSON CHOSE FOR THIS HOSTED ACT in Foundry's own dialog, or
+   * null for AUTOMATIC (Owen, 2026-10-25). Foundry's request names it
+   * `chosenModel`, the same field BookForge's rows carry, and the request
+   * crosses verbatim — so this reads it there and nowhere else. Never throws,
+   * never asks a server.
+   */
+  chosenModel: (config: Record<string, unknown>): string | null => {
+    const request = (config as unknown as FoundryJobStepConfig).request as unknown as
+      Record<string, unknown> | undefined;
+    return chosenModelOf(request?.['chosenModel']);
   },
   /*
    * NO `leasesModel` HERE, AND ITS ABSENCE IS THE STATEMENT.

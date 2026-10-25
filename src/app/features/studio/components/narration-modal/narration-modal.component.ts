@@ -104,6 +104,7 @@ import {
 import { DecimalPipe } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { DesktopSelectComponent, type DesktopSelectItems } from '../../../../creamsicle-desktop';
+import { JobModelFieldComponent } from '../../../../shared/job-model-field.component';
 import {
   SettingsService, type PipelinePreset,
 } from '../../../../core/services/settings.service';
@@ -209,7 +210,7 @@ function fileName(fullPath: string): string {
   selector: 'app-narration-modal',
   standalone: true,
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [DecimalPipe, FormsModule, DesktopSelectComponent],
+  imports: [DecimalPipe, FormsModule, DesktopSelectComponent, JobModelFieldComponent],
   template: `
     <div class="nm-backdrop" (click)="onCancel()">
       <div class="nm-modal" (click)="$event.stopPropagation()">
@@ -404,6 +405,24 @@ function fileName(fullPath: string): string {
                        [disabled]="!narrate()"
                        [value]="speed()" (input)="speed.set(+$any($event.target).value)" />
               </div>
+
+              <!--
+                THE CLEANUP'S MODEL, chosen where the cleanup is offered (Owen,
+                2026-10-25: "put the option the user can pick in a dropdown on
+                the modal that configures the job"). The cleanup itself is asked
+                about at Narrate, in a system dialog that cannot hold a control,
+                so the choice sits here and is used only if that answer is Yes.
+                No server is named: the cleanup row is placed by the queue, so
+                the list is read from the server an unassigned text act goes to.
+              -->
+              @if (narrate()) {
+                <div class="nm-field">
+                  <app-job-model-field kind="clean" [server]="null"
+                                       label="Text cleanup model"
+                                       hint="Used only if this book has not been cleaned and you choose to clean it first — you are asked when you press Narrate."
+                                       (chosen)="cleanModel.set($event)" />
+                </div>
+              }
 
               <!--
                 THE WORKERS SLIDER IS GONE, and the copy beside it is why it had
@@ -1932,6 +1951,13 @@ export class NarrationModalComponent {
    * a half-made choice is a default that surprises. Committing the run is what
    * makes it one.
    */
+  /**
+   * The model the narration text cleanup runs on IF this run cleans first —
+   * '' is AUTOMATIC. Carried on the pass as `chosenModel` and remembered for the
+   * `clean` kind only when a cleanup is actually queued.
+   */
+  readonly cleanModel = signal<string>('');
+
   private rememberChoices(): void {
     this.settings.updatePipelineDefaults({
       ttsEngine: this.engine(),
@@ -2178,9 +2204,14 @@ export class NarrationModalComponent {
            * request was inert, and the adversarial review measured it so.
            */
           sourcePath: book.epubPath,
-          passes: [{ kind: 'narration-text' }],
+          passes: [{
+            kind: 'narration-text',
+            // Absent is AUTOMATIC — the same answer an old row without it gets.
+            ...(this.cleanModel() === '' ? {} : { chosenModel: this.cleanModel() }),
+          }],
         }, jobs);
         if (!run.success) throw new Error(run.error ?? 'The cleanup run could not be queued.');
+        this.settings.setLastJobModel('clean', this.cleanModel());
         this.queued.emit({ jobs: jobs.length + 1 });
         return;
       }

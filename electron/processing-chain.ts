@@ -219,6 +219,18 @@ export async function planProcessingChain(request: ProcessingChainRequest): Prom
     if (pass.kind === 'translate' && !pass.translate) {
       throw new Error('The Translate pass needs source and target languages and a model; none were given.');
     }
+    /*
+     * THE CLEANUP'S CHOSEN MODEL (Owen, 2026-10-25) belongs to the cleanup and
+     * to nothing else: simplify and translate carry their own model on their
+     * own params, and a `chosenModel` on one of them is a caller that put the
+     * choice on the wrong pass — refused, rather than read by nobody.
+     */
+    if (pass.chosenModel !== undefined && pass.kind !== 'narration-text') {
+      throw new Error(
+        `A "${pass.kind}" pass was given a chosenModel, which only the narration text cleanup `
+        + 'reads. Nothing was queued.');
+    }
+    const chosenModel = typeof pass.chosenModel === 'string' ? pass.chosenModel.trim() : '';
 
     const config: PassJobConfig = {
       kind: pass.kind,
@@ -231,6 +243,8 @@ export async function planProcessingChain(request: ProcessingChainRequest): Prom
       ...(familyId === null ? {} : { familyId }),
       ...(pass.simplify ? { simplify: pass.simplify } : {}),
       ...(pass.translate ? { translate: pass.translate } : {}),
+      // Absent is AUTOMATIC, so an empty choice is not stored as one.
+      ...(chosenModel === '' ? {} : { chosenModel }),
     };
 
     return { jobType: JOB_TYPE_OF[pass.kind], label: LABEL_OF[pass.kind], config };

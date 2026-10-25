@@ -34,7 +34,10 @@
  * first time the server adds a frame.
  */
 import { followTask } from './crucible-coordinate';
-import { crucibleServerNamed, engineClientFor } from './crucible-registry';
+import { readAppSettings, writeAppSettings } from './app-settings';
+import { crucibleServerNamed, engineClientFor, slotAvailability } from './crucible-registry';
+import { defaultJobModel, jobModelChoices, type JobModelChoices, type JobModelKind } from '../shared/job-models';
+import type { JobModelOffer } from '../shared/job-model-offer';
 import {
   SUBJECT_KINDS,
   type CrucibleCatalogRow,
@@ -208,4 +211,93 @@ export async function removeModel(server: string, kind: string, id: string): Pro
     );
   }
   await (await engineClientFor(entry)).removeSubject(kind as CrucibleSubjectKind, id);
+}
+
+/**
+ * ── WHAT A JOB'S MODEL DROPDOWN OFFERS, READ OFF ONE SERVER (Owen, 2026-10-25) ──
+ *
+ * *"put the option the user can pick in a dropdown on the modal that configures
+ * the job"*; *"cloud accounts should be listed as an option in every model
+ * dropdown if its available, just like 27b or 9b or anything else. however,
+ * bookforge should use the last used model as the default. the ideal is that the
+ * user wont need to use cloud models because theyre expensive. but it should be
+ * there if their system is too weak to run a local model"*; *"keep it at 27b as
+ * the max right now"*.
+ *
+ * The rows are `jobModelChoices` (shared/job-models.ts, mirrored in BookForge);
+ * this function only reads the two lists it is built from and says which row to
+ * preselect.
+ *
+ * ── WHICH SERVER: THE ONE THE JOB WOULD WAIT FOR ──────────────────────────
+ *
+ * `server` is the engine the dialog pinned (run-target's chips), and the row is
+ * pinned to it after the enqueue (`setWaitFor`), so its list is the honest one.
+ * Null is a dialog with no pin — hosted, where the host's queue chooses — and
+ * then it is the first Crucible slot in the person's own ranking, which is the
+ * machine `waitForOfNewJob`'s `top` names and the first the `any` walk tries.
+ * A cloud SLOT is never it: the cloud rows here are the SERVER's upstream
+ * accounts, read through the same door as everything else.
+ *
+ * ── A SERVER THAT CANNOT BE ASKED IS AN ERROR, NOT AN EMPTY LIST ──────────
+ *
+ * `models()` failing rejects, with the SDK's own sentence ("crucible at … is
+ * unreachable: …"), and the dialog prints it — a dropdown holding only
+ * AUTOMATIC would look like a server with no models. The ONE read allowed to
+ * fail softly is `upstreamModels()`: the local rows are still true without it,
+ * so they are offered and `cloudNote` says why there are no cloud rows (a
+ * server older than 2.0.31 says so in its own words). No retry is composed
+ * here, on the rule every other crucible read in this module keeps: the SDK
+ * owns the wire, and a dialog that opens again asks again.
+ */
+export async function jobModelOffer(kind: JobModelKind, server: string | null): Promise<JobModelOffer> {
+  const list = await jobModelsOn(server);
+  return { list, preselected: defaultJobModel(list, readAppSettings().lastJobModels[kind]) };
+}
+
+async function jobModelsOn(server: string | null): Promise<JobModelChoices> {
+  const name = server !== null && server.length > 0 ? server : firstRankedCrucible();
+  const entry = crucibleServerNamed(name);
+  if (entry === null) {
+    throw new Error(
+      `"${name}" is not a registered engine, so its models cannot be listed. It may have been `
+      + 'renamed or removed while this window was open.',
+    );
+  }
+  const client = await engineClientFor(entry);
+  const local = await client.models();
+  let cloud: Awaited<ReturnType<typeof client.upstreamModels>> | null = null;
+  let cloudUnreadable: string | null = null;
+  try {
+    cloud = await client.upstreamModels();
+  } catch (err) {
+    cloudUnreadable = err instanceof Error ? err.message : String(err);
+  }
+  return jobModelChoices(entry.name, local, cloud, cloudUnreadable);
+}
+
+/** The top-ranked Crucible slot's name, or the reason there is none, by name. */
+function firstRankedCrucible(): string {
+  const available = slotAvailability();
+  if (available.refusal !== null) throw new Error(available.refusal.sentence);
+  const first = available.slots.find((slot) => slot.kind === 'crucible');
+  if (first === undefined) {
+    throw new Error(
+      'No Crucible server is connected, so there are no models to choose from. Add one under '
+      + 'Settings › Crucible Servers.',
+    );
+  }
+  return first.name;
+}
+
+/**
+ * REMEMBER WHAT THIS KIND OF JOB WAS LAST SENT WITH — `''` (AUTOMATIC) included,
+ * because choosing Automatic after a cloud run is a choice too, and the next
+ * dialog must not reopen on the bill. Written by the dialog after its enqueue
+ * succeeded, never by the queue: the queue cannot tell a request with no choice
+ * on it from one whose person chose Automatic (both carry no `chosenModel`), and
+ * a rerun from the shelf is not somebody choosing anything.
+ */
+export function rememberJobModel(kind: JobModelKind, value: string): void {
+  const last = readAppSettings().lastJobModels;
+  writeAppSettings({ lastJobModels: { ...last, [kind]: value } });
 }

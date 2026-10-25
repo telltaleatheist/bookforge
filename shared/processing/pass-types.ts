@@ -141,12 +141,34 @@ export interface PassJobConfig {
   familyId?: string;
   simplify?: SimplifyPassParams;
   translate?: TranslatePassParams;
+  /**
+   * THE MODEL THE NARRATION TEXT CLEANUP RUNS ON, as a person chose it in the
+   * window that queued it (Owen, 2026-10-25: *"put the option the user can pick
+   * in a dropdown on the modal that configures the job"*). A local Crucible id,
+   * or `<upstream>/<model>` for a cloud account. `narration-text` only.
+   *
+   * Absent is AUTOMATIC — the biggest chat model that fits the server's card,
+   * up to 27B — and that is also what a row queued before the field existed
+   * means. Never `''`: the planner drops an empty value rather than storing it.
+   */
+  chosenModel?: string;
 }
 
 export interface ChainPassRequest {
   kind: ProcessingPassKind;
   simplify?: SimplifyPassParams;
   translate?: TranslatePassParams;
+  /**
+   * THE MODEL THE NARRATION TEXT CLEANUP RUNS ON, as a person chose it in the
+   * window that queued it (Owen, 2026-10-25: *"put the option the user can pick
+   * in a dropdown on the modal that configures the job"*). A local Crucible id,
+   * or `<upstream>/<model>` for a cloud account. `narration-text` only.
+   *
+   * Absent is AUTOMATIC — the biggest chat model that fits the server's card,
+   * up to 27B — and that is also what a row queued before the field existed
+   * means. Never `''`: the planner drops an empty value rather than storing it.
+   */
+  chosenModel?: string;
 }
 
 export interface ProcessingChainRequest {

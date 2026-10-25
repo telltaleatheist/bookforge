@@ -65,7 +65,8 @@ import {
 import { readCapability } from './crucible-dispatch';
 import { readEngineSettings, testUpstream, writeEngineSettings } from './crucible-settings';
 import { crucibleFaultWords, crucibleRunState, startCrucible } from './crucible-start';
-import { engineCatalog, pullSubject, removeModel } from './crucible-models';
+import { engineCatalog, jobModelOffer, pullSubject, rememberJobModel, removeModel } from './crucible-models';
+import type { JobModelKind } from '../shared/job-models';
 import type {
   SettingsDocument,
   SettingsPatch,
@@ -4004,6 +4005,23 @@ export function registerIpc(): void {
    * disagree the first time a probe lagged.
    */
   ipcMain.handle('crucible:serves', (_event, cls: ModelClass) => anyServerServing(cls));
+
+  /**
+   * WHAT A JOB'S MODEL DROPDOWN OFFERS, AND WHICH ROW IT OPENS ON (Owen,
+   * 2026-10-25: *"put the option the user can pick in a dropdown on the modal
+   * that configures the job"*). A LIVE READ of one server — its `models()` and
+   * its upstream accounts' lists — because the dropdown is a person about to
+   * choose, and the cached capability mirror `crucible:serves` reads holds
+   * neither list. `server` is the dialog's pinned engine, or null for the
+   * top-ranked one (`jobModelOffer`, electron/crucible-models.ts, says why).
+   * A server that cannot be asked REJECTS with its own sentence.
+   */
+  ipcMain.handle('crucible:job-models', (_event, kind: JobModelKind, server: string | null) =>
+    jobModelOffer(kind, server));
+  /** The dialog's choice, remembered after its enqueue succeeded — `''` (Automatic) too. */
+  ipcMain.handle('crucible:remember-job-model', (_event, kind: JobModelKind, value: string) => {
+    rememberJobModel(kind, value);
+  });
 
   /**
    * THE PROGRESS LIST FOR "INSTALL CRUCIBLE HERE", composed for this machine.

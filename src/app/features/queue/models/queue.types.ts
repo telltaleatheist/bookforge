@@ -431,6 +431,13 @@ export interface TranslationJobConfig {
   // AI Provider settings (per-job)
   aiProvider: AIProvider;
   aiModel: string;
+  /**
+   * The model a person chose for this job in its own window (Owen, 2026-10-25):
+   * a local Crucible id, or `<upstream>/<model>` for a cloud account. Absent is
+   * AUTOMATIC — the biggest chat model that fits, up to 27B — which is also what
+   * a row saved before the field existed means.
+   */
+  chosenModel?: string;
   // Provider-specific settings
 }
 
@@ -778,6 +785,13 @@ export interface BookAnalysisConfig {
   // AI Provider settings (per-job)
   aiProvider: AIProvider;
   aiModel: string;
+  /**
+   * The model a person chose for this job in its own window (Owen, 2026-10-25):
+   * a local Crucible id, or `<upstream>/<model>` for a cloud account. Absent is
+   * AUTOMATIC — the biggest chat model that fits, up to 27B — which is also what
+   * a row saved before the field existed means.
+   */
+  chosenModel?: string;
   // Provider-specific settings (only the relevant one is used)
   // Analysis categories
   categories: Array<{

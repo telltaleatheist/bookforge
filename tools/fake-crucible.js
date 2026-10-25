@@ -819,6 +819,10 @@ function sessionHeldRefusal(held) {
  *                     the backend has measured and turned off. The reason is
  *                     the knob because the whole point of the ruling is that
  *                     the SERVER's sentence is what an app shows.
+ *   resolveModelFor(q) the model `GET /v1/resolve` names for a query
+ *                     `{verb, max_params_b}`; default: a 4-bit 27B for a chat
+ *                     ceiling of 27 or more, the 9B under it. A cleanup is
+ *                     sized through this door (Owen, 2026-10-25).
  */
 const LLM_CLASSES = ['clean', 'translate', 'simplify', 'analysis'];
 const UPSTREAM_NAMES = ['anthropic', 'openai', 'ollama'];
@@ -837,6 +841,8 @@ function settingsRoutes(behaviour) {
     reads: 0,
     /** How many times capability was read. */
     capabilityReads: 0,
+    /** Every `GET /v1/resolve` query that crossed, as `{verb, max_params_b}`. */
+    resolves: [],
     /** The refusals this fake answered. */
     refusals: [],
     /** Everything served, as text, so a keeper can grep it for a key. */
@@ -904,6 +910,9 @@ function settingsRoutes(behaviour) {
       backend_kind: backendKind,
       local_models: selectedDoc,
       local_model_choices: choicesDoc,
+      // Client 2.0.21+: candidates the catalog had no row for, per class. The
+      // two agree here, which is what a healthy server says.
+      choice_problems: Object.fromEntries(LLM_CLASSES.map((c) => [c, []])),
     };
     return doc;
   };
@@ -1001,6 +1010,38 @@ function settingsRoutes(behaviour) {
     snapshot: document,
     async handle(req, res, ctx) {
       const route = ctx.url.pathname;
+      if (route === '/v1/resolve' && req.method === 'GET') {
+        const query = {
+          verb: ctx.url.searchParams.get('verb') || 'generate',
+          max_params_b: ctx.url.searchParams.get('max_params_b'),
+        };
+        state.resolves.push(query);
+        const ceiling = query.max_params_b === null ? null : Number(query.max_params_b);
+        const model = behaviour.resolveModelFor
+          ? behaviour.resolveModelFor(query)
+          : (ceiling === null || ceiling >= 27 ? 'qwen3.8-27b-4bit' : 'qwen3.5-9b');
+        return serve(res, 200, {
+          verb: query.verb,
+          door: 'POST /v1/openai/chat/completions',
+          request: { model: null, verb: query.verb, max_params_b: query.max_params_b, form: null, images: null },
+          model,
+          source: ceiling === null ? 'auto' : 'max_params_b',
+          params_b: model === null ? null : (model.indexOf('27b') !== -1 ? 27 : 9),
+          bits: model === null ? null : (model.indexOf('4bit') !== -1 ? 4 : 16),
+          engine: model === null ? null : 'vllm',
+          form: null,
+          installed: model === null ? null : true,
+          resident: model === null ? null : false,
+          fit: model === null ? null : {
+            fits: true, need_bytes: 20314737593, available_bytes: 22535995392,
+            context_tokens: 8192, concurrency: 1,
+          },
+          facts: null,
+          refused: model === null
+            ? { status: 409, code: 'no_model_fits', message: 'nothing under that ceiling fits', details: null }
+            : null,
+        });
+      }
       if (route.indexOf('/v1/settings') !== 0 && route !== '/v1/capability') return false;
 
       if (behaviour.noSettingsDoor === true && route.indexOf('/v1/settings') === 0) {
@@ -1562,6 +1603,77 @@ const ENGINE_INFO_FIELDS = Object.freeze({
 });
 
 /**
+ * ── WHAT A JOB'S MODEL DROPDOWN READS (Crucible 2.0.31; Owen, 2026-10-25) ───
+ *
+ * `GET /v1/models` (a BARE ARRAY — the SDK's `models()` asks `asArray` of the
+ * body itself) and `GET /v1/openai/models`, whose `data` mixes the resident
+ * model's row (no `upstream` field; the SDK skips it) with one row per model a
+ * configured upstream serves — `id`, `upstream`, `routed_for`, `listed`,
+ * `facts` — and a top-level `upstreams` map of each account's list status
+ * (`listed_at`, `stale`, `error`). The shapes are the SDK's own readers'
+ * (`readModelInfo`, `readUpstreamModel`, `readUpstreamListStatus`), so a row
+ * the real server would not send fails the parse here too.
+ *
+ * `behaviour`:
+ *   models          wire rows for /v1/models (see {@link modelInfoRow})
+ *   upstreamRows    wire rows for /v1/openai/models (see {@link upstreamModelRow})
+ *   upstreams       the `upstreams` map; default {}
+ *   noUpstreamDoor  true: /v1/openai/models is a 404, as on a pre-2.0.31 server
+ *
+ * A HANDLER a keeper's own `route` delegates to; `reads` counts each door.
+ */
+function jobModelRoutes(behaviour = {}) {
+  const reads = { models: 0, upstream: 0 };
+  return {
+    reads,
+    async handle(req, res, ctx) {
+      if (req.method !== 'GET') return false;
+      if (ctx.url.pathname === '/v1/models') {
+        reads.models += 1;
+        send(res, 200, behaviour.models || []);
+        return true;
+      }
+      if (ctx.url.pathname === '/v1/openai/models') {
+        reads.upstream += 1;
+        if (behaviour.noUpstreamDoor === true) {
+          send(res, 404, { error: { code: 'not_found', message: '/v1/openai/models', details: null } });
+          return true;
+        }
+        send(res, 200, {
+          object: 'list',
+          data: [
+            // The resident model's row carries no `upstream`, and the SDK skips it.
+            { id: 'qwen3.5-9b', object: 'model', owned_by: 'crucible' },
+            ...(behaviour.upstreamRows || []),
+          ],
+          upstreams: behaviour.upstreams || {},
+        });
+        return true;
+      }
+      return false;
+    },
+  };
+}
+
+/** One `GET /v1/models` row in the shape `readModelInfo` requires; `over` replaces fields. */
+function modelInfoRow(id, over = {}) {
+  return Object.assign({
+    id, family: 'qwen3.5', params_b: 9, revision: 'abc1234', fingerprint: `${id}@abc1234`,
+    modalities: ['text'], backend_supported: true, installed: true, weights_of: null,
+    resident: false, loadable: true, reason: null, memory_bytes_estimate: 19000000000,
+    context_default: 32768, max_model_len: null, form: null, form_reason: null, forms: null,
+    verbs: ['generate'], package: null, package_installed: null, embed: null, rerank: null,
+  }, over);
+}
+
+/** One upstream row of `GET /v1/openai/models`, as Crucible 2.0.31 sends it. */
+function upstreamModelRow(id, upstream, over = {}) {
+  return Object.assign({
+    id, object: 'model', owned_by: upstream, upstream, routed_for: [], listed: true, facts: null,
+  }, over);
+}
+
+/**
  * The role-dependent `/v1/info` fields for a document whose `role` is `role`.
  * An ENGINE (Crucible's own `/v1/info`) always sends `role`, `managed_by` and
  * `pages_engine`; an ORCHESTRATOR (the host controller door) sends `role` and
@@ -1580,4 +1692,5 @@ module.exports = {
   sessionRoutes, sessionHeldRefusal,
   settingsRoutes, LLM_CLASSES, UPSTREAM_NAMES, WSL_ONLY_CLASSES, WSL_ONLY_REASON,
   faultyJobRoutes, cancelRefusedFault, armReset, takeFault,
+  jobModelRoutes, modelInfoRow, upstreamModelRow,
 };

@@ -8563,6 +8563,31 @@ function setupIpcHandlers(): void {
     }
   });
 
+  /**
+   * WHAT A JOB'S MODEL DROPDOWN OFFERS (Owen, 2026-10-25): *"put the option the
+   * user can pick in a dropdown on the modal that configures the job"*.
+   *
+   * `name` is the server the job will run on, or null for the one an
+   * unassigned text act would be placed on (`decideWhereTextActRuns`). The
+   * answer is `JobModelChoices` (shared/crucible/job-models.ts) and always names
+   * the server it was read from. A server that cannot be reached or named is a
+   * failed call whose sentence says so by name; an upstream list that cannot be
+   * read is NOT — the local rows come back and `cloudNote` says why there are
+   * no cloud ones (electron/crucible/job-models-door.ts).
+   *
+   * `bookforge:` rather than `crucible:` for the reason the catalog doors are:
+   * the vendored Foundry owns much of the bare family, and a duplicate
+   * `ipcMain.handle` name throws at registration (tools/test-ipc-collision.js).
+   */
+  ipcMain.handle('bookforge:crucible-job-models', async (_event, name: string | null) => {
+    try {
+      const { readJobModelChoices } = await import('./crucible/job-models-door.js');
+      return { success: true, data: await readJobModelChoices(name) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   // ── THE INSTALL STORY: three doors, and the plan that makes one honest ────
   //
   // "Offer to install a Crucible, or point at one elsewhere." Door 1 (connect

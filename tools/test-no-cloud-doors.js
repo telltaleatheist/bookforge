@@ -401,6 +401,15 @@ check('the three vendor names appear only as the engine\'s upstream list', () =>
     'src/app/core/models/ai-config.types.ts',
     'src/app/features/queue/components/job-details/job-details.component.ts',
     'src/app/features/queue/components/job-step/job-step.component.ts',
+    /*
+     * THE JOB MODEL DROPDOWN'S ROW LABELS (Owen, 2026-10-25: "cloud accounts
+     * should be listed as an option in every model dropdown if its
+     * available"). `cloudAccountName` turns the upstream an ENGINE row names
+     * into the word a person reads ("Claude: …"); the rows themselves come
+     * from the engine's GET /v1/openai/models. It labels, it never builds a
+     * request or reads a key — held to that below with the other three.
+     */
+    'shared/crucible/job-models.ts',
   ]);
   const offenders = [];
   for (const f of FILES) {
@@ -411,12 +420,13 @@ check('the three vendor names appear only as the engine\'s upstream list', () =>
     `these files name a vendor as a value: ${offenders.join(', ')}. The three upstream names are `
     + 'the engine\'s vocabulary; anything that branches on one here is provider code coming back.');
   /*
-   * The three LABELLING files may name a vendor and may not act on one. A
+   * The four LABELLING files may name a vendor and may not act on one. A
    * `fetch` or an `apiKey` beside the label is the line.
    */
   for (const file of ['src/app/core/models/ai-config.types.ts',
     'src/app/features/queue/components/job-details/job-details.component.ts',
-    'src/app/features/queue/components/job-step/job-step.component.ts']) {
+    'src/app/features/queue/components/job-step/job-step.component.ts',
+    'shared/crucible/job-models.ts']) {
     const src = FILES.find((f) => f.file === file);
     assert.ok(src !== undefined, `${file} is gone`);
     assert.ok(!/fetch\(|apiKey/.test(src.code),

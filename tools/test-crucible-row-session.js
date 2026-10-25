@@ -864,18 +864,42 @@ const settle = async (n = 20) => { for (let i = 0; i < n; i += 1) await new Prom
       const seam = lease.crucibleLeaseSeam();
       await seam.reserveRow('job_reserve', { server, act: 'clean' });
       assert.strictEqual(routes.session.opened.length, 1, 'admission opened it');
-      assert.strictEqual(routes.session.opened[0].model, 'qwen3.5-9b',
-        'with the model the SERVER names for that class resident, not one this side guessed');
+      // A cleanup is sized by this app (Owen, 2026-10-25): the biggest chat model up
+      // to 27B, which the SERVER names through `GET /v1/resolve`.
+      assert.strictEqual(routes.session.opened[0].model, 'qwen3.8-27b-4bit',
+        'with the model the SERVER names for that ceiling resident, not one this side guessed');
+      assert.deepStrictEqual(door.settings.resolves, [{ verb: 'generate', max_params_b: '27' }]);
       assert.deepStrictEqual(seam.leaseHeld('job_reserve'), { server, act: 'clean' });
 
       await lease.withCrucibleRowScope('job_reserve', () => lease.withCrucibleLease(
-        { server, kind: 'model', id: 'qwen3.5-9b', act: 'clean', onLog: () => {} },
+        { server, kind: 'model', id: 'qwen3.8-27b-4bit', act: 'clean', onLog: () => {} },
         async () => undefined,
       ));
       assert.strictEqual(routes.session.opened.length, 1, 'the act REUSED the reserved session');
       assert.strictEqual(routes.session.closed.length, 0, 'and does not close it: the scheduler owns it');
     } finally {
       await lease.closeCrucibleRowLease('job_reserve');
+      await fake.close();
+    }
+  });
+
+  await check('a reserve for a step TOLD its model opens the session with that model, unsized', async () => {
+    // Owen, 2026-10-25: the model is the job's choice in its own modal. Reserving
+    // the act's automatic model instead would load one model and run another.
+    const routes = sessionRoutes();
+    const door = settingsRoutes({});
+    const fake = await startFakeCrucible(async (req, res, ctx) => {
+      if (await door.handle(req, res, ctx)) return true;
+      return routes.handler(req, res, ctx);
+    });
+    const server = nameFake(fake.url);
+    try {
+      await lease.crucibleLeaseSeam().reserveRow('job_told', { server, act: 'clean', model: 'qwen3.5-9b' });
+      assert.strictEqual(routes.session.opened.length, 1);
+      assert.strictEqual(routes.session.opened[0].model, 'qwen3.5-9b', 'the session opened with another model');
+      assert.deepStrictEqual(door.settings.resolves, [], 'a step told its model was sized anyway');
+    } finally {
+      await lease.closeCrucibleRowLease('job_told');
       await fake.close();
     }
   });
@@ -988,12 +1012,12 @@ await check('an UPSTREAM-routed act takes no lease — the server would refuse o
       engineUrl: async () => 'http://mac:7100',
       models: async () => { asked.models += 1; return []; },
       loadModel: async () => { asked.loads += 1; },
-      capability: async () => ({
-        backendKind: 'cuda-linux', totalBytes: 1, desktopAllowanceBytes: 1,
-        classes: [{ capability: 'translate', enabled: true, selected: 'anthropic/claude-sonnet-5', reason: 'routed', shortfallBytes: 0, route: 'upstream' }],
-      }),
+      capability: async () => { throw new Error('a job told its model read the capability row'); },
+      resolve: async () => { throw new Error('a job told its model asked the server to size it'); },
     };
-    const engine = await venue.resolveCrucibleTextEngine('translate', 'mac', host, { reach: 'spawn' });
+    // The model a person picked in the job's modal (Owen, 2026-10-25).
+    const engine = await venue.resolveCrucibleTextEngine(
+      'translate', 'mac', host, { reach: 'spawn', model: 'anthropic/claude-sonnet-5' });
     assert.strictEqual(engine.model, 'anthropic/claude-sonnet-5');
     assert.strictEqual(engine.endpoint, 'http://mac:7100/openai');
     assert.strictEqual(asked.models, 0, 'it asked /v1/models about a model that is never in it');
@@ -1001,7 +1025,8 @@ await check('an UPSTREAM-routed act takes no lease — the server would refuse o
 
     let caught = null;
     try {
-      await venue.resolveCrucibleTextEngine('translate', 'mac', host, { reach: 'spawn', loadFirst: true });
+      await venue.resolveCrucibleTextEngine(
+        'translate', 'mac', host, { reach: 'spawn', loadFirst: true, model: 'anthropic/claude-sonnet-5' });
     } catch (err) { caught = err; }
     assert.ok(caught !== null, 'loadFirst on an upstream model was silently ignored');
     assert.strictEqual(caught.code, 'crucible_upstream_not_loadable');

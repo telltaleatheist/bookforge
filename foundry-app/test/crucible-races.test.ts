@@ -79,10 +79,9 @@ test('cancelling while the session waits in the server\'s line leaves the line a
       });
       throw new Error('unreachable');
     }),
-    capability: async () => ({ backendKind: 'cuda', totalBytes: 1, classes: [{
-      capability: 'clean', enabled: true, selected: 'test-model',
-      reason: '', shortfallBytes: 0, route: 'local',
-    }] }),
+    // A cleanup is sized by this app (Owen, 2026-10-25): the server names the
+    // biggest chat model up to 27B, and the session opens with that.
+    resolve: async () => ({ model: 'test-model', fit: null, refused: null }),
   };
   const entry = { name: 'test', url: 'http://127.0.0.1:1', token: 'test', enabled: true };
   spyOn(settings, 'readAppSettings').mockReturnValue({ queueGpuDial: 'any' } as never);
@@ -107,7 +106,7 @@ test('cancelling while the session waits in the server\'s line leaves the line a
 
 
 for (const [kind, capability, model] of [
-  ['read', 'pages', 'dots-ocr'], ['clean', 'clean', 'qwen3.5-9b'],
+  ['read', 'pages', 'dots-ocr'], ['clean', 'clean', 'qwen3.8-27b-4bit'],
   ['translate', 'translate', 'qwen3.8-27b-4bit'],
   ['simplify', 'simplify', 'qwen3.8-27b-4bit'],
   ['analysis', 'analysis', 'qwen3.8-27b-4bit'],
@@ -126,8 +125,13 @@ for (const [kind, capability, model] of [
       })),
       activity: mock(async () => ({ chat: { maxInFlight: null, maxInFlightBasis: null } })),
       capability: async () => ({ backendKind: 'llama-windows', totalBytes: 24e9, classes: [{
-        capability, enabled: true, selected: model, reason: 'native Windows', shortfallBytes: 0, route: 'local',
+        capability, enabled: true, selected: capability === 'pages' ? model : 'qwen3.5-9b',
+        reason: 'native Windows', shortfallBytes: 0, route: 'local',
       }] }),
+      // Every chat act asks: the biggest chat model up to 27B. Its stale row
+      // above says the 9B, which the placement must not take. A reading still
+      // takes its row.
+      resolve: mock(async () => ({ model, fit: null, refused: null })),
     };
     spyOn(settings, 'readAppSettings').mockReturnValue({ queueGpuDial: 'any' } as never);
     spyOn(registry, 'slotAvailability').mockReturnValue({ slots: [{ kind: 'crucible', name: 'Windows' }], refusal: null } as never);
@@ -144,6 +148,8 @@ for (const [kind, capability, model] of [
       expect(client.session).toHaveBeenCalledWith(expect.objectContaining({ act: capability, model }));
       expect(result.placement.session?.id).toBe('ses-native');
       expect(result.placement.model).toBe(model);
+      expect(client.resolve.mock.calls).toEqual(
+        capability === 'pages' ? [] : [[{ verb: 'generate', maxParamsB: 27 }]]);
       expect(result.placement.endpoint).toBe('http://windows-pc:7100/openai');
       expect(result.placement.door).toBe('openai');
       const headers = JSON.parse(result.placement.env['FOUNDRY_ENDPOINT_HEADERS']!);
