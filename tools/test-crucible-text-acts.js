@@ -172,25 +172,35 @@ async function main() {
   // Read out of crucible's own capability.py when the checkout is here, rather
   // than trusted: a fifth class, or a renamed one, must surface as a failure in
   // this repo and not as a `400 unknown_act` in the middle of a book.
-  await check('the four acts are crucible\'s own capability class names', () => {
+  await check('the four acts are free act labels, and no longer crucible classes', () => {
     assert.deepStrictEqual(
       [...acts.CRUCIBLE_TEXT_ACTS], ['clean', 'translate', 'simplify', 'analysis']);
     assert.deepStrictEqual(
       [...wire.CRUCIBLE_TEXT_ACT_NAMES], [...acts.CRUCIBLE_TEXT_ACTS],
       'the renderer\'s spelling and the main process\'s must agree — one fact, two copies');
 
-    const capability = path.join(
-      path.dirname(REPO), 'crucible', 'crucible', 'capability.py');
-    if (!fs.existsSync(capability)) {
+    /*
+     * Crucible 2.0.32 made an act a free label and aa83285 (2.0.33) retired the
+     * four classes to the apps (Owen, 2026-10-25): the model is BookForge's
+     * choice, so the name is only a label on the wire. Two halves, both read
+     * from the checkout: the label grammar (crucible/inflight.py ACT_PATTERN),
+     * and that no class of that name is back in capabilityclasses.py — a class
+     * would mean the server decides a model for it again.
+     */
+    const crucible = path.join(path.dirname(REPO), 'crucible', 'crucible');
+    if (!fs.existsSync(crucible)) {
       console.log('      (crucible checkout not here — the cross-repo half of this check is skipped)');
       return;
     }
-    const source = fs.readFileSync(capability, 'utf8');
+    const inflight = fs.readFileSync(path.join(crucible, 'inflight.py'), 'utf8');
+    const pattern = /ACT_PATTERN = re\.compile\(r"([^"]+)"\)/.exec(inflight);
+    assert.ok(pattern, 'crucible/inflight.py no longer spells ACT_PATTERN where this check reads it');
+    const label = new RegExp(`^(?:${pattern[1]})$`);
+    const classes = fs.readFileSync(path.join(crucible, 'capabilityclasses.py'), 'utf8');
     for (const act of acts.CRUCIBLE_TEXT_ACTS) {
-      assert.ok(
-        new RegExp(`name="${act}"`).test(source),
-        `crucible/capability.py has no capability class named "${act}" — if it was renamed, `
-        + 'every request naming the old one is refused 400 unknown_act');
+      assert.ok(label.test(act), `"${act}" is not a label crucible accepts (${pattern[1]})`);
+      assert.ok(!new RegExp(`name="${act}"`).test(classes),
+        `crucible/capabilityclasses.py names a class "${act}" again — the server would pick its model`);
     }
   });
 
