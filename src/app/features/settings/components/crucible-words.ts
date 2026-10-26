@@ -564,6 +564,8 @@ export function unavailableGroups(
  */
 export function capabilityClassWords(capability: string): string {
   const known: Readonly<Record<string, string>> = {
+    generate: 'text jobs (cleanup, translation, simplifying, analysis)',
+    decide: 'triage and ranking',
     clean: 'cleaning up text',
     translate: 'translating',
     simplify: 'simplifying',

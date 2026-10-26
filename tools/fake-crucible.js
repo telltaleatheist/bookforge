@@ -824,7 +824,15 @@ function sessionHeldRefusal(held) {
  *                     ceiling of 27 or more, the 9B under it. A cleanup is
  *                     sized through this door (Owen, 2026-10-25).
  */
-const LLM_CLASSES = ['clean', 'translate', 'simplify', 'analysis'];
+/*
+ * The ROUTABLE llm classes, as a 2.0.32 server lists them. `generate` is the
+ * class BookForge's module needs for its text jobs (Owen, 2026-10-25: the app
+ * sizes them itself, biggest chat model up to 27B); Crucible 2.0.33 drops the
+ * other four, which stay here only while the fleet still serves them.
+ * `decide` is not routable, so it has a capability row and no route.
+ */
+const LLM_CLASSES = ['clean', 'translate', 'simplify', 'analysis', 'generate'];
+const UNROUTABLE_LLM_CLASSES = ['decide'];
 const UPSTREAM_NAMES = ['anthropic', 'openai', 'ollama'];
 /** The five classes only the WSL2 engine serves, and the one sentence for all of them (3.3). */
 const WSL_ONLY_CLASSES = ['tts', 'asr', 'align', 'rvc', 'denoise'];
@@ -852,7 +860,8 @@ function settingsRoutes(behaviour) {
   const upstreams = JSON.parse(JSON.stringify(behaviour.upstreams || {}));
   const backendKind = behaviour.backendKind || 'cuda-linux';
   const localModelFor = behaviour.localModelFor || function (c) {
-    return c === 'clean' ? 'qwen3.5-9b' : null;
+    if (c === 'generate') return 'qwen3.8-27b-4bit';
+    return c === 'clean' || c === 'decide' ? 'qwen3.5-9b' : null;
   };
   let putAttempts = 0;
   const testAttempts = {};
@@ -961,7 +970,7 @@ function settingsRoutes(behaviour) {
     backend_kind: backendKind,
     total_bytes: 25769803776,
     desktop_allowance_bytes: 3221225472,
-    classes: LLM_CLASSES.concat(['pages'], WSL_ONLY_CLASSES)
+    classes: LLM_CLASSES.concat(UNROUTABLE_LLM_CLASSES, ['pages'], WSL_ONLY_CLASSES)
       // A DROPPED CLASS HAS NO ROW AT ALL -- not a row saying no. 5.3a's Mac
       // has no `pages` block, so its record never mentions the class, and the
       // two are different documents to read.

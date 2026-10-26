@@ -90,12 +90,12 @@ const MODULE = JSON.parse(fs.readFileSync(
  * crucible `docs/PHASE15-HOST.md` §5.3a: the module carries `needs` as CLASSES
  * and the SERVER resolves each one through its own capability record, so the
  * subject a class becomes is the FAKE's answer and not the module's. This is
- * the fake's `localModelFor` default (`fake-crucible.js`: `clean` →
- * `qwen3.5-9b`), written out here so the catalog can carry a row for it — the
+ * the fake's `localModelFor` default (`fake-crucible.js`: `generate` →
+ * `qwen3.8-27b-4bit`, `decide` → `qwen3.5-9b`), written out here so the catalog can carry a row for it — the
  * catalog is the second half of the question and without the row every connect
  * would report the cleanup model missing.
  */
-const CLASS_MODELS = { clean: 'qwen3.5-9b' };
+const CLASS_MODELS = { generate: 'qwen3.8-27b-4bit', decide: 'qwen3.5-9b' };
 
 /** A capability record as the shared wire shapes it, for the pure comparison. */
 function capabilityView(classes) {
@@ -956,13 +956,13 @@ async function main() {
      * every entry is a skip — the exact post §4a's amendment deleted.
      */
     coordinate.resetCoordinationForTests();
-    const fake = await startFake({ settings: { dropClasses: ['clean'] } });
+    const fake = await startFake({ settings: { dropClasses: ['generate'] } });
     try {
       const name = registerFake(fake.url);
       const state = await coordinate.coordinateServer(name, deps());
       assert.strictEqual(state.phase, 'stocked', `phase was ${state.phase}`);
       assert.strictEqual(state.unmet.length, 1, 'the class travels on the state');
-      assert.strictEqual(state.unmet[0].class, 'clean');
+      assert.strictEqual(state.unmet[0].class, 'generate');
       assert.strictEqual(fake.seen.posts.length, 0,
         'an unmet class is not a download, so there is nothing to post');
     } finally { await fake.close(); }
@@ -971,12 +971,12 @@ async function main() {
   await check("a disabled class is stocked too, with the ENGINE's sentence", async () => {
     coordinate.resetCoordinationForTests();
     const reason = 'no mlx-darwin block for qwen3.5-9b';
-    const fake = await startFake({ settings: { disableClasses: { clean: reason } } });
+    const fake = await startFake({ settings: { disableClasses: { generate: reason } } });
     try {
       const name = registerFake(fake.url);
       const state = await coordinate.coordinateServer(name, deps());
       assert.strictEqual(state.phase, 'stocked');
-      assert.deepStrictEqual(state.unmet, [{ class: 'clean', reason }],
+      assert.deepStrictEqual(state.unmet, [{ class: 'generate', reason }],
         'the reason is the row\'s, verbatim — a word of ours makes a fixable thing a mystery');
       assert.strictEqual(fake.seen.posts.length, 0);
     } finally { await fake.close(); }
@@ -992,9 +992,9 @@ async function main() {
      */
     coordinate.resetCoordinationForTests();
     const fake = await startFake({
-      uncatalogued: [CLASS_MODELS.clean],
+      uncatalogued: [CLASS_MODELS.generate],
       settings: {
-        routes: { clean: 'anthropic/claude-sonnet-5' },
+        routes: { generate: 'anthropic/claude-sonnet-5' },
         upstreams: { anthropic: { key: 'sk-ant-1234' } },
       },
     });
@@ -1011,9 +1011,9 @@ async function main() {
   await check('an existing Ollama upstream never requests duplicate local LLM weights', async () => {
     coordinate.resetCoordinationForTests();
     const fake = await startFake({
-      uncatalogued: [CLASS_MODELS.clean],
+      uncatalogued: [CLASS_MODELS.generate],
       settings: {
-        routes: { clean: 'ollama/qwen3:8b' },
+        routes: { generate: 'ollama/qwen3:8b' },
         upstreams: { ollama: { url: 'http://127.0.0.1:11434' } },
       },
     });
@@ -1036,7 +1036,7 @@ async function main() {
      * the progress, beside the prediction rather than instead of it.
      */
     coordinate.resetCoordinationForTests();
-    const unmet = [{ class: 'clean', reason: 'nothing on this card fits' }];
+    const unmet = [{ class: 'generate', reason: 'nothing on this card fits' }];
     // The wire row also names the module `entry`; BookForge keeps class and reason.
     const fake = await startFake({ missing: ['denoise-roformer'],
       taskUnmet: unmet.map((need) => ({ ...need, entry: 'qwen3.5-9b' })) });
@@ -1137,7 +1137,7 @@ async function main() {
     }));
     for (const id of Object.values(CLASS_MODELS)) {
       rows.push({
-        kind: 'model', id, name: 'Qwen3.5 9B', jobType: 'llm', installed: true,
+        kind: 'model', id, name: id, jobType: 'llm', installed: true,
         installedBytes: 1, expectedBytes: 9663676416, floors: [], license: null,
         source: 'hf:x', resident: false,
       });
@@ -1148,7 +1148,7 @@ async function main() {
   /** The record a healthy cuda-linux engine sends: every class local and enabled. */
   function fullCapability() {
     return capabilityView(
-      ['clean', 'translate', 'simplify', 'analysis', 'pages', 'tts', 'asr', 'align', 'rvc', 'denoise']
+      ['clean', 'translate', 'simplify', 'analysis', 'generate', 'decide', 'pages', 'tts', 'asr', 'align', 'rvc', 'denoise']
         .map((c) => capabilityRow(c)));
   }
 
@@ -1208,13 +1208,20 @@ async function main() {
     const engine = { kind: 'engine', id: 'llama-cpp', name: 'llama.cpp', jobType: 'llm',
       installed: false, installedBytes: null, expectedBytes: 1024, floors: [], license: null,
       source: 'github:test', resident: false };
-    const upstream = capabilityView([capabilityRow('clean', {
+    /*
+     * `decide` cannot be routed (crucible capabilityclasses.py, routable=False),
+     * so a module that needs it needs a LOCAL engine for triage wherever
+     * `generate` runs. Its row is turned off here, which leaves the upstream
+     * route the only thing in play: that route alone asks for no executable.
+     */
+    const decideOff = 'nothing on this card fits';
+    const upstream = capabilityView([capabilityRow('generate', {
       selected: 'ollama/qwen3:8b', route: 'upstream',
-    })]);
+    }), capabilityRow('decide', { enabled: false, selected: '', reason: decideOff })]);
     const result = coordinate.missingForBookForge(MODULE.job_types.map((job) => job.type),
-      [...fullCatalog().filter((row) => row.id !== CLASS_MODELS.clean), engine],
+      [...fullCatalog().filter((row) => row.id !== CLASS_MODELS.generate), engine],
       { ...upstream, backendKind: 'llama-windows' });
-    assert.deepStrictEqual(result, { missing: [], unmet: [] });
+    assert.deepStrictEqual(result, { missing: [], unmet: [{ class: 'decide', reason: decideOff }] });
   });
 
   await check('a class with NO ROW is unmet BY NAME — never assumed local', () => {
@@ -1224,8 +1231,9 @@ async function main() {
      * Foundry measured it as `pages` against the Mac: a backend with no block
      * for a class has no capability row for it either, and the generator
      * having already resolved the class to the cuda-linux id got the WHOLE
-     * module refused `unknown_subject`. BookForge's module names one class,
-     * `clean`, so this is that document with `clean`'s row removed.
+     * module refused `unknown_subject`. BookForge's module names two classes,
+     * `generate` and `decide`, so this is that document with `generate`'s row
+     * removed.
      *
      * THE ARM THAT MATTERS IS THE ABSENCE. A class nothing has decided about
      * is not a class that works: assuming `local` here would put a book's
@@ -1234,11 +1242,11 @@ async function main() {
      */
     const all = MODULE.job_types.map((j) => j.type);
     const noClean = capabilityView(
-      ['translate', 'simplify', 'analysis', 'pages'].map((c) => capabilityRow(c)));
+      ['translate', 'simplify', 'analysis', 'decide', 'pages'].map((c) => capabilityRow(c)));
     const { missing, unmet } = coordinate.missingForBookForge(all, fullCatalog(), noClean);
     assert.deepStrictEqual(missing, [], 'an unmet class is not a thing to download');
     assert.strictEqual(unmet.length, 1, `one class is unmet, got ${unmet.length}`);
-    assert.strictEqual(unmet[0].class, 'clean');
+    assert.strictEqual(unmet[0].class, 'generate');
     assert.ok(/does not mention it/.test(unmet[0].reason),
       `the absence itself is the reason: ${unmet[0].reason}`);
   });
@@ -1247,28 +1255,30 @@ async function main() {
     const all = MODULE.job_types.map((j) => j.type);
     const reason = 'no mlx-darwin block for qwen3.5-9b';
     const off = capabilityView([
-      capabilityRow('clean', { enabled: false, selected: '', reason }),
+      capabilityRow('generate', { enabled: false, selected: '', reason }),
+      capabilityRow('decide'),
       capabilityRow('pages'),
     ]);
     const { missing, unmet } = coordinate.missingForBookForge(all, fullCatalog(), off);
     assert.deepStrictEqual(missing, [], '§5.3a: a disabled class is not a refusal and not a pull');
-    assert.deepStrictEqual(unmet, [{ class: 'clean', reason }],
+    assert.deepStrictEqual(unmet, [{ class: 'generate', reason }],
       'the row said why; nothing of ours goes in its place');
   });
 
   await check('an ENABLED class that names nothing is unmet, not a pull of the empty string', () => {
     const all = MODULE.job_types.map((j) => j.type);
     const nothingFits = capabilityView([
-      capabilityRow('clean', { selected: '', reason: 'nothing on this card fits' }),
+      capabilityRow('generate', { selected: '', reason: 'nothing on this card fits' }),
+      capabilityRow('decide'),
     ]);
     const { missing, unmet } = coordinate.missingForBookForge(all, fullCatalog(), nothingFits);
     assert.deepStrictEqual(missing, [], 'a catalog search for "" would name the empty string');
-    assert.deepStrictEqual(unmet, [{ class: 'clean', reason: 'nothing on this card fits' }]);
+    assert.deepStrictEqual(unmet, [{ class: 'generate', reason: 'nothing on this card fits' }]);
   });
 
   await check('a class the engine has not pulled is MISSING, and carries both halves', () => {
     const all = MODULE.job_types.map((j) => j.type);
-    const catalog = fullCatalog().map((row) => (row.id === CLASS_MODELS.clean
+    const catalog = fullCatalog().map((row) => (row.id === CLASS_MODELS.generate
       ? Object.assign({}, row, { installed: false, installedBytes: null })
       : row));
     const { missing, unmet } = coordinate.missingForBookForge(all, catalog, fullCapability());
@@ -1276,10 +1286,10 @@ async function main() {
     assert.strictEqual(missing.length, 1);
     assert.deepStrictEqual(missing[0], {
       what: 'class',
-      class: 'clean',
-      id: CLASS_MODELS.clean,
+      class: 'generate',
+      id: CLASS_MODELS.generate,
       kind: 'model',
-      name: 'Qwen3.5 9B',
+      name: CLASS_MODELS.generate,
       jobType: 'llm',
       expectedBytes: 9663676416,
       inCatalog: true,
@@ -1288,7 +1298,7 @@ async function main() {
 
   await check("a class whose selected id is not in that engine's catalog says so", () => {
     const all = MODULE.job_types.map((j) => j.type);
-    const catalog = fullCatalog().filter((row) => row.id !== CLASS_MODELS.clean);
+    const catalog = fullCatalog().filter((row) => row.id !== CLASS_MODELS.generate);
     const { missing } = coordinate.missingForBookForge(all, catalog, fullCapability());
     const cls = missing.find((m) => m.what === 'class');
     assert.ok(cls, 'the class is still reported');
