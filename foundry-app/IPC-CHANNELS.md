@@ -1,13 +1,27 @@
 # Foundry's IPC channels — the whole list, for the collision audit
 
-## Each text job's model, chosen in its own dialog (2026-10-25)
+## Ask the document (2026-10-29)
 
-Two doors arrived, none left.
+**COUNTED BY SCRIPT OVER `app/electron/ipc.ts`: 149 `ipcMain.handle` call sites,
+149 distinct channel names, zero `ipcMain.on`.** The figure before this change
+measured **145**; four doors arrived and none left.
 
 | Channel | Request/result |
 | --- | --- |
-| `crucible:job-models` | `(kind: JobModelKind, server: string \| null)` → `JobModelOffer` = `{list: JobModelChoices, preselected: string}`. The dropdown's rows for one server (Automatic, local chat models ≤27B, cloud `<upstream>/<model>`), and the last value used for that kind of job when the list still offers it. `server` null is the top-ranked Crucible slot. |
-| `crucible:remember-job-model` | `(kind: JobModelKind, value: string)` → `void`. Records the value a dialog enqueued with (`''` is Automatic) in `AppSettings.lastJobModels`. |
+| `ask:start` | `AskRequest` (project, the person's words, server name or null for the top-ranked one, the model dropdown's value, and the book as the pane shows it) → the run's id, AT ONCE. One run per project; a second start rejects with a sentence. Nothing is written to the book. |
+| `ask:cancel` | run id → nothing. Aborts the run; its marks are let go. |
+| `ask:sessions` | project → `AskSession[]`, oldest first, read from `<project>/ops/ask-sessions.jsonl`. |
+| `ask:save-session` | project, `AskSession` → nothing. Appends one line, written whole through `writeAtomically`. Called by the renderer after it has landed a run, with only what landed. |
+
+**ONE NEW PUSH CHANNEL, `ask:progress`** (`broadcast`, not a handle): `AskProgress`
+frames — `running` with the round, the model's short prose and the counts, then
+one of `done` (with the `AskResult`), `failed` or `cancelled`, each with a
+sentence. Every frame names its project.
+
+**FOR BOOKFORGE:** `ask:` is a new family. A host that registers Foundry's
+channels needs the four handlers and the push channel, and `JobModelKind` gained
+`ask` (`shared/job-models.ts`, mirrored byte for byte in BookForge's
+`shared/crucible/job-models.ts`).
 
 ## A cleanup with its triage in front of it (2026-09-23)
 
@@ -1056,6 +1070,10 @@ cannot report a failure. They are registered in one function, `registerIpc`
 | `acts:gates` | Is anything SERVING each of the five acts, and the sentence either way — translate, simplify, analysis, clean, read. An enabled engine whose capability row says so, a connected cloud provider, or (for `read` alone) the page reader on this disk. It measured this machine — the card, the catalogue floor, Ollama's library — until 2026-09-15, and does not any more: Foundry runs no model. Not the stage gate: whether an act applies where somebody is standing is `shared/stages.ts`, in the renderer, and a tile needs both. |
 | `analysis:read-categories` | The analysis categories this user wrote themselves, from `app-settings.json`. App-level: they are the reader's, not one project's. |
 | `analysis:write-categories` | Replace that list, and answer with it as stored — ids re-derived from names, fields capped, collisions with a built-in or with each other dropped. |
+| `ask:cancel` | Stop a running Ask; nothing it marked is kept. |
+| `ask:save-session` | Keep a landed Ask run in `<project>/ops/ask-sessions.jsonl`, so its review card survives a reload. |
+| `ask:sessions` | Every Ask run kept for a project, oldest first. |
+| `ask:start` | Put a request to the open book; a model marks blocks with tools in main and the run arrives on `ask:progress`. Answers the run id at once. |
 | `app:hosted` | Whether another app mounted Foundry, so the renderer can drop the controls the host already answers. |
 | `book:amend` | Amend the tip edit step's ops in place, under the ledger's lock. |
 | `book:apply` | Land the proof sheet's stack of ops as a new edit step. |

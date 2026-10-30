@@ -13,6 +13,7 @@ import type { CrucibleCoordinationState } from '../shared/coordinate-wire';
 import type { CrucibleInstallEvent } from '../shared/crucible-install-wire';
 import type { HostOffers, HostStatus } from '../shared/host-ops';
 import type { CruciblePullProgress } from '../shared/model-wire';
+import type { AskProgress } from '../shared/ask';
 import type {
   AppQuestion,
   Asked,
@@ -198,6 +199,14 @@ const api: FoundryApi = {
     dir: () => ipcRenderer.invoke('library:dir'),
     choose: (current) => ipcRenderer.invoke('library:choose', current),
     set: (dir) => ipcRenderer.invoke('library:set', dir),
+  },
+
+  ask: {
+    start: (request) => ipcRenderer.invoke('ask:start', request),
+    cancel: (runId) => ipcRenderer.invoke('ask:cancel', runId),
+    sessions: (projectDir) => ipcRenderer.invoke('ask:sessions', projectDir),
+    saveSession: (projectDir, session) => ipcRenderer.invoke('ask:save-session', projectDir, session),
+    onProgress: (listener) => subscribe<AskProgress>('ask:progress', listener),
   },
 
   analysis: {

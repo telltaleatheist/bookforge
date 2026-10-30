@@ -14,8 +14,8 @@
  */
 import type { JobModelChoices, JobModelKind } from './job-models';
 
-/** The four kinds, as a list a reader can walk (the settings clamp reads it). */
-export const JOB_MODEL_KINDS: readonly JobModelKind[] = ['clean', 'translate', 'simplify', 'analysis'];
+/** The kinds, as a list a reader can walk (the settings clamp reads it). */
+export const JOB_MODEL_KINDS: readonly JobModelKind[] = ['clean', 'translate', 'simplify', 'analysis', 'ask'];
 
 /**
  * `crucible:job-models`'s answer: the list a server offers for this kind of job,

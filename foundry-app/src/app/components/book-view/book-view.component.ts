@@ -3605,12 +3605,13 @@ export class BookViewComponent {
       selected: () => this.chosen(),
       chaptersOwned: () => this.chaptersOwned(),
       push: (ops) => this.push(...ops),
+      pushGroup: (what, ops) => this.pushAsOne(what, ops),
       /*
        * THE TRANSLATED PASS'S TWO MEMBERS, AND THEY ARE THE PANE'S OWN.
        *
        * `correct` is the private method the double-click editor commits through,
        * handed out rather than reimplemented: the one-in-flight guard, the load
-       * ticket and the book refresh are all inside it, and the sweep landing
+       * ticket and the book refresh are all inside it, and an Ask run landing
        * fifty corrections in a row must obey exactly the rules one hand-typed
        * paragraph obeys. `translated` is the question that decides which of the
        * two doors an outside surface should be taking in the first place.

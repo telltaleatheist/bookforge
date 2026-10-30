@@ -16,7 +16,7 @@ import { MetadataDialogComponent } from './components/metadata-dialog/metadata-d
 import { MintMetaDialogComponent } from './components/mint-meta-dialog/mint-meta-dialog.component';
 import { SimplifyDialogComponent } from './components/simplify-dialog/simplify-dialog.component';
 import { CleanDialogComponent } from './components/clean-dialog/clean-dialog.component';
-import { SweepDialogComponent } from './components/sweep-dialog/sweep-dialog.component';
+import { AskReviewDialogComponent } from './components/ask-review-dialog/ask-review-dialog.component';
 import { AnalysisDialogComponent } from './components/analysis-dialog/analysis-dialog.component';
 import { TranslateDialogComponent } from './components/translate-dialog/translate-dialog.component';
 import { CaptureNewDialogComponent } from './components/capture-new-dialog/capture-new-dialog.component';
@@ -120,7 +120,7 @@ const IS_MAC = navigator.platform.toUpperCase().includes('MAC');
     QueueBarComponent, ToastTrayComponent,
     OcrDialogComponent, ExportDialogComponent, TranslateDialogComponent,
     SimplifyDialogComponent, CleanDialogComponent,
-    MetadataDialogComponent, MintMetaDialogComponent, SweepDialogComponent,
+    MetadataDialogComponent, MintMetaDialogComponent, AskReviewDialogComponent,
     AnalysisDialogComponent,
     ConfirmDialogComponent, HostOpDialogComponent, HostStatusComponent,
     CaptureNewDialogComponent, CaptureProgressComponent, SetupWizardComponent,
@@ -252,15 +252,16 @@ const IS_MAC = navigator.platform.toUpperCase().includes('MAC');
       }
 
       <!--
-        THE SWEEP, WHICH IS THE ONE DIALOG HERE THAT IS NOT ABOUT THE POSITION.
-        The five above configure an act against the step somebody is standing on;
-        this one is about the BOOK PANE that is open, reads that pane's own replay
-        and pushes onto that pane's own stack (docs/SWEEP.md). It is mounted with
-        them because it is a modal and obeys the one-question-at-a-time rule with
-        them, and for no other reason.
+        THE REVIEW OF AN ASK RUN, WHICH IS THE ONE DIALOG HERE THAT IS NOT ABOUT
+        THE POSITION. The five above configure an act against the step somebody
+        is standing on; this one is about the BOOK PANE that is open: it lists
+        what the model marked and pushes the undo of any of it onto that pane's
+        own stack. It took the Sweep's place (Owen, 2026-10-29: "we dont need
+        sweep"). It is mounted with them because it is a modal and obeys the
+        one-question-at-a-time rule with them, and for no other reason.
       -->
-      @if (ui.sweepOpen()) {
-        <app-sweep-dialog />
+      @if (ui.askReviewOpen()) {
+        <app-ask-review-dialog />
       }
 
       <!--

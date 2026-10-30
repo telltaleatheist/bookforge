@@ -106,6 +106,7 @@ import type {
   UnappliedWarning,
   WorkspacePlan,
 } from './types';
+import type { AskProgress, AskRequest, AskSession } from './ask';
 
 /**
  * What the File menu asked for, since main cannot press a button in a tab.
@@ -941,6 +942,25 @@ export interface FoundryApi {
    * the caller's next state is main's answer and never its own optimistic copy,
    * which is what stops the window and the file disagreeing about an id.
    */
+  /**
+   * ASK THE DOCUMENT (2026-10-29) — a request put to the open book, carried out
+   * by a model with tools in main (electron/ask-document.ts). It MARKS blocks
+   * and revises words; it never writes the book. The renderer lands the result
+   * on the pane's own stack as one undo and keeps the run as a session.
+   *
+   * `start` answers with the run's id at once; the run arrives on `onProgress`,
+   * ending in a `done`, `failed` or `cancelled` frame. One run per book: a
+   * second `start` for the same project rejects with a sentence.
+   */
+  ask: {
+    start(request: AskRequest): Promise<string>;
+    cancel(runId: string): Promise<void>;
+    /** Every run kept for this project, oldest first. */
+    sessions(projectDir: string): Promise<AskSession[]>;
+    saveSession(projectDir: string, session: AskSession): Promise<void>;
+    onProgress(listener: (frame: AskProgress) => void): () => void;
+  };
+
   analysis: {
     readCategories(): Promise<CustomAnalysisCategory[]>;
     writeCategories(categories: CustomAnalysisCategory[]): Promise<CustomAnalysisCategory[]>;

@@ -121,6 +121,16 @@ export class JobModelComponent {
   readonly value = model<string>('');
   /** True once a list is read and a row is chosen from it. The dialog's Start waits on it. */
   readonly ready = output<boolean>();
+  /**
+   * ASK THE TOP-RANKED SERVER WHEN NOTHING IS PINNED. A job dialog has a
+   * run-target choosing the engine; the inspector's Ask section has no room
+   * for one and runs where the ranking says, so it asks with no pin (the
+   * hosted path's question) and is told which server answered on
+   * {@link listedOn}, which is where its run is then sent.
+   */
+  readonly topRanked = input(false);
+  /** The server the list was read from, by its registry name, each time one is read. */
+  readonly listedOn = output<string>();
 
   protected readonly offer = signal<JobModelOffer | null>(null);
   protected readonly problem = signal<string | null>(null);
@@ -129,7 +139,8 @@ export class JobModelComponent {
   private readonly target = computed<string | null | undefined>(() => {
     if (hosted()) return null;
     const pinned = this.server();
-    return pinned.length > 0 ? pinned : undefined;
+    if (pinned.length > 0) return pinned;
+    return this.topRanked() ? null : undefined;
   });
   protected readonly asking = computed(() => this.target() !== undefined);
   protected readonly fieldId = computed(() => `job-model-${this.kind()}`);
@@ -168,6 +179,7 @@ export class JobModelComponent {
       if (ticket !== this.asked) return;
       this.value.set(offer.preselected);
       this.offer.set(offer);
+      this.listedOn.emit(offer.list.server);
     } catch (err) {
       if (ticket !== this.asked) return;
       this.problem.set(err instanceof Error ? err.message : String(err));

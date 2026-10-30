@@ -17,6 +17,7 @@ import { LedgerService } from '../../core/ledger.service';
 import { ProjectsService } from '../../core/projects.service';
 import { BookStacksService, type BookStack } from '../../core/book-stacks.service';
 import { StageService } from '../../core/stage.service';
+import { AskPanelComponent } from '../ask-panel/ask-panel.component';
 
 /**
  * The inspector — what the focused book IS, down the right-hand side.
@@ -52,6 +53,7 @@ import { StageService } from '../../core/stage.service';
  */
 @Component({
   selector: 'app-inspector',
+  imports: [AskPanelComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     @if (projectDir() !== null || sheet() !== null) {
@@ -408,6 +410,17 @@ import { StageService } from '../../core/stage.service';
               </div>
             }
           </section>
+
+          <!--
+            ── Ask — a request put to the book, carried out by a model ─────────
+
+            Below the three panels, on this column's rule that new sections go
+            under the old ones. It draws a run held by AskService and lands what
+            the model marked onto this same pane's stack, as one undo.
+          -->
+          @if (!viewOnly()) {
+            <app-ask-panel [pane]="pane" />
+          }
         }
 
         <!--
@@ -846,6 +859,9 @@ export class InspectorComponent {
     const tab = this.stage.activeDocument();
     return tab === null || tab.kind !== 'book' ? null : this.stacks.bookStackFor(tab.id);
   });
+
+  /** A finished export shown read-only: no stack to land an Ask run on. */
+  protected readonly viewOnly = computed(() => this.stage.activeDocument()?.viewOnly === true);
 
   /**
    * The book as that pane is drawing it — the file with the chain and the

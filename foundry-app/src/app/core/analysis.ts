@@ -1,14 +1,13 @@
 import type { ReplayedRow } from '@shared/ops';
 import type { AnalysisFindingRow } from '@shared/types';
 
-import { SENTENCE_REACH, quoteAround, type SweepQuote } from './sweep';
-
 /**
  * THE ANALYSIS'S ARITHMETIC — a stored report, laid over the book on the paper.
  *
  * ── Why it is a module and not methods on the panel ─────────────────────────
  *
- * `sweep.ts` next door, deliberately and for the same three reasons. Everything
+ * The sweep's module was the model for it (the sweep was retired 2026-10-29,
+ * for Ask), and the three reasons were its. Everything
  * here is a pure function of a list of rows and a list of report rows; the panel
  * holds the sitting — which categories are switched off, which row the pointer
  * is over — and nothing else. Keeping the mapping out of the component is what makes the
@@ -17,7 +16,7 @@ import { SENTENCE_REACH, quoteAround, type SweepQuote } from './sweep';
  * the lit runs on the paper are the same list, so they can never disagree about
  * which words are flagged.
  *
- * IT LIVES UNDER `core/` AND NOT UNDER `shared/`, on `sweep.ts`'s own argument.
+ * IT LIVES UNDER `core/` AND NOT UNDER `shared/`, on the sweep's old argument.
  * Nothing in the main process maps a report onto rows: what crosses the boundary
  * is the report itself (`AnalysisReading`), whose shape is over there. A copy of
  * this in `shared/` would be compiled by the electron program for no consumer.
@@ -37,8 +36,8 @@ import { SENTENCE_REACH, quoteAround, type SweepQuote } from './sweep';
  * — so the only test available is whether the offsets still land INSIDE the row's
  * current text. A hit whose slice is empty or out of range is reported as
  * unplaced; a hit whose slice now covers different words is drawn, and it is
- * drawn over the wrong words. The sweep dodges this entirely by rescanning the
- * live text on every open; an analysis cannot, because rescanning would mean
+ * drawn over the wrong words. A pattern search dodges this entirely by rescanning
+ * the live text on every open; an analysis cannot, because rescanning would mean
  * re-running an hour of model time.
  *
  * WHAT MAKES THAT ACCEPTABLE RATHER THAN A DEFECT is what the report is for: it
@@ -49,7 +48,69 @@ import { SENTENCE_REACH, quoteAround, type SweepQuote } from './sweep';
  */
 
 /** The quotation a row draws, cut at the span so the middle can be lit. */
-export type AnalysisQuote = SweepQuote;
+export interface AnalysisQuote {
+  before: string;
+  hit: string;
+  after: string;
+}
+
+/**
+ * How far a row's quotation reaches on either side of the span. It came from
+ * the sweep (retired 2026-10-29), whose census quoted the same way; it lives
+ * here now because the analysis panel is the one surface still quoting.
+ */
+export const SENTENCE_REACH = 140;
+
+/**
+ * The words around a span, cut into three so the middle can be lit.
+ *
+ * ── Sentence first, then the leash ──────────────────────────────────────────
+ *
+ * The reach is a SENTENCE where one can be found: back to the last full stop that
+ * had whitespace after it, forward to the next one, and a line break in either
+ * direction is a harder boundary than any punctuation mark. Where no sentence
+ * ends within the leash — a block that is one long unpunctuated run, which OCR
+ * produces more often than prose does — the leash wins and the quotation says so
+ * with an ellipsis rather than growing to the size of the paragraph.
+ *
+ * WHAT THIS DRAWS IS THE REPLAYED SOURCE STRING, inline markers and all, which is
+ * the same string the double-click editor puts in front of somebody; a quotation
+ * that silently hid a footnote marker standing next to the span would be lying
+ * about the neighbourhood.
+ */
+export function quoteAround(text: string, start: number, end: number, reach: number): AnalysisQuote {
+  const floor = Math.max(0, start - reach);
+  let from = floor;
+  for (let i = start - 1; i >= floor; i -= 1) {
+    const ch = text.charAt(i);
+    if (ch === '\n') { from = i + 1; break; }
+    if (STOPS.includes(ch) && isSpace(text.charAt(i + 1))) { from = i + 1; break; }
+  }
+  const ceiling = Math.min(text.length, end + reach);
+  let to = ceiling;
+  for (let i = end; i < ceiling; i += 1) {
+    const ch = text.charAt(i);
+    if (ch === '\n') { to = i; break; }
+    if (STOPS.includes(ch) && (i + 1 >= text.length || isSpace(text.charAt(i + 1)))) {
+      to = i + 1;
+      break;
+    }
+  }
+  const before = text.slice(from, start).replace(/^\s+/, '');
+  const after = text.slice(end, to).replace(/\s+$/, '');
+  return {
+    before: (from > 0 ? '… ' : '') + before,
+    hit: text.slice(start, end),
+    after: after + (to < text.length ? ' …' : ''),
+  };
+}
+
+/** What ends a sentence, for the purpose of quoting one. */
+const STOPS = '.!?';
+
+function isSpace(ch: string): boolean {
+  return ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r';
+}
 
 /*
  * THE TIERS ARE GONE (Owen, 2026-09-25): *"we wont have two separate categories
@@ -318,9 +379,6 @@ export function place(
  * under the pointer for as long as the hand holds still: it is the book, in the
  * column beside the list, with the words lit in place. A hover preview of a
  * paragraph you are one click from reading is a worse copy of the reading.
- *
- * `sweep.widen` is untouched and is still the sweep's — that card is a modal over
- * the page and has no book beside it to travel to, which is the difference.
  */
 
 /** One stretch of a block's text that the paper draws lit. */

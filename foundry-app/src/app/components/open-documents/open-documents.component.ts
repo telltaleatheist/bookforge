@@ -400,21 +400,6 @@ import { ActionMenuComponent } from '../action-menu/action-menu.component';
                 stroke-width="1.8" stroke-linecap="round" />
         </symbol>
         <!--
-          A BROOM, FOR THE SWEEP. The one mark in this sheet that names a
-          GESTURE rather than a thing: the census modal finds a pattern across
-          the whole book and cuts or keeps each match, and every noun-shaped
-          candidate for it (a magnifier, a page, a pair of brackets) reads as
-          "search" or "text" — which is what the tile would already have been
-          taken for. Same 24-unit box, same 1.8 stroke, same round joins as
-          every mark above it, because the argument for a sheet is that the
-          marks are one set.
-        -->
-        <symbol id="ft-sweep" viewBox="0 0 24 24">
-          <path d="M14.5 3.5l6 6 M17.5 6.5l-7 7 M10.5 13.5l-6 3 3 3 3-6 M4.5 16.5l3 3"
-                fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
-                stroke-linejoin="round" />
-        </symbol>
-        <!--
           A MAGNIFIER, FOR THE ANALYSIS — and it is the mark the sweep turned
           down, taken up here on the same argument read the other way. That one
           named a GESTURE and every noun-shaped candidate for it read as "search",

@@ -255,7 +255,7 @@ export async function jobModelOffer(kind: JobModelKind, server: string | null): 
 }
 
 async function jobModelsOn(server: string | null): Promise<JobModelChoices> {
-  const name = server !== null && server.length > 0 ? server : firstRankedCrucible();
+  const name = server !== null && server.length > 0 ? server : topRankedCrucible();
   const entry = crucibleServerNamed(name);
   if (entry === null) {
     throw new Error(
@@ -275,8 +275,12 @@ async function jobModelsOn(server: string | null): Promise<JobModelChoices> {
   return jobModelChoices(entry.name, local, cloud, cloudUnreadable);
 }
 
-/** The top-ranked Crucible slot's name, or the reason there is none, by name. */
-function firstRankedCrucible(): string {
+/**
+ * The top-ranked Crucible slot's name, or the reason there is none, by name.
+ * Exported for Ask (electron/ask-document.ts): its dropdown reads its list with
+ * no server pinned, and the run must then go to the same machine.
+ */
+export function topRankedCrucible(): string {
   const available = slotAvailability();
   if (available.refusal !== null) throw new Error(available.refusal.sentence);
   const first = available.slots.find((slot) => slot.kind === 'crucible');

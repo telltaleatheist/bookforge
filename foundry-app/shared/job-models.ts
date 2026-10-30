@@ -39,8 +39,12 @@ export const JOB_MODEL_CEILING_B = 27;
 /** The value AUTOMATIC carries: no `chosenModel` on the request. */
 export const AUTOMATIC_JOB_MODEL = '';
 
-/** The four kinds of job a person picks a model for. */
-export type JobModelKind = 'clean' | 'translate' | 'simplify' | 'analysis';
+/**
+ * The kinds of job a person picks a model for. `ask` is a question put to the
+ * book from the inspector (Foundry's Ask, 2026-10-29): a tool loop rather than a
+ * queued job, but the same dropdown and the same remembered last choice.
+ */
+export type JobModelKind = 'clean' | 'translate' | 'simplify' | 'analysis' | 'ask';
 
 export interface JobModelChoice {
   /** What the request carries as `chosenModel`; `''` is AUTOMATIC. */

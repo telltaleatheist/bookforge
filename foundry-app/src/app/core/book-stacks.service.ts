@@ -119,6 +119,14 @@ export interface BookStack {
   /** Ops onto the same stack the gestures on the paper push onto. */
   push(ops: readonly BookOp[]): void;
   /**
+   * SEVERAL OPS AS ONE GESTURE, described as `what` — one press of undo takes
+   * them all back. The viewer's own `pushAsOne`, handed out for Ask: a run that
+   * struck four hundred study questions is one decision the person made by
+   * pressing Ask, and four hundred presses of undo would be the stack
+   * disagreeing with them about that.
+   */
+  pushGroup(what: string, ops: readonly BookOp[]): void;
+  /**
    * TRUE WHERE THE WORDS OF A BLOCK ARE NOT AN OP — a position standing under a
    * translation or a simplification.
    *
@@ -130,9 +138,9 @@ export interface BookStack {
    * records file still held the machine's, and the next materialisation would
    * answer with the machine's (`commit`, book-view.component.ts).
    *
-   * SO A SURFACE OUTSIDE THE VIEWER HAS TO BE ABLE TO ASK, because the sweep does
+   * SO A SURFACE OUTSIDE THE VIEWER HAS TO BE ABLE TO ASK, because Ask does
    * both kinds of edit in one press and has to know which door each half takes
-   * before it draws the button that lands them (docs/SWEEP.md §2.7).
+   * before it lands them.
    */
   translated(): boolean;
   /**

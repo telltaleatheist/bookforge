@@ -1420,7 +1420,7 @@ async function placeResidentModel(
   say(listed.resident
     ? `Asking ${slot.name} for its turn…`
     : `Asking ${slot.name} for its turn and loading ${selected}…`);
-  const session = await openSession(engine, selected, capability, slot.name, say, signal);
+  const session = await openSession(engine, { model: selected }, capability, slot.name, say, signal);
 
   /*
    * ── THE DEPTH IS ASKED FOR AFTER THE MODEL IS RESIDENT ─────────────────
@@ -1621,6 +1621,11 @@ function headerMapFor(entry: CrucibleServerEntry, capability: CapabilityClass): 
 export interface HeldSession {
   /** The server's id for it (`ses-…`), for the log line and the in-flight ledger. */
   readonly id: string;
+  /**
+   * The model it opened with: the one named, or the one the server chose for a
+   * ceiling ({@link SessionPick}). Null only when the server did not say.
+   */
+  readonly model: string | null;
   /** Close the session and give the machine back. Idempotent; never throws. */
   release(): Promise<void>;
 }
@@ -1635,28 +1640,40 @@ const SESSION_TOUCH_MS = 60_000;
 const SESSION_MAX_WAIT_S = 86_400;
 
 /**
+ * WHICH MODEL A SESSION OPENS WITH: one named, or the server's own pick for the
+ * act capped at a ceiling in billions of parameters (Crucible's `max_params_b`,
+ * which only ever lowers its pick).
+ */
+export type SessionPick = { readonly model: string } | { readonly maxParamsB: number };
+
+/**
  * OPEN THE SESSION — wait in the server's line, then keep it present.
  *
  * `entry` IS THE ENGINE-ADDRESSED ONE, resolved by `placeOnCrucible`: a session
  * is a turn on a CARD and an orchestrator has none (PHASE17 §1).
+ *
+ * `act` IS THE LABEL THE SERVER SHOWS THE RUN UNDER — a placement's capability
+ * class, or `ask` for a question about a book (electron/ask-document.ts), which
+ * is a run of its own and not one of the six classes; Crucible takes any one
+ * lowercase word as a session's act.
  *
  * A REFUSAL PROPAGATES AS A THROW and is read by `interpretFailure` like every
  * other one on this path: a session that never opened throws
  * `CrucibleSessionClosed` with its reason, and an aborted wait (a Stop) throws
  * the abort, having already left the line.
  */
-async function openSession(
+export async function openSession(
   entry: CrucibleServerEntry,
-  model: string,
-  capability: CapabilityClass,
+  pick: SessionPick,
+  act: string,
   slotName: string,
   say: PlacementProgress,
   signal?: AbortSignal,
 ): Promise<HeldSession> {
   const client = clientFor(entry);
   const session: CrucibleSession = await client.session({
-    act: capability,
-    model,
+    act,
+    ...pick,
     idleS: SESSION_IDLE_S,
     maxWaitS: SESSION_MAX_WAIT_S,
     onQueue: ({ position, of }) => {
@@ -1707,8 +1724,10 @@ async function openSession(
       console.error(`[slots] ${entry.name} ended this run's session ${session.id} (${end.reason}): ${end.message}`);
     }
   });
+  const model = session.model;
   return {
     id: session.id,
+    model,
     async release(): Promise<void> {
       if (ended) return;
       ended = true;
@@ -1717,7 +1736,7 @@ async function openSession(
         await session.close();
       } catch (err) {
         console.error(
-          `[slots] the session on ${model} at ${entry.name} could not be closed (it idles out in `
+          `[slots] the session on ${model ?? act} at ${entry.name} could not be closed (it idles out in `
           + `${SESSION_IDLE_S}s): ${err instanceof Error ? err.message : String(err)}`,
         );
       }

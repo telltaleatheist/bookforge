@@ -66,6 +66,8 @@ import { readCapability } from './crucible-dispatch';
 import { readEngineSettings, testUpstream, writeEngineSettings } from './crucible-settings';
 import { crucibleFaultWords, crucibleRunState, startCrucible } from './crucible-start';
 import { engineCatalog, jobModelOffer, pullSubject, rememberJobModel, removeModel } from './crucible-models';
+import { cancelAsk, readAskSessions, saveAskSession, startAsk } from './ask-document';
+import type { AskRequest, AskSession } from '../shared/ask';
 import type { JobModelKind } from '../shared/job-models';
 import type {
   SettingsDocument,
@@ -3341,6 +3343,27 @@ export function registerIpc(): void {
         analysisCategories: Array.isArray(categories) ? categories : [],
       }).analysisCategories,
   );
+
+  /*
+   * ── ASK THE DOCUMENT — a model works through the book with tools ──────────
+   *
+   * `ask:start` ANSWERS WITH THE RUN'S ID AT ONCE and the run arrives on
+   * `ask:progress` — a run is minutes of a model's work, and an invoke held that
+   * long is one the renderer cannot even be told about (the pull door's rule).
+   * Every frame carries the project, so a pane that was closed and opened again
+   * still knows which frames are its own. NOTHING HERE WRITES THE BOOK: the
+   * marks come back as a list and the renderer lands them on its own stack
+   * (electron/ask-document.ts says why).
+   *
+   * THE SESSIONS ARE THE RECORD THE REVIEW CARD READS after a reload, written
+   * by the renderer once a run has landed, with only what landed.
+   */
+  ipcMain.handle('ask:start', (_event, request: AskRequest) =>
+    startAsk(request, (frame) => { broadcast('ask:progress', frame); }));
+  ipcMain.handle('ask:cancel', (_event, runId: string) => { cancelAsk(runId); });
+  ipcMain.handle('ask:sessions', (_event, projectDir: string) => readAskSessions(projectDir));
+  ipcMain.handle('ask:save-session', (_event, projectDir: string, session: AskSession) =>
+    saveAskSession(projectDir, session));
 
   ipcMain.handle('library:dir', () => readAppSettings().libraryDir);
   ipcMain.handle('library:set', (_event, dir: string) => {

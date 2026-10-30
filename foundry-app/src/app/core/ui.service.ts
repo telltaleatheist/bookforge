@@ -110,7 +110,8 @@ export class UiService {
   /** The Metadata dialog — the book's own record, not the app's idea of it. */
   readonly metadataOpen = signal(false);
   /**
-   * The Sweep — a census of one pattern across the open book, verdicted (Wave 45).
+   * The review of an Ask run — what the model marked, and the undo of any of it
+   * (2026-10-29; it took the place of the Sweep, which Owen retired).
    *
    * IT IS A DIALOG LIKE THE FIVE ABOVE AND IT IS ABOUT SOMETHING ELSE ENTIRELY,
    * which is worth saying here because the difference decides what it may do.
@@ -118,12 +119,12 @@ export class UiService {
    * an export, a record — and each of them consumes the ledger, which is why each
    * is asked about unapplied work before it opens. This one stages MORE unapplied
    * work onto the very pane the person is standing in front of: it reads
-   * `BookStack.view()`, it lands `BookStack.push()`, and the tray's Apply is
+   * `BookStack.view()`, it lands `BookStack.pushGroup()`, and the tray's Apply is
    * untouched by it. So there is no `clearedHere` in front of it and there must
-   * not be one (docs/SWEEP.md §1) — a card asking somebody to apply their edits
+   * not be one — a card asking somebody to apply their edits
    * before making more of the same kind is a card that has misread its own act.
    */
-  readonly sweepOpen = signal(false);
+  readonly askReviewOpen = signal(false);
   /**
    * The Analysis dialog — read this book against the categories (docs/ANALYSIS.md).
    *
@@ -134,7 +135,7 @@ export class UiService {
    * once at the widest calibrated net and strictness is three buttons on the PANEL,
    * so changing your mind costs a click and never an hour.
    *
-   * AND IT TAKES NO `clearedHere`, which puts it with the sweep rather than with
+   * AND IT TAKES NO `clearedHere`, which puts it with the Ask review rather than with
    * the other four. The guard protects acts that CONSUME a rendering; this run
    * reads the book file and writes a report beside it, consuming no rendering and
    * moving no pointer (docs/ANALYSIS.md §7, decided explicitly).
@@ -395,7 +396,7 @@ export class UiService {
     this.cleanOpen,
     this.metadataOpen,
     this.captureNewOpen,
-    this.sweepOpen,
+    this.askReviewOpen,
     this.analysisOpen,
     this.confirmOpen,
   ] as const;
@@ -514,12 +515,12 @@ export class UiService {
     this.mintMetaOpen.set(null);
   }
 
-  openSweep(): void {
-    this.only(this.sweepOpen);
+  openAskReview(): void {
+    this.only(this.askReviewOpen);
   }
 
-  closeSweep(): void {
-    this.sweepOpen.set(false);
+  closeAskReview(): void {
+    this.askReviewOpen.set(false);
   }
 
   openAnalysis(): void {
