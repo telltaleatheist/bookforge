@@ -476,13 +476,10 @@ import { UnappliedService } from '../../core/unapplied.service';
           paper (docs/ANALYSIS.md §8), which is why the tile opens a dialog and
           the result opens a panel.
 
-          GRAYED HOSTED, and it is the only tile here whose gate mentions the host
-          for a reason other than a missing surface. A hosted window's queue is the
-          host's, it takes the two request shapes its vendored snapshot declares,
-          and an analysis is a third -- so ordering one there could only start an
-          hour of GPU with no row anybody in either window can see. The door
-          refuses the same way (\`queue:enqueue-analysis\`, electron/ipc.ts); this is
-          the half a person meets before they press.
+          OFFERED HOSTED TOO since 2026-10-30 (Owen: *"analysis is grayed out in
+          foundry/bookforge"*): the host's queue learned the ranking and the check,
+          and the pair waits there like a triaged cleanup (\`enqueueAnalysis\`,
+          electron/job-queue.ts).
         -->
         <button
           class="menu-item"
@@ -1511,9 +1508,6 @@ export class ActionMenuComponent {
    * question nobody had reached.
    */
   protected analysisTitle(): string {
-    if (hosted()) {
-      return 'Analysis runs in Foundry itself — open this book there to read it against the categories';
-    }
     const gate = this.gates.gate('analysis');
     return gate.lit
       ? 'Read this book against the categories and list what it finds beside the page'
@@ -1625,23 +1619,20 @@ export class ActionMenuComponent {
   }
 
   /**
-   * LIT WHERE A TRANSLATION WOULD BE, AND NEVER HOSTED.
+   * LIT WHERE A TRANSLATION WOULD BE, hosted or not.
    *
-   * The first half asks the same predicate the two tiles above it ask, and that
-   * is not borrowing — it is Owen's own rule that the offer and the possibility
-   * are one fact. An analysis reads exactly what a translation reads (the
-   * position's materialised book file, every op replayed in), so "is there a book
-   * at this position" has one answer and one function.
+   * It asks the same predicate the two tiles above it ask, and that is not
+   * borrowing — it is Owen's own rule that the offer and the possibility are one
+   * fact. An analysis reads exactly what a translation reads (the position's
+   * materialised book file, every op replayed in), so "is there a book at this
+   * position" has one answer and one function.
    *
-   * The second half is this tile's own, and it is a refusal rather than a
-   * capability: a hosted window's queue belongs to the host, whose vendored copy
-   * of the API declares two request shapes and not this third one. A row it cannot
-   * label, lane or spell a command line for is worse than no row, and Foundry's
-   * own queue is invisible in a hosted window — so the act is not offered there.
-   * It reaches BookForge by the normal re-vendor (docs/ANALYSIS.md §9).
+   * IT WAS NEVER OFFERED HOSTED until 2026-10-30, because the host's queue had not
+   * learned the analysis pair. It has (`enqueueAnalysis`, electron/job-queue.ts),
+   * and the one hosted case that still cannot work — a host with no queue — is
+   * refused by the door, by name.
    */
   protected canAnalyse(): boolean {
-    if (hosted()) return false;
     const tab = this.stage.activeDocument();
     if (tab === null) return false;
     const project = this.projects.projectFor(tab.path);

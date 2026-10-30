@@ -2423,27 +2423,44 @@ export function enqueueAnalysis(
   parentStep: string | null = null,
 ): { rank: Job | null; analysis: Job } {
   /*
-   * ── IT DOES NOT ROUTE, AND THAT IS SAID HERE RATHER THAN HALF-WIRED ───────
+   * ── IT ROUTES, AS THE TRIAGED CLEANUP ROUTES (2026-10-30) ──────────────────
    *
-   * `FoundryHostQueue.enqueue` takes the two request shapes the host's own
-   * vendored copy of `shared/api.ts` declares, and an analysis is a third one it
-   * has never heard of (docs/BOOKFORGE-HANDOFF.md §8 — `app/` is a sealed
-   * snapshot laid down at a named commit and never hand-edited on that side). A
-   * request pushed at a queue whose types predate it would be a row the host
-   * cannot label, cannot lane and cannot spell a command line for.
+   * Until this date the act was gated off hosted, because the host's queue had
+   * never heard of an analysis and a row it could not label or lane was worse
+   * than no row. Owen, 2026-10-30: *"analysis is grayed out in
+   * foundry/bookforge"* — so the host learned the two kinds (BookForge's
+   * foundry-host-queue.ts and queue-steps/foundry-job.ts: `analysis-rank` on the
+   * decide act, `analysis` on the analysis act) and the pair is handed over the
+   * way `enqueueTriagedCleanup` hands its pair: the ranking first, then the
+   * analysis with the HOST'S id for the ranking as its `after`, so the host's
+   * own pump runs them in order and a failed ranking takes the check with it.
    *
-   * SO THE TILE IS GATED OFF HOSTED (`canAnalyse`, action-menu.component.ts) and
-   * the door refuses by name (`queue:enqueue-analysis`, electron/ipc.ts) — two
-   * halves of one rule, because a summons with nobody home and a home nobody can
-   * summon are how a feature ends up half-built. Running it in Foundry's own
-   * queue instead would be worse than refusing: hosted there is no Foundry queue
-   * surface at all (Owen, 2026-08-21), so the job would start, hold the card for
-   * an hour and be invisible in both windows.
-   *
-   * This reaches BookForge by the normal re-vendor (docs/ANALYSIS.md §9), and the
-   * function that will route it is this one, with a `hostQueue()` branch at the
-   * top exactly like `enqueueTextPass`'s.
+   * THE SECOND PRESS IS ANSWERED FROM THE HOST'S ROWS (`liveOnTheShelf`), the
+   * cleanup's rule: the report is the product and the cache, and two runs
+   * appending verdicts into one file would interleave two processes' answers.
    */
+  const host = hostQueue();
+  if (host !== null) {
+    const product = productOf(request);
+    const standing = liveOnTheShelf(product);
+    if (standing !== undefined) {
+      const behind = standing.after === undefined
+        ? undefined
+        : shelfJobs().find((row) => row.id === standing.after && row.kind === 'analysis-rank');
+      return { rank: behind ?? null, analysis: standing };
+    }
+    const hostRanks = analysisRankFileFor(product);
+    const rank = host.enqueue({
+      kind: 'analysis-rank',
+      inputPath: request.inputPath,
+      outputPath: hostRanks,
+      reportPath: product,
+      categories: request.categories,
+      ...(request.at !== undefined ? { at: request.at } : {}),
+    }, parentStep);
+    const analysis = host.enqueue({ ...request, ranksPath: hostRanks, after: rank.id }, parentStep);
+    return { rank, analysis };
+  }
   const outputPath = productOf(request);
   const already = pendingFor(outputPath);
   if (already) {

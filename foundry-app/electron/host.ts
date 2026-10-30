@@ -19,7 +19,8 @@
  * writes it and that sits at the top of everything.
  */
 import type {
-  CleanTriageRequest, ExportLanding, FoundryJobRow, ImportLanding, JobRequest, TextPassRequest,
+  AnalysisRankRequest, AnalyzeRequest, CleanTriageRequest, ExportLanding, FoundryJobRow, ImportLanding,
+  JobRequest, TextPassRequest,
 } from '../shared/types';
 // A TYPE, and it has to stay one: `host-ops.ts` pushes at windows and therefore
 // imports `window.ts`, which is exactly the weight this leaf exists to keep out
@@ -151,8 +152,20 @@ export interface FoundryHostQueue {
    * that did not ship the feature — and a host on an older snapshot that does
    * receive one files a row whose kind its tables do not name.
    */
+  /*
+   * ── AND THE ANALYSIS PAIR (2026-10-30) ────────────────────────────────────
+   *
+   * `AnalysisRankRequest` (kind `analysis-rank`) and `AnalyzeRequest` (kind
+   * `analysis`), sent as a pair by `enqueueAnalysis` exactly as the triage and
+   * its cleanup are: the ranking first, then the analysis with the host's id for
+   * the ranking as its `after`. What a host has to learn is the same list: the
+   * lane (the ranking on the decide act, the check on the analysis act), the
+   * labels, the progress lines (`analyze: rank n/m`, `analyze: verify n/m
+   * (<category>)`) and that the ranking lands nothing while the analysis lands a
+   * report under the step it was run against.
+   */
   enqueue(
-    request: JobRequest | TextPassRequest | CleanTriageRequest,
+    request: JobRequest | TextPassRequest | CleanTriageRequest | AnalysisRankRequest | AnalyzeRequest,
     parentStep: string | null,
   ): FoundryJobRow;
   /**

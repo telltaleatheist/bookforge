@@ -326,11 +326,10 @@ export type TextPassKind = 'clean' | 'translate' | 'simplify' | 'analysis';
  * asserts the served name onto the request before Foundry runs it, so a
  * translation can never end up recorded against the cleanup's model.
  *
- * `analysis` is here because it is the third act Owen named, not because it
- * arrives yet: no `analysis` row crosses the host queue today (`FoundryJobKind`,
- * electron/foundry-host-queue.ts, is `epub|txt|pdf|read|translate|simplify|clean`),
- * so Foundry runs it in its own queue. When it does cross, it joins the 27B row
- * it already belongs to rather than needing a decision that day.
+ * `analysis` is here because it is the third act Owen named. Since 2026-10-30 it
+ * crosses the host queue as a pair (`analysis-rank` on a decide model, then
+ * `analysis`; `FoundryJobKind`, electron/foundry-host-queue.ts), and the check
+ * belongs on the 27B row it was already given here.
  */
 export function profileForKind(kind: TextPassKind): TextModelProfile {
   switch (kind) {

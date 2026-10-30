@@ -136,7 +136,7 @@ import {
   writePdfMetadata,
 } from './engine';
 import { catalogForThisMachine, onEnvInstallProgress } from './env-install';
-import { hosted, hostMintMeta } from './host';
+import { foundryHost, hosted, hostMintMeta } from './host';
 import {
   actOnHostNode, hostNodesFor, hostOffers, hostOpensStatus, hostStatus,
   invokeHostOperation, openHostStatus,
@@ -3523,29 +3523,21 @@ export function registerIpc(): void {
     return queue.enqueueTriagedCleanup(request, await madeFrom(request, request.recordsPath));
   });
   /*
-   * AN ANALYSIS IS QUEUED THE SAME WAY AND REFUSED HOSTED, which is the one place
-   * this door differs from the one above it.
+   * AN ANALYSIS IS QUEUED THE SAME WAY, and since 2026-10-30 a hosted window
+   * queues it too — in the HOST'S queue, which learned the pair (`enqueueAnalysis`,
+   * electron/job-queue.ts; Owen: *"analysis is grayed out in foundry/bookforge"*).
    *
-   * `enqueueAnalysis` does not route (electron/job-queue.ts carries the argument
-   * in full): the host's queue takes the two request shapes its vendored copy of
-   * `shared/api.ts` declares, and this is a third.
-   *
-   * SO THE TEST IS `hosted()` AND NOT "is a host queue registered", which is the
-   * one thing about this refusal worth reading twice. Owen's ruling, 2026-08-21:
-   * *"when im in bookforge, the shelf shouldnt appear at all."* A hosted window
-   * has no Foundry queue surface whether or not the host registered a queue of
-   * its own — so falling back to Foundry's own scheduler would start an hour of
-   * GPU with no row anybody in either window can see, cancel or start. The tile
-   * is gated off there as well; a refusal met before a press is worth more than
-   * the same refusal after, and this is the half that makes the rule true
-   * whatever route reached it.
+   * THE ONE REFUSAL LEFT is a hosted window whose host registered NO queue.
+   * Owen's ruling, 2026-08-21: *"when im in bookforge, the shelf shouldnt appear
+   * at all"* — so there Foundry's own scheduler would start an hour of GPU with
+   * no row anybody in either window can see, cancel or start. A host that keeps a
+   * queue is the case that works; one that does not is said by name.
    */
   ipcMain.handle('queue:enqueue-analysis', async (_event, request: AnalyzeRequest) => {
-    if (hosted()) {
+    if (hosted() && foundryHost()?.hostQueue === undefined) {
       throw new Error(
-        'Analysis is not available in this window yet — the app Foundry is running inside keeps its '
-        + 'own queue, and it has not learned about analysis runs. Open the book in Foundry itself to '
-        + 'analyse it.',
+        'Analysis is not available in this window — the app Foundry is running inside keeps no queue '
+        + 'for it to wait in. Open the book in Foundry itself to analyse it.',
       );
     }
     // The input again, because a request can arrive with any `inputPath` at all

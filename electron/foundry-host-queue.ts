@@ -80,13 +80,21 @@ import type { QueueJob, QueueStep } from '../shared/queue/engine-types';
  * badly and contends for the wrong pool — which is why both members are added
  * here, in `resourceFor` (queue-steps/foundry-job.ts) and in `labelFor` together.
  *
- * `mint` and `analysis` are theirs and are NOT here: neither is routed across the
- * host queue today. The list is what we have seen pressed, and a kind arriving
- * that is not in it is a compile error the day somebody wires it, which is the
- * loud failure this house rule exists for.
+ * `mint` is theirs and is NOT here: it is not routed across the host queue. The
+ * list is what we have seen pressed, and a kind arriving that is not in it is a
+ * compile error the day somebody wires it, which is the loud failure this house
+ * rule exists for.
+ *
+ * `analysis-rank` and `analysis` ARRIVED 2026-10-30, as a pair (the ranking, then
+ * the check with the ranking's id as its `after`), when Foundry stopped graying
+ * Analysis out in a hosted window. They are GPU rows (`resourceFor`), the ranking
+ * on the decide class and the check on the analysis class (`crucibleClass`),
+ * labelled in `labelFor`; their product is their `outputPath` (the rank file, the
+ * report), so `productOf` needs nothing.
  */
 export type FoundryJobKind =
-  'epub' | 'txt' | 'pdf' | 'read' | 'translate' | 'simplify' | 'clean' | 'clean-triage';
+  'epub' | 'txt' | 'pdf' | 'read' | 'translate' | 'simplify' | 'clean' | 'clean-triage'
+  | 'analysis-rank' | 'analysis';
 
 /**
  * THE THREE TEXT PASSES, as one question — their `isTextPassRequest`.
@@ -1272,6 +1280,10 @@ function labelFor(request: FoundryJobRequest): string {
      * step reads the same in the hosted window and in this queue.
      */
     case 'clean-triage': return 'Clean text — triage';
+    // The analysis pair (foundry 2026-10-30): every sentence scored on a decide
+    // model, then each ranked passage checked, landing a report on its own step.
+    case 'analysis-rank': return 'Analysis — ranking';
+    case 'analysis': return 'Analysis';
     case 'simplify': return 'Simplify';
     /*
      * A SIMPLIFY USED TO BE A TRANSLATE STEP WEARING A REWRITE, and until foundry

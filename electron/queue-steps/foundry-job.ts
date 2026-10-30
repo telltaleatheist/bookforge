@@ -105,7 +105,7 @@ function resourceFor(config: Record<string, unknown>): StepResource {
   const request = (config as unknown as FoundryJobStepConfig).request;
   const kind = request?.kind;
   return kind === 'read' || kind === 'translate' || kind === 'simplify' || kind === 'clean'
-    || kind === 'clean-triage'
+    || kind === 'clean-triage' || kind === 'analysis-rank' || kind === 'analysis'
     ? 'gpu'
     : 'cpu';
 }
@@ -212,8 +212,9 @@ export const foundryJobStep: StepModule = {
    * A READ IS `pages`. A cleanup/translate/simplify carries its own text class.
    * A RENDERING (epub/txt/pdf) names NONE and answers `null` — it travels
    * nowhere (`cpu`, `resourceFor`), asks no model, and has no class to be
-   * matched against a server's capability. `analysis` is not a Foundry request
-   * kind here — that class belongs to the `book-analysis` step.
+   * matched against a server's capability. An ANALYSIS arrives as a pair
+   * (foundry 2026-10-30): the ranking asks a DECIDE model, the check behind it
+   * asks the `analysis` class.
    */
   crucibleClass: (config: Record<string, unknown>): string | null => {
     const kind = (config as unknown as FoundryJobStepConfig).request?.kind;
@@ -225,6 +226,8 @@ export const foundryJobStep: StepModule = {
       case 'clean-triage': return 'decide';
       case 'translate': return 'translate';
       case 'simplify': return 'simplify';
+      case 'analysis-rank': return 'decide';
+      case 'analysis': return 'analysis';
       default: return null;
     }
   },
@@ -296,16 +299,16 @@ export const foundryJobStep: StepModule = {
      * already agreed is a language act — the day a fourth arrives, this line is
      * the compile error.
      *
-     * THREE AND NOT FOUR: `analysis` is a text act everywhere else in this seam
-     * (it is one of crucible's four capability classes and has its own
-     * capability row on every server), but no press
-     * in the hosted window routes one across the host queue today — `analysis`
-     * is deliberately absent from `FoundryJobKind`. RULING OWED: when Foundry
-     * starts sending `kind: 'analysis'` here, this line, `FoundryJobKind`,
-     * `isTextPass`, `resourceFor` and `labelFor` move together.
+     * AND THE ANALYSIS PAIR SINCE 2026-10-30 (Owen: *"analysis is grayed out in
+     * foundry/bookforge"*). The ruling this note used to owe is made: Foundry
+     * sends `analysis-rank` and `analysis` across the host queue, so this line,
+     * `FoundryJobKind`, `resourceFor`, `crucibleClass` and `labelFor` moved
+     * together. NOT `isTextPass`: an analysis writes a REPORT (its
+     * `outputPath`), not a records file, so its product is the rendering rule's.
      */
-    const act: 'clean' | 'clean-triage' | 'translate' | 'simplify' | null =
+    const act: 'clean' | 'clean-triage' | 'translate' | 'simplify' | 'analysis-rank' | 'analysis' | null =
       kind === 'clean' || kind === 'clean-triage' || kind === 'translate' || kind === 'simplify'
+        || kind === 'analysis-rank' || kind === 'analysis'
         ? kind : null;
     /*
      * ── WHERE THIS TEXT ACT RUNS, AND WHO COMPOSES IT ─────────────────────────
@@ -410,7 +413,7 @@ export const foundryJobStep: StepModule = {
      * book. One record, one decision, two doors into it.
      */
     let venueServer: string | null = null;
-    const placed: 'clean' | 'clean-triage' | 'translate' | 'simplify' | 'read' | null =
+    const placed: 'clean' | 'clean-triage' | 'translate' | 'simplify' | 'analysis-rank' | 'analysis' | 'read' | null =
       act ?? (kind === 'read' ? 'read' : null);
     if (placed !== null) {
       const { decideWhereTextActRuns, processTextVenueHost } =
