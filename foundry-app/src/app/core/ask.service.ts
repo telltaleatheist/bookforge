@@ -53,6 +53,24 @@ export class AskService {
   readonly runs = signal<ReadonlyMap<string, AskRunState>>(new Map());
   /** Each book's latest kept session, by project directory; null is "read, and there is none". */
   readonly latest = signal<ReadonlyMap<string, AskSession | null>>(new Map());
+  /**
+   * Each book's kept sessions, oldest first: the conversation the panel draws.
+   * Every request still starts the model fresh (Owen: *"one request per chat
+   * window, so the previous request's context doesnt leak"*); the thread is for
+   * the person, so what was asked and what came of it stay in front of them.
+   */
+  readonly history = signal<ReadonlyMap<string, readonly AskSession[]>>(new Map());
+
+  /**
+   * "New chat" — by project, the time before which the thread is not drawn.
+   * Nothing is deleted: the sessions stay in the project, and the review card
+   * still reads the latest one.
+   */
+  readonly clearedAt = signal<ReadonlyMap<string, number>>(new Map());
+
+  newChat(projectDir: string): void {
+    this.clearedAt.update((held) => new Map(held).set(projectDir, Date.now()));
+  }
 
   /** Which tab each run was started from, so the landing finds its pane. */
   private readonly tabOf = new Map<string, string>();
@@ -65,11 +83,12 @@ export class AskService {
     return this.runs().get(projectDir) ?? null;
   }
 
-  /** The latest session, read from the project once per book and kept current after. */
+  /** The sessions, read from the project once per book and kept current after. */
   async loadLatest(projectDir: string): Promise<void> {
     if (!api || this.latest().has(projectDir)) return;
     try {
       const all = await api.ask.sessions(projectDir);
+      this.history.update((held) => new Map(held).set(projectDir, all));
       this.setLatest(projectDir, all.at(-1) ?? null);
     } catch (err) {
       this.notices.notice.set(err instanceof Error ? err.message : String(err));
@@ -83,13 +102,13 @@ export class AskService {
     const projectDir = tab.path;
     const book = pane.view();
     if (book === null) {
-      this.setRun(projectDir, failed('The book is still opening; ask again once it is on the page.'));
+      this.setRun(projectDir, failed('The book is still opening; ask again once it is on the page.', request));
       return;
     }
     const view = askViewOf(book, tab.title);
     this.setRun(projectDir, {
       phase: 'running', runId: null, request, status: 'Starting…', round: 0, maxRounds: 0,
-      says: null, struck: 0, revised: 0, message: null,
+      says: null, struck: 0, revised: 0, message: null, steps: [], startedAt: Date.now(),
     });
     try {
       const runId = await api.ask.start({ projectDir, request, server, model, view });
@@ -98,7 +117,7 @@ export class AskService {
       if (now !== null && now.runId === null && now.phase === 'running') this.setRun(projectDir, { ...now, runId });
       await api.crucible.rememberJobModel('ask', model);
     } catch (err) {
-      this.setRun(projectDir, failed(err instanceof Error ? err.message : String(err)));
+      this.setRun(projectDir, failed(err instanceof Error ? err.message : String(err), request));
     }
   }
 
@@ -116,6 +135,7 @@ export class AskService {
       this.setRun(frame.projectDir, {
         ...run, runId: frame.runId, status: frame.status, round: frame.round, maxRounds: frame.maxRounds,
         says: frame.says, struck: frame.struck, revised: frame.revised,
+        steps: withStep(run.steps, frame, run.says),
       });
       return;
     }
@@ -159,6 +179,7 @@ export class AskService {
       }
     }
     this.setLatest(frame.projectDir, session);
+    this.history.update((held) => new Map(held).set(frame.projectDir, [...(held.get(frame.projectDir) ?? []), session]));
     const said = [
       landed.acted.length === 0
         ? 'The model marked nothing.'
@@ -209,12 +230,36 @@ export interface AskRunState {
   readonly revised: number;
   /** The closing sentence: what landed, or why nothing did. */
   readonly message: string | null;
+  /** What the model did, round by round, for the thread's "Working" line. */
+  readonly steps: readonly AskStep[];
+  /** When Send was pressed, for "worked for 3m 20s". */
+  readonly startedAt: number;
 }
 
-function failed(message: string): AskRunState {
+/** One line of a run's working: what happened, and what the model said, if it said something new. */
+export interface AskStep {
+  readonly status: string;
+  readonly says: string | null;
+}
+
+/**
+ * A FRAME AS A STEP. Main sends two frames a round: "waiting for the model",
+ * which is a wait and not a step, and the round's outcome (its tool calls and
+ * the counts), which is. The model's prose is carried only when it changed,
+ * because main repeats the last thing it said on every frame after.
+ */
+function withStep(steps: readonly AskStep[], frame: Extract<AskProgress, { state: 'running' }>, saidBefore: string | null): readonly AskStep[] {
+  if (/waiting for|asking .* for its summary/i.test(frame.status)) return steps;
+  const says = frame.says !== null && frame.says !== saidBefore ? frame.says : null;
+  const last = steps.at(-1);
+  if (last !== undefined && last.status === frame.status && says === null) return steps;
+  return [...steps, { status: frame.status, says }];
+}
+
+function failed(message: string, request: string): AskRunState {
   return {
-    phase: 'failed', runId: null, request: '', status: '', round: 0, maxRounds: 0,
-    says: null, struck: 0, revised: 0, message,
+    phase: 'failed', runId: null, request, status: '', round: 0, maxRounds: 0,
+    says: null, struck: 0, revised: 0, message, steps: [], startedAt: Date.now(),
   };
 }
 
