@@ -44,7 +44,7 @@ import { BookStacksService, type BookStack } from '../../core/book-stacks.servic
 import { type Tab } from '../../core/documents.service';
 import { NoticeService } from '../../core/notice.service';
 import { editionFlow, editionPieces } from './edition';
-import { chapterOrder, chapterSpan, flowNeighbours, seamJoins, sharedAnchor } from './flow';
+import { chapterOrder, flowNeighbours, seamJoins, sharedAnchor } from './flow';
 import { readTable, type TableRow } from './table';
 
 /**
@@ -1218,7 +1218,7 @@ const OP_GESTURE: Gesture = { kind: 'op' };
               </div>
             }
             @if (line.chapter; as title) {
-              <div class="chapter" (contextmenu)="chapterRuleMenu($event, line.row.id, title)">
+              <div class="chapter">
                 <div class="chapter-head">
                   @if (renaming() === line.row.id) {
                     <!--
@@ -1676,33 +1676,6 @@ const OP_GESTURE: Gesture = { kind: 'op' };
               Strike {{ open.unstruck.length === 1 ? 'the 1' : 'all ' + open.unstruck.length }} {{ open.plural }}
             </button>
           }
-        </div>
-      }
-      <!--
-        THE CHAPTER RULE'S OWN MENU — *"right-click the 'notes' chapter and hit
-        'remove all' and itll delete every item in the chapter and the chapter
-        marker itself"* (Owen, 2026-10-25). The back matter a book should not
-        read aloud is usually a whole chapter, and striking it block by block
-        was the only way. One gesture, so Ctrl+Z brings the chapter back whole.
-      -->
-      @if (chapterMenu(); as open) {
-        <div class="menu-scrim" (click)="chapterMenu.set(null)" (contextmenu)="chapterMenu.set(null)"></div>
-        <div
-          class="menu"
-          role="menu"
-          [attr.aria-label]="'About the chapter ' + open.title"
-          [style.left.px]="open.x"
-          [style.top.px]="open.y"
-          (keydown.escape)="chapterMenu.set(null)"
-        >
-          <button role="menuitem" (click)="removeChapterAll()">
-            <span class="swatch" style="background: var(--ink-chapter)"></span>
-            Remove all — "{{ open.title }}" and its {{ open.ids.length === 1 ? '1 block' : open.ids.length + ' blocks' }}
-          </button>
-          <button role="menuitem" (click)="dropChapterFromMenu()">
-            <span class="swatch" style="background: var(--ink-chapter)"></span>
-            Remove only the chapter marker
-          </button>
         </div>
       }
     </div>
@@ -6736,62 +6709,6 @@ export class BookViewComponent {
    */
   protected dropChapter(id: string): void {
     this.push({ op: 'chapter', remove: id });
-  }
-
-  /** The chapter rule's right-click menu: which division, and what it holds. */
-  protected readonly chapterMenu = signal<{
-    x: number;
-    y: number;
-    id: string;
-    title: string;
-    /** Every unstruck block in the chapter, its opening block first (`chapterSpan`). */
-    ids: string[];
-  } | null>(null);
-
-  protected chapterRuleMenu(event: MouseEvent, id: string, title: string): void {
-    if (this.edition()) return;
-    const target = event.target as HTMLElement | null;
-    // The chip mid-rename is a text field, and its own menu is the browser's.
-    if (target !== null && target.isContentEditable) return;
-    event.preventDefault();
-    event.stopPropagation();
-    const replayed = this.view();
-    if (replayed === null) return;
-    const opens = new Set(replayed.chapters.map((chapter) => chapter.id));
-    this.context.set(null);
-    this.chapterMenu.set({
-      x: event.clientX, y: event.clientY, id, title,
-      ids: chapterSpan(replayed.rows, opens, id),
-    });
-  }
-
-  /**
-   * REMOVE ALL: the division and every block under it, as ONE gesture.
-   *
-   * The marker goes first, then each block is struck — the same strike Delete
-   * pushes, so the blocks are cancelled rather than destroyed and one Ctrl+Z
-   * brings the chapter back, title and all. The order matters: the division is
-   * removed while its opening block still flows, which is the only place the
-   * replay takes a `chapter` op from.
-   */
-  protected removeChapterAll(): void {
-    const open = this.chapterMenu();
-    this.chapterMenu.set(null);
-    if (open === null) return;
-    const blocks = open.ids.length === 1 ? '1 block' : `${open.ids.length} blocks`;
-    this.pushAsOne(`removing the chapter "${open.title}" and its ${blocks}`, [
-      { op: 'chapter', remove: open.id },
-      ...open.ids.map((id): BookOp => ({ op: 'strike', id })),
-    ]);
-    this.chosen.set(new Set(open.ids));
-  }
-
-  /** The same ✕ the rule carries, offered beside Remove all. */
-  protected dropChapterFromMenu(): void {
-    const open = this.chapterMenu();
-    this.chapterMenu.set(null);
-    if (open === null) return;
-    this.dropChapter(open.id);
   }
 
   /**

@@ -11,13 +11,14 @@ import {
 } from '@angular/core';
 
 import { pdfCategoryLabel } from '@shared/categories';
-import type { Replayed } from '@shared/ops';
+import type { BookOp, Replayed } from '@shared/ops';
 
 import { LedgerService } from '../../core/ledger.service';
 import { ProjectsService } from '../../core/projects.service';
 import { BookStacksService, type BookStack } from '../../core/book-stacks.service';
 import { StageService } from '../../core/stage.service';
 import { AskPanelComponent } from '../ask-panel/ask-panel.component';
+import { chapterSpan } from '../book-view/flow';
 
 /**
  * The inspector — what the focused book IS, down the right-hand side.
@@ -214,6 +215,7 @@ import { AskPanelComponent } from '../ask-panel/ask-panel.component';
                           [title]="row.title"
                           (click)="pane.reveal(row.id)"
                           (dblclick)="startSheetRename(row)"
+                          (contextmenu)="chapterRowMenu($event, row)"
                         >
                           <span class="ch-title">{{ row.title }}</span>
                           <span class="ch-at">≈ {{ row.page }}</span>
@@ -247,6 +249,34 @@ import { AskPanelComponent } from '../ask-panel/ask-panel.component';
                     </li>
                   }
                 </ul>
+                <!--
+                  A CHAPTER ROW'S OWN MENU — *"right-click the 'notes' chapter and
+                  hit 'remove all' and itll delete every item in the chapter and
+                  the chapter marker itself"* (Owen, 2026-10-25). It lives HERE,
+                  on the list of chapters, not on the rule in the text (Owen,
+                  2026-10-29: *"that option was actually supposed to be in the
+                  right side chapter nav bar"*). The back matter a book should not
+                  read aloud is usually a whole chapter, and striking it block by
+                  block was the only way. One gesture, so Ctrl+Z brings it back whole.
+                -->
+                @if (chapterMenu(); as open) {
+                  <div class="menu-scrim" (click)="chapterMenu.set(null)" (contextmenu)="chapterMenu.set(null)"></div>
+                  <div
+                    class="menu"
+                    role="menu"
+                    [attr.aria-label]="'About the chapter ' + open.title"
+                    [style.left.px]="open.x"
+                    [style.top.px]="open.y"
+                    (keydown.escape)="chapterMenu.set(null)"
+                  >
+                    <button role="menuitem" (click)="removeChapterAll()">
+                      Remove all — "{{ open.title }}" and its {{ open.ids.length === 1 ? '1 block' : open.ids.length + ' blocks' }}
+                    </button>
+                    <button role="menuitem" (click)="removeChapterMarker()">
+                      Remove only the chapter marker
+                    </button>
+                  </div>
+                }
                 <div class="acts">
                   <!--
                     "HERE" IS THE BLOCK PICKED ON THE PAPER, which is the one thing
@@ -617,6 +647,41 @@ import { AskPanelComponent } from '../ask-panel/ask-panel.component';
       font-size: 11px; line-height: 1.4;
       color: var(--text-tertiary);
     }
+
+    /* A chapter row's right-click menu: the app's small menu, the same one the
+       paper and the open-documents list draw, so it reads as one kind of thing.
+       The scrim is what makes the next click dismiss it exactly once. */
+    .menu-scrim { position: fixed; inset: 0; z-index: 1000; }
+    .menu {
+      position: fixed;
+      z-index: 1001;
+      min-width: 180px;
+      max-height: 60vh;
+      overflow: hidden auto;
+      padding: 4px;
+      display: flex;
+      flex-direction: column;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius-md);
+      box-shadow: 0 10px 20px -6px rgba(0, 0, 0, 0.35);
+    }
+    .menu button {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      width: 100%;
+      padding: 6px 10px;
+      background: transparent;
+      border: none;
+      border-radius: var(--radius-sm);
+      color: var(--text-secondary);
+      font-family: inherit;
+      font-size: 12px;
+      text-align: left;
+      cursor: pointer;
+    }
+    .menu button:hover { background: var(--bg-hover); color: var(--text-primary); }
 
     /* ── The chapter rows ──────────────────────────────────────────────── */
 
@@ -1151,6 +1216,56 @@ export class InspectorComponent {
   /** The block stays; the rule goes. */
   protected dropSheetChapter(id: string): void {
     this.sheet()?.push([{ op: 'chapter', remove: id }]);
+  }
+
+  /** A chapter row's right-click menu: which division, and what it holds. */
+  protected readonly chapterMenu = signal<{
+    x: number;
+    y: number;
+    id: string;
+    title: string;
+    /** Every unstruck block in the chapter, its opening block first (`chapterSpan`). */
+    ids: string[];
+  } | null>(null);
+
+  protected chapterRowMenu(event: MouseEvent, row: SheetChapterRow): void {
+    const pane = this.sheet();
+    const replayed = pane === null ? null : pane.view();
+    if (replayed === null) return;
+    event.preventDefault();
+    const opens = new Set(replayed.chapters.map((chapter) => chapter.id));
+    this.chapterMenu.set({
+      x: event.clientX, y: event.clientY, id: row.id, title: row.title,
+      ids: chapterSpan(replayed.rows, opens, row.id),
+    });
+  }
+
+  /**
+   * REMOVE ALL: the division and every block under it, as ONE gesture.
+   *
+   * The marker goes first, then each block is struck — the same strike Delete
+   * pushes, so the blocks are cancelled rather than destroyed and one Ctrl+Z
+   * brings the chapter back, title and all. The order matters: the division is
+   * removed while its opening block still flows, which is the only place the
+   * replay takes a `chapter` op from.
+   */
+  protected removeChapterAll(): void {
+    const open = this.chapterMenu();
+    this.chapterMenu.set(null);
+    const pane = this.sheet();
+    if (open === null || pane === null) return;
+    const blocks = open.ids.length === 1 ? '1 block' : `${open.ids.length} blocks`;
+    pane.pushGroup(`removing the chapter "${open.title}" and its ${blocks}`, [
+      { op: 'chapter', remove: open.id },
+      ...open.ids.map((id): BookOp => ({ op: 'strike', id })),
+    ]);
+  }
+
+  /** The same ✕ the row carries, offered beside Remove all. */
+  protected removeChapterMarker(): void {
+    const open = this.chapterMenu();
+    this.chapterMenu.set(null);
+    if (open !== null) this.dropSheetChapter(open.id);
   }
 
   /**
