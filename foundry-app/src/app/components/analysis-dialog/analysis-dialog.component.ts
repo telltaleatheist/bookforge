@@ -164,7 +164,10 @@ import { api, hosted } from '../../core/foundry';
                     type="checkbox"
                     [checked]="picked().has(one.id)"
                     (change)="flip(one.id)">
-                  <span class="check-name">{{ one.name }}</span>
+                  <span class="check-name">
+                    {{ one.name }}
+                    <em class="check-said">{{ one.about }}</em>
+                  </span>
                   <!--
                     UNTUNED SAID QUIETLY AND BEFORE THE RUN. docs/ANALYSIS.md §5:
                     these two have no measured line yet, so they may turn
@@ -183,7 +186,7 @@ import { api, hosted } from '../../core/foundry';
 
           <!--
             THE USER'S OWN, IN THEIR OWN BLOCK. They are kept apart from the
-            twelve rather than mixed in, and the reason is that they are a
+            built-ins rather than mixed in, and the reason is that they are a
             different KIND of thing: the built-ins are the engine's list and
             cannot be removed, these are a list this person keeps and can. One
             grid with three removable rows scattered through it would make every
@@ -239,16 +242,18 @@ import { api, hosted } from '../../core/foundry';
                 name="newName">
               <textarea
                 class="add-said"
-                rows="2"
-                placeholder="One sentence: the claim the author would be making. “The author argues that …”"
+                rows="3"
+                placeholder="The claim, in its first sentence: “Says wives must obey their husbands.” Then, if it helps, what counts: “An approving story counts.”"
                 [attr.maxlength]="saidMax"
                 [ngModel]="newSaid()"
                 (ngModelChange)="newSaid.set($event)"
                 name="newSaid"></textarea>
               <p class="note">
-                The sentence <strong>is</strong> what gets measured — every sentence in the book is
-                scored against it. A claim finds passages; a topic finds nothing. Nothing has
-                calibrated it, so the report will mark this category as a first draft.
+                The <strong>first sentence</strong> is what every sentence in the book is scored
+                against, so make it the claim — a claim finds passages; a topic finds nothing.
+                The whole description is what each passage is then checked against, which is
+                where to say what counts. It is saved for every book. Nothing has calibrated
+                it, so the report will mark this category as a first draft.
               </p>
               @if (addProblem(); as reason) {
                 <p class="problem">{{ reason }}</p>
@@ -435,7 +440,7 @@ import { api, hosted } from '../../core/foundry';
       gap: 2px 10px;
     }
     .check {
-      display: flex; align-items: center; gap: 6px;
+      display: flex; align-items: flex-start; gap: 6px;
       padding: 4px 6px;
       border-radius: var(--radius-sm);
       font-size: 12px; color: var(--text-secondary);
@@ -444,7 +449,13 @@ import { api, hosted } from '../../core/foundry';
     }
     .check:hover { background: var(--bg-hover); }
     .check.on { color: var(--text-primary); }
-    .check-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    /*
+      EVERY ROW CARRIES ITS GLOSS NOW (Owen, 2026-10-30: the categories listed in
+      the modal, with descriptions), so a name wraps instead of being clipped and
+      the box sits on the first line rather than the middle of three.
+    */
+    .check-name { flex: 1; min-width: 0; white-space: normal; }
+    .check input { margin-top: 3px; }
     /* A word and not a colour: an untuned category is not a WARNING, it is a fact
        about how much has been measured, and an amber pip beside four rows of a
        checklist would read as something being wrong with them. */
@@ -457,12 +468,10 @@ import { api, hosted } from '../../core/foundry';
 
     /*
       ONE COLUMN FOR THE USER'S OWN, because each of them carries a SENTENCE and
-      a sentence in a half-width cell is three lines of four words. The twelve
-      built-ins are names and fit two abreast; these are not the same shape.
+      a sentence in a half-width cell is three lines of four words. The built-ins
+      carry one short gloss each and fit two abreast; these are not the same shape.
     */
     .checklist.mine { grid-template-columns: 1fr; }
-    .check.own { align-items: flex-start; }
-    .check.own input { margin-top: 3px; }
     .check-said {
       display: block;
       font-style: normal;
@@ -470,7 +479,6 @@ import { api, hosted } from '../../core/foundry';
       color: var(--text-tertiary);
       white-space: normal;
     }
-    .check.own .check-name { overflow: visible; white-space: normal; }
     .drop {
       flex: 0 0 auto;
       background: transparent; border: none; cursor: pointer;

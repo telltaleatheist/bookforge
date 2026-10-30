@@ -67,6 +67,14 @@ export interface AnalysisCategory {
    * LEGEND are never adjacent on the wheel — the legend is the one place a
    * person reads the dots as a set.
    *
+   * THE FIVE CHILD-TRAINING CATEGORIES (2026-10-30) went into the middles of
+   * the five widest remaining arcs (326, 113, 282, 172, 4), which brings the
+   * smallest gap on the wheel down to 12° — between `anti-expertise` and
+   * `political-demonization`. Seventeen identity hues cannot all be far apart;
+   * the name beside every dot is what identifies it, the colour only helps a
+   * list be scanned. They are still dealt so that no two LEGEND neighbours
+   * sit next to each other on the wheel.
+   *
    * ── AND THE PAPER NEVER SEES IT ────────────────────────────────────────────
    *
    * The book view keeps its single `--ink-hit` and will go on keeping it. That
@@ -91,6 +99,18 @@ export interface AnalysisCategory {
    * to know which half of the checklist has been measured.
    */
   tuned: boolean;
+  /**
+   * WHAT IT LOOKS FOR, said to the person choosing — the line under the name
+   * in the dialog's checklist (Owen, 2026-10-30: *"named categories with
+   * descriptions"*, listed in the modal).
+   *
+   * THE READER'S WORDS, NOT THE RANKER'S LINE, which is the rule this file's
+   * header keeps: the ranker's line and the proposition are calibrated strings
+   * that live with the engine, and a copy here would be a prompt in a window.
+   * This is a gloss for a person deciding whether to tick a box; editing it
+   * changes nothing any model is asked.
+   */
+  about: string;
 }
 
 /**
@@ -106,18 +126,40 @@ export interface AnalysisCategory {
  * against reference books is follow-up work indexed in docs/PLAN.md.
  */
 export const ANALYSIS_CATEGORIES: readonly AnalysisCategory[] = [
-  { id: 'political-demonization', name: 'Political demonization', hue: 352, tuned: true },
-  { id: 'hate', name: 'Hate', hue: 130, tuned: true },
-  { id: 'conspiracy', name: 'Conspiracy', hue: 264, tuned: true },
-  { id: 'dehumanization', name: 'Dehumanization', hue: 68, tuned: true },
-  { id: 'violence', name: 'Violence', hue: 210, tuned: true },
-  { id: 'false-prophecy', name: 'False prophecy', hue: 20, tuned: true },
-  { id: 'christian-nationalism', name: 'Christian nationalism', hue: 158, tuned: true },
-  { id: 'prosperity-gospel', name: 'Prosperity gospel', hue: 300, tuned: true },
-  { id: 'extremism', name: 'Extremism', hue: 96, tuned: true },
-  { id: 'political-violence', name: 'Political violence', hue: 236, tuned: true },
-  { id: 'anti-evolution', name: 'Anti-evolution and science denial', hue: 44, tuned: false },
-  { id: 'authoritarian-blueprint', name: 'Authoritarian blueprint', hue: 186, tuned: false },
+  { id: 'political-demonization', name: 'Political demonization', hue: 352, tuned: true,
+    about: 'Calling political opponents communists, Marxists or enemies of the country.' },
+  { id: 'hate', name: 'Hate', hue: 130, tuned: true,
+    about: 'Hostility or mockery toward a group for its race, religion, ethnicity, sexuality or identity.' },
+  { id: 'conspiracy', name: 'Conspiracy', hue: 264, tuned: true,
+    about: 'A conspiracy theory presented as true — a stolen election, a deep state, a hidden plot.' },
+  { id: 'dehumanization', name: 'Dehumanization', hue: 68, tuned: true,
+    about: 'People described as vermin, disease or less than human, or opponents called mentally ill.' },
+  { id: 'violence', name: 'Violence', hue: 210, tuned: true,
+    about: 'Calling for, threatening or glorifying violence against people.' },
+  { id: 'false-prophecy', name: 'False prophecy', hue: 20, tuned: true,
+    about: 'Claims that God spoke to the author or someone they cite, or a prophecy announced.' },
+  { id: 'christian-nationalism', name: 'Christian nationalism', hue: 158, tuned: true,
+    about: 'Christianity or the church should run the government, or God is directing the nation.' },
+  { id: 'prosperity-gospel', name: 'Prosperity gospel', hue: 300, tuned: true,
+    about: 'Money asked for as a religious duty, or blessing promised in return for giving.' },
+  { id: 'extremism', name: 'Extremism', hue: 96, tuned: true,
+    about: 'Defending oppression, supremacy, ethnic cleansing or authoritarian rule.' },
+  { id: 'political-violence', name: 'Political violence', hue: 236, tuned: true,
+    about: 'Defending or downplaying a political attack, riot or insurrection.' },
+  { id: 'anti-evolution', name: 'Anti-evolution and science denial', hue: 44, tuned: false,
+    about: 'Evolution called false or a deception, or a young earth and special creation stated as fact.' },
+  { id: 'authoritarian-blueprint', name: 'Authoritarian blueprint', hue: 186, tuned: false,
+    about: 'Replacing civil servants with loyalists, or an executive controlling agencies and courts unchecked.' },
+  { id: 'child-physical-punishment', name: 'Physical punishment of children', hue: 326, tuned: false,
+    about: 'Telling parents to hit, switch or spank children — including babies — or how to do it.' },
+  { id: 'absolute-obedience', name: 'Demanding total obedience', hue: 113, tuned: false,
+    about: 'A child must obey instantly and without question, or a child’s will must be broken.' },
+  { id: 'children-as-animals', name: 'Children trained like animals', hue: 282, tuned: false,
+    about: 'Raising children compared to training dogs, mules or horses, as the model to follow.' },
+  { id: 'wifely-submission', name: 'Wives must submit', hue: 172, tuned: false,
+    about: 'Wives must submit to and obey their husbands.' },
+  { id: 'anti-expertise', name: 'Dismissing experts and authorities', hue: 4, tuned: false,
+    about: 'Psychologists, doctors, child experts or social services dismissed as ignorant or harmful.' },
 ];
 
 /** Every id, for the checks that only need the set. */
@@ -222,8 +264,17 @@ export interface CustomAnalysisCategory {
   description: string;
 }
 
-/** How long a description may be. Long enough for a claim, short of an essay. */
-export const CUSTOM_CATEGORY_DESCRIPTION_MAX = 240;
+/**
+ * How long a description may be. Long enough for a claim and what counts as
+ * one, short of an essay.
+ *
+ * 240 until 2026-10-30, which held one sentence and no more. The test on "To
+ * Train Up a Child" measured that the sentences AFTER the first are worth
+ * having: the ranker reads only the first, but the verifier tests the whole,
+ * and "an approving story counts as endorsement" was what took recall on that
+ * book from 0.88 to 0.92. That description is about 370 characters.
+ */
+export const CUSTOM_CATEGORY_DESCRIPTION_MAX = 600;
 
 /** How long a name may be, so a legend chip stays a chip. */
 export const CUSTOM_CATEGORY_NAME_MAX = 48;

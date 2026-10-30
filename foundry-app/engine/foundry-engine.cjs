@@ -31173,7 +31173,7 @@ var init_version = __esm({
     init_engine_import_meta_url();
     init_package();
     VERSION = package_default.version;
-    GIT_COMMIT = "src cf1667fbaeeb".length > 0 ? "src cf1667fbaeeb" : null;
+    GIT_COMMIT = "src f034ac2824f0".length > 0 ? "src f034ac2824f0" : null;
   }
 });
 
@@ -34655,6 +34655,62 @@ var init_plan = __esm({
         option: "Argues for replacing civil servants with loyalists, or for the executive to control the agencies, courts, or prosecutions unchecked",
         proposition: "the executive should be staffed with loyalists in place of career civil servants, should hold direct control over the agencies and prosecutions, and should not be restrained by the checks that limit it",
         tuned: false
+      },
+      /*
+       * ── THE CHILD-TRAINING FIVE (2026-10-30) ────────────────────────────────────
+       *
+       * Written for "To Train Up a Child" (Pearl, 1994), which none of the twelve
+       * above describe: a book whose subject is hitting babies and breaking wills
+       * scores near nothing on hate, violence or extremism. Owen: *"they might not
+       * cover this book so we might consider adding more categories."*
+       *
+       * MEASURED ONCE, NOT TUNED. Against a hand reference of that book (274 marks,
+       * three readers, every block), 9B ranker + 27B verifier: 109 findings, 0.94 of
+       * them matching a mark of their category, 0.92 of the clear marks found. One
+       * book is a first measurement, not a calibration, so they stay `tuned: false`.
+       *
+       * THE PROPOSITIONS SAY THAT AN APPROVING STORY COUNTS, and that sentence is the
+       * measured difference. Without it the verifier read this book's anecdotes —
+       * the author switching a five-month-old off the stairs, an Amish father
+       * spanking a twelve-month-old, a child switching her rag doll — as narration
+       * rather than endorsement, and rejected the book's most notorious passages
+       * (recall 0.88 → 0.92 with it; precision 0.95 → 0.94). In a manual of this
+       * kind the approving story IS the instruction.
+       */
+      {
+        category: "child-physical-punishment",
+        label: "Physical punishment of children",
+        option: "Tells parents to hit, switch, whip or spank children, or explains how and when to do it.",
+        proposition: "Tells parents to hit, switch, whip or spank children, or explains how and when to do it. The author endorses striking children as discipline, including infants and toddlers, or instructs parents on the implement, the number of licks, or making it hurt. An approving story counts as endorsement: the author or someone the author holds up as an example switching or spanking a child, or a child imitating it with approval.",
+        tuned: false
+      },
+      {
+        category: "absolute-obedience",
+        label: "Demanding total obedience",
+        option: "Says a child must obey instantly, completely and without question, or that a child's will must be broken.",
+        proposition: "Says a child must obey instantly, completely and without question, or that a child's will must be broken. The author asserts that children must submit to parental authority without delay, complaint or any show of displeasure, and that resistance must be defeated. An approving story of a child being made to submit counts as endorsement.",
+        tuned: false
+      },
+      {
+        category: "children-as-animals",
+        label: "Children trained like animals",
+        option: "Compares training children to training animals such as dogs, mules or horses.",
+        proposition: "Compares training children to training animals such as dogs, mules or horses. The author presents animal training as the model for raising children, including approving comparisons of a child to a trained dog, mule or horse.",
+        tuned: false
+      },
+      {
+        category: "wifely-submission",
+        label: "Wives must submit",
+        option: "Says wives must submit to and obey their husbands.",
+        proposition: "Says wives must submit to and obey their husbands. The author asserts that a wife owes her husband obedience and should defer to him as the authority over her, including approving stories of a wife deferring.",
+        tuned: false
+      },
+      {
+        category: "anti-expertise",
+        label: "Dismissing experts and authorities",
+        option: "Dismisses psychologists, doctors, child experts or social services as ignorant or harmful to children.",
+        proposition: "Dismisses psychologists, doctors, child experts or social services as ignorant or harmful to children. The author tells parents to distrust professional or government guidance on raising children, including mocking psychologists or experts by name or as a group.",
+        tuned: false
       }
     ];
     MISINFORMATION_EXCLUSION = 'misinformation is not ranked \u2014 whether an assertion is false is world knowledge, and a ranker that reads for what a book says sees only "makes a factual assertion". Measured in briefcase against its reference videos: 169 of 205 candidates and 19 of 20 verified false positives were this one category.';
@@ -34674,7 +34730,12 @@ var init_plan = __esm({
       "extremism": "Extremism",
       "political-violence": "Political violence",
       "anti-evolution": "Anti-evolution and science denial",
-      "authoritarian-blueprint": "Authoritarian blueprint"
+      "authoritarian-blueprint": "Authoritarian blueprint",
+      "child-physical-punishment": "Physical punishment of children",
+      "absolute-obedience": "Demanding total obedience",
+      "children-as-animals": "Children trained like animals",
+      "wifely-submission": "Wives must submit",
+      "anti-expertise": "Dismissing experts and authorities"
     };
     CATEGORY_HUES = {
       "political-demonization": 352,
@@ -34688,7 +34749,12 @@ var init_plan = __esm({
       "extremism": 96,
       "political-violence": 236,
       "anti-evolution": 44,
-      "authoritarian-blueprint": 186
+      "authoritarian-blueprint": 186,
+      "child-physical-punishment": 326,
+      "absolute-obedience": 113,
+      "children-as-animals": 282,
+      "wifely-submission": 172,
+      "anti-expertise": 4
     };
   }
 });
@@ -35685,7 +35751,8 @@ function readPlan(categoriesPath, log2) {
   return plan;
 }
 async function loadedContextOf(transport, endpoint, model) {
-  const served = await servedModels(transport, endpoint);
+  const server = endpoint.trim().replace(/\/+$/, "").replace(/\/v1$/, "");
+  const served = await servedModels(transport, `${server}/openai`);
   const row = served.find((one) => one.id === model);
   if (row === void 0) {
     throw new AnalyzeError(
@@ -104607,9 +104674,11 @@ var COMMANDS = [
       "not in the book the reader sees \u2014 and so are figures, formulae and tables,",
       "which have no sentences in them.",
       "",
-      "WHICH CATEGORIES. Ten with briefcase's measured lines, plus two book",
-      "categories that are FIRST DRAFTS and say so: anti-evolution and",
-      "authoritarian-blueprint. The report names every untuned category in its",
+      "WHICH CATEGORIES. Ten with briefcase's measured lines, plus seven book",
+      "categories that are FIRST DRAFTS and say so: anti-evolution,",
+      "authoritarian-blueprint and the five child-training ones (physical",
+      "punishment, total obedience, children as animals, wifely submission,",
+      "dismissing experts). The report names every untuned category in its",
       "header, because their counts may be high or low and a reader deciding what",
       "to trust needs to know which is which. `misinformation` is refused",
       "outright and the refusal explains itself: whether an assertion is FALSE is",
