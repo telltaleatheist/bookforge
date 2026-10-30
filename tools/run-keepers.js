@@ -140,6 +140,9 @@ const SUITES = [
   // dial an Ollama for VRAM eviction and the number pass — they go with that
   // layer, and the list going empty is how you know it went.
   'test-no-cloud-doors',
+  // A narration's progress and completion reach the queue with no window
+  // open (2026-10-29: 612 chunks rendered under a row that read 0% forever).
+  'test-tts-emits-without-window',
   // And the Enhance tab's deletion, pinned the same way. Owen dropped Resemble
   // Enhance whole on 2026-09-14 ("drop and remove the enhance page and the
   // corresponding crucible route. it's unnecessary"), so it neither became a

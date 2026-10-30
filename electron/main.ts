@@ -3698,7 +3698,16 @@ function createWindow(): void {
 
   mainWindow.on('closed', () => {
     mainWindow = null;
+    setQueueMainWindow(null);
   });
+  /*
+   * THE QUEUE IS TOLD ABOUT EVERY WINDOW, not just the first. `showMainWindow`
+   * builds a new one when the old is gone, and the queue hands its window to
+   * the bridges at each step's start; told only at startup, a recreated window
+   * left it holding a destroyed one, and a narration (2026-10-29, To Train Up a
+   * Child) rendered every chunk while its row sat at 0% and never finished.
+   */
+  setQueueMainWindow(mainWindow);
 }
 
 /** Bring the main window back from the tray, the dock or a minimise. */
@@ -13657,7 +13666,6 @@ app.whenReady().then(async () => {
     createWindow();
     if (mainWindow) {
       pdfWorkerProxy.setDefaultSender(mainWindow.webContents);
-      setQueueMainWindow(mainWindow);
     }
   }
 

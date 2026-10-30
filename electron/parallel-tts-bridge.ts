@@ -3239,6 +3239,21 @@ async function findMissingSentenceFiles(prepInfo: PrepInfo): Promise<number[]> {
 }
 
 let mainWindow: BrowserWindow | null = null;
+
+/**
+ * WHETHER THIS IS THE APP, which is what every "tell the queue" below asks —
+ * never whether a window is open.
+ *
+ * Progress and completion go to the queue engine, which lives in this process
+ * and hears them through the bridge bus (`rendererSend` publishes there first).
+ * The app runs with no window at all (closed to the tray), and a window can be
+ * recreated under a running step, so gating those emits on `mainWindow`
+ * dropped every one of them: on 2026-10-29 a narration rendered all 612 chunks
+ * while its row read 0% and its step never ended. The CLI's headless render is
+ * the one caller that must emit nothing and finalize nothing, and it runs in
+ * plain Node, where `process.type` is not 'browser'.
+ */
+const IN_APP = (process as NodeJS.Process & { type?: string }).type === 'browser';
 let loggerInitialized = false;
 
 // like a re-download that wasn't happening.
@@ -3464,7 +3479,7 @@ interface ConversionSession {
   // run loop aborts the job with this message instead of spilling into a freeze.
   gpuPreflightError?: string;
   // Terminal failure reason (e.g. "All workers failed: ... <stderr tail>"). emitComplete
-  // no-ops headless (no mainWindow), so renderRangeHeadless reads THIS to throw the real
+  // no-ops headless (outside the app, `IN_APP`), so renderRangeHeadless reads THIS to throw the real
   // cause instead of the downstream "N sentence files missing" symptom.
   completionError?: string;
   /**
@@ -4575,7 +4590,7 @@ export async function prepareSession(
       }
       // First-run model download visibility: emit a 'preparing' note once when the
       // download starts (throttled — only on the unset→set transition).
-      if (!downloadNoteEmitted && prepJobId && MODEL_DOWNLOAD_RE.test(text) && mainWindow) {
+      if (!downloadNoteEmitted && prepJobId && MODEL_DOWNLOAD_RE.test(text) && IN_APP) {
         downloadNoteEmitted = true;
         const progress: AggregatedProgress = {
           phase: 'preparing',
@@ -5271,8 +5286,8 @@ async function checkAllWorkersComplete(session: ConversionSession): Promise<void
     const stage = detail.includes('could not be copied out of WSL')
       ? 'Session copy failed'
       : 'The render finished but the step after it failed';
-    // `completionError` is how a HEADLESS run learns anything at all: with no
-    // mainWindow `emitComplete` returns early, and `renderRangeHeadless` reads
+    // `completionError` is how a HEADLESS run learns anything at all: outside
+    // the app (`IN_APP`) `emitComplete` returns early, and `renderRangeHeadless` reads
     // this field after its poll sees the session go.
     session.completionError = `${stage}: ${detail}`;
     console.error(`[PARALLEL-TTS] ${session.completionError}`);
@@ -5577,7 +5592,7 @@ async function completeAfterWorkers(session: ConversionSession): Promise<void> {
           outputDir: dnOutDir,
           onLog: (message) => { void logger.log('INFO', session.jobId, message); },
           onProgress: (done, total) => {
-            if (!mainWindow) return;
+            if (!IN_APP) return;
             const progress: AggregatedProgress = {
               phase: 'enhancing',
               totalSentences: session.prepInfo!.totalSentences,
@@ -5643,7 +5658,7 @@ async function completeAfterWorkers(session: ConversionSession): Promise<void> {
           hopLength: rvc.hopLength,
           onProgress: (done, total) => {
             rvcTotal = total;
-            if (!mainWindow) return;
+            if (!IN_APP) return;
             const progress: AggregatedProgress = {
               phase: 'enhancing',
               totalSentences: session.prepInfo!.totalSentences,
@@ -5823,7 +5838,7 @@ async function runAssembly(session: ConversionSession): Promise<string> {
   await fs.mkdir(asmOutputDir, { recursive: true });
 
   // Emit assembling phase
-  if (mainWindow) {
+  if (IN_APP) {
     const progress: AggregatedProgress = {
       phase: 'assembling',
       totalSentences: prepInfo.totalSentences,
@@ -5996,7 +6011,7 @@ async function runAssembly(session: ConversionSession): Promise<string> {
     const totalChapters = prepInfo.totalChapters;
 
     const sendAssemblyProgress = (subPhase: typeof assemblySubPhase, subProgress: number, message?: string) => {
-      if (!mainWindow) return;
+      if (!IN_APP) return;
 
       // Calculate overall percentage: combining 0-60%, vtt 60-70%, encoding 70-95%, metadata 95-100%
       let overallPercent: number;
@@ -6684,7 +6699,7 @@ function emitPrepStageProgress(
   // has left is the pass.
   prep?: PrepSubProgress,
 ): void {
-  if (!mainWindow) return;
+  if (!IN_APP) return;
   // Weights are each stage's NORMALIZED share of the run (they sum to 1), so the
   // renderer can price stages it hasn't reached yet instead of assuming every
   // remaining stage costs what the current one does. Converting dominates: on the
@@ -6769,7 +6784,7 @@ const STATE_SAVE_SENTENCE_INTERVAL = 10; // Save state every 10 sentences
  * the job would hang in "running" forever.
  */
 function emitJobFailure(jobId: string, error: string): void {
-  if (!mainWindow) return;
+  if (!IN_APP) return;
   const progress: AggregatedProgress = {
     phase: 'error',
     totalSentences: 0,
@@ -7023,7 +7038,7 @@ function currentBatch(session: ConversionSession): ActiveBatchProgress | undefin
 }
 
 function emitProgress(session: ConversionSession): void {
-  if (!mainWindow || !session.prepInfo) return;
+  if (!IN_APP || !session.prepInfo) return;
 
   const activeWorkers = session.workers.filter(w => w.status === 'running').length;
   const now = Date.now();
@@ -7328,7 +7343,7 @@ function announceGpuPhaseOver(session: ConversionSession, reason: string): void 
 
 /** Emit a 'preparing'-phase progress message (used while a job waits for the GPU). */
 function emitGpuWaitProgress(session: ConversionSession, message: string): void {
-  if (!mainWindow || !session.prepInfo) return;
+  if (!IN_APP || !session.prepInfo) return;
   const progress: AggregatedProgress = {
     phase: 'preparing',
     totalSentences: session.prepInfo.totalSentences,
@@ -7452,7 +7467,7 @@ function emitComplete(
   // Free the GPU as soon as the job ends so AI cleanup can resume promptly.
   releaseSessionGpu(session);
 
-  if (!mainWindow || !session.prepInfo) {
+  if (!IN_APP || !session.prepInfo) {
     return;
   }
 
@@ -8950,7 +8965,7 @@ export async function startParallelConversion(
   await savePersistentState(session); // Save initial state
 
   // Emit initial progress
-  if (mainWindow) {
+  if (IN_APP) {
     const progress: AggregatedProgress = {
       phase: 'preparing',
       totalSentences: prepInfo.totalSentences,
@@ -9058,7 +9073,7 @@ export async function startParallelConversion(
  * `_save_audio`, so a plain numeric-order concat is byte-faithful to what assembly
  * would join.
  *
- * NO IPC (mainWindow stays null → every `rendererSend` no-ops; `emitComplete` releases
+ * NO IPC (outside the app every `rendererSend` reaches no one; `emitComplete` releases
  * the GPU and returns early), NO assembly, NO powerSaveBlocker, NO persistent state.
  * Fails loud on every missing precondition (NO FALLBACKS): 0 chunks, GPU preflight
  * shortfall, or an incomplete sentence set all throw with a naming message.
@@ -9589,7 +9604,7 @@ export async function flushActiveSessionsToCache(timeoutMs = 25000): Promise<voi
  * again (bug hunt 2026-09-20, S12).
  */
 function emitCancelledAnalytics(session: ConversionSession, reason: StopReason): void {
-  if (!mainWindow || !session.prepInfo) return;
+  if (!IN_APP || !session.prepInfo) return;
 
   // Stop state save timer and finalize state
   stopStateSaveTimer(session);
@@ -11030,7 +11045,7 @@ export async function resumeParallelConversion(
         ? path.join(resumeInfo.processDir, 'chapters', 'sentences')
         : '';
       // Emit complete event for event-based listeners
-      if (mainWindow) {
+      if (IN_APP) {
         rendererSend('parallel-tts:complete', {
           jobId,
           success: true,
@@ -11189,7 +11204,7 @@ export async function resumeParallelConversion(
   console.log(`[PARALLEL-TTS] Resume session created: baseline=${session.baselineCompleted}, missing=${session.totalMissing}`);
 
   // Emit initial progress (accounting for already completed sentences)
-  if (mainWindow) {
+  if (IN_APP) {
     const progress: AggregatedProgress = {
       phase: 'converting',
       totalSentences: prepInfo.totalSentences,
@@ -11316,7 +11331,7 @@ async function runAssemblyOnly(
   activeSessions.set(jobId, session);
 
   // Emit assembling progress
-  if (mainWindow) {
+  if (IN_APP) {
     const progress: AggregatedProgress = {
       phase: 'assembling',
       totalSentences: 0,
@@ -11338,7 +11353,7 @@ async function runAssemblyOnly(
     activeSessions.delete(jobId);
 
     // Emit complete
-    if (mainWindow) {
+    if (IN_APP) {
       rendererSend('parallel-tts:complete', {
         jobId,
         success: true,
@@ -11356,7 +11371,7 @@ async function runAssemblyOnly(
     console.error('[PARALLEL-TTS]', error);
 
     // Emit error
-    if (mainWindow) {
+    if (IN_APP) {
       rendererSend('parallel-tts:complete', {
         jobId,
         success: false,
