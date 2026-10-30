@@ -31173,7 +31173,7 @@ var init_version = __esm({
     init_engine_import_meta_url();
     init_package();
     VERSION = package_default.version;
-    GIT_COMMIT = "src f034ac2824f0".length > 0 ? "src f034ac2824f0" : null;
+    GIT_COMMIT = "src 5cfb58b715af".length > 0 ? "src 5cfb58b715af" : null;
   }
 });
 
@@ -34681,14 +34681,14 @@ var init_plan = __esm({
         category: "child-physical-punishment",
         label: "Physical punishment of children",
         option: "Tells parents to hit, switch, whip or spank children, or explains how and when to do it.",
-        proposition: "Tells parents to hit, switch, whip or spank children, or explains how and when to do it. The author endorses striking children as discipline, including infants and toddlers, or instructs parents on the implement, the number of licks, or making it hurt. An approving story counts as endorsement: the author or someone the author holds up as an example switching or spanking a child, or a child imitating it with approval.",
+        proposition: "Tells parents to hit, switch, whip or spank children, or explains how and when to do it. The author endorses striking children as discipline, including infants and toddlers, or instructs parents on the implement, the number of licks, or making it hurt. An approving story counts as endorsement: the author or someone the author holds up as an example switching or spanking a child, or a child imitating it with approval. Mocking someone for punishing a child ineffectively or inconsistently, while prescribing a firmer or more consistent way, counts as endorsement.",
         tuned: false
       },
       {
         category: "absolute-obedience",
         label: "Demanding total obedience",
         option: "Says a child must obey instantly, completely and without question, or that a child's will must be broken.",
-        proposition: "Says a child must obey instantly, completely and without question, or that a child's will must be broken. The author asserts that children must submit to parental authority without delay, complaint or any show of displeasure, and that resistance must be defeated. An approving story of a child being made to submit counts as endorsement.",
+        proposition: "Says a child must obey instantly, completely and without question, or that a child's will must be broken. The author asserts that children must submit to parental authority without delay, complaint or any show of displeasure, and that resistance must be defeated. An approving story of a child being made to submit counts as endorsement, and so does mocking a parent who fails to make a child submit while prescribing a firmer way.",
         tuned: false
       },
       {
