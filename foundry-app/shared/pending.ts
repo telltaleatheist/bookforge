@@ -146,11 +146,11 @@ export const PENDING_IN: Readonly<Record<JobState, boolean>> = {
 /**
  * THE LEDGER ACTION A QUEUE ROW WILL LAND AS, for the rows that land one.
  *
- * Three members and no more, deliberately. A reading, an analysis, a mint and an
- * environment install all have surfaces of their own — the shelf's progress, the
- * hits panel, the light table — and a promise drawn for them in the tree would be
- * a second place saying the same news. What is here is exactly the family whose
- * landing puts a card in the history: the three text passes (`TEXT_PASS_ACTIONS`,
+ * The three text passes, and an analysis (2026-10-30, below). A reading, a mint
+ * and an environment install have surfaces of their own — the shelf's progress,
+ * the light table — and a promise drawn for them in the tree would be a second
+ * place saying the same news. What is here is the family whose landing puts a
+ * card in the history: the three text passes (`TEXT_PASS_ACTIONS`,
  * shared/ledger.ts).
  *
  * AN EXPORT IS NOT IN THIS TABLE and is not missing from it: an export lands a
@@ -163,6 +163,16 @@ const LANDS_AS: Readonly<Partial<Record<Job['kind'], StepAction>>> = {
   translate: 'translate',
   simplify: 'simplify',
   clean: 'clean',
+  /*
+   * AND AN ANALYSIS, SINCE 2026-10-30. Owen, queuing one in BookForge: *"it shows
+   * in the side as an EPUB step rather than analysis."* The host had marked the
+   * row as promising its `stepId` and this table did not know the kind, so the
+   * tree drew it as a promised export — the only promise it knew how to name.
+   * The hits panel is still where an analysis is read; this card is where it
+   * will land, said as what it is. It is TERMINAL (nothing is made from it), so
+   * the card offers no acts — see `produces` in open-documents.component.ts.
+   */
+  analysis: 'analysis',
 };
 
 /**

@@ -395,9 +395,13 @@ const FINAL_LAYER = 'final';
  */
 function mintsOf(request: EngineRequest): string | undefined {
   if (isTextPassRequest(request)) return request.stepId;
+  // AN ANALYSIS MINTS ITS STEP (2026-10-30), as a text pass does: the card waits
+  // in the tree where the report will land, terminal (`LANDS_AS`, shared/pending.ts).
+  if (request.kind === 'analysis') return request.stepId;
   // A TRIAGE MINTS NOTHING: the cleanup behind it is the step, and a grayed card
-  // for the question in front of the answer would be two cards for one act.
-  if (request.kind === 'read' || request.kind === 'analysis' || request.kind === 'clean-triage'
+  // for the question in front of the answer would be two cards for one act. Nor
+  // does a ranking, for the same reason: the analysis behind it is the step.
+  if (request.kind === 'read' || request.kind === 'clean-triage'
     || request.kind === 'analysis-rank') {
     return undefined;
   }

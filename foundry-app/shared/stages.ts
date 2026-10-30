@@ -136,6 +136,9 @@ export function arrivedAsBook(project: ProjectSummary | null): boolean {
  */
 export function hasBookAt(project: ProjectSummary | null, standing: LedgerStep | null): boolean {
   if (project === null) return false;
+  // AN ANALYSIS IS TERMINAL (Owen, 2026-10-30): a report about the book above it,
+  // never a book itself, so nothing is made from it — every act asks here.
+  if (standing !== null && standing.action === 'analysis') return false;
   const arrived = arrivedAsBook(project);
   if (!project.reading.done && !arrived) return false;
   return arrived || !standsOnAnArrival(standing);
@@ -399,6 +402,8 @@ export function hostActPositionFrom(
   standing: LedgerStep | null,
 ): LedgerStep | null {
   if (ledger === null || standing === null) return null;
+  // Nor a host act from an analysis — terminal, as `hasBookAt` says.
+  if (standing.action === 'analysis') return null;
   /*
    * THE SAME CORRECTION AS `hasBookAt`: this named `import` when `import` was
    * the only arrival. Standing on a capture step it used to hand the host act

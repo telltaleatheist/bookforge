@@ -2606,8 +2606,10 @@ export class OpenDocumentsComponent {
           // book exactly as the landed one will, and a promised EPUB is the file a
           // host act consumes. `hasBook` is the test every real card in this book is
           // drawn by: a promise cannot make a book out of a project that has none.
+          // A promised ANALYSIS offers nothing, as the landed one does not: it
+          // is terminal (see the landed card's `produces`).
           produces: node !== null
-            ? (hasBook ? 'book' : null)
+            ? (hasBook && node.action !== 'analysis' ? 'book' : null)
             : (promise.kind === 'epub' ? 'export' : null),
           madeFrom: file !== null ? promise.parentStep ?? null : null,
           nodeId: file !== null ? id : null,
@@ -2712,7 +2714,15 @@ export class OpenDocumentsComponent {
             depth,
             dir: project.dir,
             step,
-            produces: hasBook && (arrivedAsBook || step.action !== 'import') ? 'book' : null,
+            /*
+             * AN ANALYSIS IS TERMINAL (Owen, 2026-10-30: *"its a special step
+             * that's terminal - there arent other steps that can be derived form
+             * it"*): it is a report ABOUT the book above it, not a state of the
+             * book, so its card offers no acts. Translating or narrating is done
+             * on the step it was run against.
+             */
+            produces: hasBook && step.action !== 'analysis'
+              && (arrivedAsBook || step.action !== 'import') ? 'book' : null,
             current: step.id === standing,
             onTheShelf: step.id === shelf,
             stale: step.stale === true,
@@ -3128,6 +3138,10 @@ export class OpenDocumentsComponent {
      */
     if (row.kind === 'step' && row.step !== null && row.step.action === 'analysis') {
       this.picked.set(row.key);
+      // A PROMISED analysis has no report yet, and standing on it would make the
+      // dock act from a report — so it takes the selection and opens nothing,
+      // like a promised file. The panel opens once the card has landed.
+      if (row.promise !== null) return;
       if (row.dir !== null) this.stage.startAnalysisAt(row.dir, row.step.id);
       return;
     }
