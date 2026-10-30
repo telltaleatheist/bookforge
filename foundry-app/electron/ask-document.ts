@@ -155,8 +155,12 @@ export function cancelAsk(runId: string): void {
 // The run
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** Where a run is pointed: the client, the model id, its window, and the hold. */
-interface Target {
+/**
+ * Where a run is pointed: the client, the model id, its window, and the hold.
+ * Category suggestions (electron/suggest-categories.ts) point one chat the same
+ * way, which is why this and {@link chatWithin} are exported.
+ */
+export interface Target {
   server: string;
   client: CrucibleClient;
   model: string;
@@ -166,8 +170,19 @@ interface Target {
   session: HeldSession | null;
 }
 
-async function target(request: AskRequest, say: (status: string) => void, signal: AbortSignal): Promise<Target> {
-  const name = request.server !== null && request.server.length > 0 ? request.server : topRankedCrucible();
+/**
+ * THE SERVER AND MODEL A DROPDOWN NAMED, made ready: a local model loaded and
+ * held by a session the caller releases, a forwarded one passed through.
+ * `act` is what the server shows the work as.
+ */
+export async function crucibleTarget(
+  server: string | null,
+  chosen: string,
+  act: string,
+  say: (status: string) => void,
+  signal: AbortSignal,
+): Promise<Target> {
+  const name = server !== null && server.length > 0 ? server : topRankedCrucible();
   const entry = crucibleServerNamed(name);
   if (entry === null) {
     throw new Error(`"${name}" is not a registered Crucible server. It may have been renamed or removed; pick a model again.`);
@@ -176,7 +191,6 @@ async function target(request: AskRequest, say: (status: string) => void, signal
   // engine work, so the hop is followed once (crucible-dispatch.ts says why).
   const engine = (await resolveEngine(entry)).entry;
   const client = clientFor(engine);
-  const chosen = request.model;
 
   if (chosen.includes('/')) {
     // Forwarded on the server's upstream account: nothing on the card to hold.
@@ -196,7 +210,7 @@ async function target(request: AskRequest, say: (status: string) => void, signal
   const session = await openSession(
     engine,
     chosen.length === 0 ? { maxParamsB: JOB_MODEL_CEILING_B } : { model: chosen },
-    ACT,
+    act,
     entry.name,
     say,
     signal,
@@ -253,7 +267,7 @@ async function runAsk(
   };
 
   say('Starting…');
-  const to = await target(request, say, signal);
+  const to = await crucibleTarget(request.server, request.model, ACT, say, signal);
   try {
     const summary = await loop(to, request, box, signal, (r, prose, status) => {
       round = r;
@@ -467,7 +481,7 @@ export function isWeather(err: unknown): boolean {
 }
 
 /** One chat, with weather retried inside {@link ATTEMPTS} and a growing wait. */
-async function chatWithin(
+export async function chatWithin(
   to: Target,
   options: Parameters<CrucibleClient['chat']>[0] & { signal: AbortSignal },
 ): ReturnType<CrucibleClient['chat']> {

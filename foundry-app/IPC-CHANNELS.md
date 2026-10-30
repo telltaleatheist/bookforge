@@ -1070,6 +1070,7 @@ cannot report a failure. They are registered in one function, `registerIpc`
 | `acts:gates` | Is anything SERVING each of the five acts, and the sentence either way — translate, simplify, analysis, clean, read. An enabled engine whose capability row says so, a connected cloud provider, or (for `read` alone) the page reader on this disk. It measured this machine — the card, the catalogue floor, Ollama's library — until 2026-09-15, and does not any more: Foundry runs no model. Not the stage gate: whether an act applies where somebody is standing is `shared/stages.ts`, in the renderer, and a tile needs both. |
 | `analysis:read-categories` | The analysis categories this user wrote themselves, from `app-settings.json`. App-level: they are the reader's, not one project's. |
 | `analysis:write-categories` | Replace that list, and answer with it as stored — ids re-derived from names, fields capped, collisions with a built-in or with each other dropped. |
+| `analysis:suggest-categories` | Propose categories for a book: excerpts of the book at its position and the reader's existing categories, one chat on the dialog's server and model. Answers with the theme and the proposals; saves nothing. |
 | `ask:cancel` | Stop a running Ask; nothing it marked is kept. |
 | `ask:save-session` | Keep a landed Ask run in `<project>/ops/ask-sessions.jsonl`, so its review card survives a reload. |
 | `ask:sessions` | Every Ask run kept for a project, oldest first. |

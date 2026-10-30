@@ -8,6 +8,7 @@
  * renderer's `window.foundry` is typed as it.
  */
 import type { CustomAnalysisCategory } from './analysis-categories';
+import type { SuggestCategoriesRequest, SuggestCategoriesResult } from './category-suggestions';
 import type { IncomingPairingRequest, RemotePairingProgress } from './remote-pairing';
 import type { BookOutcome } from './book';
 import type { CrucibleCoordinationMap, CrucibleCoordinationState } from './coordinate-wire';
@@ -964,6 +965,8 @@ export interface FoundryApi {
   analysis: {
     readCategories(): Promise<CustomAnalysisCategory[]>;
     writeCategories(categories: CustomAnalysisCategory[]): Promise<CustomAnalysisCategory[]>;
+    /** Propose categories for this book from excerpts of it, judged against the reader's own. Saves nothing. */
+    suggestCategories(request: SuggestCategoriesRequest & { title: string }): Promise<SuggestCategoriesResult>;
   };
 
   /**

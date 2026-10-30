@@ -9,6 +9,7 @@ import {
   customCategoryId,
   type CustomAnalysisCategory,
 } from '@shared/analysis-categories';
+import type { SuggestCategoriesResult, SuggestedCategory } from '@shared/category-suggestions';
 import { fold } from '@shared/original';
 import { canTranslateFrom } from '@shared/stages';
 import {
@@ -267,12 +268,60 @@ import { api, hosted } from '../../core/foundry';
             </div>
           }
 
+          <!--
+            SUGGESTED FOR THIS BOOK (Owen, 2026-10-30). The model the dropdown
+            names reads excerpts of the book with the categories above as the
+            brief, and proposes what else this reader would want flagged.
+            Nothing is saved until Add, which is the add form's own save; Edit
+            puts it in that form to be changed first.
+          -->
+          @if (suggesting()) {
+            <p class="note">Reading excerpts of the book and asking the model what else to look for. Loading a model can take a minute.</p>
+          }
+          @if (suggestProblem(); as reason) {
+            <p class="problem">{{ reason }}</p>
+          }
+          @if (suggested(); as found) {
+            <div class="field">
+              <span class="label">Suggested for this book <em>{{ found.model }} on {{ found.server }}, from {{ found.excerpts }} excerpts</em></span>
+              @if (found.theme.length > 0) {
+                <p class="note">{{ found.theme }}</p>
+              }
+              @if (found.suggestions.length === 0) {
+                <p class="note">Nothing the categories above do not already cover.</p>
+              }
+              <div class="checklist mine">
+                @for (one of found.suggestions; track one.name) {
+                  <div class="check own suggestion">
+                    <span class="check-name">
+                      {{ one.name }}
+                      <em class="check-said">{{ one.description }}</em>
+                      @if (one.quote.length > 0) {
+                        <em class="check-said quote">“{{ one.quote }}”</em>
+                      }
+                    </span>
+                    <span class="suggest-acts">
+                      <button type="button" class="ghost small" [disabled]="saving()" (click)="keepSuggestion(one)">Add</button>
+                      <button type="button" class="ghost small" (click)="editSuggestion(one)">Edit…</button>
+                    </span>
+                  </div>
+                }
+              </div>
+              <div class="picks">
+                <button class="ghost small" (click)="suggested.set(null)">Dismiss suggestions</button>
+              </div>
+            </div>
+          }
+
           <div class="picks">
             <button class="ghost small" (click)="pickAll()">All</button>
             <button class="ghost small" (click)="pickNone()">None</button>
             @if (!adding()) {
               <button class="ghost small" (click)="startAdding()">Add a category…</button>
             }
+            <button class="ghost small" [disabled]="suggesting() || !canRun() || !modelReady()" (click)="suggest()">
+              {{ suggesting() ? 'Suggesting…' : 'Suggest from this book' }}
+            </button>
             <span class="tally">{{ picked().size }} of {{ all().length }}</span>
           </div>
 
@@ -488,6 +537,10 @@ import { api, hosted } from '../../core/foundry';
                   color 100ms cubic-bezier(0, 0, 0.2, 1);
     }
     .drop:hover { background: var(--bg-active); color: var(--danger, var(--warn)); }
+    .suggestion { cursor: default; }
+    .suggestion:hover { background: transparent; }
+    .check-said.quote { font-style: italic; margin-top: 2px; }
+    .suggest-acts { flex: 0 0 auto; display: flex; flex-direction: column; gap: 4px; }
 
     .adder {
       padding: 10px;
@@ -757,48 +810,97 @@ export class AnalysisDialogComponent {
    * disk; this is the conversation.
    */
   protected async save(): Promise<void> {
-    if (!api) return;
-    const name = this.newName().replace(/\s+/g, ' ').trim();
-    const description = this.newSaid().replace(/\s+/g, ' ').trim();
-    if (name.length === 0) {
-      this.addProblem.set('Give it a name — that is what the checklist and the legend will say.');
-      return;
-    }
+    const refused = await this.keep(this.newName(), this.newSaid());
+    if (refused === null) this.stopAdding();
+    else this.addProblem.set(refused);
+  }
+
+  /**
+   * THE ONE SAVE, for the add form and for a suggestion's Add alike: null when it
+   * was kept (and ticked), else the sentence saying why not.
+   */
+  private async keep(rawName: string, rawSaid: string): Promise<string | null> {
+    if (!api) return 'There is no app behind this window to save into.';
+    const name = rawName.replace(/\s+/g, ' ').trim();
+    const description = rawSaid.replace(/\s+/g, ' ').trim();
+    if (name.length === 0) return 'Give it a name — that is what the checklist and the legend will say.';
     if (description.length === 0) {
-      this.addProblem.set(
-        'Write the sentence. It is the whole of what gets measured: without it there is nothing '
-        + 'to score a sentence of the book against.',
-      );
-      return;
+      return 'Write the sentence. It is the whole of what gets measured: without it there is nothing '
+        + 'to score a sentence of the book against.';
     }
     const id = customCategoryId(name);
-    if (id.length === 0) {
-      this.addProblem.set('That name is all punctuation, so there is nothing to file it under.');
-      return;
-    }
+    if (id.length === 0) return 'That name is all punctuation, so there is nothing to file it under.';
     if (ANALYSIS_CATEGORY_IDS.includes(id)) {
-      this.addProblem.set(
-        `Foundry already looks for something it calls “${name}”, with a line that was `
-        + 'measured. It is on the list above.',
-      );
-      return;
+      return `Foundry already looks for something it calls “${name}”, with a line that was `
+        + 'measured. It is on the list above.';
     }
-    if (this.mine().some((one) => one.id === id)) {
-      this.addProblem.set(`You already have a category called “${name}”.`);
-      return;
-    }
+    if (this.mine().some((one) => one.id === id)) return `You already have a category called “${name}”.`;
     this.saving.set(true);
     this.addProblem.set(null);
     try {
       const held = await api.analysis.writeCategories([...this.mine(), { id, name, description }]);
       this.mine.set(held);
       this.picked.update((was) => new Set([...was, id]));
-      this.stopAdding();
+      return null;
     } catch (err) {
-      this.addProblem.set(err instanceof Error ? err.message : String(err));
+      return err instanceof Error ? err.message : String(err);
     } finally {
       this.saving.set(false);
     }
+  }
+
+  /** Suggestions in flight, the last answer, and why there is none. */
+  protected readonly suggesting = signal(false);
+  protected readonly suggested = signal<SuggestCategoriesResult | null>(null);
+  protected readonly suggestProblem = signal<string | null>(null);
+
+  /**
+   * ASK FOR SUGGESTIONS, on the server and model the dropdowns name — the same
+   * pair the run would use, so a person who picked this PC's 27B for the
+   * analysis gets suggestions from it too.
+   */
+  protected async suggest(): Promise<void> {
+    const input = this.source();
+    if (input === null || !api) return;
+    this.suggesting.set(true);
+    this.suggestProblem.set(null);
+    try {
+      this.suggested.set(await api.analysis.suggestCategories({
+        inputPath: input,
+        server: this.server(),
+        model: this.chosenModel(),
+        title: this.name(),
+      }));
+    } catch (err) {
+      this.suggestProblem.set(err instanceof Error ? err.message : String(err));
+    } finally {
+      this.suggesting.set(false);
+    }
+  }
+
+  /** Add a suggestion as it stands; it leaves the list once it is one of yours. */
+  protected async keepSuggestion(one: SuggestedCategory): Promise<void> {
+    const refused = await this.keep(one.name, one.description);
+    if (refused !== null) {
+      this.suggestProblem.set(refused);
+      return;
+    }
+    this.suggestProblem.set(null);
+    this.dropSuggestion(one);
+  }
+
+  /** Put a suggestion in the add form to be changed before it is saved. */
+  protected editSuggestion(one: SuggestedCategory): void {
+    this.newName.set(one.name);
+    this.newSaid.set(one.description);
+    this.startAdding();
+    this.dropSuggestion(one);
+  }
+
+  private dropSuggestion(one: SuggestedCategory): void {
+    this.suggested.update((was) => (was === null
+      ? null
+      : { ...was, suggestions: was.suggestions.filter((s) => s !== one) }));
   }
 
   /**

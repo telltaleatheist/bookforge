@@ -212,6 +212,7 @@ const api: FoundryApi = {
   analysis: {
     readCategories: () => ipcRenderer.invoke('analysis:read-categories'),
     writeCategories: (categories) => ipcRenderer.invoke('analysis:write-categories', categories),
+    suggestCategories: (request) => ipcRenderer.invoke('analysis:suggest-categories', request),
   },
 
   projects: {
