@@ -14,6 +14,7 @@ import type { CrucibleInstallEvent } from '../shared/crucible-install-wire';
 import type { HostOffers, HostStatus } from '../shared/host-ops';
 import type { CruciblePullProgress } from '../shared/model-wire';
 import type { AskProgress } from '../shared/ask';
+import type { SuggestProgress } from '../shared/category-suggestions';
 import type {
   AppQuestion,
   Asked,
@@ -212,7 +213,9 @@ const api: FoundryApi = {
   analysis: {
     readCategories: () => ipcRenderer.invoke('analysis:read-categories'),
     writeCategories: (categories) => ipcRenderer.invoke('analysis:write-categories', categories),
-    suggestCategories: (request) => ipcRenderer.invoke('analysis:suggest-categories', request),
+    suggestStart: (request) => ipcRenderer.invoke('analysis:suggest-start', request),
+    suggestCancel: (runId) => ipcRenderer.invoke('analysis:suggest-cancel', runId),
+    onSuggestProgress: (listener) => subscribe<SuggestProgress>('analysis:suggest-progress', listener),
   },
 
   projects: {

@@ -67,7 +67,7 @@ import { readEngineSettings, testUpstream, writeEngineSettings } from './crucibl
 import { crucibleFaultWords, crucibleRunState, startCrucible } from './crucible-start';
 import { engineCatalog, jobModelOffer, pullSubject, rememberJobModel, removeModel } from './crucible-models';
 import { cancelAsk, readAskSessions, saveAskSession, startAsk } from './ask-document';
-import { suggestCategories } from './suggest-categories';
+import { cancelSuggest, startSuggest } from './suggest-categories';
 import type { SuggestCategoriesRequest } from '../shared/category-suggestions';
 import type { AskRequest, AskSession } from '../shared/ask';
 import type { JobModelKind } from '../shared/job-models';
@@ -3346,18 +3346,18 @@ export function registerIpc(): void {
       }).analysisCategories,
   );
   /*
-   * SUGGEST CATEGORIES FROM THE BOOK — one chat over excerpts, answered as a
-   * list the dialog offers and nothing saved (electron/suggest-categories.ts).
-   * The book must be one this window opened, the plan door's own gate.
+   * SUGGEST CATEGORIES FROM THE BOOK — one streamed chat over excerpts
+   * (electron/suggest-categories.ts). Ask's shape: start answers with the run's
+   * id at once, the run arrives on `analysis:suggest-progress`, and each
+   * suggestion is saved into the user's categories as it arrives. The book must
+   * be one this window opened, the plan door's own gate.
    */
-  ipcMain.handle(
-    'analysis:suggest-categories',
-    (_event, request: SuggestCategoriesRequest & { title: string }) => {
-      const source = admitted(request.inputPath);
-      if (source === null) throw new Error(`${request.inputPath} was never opened in this app.`);
-      return suggestCategories(source, request);
-    },
-  );
+  ipcMain.handle('analysis:suggest-start', (_event, request: SuggestCategoriesRequest) => {
+    const source = admitted(request.inputPath);
+    if (source === null) throw new Error(`${request.inputPath} was never opened in this app.`);
+    return startSuggest(request, source, (frame) => { broadcast('analysis:suggest-progress', frame); });
+  });
+  ipcMain.handle('analysis:suggest-cancel', (_event, runId: string) => { cancelSuggest(runId); });
 
   /*
    * ── ASK THE DOCUMENT — a model works through the book with tools ──────────

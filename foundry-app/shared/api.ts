@@ -8,7 +8,7 @@
  * renderer's `window.foundry` is typed as it.
  */
 import type { CustomAnalysisCategory } from './analysis-categories';
-import type { SuggestCategoriesRequest, SuggestCategoriesResult } from './category-suggestions';
+import type { SuggestCategoriesRequest, SuggestProgress } from './category-suggestions';
 import type { IncomingPairingRequest, RemotePairingProgress } from './remote-pairing';
 import type { BookOutcome } from './book';
 import type { CrucibleCoordinationMap, CrucibleCoordinationState } from './coordinate-wire';
@@ -965,8 +965,14 @@ export interface FoundryApi {
   analysis: {
     readCategories(): Promise<CustomAnalysisCategory[]>;
     writeCategories(categories: CustomAnalysisCategory[]): Promise<CustomAnalysisCategory[]>;
-    /** Propose categories for this book from excerpts of it, judged against the reader's own. Saves nothing. */
-    suggestCategories(request: SuggestCategoriesRequest & { title: string }): Promise<SuggestCategoriesResult>;
+    /**
+     * Propose categories for this book from excerpts of it, judged against the
+     * reader's own; each is saved into their categories as it arrives. Answers
+     * with the run's id; the run arrives on `onSuggestProgress`.
+     */
+    suggestStart(request: SuggestCategoriesRequest): Promise<string>;
+    suggestCancel(runId: string): Promise<void>;
+    onSuggestProgress(listener: (frame: SuggestProgress) => void): () => void;
   };
 
   /**

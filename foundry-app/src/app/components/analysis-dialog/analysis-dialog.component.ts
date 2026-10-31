@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, computed, effect, inject, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, DestroyRef, effect, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 
 import {
@@ -9,7 +9,7 @@ import {
   customCategoryId,
   type CustomAnalysisCategory,
 } from '@shared/analysis-categories';
-import type { SuggestCategoriesResult, SuggestedCategory } from '@shared/category-suggestions';
+import type { SuggestProgress } from '@shared/category-suggestions';
 import { fold } from '@shared/original';
 import { canTranslateFrom } from '@shared/stages';
 import {
@@ -156,70 +156,113 @@ import { api, hosted } from '../../core/foundry';
           -->
           <p class="fact" [title]="input">{{ name() }}</p>
 
+          <!--
+            LIT BOXES, NOT CHECKBOXES (Owen, 2026-10-30: "checkbox isnt the
+            bookforge way of doing it … having a box that contains the text and
+            clicking the box and it lights up the whole box"). The export
+            dialog's format cards are the pattern: the chosen box wears the
+            accent fill and border. These are many-of-many, so each is a toggle
+            (aria-pressed) rather than a radio.
+          -->
           <div class="field">
-            <span class="label">Look for <em>every ticked category is measured over every sentence</em></span>
+            <span class="label">Look for <em>every lit category is measured over every sentence</em></span>
             <div class="checklist">
               @for (one of categories; track one.id) {
-                <label class="check" [class.on]="picked().has(one.id)">
-                  <input
-                    type="checkbox"
-                    [checked]="picked().has(one.id)"
-                    (change)="flip(one.id)">
-                  <span class="check-name">
-                    {{ one.name }}
-                    <em class="check-said">{{ one.about }}</em>
+                <button
+                  type="button"
+                  class="pick"
+                  [class.on]="picked().has(one.id)"
+                  [attr.aria-pressed]="picked().has(one.id)"
+                  (click)="flip(one.id)">
+                  <span class="pick-head">
+                    <span class="pick-name">{{ one.name }}</span>
+                    <!--
+                      UNTUNED SAID QUIETLY AND BEFORE THE RUN. docs/ANALYSIS.md §5:
+                      these have no measured line yet, so they may turn up too
+                      much or too little, and the report names them as untuned.
+                    -->
+                    @if (!one.tuned) {
+                      <span class="pick-tag" title="Not measured yet — a first draft">draft</span>
+                    }
                   </span>
-                  <!--
-                    UNTUNED SAID QUIETLY AND BEFORE THE RUN. docs/ANALYSIS.md §5:
-                    these two have no measured line yet, so they may turn
-                    up too much or too little, and the report names them as
-                    untuned. The person deciding whether to spend an hour is the
-                    person who wants to know which half of this list has been
-                    measured — which is why it is here and not only afterwards.
-                  -->
-                  @if (!one.tuned) {
-                    <span class="check-note" title="Not measured yet — a first draft">draft</span>
-                  }
-                </label>
+                  <span class="pick-said">{{ one.about }}</span>
+                </button>
               }
             </div>
           </div>
 
           <!--
-            THE USER'S OWN, IN THEIR OWN BLOCK. They are kept apart from the
-            built-ins rather than mixed in, and the reason is that they are a
-            different KIND of thing: the built-ins are the engine's list and
-            cannot be removed, these are a list this person keeps and can. One
-            grid with three removable rows scattered through it would make every
-            row look like it might vanish.
+            THE USER'S OWN, IN THEIR OWN BLOCK — typed, or suggested from a book
+            and saved the moment the model wrote them. They are kept apart from
+            the built-ins because they are a different KIND of thing: the
+            built-ins are the engine's list and cannot be changed, these are a
+            list this person keeps, edits (the pencil) and removes (the ✕).
+            A box with buttons inside it cannot itself be a <button>, so it is a
+            toggle by role, and the two small buttons stop their press from
+            reaching it.
           -->
           @if (mine().length > 0) {
             <div class="field">
-              <span class="label">Yours <em>scored from the sentence you wrote</em></span>
+              <span class="label">Yours <em>scored from the sentence you wrote, or the model suggested</em></span>
               <div class="checklist mine">
                 @for (one of mine(); track one.id) {
-                  <label class="check own" [class.on]="picked().has(one.id)">
-                    <input
-                      type="checkbox"
-                      [checked]="picked().has(one.id)"
-                      (change)="flip(one.id)">
-                    <span class="check-name">
-                      {{ one.name }}
-                      <em class="check-said">{{ one.description }}</em>
-                    </span>
-                    <!--
-                      REMOVE, AS A BUTTON INSIDE A LABEL, which needs the press
-                      stopped: a click anywhere in a label toggles its checkbox,
-                      so without this the ✕ would tick the category on its way to
-                      deleting it.
-                    -->
-                    <button
-                      type="button"
-                      class="drop"
-                      [attr.aria-label]="'Remove ' + one.name"
-                      (click)="$event.preventDefault(); drop(one.id)"
-                    >✕</button>
-                  </label>
+                  @if (editing() === one.id) {
+                    <div class="pick editing">
+                      <input
+                        type="text"
+                        [attr.maxlength]="nameMax"
+                        [ngModel]="editName()"
+                        (ngModelChange)="editName.set($event)"
+                        [attr.aria-label]="'Name of ' + one.name">
+                      <textarea
+                        rows="3"
+                        [attr.maxlength]="saidMax"
+                        [ngModel]="editSaid()"
+                        (ngModelChange)="editSaid.set($event)"
+                        [attr.aria-label]="'Description of ' + one.name"></textarea>
+                      @if (editProblem(); as reason) {
+                        <p class="problem">{{ reason }}</p>
+                      }
+                      <div class="picks">
+                        <button type="button" class="ghost small" (click)="stopEditing()">Cancel</button>
+                        <button type="button" class="ghost small" [disabled]="saving()" (click)="saveEdit(one.id)">
+                          {{ saving() ? 'Saving…' : 'Save' }}
+                        </button>
+                      </div>
+                    </div>
+                  } @else {
+                    <div
+                      class="pick own"
+                      role="button"
+                      tabindex="0"
+                      [class.on]="picked().has(one.id)"
+                      [attr.aria-pressed]="picked().has(one.id)"
+                      (click)="flip(one.id)"
+                      (keydown.enter)="flip(one.id)"
+                      (keydown.space)="$event.preventDefault(); flip(one.id)">
+                      <span class="pick-head">
+                        <span class="pick-name">{{ one.name }}</span>
+                        @if (suggestedHere().has(one.id)) {
+                          <span class="pick-tag" title="Suggested from this book just now">suggested</span>
+                        }
+                        <button
+                          type="button"
+                          class="tool"
+                          title="Change what it says"
+                          [attr.aria-label]="'Edit ' + one.name"
+                          (click)="$event.stopPropagation(); startEditing(one)"
+                          (keydown)="$event.stopPropagation()">✎</button>
+                        <button
+                          type="button"
+                          class="tool drop"
+                          title="Remove it from your categories"
+                          [attr.aria-label]="'Remove ' + one.name"
+                          (click)="$event.stopPropagation(); drop(one.id)"
+                          (keydown)="$event.stopPropagation()">✕</button>
+                      </span>
+                      <span class="pick-said">{{ one.description }}</span>
+                    </div>
+                  }
                 }
               </div>
             </div>
@@ -227,7 +270,7 @@ import { api, hosted } from '../../core/foundry';
 
           <!--
             ADDING ONE. Two fields and a button, folded away until asked for: the
-            ordinary visit to this dialog ticks boxes and presses Add to queue,
+            ordinary visit to this dialog lights boxes and presses Add to queue,
             and a form standing open in the middle of it would be a question
             nobody came here to answer.
           -->
@@ -268,62 +311,44 @@ import { api, hosted } from '../../core/foundry';
             </div>
           }
 
-          <!--
-            SUGGESTED FOR THIS BOOK (Owen, 2026-10-30). The model the dropdown
-            names reads excerpts of the book with the categories above as the
-            brief, and proposes what else this reader would want flagged.
-            Nothing is saved until Add, which is the add form's own save; Edit
-            puts it in that form to be changed first.
-          -->
-          @if (suggesting()) {
-            <p class="note">Reading excerpts of the book and asking the model what else to look for. Loading a model can take a minute.</p>
-          }
-          @if (suggestProblem(); as reason) {
-            <p class="problem">{{ reason }}</p>
-          }
-          @if (suggested(); as found) {
-            <div class="field">
-              <span class="label">Suggested for this book <em>{{ found.model }} on {{ found.server }}, from {{ found.excerpts }} excerpts</em></span>
-              @if (found.theme.length > 0) {
-                <p class="note">{{ found.theme }}</p>
-              }
-              @if (found.suggestions.length === 0) {
-                <p class="note">Nothing the categories above do not already cover.</p>
-              }
-              <div class="checklist mine">
-                @for (one of found.suggestions; track one.name) {
-                  <div class="check own suggestion">
-                    <span class="check-name">
-                      {{ one.name }}
-                      <em class="check-said">{{ one.description }}</em>
-                      @if (one.quote.length > 0) {
-                        <em class="check-said quote">“{{ one.quote }}”</em>
-                      }
-                    </span>
-                    <span class="suggest-acts">
-                      <button type="button" class="ghost small" [disabled]="saving()" (click)="keepSuggestion(one)">Add</button>
-                      <button type="button" class="ghost small" (click)="editSuggestion(one)">Edit…</button>
-                    </span>
-                  </div>
-                }
-              </div>
-              <div class="picks">
-                <button class="ghost small" (click)="suggested.set(null)">Dismiss suggestions</button>
-              </div>
-            </div>
-          }
-
           <div class="picks">
             <button class="ghost small" (click)="pickAll()">All</button>
             <button class="ghost small" (click)="pickNone()">None</button>
             @if (!adding()) {
               <button class="ghost small" (click)="startAdding()">Add a category…</button>
             }
-            <button class="ghost small" [disabled]="suggesting() || !canRun() || !modelReady()" (click)="suggest()">
-              {{ suggesting() ? 'Suggesting…' : 'Suggest from this book' }}
+            <button class="ghost small" [disabled]="suggestion() !== null || !canRun() || !modelReady()" (click)="suggest()">
+              Suggest from this book
             </button>
             <span class="tally">{{ picked().size }} of {{ all().length }}</span>
           </div>
+
+          <!--
+            THE SUGGESTION RUN, UNDER ITS BUTTON AND NOT IN A SECOND MODAL (Owen,
+            2026-10-30: "a small progress bar and a stop button next to it under
+            the suggest button"). The bar and the time left are estimates and
+            say so; the sentence beside them is the server's own, so "#1 in its
+            line" and "loading qwen3.8-27b-4bit" read as what they are. Each
+            suggestion appears above as a box of its own as it arrives.
+          -->
+          @if (suggestion(); as run) {
+            <div class="suggesting">
+              <div class="bar-row">
+                <div class="bar" role="progressbar" [attr.aria-valuenow]="pct(run.fraction)" aria-valuemin="0" aria-valuemax="100">
+                  <div class="bar-fill" [style.width.%]="pct(run.fraction)"></div>
+                </div>
+                <span class="eta">{{ eta(run.etaS) }}</span>
+                <button type="button" class="ghost small" (click)="stopSuggesting()">Stop</button>
+              </div>
+              <p class="note">{{ run.status }}</p>
+            </div>
+          }
+          @if (suggestNote(); as said) {
+            <p class="note">{{ said }}</p>
+          }
+          @if (suggestProblem(); as reason) {
+            <p class="problem">{{ reason }}</p>
+          }
 
 
           <p class="note">
@@ -486,30 +511,38 @@ import { api, hosted } from '../../core/foundry';
     .checklist {
       display: grid;
       grid-template-columns: 1fr 1fr;
-      gap: 2px 10px;
+      gap: 6px;
     }
-    .check {
-      display: flex; align-items: flex-start; gap: 6px;
-      padding: 4px 6px;
-      border-radius: var(--radius-sm);
-      font-size: 12px; color: var(--text-secondary);
-      cursor: pointer;
-      user-select: none;
-    }
-    .check:hover { background: var(--bg-hover); }
-    .check.on { color: var(--text-primary); }
     /*
-      EVERY ROW CARRIES ITS GLOSS NOW (Owen, 2026-10-30: the categories listed in
-      the modal, with descriptions), so a name wraps instead of being clipped and
-      the box sits on the first line rather than the middle of three.
+      THE LIT BOX — the export dialog's \`.kind\` card, many-of-many. The chosen
+      ones wear the accent, which is this app's one word for "this is the thing":
+      the same soft fill the action menu's active row uses.
     */
-    .check-name { flex: 1; min-width: 0; white-space: normal; }
-    .check input { margin-top: 3px; }
+    .pick {
+      display: flex; flex-direction: column; gap: 2px;
+      padding: 7px 10px;
+      background: var(--bg-input);
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius-md);
+      text-align: left; cursor: pointer;
+      font: inherit; color: inherit;
+      user-select: none;
+      transition: background-color 100ms cubic-bezier(0, 0, 0.2, 1),
+                  border-color 100ms cubic-bezier(0, 0, 0.2, 1);
+    }
+    .pick:hover { background: var(--bg-hover); border-color: var(--border-strong); }
+    .pick:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+    .pick.on { background: var(--accent-soft); border-color: var(--accent); }
+    .pick-head { display: flex; align-items: flex-start; gap: 6px; }
+    .pick-name { flex: 1; min-width: 0; font-size: 12px; font-weight: 500; color: var(--text-secondary); }
+    .pick.on .pick-name { color: var(--accent); }
+    .pick-said { font-size: 10.5px; line-height: 1.4; color: var(--text-tertiary); }
     /* A word and not a colour: an untuned category is not a WARNING, it is a fact
-       about how much has been measured, and an amber pip beside four rows of a
-       checklist would read as something being wrong with them. */
-    .check-note {
+       about how much has been measured, and an amber pip beside several boxes
+       would read as something being wrong with them. */
+    .pick-tag {
       flex: 0 0 auto;
+      margin-top: 2px;
       font-family: var(--font-mono);
       font-size: 8.5px; letter-spacing: 0.08em; text-transform: uppercase;
       color: var(--text-tertiary);
@@ -521,26 +554,30 @@ import { api, hosted } from '../../core/foundry';
       carry one short gloss each and fit two abreast; these are not the same shape.
     */
     .checklist.mine { grid-template-columns: 1fr; }
-    .check-said {
-      display: block;
-      font-style: normal;
-      font-size: 10.5px; line-height: 1.4;
-      color: var(--text-tertiary);
-      white-space: normal;
-    }
-    .drop {
+    .tool {
       flex: 0 0 auto;
       background: transparent; border: none; cursor: pointer;
-      color: var(--text-tertiary); font-size: 10px;
+      color: var(--text-tertiary); font-size: 11px; line-height: 1;
       padding: 2px 4px; border-radius: var(--radius-sm);
       transition: background-color 100ms cubic-bezier(0, 0, 0.2, 1),
                   color 100ms cubic-bezier(0, 0, 0.2, 1);
     }
-    .drop:hover { background: var(--bg-active); color: var(--danger, var(--warn)); }
-    .suggestion { cursor: default; }
-    .suggestion:hover { background: transparent; }
-    .check-said.quote { font-style: italic; margin-top: 2px; }
-    .suggest-acts { flex: 0 0 auto; display: flex; flex-direction: column; gap: 4px; }
+    .tool:hover { background: var(--bg-active); color: var(--text-primary); }
+    .tool.drop:hover { color: var(--danger, var(--warn)); }
+    .pick.editing { cursor: default; gap: 6px; background: var(--bg-sunken); }
+    .pick.editing:hover { border-color: var(--border-default); }
+    .pick.editing textarea { resize: vertical; min-height: 44px; line-height: 1.45; }
+
+    /* The suggestion run: a thin bar, the time left, and Stop, under the button. */
+    .suggesting { display: flex; flex-direction: column; gap: 4px; }
+    .bar-row { display: flex; align-items: center; gap: 8px; }
+    .bar {
+      flex: 1; height: 4px;
+      background: var(--bg-sunken);
+      border-radius: 2px; overflow: hidden;
+    }
+    .bar-fill { height: 100%; background: var(--accent); transition: width 900ms linear; }
+    .eta { font-size: 11px; color: var(--text-tertiary); font-variant-numeric: tabular-nums; white-space: nowrap; }
 
     .adder {
       padding: 10px;
@@ -759,6 +796,18 @@ export class AnalysisDialogComponent {
       this.problem.set(null);
     });
     void this.loadMine();
+    /*
+     * THE SUGGESTION FRAMES, for as long as this card exists. Closing the card
+     * stops a run that is still going — the model is released, and every
+     * suggestion that already arrived stays saved.
+     */
+    if (api) {
+      const off = api.analysis.onSuggestProgress((frame) => this.onSuggestFrame(frame));
+      inject(DestroyRef).onDestroy(() => {
+        off();
+        void this.stopSuggesting();
+      });
+    }
   }
 
   /**
@@ -816,8 +865,8 @@ export class AnalysisDialogComponent {
   }
 
   /**
-   * THE ONE SAVE, for the add form and for a suggestion's Add alike: null when it
-   * was kept (and ticked), else the sentence saying why not.
+   * THE ADD FORM'S SAVE: null when it was kept (and lit), else the sentence
+   * saying why not.
    */
   private async keep(rawName: string, rawSaid: string): Promise<string | null> {
     if (!api) return 'There is no app behind this window to save into.';
@@ -849,58 +898,158 @@ export class AnalysisDialogComponent {
     }
   }
 
-  /** Suggestions in flight, the last answer, and why there is none. */
-  protected readonly suggesting = signal(false);
-  protected readonly suggested = signal<SuggestCategoriesResult | null>(null);
+  // ── Suggested from this book ─────────────────────────────────────────────
+
+  /**
+   * THE RUN IN FLIGHT, as its last frame, or null when there is none. Set to a
+   * starting frame at the press, so the bar is there before main answers.
+   */
+  protected readonly suggestion = signal<SuggestProgress | null>(null);
+  /** The ids suggested while this card has been open, for their "suggested" tag. */
+  protected readonly suggestedHere = signal<ReadonlySet<string>>(new Set());
+  /** What the last run ended with — its count and the theme it read. */
+  protected readonly suggestNote = signal<string | null>(null);
   protected readonly suggestProblem = signal<string | null>(null);
+  /** The run's id, once main or its first frame has said it. */
+  private suggestRunId: string | null = null;
 
   /**
    * ASK FOR SUGGESTIONS, on the server and model the dropdowns name — the same
    * pair the run would use, so a person who picked this PC's 27B for the
-   * analysis gets suggestions from it too.
+   * analysis gets suggestions from it too. What arrives is saved by main as it
+   * arrives; this card only draws the frames (`onSuggestFrame`).
    */
   protected async suggest(): Promise<void> {
     const input = this.source();
-    if (input === null || !api) return;
-    this.suggesting.set(true);
+    if (input === null || !api || this.suggestion() !== null) return;
     this.suggestProblem.set(null);
+    this.suggestNote.set(null);
+    this.suggestRunId = null;
+    this.suggestion.set({
+      runId: '', state: 'running', phase: 'loading', status: 'Starting…',
+      fraction: 0, etaS: null, theme: null, added: [], mine: null,
+    });
     try {
-      this.suggested.set(await api.analysis.suggestCategories({
+      const id = await api.analysis.suggestStart({
         inputPath: input,
+        title: this.name(),
         server: this.server(),
         model: this.chosenModel(),
-        title: this.name(),
-      }));
+      });
+      this.suggestRunId ??= id;
     } catch (err) {
+      this.suggestion.set(null);
       this.suggestProblem.set(err instanceof Error ? err.message : String(err));
-    } finally {
-      this.suggesting.set(false);
     }
   }
 
-  /** Add a suggestion as it stands; it leaves the list once it is one of yours. */
-  protected async keepSuggestion(one: SuggestedCategory): Promise<void> {
-    const refused = await this.keep(one.name, one.description);
-    if (refused !== null) {
-      this.suggestProblem.set(refused);
+  protected async stopSuggesting(): Promise<void> {
+    if (!api || this.suggestRunId === null) return;
+    await api.analysis.suggestCancel(this.suggestRunId);
+  }
+
+  /**
+   * ONE FRAME. Main runs one suggestion at a time, so a frame that arrives
+   * before `suggestStart` has answered is this card's run and names its id.
+   * The stored list is taken whole, as any write's answer is, and what this
+   * run added is lit.
+   */
+  private onSuggestFrame(frame: SuggestProgress): void {
+    if (this.suggestion() === null) return;
+    if (this.suggestRunId === null) this.suggestRunId = frame.runId;
+    else if (frame.runId !== this.suggestRunId) return;
+    if (frame.mine !== null) this.mine.set(frame.mine);
+    const fresh = frame.added.filter((id) => !this.suggestedHere().has(id));
+    if (fresh.length > 0) {
+      this.suggestedHere.update((was) => new Set([...was, ...fresh]));
+      this.picked.update((was) => new Set([...was, ...fresh]));
+    }
+    if (frame.state === 'running') {
+      this.suggestion.set(frame);
       return;
     }
-    this.suggestProblem.set(null);
-    this.dropSuggestion(one);
+    this.suggestion.set(null);
+    this.suggestRunId = null;
+    if (frame.state === 'failed') {
+      this.suggestProblem.set(frame.message ?? 'The suggestions failed.');
+      return;
+    }
+    const said = frame.state === 'cancelled' ? (frame.message ?? 'Stopped.') : frame.status;
+    this.suggestNote.set(frame.theme !== null && frame.theme.length > 0 ? `${said} It read this book as: ${frame.theme}` : said);
   }
 
-  /** Put a suggestion in the add form to be changed before it is saved. */
-  protected editSuggestion(one: SuggestedCategory): void {
-    this.newName.set(one.name);
-    this.newSaid.set(one.description);
-    this.startAdding();
-    this.dropSuggestion(one);
+  /** The bar's width, in whole percent. */
+  protected pct(fraction: number): number {
+    return Math.round(Math.max(0, Math.min(1, fraction)) * 100);
   }
 
-  private dropSuggestion(one: SuggestedCategory): void {
-    this.suggested.update((was) => (was === null
-      ? null
-      : { ...was, suggestions: was.suggestions.filter((s) => s !== one) }));
+  /** The time left, said as the estimate it is. */
+  protected eta(seconds: number | null): string {
+    if (seconds === null) return '';
+    if (seconds < 60) return `about ${Math.max(1, seconds)} s left`;
+    return `about ${Math.round(seconds / 60)} min left`;
+  }
+
+  // ── Changing one of yours (the pencil) ───────────────────────────────────
+
+  protected readonly editing = signal<string | null>(null);
+  protected readonly editName = signal('');
+  protected readonly editSaid = signal('');
+  protected readonly editProblem = signal<string | null>(null);
+
+  protected startEditing(one: CustomAnalysisCategory): void {
+    this.editing.set(one.id);
+    this.editName.set(one.name);
+    this.editSaid.set(one.description);
+    this.editProblem.set(null);
+  }
+
+  protected stopEditing(): void {
+    this.editing.set(null);
+    this.editProblem.set(null);
+  }
+
+  /**
+   * SAVE AN EDIT IN PLACE. The id is the name's slug (`customCategoryId`), so a
+   * renamed category is a new id where it stands in the list, and whether it is
+   * lit — and whether it was suggested here — moves with it.
+   */
+  protected async saveEdit(oldId: string): Promise<void> {
+    if (!api) return;
+    const name = this.editName().replace(/\s+/g, ' ').trim();
+    const description = this.editSaid().replace(/\s+/g, ' ').trim();
+    const id = customCategoryId(name);
+    let refused: string | null = null;
+    if (name.length === 0) refused = 'Give it a name — that is what the list and the legend will say.';
+    else if (description.length === 0) refused = 'Write the sentence. It is the whole of what gets measured.';
+    else if (id.length === 0) refused = 'That name is all punctuation, so there is nothing to file it under.';
+    else if (ANALYSIS_CATEGORY_IDS.includes(id)) refused = `Foundry already looks for something it calls “${name}”.`;
+    else if (this.mine().some((one) => one.id === id && one.id !== oldId)) refused = `You already have a category called “${name}”.`;
+    if (refused !== null) {
+      this.editProblem.set(refused);
+      return;
+    }
+    this.saving.set(true);
+    try {
+      const held = await api.analysis.writeCategories(
+        this.mine().map((one) => (one.id === oldId ? { id, name, description } : one)),
+      );
+      this.mine.set(held);
+      if (id !== oldId) {
+        const move = (was: ReadonlySet<string>): Set<string> => {
+          const next = new Set(was);
+          if (next.delete(oldId)) next.add(id);
+          return next;
+        };
+        this.picked.update(move);
+        this.suggestedHere.update(move);
+      }
+      this.stopEditing();
+    } catch (err) {
+      this.editProblem.set(err instanceof Error ? err.message : String(err));
+    } finally {
+      this.saving.set(false);
+    }
   }
 
   /**

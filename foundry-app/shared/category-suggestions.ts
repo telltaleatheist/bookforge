@@ -30,20 +30,24 @@
  * Name and description, the two fields of `CustomAnalysisCategory`, written to
  * the rule the add form states: the first sentence is a claim (the ranker reads
  * only that, `customOptionText` in src/analyze/plan.ts), and what follows says
- * what counts (the verifier reads the whole). Nothing is saved here. A person
- * presses Add on a suggestion and it goes through `analysis:write-categories`
- * exactly as a typed one does, slugged and capped by main.
+ * what counts (the verifier reads the whole). Main saves each one into the
+ * reader's categories the moment it closes in the stream, through the clamp a
+ * typed one goes through (electron/suggest-categories.ts); the dialog lights
+ * it, and the pencil and ✕ every category of theirs carries change or remove it.
  */
 import {
   CUSTOM_CATEGORY_DESCRIPTION_MAX,
   CUSTOM_CATEGORY_NAME_MAX,
   customCategoryId,
+  type CustomAnalysisCategory,
 } from './analysis-categories';
 
 /** What the dialog asks main for. */
 export interface SuggestCategoriesRequest {
   /** The book, as the dialog names it: the original document's path. */
   inputPath: string;
+  /** What the book is called, as the dialog shows it. */
+  title: string;
   /** A registered Crucible server's name; empty is the top-ranked one. */
   server: string;
   /** A model id; empty is Automatic, as every job dropdown means it. */
@@ -60,16 +64,33 @@ export interface SuggestedCategory {
   quote: string;
 }
 
-export interface SuggestCategoriesResult {
-  server: string;
-  model: string;
-  /** What the model took the reader to be looking for, in a sentence or two. */
-  theme: string;
-  suggestions: SuggestedCategory[];
-  /** How much of the book it was shown. */
-  excerpts: number;
-  chars: number;
-  seconds: number;
+/**
+ * ONE FRAME OF A RUN, on `analysis:suggest-progress`.
+ *
+ * Every suggestion is SAVED AS IT ARRIVES (Owen, 2026-10-30: *"list them as
+ * individual units … as soon as it adds them"*), by main, through the same
+ * clamp a typed category goes through; `mine` is the stored list after the
+ * last save, which the dialog takes as it takes any write's answer, and
+ * `added` names the ids this run made so the dialog can tick them.
+ *
+ * `fraction` and `etaS` are estimates, said as such: loading is timed against
+ * a measured minute, writing against the reply's measured length and the rate
+ * the model is actually writing at.
+ */
+export interface SuggestProgress {
+  runId: string;
+  state: 'running' | 'done' | 'failed' | 'cancelled';
+  phase: 'loading' | 'reading' | 'writing';
+  /** A sentence about what is happening now. */
+  status: string;
+  fraction: number;
+  /** Seconds left, roughly; null once there is nothing left to wait for. */
+  etaS: number | null;
+  theme: string | null;
+  added: string[];
+  mine: CustomAnalysisCategory[] | null;
+  /** On `failed` and `cancelled`. */
+  message?: string;
 }
 
 /** A category the reader already has, as the brief states it. */
@@ -240,41 +261,66 @@ export const SUGGEST_SCHEMA: Readonly<Record<string, unknown>> = {
 };
 
 /**
- * THE ANSWER, READ — or refused by name when it is not one.
+ * WHAT THE ANSWER HOLDS SO FAR — the theme once its string has closed, and every
+ * suggestion object that has closed, read out of a reply still being written.
  *
- * A suggestion that would collide with a category the reader has is dropped
- * rather than offered: pressing Add on it could only be refused. Over-long
- * fields are cut to the caps the add form enforces, so what is offered is what
- * the form would accept.
+ * The reply is schema-bound JSON (`SUGGEST_SCHEMA`), so a suggestion is complete
+ * the moment its closing brace arrives; scanning for balanced braces outside
+ * strings finds them without waiting for the whole answer. This is what lets a
+ * suggestion land in the checklist as soon as the model has written it.
  */
-export function readSuggestions(
-  content: string,
-  existing: readonly BriefCategory[],
-): { theme: string; suggestions: SuggestedCategory[] } {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(content);
-  } catch {
-    throw new Error('The model did not answer in JSON, so there are no suggestions to show.');
+export function readPartial(text: string): { theme: string | null; items: unknown[] } {
+  let theme: string | null = null;
+  const t = /"theme"\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(text);
+  if (t !== null) {
+    try { theme = (JSON.parse(`"${t[1]}"`) as string).trim(); } catch { theme = null; }
   }
-  if (typeof parsed !== 'object' || parsed === null) throw new Error('The model answered with something that is not a list of suggestions.');
-  const o = parsed as Record<string, unknown>;
-  const theme = typeof o['theme'] === 'string' ? o['theme'].trim() : '';
-  const list = Array.isArray(o['suggestions']) ? o['suggestions'] : [];
-  const taken = new Set(existing.map((one) => one.id));
-  const takenNames = new Set(existing.map((one) => one.name.toLowerCase()));
-  const suggestions: SuggestedCategory[] = [];
-  for (const item of list) {
-    if (typeof item !== 'object' || item === null) continue;
-    const s = item as Record<string, unknown>;
-    const field = (k: string): string => (typeof s[k] === 'string' ? (s[k] as string).replace(/\s+/g, ' ').trim() : '');
-    const name = field('name').slice(0, CUSTOM_CATEGORY_NAME_MAX).trim();
-    const description = field('description').slice(0, CUSTOM_CATEGORY_DESCRIPTION_MAX).trim();
-    const id = customCategoryId(name);
-    if (name.length === 0 || description.length === 0 || id.length === 0) continue;
-    if (taken.has(id) || takenNames.has(name.toLowerCase())) continue;
-    taken.add(id);
-    suggestions.push({ name, description, why: field('why'), quote: field('quote') });
+  const items: unknown[] = [];
+  const at = /"suggestions"\s*:\s*\[/.exec(text);
+  if (at === null) return { theme, items };
+  let depth = 0;
+  let start = -1;
+  let inString = false;
+  let escaped = false;
+  for (let i = at.index + at[0].length; i < text.length; i += 1) {
+    const c = text[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (c === '\\') escaped = true;
+      else if (c === '"') inString = false;
+      continue;
+    }
+    if (c === '"') inString = true;
+    else if (c === '{') { if (depth === 0) start = i; depth += 1; }
+    else if (c === '}') {
+      depth -= 1;
+      if (depth === 0 && start >= 0) {
+        try { items.push(JSON.parse(text.slice(start, i + 1))); } catch { /* not closed after all */ }
+        start = -1;
+      }
+    } else if (c === ']' && depth === 0) break;
   }
-  return { theme, suggestions };
+  return { theme, items };
+}
+
+/**
+ * ONE SUGGESTION, ADMITTED — or null when it cannot become a category.
+ *
+ * One that would collide with a category the reader has (`taken`, ids and
+ * lower-cased names) is dropped: saving it could only be refused. Over-long
+ * fields are cut to the caps the add form enforces. An admitted one is added to
+ * `taken`, so a model repeating itself is admitted once.
+ */
+export function admitSuggestion(item: unknown, taken: Set<string>): (SuggestedCategory & { id: string }) | null {
+  if (typeof item !== 'object' || item === null) return null;
+  const s = item as Record<string, unknown>;
+  const field = (k: string): string => (typeof s[k] === 'string' ? (s[k] as string).replace(/\s+/g, ' ').trim() : '');
+  const name = field('name').slice(0, CUSTOM_CATEGORY_NAME_MAX).trim();
+  const description = field('description').slice(0, CUSTOM_CATEGORY_DESCRIPTION_MAX).trim();
+  const id = customCategoryId(name);
+  if (name.length === 0 || description.length === 0 || id.length === 0) return null;
+  if (taken.has(id) || taken.has(name.toLowerCase())) return null;
+  taken.add(id);
+  taken.add(name.toLowerCase());
+  return { id, name, description, why: field('why'), quote: field('quote') };
 }
