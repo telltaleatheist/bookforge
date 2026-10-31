@@ -42,7 +42,8 @@ from .epub import UnsupportedInput
 from .normalize import (BOOK_EXACT_ENGINES, ORPHEUS, UnsupportedEngine,
                         _refuse_engine, normalize_text)
 from .packer import get_sentences, orpheus_max_chars
-from .paragraph_packer import ends_a_thought, markup_text, table_rows
+from .paragraph_packer import (bold_title, ends_a_thought, markup_text, norm_title,
+                               table_rows)
 from .sml import (
     escape_sml,
     normalize_sml_tags,
@@ -278,15 +279,10 @@ EXCLUDED_EPUB_TYPES = {
 
 
 def _norm_title(s) -> str:
-    """Tolerant title normalization for dedup: lowercase, collapse whitespace,
-    drop trailing sentence/colon punctuation, fold common smart punctuation."""
-    s = (s or '').strip()
-    s = (s.replace('’', "'").replace('‘', "'")
-          .replace('“', '"').replace('”', '"')
-          .replace('–', '-').replace('—', '-'))
-    s = re.sub(r'\s+', ' ', s)
-    s = re.sub(r'[.!?…:]+$', '', s)
-    return s.lower().strip()
+    """Tolerant title normalization for dedup. The rule moved to
+    `paragraph_packer.norm_title` on 2026-10-31, unchanged, because the Higgs
+    walk (`extract_blocks`) needs the same answer for the same question."""
+    return norm_title(s)
 
 
 def _tuple_row(node, last_text_char=None):
@@ -330,7 +326,7 @@ def _tuple_row(node, last_text_char=None):
                 name = child.name.lower()
                 first_char, last_char = _edge_chars(child)
                 lead_ws = ws_pending or first_char.isspace()
-                if name in HEADING_TAGS:
+                if name in HEADING_TAGS or bold_title(child):
                     title = heading_text(child)
                     if title:
                         if prev_child_had_data:
@@ -489,6 +485,11 @@ def filter_chapter(idx: int, doc, ctx: ChapterContext) -> list | None:
         handled_tables = set()
         prev_typ = None
         last_heading_normalized = None
+        # EVERY heading voiced since the last body text, not only the last one
+        # (2026-10-31): a book that opens a chapter "Title / Chapter 2 / Title"
+        # read the title twice, because the label between them reset the
+        # one-heading memory. Cleared exactly where that memory is.
+        recent_headings: set = set()
         chapter_title_normalized = None
         item_pending = False
         sml_statics = static_tokens()
@@ -516,7 +517,7 @@ def filter_chapter(idx: int, doc, ctx: ChapterContext) -> list | None:
                 if not ctx.skip_headings:
                     title = payload.strip()
                     norm = _norm_title(title)
-                    if norm and norm == last_heading_normalized:
+                    if norm and (norm == last_heading_normalized or norm in recent_headings):
                         print(f'[HEADING] Skipping duplicate heading: "{title}"')
                         prev_typ = typ
                         continue
@@ -531,6 +532,8 @@ def filter_chapter(idx: int, doc, ctx: ChapterContext) -> list | None:
                     # Only headings that are actually VOICED get marked.
                     text_list.append(sml_heading(title))
                     last_heading_normalized = norm
+                    if norm:
+                        recent_headings.add(norm)
                     if chapter_title_normalized is None:
                         chapter_title_normalized = norm
             elif typ == 'item_start':
@@ -565,6 +568,7 @@ def filter_chapter(idx: int, doc, ctx: ChapterContext) -> list | None:
             elif typ == 'table':
                 _close_block(text_list)
                 last_heading_normalized = None
+                recent_headings.clear()
                 table = payload
                 if table in handled_tables:
                     prev_typ = typ
@@ -589,12 +593,15 @@ def filter_chapter(idx: int, doc, ctx: ChapterContext) -> list | None:
                     # Deduplicate: skip body text that repeats the heading we just
                     # added OR the chapter title (catches a non-adjacent echo).
                     if text_check and (text_check == last_heading_normalized
+                                       or text_check in recent_headings
                                        or text_check == chapter_title_normalized):
                         print(f'[HEADING] Skipping duplicate body text: "{text}"')
                         last_heading_normalized = None
+                        recent_headings.clear()
                         prev_typ = typ
                         continue
                     last_heading_normalized = None
+                    recent_headings.clear()
                     if text_check in toc_titles_normalized:
                         if not ends_a_thought(text):
                             text += '.'

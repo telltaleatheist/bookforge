@@ -1827,5 +1827,48 @@ class PrepPolicyTest(unittest.TestCase):
                                  'scene-break', 'table']))
 
 
+class BoldTitlesAndRepeatsTest(unittest.TestCase):
+    """2026-10-31, a Jehovah's Witnesses book exported by Foundry: subheadings
+    and the "Chapter 2" label set as wholly bold paragraphs, and the chapter's
+    title said twice (the heading, the label, then the title again)."""
+
+    def kinds(self, html):
+        return [(b.kind, b.text) for b in pp.extract_blocks(_FixtureDoc(html), 'text/c0001.xhtml')]
+
+    def test_a_wholly_bold_short_paragraph_is_a_heading(self):
+        got = self.kinds('<p><strong>Science Not at Issue</strong></p>'
+                         '<p>Before proceeding further, a clarification may be helpful.</p>')
+        self.assertEqual(got[0], (pp.HEADING, 'Science Not at Issue.'))
+        self.assertEqual(got[1][0], pp.PARAGRAPH)
+
+    def test_a_bold_question_is_a_title_and_keeps_its_question_mark(self):
+        got = self.kinds('<p><b>Disagreements About Evolution—Why?</b></p>')
+        self.assertEqual(got, [(pp.HEADING, 'Disagreements About Evolution—Why?')])
+
+    def test_bold_that_is_a_sentence_or_partial_or_long_stays_a_paragraph(self):
+        for html in ('<p><strong>He was not coming back.</strong></p>',
+                     '<p><strong>Note:</strong> the figures are estimates</p>',
+                     '<p><strong>' + 'word ' * 13 + '</strong></p>'):
+            self.assertEqual(self.kinds(html)[0][0], pp.PARAGRAPH, html)
+
+    def test_a_title_said_twice_before_the_prose_is_read_once(self):
+        got = self.kinds('<h1>Disagreements About Evolution—Why?</h1>'
+                         '<p><strong>Chapter 2</strong></p>'
+                         '<p><strong>Disagreements About Evolution—Why?</strong></p>'
+                         '<p>When a special centennial edition was to be published, he wrote.</p>')
+        self.assertEqual([k for k, _ in got], [pp.HEADING, pp.HEADING, pp.PARAGRAPH])
+        self.assertEqual(got[1][1], 'Chapter 2.')
+
+    def test_body_text_repeating_a_heading_is_dropped(self):
+        got = self.kinds('<h2>Differing Viewpoints</h2><p>Differing viewpoints</p>'
+                         '<p>In the view of many, life will always be.</p>')
+        self.assertEqual([k for k, _ in got], [pp.HEADING, pp.PARAGRAPH])
+
+    def test_a_heading_repeated_after_prose_is_a_new_section_and_is_kept(self):
+        got = self.kinds('<h2>Summary</h2><p>First part of the text, said here.</p>'
+                         '<h2>Summary</h2><p>Second part of the text, said here.</p>')
+        self.assertEqual([k for k, _ in got], [pp.HEADING, pp.PARAGRAPH, pp.HEADING, pp.PARAGRAPH])
+
+
 if __name__ == '__main__':
     unittest.main()

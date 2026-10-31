@@ -1615,6 +1615,69 @@ def table_rows(table) -> list:
     return lines
 
 
+def norm_title(s) -> str:
+    """Tolerant title normalization for dedup: lowercase, collapse whitespace,
+    drop trailing sentence/colon punctuation, fold common smart punctuation."""
+    s = (s or '').strip()
+    s = (s.replace('\u2019', "'").replace('\u2018', "'")
+          .replace('\u201c', '"').replace('\u201d', '"')
+          .replace('\u2013', '-').replace('\u2014', '-'))
+    s = re.sub(r'\s+', ' ', s)
+    s = re.sub(r'[.!?\u2026:]+$', '', s)
+    return s.lower().strip()
+
+
+#: The tags that make a run of text bold in the markup itself.
+BOLD_TAGS = frozenset({'strong', 'b'})
+
+#: The longest a bold paragraph may be and still read as a title, in words.
+BOLD_TITLE_MAX_WORDS = 12
+
+
+def bold_title(tag) -> str:
+    """The title a WHOLLY BOLD SHORT PARAGRAPH carries, or '' (2026-10-31).
+
+    Owen, on a Jehovah's Witnesses book exported by Foundry: *"it collapses
+    subtitles/titles into the next sentence ... 'Science Not at Issue Before
+    proceeding further, ...' Science Not at Issue is the subheading and
+    shouldn't be on the same line visually in the vtt."* The book sets its
+    subheadings, and its "Chapter 2" label, as `<p><strong>...</strong></p>` -
+    no heading tag - so both walks read them as paragraphs: voiced correctly
+    (they get the period a bare line needs) but packed into the chunk of the
+    paragraph under them, so one cue said both.
+
+    A paragraph is a title here when EVERY word in it sits inside <strong> or
+    <b>, it is at most BOLD_TITLE_MAX_WORDS words, and it does not end the way
+    a sentence or a clause does ('.', ',', ';', ':'). A question or an
+    exclamation still qualifies: 'Disagreements About Evolution - Why?' is a
+    title. CSS-only bold (a class) is not read: class names are each
+    publisher's own guess. Both walks ask this (`chapters._tuple_row`,
+    `extract_blocks`), so both treat such a line exactly as an h-tag.
+    """
+    if getattr(tag, 'name', None) is None or tag.name.lower() != 'p':
+        return ''
+    words = 0
+    for s in tag.find_all(string=True):
+        if not s.strip():
+            continue
+        bold = False
+        for parent in s.parents:
+            if parent is tag:
+                break
+            if parent.name and parent.name.lower() in BOLD_TAGS:
+                bold = True
+                break
+        if not bold:
+            return ''
+        words += len(s.split())
+    if words == 0 or words > BOLD_TITLE_MAX_WORDS:
+        return ''
+    title = markup_text(tag).strip()
+    if not title or title[-1] in '.,;:':
+        return ''
+    return title
+
+
 def extract_blocks(doc, doc_name: str = '', start_index: int = 0,
                    source_kind: str | None = None) -> list:
     """One spine document -> its blocks, in reading order.
@@ -1666,6 +1729,9 @@ def extract_blocks(doc, doc_name: str = '', start_index: int = 0,
 
     blocks: list = []
     counter = start_index
+    # Every title read since the last paragraph of prose: a heading, or a body
+    # line, repeating one of them is the book saying its title twice.
+    recent_titles: set = set()
 
     def raw_block_text(tag) -> str:
         # The markup's own text, WHITESPACE INTACT. The heading rule of
@@ -1699,8 +1765,17 @@ def extract_blocks(doc, doc_name: str = '', start_index: int = 0,
             if not isinstance(child, Tag):
                 continue
             name = child.name.lower()
-            if name in _HEADING_TAGS:
+            if name in _HEADING_TAGS or bold_title(child):
                 text = block_text(child)
+                norm = norm_title(text)
+                if text and norm and norm in recent_titles:
+                    # A TITLE SAID TWICE IS READ ONCE (2026-10-31). The book
+                    # opened chapter 2 with its title, then "Chapter 2", then
+                    # the title again, and the narration read it twice.
+                    print(f'[HEADING] Skipping repeated heading: "{text}"')
+                    continue
+                if norm:
+                    recent_titles.add(norm)
                 if text:
                     # The period a heading needs so TTS stops there - the same
                     # one `filter_chapter` appends, for the same reason.
@@ -1717,6 +1792,7 @@ def extract_blocks(doc, doc_name: str = '', start_index: int = 0,
                     counter += 1
                 continue
             if name == 'li':
+                recent_titles.clear()
                 text = block_text(child)
                 inner = [c for c in child.children
                          if isinstance(c, Tag) and c.name.lower() in ('ul', 'ol')]
@@ -1738,6 +1814,7 @@ def extract_blocks(doc, doc_name: str = '', start_index: int = 0,
                     walk(nested)
                 continue
             if name == 'table':
+                recent_titles.clear()
                 for line in table_rows(child):
                     # The period a table row needs so TTS stops at the end of
                     # it - the same one a heading and an item get, for the same
@@ -1749,6 +1826,7 @@ def extract_blocks(doc, doc_name: str = '', start_index: int = 0,
                     counter += 1
                 continue
             if name == 'hr':
+                recent_titles.clear()
                 blocks.append(Block(text='', kind=SCENE_BREAK, doc=doc_name,
                                     index=counter))
                 counter += 1
@@ -1765,6 +1843,12 @@ def extract_blocks(doc, doc_name: str = '', start_index: int = 0,
                 if not printed:
                     continue
                 text = collapse(strip_unspoken_glyphs(raw))
+                if re.search(r'\w', printed) and norm_title(text) in recent_titles:
+                    # The same title set again as body text: e2a's
+                    # "duplicate body text" rule, which this walk never had.
+                    print(f'[HEADING] Skipping body text that repeats a heading: "{text}"')
+                    continue
+                recent_titles.clear()
                 if not re.search(r'\w', printed):
                     kind = SCENE_BREAK
                 elif source_kind == PDF_DERIVED and looks_table_like(raw):
