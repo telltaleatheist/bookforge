@@ -295,7 +295,7 @@ Your job: carry out the person's request by MARKING blocks for removal, each wit
 Work the way a careful editor would with a long book:
 1. Survey: outline, then read a sample of the start and of a few chapters to learn how the book is built — what recurs, what is body text, what is apparatus.
 2. Turn what you find into rules. Search to see how far a pattern reaches and what it would catch by mistake. Use mark with dry_run first, then mark.
-3. Use exact ids for one-off judgment calls. To change words rather than remove a block, use revise on that block, quoting the exact text to replace.
+3. Use exact ids for one-off judgment calls. To change words rather than remove a block, use revise on that block, quoting the exact text to replace. To make the same change in many blocks (a leading number on every paragraph, a recurring stray mark), use revise_pattern with dry_run first, and tighten the pattern until the examples show only what should change.
 4. Check your work: read with only:"unmarked" through each chapter's non-body regions, and spot-check what you marked, so nothing is missed and nothing wrongly caught. Unmark mistakes.
 5. When you are done, stop calling tools and write a short summary for the person: what you marked or revised under each reason and anything you were unsure of. If the person only asked a question, answer it in that summary and mark nothing.
 
@@ -349,15 +349,30 @@ async function loop(
       act: ACT,
       signal,
       // Thinking is the chat template's switch on a local model, sent as
-      // chat_template_kwargs by the SDK; a forwarded Claude does not reason
-      // unless asked, so the switch there is the absence of the field
-      // (src/translate/transport.ts, takesThinkField, says the same).
+      // chat_template_kwargs by the SDK. A forwarded Claude is sent nothing:
+      // the newer ones think by default and Crucible answers that thinking as
+      // `contentBlocks`, which the history below sends back.
       ...(to.local ? { thinking: false } : {}),
     });
     if (reply.usage?.promptTokens) fit.measured(reply.usage.promptTokens, chars);
     const calls: readonly ChatToolCall[] = final ? [] : reply.toolCalls;
+    /*
+     * CLAUDE'S OWN TURN GOES BACK AS IT CAME. Sonnet and Opus 5.5 think by
+     * default (Crucible 2.0.33 sends them adaptive thinking), and a tool loop
+     * keeps that thinking only if each turn's `contentBlocks` are sent back
+     * verbatim beside the same content and calls — the server refuses an edited
+     * turn `content_blocks_mismatch`. So they ride only when the calls are the
+     * reply's own; the last round drops its calls and is never sent again
+     * anyway. A local model answers no blocks, and its thinking is off.
+     */
+    const blocks = !final && reply.contentBlocks.length > 0 ? { contentBlocks: reply.contentBlocks } : {};
     history.push({
-      message: { role: 'assistant', content: reply.content, ...(calls.length > 0 ? { toolCalls: calls } : {}) },
+      message: {
+        role: 'assistant',
+        content: reply.content,
+        ...(calls.length > 0 ? { toolCalls: calls } : {}),
+        ...blocks,
+      },
       round,
     });
     if (reply.content !== null && reply.content.trim().length > 0) summary = reply.content.trim();

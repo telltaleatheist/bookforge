@@ -386,6 +386,77 @@ export function askToolbox(view: AskView): AskToolbox {
         return `REVISED ${id} as "${reason}":\n- ${clip(before, 300)}\n+ ${clip(after, 300)}\n${totals()}`;
       },
     },
+    /*
+     * ── THE SAME CHANGE ACROSS MANY BLOCKS (Owen, 2026-10-30) ───────────────
+     *
+     * *"can we remove the numbers from the start of each of the paragraphs?
+     * jehovahs witnesses number their paragraphs."* A book numbers six hundred
+     * paragraphs, and `revise` is one block per call, so a whole-book change
+     * ran out of rounds before it ran out of paragraphs. This is `mark`'s
+     * pattern form for words: one regex substitution over every block a
+     * selector names, dry run first, each change landing as a revision the
+     * person reviews under the reason — so the caution (a real "10" opening a
+     * sentence) is in the pattern and in the review, not in six hundred calls.
+     */
+    {
+      name: 'revise_pattern',
+      description: 'Change words in MANY blocks at once by regular-expression substitution, with a short reason the person will review the changes under. find is a JavaScript regular expression applied to each block\'s current text; replace is its replacement ($1, $2 … refer to groups; empty deletes the match). Only the first match in each block is replaced unless find_flags contains "g". Give a selector (ids, pattern, span or range, optionally chapter) to limit which blocks; with none, every live block where find matches. Blocks marked for removal are skipped, and a change that would leave a block empty is refused for that block. ALWAYS use dry_run:true first: it reports how many blocks would change and shows spread-out before/after examples, so you can tighten find until it catches only what it should. Use revise for one-off changes.',
+      parameters: {
+        type: 'object',
+        properties: {
+          ...selectorProps,
+          find: { type: 'string', description: 'A JavaScript regular expression for the text to change, e.g. ^\\d{1,3}\\s+ for a number at the very start of a block.' },
+          find_flags: { type: 'string', description: 'Flags for find, e.g. "g" for every match in a block, "i" for case-insensitive.' },
+          replace: { type: 'string', description: 'What each match becomes; empty deletes it.' },
+          reason: { type: 'string', description: 'Short label, e.g. "paragraph number". Changes are grouped by it for review.' },
+          dry_run: { type: 'boolean' },
+        },
+        required: ['find', 'replace', 'reason'],
+      },
+      run(a) {
+        const reason = reasonOf(a);
+        if (typeof a['find'] !== 'string' || a['find'].length === 0) throw new Error('find must be a non-empty regular expression string');
+        if (typeof a['replace'] !== 'string') throw new Error('replace must be a string (empty deletes)');
+        const flags = typeof a['find_flags'] === 'string' ? a['find_flags'].replace(/y/g, '') : '';
+        let find: RegExp;
+        try {
+          find = new RegExp(a['find'], flags);
+        } catch (err) {
+          throw new Error(`find will not compile: ${(err as Error).message}`);
+        }
+        const probe = regex(a['find'], flags);
+        const selected = ['ids', 'pattern', 'span', 'range'].some((k) => a[k] !== undefined)
+          ? select(a)
+          : live.filter((b) => a['chapter'] === undefined || b.chapter === Number(a['chapter']));
+        const changes: { b: Live; before: string; after: string }[] = [];
+        let emptied = 0;
+        for (const b of selected) {
+          if (struckMark(b)) continue;
+          const before = textOf(b);
+          if (!probe.test(before)) continue;
+          find.lastIndex = 0;
+          const after = before.replace(find, a['replace']);
+          if (after === before) continue;
+          if (after.trim().length === 0) { emptied += 1; continue; }
+          changes.push({ b, before, after });
+        }
+        const show = (n: number): string => {
+          const step = Math.max(1, changes.length / n);
+          const picked = changes.length <= n ? changes : Array.from({ length: n }, (_, i) => changes[Math.floor(i * step)]!);
+          return picked.map((c) => `${c.b.id}\n  - ${clip(c.before, 140)}\n  + ${clip(c.after, 140)}`).join('\n');
+        };
+        const where = `By chapter: ${perChapter(changes.map((c) => c.b)) || 'none'}`;
+        const refused = emptied > 0 ? ` ${emptied} block(s) skipped because the change would leave them empty (use mark to remove a block).` : '';
+        if (a['dry_run'] === true) {
+          return `WOULD REVISE ${changes.length} blocks. ${where}.${refused}\n${show(12)}`;
+        }
+        for (const c of changes) {
+          if (c.after === c.b.text) marks.delete(c.b.id);
+          else marks.set(c.b.id, { kind: 'text', reason, after: c.after });
+        }
+        return `REVISED ${changes.length} blocks as "${reason}". ${where}.${refused}\n${show(6)}\n${totals()}`;
+      },
+    },
     {
       name: 'unmark',
       description: 'Take marks and revisions off: by selector, or every block marked or revised with a given reason. A revised block goes back to its original text.',

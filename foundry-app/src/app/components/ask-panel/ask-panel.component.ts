@@ -173,8 +173,9 @@ import { JobModelComponent } from '../job-model/job-model.component';
     }
   `,
   styles: [`
+    /* --grow is the inspector's: the share of the column this section was dragged to. */
     :host {
-      flex: 1 1 0;
+      flex: var(--grow, 1) 1 0;
       min-height: 0;
       display: flex;
       flex-direction: column;

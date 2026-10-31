@@ -52,13 +52,70 @@ import { chapterSpan } from '../book-view/flow';
  * section and its word-correction box: the surfaces those addressed are gone, and
  * what is left is the three panels the proof sheet owns.
  */
+/** The panel's width before anyone drags it, and the narrowest it goes. */
+const DEFAULT_WIDTH = 260;
+const MIN_WIDTH = 220;
+/** The shortest an open section can be dragged, in pixels: its header and a row or two. */
+const MIN_SECTION = 72;
+/** Ask starts with a larger share: it is the section that reads a conversation. */
+const DEFAULT_WEIGHTS: Record<string, number> = { chapters: 1, notes: 1, furniture: 1, ask: 1.5 };
+const WIDTH_KEY = 'foundry.inspector.width';
+const WEIGHTS_KEY = 'foundry.inspector.weights';
+
+/*
+ * STORAGE IS A CONVENIENCE AND MAY BE ABSENT — a private window, blocked site
+ * data. Every read falls back to the defaults and every write may fail
+ * quietly; the panel draws the same either way.
+ */
+function readWidth(): number {
+  try {
+    const n = Number(localStorage.getItem(WIDTH_KEY));
+    return Number.isFinite(n) && n >= MIN_WIDTH ? n : DEFAULT_WIDTH;
+  } catch {
+    return DEFAULT_WIDTH;
+  }
+}
+
+function readWeights(): Record<string, number> {
+  try {
+    const held = JSON.parse(localStorage.getItem(WEIGHTS_KEY) ?? 'null') as unknown;
+    if (typeof held !== 'object' || held === null) return { ...DEFAULT_WEIGHTS };
+    const out: Record<string, number> = { ...DEFAULT_WEIGHTS };
+    for (const [k, v] of Object.entries(held)) if (typeof v === 'number' && v > 0) out[k] = v;
+    return out;
+  } catch {
+    return { ...DEFAULT_WEIGHTS };
+  }
+}
+
+function keep(key: string, value: unknown): void {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch { /* storage refused: the size is this session's only */ }
+}
+
 @Component({
   selector: 'app-inspector',
   imports: [AskPanelComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
+  host: { '[style.width.px]': 'width()', '[style.min-width.px]': 'width()' },
   template: `
     @if (projectDir() !== null || sheet() !== null) {
-      <div class="panel">
+      <!--
+        THE PANEL IS AS WIDE AND ITS SECTIONS AS TALL AS THE PERSON DRAGS THEM
+        (Owen, 2026-10-30: "can we also make it so i can resize the right side
+        nav accordions to make them bigger? like if im using ask im going to
+        want it to fill more of the screen"). The grip on the left edge sets
+        the width; a grip on the line between two open sections moves that
+        line. Both are remembered in this window's storage, a per-viewer
+        convenience, and a double-click on a grip puts it back.
+      -->
+      <div
+        class="edge"
+        title="Drag to widen; double-click to reset"
+        (pointerdown)="grabEdge($event)"
+        (dblclick)="resetWidth()"></div>
+      <div class="panel" #panel>
         <!-- ── Standing on ──────────────────────────────────────────────── -->
         <!--
           THE RUNNING ORDER IS FIXED AND THIS IS THE TOP OF IT: the standing
@@ -141,7 +198,7 @@ import { chapterSpan } from '../book-view/flow';
           exactly as they take one made on the paper, because there is one stack.
         -->
         @if (sheet(); as pane) {
-          <section class="accordion" [class.shut]="!chaptersOpen()">
+          <section class="accordion" data-section="chapters" [class.shut]="!chaptersOpen()" [style.--grow]="grow('chapters')">
             <button class="head" (click)="chaptersOpen.set(!chaptersOpen())">
               <span class="twist">{{ chaptersOpen() ? '▾' : '▸' }}</span>
               <span class="label">Chapters</span>
@@ -317,7 +374,8 @@ import { chapterSpan } from '../book-view/flow';
             lists in a 260px column is a gesture that needs autoscroll to reach
             most of its targets, and this needs none.
           -->
-          <section class="accordion" [class.shut]="!notesOpen()">
+          <div class="grip" title="Drag to resize; double-click to share evenly" (pointerdown)="grabGrip($event)" (dblclick)="resetWeights()"></div>
+          <section class="accordion" data-section="notes" [class.shut]="!notesOpen()" [style.--grow]="grow('notes')">
             <button class="head" (click)="notesOpen.set(!notesOpen())">
               <span class="twist">{{ notesOpen() ? '▾' : '▸' }}</span>
               <span class="label">Notes</span>
@@ -402,7 +460,8 @@ import { chapterSpan } from '../book-view/flow';
             printed — the position is not a guess, which is why the op has none to
             make.
           -->
-          <section class="accordion" [class.shut]="!furnitureOpen()">
+          <div class="grip" title="Drag to resize; double-click to share evenly" (pointerdown)="grabGrip($event)" (dblclick)="resetWeights()"></div>
+          <section class="accordion" data-section="furniture" [class.shut]="!furnitureOpen()" [style.--grow]="grow('furniture')">
             <button class="head" (click)="furnitureOpen.set(!furnitureOpen())">
               <span class="twist">{{ furnitureOpen() ? '▾' : '▸' }}</span>
               <span class="label">Furniture</span>
@@ -449,7 +508,8 @@ import { chapterSpan } from '../book-view/flow';
             the model marked onto this same pane's stack, as one undo.
           -->
           @if (!viewOnly()) {
-            <app-ask-panel [pane]="pane" />
+            <div class="grip" title="Drag to resize; double-click to share evenly" (pointerdown)="grabGrip($event)" (dblclick)="resetWeights()"></div>
+            <app-ask-panel [pane]="pane" data-section="ask" [style.--grow]="grow('ask')" />
           }
         }
 
@@ -511,10 +571,32 @@ import { chapterSpan } from '../book-view/flow';
       --mark-division: #5a83b0;
 
       display: block;
-      width: 260px;
-      min-width: 260px;
+      position: relative;
       height: 100%;
     }
+
+    /* The width grip: the panel's left border, made grabbable. */
+    .edge {
+      position: absolute; left: -3px; top: 0; bottom: 0; width: 6px;
+      cursor: col-resize; z-index: 3;
+    }
+    .edge:hover, .edge.dragging { background: var(--accent-soft); }
+
+    /*
+      THE HEIGHT GRIP sits on the line between two sections and takes no room:
+      a zero-height row whose hit area hangs 3px either side of the line.
+    */
+    .grip {
+      flex: 0 0 0;
+      position: relative; z-index: 2;
+      height: 0;
+    }
+    .grip::before {
+      content: '';
+      position: absolute; left: 0; right: 0; top: -3px; height: 6px;
+      cursor: row-resize;
+    }
+    .grip:hover::before { background: var(--accent-soft); }
 
     /* The documents panel's surface, mirrored: the two side panels are siblings
        and the window should read as one frame around the pages, not as three
@@ -535,7 +617,7 @@ import { chapterSpan } from '../book-view/flow';
       only its header row.
     */
     .accordion {
-      flex: 1 1 0;
+      flex: var(--grow, 1) 1 0;
       min-height: 0;
       display: flex;
       flex-direction: column;
@@ -899,9 +981,99 @@ export class InspectorComponent {
    * and eleven categories do not both fit on a laptop.
    */
   protected readonly chaptersOpen = signal(true);
-  /** The proof sheet's two other sections. Open by default, for the reason above. */
-  protected readonly notesOpen = signal(true);
-  protected readonly furnitureOpen = signal(true);
+  /**
+   * The proof sheet's two other sections, SHUT by default (Owen, 2026-10-30:
+   * "minimize furniture and notes by default, i almost never need those").
+   * A click on the header still opens either.
+   */
+  protected readonly notesOpen = signal(false);
+  protected readonly furnitureOpen = signal(false);
+
+  // ── The panel's size, the person's own ───────────────────────────────────
+
+  /** How wide the panel is, in pixels. */
+  protected readonly width = signal(readWidth());
+  /** Each section's share of the height, by name; an open section's height is proportional to it. */
+  private readonly weights = signal<Record<string, number>>(readWeights());
+  private readonly panel = viewChild<ElementRef<HTMLElement>>('panel');
+
+  protected grow(name: string): number {
+    return this.weights()[name] ?? DEFAULT_WEIGHTS[name] ?? 1;
+  }
+
+  protected resetWidth(): void {
+    this.width.set(DEFAULT_WIDTH);
+    keep(WIDTH_KEY, DEFAULT_WIDTH);
+  }
+
+  protected resetWeights(): void {
+    this.weights.set({ ...DEFAULT_WEIGHTS });
+    keep(WEIGHTS_KEY, DEFAULT_WEIGHTS);
+  }
+
+  /** Drag the left edge: the panel grows leftward, into the pages. */
+  protected grabEdge(down: PointerEvent): void {
+    down.preventDefault();
+    const edge = down.currentTarget as HTMLElement;
+    edge.setPointerCapture(down.pointerId);
+    edge.classList.add('dragging');
+    const from = this.width();
+    const x0 = down.clientX;
+    const max = Math.max(MIN_WIDTH, Math.floor(window.innerWidth * 0.7));
+    const move = (e: PointerEvent): void => {
+      this.width.set(Math.round(Math.min(max, Math.max(MIN_WIDTH, from + (x0 - e.clientX)))));
+    };
+    const up = (): void => {
+      edge.removeEventListener('pointermove', move);
+      edge.removeEventListener('pointerup', up);
+      edge.removeEventListener('pointercancel', up);
+      edge.classList.remove('dragging');
+      keep(WIDTH_KEY, this.width());
+    };
+    edge.addEventListener('pointermove', move);
+    edge.addEventListener('pointerup', up);
+    edge.addEventListener('pointercancel', up);
+  }
+
+  /**
+   * Drag the line between two sections. The nearest OPEN section above the grip
+   * and the nearest open one below it trade height; a shut section in between is
+   * passed over, and with no open section on one side there is nothing to trade.
+   * At the press every open section's weight becomes its height in pixels, so
+   * the two being dragged move exactly with the pointer and the rest stand still.
+   */
+  protected grabGrip(down: PointerEvent): void {
+    const panel = this.panel()?.nativeElement;
+    if (panel === undefined) return;
+    const grip = down.currentTarget as HTMLElement;
+    const sections = [...panel.querySelectorAll<HTMLElement>('[data-section]')];
+    const open = sections.filter((el) => !el.classList.contains('shut'));
+    const above = [...open].reverse().find((el) => (grip.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_PRECEDING) !== 0);
+    const below = open.find((el) => (grip.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0);
+    if (above === undefined || below === undefined) return;
+    down.preventDefault();
+    grip.setPointerCapture(down.pointerId);
+    const heights: Record<string, number> = { ...this.weights() };
+    for (const el of open) heights[el.dataset['section']!] = el.getBoundingClientRect().height;
+    const a = above.dataset['section']!;
+    const b = below.dataset['section']!;
+    const pair = heights[a]! + heights[b]!;
+    const a0 = heights[a]!;
+    const y0 = down.clientY;
+    const move = (e: PointerEvent): void => {
+      const next = Math.min(pair - MIN_SECTION, Math.max(MIN_SECTION, a0 + (e.clientY - y0)));
+      this.weights.set({ ...heights, [a]: next, [b]: pair - next });
+    };
+    const up = (): void => {
+      grip.removeEventListener('pointermove', move);
+      grip.removeEventListener('pointerup', up);
+      grip.removeEventListener('pointercancel', up);
+      keep(WEIGHTS_KEY, this.weights());
+    };
+    grip.addEventListener('pointermove', move);
+    grip.addEventListener('pointerup', up);
+    grip.addEventListener('pointercancel', up);
+  }
 
   /** Which chapter row is being renamed, and the text in its box. */
   protected readonly renamingHref = signal<string | null>(null);

@@ -38,9 +38,9 @@ function tools() {
   return { box, run };
 }
 
-test('the seven tools are offered, each with a schema', () => {
+test('the eight tools are offered, each with a schema', () => {
   const { box } = tools();
-  expect(box.tools.map((t) => t.name)).toEqual(['outline', 'read', 'search', 'mark', 'revise', 'unmark', 'marks_summary']);
+  expect(box.tools.map((t) => t.name)).toEqual(['outline', 'read', 'search', 'mark', 'revise', 'revise_pattern', 'unmark', 'marks_summary']);
   for (const t of box.tools) expect((t.parameters as { type: string }).type).toBe('object');
 });
 
@@ -104,6 +104,38 @@ test('revise substitutes exactly, and the mark keeps before and after', () => {
   // Later tools see the revised words.
   expect(run('search', { pattern: '20 days' })).toContain('1 matches');
   expect(run('read', { only: 'revised' })).toContain('e-6 [REVISED: number] It rained for 20 days.');
+});
+
+test('revise_pattern changes many blocks at once, dry run first, and skips what it should', () => {
+  // A Watchtower-style book: a paragraph number before the prose, and one
+  // paragraph whose prose itself opens with a number.
+  const view: AskView = {
+    title: 'Numbered', struck: 0, chapters: [{ id: 'p-1', title: 'One' }],
+    blocks: [
+      { id: 'p-1', text: '1 The earth is old, they say.', category: 'Text', chapter: 0 },
+      { id: 'p-2', text: '2 “Who made it?” we ask.', category: 'Text', chapter: 0 },
+      { id: 'p-3', text: '10 million years is a guess.', category: 'Text', chapter: 0 },
+      { id: 'p-4', text: '3 ', category: 'Text', chapter: 0 },
+      { id: 'p-5', text: 'No number here.', category: 'Text', chapter: 0 },
+    ],
+  };
+  const box = askToolbox(view);
+  const run = (name: string, args: Record<string, unknown>): string => box.tools.find((x) => x.name === name)!.run(args);
+  const find = '^\\d{1,3}\\s+(?=[A-Z“])';
+  const dry = run('revise_pattern', { find, replace: '', reason: 'paragraph number', dry_run: true });
+  expect(dry).toContain('WOULD REVISE 2 blocks');
+  expect(box.items()).toEqual([]);
+  // A change that would empty a block is refused for that block, by name.
+  expect(run('revise_pattern', { find: '^\\d+\\s*$', replace: '', reason: 'x', dry_run: true }))
+    .toContain('WOULD REVISE 0 blocks. By chapter: none. 1 block(s) skipped because the change would leave them empty');
+  run('revise_pattern', { find, replace: '', reason: 'paragraph number' });
+  expect(box.items()).toEqual([
+    { id: 'p-1', kind: 'text', reason: 'paragraph number', before: '1 The earth is old, they say.', after: 'The earth is old, they say.' },
+    { id: 'p-2', kind: 'text', reason: 'paragraph number', before: '2 “Who made it?” we ask.', after: '“Who made it?” we ask.' },
+  ]);
+  // A block marked for removal is not revised.
+  run('mark', { ids: ['p-3'], reason: 'gone' });
+  expect(run('revise_pattern', { find: '^10', replace: 'Ten', reason: 'x', dry_run: true })).toContain('WOULD REVISE 0 blocks');
 });
 
 test('a find that occurs twice needs an occurrence, which picks it', () => {
