@@ -52,7 +52,18 @@ export interface SuggestCategoriesRequest {
   server: string;
   /** A model id; empty is Automatic, as every job dropdown means it. */
   model: string;
+  /**
+   * WHAT THE READER EXPECTS IN THIS BOOK, in their words, or empty (Owen,
+   * 2026-10-30: *"if i run it on the jehovahs witnesses anti evolution book, i
+   * would tell it to look for any anti evolution pseudoscience"*). It is the
+   * strongest guide the prompt carries, and it also picks some of the
+   * excerpts ({@link pickExcerpts}). At most {@link SUGGEST_HINT_MAX} characters.
+   */
+  hint: string;
 }
+
+/** How long the reader's note may be. A sentence or two, not a brief. */
+export const SUGGEST_HINT_MAX = 400;
 
 /** One proposed category. */
 export interface SuggestedCategory {
@@ -152,11 +163,18 @@ const MIN_ROW = 120;
  * until it holds its share of the budget, cut back to the last full sentence.
  * The chapter it sits in rides with it, because "Chapter 5: The Rod" is half of
  * what a passage from it is about.
+ *
+ * WITH A NOTE FROM THE READER, some of the excerpts start where the note's
+ * words are thickest instead ({@link SUGGEST_FOCUS} of them): a claim the
+ * reader expects may live in three chapters out of twenty, and even spacing
+ * alone would sample past it. The rest stay evenly spaced, so the model still
+ * sees what the whole book is about.
  */
 export function pickExcerpts(
   rows: readonly ExcerptRow[],
   chapters: readonly ExcerptChapter[],
   budgetChars: number,
+  hint: string = '',
   count: number = SUGGEST_EXCERPTS,
 ): Excerpt[] {
   const chapterAt = new Map(chapters.map((c) => [c.id, c.title]));
@@ -174,10 +192,27 @@ export function pickExcerpts(
 
   const n = Math.min(count, body.length);
   const share = Math.floor(budgetChars / n);
+  const terms = hintTerms(hint);
+  const focused = terms.length === 0 ? [] : body
+    .map((row, i) => ({ i, score: scoreRow(row.text, terms) }))
+    .filter((one) => one.score > 0)
+    .sort((a, b) => b.score - a.score || a.i - b.i)
+    .map((one) => one.i);
+  const starts = new Set<number>();
+  for (const i of focused) {
+    if (starts.size >= Math.min(SUGGEST_FOCUS, n)) break;
+    starts.add(i);
+  }
+  const even = n - starts.size;
+  for (let k = 0; k < even; k += 1) {
+    let at = Math.floor((k * body.length) / even);
+    while (starts.has(at) && at + 1 < body.length) at += 1;
+    starts.add(at);
+  }
+  const ordered = [...starts].sort((a, b) => a - b);
   const out: Excerpt[] = [];
-  for (let k = 0; k < n; k += 1) {
-    const start = Math.floor((k * body.length) / n);
-    const end = k + 1 < n ? Math.floor(((k + 1) * body.length) / n) : body.length;
+  for (const [k, start] of ordered.entries()) {
+    const end = k + 1 < ordered.length ? ordered[k + 1]! : body.length;
     let text = '';
     for (let i = start; i < end && text.length < share; i += 1) {
       text = text.length === 0 ? body[i]!.text : `${text}\n${body[i]!.text}`;
@@ -185,6 +220,32 @@ export function pickExcerpts(
     out.push({ chapter: body[start]!.chapter, text: toSentence(text, share) });
   }
   return out;
+}
+
+/** Excerpts that follow the reader's note, when there is one. */
+export const SUGGEST_FOCUS = 6;
+
+const STOP = new Set(['about', 'above', 'after', 'again', 'also', 'anything', 'book', 'books', 'claims', 'could', 'every',
+  'from', 'have', 'into', 'like', 'look', 'looking', 'more', 'other', 'should', 'some', 'such', 'that', 'their', 'them',
+  'then', 'there', 'these', 'they', 'thing', 'things', 'this', 'what', 'when', 'where', 'which', 'with', 'would', 'your']);
+
+/** The note's content words, cut to six-letter stems so "evolutionists" meets "evolution". */
+function hintTerms(hint: string): string[] {
+  const words = hint.toLowerCase().match(/[a-z][a-z'-]{3,}/g) ?? [];
+  return [...new Set(words.filter((w) => !STOP.has(w)).map((w) => w.slice(0, 6)))];
+}
+
+/** How many of the terms a passage carries, each counted once, plus a little for repeats. */
+function scoreRow(text: string, terms: readonly string[]): number {
+  const words = text.toLowerCase().match(/[a-z][a-z'-]{3,}/g) ?? [];
+  let distinct = 0;
+  let hits = 0;
+  for (const term of terms) {
+    const n = words.filter((w) => w.startsWith(term)).length;
+    if (n > 0) distinct += 1;
+    hits += n;
+  }
+  return distinct * 10 + Math.min(hits, 9);
 }
 
 /** Markdown emphasis off; the model reads words. */
@@ -215,6 +276,7 @@ Rules:
 - name: two to five words, sentence case, saying what is flagged.
 - description: the FIRST sentence is the claim, written so it could match a sentence in any book, never naming this book, its author or its people, and at most 140 characters. Begin it with a verb such as "Says", "Tells", "Argues", "Claims" or "Compares". Then one or two sentences saying what counts, for example "An approving story counts as endorsement." At most ${CUSTOM_CATEGORY_DESCRIPTION_MAX - 100} characters in all.
 - why: one sentence on why this reader would want it, given their existing categories.
+- If the reader says what they expect in this book, that note is your strongest guide: look hardest for it, and make your proposals serve it. Where an existing category already covers what the note names, propose narrower, more specific claims within it instead of repeating it. Still propose only what the excerpts show.
 - theme: first, in one or two sentences, what you take this reader to be looking for in this book.
 
 Answer with JSON only.`;
@@ -226,13 +288,19 @@ export function suggestUserPrompt(
   existing: readonly BriefCategory[],
   chapters: readonly string[],
   excerpts: readonly Excerpt[],
+  hint: string = '',
 ): string {
+  const note = hint.replace(/\s+/g, ' ').trim().slice(0, SUGGEST_HINT_MAX);
   const brief = existing.map((one) => `- ${one.name}: ${one.says}`).join('\n');
   const contents = chapters.filter((t) => !APPARATUS.test(t.trim())).join('; ');
   const passages = excerpts
     .map((one, i) => `[${i + 1}]${one.chapter === null ? '' : ` (${one.chapter})`}\n${one.text}`)
     .join('\n\n');
-  return `The reader's existing categories:\n${brief}\n\nThe book: ${title}\n${contents.length > 0 ? `Chapters: ${contents}\n` : ''}\nExcerpts, evenly spaced through the book:\n\n${passages}`;
+  const said = note.length > 0 ? `\n\nWhat the reader expects in this book, in their words: ${note}` : '';
+  const how = note.length > 0
+    ? "Excerpts, most evenly spaced through the book and some chosen because they touch the reader's note"
+    : 'Excerpts, evenly spaced through the book';
+  return `The reader's existing categories:\n${brief}${said}\n\nThe book: ${title}\n${contents.length > 0 ? `Chapters: ${contents}\n` : ''}\n${how}:\n\n${passages}`;
 }
 
 /** The answer's shape, for the engine's grammar. */

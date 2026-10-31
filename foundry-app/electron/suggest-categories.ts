@@ -55,6 +55,7 @@ import {
   readPartial,
   suggestSystemPrompt,
   suggestUserPrompt,
+  SUGGEST_HINT_MAX,
   SUGGEST_MAX_CHARS,
   SUGGEST_MIN_CHARS,
   SUGGEST_REPLY_TOKENS,
@@ -92,7 +93,9 @@ const ATTEMPTS = 3;
 /** Runs in flight. One at a time: a second would load a second model for the same answer. */
 const runs = new Map<string, AbortController>();
 
-export function startSuggest(request: SuggestCategoriesRequest, source: string, emit: (frame: SuggestProgress) => void): string {
+export function startSuggest(asked: SuggestCategoriesRequest, source: string, emit: (frame: SuggestProgress) => void): string {
+  // The note is the window's free text: kept a string and kept short here, whatever was sent.
+  const request = { ...asked, hint: typeof asked.hint === 'string' ? asked.hint.trim().slice(0, SUGGEST_HINT_MAX) : '' };
   if (runs.size > 0) throw new Error('Suggestions are already being worked out. Stop them first, or wait for them to arrive.');
   const dir = projectDirOf(path.resolve(source));
   if (dir === null) throw new Error(`${source} is not a book in the library, so there is nothing to read.`);
@@ -224,7 +227,7 @@ async function runSuggest(
     if (budget < SUGGEST_MIN_CHARS) {
       throw new Error(`${target.model} on ${target.server} has a ${target.window}-token window, too small to be shown enough of the book. Pick a model with a larger one.`);
     }
-    const excerpts = pickExcerpts(book.rows, book.header.chapters, budget);
+    const excerpts = pickExcerpts(book.rows, book.header.chapters, budget, request.hint);
     if (excerpts.length === 0) throw new Error('This book has no body text to take excerpts from.');
 
     enter('reading', `${target.model} is reading ${excerpts.length} excerpts…`);
@@ -232,7 +235,7 @@ async function runSuggest(
       model: target.model,
       messages: [
         { role: 'system' as const, content: suggestSystemPrompt() },
-        { role: 'user' as const, content: suggestUserPrompt(request.title, brief, book.header.chapters.map((c) => c.title), excerpts) },
+        { role: 'user' as const, content: suggestUserPrompt(request.title, brief, book.header.chapters.map((c) => c.title), excerpts, request.hint) },
       ],
       maxTokens: SUGGEST_REPLY_TOKENS,
       temperature: 0.3,

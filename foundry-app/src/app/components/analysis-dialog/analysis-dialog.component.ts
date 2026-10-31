@@ -9,7 +9,7 @@ import {
   customCategoryId,
   type CustomAnalysisCategory,
 } from '@shared/analysis-categories';
-import type { SuggestProgress } from '@shared/category-suggestions';
+import { SUGGEST_HINT_MAX, type SuggestProgress } from '@shared/category-suggestions';
 import { fold } from '@shared/original';
 import { canTranslateFrom } from '@shared/stages';
 import {
@@ -317,10 +317,30 @@ import { api, hosted } from '../../core/foundry';
             @if (!adding()) {
               <button class="ghost small" (click)="startAdding()">Add a category…</button>
             }
+            <span class="tally">{{ picked().size }} of {{ all().length }}</span>
+          </div>
+
+          <!--
+            SUGGEST, WITH A NOTE (Owen, 2026-10-30: "if i run it on the jehovahs
+            witnesses anti evolution book, i would tell it to look for any anti
+            evolution pseudoscience"). The note is optional; with it, the model
+            looks hardest for what it names, and some of the excerpts are the
+            passages its words touch most.
+          -->
+          <div class="suggest-row">
+            <input
+              type="text"
+              class="hint"
+              placeholder="What do you expect in this book? Optional — e.g. anti-evolution pseudoscience"
+              [attr.maxlength]="hintMax"
+              [disabled]="suggestion() !== null"
+              [ngModel]="hint()"
+              (ngModelChange)="hint.set($event)"
+              (keydown.enter)="suggest()"
+              name="hint">
             <button class="ghost small" [disabled]="suggestion() !== null || !canRun() || !modelReady()" (click)="suggest()">
               Suggest from this book
             </button>
-            <span class="tally">{{ picked().size }} of {{ all().length }}</span>
           </div>
 
           <!--
@@ -535,7 +555,15 @@ import { api, hosted } from '../../core/foundry';
     .pick.on { background: var(--accent-soft); border-color: var(--accent); }
     .pick-head { display: flex; align-items: flex-start; gap: 6px; }
     .pick-name { flex: 1; min-width: 0; font-size: 12px; font-weight: 500; color: var(--text-secondary); }
-    .pick.on .pick-name { color: var(--accent); }
+    /*
+      THE FILL CARRIES THE ACCENT, NOT THE WORDS. Accent text on the accent's own
+      soft fill was cyan on cyan (Owen, 2026-10-30: "the fonts inside the checked
+      checkboxes is hard to see"), so a lit box writes in the ordinary text
+      colours, one step brighter than an unlit one.
+    */
+    .pick.on .pick-name { color: var(--text-primary); font-weight: 600; }
+    .pick.on .pick-said { color: var(--text-secondary); }
+    .pick.on .pick-tag { color: var(--text-secondary); }
     .pick-said { font-size: 10.5px; line-height: 1.4; color: var(--text-tertiary); }
     /* A word and not a colour: an untuned category is not a WARNING, it is a fact
        about how much has been measured, and an amber pip beside several boxes
@@ -567,6 +595,9 @@ import { api, hosted } from '../../core/foundry';
     .pick.editing { cursor: default; gap: 6px; background: var(--bg-sunken); }
     .pick.editing:hover { border-color: var(--border-default); }
     .pick.editing textarea { resize: vertical; min-height: 44px; line-height: 1.45; }
+
+    .suggest-row { display: flex; align-items: center; gap: 8px; }
+    .suggest-row .hint { flex: 1; min-width: 0; height: 24px; font-size: 11px; }
 
     /* The suggestion run: a thin bar, the time left, and Stop, under the button. */
     .suggesting { display: flex; flex-direction: column; gap: 4px; }
@@ -905,6 +936,9 @@ export class AnalysisDialogComponent {
    * starting frame at the press, so the bar is there before main answers.
    */
   protected readonly suggestion = signal<SuggestProgress | null>(null);
+  /** The reader's note for the model — what they expect in this book. Kept across runs while the card is open. */
+  protected readonly hint = signal('');
+  protected readonly hintMax = SUGGEST_HINT_MAX;
   /** The ids suggested while this card has been open, for their "suggested" tag. */
   protected readonly suggestedHere = signal<ReadonlySet<string>>(new Set());
   /** What the last run ended with — its count and the theme it read. */
@@ -935,6 +969,7 @@ export class AnalysisDialogComponent {
         title: this.name(),
         server: this.server(),
         model: this.chosenModel(),
+        hint: this.hint(),
       });
       this.suggestRunId ??= id;
     } catch (err) {
