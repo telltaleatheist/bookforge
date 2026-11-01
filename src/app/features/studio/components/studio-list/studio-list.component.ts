@@ -387,14 +387,14 @@ import { StudioItem } from '../../models/studio.types';
       margin-bottom: 4px;
     }
 
-    /* A row never pushes the list sideways: tags that don't fit are cut at the edge (the +N says how many more). */
+    /* A row never pushes the list sideways: what does not fit wraps to a second line, tags whole. */
     .item-meta {
       display: flex;
+      flex-wrap: wrap;
       align-items: center;
-      gap: 8px;
+      gap: 4px 8px;
       font-size: 11px;
       min-width: 0;
-      overflow: hidden;
     }
 
     .status-badge {
@@ -456,14 +456,15 @@ import { StudioItem } from '../../models/studio.types';
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
+      min-width: 0;
+      max-width: 100%;
     }
 
     .item-tags {
       display: inline-flex;
       gap: 3px;
-      margin-left: 4px;
       min-width: 0;
-      overflow: hidden;
+      flex-wrap: wrap;
     }
 
     .tag-mini {
