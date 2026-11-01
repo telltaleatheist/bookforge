@@ -633,7 +633,19 @@ function lettersByRule(form: PrintedForm): boolean {
  * that also ends the sentence).
  */
 function lettered(form: PrintedForm, sense: GlossarySense): GlossarySense {
-  return { ...sense, kind: 'initials', reading: lettersOf(form).join(' '), periodIsPart: isDottedInitials(form) };
+  const letters = lettersOf(form);
+  /*
+   * ONE LETTER TWICE IS SAID AS PRINTED (Owen, 2026-10-31, the listen test on
+   * owen-audiobook: *"S S performed worse than SS. other than that they were all
+   * fine"* — the spaced clip ran 5.9 s against 2.8 s). So "SS" stays "SS", and
+   * "S.S." loses only its periods. One sample; the rule is the repeated letter.
+   */
+  if (letters.length > 1 && new Set(letters).size === 1) {
+    return form.kind === 'caps'
+      ? { ...sense, kind: 'initials', reading: '', periodIsPart: false }
+      : { ...sense, kind: 'initials', reading: letters.join(''), periodIsPart: true };
+  }
+  return { ...sense, kind: 'initials', reading: letters.join(' '), periodIsPart: isDottedInitials(form) };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

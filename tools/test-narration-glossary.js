@@ -486,6 +486,11 @@ const entries = (where) => JSON.parse(fs.readFileSync(where.glossaryFile, 'utf8'
     assert.strictEqual(read(caps('SOMUA'), sense('abbreviation', 'SOMUA')).reading, '', 'a long run given as printed stays as printed');
     assert.strictEqual(read(caps('THE'), sense('word', 'the')).reading, 'the', 'a shouted word is its word');
     assert.strictEqual(glossary.senseProblem(caps('USMC'), read(caps('USMC'), sense('initials', ''))), null);
+    // One letter twice is said as printed: "S S" read worse than "SS" in the listen test.
+    assert.strictEqual(read(caps('SS'), sense('initials', '')).reading, '');
+    assert.strictEqual(read(caps('SS'), sense('abbreviation', 'Schutzstaffel')).reading, '', 'an expansion of SS: as printed');
+    const ss = { key: 's.s', kind: 'abbreviation', count: 1, printed: { 'S.S.': 1 }, samples: [], occurrences: [] };
+    assert.deepStrictEqual([read(ss, sense('initials', '')).reading, read(ss, sense('initials', '')).periodIsPart], ['SS', true]);
     // Dotted initials: their letters, the periods consumed with them.
     const us = { key: 'u.s', kind: 'abbreviation', count: 2, printed: { 'U.S.': 2 }, samples: [], occurrences: [] };
     const lettered = read(us, { meaning: 'United States', kind: 'abbreviation', reading: 'United States', periodIsPart: true });
