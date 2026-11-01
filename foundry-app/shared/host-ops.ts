@@ -634,3 +634,51 @@ export interface HostMintMeta {
   language?: string;
   coverPath?: string;
 }
+
+/*
+ * ── THE HOST'S SECTION ON A TEXT PASS'S CARD (2026-11-01) ────────────────────
+ *
+ * A host may have something to say about a pass before it runs: a choice the
+ * person makes on the card, and the rows that choice puts in the queue ahead of
+ * the pass. BookForge's is whether a cleanup reads, builds or skips a guide it
+ * keeps for the step; this app knows none of that. It asks the host for an offer
+ * when the card opens, draws the host's words as lit boxes, lists what the chosen
+ * one adds to the queue, and carries the chosen id on the request
+ * (`CleanRequest.hostChoice`) for the host's queue to read. No offer, no section.
+ */
+
+/** What the card asks the host: which pass, and which step it is made from. */
+export interface HostPassAsk {
+  kind: 'clean';
+  projectDir: string;
+  /** The landed step the pass is made from, or null when it waits on a promise. */
+  at: string | null;
+  /** The promised row it waits on, when it does. */
+  deferredFrom: string | null;
+}
+
+/** One choice the host offers. Every word is the host's. */
+export interface HostPassChoice {
+  id: string;
+  label: string;
+  detail: string;
+  recommended?: boolean;
+  /** The rows this choice adds AHEAD of the pass, in order, in the host's words. Empty for none. */
+  queues: string[];
+}
+
+/** The host's section on the card. */
+export interface HostPassOffer {
+  /** The section's label ("what this is about"). */
+  label: string;
+  /** One or two sentences: the state of things, as the host sees them. */
+  note: string;
+  choices: HostPassChoice[];
+  /** The id lit when the card opens. Must be one of `choices`. */
+  chosen: string;
+  /**
+   * A host operation the section links to (one of `HostOffers.operations`), run
+   * on the tree node `nodeId` (the step the host is talking about) with no answers.
+   */
+  review?: { label: string; operationId: string; nodeId: string };
+}

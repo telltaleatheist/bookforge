@@ -104,13 +104,13 @@ import {
 import { connectLocalEngine, registerIpc } from './ipc';
 import * as queue from './job-queue';
 import { ledgerOf, listProjects, onImportLanded, projectDirOf, readManifest } from './projects';
-import { identifyExport } from './workspace';
+import { identifyCleanup, identifyExport } from './workspace';
 import { foundryWindow, isDev, openWindow, whenRendererReady } from './window';
 import { stepOf } from '../shared/ledger';
 import { deferralFor } from '../shared/pending';
-import { carriedFromPlan } from '../shared/pipeline';
+import { carriedFromPlan, DEFAULT_CLEAN_TEXT_MODEL, DEFAULT_OLLAMA_ENDPOINT } from '../shared/pipeline';
 import { fold, originalOf } from '../shared/original';
-import type { ExportLanding, Job, JobRequest } from '../shared/types';
+import type { CleanRequest, ExportLanding, Job, JobRequest } from '../shared/types';
 
 export type { FoundryHost, HostOperation };
 /*
@@ -1111,6 +1111,49 @@ function unfiled(row: Job): Error {
  * Start tears it exactly as a move mid-run would. Done, failed and cancelled
  * rows are history and count for nothing.
  */
+/**
+ * A READINGS-ONLY PASS FROM ONE STEP, composed for the HOST to queue
+ * (`CleanRequest.readingsOnly`, 2026-11-01).
+ *
+ * The host decided the readings and owns the act: it files this request in its
+ * own queue and hands the readings file as `RunOptions.fixedReadings` when the
+ * row runs, exactly as it hands a cleanup's. What only this app can say is where
+ * the answers go and which step they will be — the records file, the stamp, the
+ * step id — and those are planned here by the cleanup's own planner, with the
+ * pass's `label` as part of its identity, so a second press under the same name
+ * replaces the first and a real cleanup from the same step is a different row.
+ *
+ * NOTHING RUNS HERE AND NOTHING IS QUEUED IN THIS APP. A step that has not landed
+ * yet is planned as a promise (`deferred`), as an export ordered from one is.
+ */
+export async function planReadingsPass(projectDir: string, stepId: string, label: string): Promise<CleanRequest> {
+  const name = label.trim();
+  if (name.length === 0) throw new Error('A readings pass needs a name for the step it lands as.');
+  const project = (await listProjects()).find((row) => fold(row.dir) === fold(projectDir));
+  if (project === undefined) throw new Error(`${projectDir} is not a project in this app's library.`);
+  const original = originalOf(project.documents);
+  if (original === null) throw new Error(`${projectDir} holds no document to write readings into.`);
+  const ledger = ledgerOf(await readManifest(project.dir));
+  const landed = ledger.steps.find((row) => row.id === stepId) ?? null;
+  const deferral = landed === null ? deferralFor(ledger, queue.shelfJobsFor(project.dir), stepId) : null;
+  const step = landed ?? (deferral === null ? stepOf(ledger, stepId) : null);
+  const plan = await identifyCleanup(original.path, step, deferral ?? undefined, undefined, name);
+  if (plan.stampPath === undefined) throw new Error('The cleanup planner named no stamp for this readings pass.');
+  return {
+    kind: 'clean',
+    inputPath: plan.sourcePath,
+    recordsPath: plan.recordsPath,
+    stampPath: plan.stampPath,
+    ...(plan.deferred !== undefined ? { deferred: plan.deferred } : {}),
+    // Declared constants, never asked: the pass opens no model (`argsFor`).
+    model: DEFAULT_CLEAN_TEXT_MODEL,
+    ollama: DEFAULT_OLLAMA_ENDPOINT,
+    at: plan.at ?? null,
+    stepId: plan.stepId,
+    readingsOnly: { label: name },
+  };
+}
+
 export function foundryBusy(): { windowOpen: boolean; jobsPending: number } {
   const win = foundryWindow();
   return {

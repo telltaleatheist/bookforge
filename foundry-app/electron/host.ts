@@ -25,7 +25,7 @@ import type {
 // A TYPE, and it has to stay one: `host-ops.ts` pushes at windows and therefore
 // imports `window.ts`, which is exactly the weight this leaf exists to keep out
 // of `app-settings.ts`. `import type` is erased, so the leaf stays a leaf.
-import type { HostMintMeta, HostNodeAction } from '../shared/host-ops';
+import type { HostMintMeta, HostNodeAction, HostPassAsk, HostPassOffer } from '../shared/host-ops';
 import type { CrucibleServerEntry } from './app-settings';
 import type { HostOperation } from './host-ops';
 
@@ -343,6 +343,13 @@ export interface FoundryHost {
    * mistake must not keep the modal from opening.
    */
   mintMetaFor?(projectDir: string): Promise<HostMintMeta | null>;
+  /**
+   * THE HOST'S SECTION ON A PASS'S CARD (`HostPassOffer`, shared/host-ops.ts):
+   * asked when the Clean text card opens, for the step it is aimed at. Null is
+   * "nothing to say", and the card draws no section. OPTIONAL, on `onImport`'s
+   * rule: a host with nothing to say about a cleanup simply has no hook.
+   */
+  passOffer?(ask: HostPassAsk): Promise<HostPassOffer | null>;
 
   /**
    * The host's Crucible REGISTRY — every server it knows, in priority order.
@@ -432,6 +439,25 @@ export function hostedLibraryDir(): string | null {
  * reach the form as the problem line, and the one caller that must not fail
  * on a seed — the export settle — catches it itself and says so in its log.
  */
+/**
+ * The host's section for a pass's card, or null standalone and for a host with
+ * no `passOffer`. A throw travels as a sentence, on `hostMintMeta`'s rule: a
+ * broken host and a host with nothing to say are two different facts.
+ */
+export async function hostPassOffer(ask: HostPassAsk): Promise<HostPassOffer | null> {
+  if (host?.passOffer === undefined) return null;
+  let offer: HostPassOffer | null;
+  try {
+    offer = await host.passOffer(ask);
+  } catch (err) {
+    throw new Error(`The host could not say what it has for this pass: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  if (offer !== null && !offer.choices.some((choice) => choice.id === offer!.chosen)) {
+    throw new Error(`The host offered "${offer.chosen}" as the choice to start on, and it is not one of its choices.`);
+  }
+  return offer;
+}
+
 export async function hostMintMeta(projectDir: string): Promise<HostMintMeta | null> {
   if (host?.mintMetaFor === undefined) return null;
   try {

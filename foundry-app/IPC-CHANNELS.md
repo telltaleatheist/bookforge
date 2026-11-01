@@ -1,5 +1,19 @@
 # Foundry's IPC channels — the whole list, for the collision audit
 
+## The host's section on the Clean text card (2026-11-01)
+
+**COUNTED BY SCRIPT OVER `app/electron/ipc.ts`: 152 `ipcMain.handle` call sites,
+152 distinct channel names, zero `ipcMain.on`.** The figure before this change
+measured **151** (the 149 below plus `analysis:suggest-start` and
+`analysis:suggest-cancel`); one door arrived and none left.
+
+| Channel | Request/result |
+| --- | --- |
+| `host-ops:pass-offer` | inputPath, the row the card is aimed at (optional) → the host's `HostPassOffer` for that step, or null standalone, for a host with no `passOffer`, or for a document outside the library. Resolves the step exactly as `workspace:plan-clean` does and plans, mints and writes nothing. |
+
+**FOR BOOKFORGE:** `FoundryHost.passOffer(ask: HostPassAsk)` is the hook; the card
+carries the lit choice's id on the request as `CleanRequest.hostChoice`.
+
 ## Ask the document (2026-10-29)
 
 **COUNTED BY SCRIPT OVER `app/electron/ipc.ts`: 149 `ipcMain.handle` call sites,
@@ -1120,6 +1134,7 @@ cannot report a failure. They are registered in one function, `registerIpc`
 | `host-ops:invoke` | Run one of the host's acts, named by id, from a node in the tree. Carries the answers to the act's own form. |
 | `host-ops:node-action` | Retry or dismiss a host node that FAILED — the pair the tree draws on a failed card. |
 | `host-ops:nodes` | One project's host-contributed nodes as they now stand — the first paint. |
+| `host-ops:pass-offer` | The host's section on the Clean text card for one step (`HostPassOffer`), or null. |
 | `host-ops:offers` | What the host registered at mount: its operations (with their forms), and whether failed nodes can be retried. |
 | `host-ops:status` | What the host is doing right now, for the chip in this window's chrome — and whether a click on it goes anywhere. Null standalone. |
 | `host-ops:status-open` | The chip was clicked: hand it to the host's `onStatusOpen`. Refuses by name for a host that registered none. |

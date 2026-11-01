@@ -349,6 +349,7 @@ const api: FoundryApi = {
     nodeAction: (projectDir, nodeId, action) =>
       ipcRenderer.invoke('host-ops:node-action', projectDir, nodeId, action),
     nodes: (projectDir) => ipcRenderer.invoke('host-ops:nodes', projectDir),
+    passOffer: (inputPath, from) => ipcRenderer.invoke('host-ops:pass-offer', inputPath, from),
     invoke: (operationId, projectDir, nodeId, settings) =>
       ipcRenderer.invoke('host-ops:invoke', operationId, projectDir, nodeId, settings),
     onChanged: (listener) => subscribe<HostNodes>('host-ops:changed', listener),

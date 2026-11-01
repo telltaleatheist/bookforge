@@ -138,7 +138,7 @@ import {
   writePdfMetadata,
 } from './engine';
 import { catalogForThisMachine, onEnvInstallProgress } from './env-install';
-import { foundryHost, hosted, hostMintMeta } from './host';
+import { foundryHost, hosted, hostMintMeta, hostPassOffer } from './host';
 import {
   actOnHostNode, hostNodesFor, hostOffers, hostOpensStatus, hostStatus,
   invokeHostOperation, openHostStatus,
@@ -193,7 +193,7 @@ import {
   ANALYSIS_CATEGORY_IDS,
   type CustomAnalysisCategory,
 } from '../shared/analysis-categories';
-import { cleanupInEffect } from '../shared/ledger';
+import { cleanupInEffect, positionOf } from '../shared/ledger';
 import type { ReadAsk } from '../shared/ledger';
 import { admitPending, deferralFor, pendingStepOf, rowMinting, withPending } from '../shared/pending';
 import type { Deferral } from '../shared/pending';
@@ -1770,6 +1770,33 @@ export function registerIpc(): void {
    * reached this from the mount seam would meet a refusal about a window rather
    * than about a book.
    */
+  /*
+   * THE HOST'S SECTION ON THE CLEAN TEXT CARD (`HostPassOffer`, shared/host-ops.ts).
+   *
+   * The step is resolved EXACTLY as `workspace:plan-clean` below resolves it — the
+   * row the card is aimed at, a promise it waits on, or the position — but NOTHING
+   * is planned, minted or written: this is asked every time the card opens, and a
+   * card closed unpressed must leave no trace. Standalone, and for a host with no
+   * `passOffer`, it is null before anything is read.
+   */
+  ipcMain.handle('host-ops:pass-offer', async (_event, inputPath: string, from?: string) => {
+    if (foundryHost()?.passOffer === undefined) return null;
+    const source = admitted(inputPath);
+    if (source === null) throw new Error(`${inputPath} was never opened in this app.`);
+    const dir = projectDirOf(source);
+    if (dir === null) return null;
+    const aim = await aimedAt(source, from);
+    let at: string | null = null;
+    if (aim.deferral === undefined) {
+      if (aim.at !== null) at = aim.at.id;
+      else {
+        const view = await readStepLedger(dir);
+        at = view === null ? null : positionOf(view.ledger)?.id ?? null;
+      }
+    }
+    return hostPassOffer({ kind: 'clean', projectDir: dir, at, deferredFrom: aim.deferral?.from ?? null });
+  });
+
   ipcMain.handle('workspace:plan-clean', async (_event, inputPath: string, from?: string) => {
     const source = admitted(inputPath);
     if (source === null) throw new Error(`${inputPath} was never opened in this app.`);

@@ -360,8 +360,14 @@ export const PARAMS_OF: Readonly<Record<StepAction, readonly (keyof LedgerParams
    * `vlm-compile --narration-stamp`. That is a receipt travelling with the file,
    * which is what a narrator needs; a params bag repeating it would be this app
    * copying the engine's own record in order to have an opinion about it.
+   *
+   * `readings` IS THE ONE EXCEPTION, present only on a READINGS-ONLY pass
+   * (`CleanRequest.readingsOnly`, 2026-11-01): the host's name for a pass that
+   * wrote its readings in and asked nothing. It is the question, so that pass and
+   * a real cleanup made from the same step are two rows rather than one replacing
+   * the other. Every cleanup before it has no `readings` and is unchanged.
    */
-  clean: [],
+  clean: ['readings'],
   /*
    * A METADATA EDIT IS DESCRIBED BY WHICH FIELDS IT SET, and by nothing else. The
    * values are in the payload, where the thing an export replays belongs
@@ -1240,7 +1246,7 @@ function readStep(entry: unknown, index: number): LedgerStep {
  * a forgotten clause here means a page range checked as if it were a page count
  * and refused for being a string. Everything not in here is a whole number.
  */
-const WORDS = ['arrangement', 'bank', 'from', 'generation', 'language', 'model', 'skipPages'] as const;
+const WORDS = ['arrangement', 'bank', 'from', 'generation', 'language', 'model', 'readings', 'skipPages'] as const;
 
 function isWord(key: keyof LedgerParams): key is typeof WORDS[number] {
   return (WORDS as readonly string[]).includes(key);
@@ -1687,10 +1693,13 @@ export function translatedInto(
    * either end would aim easy language at the plain-terms row.
    */
   rewrite?: RewriteMode,
+  /** A readings-only cleanup's name for itself (`LedgerParams.readings`); absent for every other pass. */
+  readings?: string,
 ): LedgerParams {
   const said = language?.trim() ?? '';
   const params: LedgerParams = said.length === 0 ? {} : { language: said };
   if (rewrite !== undefined) params.rewrite = rewrite;
+  if (readings !== undefined && readings.length > 0) params.readings = readings;
   return params;
 }
 
@@ -2126,6 +2135,8 @@ export interface TranslationAsk {
    * this whole section exists to have ended).
    */
   rewrite?: RewriteMode;
+  /** A readings-only cleanup's name (`LedgerParams.readings`): part of which step it is. */
+  readings?: string;
 }
 
 /** Where this translation's answers go, and which step they belong to. */
@@ -2212,7 +2223,7 @@ export function translationTarget(
   const target = reRunTarget(ledger, {
     action: ask.action,
     parent: ask.parent,
-    params: translatedInto(ask.language, ask.rewrite),
+    params: translatedInto(ask.language, ask.rewrite, ask.readings),
   });
   /*
    * ── A CLEANUP PRESSED AGAIN CLEANS AGAIN (Owen, 2026-10-03) ─────────────────

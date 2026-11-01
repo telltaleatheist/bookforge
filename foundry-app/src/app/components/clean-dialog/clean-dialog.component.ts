@@ -8,8 +8,10 @@ import {
   DEFAULT_OLLAMA_ENDPOINT as DEFAULT_OLLAMA,
 } from '@shared/pipeline';
 import { withChosenModel } from '@shared/job-model-offer';
+import type { HostPassOffer } from '@shared/host-ops';
 import type { CleanRequest } from '@shared/types';
 
+import { HostOpsService } from '../../core/host-ops.service';
 import { LedgerService } from '../../core/ledger.service';
 import { ProjectsService } from '../../core/projects.service';
 import { QueueService } from '../../core/queue.service';
@@ -156,6 +158,37 @@ function triageRemembered(): boolean {
           <p class="fact" [title]="input">{{ name() }}</p>
 
           <!--
+            THE HOST'S SECTION (\`HostPassOffer\`, shared/host-ops.ts). Every word in
+            it is the host's: this app draws the choices as lit boxes, lights the
+            one chosen, and carries its id on the request. Nothing when the host has
+            nothing to say, which is every standalone window.
+          -->
+          @if (offer(); as o) {
+            <div class="field">
+              <span class="label">{{ o.label }}</span>
+              <div class="host-pass">
+                <p class="host-note">{{ o.note }}
+                  @if (o.review; as r) {
+                    <button type="button" class="link" (click)="openReview(r.operationId, r.nodeId)">{{ r.label }}</button>
+                  }
+                </p>
+                <div class="host-choices" role="group" [attr.aria-label]="o.label">
+                  @for (choice of o.choices; track choice.id) {
+                    <button type="button" class="pick" [class.on]="chosen() === choice.id"
+                            [attr.aria-pressed]="chosen() === choice.id" (click)="chosen.set(choice.id)">
+                      <span class="pick-head">
+                        <span class="pick-name">{{ choice.label }}</span>
+                        @if (choice.recommended) { <span class="pick-tag">Recommended</span> }
+                      </span>
+                      <span class="pick-said">{{ choice.detail }}</span>
+                    </button>
+                  }
+                </div>
+              </div>
+            </div>
+          }
+
+          <!--
             THE QUICK CHECK IN FRONT OF THE CLEANUP. A box only when an engine
             can do it; a sentence when none can, because a box that cannot be
             honoured is not an option (Owen, 2026-09-17: "present it as
@@ -204,6 +237,16 @@ function triageRemembered(): boolean {
 
           @if (problem(); as reason) {
             <p class="problem">{{ reason }}</p>
+          }
+
+          <!-- WHAT THE PRESS PUTS IN THE QUEUE, in order, when the host has rows of its own to add ahead. -->
+          @if (offer() !== null) {
+            <div class="field">
+              <span class="label">Adds to the queue</span>
+              <ol class="queued">
+                @for (row of queuedRows(); track $index) { <li>{{ row }}</li> }
+              </ol>
+            </div>
           }
         }
         </div>
@@ -277,6 +320,46 @@ function triageRemembered(): boolean {
     </div>
   `,
   styles: [`
+    /* THE HOST'S SECTION: the analysis dialog's lit box (\`.pick\`), one of many. */
+    .host-pass {
+      display: flex; flex-direction: column; gap: 8px;
+      padding: 10px; border: 1px solid var(--border-subtle); border-radius: var(--radius-md);
+    }
+    .host-note { margin: 0; font-size: 11.5px; line-height: 1.5; color: var(--text-secondary); }
+    .host-choices { display: flex; flex-direction: column; gap: 6px; }
+    .link {
+      background: none; border: none; padding: 0; margin-left: 4px; cursor: pointer;
+      font: inherit; color: var(--accent); text-decoration: underline;
+    }
+    .pick {
+      display: flex; flex-direction: column; gap: 2px;
+      padding: 7px 10px;
+      background: var(--bg-input);
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius-md);
+      text-align: left; cursor: pointer;
+      font: inherit; color: inherit;
+      user-select: none;
+      transition: background-color 100ms cubic-bezier(0, 0, 0.2, 1),
+                  border-color 100ms cubic-bezier(0, 0, 0.2, 1);
+    }
+    .pick:hover { background: var(--bg-hover); border-color: var(--border-strong); }
+    .pick:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+    .pick.on { background: var(--accent-soft); border-color: var(--accent); }
+    .pick-head { display: flex; align-items: flex-start; gap: 6px; }
+    .pick-name { flex: 1; min-width: 0; font-size: 12px; font-weight: 500; color: var(--text-secondary); }
+    /* The fill carries the accent, not the words (analysis dialog, 2026-10-30). */
+    .pick.on .pick-name { color: var(--text-primary); font-weight: 600; }
+    .pick.on .pick-said, .pick.on .pick-tag { color: var(--text-secondary); }
+    .pick-said { font-size: 10.5px; line-height: 1.4; color: var(--text-tertiary); }
+    .pick-tag {
+      flex: 0 0 auto; margin-top: 2px;
+      font-family: var(--font-mono);
+      font-size: 8.5px; letter-spacing: 0.08em; text-transform: uppercase;
+      color: var(--text-tertiary);
+    }
+    .queued { margin: 0; padding-left: 18px; font-size: 12px; line-height: 1.7; color: var(--text-primary); }
+
     /* A fact, not a field. What a read-only input used to be. */
     .fact {
       margin: 0; font-size: 12px; color: var(--text-primary);
@@ -404,6 +487,7 @@ export class CleanDialogComponent {
   private readonly queue = inject(QueueService);
   private readonly projects = inject(ProjectsService);
   private readonly ledger = inject(LedgerService);
+  private readonly hostOps = inject(HostOpsService);
 
   /**
    * The book this cleanup is OF — the Simplify dialog's `source`, asked of the
@@ -497,6 +581,23 @@ export class CleanDialogComponent {
    * answer until it is upgraded — and never a guess that it might.
    */
   protected readonly triageOffer = signal<'yes' | 'no' | null>(null);
+  /** The host's section for this book's step, or null (standalone, or nothing to say). */
+  protected readonly offer = signal<HostPassOffer | null>(null);
+  /** The host choice lit on the card. */
+  protected readonly chosen = signal('');
+  /**
+   * THE ROWS THE PRESS WILL ADD, in order: the host's own ahead (the lit choice's
+   * `queues`), the check when its box is ticked and drawn, then the cleanup.
+   */
+  protected readonly queuedRows = computed(() => {
+    const o = this.offer();
+    const choice = o?.choices.find((one) => one.id === this.chosen());
+    return [
+      ...(choice?.queues ?? []),
+      ...(this.triaged() && this.triageOffer() === 'yes' ? ['Check which paragraphs need cleaning'] : []),
+      'Clean text',
+    ];
+  });
   /** Who "cannot do it yet", for the sentence drawn in place of the box. */
   protected readonly triageWhere = computed(() => {
     const chosen = this.server();
@@ -561,6 +662,55 @@ export class CleanDialogComponent {
     effect(() => {
       void this.askTriage(this.server());
     });
+    /*
+     * THE HOST IS ASKED WHEN THE CARD OPENS ON A BOOK, AND AGAIN WHEN ITS NODES
+     * FOR THAT PROJECT MOVE: its own work landing (a row it queued finishing) is
+     * exactly what changes its answer. Read through `nodesFor` so the effect
+     * re-runs on a push; the nodes themselves are not looked at.
+     */
+    effect(() => {
+      const input = this.source();
+      const from = this.aim();
+      const tab = this.stage.activeDocument();
+      const project = tab === null ? null : this.projects.projectFor(tab.path);
+      if (project !== null) {
+        this.hostOps.ensure(project.dir);
+        this.hostOps.nodesFor(project.dir);
+      }
+      void this.askHost(input, from);
+    });
+  }
+
+  /** Which ask is the latest, so an answer that arrives late is dropped. */
+  private hostAsk = 0;
+
+  private async askHost(input: string | null, from: string | undefined): Promise<void> {
+    const ask = ++this.hostAsk;
+    if (!api || !hosted() || input === null) { this.offer.set(null); return; }
+    try {
+      const offer = await api.hostOps.passOffer(input, from);
+      if (ask !== this.hostAsk) return;
+      // A choice the person lit survives a re-ask that still offers it.
+      const kept = offer !== null && offer.choices.some((one) => one.id === this.chosen())
+        ? this.chosen() : offer?.chosen ?? '';
+      this.offer.set(offer);
+      this.chosen.set(kept);
+    } catch (err) {
+      if (ask !== this.hostAsk) return;
+      this.offer.set(null);
+      this.problem.set(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  protected async openReview(operationId: string, nodeId: string): Promise<void> {
+    const tab = this.stage.activeDocument();
+    const project = tab === null ? null : this.projects.projectFor(tab.path);
+    if (project === null) return;
+    try {
+      await this.hostOps.invoke(operationId, project.dir, nodeId);
+    } catch (err) {
+      this.problem.set(err instanceof Error ? err.message : String(err));
+    }
   }
 
   /** Tick or untick the removal box. For this press only: it opens ticked. */
@@ -679,6 +829,8 @@ export class CleanDialogComponent {
         stepId: plan.stepId,
         // WHAT IT TAKES OUT — said to the model in the check and the cleanup alike.
         removal: { references: this.removeReferences(), also: this.removeAlso().trim() },
+        // The host's choice, by its own id, for the host's queue to read (`CleanRequest.hostChoice`).
+        ...(this.offer() !== null && this.chosen().length > 0 ? { hostChoice: this.chosen() } : {}),
       }, this.chosenModel());
 
       // A refusal is not a success: the queue dedupes on the records path and

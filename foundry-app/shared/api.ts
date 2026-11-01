@@ -13,7 +13,7 @@ import type { IncomingPairingRequest, RemotePairingProgress } from './remote-pai
 import type { BookOutcome } from './book';
 import type { CrucibleCoordinationMap, CrucibleCoordinationState } from './coordinate-wire';
 import type { CrucibleInstallEvent, CrucibleInstallStatus } from './crucible-install-wire';
-import type { HostMintMeta, HostNodeAction, HostOffers, HostStatus } from './host-ops';
+import type { HostMintMeta, HostNodeAction, HostOffers, HostPassOffer, HostStatus } from './host-ops';
 import type { ReadAsk } from './ledger';
 import type {
   CapabilityRecord,
@@ -1241,6 +1241,13 @@ export interface FoundryApi {
      * cannot be different shapes of the same fact.
      */
     offers(): Promise<HostOffers>;
+    /**
+     * THE HOST'S SECTION ON THE CLEAN TEXT CARD, for the step the card is aimed at
+     * (`from`, as `planCleanup` takes it; absent is the position). Null standalone,
+     * for a host with nothing to say, and for a document outside the library.
+     * Plans, mints and writes nothing.
+     */
+    passOffer(inputPath: string, from?: string): Promise<HostPassOffer | null>;
     /**
      * Retry or dismiss a host node that FAILED — the pair the tree draws on a
      * failed card, and only when `offers().nodeActions` said somebody is

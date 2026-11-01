@@ -5743,20 +5743,20 @@ function crc32(data) {
   for (let i = 0; i < data.length; i++) c = CRC_TABLE[(c ^ data[i]) & 255] ^ c >>> 8;
   return (c ^ 4294967295) >>> 0;
 }
-function zipText(path28, text) {
-  return { path: path28, data: new TextEncoder().encode(text) };
+function zipText(path29, text) {
+  return { path: path29, data: new TextEncoder().encode(text) };
 }
-function checkPath(path28) {
-  if (path28.length === 0) throw new ZipError("an entry has an empty path");
-  if (path28.includes("\\")) {
-    throw new ZipError(`entry "${path28}" contains a backslash \u2014 ZIP paths are forward-slashed`);
+function checkPath(path29) {
+  if (path29.length === 0) throw new ZipError("an entry has an empty path");
+  if (path29.includes("\\")) {
+    throw new ZipError(`entry "${path29}" contains a backslash \u2014 ZIP paths are forward-slashed`);
   }
-  if (path28.startsWith("/")) throw new ZipError(`entry "${path28}" is absolute \u2014 ZIP paths are relative`);
-  if (path28.split("/").some((seg) => seg === "." || seg === ".." || seg === "")) {
-    throw new ZipError(`entry "${path28}" has an empty or relative path segment`);
+  if (path29.startsWith("/")) throw new ZipError(`entry "${path29}" is absolute \u2014 ZIP paths are relative`);
+  if (path29.split("/").some((seg) => seg === "." || seg === ".." || seg === "")) {
+    throw new ZipError(`entry "${path29}" has an empty or relative path segment`);
   }
-  const name = new TextEncoder().encode(path28);
-  if (name.length > MAX_U16) throw new ZipError(`entry "${path28}" has a name longer than ${MAX_U16} bytes`);
+  const name = new TextEncoder().encode(path29);
+  if (name.length > MAX_U16) throw new ZipError(`entry "${path29}" has a name longer than ${MAX_U16} bytes`);
   return name;
 }
 function writeZip(entries) {
@@ -6445,38 +6445,38 @@ function readZip(bytes) {
     const extraLen = u16(p + 30);
     const commentLen = u16(p + 32);
     const localOffset = u32(p + 42);
-    const path28 = decoder.decode(bytes.subarray(p + 46, p + 46 + nameLen));
+    const path29 = decoder.decode(bytes.subarray(p + 46, p + 46 + nameLen));
     p += 46 + nameLen + extraLen + commentLen;
     if (csize === 4294967295 || usize === 4294967295 || localOffset === 4294967295) {
-      throw new UnzipError(`entry "${path28}" is zip64, which this reader does not implement`);
+      throw new UnzipError(`entry "${path29}" is zip64, which this reader does not implement`);
     }
     if (localOffset + 30 > bytes.length || u32(localOffset) !== LOCAL_SIG2) {
-      throw new UnzipError(`entry "${path28}": bad local header signature`);
+      throw new UnzipError(`entry "${path29}": bad local header signature`);
     }
     const lFlags = u16(localOffset + 6);
     const lMethod = u16(localOffset + 8);
     const lNameLen = u16(localOffset + 26);
     const lExtraLen = u16(localOffset + 28);
     const lPath = decoder.decode(bytes.subarray(localOffset + 30, localOffset + 30 + lNameLen));
-    if (lPath !== path28) {
-      throw new UnzipError(`the central directory says "${path28}", its local header says "${lPath}"`);
+    if (lPath !== path29) {
+      throw new UnzipError(`the central directory says "${path29}", its local header says "${lPath}"`);
     }
     if (lMethod !== method) {
-      throw new UnzipError(`entry "${path28}": method ${lMethod} locally, ${method} centrally`);
+      throw new UnzipError(`entry "${path29}": method ${lMethod} locally, ${method} centrally`);
     }
     const streamed = (lFlags & 8) !== 0;
     if (!streamed) {
       const lCrc = u32(localOffset + 14);
       const lCsize = u32(localOffset + 18);
       const lUsize = u32(localOffset + 22);
-      if (lCrc !== crc) throw new UnzipError(`entry "${path28}": the two headers disagree about its checksum`);
+      if (lCrc !== crc) throw new UnzipError(`entry "${path29}": the two headers disagree about its checksum`);
       if (lCsize !== csize || lUsize !== usize) {
-        throw new UnzipError(`entry "${path28}": the two headers disagree about its size`);
+        throw new UnzipError(`entry "${path29}": the two headers disagree about its size`);
       }
     }
     const start = localOffset + 30 + lNameLen + lExtraLen;
     if (start + csize > bytes.length) {
-      throw new UnzipError(`entry "${path28}" runs past the end of the file \u2014 the archive is truncated`);
+      throw new UnzipError(`entry "${path29}" runs past the end of the file \u2014 the archive is truncated`);
     }
     const raw = bytes.slice(start, start + csize);
     let data;
@@ -6486,24 +6486,24 @@ function readZip(bytes) {
       try {
         data = new Uint8Array((0, import_node_zlib.inflateRawSync)(raw));
       } catch (error) {
-        throw new UnzipError(`entry "${path28}" is deflated and would not inflate: ${error.message}`);
+        throw new UnzipError(`entry "${path29}" is deflated and would not inflate: ${error.message}`);
       }
     } else {
       throw new UnzipError(
-        `entry "${path28}" uses compression method ${method}; this reader implements stored (0) and deflate (8)`
+        `entry "${path29}" uses compression method ${method}; this reader implements stored (0) and deflate (8)`
       );
     }
     if (data.length !== usize) {
-      throw new UnzipError(`entry "${path28}" is ${data.length} bytes, its header says ${usize}`);
+      throw new UnzipError(`entry "${path29}" is ${data.length} bytes, its header says ${usize}`);
     }
     const actual = crc322(data);
     if (actual !== crc) {
       throw new UnzipError(
-        `entry "${path28}" fails its checksum (${actual.toString(16)} against ${crc.toString(16)}) \u2014 the file is damaged`
+        `entry "${path29}" fails its checksum (${actual.toString(16)} against ${crc.toString(16)}) \u2014 the file is damaged`
       );
     }
     out.push({
-      path: path28,
+      path: path29,
       data,
       raw,
       method,
@@ -6564,9 +6564,9 @@ function resolveHref(baseDir, href) {
   }
   return out.join("/");
 }
-function directoryOf(path28) {
-  const slash = path28.lastIndexOf("/");
-  return slash < 0 ? "" : path28.slice(0, slash);
+function directoryOf(path29) {
+  const slash = path29.lastIndexOf("/");
+  return slash < 0 ? "" : path29.slice(0, slash);
 }
 function attr(el, name) {
   return el.attrs.get(name);
@@ -6620,13 +6620,13 @@ function containerFromMembers(members) {
     if (item === void 0) {
       throw new BookError(`the spine references manifest id "${idref}", which the manifest does not declare`);
     }
-    const path28 = resolveHref(opfDir, item.href);
-    const member = byPath.get(path28);
+    const path29 = resolveHref(opfDir, item.href);
+    const member = byPath.get(path29);
     if (member === void 0) {
-      throw new BookError(`the manifest declares "${path28}", and there is no such entry in the archive`);
+      throw new BookError(`the manifest declares "${path29}", and there is no such entry in the archive`);
     }
     const source = member.text();
-    documents.push({ path: path28, source, stamped: source.includes("data-bf-cat") });
+    documents.push({ path: path29, source, stamped: source.includes("data-bf-cat") });
   }
   if (documents.length === 0) {
     throw new BookError("this EPUB has an empty spine \u2014 there is no book in it");
@@ -8048,11 +8048,11 @@ function __metadata(metadataKey, metadataValue) {
 }
 function __awaiter(thisArg, _arguments, P, generator) {
   function adopt(value) {
-    return value instanceof P ? value : new P(function(resolve22) {
-      resolve22(value);
+    return value instanceof P ? value : new P(function(resolve23) {
+      resolve23(value);
     });
   }
-  return new (P || (P = Promise))(function(resolve22, reject) {
+  return new (P || (P = Promise))(function(resolve23, reject) {
     function fulfilled(value) {
       try {
         step(generator.next(value));
@@ -8068,7 +8068,7 @@ function __awaiter(thisArg, _arguments, P, generator) {
       }
     }
     function step(result) {
-      result.done ? resolve22(result.value) : adopt(result.value).then(fulfilled, rejected);
+      result.done ? resolve23(result.value) : adopt(result.value).then(fulfilled, rejected);
     }
     step((generator = generator.apply(thisArg, _arguments || [])).next());
   });
@@ -8246,14 +8246,14 @@ function __asyncValues(o) {
   }, i);
   function verb(n) {
     i[n] = o[n] && function(v) {
-      return new Promise(function(resolve22, reject) {
-        v = o[n](v), settle(resolve22, reject, v.done, v.value);
+      return new Promise(function(resolve23, reject) {
+        v = o[n](v), settle(resolve23, reject, v.done, v.value);
       });
     };
   }
-  function settle(resolve22, reject, d, v) {
+  function settle(resolve23, reject, d, v) {
     Promise.resolve(v).then(function(v2) {
-      resolve22({ value: v2, done: d });
+      resolve23({ value: v2, done: d });
     }, reject);
   }
 }
@@ -8677,9 +8677,9 @@ var require_async = __commonJS({
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.waitForTick = void 0;
     exports2.waitForTick = function() {
-      return new Promise(function(resolve22) {
+      return new Promise(function(resolve23) {
         setTimeout(function() {
-          return resolve22();
+          return resolve23();
         }, 0);
       });
     };
@@ -17489,12 +17489,12 @@ var require_CustomFontSubsetEmbedder = __commonJS({
         };
         CustomFontSubsetEmbedder2.prototype.serializeFont = function() {
           var _this = this;
-          return new Promise(function(resolve22, reject) {
+          return new Promise(function(resolve23, reject) {
             var parts = [];
             _this.subset.encodeStream().on("data", function(bytes) {
               return parts.push(bytes);
             }).on("end", function() {
-              return resolve22(utils_1.mergeUint8Arrays(parts));
+              return resolve23(utils_1.mergeUint8Arrays(parts));
             }).on("error", function(err) {
               return reject(err);
             });
@@ -24749,14 +24749,14 @@ var require_svgPath = __commonJS({
       ["Z", 0],
       ["z", 0]
     ]);
-    var parse = function(path28) {
+    var parse = function(path29) {
       var cmd;
       var ret = [];
       var args = [];
       var curArg = "";
       var foundDecimal = false;
       var params = 0;
-      for (var _i = 0, path_1 = path28; _i < path_1.length; _i++) {
+      for (var _i = 0, path_1 = path29; _i < path_1.length; _i++) {
         var c = path_1[_i];
         if (parameters.has(c)) {
           params = parameters.get(c);
@@ -25070,8 +25070,8 @@ var require_svgPath = __commonJS({
       ];
       return result;
     };
-    exports2.svgPathToOperators = function(path28) {
-      return apply(parse(path28));
+    exports2.svgPathToOperators = function(path29) {
+      return apply(parse(path29));
     };
   }
 });
@@ -25255,7 +25255,7 @@ var require_operations = __commonJS({
         operators_1.popGraphicsState()
       ]).filter(Boolean);
     };
-    exports2.drawSvgPath = function(path28, options) {
+    exports2.drawSvgPath = function(path29, options) {
       var _a, _b, _c;
       return tslib_1.__spreadArrays([
         operators_1.pushGraphicsState(),
@@ -25269,7 +25269,7 @@ var require_operations = __commonJS({
         options.borderWidth && operators_1.setLineWidth(options.borderWidth),
         options.borderLineCap && operators_1.setLineCap(options.borderLineCap),
         operators_1.setDashPattern((_b = options.borderDashArray) !== null && _b !== void 0 ? _b : [], (_c = options.borderDashPhase) !== null && _c !== void 0 ? _c : 0)
-      ], svgPath_1.svgPathToOperators(path28), [
+      ], svgPath_1.svgPathToOperators(path29), [
         // prettier-ignore
         options.color && options.borderWidth ? operators_1.fillAndStroke() : options.color ? operators_1.fill() : options.borderColor ? operators_1.stroke() : operators_1.closePath(),
         operators_1.popGraphicsState()
@@ -29593,12 +29593,12 @@ var require_PDFPage = __commonJS({
             graphicsState: graphicsStateKey
           }));
         };
-        PDFPage2.prototype.drawSvgPath = function(path28, options) {
+        PDFPage2.prototype.drawSvgPath = function(path29, options) {
           var _a, _b, _c, _d, _e, _f, _g, _h, _j;
           if (options === void 0) {
             options = {};
           }
-          utils_1.assertIs(path28, "path", ["string"]);
+          utils_1.assertIs(path29, "path", ["string"]);
           utils_1.assertOrUndefined(options.x, "options.x", ["number"]);
           utils_1.assertOrUndefined(options.y, "options.y", ["number"]);
           utils_1.assertOrUndefined(options.scale, "options.scale", ["number"]);
@@ -29627,7 +29627,7 @@ var require_PDFPage = __commonJS({
             options.borderColor = colors_1.rgb(0, 0, 0);
           }
           var contentStream = this.getContentStream();
-          contentStream.push.apply(contentStream, operations_1.drawSvgPath(path28, {
+          contentStream.push.apply(contentStream, operations_1.drawSvgPath(path29, {
             x: (_a = options.x) !== null && _a !== void 0 ? _a : this.x,
             y: (_b = options.y) !== null && _b !== void 0 ? _b : this.y,
             scale: options.scale,
@@ -30407,8 +30407,8 @@ async function withBusyWait(send, options) {
     log2(
       `${options.where} answered ${response.status} (${busyReason(response.status)}) \u2014 waiting ${(wait / 1e3).toFixed(1)}s${said === null ? "" : " (its own retry-after)"} and asking again; ${(waited / 1e3).toFixed(1)}s of this request's ${(budgetMs / 1e3).toFixed(0)}s slot budget spent so far.`
     );
-    await new Promise((resolve22) => {
-      setTimeout(resolve22, wait);
+    await new Promise((resolve23) => {
+      setTimeout(resolve23, wait);
     });
     backoff = Math.min(backoff * 2, BUSY_MAX_WAIT_MS);
   }
@@ -30548,7 +30548,7 @@ async function readOnePage(url, page, opts) {
     opts.onWeather?.(
       `page ${page.number}: ${fault.said} That is weather, not a refusal -- trying again in ${wait >= 6e4 ? `${wait / 6e4} min` : `${wait / 1e3} s`} (${attempt} of ${tries}).`
     );
-    await new Promise((resolve22) => setTimeout(resolve22, wait));
+    await new Promise((resolve23) => setTimeout(resolve23, wait));
   }
 }
 async function tryOnePage(url, page, opts) {
@@ -31173,7 +31173,7 @@ var init_version = __esm({
     init_engine_import_meta_url();
     init_package();
     VERSION = package_default.version;
-    GIT_COMMIT = "src 5cfb58b715af".length > 0 ? "src 5cfb58b715af" : null;
+    GIT_COMMIT = "src 6aa2443a1a8a".length > 0 ? "src 6aa2443a1a8a" : null;
   }
 });
 
@@ -35770,7 +35770,7 @@ async function runAnalyzeRank(opts) {
   const started = Date.now();
   const { log: log2 } = opts;
   const transport = opts.transport ?? fetchTransport(decideDeadline(deadlineForConcurrency(1)));
-  const sleep = opts.sleep ?? ((ms) => new Promise((resolve22) => setTimeout(resolve22, ms)));
+  const sleep = opts.sleep ?? ((ms) => new Promise((resolve23) => setTimeout(resolve23, ms)));
   const url = decideUrl(opts.endpoint);
   const { sentences, bankSha: bankSha2 } = readProse(opts.bookPath, "analyze", log2);
   const plan = readPlan(opts.categoriesPath ?? null, log2);
@@ -65889,7 +65889,7 @@ var require_fontkit_umd = __commonJS({
           return cmds.join("");
         };
         _proto.mapPoints = function mapPoints(fn) {
-          var path28 = new Path2();
+          var path29 = new Path2();
           for (var _iterator2 = _createForOfIteratorHelperLoose$l(this.commands), _step2; !(_step2 = _iterator2()).done; ) {
             var c = _step2.value;
             var args = [];
@@ -65897,9 +65897,9 @@ var require_fontkit_umd = __commonJS({
               var _fn = fn(c.args[i2], c.args[i2 + 1]), x = _fn[0], y = _fn[1];
               args.push(x, y);
             }
-            path28[c.command].apply(path28, args);
+            path29[c.command].apply(path29, args);
           }
-          return path28;
+          return path29;
         };
         _proto.transform = function transform2(m0, m1, m2, m3, m4, m5) {
           return this.mapPoints(function(x, y) {
@@ -66509,7 +66509,7 @@ var require_fontkit_umd = __commonJS({
         };
         _proto2._getPath = function _getPath() {
           var contours = this._getContours();
-          var path28 = new Path();
+          var path29 = new Path();
           for (var i2 = 0; i2 < contours.length; i2++) {
             var contour = contours[i2];
             var firstPt = contour[0];
@@ -66526,32 +66526,32 @@ var require_fontkit_umd = __commonJS({
               }
               var curvePt = firstPt;
             }
-            path28.moveTo(firstPt.x, firstPt.y);
+            path29.moveTo(firstPt.x, firstPt.y);
             for (var j = start; j < contour.length; j++) {
               var pt = contour[j];
               var prevPt = j === 0 ? firstPt : contour[j - 1];
               if (prevPt.onCurve && pt.onCurve) {
-                path28.lineTo(pt.x, pt.y);
+                path29.lineTo(pt.x, pt.y);
               } else if (prevPt.onCurve && !pt.onCurve) {
                 var curvePt = pt;
               } else if (!prevPt.onCurve && !pt.onCurve) {
                 var midX = (prevPt.x + pt.x) / 2;
                 var midY = (prevPt.y + pt.y) / 2;
-                path28.quadraticCurveTo(prevPt.x, prevPt.y, midX, midY);
+                path29.quadraticCurveTo(prevPt.x, prevPt.y, midX, midY);
                 var curvePt = pt;
               } else if (!prevPt.onCurve && pt.onCurve) {
-                path28.quadraticCurveTo(curvePt.x, curvePt.y, pt.x, pt.y);
+                path29.quadraticCurveTo(curvePt.x, curvePt.y, pt.x, pt.y);
                 var curvePt = null;
               } else {
                 throw new Error("Unknown TTF path state");
               }
             }
             if (curvePt) {
-              path28.quadraticCurveTo(curvePt.x, curvePt.y, firstPt.x, firstPt.y);
+              path29.quadraticCurveTo(curvePt.x, curvePt.y, firstPt.x, firstPt.y);
             }
-            path28.closePath();
+            path29.closePath();
           }
-          return path28;
+          return path29;
         };
         return TTFGlyph2;
       })(Glyph);
@@ -66588,7 +66588,7 @@ var require_fontkit_umd = __commonJS({
           var str = cff.topDict.CharStrings[this.id];
           var end = str.offset + str.length;
           stream.pos = str.offset;
-          var path28 = new Path();
+          var path29 = new Path();
           var stack = [];
           var trans = [];
           var width = null;
@@ -66621,9 +66621,9 @@ var require_fontkit_umd = __commonJS({
           }
           function moveTo(x2, y2) {
             if (open) {
-              path28.closePath();
+              path29.closePath();
             }
-            path28.moveTo(x2, y2);
+            path29.moveTo(x2, y2);
             open = true;
           }
           var parse = function parse2() {
@@ -66651,7 +66651,7 @@ var require_fontkit_umd = __commonJS({
                     while (stack.length >= 2) {
                       x += stack.shift();
                       y += stack.shift();
-                      path28.lineTo(x, y);
+                      path29.lineTo(x, y);
                     }
                     break;
                   case 6:
@@ -66664,7 +66664,7 @@ var require_fontkit_umd = __commonJS({
                       } else {
                         y += stack.shift();
                       }
-                      path28.lineTo(x, y);
+                      path29.lineTo(x, y);
                       phase = !phase;
                     }
                     break;
@@ -66676,7 +66676,7 @@ var require_fontkit_umd = __commonJS({
                       var c2y = c1y + stack.shift();
                       x = c2x + stack.shift();
                       y = c2y + stack.shift();
-                      path28.bezierCurveTo(c1x, c1y, c2x, c2y, x, y);
+                      path29.bezierCurveTo(c1x, c1y, c2x, c2y, x, y);
                     }
                     break;
                   case 10:
@@ -66706,7 +66706,7 @@ var require_fontkit_umd = __commonJS({
                       checkWidth();
                     }
                     if (open) {
-                      path28.closePath();
+                      path29.closePath();
                       open = false;
                     }
                     break;
@@ -66770,17 +66770,17 @@ var require_fontkit_umd = __commonJS({
                       var c2y = c1y + stack.shift();
                       x = c2x + stack.shift();
                       y = c2y + stack.shift();
-                      path28.bezierCurveTo(c1x, c1y, c2x, c2y, x, y);
+                      path29.bezierCurveTo(c1x, c1y, c2x, c2y, x, y);
                     }
                     x += stack.shift();
                     y += stack.shift();
-                    path28.lineTo(x, y);
+                    path29.lineTo(x, y);
                     break;
                   case 25:
                     while (stack.length >= 8) {
                       x += stack.shift();
                       y += stack.shift();
-                      path28.lineTo(x, y);
+                      path29.lineTo(x, y);
                     }
                     var c1x = x + stack.shift();
                     var c1y = y + stack.shift();
@@ -66788,7 +66788,7 @@ var require_fontkit_umd = __commonJS({
                     var c2y = c1y + stack.shift();
                     x = c2x + stack.shift();
                     y = c2y + stack.shift();
-                    path28.bezierCurveTo(c1x, c1y, c2x, c2y, x, y);
+                    path29.bezierCurveTo(c1x, c1y, c2x, c2y, x, y);
                     break;
                   case 26:
                     if (stack.length % 2) {
@@ -66801,7 +66801,7 @@ var require_fontkit_umd = __commonJS({
                       c2y = c1y + stack.shift();
                       x = c2x;
                       y = c2y + stack.shift();
-                      path28.bezierCurveTo(c1x, c1y, c2x, c2y, x, y);
+                      path29.bezierCurveTo(c1x, c1y, c2x, c2y, x, y);
                     }
                     break;
                   case 27:
@@ -66815,7 +66815,7 @@ var require_fontkit_umd = __commonJS({
                       c2y = c1y + stack.shift();
                       x = c2x + stack.shift();
                       y = c2y;
-                      path28.bezierCurveTo(c1x, c1y, c2x, c2y, x, y);
+                      path29.bezierCurveTo(c1x, c1y, c2x, c2y, x, y);
                     }
                     break;
                   case 28:
@@ -66855,7 +66855,7 @@ var require_fontkit_umd = __commonJS({
                         x = c2x + stack.shift();
                         y = c2y + (stack.length === 1 ? stack.shift() : 0);
                       }
-                      path28.bezierCurveTo(c1x, c1y, c2x, c2y, x, y);
+                      path29.bezierCurveTo(c1x, c1y, c2x, c2y, x, y);
                       phase = !phase;
                     }
                     break;
@@ -66991,8 +66991,8 @@ var require_fontkit_umd = __commonJS({
                         var c6y = c5y;
                         x = c6x;
                         y = c6y;
-                        path28.bezierCurveTo(c1x, c1y, c2x, c2y, c3x, c3y);
-                        path28.bezierCurveTo(c4x, c4y, c5x, c5y, c6x, c6y);
+                        path29.bezierCurveTo(c1x, c1y, c2x, c2y, c3x, c3y);
+                        path29.bezierCurveTo(c4x, c4y, c5x, c5y, c6x, c6y);
                         break;
                       case 35:
                         var pts = [];
@@ -67001,8 +67001,8 @@ var require_fontkit_umd = __commonJS({
                           y += stack.shift();
                           pts.push(x, y);
                         }
-                        path28.bezierCurveTo.apply(path28, pts.slice(0, 6));
-                        path28.bezierCurveTo.apply(path28, pts.slice(6));
+                        path29.bezierCurveTo.apply(path29, pts.slice(0, 6));
+                        path29.bezierCurveTo.apply(path29, pts.slice(6));
                         stack.shift();
                         break;
                       case 36:
@@ -67020,8 +67020,8 @@ var require_fontkit_umd = __commonJS({
                         c6y = c5y;
                         x = c6x;
                         y = c6y;
-                        path28.bezierCurveTo(c1x, c1y, c2x, c2y, c3x, c3y);
-                        path28.bezierCurveTo(c4x, c4y, c5x, c5y, c6x, c6y);
+                        path29.bezierCurveTo(c1x, c1y, c2x, c2y, c3x, c3y);
+                        path29.bezierCurveTo(c4x, c4y, c5x, c5y, c6x, c6y);
                         break;
                       case 37:
                         var startx = x;
@@ -67040,8 +67040,8 @@ var require_fontkit_umd = __commonJS({
                           y += stack.shift();
                         }
                         pts.push(x, y);
-                        path28.bezierCurveTo.apply(path28, pts.slice(0, 6));
-                        path28.bezierCurveTo.apply(path28, pts.slice(6));
+                        path29.bezierCurveTo.apply(path29, pts.slice(0, 6));
+                        path29.bezierCurveTo.apply(path29, pts.slice(6));
                         break;
                       default:
                         throw new Error("Unknown op: 12 " + op);
@@ -67065,9 +67065,9 @@ var require_fontkit_umd = __commonJS({
           };
           parse();
           if (open) {
-            path28.closePath();
+            path29.closePath();
           }
-          return path28;
+          return path29;
         };
         return CFFGlyph2;
       })(Glyph);
@@ -67781,7 +67781,7 @@ var require_fontkit_umd = __commonJS({
         function TTFGlyphEncoder2() {
         }
         var _proto = TTFGlyphEncoder2.prototype;
-        _proto.encodeSimple = function encodeSimple(path28, instructions) {
+        _proto.encodeSimple = function encodeSimple(path29, instructions) {
           if (instructions === void 0) {
             instructions = [];
           }
@@ -67792,14 +67792,14 @@ var require_fontkit_umd = __commonJS({
           var same = 0;
           var lastX = 0, lastY = 0, lastFlag = 0;
           var pointCount = 0;
-          for (var i2 = 0; i2 < path28.commands.length; i2++) {
-            var c = path28.commands[i2];
+          for (var i2 = 0; i2 < path29.commands.length; i2++) {
+            var c = path29.commands[i2];
             for (var j = 0; j < c.args.length; j += 2) {
               var x = c.args[j];
               var y = c.args[j + 1];
               var flag2 = 0;
               if (c.command === "quadraticCurveTo" && j === 2) {
-                var next = path28.commands[i2 + 1];
+                var next = path29.commands[i2 + 1];
                 if (next && next.command === "quadraticCurveTo") {
                   var midX = (lastX + next.args[0]) / 2;
                   var midY = (lastY + next.args[1]) / 2;
@@ -67832,10 +67832,10 @@ var require_fontkit_umd = __commonJS({
               endPtsOfContours.push(pointCount - 1);
             }
           }
-          if (path28.commands.length > 1 && path28.commands[path28.commands.length - 1].command !== "closePath") {
+          if (path29.commands.length > 1 && path29.commands[path29.commands.length - 1].command !== "closePath") {
             endPtsOfContours.push(pointCount - 1);
           }
-          var bbox = path28.bbox;
+          var bbox = path29.bbox;
           var glyf2 = {
             numberOfContours: endPtsOfContours.length,
             xMin: bbox.minX,
@@ -68037,7 +68037,7 @@ var require_fontkit_umd = __commonJS({
             var gid = _step2.value;
             this.charstrings.push(this.cff.getCharString(gid));
             var glyph2 = this.font.getGlyph(gid);
-            var path28 = glyph2.path;
+            var path29 = glyph2.path;
             for (var subr in glyph2._usedGsubrs) {
               gsubrs[subr] = true;
             }
@@ -68078,7 +68078,7 @@ var require_fontkit_umd = __commonJS({
             used_fds[fd] = true;
             topDict.FDSelect.fds.push(topDict.FDArray.length - 1);
             var glyph2 = this.font.getGlyph(gid);
-            var path28 = glyph2.path;
+            var path29 = glyph2.path;
             for (var subr in glyph2._usedSubrs) {
               used_subrs[used_subrs.length - 1][subr] = true;
             }
@@ -68098,7 +68098,7 @@ var require_fontkit_umd = __commonJS({
           for (var _iterator3 = _createForOfIteratorHelperLoose$p(this.glyphs), _step3; !(_step3 = _iterator3()).done; ) {
             var gid = _step3.value;
             var glyph2 = this.font.getGlyph(gid);
-            var path28 = glyph2.path;
+            var path29 = glyph2.path;
             for (var subr in glyph2._usedSubrs) {
               used_subrs[subr] = true;
             }
@@ -73025,16 +73025,16 @@ var init_base = __esm({
           }
         }
       }
-      addToPath(path28, added, removed, oldPosInc, options) {
-        const last = path28.lastComponent;
+      addToPath(path29, added, removed, oldPosInc, options) {
+        const last = path29.lastComponent;
         if (last && !options.oneChangePerToken && last.added === added && last.removed === removed) {
           return {
-            oldPos: path28.oldPos + oldPosInc,
+            oldPos: path29.oldPos + oldPosInc,
             lastComponent: { count: last.count + 1, added, removed, previousComponent: last.previousComponent }
           };
         } else {
           return {
-            oldPos: path28.oldPos + oldPosInc,
+            oldPos: path29.oldPos + oldPosInc,
             lastComponent: { count: 1, added, removed, previousComponent: last }
           };
         }
@@ -73450,7 +73450,7 @@ function applyFixedReadings(text, readings, at) {
       missed.push(spot);
       continue;
     }
-    edits.push({ at: offset, length: spot.find.length, replace: spot.replace, find: spot.find });
+    edits.push({ at: offset, length: spot.find.length, replace: spot.replace, find: spot.find, spot });
   }
   edits.sort((a, b) => b.at - a.at);
   let out = text;
@@ -73464,40 +73464,48 @@ function applyFixedReadings(text, readings, at) {
     }
     out = out.slice(0, edit.at) + edit.replace + out.slice(edit.at + edit.length);
     const delta = edit.replace.length - edit.length;
-    spans = spans.map((span) => ({ at: span.at + delta, end: span.end + delta }));
-    spans.push({ at: edit.at, end: edit.at + edit.replace.length });
+    spans = spans.map((span) => ({ ...span, at: span.at + delta, end: span.end + delta }));
+    spans.push({ at: edit.at, end: edit.at + edit.replace.length, reading: edit.spot });
     floor = edit.at;
     if (edit.replace !== edit.find) applied.set(edit.find, (applied.get(edit.find) ?? 0) + 1);
     else kept += 1;
   }
   spans.sort((a, b) => a.at - b.at);
+  const bare = (list) => list.map(({ at: a, end }) => ({ at: a, end }));
   const matcher = matcherFor(bookWide);
-  if (matcher === null) return { text: out, applied, missed, protected: spans, kept };
+  if (matcher === null) {
+    return { text: out, applied, missed, protected: bare(spans), kept, placed: spans.map(({ reading, at: a, end }) => ({ reading, at: a, end })) };
+  }
   const byFind = new Map(bookWide.map((r) => [r.find, r.replace]));
+  const bookWideOf = new Map(bookWide.map((r) => [r.find, r]));
   let result = "";
   let from = 0;
   let shift = 0;
   const shifted = [];
+  const readHere = [];
   let nextSpan = 0;
   for (const hit of occurrences(out, matcher)) {
     const replace = byFind.get(hit.find);
     const end = hit.at + hit.find.length;
     if (spans.some((span) => hit.at < span.end && span.at < end)) continue;
     while (nextSpan < spans.length && spans[nextSpan].end <= hit.at) {
-      shifted.push({ at: spans[nextSpan].at + shift, end: spans[nextSpan].end + shift });
+      shifted.push({ ...spans[nextSpan], at: spans[nextSpan].at + shift, end: spans[nextSpan].end + shift });
       nextSpan += 1;
     }
     const keepsStop = hit.find.endsWith(".") && !replace.endsWith(".") && /^["'’”)\]]*\s*$/u.test(out.slice(end));
     const said = replace + (keepsStop ? "." : "");
-    result += out.slice(from, hit.at) + said;
+    result += out.slice(from, hit.at);
+    readHere.push({ at: result.length, end: result.length + said.length, reading: bookWideOf.get(hit.find) });
+    result += said;
     shift += said.length - hit.find.length;
     from = end;
     applied.set(hit.find, (applied.get(hit.find) ?? 0) + 1);
   }
   for (; nextSpan < spans.length; nextSpan += 1) {
-    shifted.push({ at: spans[nextSpan].at + shift, end: spans[nextSpan].end + shift });
+    shifted.push({ ...spans[nextSpan], at: spans[nextSpan].at + shift, end: spans[nextSpan].end + shift });
   }
-  return { text: result + out.slice(from), applied, missed, protected: shifted, kept };
+  const placed = [...shifted, ...readHere].sort((a, b) => a.at - b.at).map(({ reading, at: a, end }) => ({ reading, at: a, end }));
+  return { text: result + out.slice(from), applied, missed, protected: bare(shifted), kept, placed };
 }
 function fixedKeyField(text, readings, at) {
   const { spots, bookWide } = forBlock(readings, at);
@@ -74314,7 +74322,7 @@ async function runCleanTriage(opts) {
   const at = (/* @__PURE__ */ new Date()).toISOString();
   const concurrency = opts.concurrency ?? DEFAULT_TRIAGE_CONCURRENCY;
   const transport = opts.transport ?? fetchTransport(decideDeadline(deadlineForConcurrency(concurrency)));
-  const sleep = opts.sleep ?? ((ms) => new Promise((resolve22) => setTimeout(resolve22, ms)));
+  const sleep = opts.sleep ?? ((ms) => new Promise((resolve23) => setTimeout(resolve23, ms)));
   const url = decideUrl(opts.endpoint);
   const where = path24.resolve(opts.bookPath);
   let bookText;
@@ -74508,6 +74516,151 @@ var init_triage = __esm({
     ];
     TRIAGE_CRITERIA = TRIAGE_GUIDE.split("\n").filter((line) => line.startsWith("- ") || line.startsWith("Superscript") || line.startsWith("Ordinary prose")).join("\n");
     SENTENCE_OPTIONS = { yes: "Yes", no: "No" };
+  }
+});
+
+// src/clean/apply-readings.ts
+var apply_readings_exports = {};
+__export(apply_readings_exports, {
+  APPLIED_READINGS_FORMAT: () => APPLIED_READINGS_FORMAT,
+  READINGS_ONLY_MODEL: () => READINGS_ONLY_MODEL,
+  appliedReadingsPathFor: () => appliedReadingsPathFor,
+  readingsOnlyKey: () => readingsOnlyKey,
+  runApplyReadings: () => runApplyReadings
+});
+function appliedReadingsPathFor(recordsPath) {
+  return `${path25.resolve(recordsPath).replace(/\.jsonl$/i, "")}.applied.json`;
+}
+function readingsOnlyKey(request) {
+  return (0, import_node_crypto6.createHash)("sha256").update([KEY_FORMAT, request.text, fixedKeyField(request.text, request.fixed, request.at)].join("\0"), "utf8").digest("hex");
+}
+async function runApplyReadings(opts) {
+  const at = (/* @__PURE__ */ new Date()).toISOString();
+  if (opts.fixedReadings.length === 0) {
+    throw new CleanTextError(
+      "clean-text --readings-only was handed no readings, so it would write a copy of the book and call it a step. Name a --fixed-readings file that holds at least one reading."
+    );
+  }
+  const where = path25.resolve(opts.bookPath);
+  let bookText;
+  try {
+    bookText = stripBom(fs31.readFileSync(where, "utf8"));
+  } catch (err) {
+    throw new CleanTextError(`--book ${where} cannot be read (${err.message}).`);
+  }
+  const book = readBookFile(bookText, where);
+  const { blocks, tables } = cleanBlocks(book, where);
+  if (blocks.length === 0) {
+    throw new CleanTextError(`--book ${where} has no block with words in it, so there is nothing to write readings into.`);
+  }
+  const recordsPath = path25.resolve(opts.recordsPath);
+  const records = TranslationRecords.open(recordsPath);
+  const known = new Set(blocks.map((b) => b.parts));
+  if (records.positions > 0 && ![...records.positionMap().keys()].some((parts) => known.has(parts))) {
+    throw new CleanTextError(
+      `--records ${recordsPath} holds ${records.size} row(s), and not one of them names a block of --book ${where}. That file was written about a different book. Name the records file for THIS book, or a path that does not exist yet.`
+    );
+  }
+  const fixed = opts.fixedReadings;
+  const applied = [];
+  let changed = 0;
+  let written = 0;
+  let missed = 0;
+  const append = (parts, key, text) => {
+    const newest = records.rowFor(parts);
+    if (newest !== void 0 && newest.text === text && newest.key === key) return;
+    if (newest?.author === "user" && records.questionFor(parts) === key) return;
+    records.append({ key, parts, ...opts.generation === void 0 ? {} : { generation: opts.generation }, text });
+    written += 1;
+  };
+  const read = (key, text) => {
+    const one = applyFixedReadings(text, fixed, key);
+    for (const spot of one.missed) {
+      missed += 1;
+      opts.log(`clean-text: a reading for "${spot.find}" #${spot.nth} in ${spot.at} found no such occurrence (the block changed since it was decided); left as printed.`);
+    }
+    for (const place of one.placed) {
+      const landed = one.text.slice(place.at, place.end);
+      const runs = landed.length === 0 ? [] : wholeTokenOffsets(one.text, landed);
+      const nthAfter = runs.indexOf(place.at);
+      applied.push({
+        at: key,
+        nthBefore: place.reading.nth ?? null,
+        find: place.reading.find,
+        replace: landed,
+        nthAfter: nthAfter < 0 ? null : nthAfter
+      });
+    }
+    return one.text;
+  };
+  const tableByParts = new Map(tables.map((table) => [table.parts, table]));
+  const doneTables = /* @__PURE__ */ new Set();
+  for (const block of blocks) {
+    if (block.cell === void 0) {
+      const text = read(block.target.key, block.target.text);
+      if (text !== block.target.text) changed += 1;
+      append(block.parts, readingsOnlyKey({ text: block.target.text, fixed, at: block.target.key }), text);
+      continue;
+    }
+    if (doneTables.has(block.parts)) continue;
+    doneTables.add(block.parts);
+    const table = tableByParts.get(block.parts);
+    for (const cell of table.cells) {
+      const cellBlock = blocks.find((b) => b.parts === table.parts && b.cell === cell);
+      table.words.set(cell, read(cellBlock.target.key, cellBlock.target.text));
+    }
+    const spliced = spliceTableGrid(table.grid, table.words);
+    if ("complaint" in spliced) {
+      opts.log(`clean-text: LEFT AS PRINTED \u2014 ${table.where}: ${spliced.complaint}`);
+      continue;
+    }
+    if (spliced.text !== table.source) changed += 1;
+    append(table.parts, readingsOnlyKey({ text: table.source, fixed, at: table.parts }), spliced.text);
+  }
+  const appliedPath = appliedReadingsPathFor(recordsPath);
+  const file = { format: APPLIED_READINGS_FORMAT, from: opts.from ?? null, applied };
+  ensureDir(path25.dirname(appliedPath));
+  fs31.writeFileSync(appliedPath, `${JSON.stringify(file, null, 2)}
+`, "utf8");
+  const sourceTexts = bookPositionTexts(book);
+  const digests = /* @__PURE__ */ new Map();
+  for (const parts of new Set(blocks.map((b) => b.parts))) {
+    const text = records.rowFor(parts)?.text ?? sourceTexts.get(parts);
+    if (text === void 0) {
+      throw new CleanTextError(`clean-text wrote readings into ${parts} of ${where} and can find no text at that position to stand behind the stamp.`);
+    }
+    digests.set(parts, blockDigest(text));
+  }
+  const stamp = narrationTextStamp({ model: READINGS_ONLY_MODEL, at, punctuationRefused: 0, blocks: digests });
+  ensureDir(path25.dirname(path25.resolve(opts.stampPath)));
+  fs31.writeFileSync(path25.resolve(opts.stampPath), `${JSON.stringify(stamp, null, 2)}
+`, "utf8");
+  opts.log(
+    `clean-text: readings only \u2014 ${fixed.length} reading(s) handed in, ${applied.length} landed across ${changed} of ${blocks.length} block(s), ${missed} not found; ${written} row(s) written. Where each one landed: ${appliedPath}`
+  );
+  return { blocks: blocks.length, changed, written, applied: applied.length, missed, appliedPath, stamp };
+}
+var fs31, path25, import_node_crypto6, APPLIED_READINGS_FORMAT, READINGS_ONLY_MODEL, KEY_FORMAT;
+var init_apply_readings = __esm({
+  "src/clean/apply-readings.ts"() {
+    "use strict";
+    init_engine_import_meta_url();
+    fs31 = __toESM(require("node:fs"), 1);
+    path25 = __toESM(require("node:path"), 1);
+    import_node_crypto6 = require("node:crypto");
+    init_fsdirs();
+    init_bom();
+    init_bookrows();
+    init_records();
+    init_tablecells();
+    init_blocks2();
+    init_digest();
+    init_fixed_readings();
+    init_punctuate();
+    init_stamp();
+    APPLIED_READINGS_FORMAT = "applied-readings/v1";
+    READINGS_ONLY_MODEL = "readings-only";
+    KEY_FORMAT = "clean-readings/v1";
   }
 });
 
@@ -74750,13 +74903,13 @@ function cleanEpubKey(request) {
   ];
   const removal = request.removal === void 0 ? "" : removalKeyField(request.removal);
   if (removal.length > 0) fields.push(removal);
-  return (0, import_node_crypto6.createHash)("sha256").update(fields.join(NUL5), "utf8").digest("hex");
+  return (0, import_node_crypto7.createHash)("sha256").update(fields.join(NUL5), "utf8").digest("hex");
 }
 function cleanEpubBankPath(outPath) {
-  return `${path25.resolve(outPath)}.clean-bank.jsonl`;
+  return `${path26.resolve(outPath)}.clean-bank.jsonl`;
 }
 function cleanEpubStampPath(outPath) {
-  return `${path25.resolve(outPath)}.stamp.json`;
+  return `${path26.resolve(outPath)}.stamp.json`;
 }
 function textNodesOf(source, site) {
   const fragment = source.slice(site.innerStart, site.innerEnd);
@@ -74844,8 +74997,8 @@ async function cleanTextEpub(opts) {
   });
   const transport = opts.transport ?? fetchTransport(deadlineForConcurrency(concurrency));
   const model = opts.model ?? opts.runner?.model ?? (await openModelServer({ kind, transport, endpoint, log: opts.log })).model;
-  const epubPath = path25.resolve(opts.epubPath);
-  const outPath = path25.resolve(opts.outPath);
+  const epubPath = path26.resolve(opts.epubPath);
+  const outPath = path26.resolve(opts.outPath);
   if (epubPath === outPath) {
     throw new CleanTextError(
       `--out ${outPath} is --epub itself. This command writes a NEW book and never edits one in place: the input is what a second run would have to read, and a pass that consumed it would make its own result impossible to check. Name a different --out.`
@@ -74853,7 +75006,7 @@ async function cleanTextEpub(opts) {
   }
   let bytes;
   try {
-    bytes = new Uint8Array(fs31.readFileSync(epubPath));
+    bytes = new Uint8Array(fs32.readFileSync(epubPath));
   } catch (err) {
     throw new CleanTextError(`--epub ${epubPath} cannot be read (${err.message}).`);
   }
@@ -75108,13 +75261,13 @@ async function cleanTextEpub(opts) {
       uncompressedSize: member.uncompressedSize
     };
   });
-  ensureDir(path25.dirname(outPath));
-  await fs31.promises.writeFile(outPath, writeZip(entries));
+  ensureDir(path26.dirname(outPath));
+  await fs32.promises.writeFile(outPath, writeZip(entries));
   const stampPath = cleanEpubStampPath(outPath);
-  fs31.writeFileSync(stampPath, `${JSON.stringify(stamp, null, 2)}
+  fs32.writeFileSync(stampPath, `${JSON.stringify(stamp, null, 2)}
 `, "utf8");
   const receiptPath2 = `${outPath}.receipt.json`;
-  fs31.writeFileSync(receiptPath2, `${JSON.stringify({
+  fs32.writeFileSync(receiptPath2, `${JSON.stringify({
     normalizerVersion: NORMALIZER_VERSION,
     punctuationSpec: PUNCTUATION_SPEC_VERSION,
     model,
@@ -75173,14 +75326,14 @@ function sayRefusal(log2, key, record2) {
     `clean-text: REFUSED ${record2.status} in ${key} \u2014 "${record2.find}" \u2192 "${record2.replace}"${record2.detail === void 0 ? "" : ` (${record2.detail})`}`
   );
 }
-var fs31, path25, import_node_crypto6, NUL5, NOTHING_TO_ASK;
+var fs32, path26, import_node_crypto7, NUL5, NOTHING_TO_ASK;
 var init_epub2 = __esm({
   "src/clean/epub.ts"() {
     "use strict";
     init_engine_import_meta_url();
-    fs31 = __toESM(require("node:fs"), 1);
-    path25 = __toESM(require("node:path"), 1);
-    import_node_crypto6 = require("node:crypto");
+    fs32 = __toESM(require("node:fs"), 1);
+    path26 = __toESM(require("node:path"), 1);
+    import_node_crypto7 = require("node:crypto");
     init_fsdirs();
     init_zip();
     init_meta();
@@ -75224,7 +75377,7 @@ __export(run_exports, {
 });
 function cleanKey(request) {
   const fields = [
-    request.unit === "sentence" ? SENTENCE_KEY_FORMAT : KEY_FORMAT,
+    request.unit === "sentence" ? SENTENCE_KEY_FORMAT : KEY_FORMAT2,
     request.model.trim(),
     NORMALIZER_VERSION,
     PUNCTUATION_SPEC_VERSION,
@@ -75234,7 +75387,7 @@ function cleanKey(request) {
   if (removal.length > 0) fields.push(removal);
   const fixed = request.fixed === void 0 ? "" : fixedKeyField(request.text, request.fixed, request.at);
   if (fixed.length > 0) fields.push(fixed);
-  return (0, import_node_crypto7.createHash)("sha256").update(fields.join(NUL6), "utf8").digest("hex");
+  return (0, import_node_crypto8.createHash)("sha256").update(fields.join(NUL6), "utf8").digest("hex");
 }
 function triageKey(request) {
   const fields = [
@@ -75248,16 +75401,16 @@ function triageKey(request) {
   if (removal.length > 0) fields.push(removal);
   const fixed = request.fixed === void 0 ? "" : fixedKeyField(request.text, request.fixed, request.at);
   if (fixed.length > 0) fields.push(fixed);
-  return (0, import_node_crypto7.createHash)("sha256").update(fields.join(NUL6), "utf8").digest("hex");
+  return (0, import_node_crypto8.createHash)("sha256").update(fields.join(NUL6), "utf8").digest("hex");
 }
 function receiptPath(recordsPath) {
-  return `${path26.resolve(recordsPath)}.receipt.json`;
+  return `${path27.resolve(recordsPath)}.receipt.json`;
 }
 function openBook(bookPath) {
-  const where = path26.resolve(bookPath);
+  const where = path27.resolve(bookPath);
   let text;
   try {
-    text = stripBom(fs32.readFileSync(where, "utf8"));
+    text = stripBom(fs33.readFileSync(where, "utf8"));
   } catch (err) {
     throw new CleanTextError(
       `--book ${where} cannot be read (${err.message}). It is the book file the app materialises for a step (docs/BOOK-FILE.md) \u2014 one JSON object per line, the header first.`
@@ -75298,12 +75451,12 @@ async function runCleanText(opts) {
   const triage = opts.triagePath === void 0 ? null : readTriageFile(opts.triagePath);
   if (triage !== null && !sameRemoval(triage.removal ?? NO_REMOVAL, removal)) {
     throw new CleanTextError(
-      `--triage ${path26.resolve(opts.triagePath)} was asked about a different removal (${JSON.stringify(removalRecord(triage.removal ?? NO_REMOVAL))}) from this run's (${JSON.stringify(removalRecord(removal))}). Run clean-triage with the same --remove-references and --remove-also as clean-text.`
+      `--triage ${path27.resolve(opts.triagePath)} was asked about a different removal (${JSON.stringify(removalRecord(triage.removal ?? NO_REMOVAL))}) from this run's (${JSON.stringify(removalRecord(removal))}). Run clean-triage with the same --remove-references and --remove-also as clean-text.`
     );
   }
   if (triage !== null && (triage.unit ?? "block") !== unit) {
     throw new CleanTextError(
-      `--triage ${path26.resolve(opts.triagePath)} judged ${triage.unit ?? "block"}s, and this run asks about ${unit}s. Its verdicts name positions this run does not have. Run clean-triage with --unit ${unit}, or clean-text with --unit ${triage.unit ?? "block"}.`
+      `--triage ${path27.resolve(opts.triagePath)} judged ${triage.unit ?? "block"}s, and this run asks about ${unit}s. Its verdicts name positions this run does not have. Run clean-triage with --unit ${unit}, or clean-text with --unit ${triage.unit ?? "block"}.`
     );
   }
   const { text: bookText, where } = openBook(opts.bookPath);
@@ -75316,13 +75469,13 @@ async function runCleanText(opts) {
   for (const one of plan.kept) {
     opts.log(`clean-text: LEFT AS PRINTED \u2014 ${one}`);
   }
-  const fileName = path26.basename(where);
+  const fileName = path27.basename(where);
   if (blocks.length === 0) {
     throw new CleanTextError(
       `--book ${where} has no block with words in it, so there is nothing to clean. A book file whose every row is shelved, skipped or blank is not a book this pass can act on.`
     );
   }
-  const recordsPath = path26.resolve(opts.recordsPath);
+  const recordsPath = path27.resolve(opts.recordsPath);
   const records = TranslationRecords.open(recordsPath);
   refuseForeignRecords(records, new Set(blocks.map((b) => b.parts)), recordsPath, where);
   opts.log(records.size === 0 ? `clean-text: nothing is recorded in ${recordsPath}, so every block is asked of the model and recorded there as it lands.` : `clean-text: ${records.size} record(s) covering ${records.positions} position(s) are in ${recordsPath} \u2014 a block whose exact question is in there is not asked again, and every new answer is added to it.`);
@@ -75391,7 +75544,7 @@ async function runCleanText(opts) {
   const keptClean = /* @__PURE__ */ new Set();
   if (triage !== null) {
     const summary = {
-      file: path26.resolve(opts.triagePath),
+      file: path27.resolve(opts.triagePath),
       model: triage.model.id,
       clean: [],
       flagged: 0,
@@ -75624,8 +75777,8 @@ async function runCleanText(opts) {
     ...fixed.length > 0 ? { fixedReadings: fixedRecord } : {}
   };
   const receiptOut = receiptPath(recordsPath);
-  ensureDir(path26.dirname(receiptOut));
-  fs32.writeFileSync(receiptOut, `${JSON.stringify(receipt, null, 2)}
+  ensureDir(path27.dirname(receiptOut));
+  fs33.writeFileSync(receiptOut, `${JSON.stringify(receipt, null, 2)}
 `, "utf8");
   const sourceTexts = bookPositionTexts(book);
   const digests = /* @__PURE__ */ new Map();
@@ -75644,15 +75797,15 @@ async function runCleanText(opts) {
     punctuationRefused: punctuated.record.refused.length,
     blocks: digests
   });
-  ensureDir(path26.dirname(path26.resolve(opts.stampPath)));
-  fs32.writeFileSync(path26.resolve(opts.stampPath), `${JSON.stringify(stamp, null, 2)}
+  ensureDir(path27.dirname(path27.resolve(opts.stampPath)));
+  fs33.writeFileSync(path27.resolve(opts.stampPath), `${JSON.stringify(stamp, null, 2)}
 `, "utf8");
   if (humanKept > 0) {
     opts.log(
       `clean-text: ${humanKept} position(s) whose newest row a person wrote were left exactly as they left them \u2014 their source text has not changed since.`
     );
   }
-  opts.log(`clean-text: the receipt is ${receiptOut}; the stamp is ${path26.resolve(opts.stampPath)}`);
+  opts.log(`clean-text: the receipt is ${receiptOut}; the stamp is ${path27.resolve(opts.stampPath)}`);
   opts.log(
     `clean-text: the stamp names ${digests.size} block position(s) and their text digest is ${stamp.textDigest} \u2014 vlm-compile --narration-stamp recomputes both over the book it is handed and refuses by name if it is not this one.`
   );
@@ -75679,14 +75832,14 @@ function sayRefusal2(log2, key, record2) {
     `clean-text: REFUSED ${record2.status} in ${key} \u2014 "${record2.find}" \u2192 "${record2.replace}"${record2.detail === void 0 ? "" : ` (${record2.detail})`}`
   );
 }
-var fs32, path26, import_node_crypto7, KEY_FORMAT, SENTENCE_KEY_FORMAT, NUL6, DEFAULT_CLEAN_GATE, TRIAGE_KEY_FORMAT, NOTHING_TO_ASK2;
+var fs33, path27, import_node_crypto8, KEY_FORMAT2, SENTENCE_KEY_FORMAT, NUL6, DEFAULT_CLEAN_GATE, TRIAGE_KEY_FORMAT, NOTHING_TO_ASK2;
 var init_run = __esm({
   "src/clean/run.ts"() {
     "use strict";
     init_engine_import_meta_url();
-    fs32 = __toESM(require("node:fs"), 1);
-    path26 = __toESM(require("node:path"), 1);
-    import_node_crypto7 = require("node:crypto");
+    fs33 = __toESM(require("node:fs"), 1);
+    path27 = __toESM(require("node:path"), 1);
+    import_node_crypto8 = require("node:crypto");
     init_fsdirs();
     init_bom();
     init_bookrows();
@@ -75707,7 +75860,7 @@ var init_run = __esm({
     init_tts_punctuation();
     init_fixed_readings();
     init_removal();
-    KEY_FORMAT = "clean/dialect/v1";
+    KEY_FORMAT2 = "clean/dialect/v1";
     SENTENCE_KEY_FORMAT = "clean/sentence/v1";
     NUL6 = String.fromCharCode(0);
     DEFAULT_CLEAN_GATE = "light";
@@ -76400,14 +76553,14 @@ var require_util = __commonJS({
         }
         const port = url.port != null ? url.port : url.protocol === "https:" ? 443 : 80;
         let origin = url.origin != null ? url.origin : `${url.protocol || ""}//${url.hostname || ""}:${port}`;
-        let path28 = url.path != null ? url.path : `${url.pathname || ""}${url.search || ""}`;
+        let path29 = url.path != null ? url.path : `${url.pathname || ""}${url.search || ""}`;
         if (origin[origin.length - 1] === "/") {
           origin = origin.slice(0, origin.length - 1);
         }
-        if (path28 && path28[0] !== "/") {
-          path28 = `/${path28}`;
+        if (path29 && path29[0] !== "/") {
+          path29 = `/${path29}`;
         }
-        return new URL(`${origin}${path28}`);
+        return new URL(`${origin}${path29}`);
       }
       if (!isHttpOrHttpsPrefixed(url.origin || url.protocol)) {
         throw new InvalidArgumentError("Invalid URL protocol: the URL must start with `http:` or `https:`.");
@@ -76859,39 +77012,39 @@ var require_diagnostics = __commonJS({
       });
       diagnosticsChannel.channel("undici:client:sendHeaders").subscribe((evt) => {
         const {
-          request: { method, path: path28, origin }
+          request: { method, path: path29, origin }
         } = evt;
-        debuglog("sending request to %s %s/%s", method, origin, path28);
+        debuglog("sending request to %s %s/%s", method, origin, path29);
       });
       diagnosticsChannel.channel("undici:request:headers").subscribe((evt) => {
         const {
-          request: { method, path: path28, origin },
+          request: { method, path: path29, origin },
           response: { statusCode }
         } = evt;
         debuglog(
           "received response to %s %s/%s - HTTP %d",
           method,
           origin,
-          path28,
+          path29,
           statusCode
         );
       });
       diagnosticsChannel.channel("undici:request:trailers").subscribe((evt) => {
         const {
-          request: { method, path: path28, origin }
+          request: { method, path: path29, origin }
         } = evt;
-        debuglog("trailers received from %s %s/%s", method, origin, path28);
+        debuglog("trailers received from %s %s/%s", method, origin, path29);
       });
       diagnosticsChannel.channel("undici:request:error").subscribe((evt) => {
         const {
-          request: { method, path: path28, origin },
+          request: { method, path: path29, origin },
           error
         } = evt;
         debuglog(
           "request to %s %s/%s errored - %s",
           method,
           origin,
-          path28,
+          path29,
           error.message
         );
       });
@@ -76940,9 +77093,9 @@ var require_diagnostics = __commonJS({
         });
         diagnosticsChannel.channel("undici:client:sendHeaders").subscribe((evt) => {
           const {
-            request: { method, path: path28, origin }
+            request: { method, path: path29, origin }
           } = evt;
-          debuglog("sending request to %s %s/%s", method, origin, path28);
+          debuglog("sending request to %s %s/%s", method, origin, path29);
         });
       }
       diagnosticsChannel.channel("undici:websocket:open").subscribe((evt) => {
@@ -77006,7 +77159,7 @@ var require_request = __commonJS({
     var kHandler = /* @__PURE__ */ Symbol("handler");
     var Request = class {
       constructor(origin, {
-        path: path28,
+        path: path29,
         method,
         body,
         headers,
@@ -77021,11 +77174,11 @@ var require_request = __commonJS({
         expectContinue,
         servername
       }, handler) {
-        if (typeof path28 !== "string") {
+        if (typeof path29 !== "string") {
           throw new InvalidArgumentError("path must be a string");
-        } else if (path28[0] !== "/" && !(path28.startsWith("http://") || path28.startsWith("https://")) && method !== "CONNECT") {
+        } else if (path29[0] !== "/" && !(path29.startsWith("http://") || path29.startsWith("https://")) && method !== "CONNECT") {
           throw new InvalidArgumentError("path must be an absolute URL or start with a slash");
-        } else if (invalidPathRegex.test(path28)) {
+        } else if (invalidPathRegex.test(path29)) {
           throw new InvalidArgumentError("invalid request path");
         }
         if (typeof method !== "string") {
@@ -77088,7 +77241,7 @@ var require_request = __commonJS({
         this.completed = false;
         this.aborted = false;
         this.upgrade = upgrade || null;
-        this.path = query ? buildURL(path28, query) : path28;
+        this.path = query ? buildURL(path29, query) : path29;
         this.origin = origin;
         this.idempotent = idempotent == null ? method === "HEAD" || method === "GET" : idempotent;
         this.blocking = blocking == null ? false : blocking;
@@ -77402,9 +77555,9 @@ var require_dispatcher_base = __commonJS({
       }
       close(callback) {
         if (callback === void 0) {
-          return new Promise((resolve22, reject) => {
+          return new Promise((resolve23, reject) => {
             this.close((err, data) => {
-              return err ? reject(err) : resolve22(data);
+              return err ? reject(err) : resolve23(data);
             });
           });
         }
@@ -77442,12 +77595,12 @@ var require_dispatcher_base = __commonJS({
           err = null;
         }
         if (callback === void 0) {
-          return new Promise((resolve22, reject) => {
+          return new Promise((resolve23, reject) => {
             this.destroy(err, (err2, data) => {
               return err2 ? (
                 /* istanbul ignore next: should never error */
                 reject(err2)
-              ) : resolve22(data);
+              ) : resolve23(data);
             });
           });
         }
@@ -79725,8 +79878,8 @@ var require_util2 = __commonJS({
     function createDeferredPromise() {
       let res;
       let rej;
-      const promise = new Promise((resolve22, reject) => {
-        res = resolve22;
+      const promise = new Promise((resolve23, reject) => {
+        res = resolve23;
         rej = reject;
       });
       return { promise, resolve: res, reject: rej };
@@ -81622,7 +81775,7 @@ var require_client_h1 = __commonJS({
       return method !== "GET" && method !== "HEAD" && method !== "OPTIONS" && method !== "TRACE" && method !== "CONNECT";
     }
     function writeH1(client, request) {
-      const { method, path: path28, host, upgrade, blocking, reset } = request;
+      const { method, path: path29, host, upgrade, blocking, reset } = request;
       let { body, headers, contentLength } = request;
       const expectsPayload = method === "PUT" || method === "POST" || method === "PATCH" || method === "QUERY" || method === "PROPFIND" || method === "PROPPATCH";
       if (util.isFormDataLike(body)) {
@@ -81688,7 +81841,7 @@ var require_client_h1 = __commonJS({
       if (blocking) {
         socket[kBlocking] = true;
       }
-      let header = `${method} ${path28} HTTP/1.1\r
+      let header = `${method} ${path29} HTTP/1.1\r
 `;
       if (typeof host === "string") {
         header += `host: ${host}\r
@@ -81875,12 +82028,12 @@ upgrade: ${upgrade}\r
           cb();
         }
       }
-      const waitForDrain = () => new Promise((resolve22, reject) => {
+      const waitForDrain = () => new Promise((resolve23, reject) => {
         assert(callback === null);
         if (socket[kError]) {
           reject(socket[kError]);
         } else {
-          callback = resolve22;
+          callback = resolve23;
         }
       });
       socket.on("close", onDrain).on("drain", onDrain);
@@ -82215,7 +82368,7 @@ var require_client_h2 = __commonJS({
     }
     function writeH2(client, request) {
       const session = client[kHTTP2Session];
-      const { method, path: path28, host, upgrade, expectContinue, signal, headers: reqHeaders } = request;
+      const { method, path: path29, host, upgrade, expectContinue, signal, headers: reqHeaders } = request;
       let { body } = request;
       if (upgrade) {
         util.errorRequest(client, request, new Error("Upgrade not supported for H2"));
@@ -82282,7 +82435,7 @@ var require_client_h2 = __commonJS({
         });
         return true;
       }
-      headers[HTTP2_HEADER_PATH] = path28;
+      headers[HTTP2_HEADER_PATH] = path29;
       headers[HTTP2_HEADER_SCHEME] = "https";
       const expectsPayload = method === "PUT" || method === "POST" || method === "PATCH";
       if (body && typeof body.read === "function") {
@@ -82518,12 +82671,12 @@ var require_client_h2 = __commonJS({
           cb();
         }
       }
-      const waitForDrain = () => new Promise((resolve22, reject) => {
+      const waitForDrain = () => new Promise((resolve23, reject) => {
         assert(callback === null);
         if (socket[kError]) {
           reject(socket[kError]);
         } else {
-          callback = resolve22;
+          callback = resolve23;
         }
       });
       h2stream.on("close", onDrain).on("drain", onDrain);
@@ -82636,9 +82789,9 @@ var require_redirect_handler = __commonJS({
           return this.handler.onHeaders(statusCode, headers, resume, statusText);
         }
         const { origin, pathname, search } = util.parseURL(new URL(this.location, this.opts.origin && new URL(this.opts.path, this.opts.origin)));
-        const path28 = search ? `${pathname}${search}` : pathname;
+        const path29 = search ? `${pathname}${search}` : pathname;
         this.opts.headers = cleanRequestHeaders(this.opts.headers, statusCode === 303, this.opts.origin !== origin);
-        this.opts.path = path28;
+        this.opts.path = path29;
         this.opts.origin = origin;
         this.opts.maxRedirections = 0;
         this.opts.query = null;
@@ -83003,16 +83156,16 @@ var require_client = __commonJS({
         return this[kNeedDrain] < 2;
       }
       async [kClose]() {
-        return new Promise((resolve22) => {
+        return new Promise((resolve23) => {
           if (this[kSize]) {
-            this[kClosedResolve] = resolve22;
+            this[kClosedResolve] = resolve23;
           } else {
-            resolve22(null);
+            resolve23(null);
           }
         });
       }
       async [kDestroy](err) {
-        return new Promise((resolve22) => {
+        return new Promise((resolve23) => {
           const requests = this[kQueue].splice(this[kPendingIdx]);
           for (let i = 0; i < requests.length; i++) {
             const request = requests[i];
@@ -83023,7 +83176,7 @@ var require_client = __commonJS({
               this[kClosedResolve]();
               this[kClosedResolve] = null;
             }
-            resolve22(null);
+            resolve23(null);
           };
           if (this[kHTTPContext]) {
             this[kHTTPContext].destroy(err, callback);
@@ -83074,7 +83227,7 @@ var require_client = __commonJS({
         });
       }
       try {
-        const socket = await new Promise((resolve22, reject) => {
+        const socket = await new Promise((resolve23, reject) => {
           client[kConnector]({
             host,
             hostname,
@@ -83086,7 +83239,7 @@ var require_client = __commonJS({
             if (err) {
               reject(err);
             } else {
-              resolve22(socket2);
+              resolve23(socket2);
             }
           });
         });
@@ -83425,8 +83578,8 @@ var require_pool_base = __commonJS({
         if (this[kQueue].isEmpty()) {
           await Promise.all(this[kClients].map((c) => c.close()));
         } else {
-          await new Promise((resolve22) => {
-            this[kClosedResolve] = resolve22;
+          await new Promise((resolve23) => {
+            this[kClosedResolve] = resolve23;
           });
         }
       }
@@ -84573,7 +84726,7 @@ var require_readable = __commonJS({
         if (this._readableState.closeEmitted) {
           return null;
         }
-        return await new Promise((resolve22, reject) => {
+        return await new Promise((resolve23, reject) => {
           if (this[kContentLength] > limit) {
             this.destroy(new AbortError());
           }
@@ -84586,7 +84739,7 @@ var require_readable = __commonJS({
             if (signal?.aborted) {
               reject(signal.reason ?? new AbortError());
             } else {
-              resolve22(null);
+              resolve23(null);
             }
           }).on("error", noop).on("data", function(chunk) {
             limit -= chunk.length;
@@ -84605,7 +84758,7 @@ var require_readable = __commonJS({
     }
     async function consume(stream, type) {
       assert(!stream[kConsume]);
-      return new Promise((resolve22, reject) => {
+      return new Promise((resolve23, reject) => {
         if (isUnusable(stream)) {
           const rState = stream._readableState;
           if (rState.destroyed && rState.closeEmitted === false) {
@@ -84622,7 +84775,7 @@ var require_readable = __commonJS({
             stream[kConsume] = {
               type,
               stream,
-              resolve: resolve22,
+              resolve: resolve23,
               reject,
               length: 0,
               body: []
@@ -84692,18 +84845,18 @@ var require_readable = __commonJS({
       return buffer;
     }
     function consumeEnd(consume2) {
-      const { type, body, resolve: resolve22, stream, length } = consume2;
+      const { type, body, resolve: resolve23, stream, length } = consume2;
       try {
         if (type === "text") {
-          resolve22(chunksDecode(body, length));
+          resolve23(chunksDecode(body, length));
         } else if (type === "json") {
-          resolve22(JSON.parse(chunksDecode(body, length)));
+          resolve23(JSON.parse(chunksDecode(body, length)));
         } else if (type === "arrayBuffer") {
-          resolve22(chunksConcat(body, length).buffer);
+          resolve23(chunksConcat(body, length).buffer);
         } else if (type === "blob") {
-          resolve22(new Blob(body, { type: stream[kContentType] }));
+          resolve23(new Blob(body, { type: stream[kContentType] }));
         } else if (type === "bytes") {
-          resolve22(chunksConcat(body, length));
+          resolve23(chunksConcat(body, length));
         }
         consumeFinish(consume2);
       } catch (err) {
@@ -84962,9 +85115,9 @@ var require_api_request = __commonJS({
     };
     function request(opts, callback) {
       if (callback === void 0) {
-        return new Promise((resolve22, reject) => {
+        return new Promise((resolve23, reject) => {
           request.call(this, opts, (err, data) => {
-            return err ? reject(err) : resolve22(data);
+            return err ? reject(err) : resolve23(data);
           });
         });
       }
@@ -85189,9 +85342,9 @@ var require_api_stream = __commonJS({
     };
     function stream(opts, factory, callback) {
       if (callback === void 0) {
-        return new Promise((resolve22, reject) => {
+        return new Promise((resolve23, reject) => {
           stream.call(this, opts, factory, (err, data) => {
-            return err ? reject(err) : resolve22(data);
+            return err ? reject(err) : resolve23(data);
           });
         });
       }
@@ -85478,9 +85631,9 @@ var require_api_upgrade = __commonJS({
     };
     function upgrade(opts, callback) {
       if (callback === void 0) {
-        return new Promise((resolve22, reject) => {
+        return new Promise((resolve23, reject) => {
           upgrade.call(this, opts, (err, data) => {
-            return err ? reject(err) : resolve22(data);
+            return err ? reject(err) : resolve23(data);
           });
         });
       }
@@ -85573,9 +85726,9 @@ var require_api_connect = __commonJS({
     };
     function connect(opts, callback) {
       if (callback === void 0) {
-        return new Promise((resolve22, reject) => {
+        return new Promise((resolve23, reject) => {
           connect.call(this, opts, (err, data) => {
-            return err ? reject(err) : resolve22(data);
+            return err ? reject(err) : resolve23(data);
           });
         });
       }
@@ -85739,20 +85892,20 @@ var require_mock_utils = __commonJS({
       }
       return true;
     }
-    function safeUrl(path28) {
-      if (typeof path28 !== "string") {
-        return path28;
+    function safeUrl(path29) {
+      if (typeof path29 !== "string") {
+        return path29;
       }
-      const pathSegments = path28.split("?");
+      const pathSegments = path29.split("?");
       if (pathSegments.length !== 2) {
-        return path28;
+        return path29;
       }
       const qp = new URLSearchParams(pathSegments.pop());
       qp.sort();
       return [...pathSegments, qp.toString()].join("?");
     }
-    function matchKey(mockDispatch2, { path: path28, method, body, headers }) {
-      const pathMatch = matchValue(mockDispatch2.path, path28);
+    function matchKey(mockDispatch2, { path: path29, method, body, headers }) {
+      const pathMatch = matchValue(mockDispatch2.path, path29);
       const methodMatch = matchValue(mockDispatch2.method, method);
       const bodyMatch = typeof mockDispatch2.body !== "undefined" ? matchValue(mockDispatch2.body, body) : true;
       const headersMatch = matchHeaders(mockDispatch2, headers);
@@ -85774,7 +85927,7 @@ var require_mock_utils = __commonJS({
     function getMockDispatch(mockDispatches, key) {
       const basePath = key.query ? buildURL(key.path, key.query) : key.path;
       const resolvedPath = typeof basePath === "string" ? safeUrl(basePath) : basePath;
-      let matchedMockDispatches = mockDispatches.filter(({ consumed }) => !consumed).filter(({ path: path28 }) => matchValue(safeUrl(path28), resolvedPath));
+      let matchedMockDispatches = mockDispatches.filter(({ consumed }) => !consumed).filter(({ path: path29 }) => matchValue(safeUrl(path29), resolvedPath));
       if (matchedMockDispatches.length === 0) {
         throw new MockNotMatchedError(`Mock dispatch not matched for path '${resolvedPath}'`);
       }
@@ -85812,9 +85965,9 @@ var require_mock_utils = __commonJS({
       }
     }
     function buildKey(opts) {
-      const { path: path28, method, body, headers, query } = opts;
+      const { path: path29, method, body, headers, query } = opts;
       return {
-        path: path28,
+        path: path29,
         method,
         body,
         headers,
@@ -86282,10 +86435,10 @@ var require_pending_interceptors_formatter = __commonJS({
       }
       format(pendingInterceptors) {
         const withPrettyHeaders = pendingInterceptors.map(
-          ({ method, path: path28, data: { statusCode }, persist, times, timesInvoked, origin }) => ({
+          ({ method, path: path29, data: { statusCode }, persist, times, timesInvoked, origin }) => ({
             Method: method,
             Origin: origin,
-            Path: path28,
+            Path: path29,
             "Status code": statusCode,
             Persistent: persist ? PERSISTENT : NOT_PERSISTENT,
             Invocations: timesInvoked,
@@ -89450,7 +89603,7 @@ var require_fetch = __commonJS({
       function dispatch({ body }) {
         const url = requestCurrentURL(request);
         const agent = fetchParams.controller.dispatcher;
-        return new Promise((resolve22, reject) => agent.dispatch(
+        return new Promise((resolve23, reject) => agent.dispatch(
           {
             path: url.pathname + url.search,
             origin: url.origin,
@@ -89524,7 +89677,7 @@ var require_fetch = __commonJS({
                 }
               }
               const onError = this.onError.bind(this);
-              resolve22({
+              resolve23({
                 status,
                 statusText,
                 headersList,
@@ -89570,7 +89723,7 @@ var require_fetch = __commonJS({
               for (let i = 0; i < rawHeaders.length; i += 2) {
                 headersList.append(bufferToLowerCasedHeaderName(rawHeaders[i]), rawHeaders[i + 1].toString("latin1"), true);
               }
-              resolve22({
+              resolve23({
                 status,
                 statusText: STATUS_CODES[status],
                 headersList,
@@ -91184,9 +91337,9 @@ var require_util6 = __commonJS({
         }
       }
     }
-    function validateCookiePath(path28) {
-      for (let i = 0; i < path28.length; ++i) {
-        const code = path28.charCodeAt(i);
+    function validateCookiePath(path29) {
+      for (let i = 0; i < path29.length; ++i) {
+        const code = path29.charCodeAt(i);
         if (code < 32 || // exclude CTLs (0-31)
         code === 127 || // DEL
         code === 59) {
@@ -93187,8 +93340,8 @@ var require_util8 = __commonJS({
       return true;
     }
     function delay(ms) {
-      return new Promise((resolve22) => {
-        setTimeout(resolve22, ms).unref();
+      return new Promise((resolve23) => {
+        setTimeout(resolve23, ms).unref();
       });
     }
     module2.exports = {
@@ -93796,11 +93949,11 @@ var require_undici = __commonJS({
           if (typeof opts.path !== "string") {
             throw new InvalidArgumentError("invalid opts.path");
           }
-          let path28 = opts.path;
+          let path29 = opts.path;
           if (!opts.path.startsWith("/")) {
-            path28 = `/${path28}`;
+            path29 = `/${path29}`;
           }
-          url = new URL(util.parseOrigin(url).origin + path28);
+          url = new URL(util.parseOrigin(url).origin + path29);
         } else {
           if (!opts) {
             opts = typeof url === "object" ? url : {};
@@ -93990,7 +94143,7 @@ function formatOptions(specs) {
 
 // src/commands.ts
 init_engine_import_meta_url();
-var path27 = __toESM(require("node:path"), 1);
+var path28 = __toESM(require("node:path"), 1);
 
 // src/backend/plan.ts
 init_engine_import_meta_url();
@@ -94679,12 +94832,12 @@ var fs9 = __toESM(require("node:fs"), 1);
 var os = __toESM(require("node:os"), 1);
 var path6 = __toESM(require("node:path"), 1);
 var import_node_child_process = require("node:child_process");
-var spawnRunner = (cmd, args, timeoutMs) => new Promise((resolve22) => {
+var spawnRunner = (cmd, args, timeoutMs) => new Promise((resolve23) => {
   let proc;
   try {
     proc = (0, import_node_child_process.spawn)(cmd, [...args], { stdio: ["ignore", "pipe", "pipe"] });
   } catch (err) {
-    resolve22({ exitCode: null, stdout: "", stderr: "", failure: err.message });
+    resolve23({ exitCode: null, stdout: "", stderr: "", failure: err.message });
     return;
   }
   const out = [];
@@ -94698,11 +94851,11 @@ var spawnRunner = (cmd, args, timeoutMs) => new Promise((resolve22) => {
   proc.stderr.on("data", (d) => errBuf.push(d));
   proc.on("error", (err) => {
     clearTimeout(timer);
-    resolve22({ exitCode: null, stdout: "", stderr: "", failure: err.message });
+    resolve23({ exitCode: null, stdout: "", stderr: "", failure: err.message });
   });
   proc.on("close", (code) => {
     clearTimeout(timer);
-    resolve22({
+    resolve23({
       exitCode: code,
       stdout: decodeConsole(Buffer.concat(out)),
       stderr: decodeConsole(Buffer.concat(errBuf)),
@@ -95821,7 +95974,7 @@ async function readPagesWithVlm(opts) {
   let totals = null;
   const pages = [];
   const stderrTail = [];
-  const finished = new Promise((resolve22, reject) => {
+  const finished = new Promise((resolve23, reject) => {
     let stdout = "";
     let stderr = "";
     let failure = null;
@@ -95891,7 +96044,7 @@ async function readPagesWithVlm(opts) {
 ` + stderrTail.map((l) => `  ${l}`).join("\n")
         ));
       }
-      resolve22();
+      resolve23();
     });
   });
   proc.stdin.write(config);
@@ -95973,7 +96126,7 @@ async function cropPageRenders(opts) {
   });
   const written = [];
   const stderrTail = [];
-  const finished = new Promise((resolve22, reject) => {
+  const finished = new Promise((resolve23, reject) => {
     let stdout = "";
     proc.stdout.setEncoding("utf8");
     proc.stdout.on("data", (chunk) => {
@@ -96006,7 +96159,7 @@ async function cropPageRenders(opts) {
 ` + stderrTail.map((l) => `  ${l}`).join("\n")
         ));
       }
-      resolve22();
+      resolve23();
     });
   });
   proc.stdin.write(config);
@@ -96038,7 +96191,7 @@ async function readPdfTextLayer(opts) {
   });
   const layer = /* @__PURE__ */ new Map();
   const stderrTail = [];
-  const finished = new Promise((resolve22, reject) => {
+  const finished = new Promise((resolve23, reject) => {
     let stdout = "";
     proc.stdout.setEncoding("utf8");
     proc.stdout.on("data", (chunk) => {
@@ -96072,7 +96225,7 @@ async function readPdfTextLayer(opts) {
 ` + stderrTail.map((l) => `  ${l}`).join("\n")
         ));
       }
-      resolve22();
+      resolve23();
     });
   });
   proc.stdin.write(config);
@@ -97226,22 +97379,22 @@ function viterbi(logProbs, switchCost) {
     dp = next;
     back.push(from);
   }
-  const path28 = new Array(n);
+  const path29 = new Array(n);
   let j = argmax(dp);
-  path28[n - 1] = j;
+  path29[n - 1] = j;
   for (let i = n - 2; i >= 0; i -= 1) {
     j = back[i][j];
-    path28[i] = j;
+    path29[i] = j;
   }
-  return path28;
+  return path29;
 }
-function runsOf(path28, state) {
+function runsOf(path29, state) {
   const out = [];
   let i = 0;
-  while (i < path28.length) {
-    if (path28[i] === state) {
+  while (i < path29.length) {
+    if (path29[i] === state) {
       let k = i;
-      while (k < path28.length && path28[k] === state) k += 1;
+      while (k < path29.length && path29[k] === state) k += 1;
       out.push([i, k]);
       i = k;
     } else {
@@ -97307,9 +97460,9 @@ function onOffPath(hot, params) {
   const rows = hot.map((h) => [Math.log(Math.max(1 - h, LOG_FLOOR2)), Math.log(Math.max(h, LOG_FLOOR2)) - params.tau]);
   return viterbi(rows, params.switchCost);
 }
-function mergedRuns(path28, units, params) {
+function mergedRuns(path29, units, params) {
   const out = [];
-  for (const [a, bEx] of runsOf(path28, 1)) {
+  for (const [a, bEx] of runsOf(path29, 1)) {
     const b = bEx - 1;
     const prev = out[out.length - 1];
     if (prev) {
@@ -97371,8 +97524,8 @@ function makeSpan(id, from, to, categories, units, hot) {
 function buildSpans(map, params = DEFAULT_SPAN_PARAMS) {
   if (map.units.length === 0 || map.categories.length === 0) return [];
   const hot = hotness(map, params);
-  const path28 = onOffPath(hot, params);
-  const ranges = mergedRuns(path28, map.units, params);
+  const path29 = onOffPath(hot, params);
+  const ranges = mergedRuns(path29, map.units, params);
   const spans = ranges.map(([a, b], id) => makeSpan(id, a, b, keepCategories(scoreRange(map, a, b, params), params.categoryFloor), map.units, hot));
   return spans.sort(compareSpans);
 }
@@ -103023,6 +103176,11 @@ var CT_FIXED_READINGS = {
   placeholder: "<readings.json>",
   describe: 'A fixed-readings/v1 file: {"format": "fixed-readings/v1", "readings": [{"find": "Wolf IV", "replace": "Wolf Four"}, ...]}. Each find is read wherever it stands as a whole token run, before anything is judged or asked, and the model is never shown it.'
 };
+var CT_READINGS_ONLY = {
+  name: "readings-only",
+  type: "boolean",
+  describe: "Write the --fixed-readings into the book and nothing else: no model, no server, no punctuation, no number rules. Records and stamp as a cleanup; <records>.applied.json says where each reading landed."
+};
 async function cleanFixedReadings(args) {
   const file = optionalString(args, "fixed-readings");
   if (file === void 0) return void 0;
@@ -103105,6 +103263,40 @@ async function runCleanTriageCommand(args) {
   });
 }
 async function runCleanText2(args) {
+  if (flag(args, "readings-only")) {
+    const foreign = [
+      "endpoint",
+      "model",
+      "server",
+      "concurrency",
+      "triage",
+      "unit",
+      "gate",
+      "remove-references",
+      "remove-also",
+      "epub",
+      "out"
+    ].filter((name) => optionalString(args, name) !== void 0);
+    if (foreign.length > 0) {
+      throw new UsageError(
+        `--readings-only writes the --fixed-readings into the book and asks nobody anything, so ${foreign.map((n) => `--${n}`).join(", ")} ha${foreign.length === 1 ? "s" : "ve"} nothing to say to it.`
+      );
+    }
+    const readings = await cleanFixedReadings(args);
+    if (readings === void 0) {
+      throw new UsageError("--readings-only needs --fixed-readings: the readings are the whole of what it writes.");
+    }
+    const { runApplyReadings: runApplyReadings2 } = await Promise.resolve().then(() => (init_apply_readings(), apply_readings_exports));
+    await runApplyReadings2({
+      bookPath: requireString(args, "book", "the book file the readings are written into"),
+      recordsPath: requireString(args, "records", "where the read text is written"),
+      stampPath: requireString(args, "stamp", "where the narration text stamp is written"),
+      fixedReadings: readings,
+      ...optionalString(args, "generation") === void 0 ? {} : { generation: optionalString(args, "generation") },
+      log
+    });
+    return;
+  }
   const server = textServer(args);
   const concurrency = optionalString(args, "concurrency");
   if (concurrency !== void 0 && !/^[1-9]\d*$/.test(concurrency)) {
@@ -103499,7 +103691,7 @@ async function runAnalyzeRankCommand(args) {
     model: requireString(args, "model", "the resident decide model"),
     log
   });
-  process.stdout.write(`${path27.resolve(outPath)}
+  process.stdout.write(`${path28.resolve(outPath)}
 `);
 }
 function defaultTranslationOut(epubPath, to) {
@@ -103535,12 +103727,12 @@ async function runTranslate(args) {
   }
   const outPath = recordsPath !== void 0 || epubPath === void 0 ? void 0 : named ?? defaultTranslationOut(epubPath, to);
   const input = epubPath ?? bookPath;
-  if (outPath !== void 0 && path27.resolve(outPath) === path27.resolve(input)) {
+  if (outPath !== void 0 && path28.resolve(outPath) === path28.resolve(input)) {
     throw new UsageError(
       `--out ${outPath} is the input itself. foundry reads the one and writes the other; a book overwritten by its own translation is the single input this command cannot get back.`
     );
   }
-  if (recordsPath !== void 0 && path27.resolve(recordsPath) === path27.resolve(input)) {
+  if (recordsPath !== void 0 && path28.resolve(recordsPath) === path28.resolve(input)) {
     throw new UsageError(
       `--records ${recordsPath} is the input itself. The records file is written to; the book is not.`
     );
@@ -103633,7 +103825,7 @@ async function runTranslate(args) {
 async function runEpubFinal(args) {
   const epubPath = requireString(args, "epub", "the working book to finish");
   const outPath = requireString(args, "out", "where the final EPUB is written");
-  if (path27.resolve(outPath) === path27.resolve(epubPath)) {
+  if (path28.resolve(outPath) === path28.resolve(epubPath)) {
     throw new UsageError(
       `--out ${outPath} is the input itself. foundry reads the working book and writes the edition; the working copy is where every cut lives, and a run that overwrites it cannot be run a second time.`
     );
@@ -103685,7 +103877,7 @@ async function runEpubFinal(args) {
 async function runEpubStamp(args) {
   const epubPath = requireString(args, "epub", "the book to stamp");
   const outPath = optionalString(args, "out");
-  if (outPath !== void 0 && path27.resolve(outPath) === path27.resolve(epubPath)) {
+  if (outPath !== void 0 && path28.resolve(outPath) === path28.resolve(epubPath)) {
     throw new UsageError(
       `--out ${outPath} is the input itself. foundry reads the one and writes the other; a directory working copy is stamped in place and takes no --out at all.`
     );
@@ -103721,7 +103913,7 @@ function metaLine(name, value) {
 async function runEpubMeta(args) {
   const epubPath = requireString(args, "epub", "the book whose metadata is being read or written");
   const outPath = optionalString(args, "out");
-  if (outPath !== void 0 && path27.resolve(outPath) === path27.resolve(epubPath)) {
+  if (outPath !== void 0 && path28.resolve(outPath) === path28.resolve(epubPath)) {
     throw new UsageError(
       `--out ${outPath} is the input itself. foundry reads the one and writes the other; a directory working copy is edited in place and takes no --out at all.`
     );
@@ -103808,7 +104000,7 @@ async function runEpubMeta(args) {
 async function runPdfMeta(args) {
   const pdfPath = requireString(args, "pdf", "the PDF whose metadata is being read or written");
   const outPath = optionalString(args, "out");
-  if (outPath !== void 0 && path27.resolve(outPath) === path27.resolve(pdfPath)) {
+  if (outPath !== void 0 && path28.resolve(outPath) === path28.resolve(pdfPath)) {
     throw new UsageError(
       `--out ${outPath} is the input itself. foundry reads the one and writes the other, and this command rewrites the whole file rather than patching it, so there would be nothing left to read.`
     );
@@ -105058,7 +105250,7 @@ var COMMANDS = [
   {
     name: "clean-text",
     summary: "Clean a book's text for a narrator: punctuation, numbers as words, the model on every block.",
-    usage: "--book <book.jsonl> --records <out.records.jsonl> --stamp <out.stamp.json> [--generation <id>] [--endpoint <url>] [--model <name>] [--server <openai|ollama|anthropic>] [--concurrency <n>] [--triage <verdicts.json>] [--unit <sentence|block>] [--gate <light|on|off>] [--remove-references <on|off>] [--remove-also <text>]  |  --epub <in.epub> --out <out.epub> [--endpoint <url>] [--model <name>] [--server <openai|ollama|anthropic>] [--concurrency <n>]",
+    usage: "--book <book.jsonl> --records <out.records.jsonl> --stamp <out.stamp.json> [--generation <id>] [--endpoint <url>] [--model <name>] [--server <openai|ollama|anthropic>] [--concurrency <n>] [--triage <verdicts.json>] [--unit <sentence|block>] [--gate <light|on|off>] [--remove-references <on|off>] [--remove-also <text>]  |  --readings-only --book <book.jsonl> --records <out.records.jsonl> --stamp <out.stamp.json> --fixed-readings <readings.json> [--generation <id>]  |  --epub <in.epub> --out <out.epub> [--endpoint <url>] [--model <name>] [--server <openai|ollama|anthropic>] [--concurrency <n>]",
     detail: [
       "THE THIRD TEXT ACT. translate turns a book into another language, --rewrite",
       "turns it into plainer prose, and this turns it into the text a NARRATOR is",
@@ -105266,7 +105458,8 @@ var COMMANDS = [
       CT_GATE,
       CT_REMOVE_REFERENCES,
       CT_REMOVE_ALSO,
-      CT_FIXED_READINGS
+      CT_FIXED_READINGS,
+      CT_READINGS_ONLY
     ],
     run: runCleanText2
   },

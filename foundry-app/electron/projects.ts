@@ -4554,6 +4554,8 @@ export async function recordsForTextPass(
    * ABSENT MINTS ONE, which is every ordinary press.
    */
   minted?: string,
+  /** A readings-only cleanup's name (`CleanRequest.readingsOnly`): part of which step it is. */
+  readings?: string,
 ): Promise<PlannedTranslation> {
   const manifest = await readManifest(dir);
   const ledger = ledgerOf(manifest);
@@ -4586,6 +4588,7 @@ export async function recordsForTextPass(
       ...(action === 'clean' ? {} : { language }),
       key: manifest.key,
       ...(rewrite !== undefined ? { rewrite } : {}),
+      ...(readings !== undefined ? { readings } : {}),
     },
     minted ?? randomUUID(),
   );
@@ -5389,6 +5392,8 @@ export async function recordTextPass(
      * `translatedInto` composing the params it has always composed.
      */
     rewrite?: RewriteMode;
+    /** A readings-only cleanup's name (`CleanRequest.readingsOnly`, `LedgerParams.readings`). */
+    readings?: string;
   } = {},
 ): Promise<void> {
   const resolved = path.resolve(recordsPath);
@@ -5453,7 +5458,8 @@ export async function recordTextPass(
          * `PARAMS_OF.clean` declares nothing. The refusal would arrive on the next
          * open of the project, about a step this app had just written itself.
          */
-        params: action === 'clean' ? {} : {
+        // A readings-only pass carries its name, which is its identity (`PARAMS_OF.clean`).
+        params: action === 'clean' ? translatedInto(undefined, undefined, landed.readings) : {
           ...translatedInto(landed.language, landed.rewrite),
           ...(from.length > 0 ? { from } : {}),
         },

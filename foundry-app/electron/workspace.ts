@@ -1981,13 +1981,15 @@ export async function identifyCleanup(
   deferral?: Deferral,
   /** The id a press already promised. `planTranslation`'s argument, verbatim. */
   minted?: string,
+  /** A readings-only pass's name (`CleanRequest.readingsOnly`): part of which step this is. */
+  readings?: string,
 ): Promise<TranslationPlan> {
   const { dir, key } = await importDocument(inputPath, 'epub');
   const manifest = await readManifest(dir);
   const ledger = ledgerOf(manifest);
 
   if (deferral !== undefined) {
-    const promised = await recordsForTextPass(dir, 'clean', '', undefined, deferral.from);
+    const promised = await recordsForTextPass(dir, 'clean', '', undefined, deferral.from, undefined, readings);
     await fsp.mkdir(path.join(dir, 'readings'), { recursive: true });
     return {
       key,
@@ -2002,7 +2004,7 @@ export async function identifyCleanup(
   }
 
   const planned = await recordsForTextPass(
-    dir, 'clean', '', undefined, at === null ? undefined : at.id, minted,
+    dir, 'clean', '', undefined, at === null ? undefined : at.id, minted, readings,
   );
   await fsp.mkdir(path.join(dir, 'readings'), { recursive: true });
   return {
@@ -2027,12 +2029,14 @@ export async function materializeCleanup(
   inputPath: string,
   at: LedgerStep | null,
   minted?: string,
+  /** A readings-only pass's name (`CleanRequest.readingsOnly`), as `identifyCleanup` takes it. */
+  readings?: string,
 ): Promise<TranslationPlan> {
   const { dir, key } = await importDocument(inputPath, 'epub');
   const manifest = await readManifest(dir);
   const ledger = ledgerOf(manifest);
   const planned = await recordsForTextPass(
-    dir, 'clean', '', undefined, at === null ? undefined : at.id, minted,
+    dir, 'clean', '', undefined, at === null ? undefined : at.id, minted, readings,
   );
   /*
    * NO SEED. A cleanup was seeded with the newest finished cleanup's answers, so a

@@ -787,7 +787,7 @@ async function materializeAtSpawn(
       ? await materializeTranslation(request.inputPath, request.to, step, request.stepId)
       : request.kind === 'simplify'
         ? await materializeSimplification(request.inputPath, request.rewrite, step, request.stepId)
-        : await materializeCleanup(request.inputPath, step, request.stepId);
+        : await materializeCleanup(request.inputPath, step, request.stepId, request.readingsOnly?.label);
     const next = withoutDeferral(request);
     next.bookPath = plan.bookPath;
     /*
@@ -2124,7 +2124,8 @@ const envRequests = new Map<string, EnvInstallRequest>();
  */
 function titleForTextPass(request: TextPassRequest): { title: string } | Record<string, never> {
   if (request.kind === 'simplify') return { title: `Simplify — ${REWRITE_LABELS[request.rewrite]}` };
-  if (request.kind === 'clean') return { title: 'Clean text' };
+  // A readings-only pass is the host's act, and the row says it in the host's words.
+  if (request.kind === 'clean') return { title: request.readingsOnly?.label ?? 'Clean text' };
   return {};
 }
 
@@ -3856,6 +3857,33 @@ export function argsFor(
      * asks no mode — see `PARAMS_OF.clean` (shared/ledger.ts) for the ledger half
      * of the same sentence.
      */
+    /*
+     * ── A READINGS-ONLY PASS: THE READINGS, AND NOTHING THAT NEEDS A SERVER ────
+     *
+     *   foundry clean-text --readings-only --book X --records Y --stamp Z
+     *                      --fixed-readings F
+     *
+     * No endpoint, no model, no removal, no triage: the engine writes the host's
+     * readings into the book and asks nobody anything (`CleanRequest.readingsOnly`).
+     * A readings pass with no readings is a request composed wrong, refused here
+     * by name rather than run as a copy of the book.
+     */
+    if (request.readingsOnly !== undefined) {
+      if (request.fixedReadings === undefined) {
+        throw new Error(
+          `"${request.readingsOnly.label}" was queued with no readings to write in, so there is nothing `
+          + 'for it to do. The host composes this pass with its readings file.',
+        );
+      }
+      return [
+        'clean-text', '--readings-only',
+        '--book', bookOf(request),
+        '--records', request.recordsPath,
+        '--stamp', request.stampPath,
+        '--fixed-readings', request.fixedReadings,
+        ...(request.generation !== undefined && request.generation.length > 0 ? ['--generation', request.generation] : []),
+      ];
+    }
     const args = [
       'clean-text',
       '--book', bookOf(request),
@@ -6501,6 +6529,7 @@ async function carry(
           ...(request.kind === 'clean' || request.to === undefined ? {} : { language: request.to }),
           ...(request.stepId !== undefined ? { stepId: request.stepId } : {}),
           ...(request.kind === 'simplify' ? { rewrite: request.rewrite } : {}),
+          ...(request.kind === 'clean' && request.readingsOnly !== undefined ? { readings: request.readingsOnly.label } : {}),
         });
         /*
          * "the book follows" IS TRUE OF ALL THREE and is the sentence the shelf has

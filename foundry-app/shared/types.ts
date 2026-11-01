@@ -1315,6 +1315,26 @@ export interface CleanRequest {
    * host decides it when the run starts, not when the person pressed.
    */
   fixedReadings?: string;
+  /**
+   * WHICH OF THE HOST'S CHOICES THE PERSON LIT on the card's host section
+   * (`HostPassOffer`, shared/host-ops.ts), by the choice's own id. Carried
+   * untouched: this app never reads it; the host's queue does.
+   */
+  hostChoice?: string;
+  /**
+   * A READINGS-ONLY PASS (2026-11-01): the readings in `fixedReadings` written
+   * into the book and NOTHING ELSE: no punctuation, no number rules, no model,
+   * no triage, no server. It lands as a step of its own, made from `at`, named by
+   * the host's `label`, and beside its records it writes an applied record
+   * (`appliedReadingsPathFor`, src/clean/apply-readings.ts) saying where every
+   * reading landed, so a later cleanup can be handed those places as kept,
+   * protected spots. `label` is also the step's identity (`LedgerParams.readings`):
+   * a second readings pass from the same step under the same name replaces the
+   * first, and a real cleanup from that step is a different row.
+   *
+   * Composed by the HOST, for its own act; never by this app's card.
+   */
+  readingsOnly?: { label: string };
 }
 
 /**
@@ -4982,6 +5002,13 @@ export interface LedgerParams {
    * corrected would make its child unrecognisable to the row it should replace.
    */
   from?: string;
+  /**
+   * `clean` — PRESENT ONLY ON A READINGS-ONLY PASS (`CleanRequest.readingsOnly`),
+   * and it is the host's name for that pass ("the step's name in the history").
+   * It is the question as well as the label: a readings pass and a cleanup made
+   * from one step are two rows, and two readings passes under one name are one.
+   */
+  readings?: string;
   /**
    * `read` — `--language`, the BCP-47 tag the pages were declared to be in.
    * `translate` — the language translated INTO, as the dialog named it.
