@@ -16,6 +16,7 @@ import * as path from 'node:path';
 import type { HostNode } from './foundry-host-nodes';
 import { readGlossary, type GlossaryEntry } from './narration-glossary';
 import { appliedStepOf, ledgerStepsOf } from './pronunciation-applied';
+import { GUIDE_OPERATION_ID } from './pronunciation-offer';
 
 /** The node id of a step's guide row: not a queue row of ours (`decodeNodeId` reads it as none). */
 export const GUIDE_NODE_PREFIX = 'bf-guide';
@@ -75,6 +76,8 @@ export async function guideNodesOf(projectDir: string): Promise<HostNode[]> {
       detail: applied === null ? 'Not applied to the text yet' : `Applied as “${applied.label}”`,
       kind: 'guide',
       state: 'done',
+      // A click opens the guide window (main.ts's bookforge.guide reads the step out of this row's id).
+      opens: GUIDE_OPERATION_ID,
     });
   }
   return nodes;

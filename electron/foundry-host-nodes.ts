@@ -85,6 +85,8 @@ export interface HostNode {
   kind: HostOperationKind;
   state: HostNodeState;
   progress?: HostNodeProgress;
+  /** The host operation a click on the row runs, on the row's own id (foundry 134c5f7). */
+  opens?: string;
 }
 
 /*
