@@ -2884,6 +2884,12 @@ export class ElectronService {
     return { success: false, error: 'Not running in Electron' };
   }
 
+  /** Write step `at`'s guide into the text as a step of its own (a readings-only pass). */
+  async applyPronunciationGuide(projectDir: string, at: string): Promise<{ success: boolean; places?: number; error?: string }> {
+    if (this.isElectron) return (window as any).electron.pronunciation.apply(projectDir, at);
+    return { success: false, error: 'Not running in Electron' };
+  }
+
   /** Stop one step of a queued run — the pronunciation guide's Stop. */
   async cancelQueueStep(stepId: string, reason: string): Promise<{ success: boolean; error?: string }> {
     if (this.isElectron) return (window as any).electron.queue.cancel({ stepId }, reason);

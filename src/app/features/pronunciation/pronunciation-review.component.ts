@@ -31,7 +31,7 @@ import {
 } from '../../creamsicle-desktop/components/desktop-select/desktop-select.component';
 import { ElectronService } from '../../core/services/electron.service';
 import {
-  LEFT_TO_NARRATOR_MEANING,
+  APPLIED_LABEL, LEFT_TO_NARRATOR_MEANING,
   type GuideReview, type GuideReviewForm, type GuideReviewFormEdit, type GuideReviewSense,
 } from '@shared/pronunciation-guide';
 import type { QueueSnapshot } from '@shared/queue/engine-types';
@@ -61,7 +61,12 @@ interface FormDraft {
   /** What the person typed for each meaning's "Something else". */
   own: string[];
   choices: SpotChoice[];
+  /** Whether Apply writes this word into the text. */
+  applied: boolean;
 }
+
+/** This step's guide work in the queue: building it, or applying it. */
+interface GuideRun { kind: 'build' | 'apply'; text: string; percent: number | null; running: boolean; stepId: string }
 
 /** One spot as the detail draws it. */
 interface SpotRow {
@@ -145,6 +150,36 @@ function lettersOf(key: string): string[] {
         </div>
       }
       @if (error()) { <div class="error">{{ error() }}</div> }
+
+      <!--
+        APPLY (Owen, 2026-11-01): the guide written into the text as a step of its
+        own, under this one — no model, seconds — and a word taken out of it or put
+        back by applying again. Going back to the step above undoes all of it.
+      -->
+      @if (review(); as r) {
+        @if (run() === null || run()!.kind !== 'apply') {
+          <div class="apply">
+            <span class="msg">
+              @if (!r.landed) {
+                This step is still being made. The guide can be applied once it has landed.
+              } @else if (r.appliedStep === null) {
+                Not applied to the text yet. Apply writes <b>{{ r.applyPlaces }} {{ r.applyPlaces === 1 ? 'place' : 'places' }}</b>
+                into a new step under this one, “{{ appliedLabel }}”, with no model.
+              } @else if (r.applyPending || appliedChanges() > 0) {
+                <b>The applied text is older than the guide.</b> Update it to write your changes into “{{ r.appliedStep.label }}”.
+              } @else {
+                Applied in “{{ r.appliedStep.label }}”: {{ r.applyPlaces }} {{ r.applyPlaces === 1 ? 'place' : 'places' }}.
+              }
+            </span>
+            @if (r.landed && (r.appliedStep === null || r.applyPending || appliedChanges() > 0)) {
+              <desktop-button variant="primary" size="sm" (click)="apply()" [disabled]="busy() || run() !== null || r.applyPlaces + appliedChanges() === 0">
+                {{ r.appliedStep === null ? 'Apply to the text' : 'Update the applied text' }}
+              </desktop-button>
+            }
+          </div>
+        }
+      }
+
       @if (stale()) {
         <div class="building">
           <span class="msg">The guide changed while you had changes open.
@@ -191,6 +226,7 @@ function lettersOf(key: string): string[] {
                   </span>
                   <span class="meta">
                     @if (isChanged(d)) { <span class="edited">changed</span> }
+                    @if (!d.applied && readsDifferently(d)) { <span class="edited off">not applied</span> }
                     @if (needsLook(d)) { <span class="dot" title="Needs a look"></span> }
                     <span class="count">{{ d.form.count }}×</span>
                   </span>
@@ -212,6 +248,12 @@ function lettersOf(key: string): string[] {
                   @if (d.form.by === 'person') { · decided by you }
                   @if (problemsIn(d); as p) { · {{ p }} }
                 </span>
+                @if (readsDifferently(d)) {
+                  <button type="button" class="applied-toggle" [class.off]="!d.applied" [attr.aria-pressed]="d.applied"
+                    (click)="setApplied(d, !d.applied)"
+                    [title]="d.applied ? 'Take this word out of the applied text' : 'Put this word back into the applied text'">
+                    {{ appliedWord(d) }}</button>
+                }
               </div>
 
               @if (d.leftWhole) {
@@ -339,6 +381,15 @@ function lettersOf(key: string): string[] {
     .building .msg { flex: 1; min-width: 0; color: var(--text-secondary); }
     .bar { flex: 0 1 220px; height: 4px; border-radius: 2px; background: var(--progress-track); overflow: hidden; }
     .bar > i { display: block; height: 100%; background: var(--progress-fill); transition: width .4s; }
+    .apply { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 8px 12px; margin-bottom: 10px;
+      border-radius: 8px; border: 1px solid var(--border-subtle); background: var(--bg-card); font-size: 13px; }
+    .apply .msg { flex: 1 1 260px; min-width: 0; color: var(--text-secondary); line-height: 1.45; }
+    .apply .msg b { color: var(--text-primary); font-weight: 600; }
+    .applied-toggle { margin-left: auto; border: 1px solid color-mix(in srgb, var(--success) 45%, transparent); color: var(--success-text);
+      background: none; border-radius: 999px; padding: 2px 10px; font: inherit; font-size: 11.5px; cursor: pointer; }
+    .applied-toggle.off { border-color: var(--border-strong); color: var(--text-tertiary); }
+    .applied-toggle:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+    .edited.off { color: var(--text-tertiary); }
     .error { background: var(--error-bg); color: var(--error-text); padding: 10px 12px; border-radius: 6px; margin-bottom: 10px; font-size: 13px; }
 
     .filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; padding-bottom: 10px; border-bottom: 1px solid var(--border-default); }
@@ -434,6 +485,7 @@ export class PronunciationReviewComponent {
   private readonly destroyRef = inject(DestroyRef);
 
   protected readonly leftToNarrator = LEFT_TO_NARRATOR_MEANING;
+  protected readonly appliedLabel = APPLIED_LABEL;
 
   readonly review = signal<GuideReview | null>(null);
   readonly drafts = signal<FormDraft[]>([]);
@@ -441,7 +493,7 @@ export class PronunciationReviewComponent {
   readonly error = signal<string | null>(null);
   readonly saved = signal<string | null>(null);
   /** THIS STEP'S GUIDE RUN while it is in BookForge's queue (its card on Foundry's tree says the same). */
-  readonly run = signal<{ text: string; percent: number | null; running: boolean; stepId: string } | null>(null);
+  readonly run = signal<GuideRun | null>(null);
   /** The guide changed on disk while there were changes here that a reload would drop. */
   readonly stale = signal(false);
   readonly confirmingRebuild = signal(false);
@@ -526,31 +578,87 @@ export class PronunciationReviewComponent {
   }
 
   /** This step's guide run in the queue, said in a line, or null when there is none waiting or running. */
-  private guideRunIn(snapshot: QueueSnapshot): { text: string; percent: number | null; running: boolean; stepId: string } | null {
+  private guideRunIn(snapshot: QueueSnapshot): GuideRun | null {
     for (const job of snapshot.jobs) {
       for (const step of job.steps) {
+        const applying = this.applyRunOf(step);
+        if (applying !== null) return applying;
         if (step.type !== 'narration-guide' || step.config['projectDir'] !== this.projectDir
           || step.config['at'] !== this.at) continue;
         const over = step.config['fromZero'] === true ? 'Rebuilding the guide' : 'Building the guide';
         switch (step.status) {
           case 'running':
-            return { text: `${over}: ${step.progress.message ?? 'starting'}`, percent: step.progress.percent ?? null, running: true, stepId: step.id };
+            return { kind: 'build', text: `${over}: ${step.progress.message ?? 'starting'}`, percent: step.progress.percent ?? null, running: true, stepId: step.id };
           case 'queued':
           case 'waiting':
             return {
               text: step.parentStepId === 'source'
                 ? `${over} is queued in BookForge. This window shows the guide when it finishes.`
                 : `${over} waits for this step to land, then runs. This window shows the guide when it finishes.`,
-              percent: null, running: false, stepId: step.id,
+              kind: 'build', percent: null, running: false, stepId: step.id,
             };
           case 'held':
-            return { text: `${over} is in BookForge's queue, not started. Press Start there.`, percent: null, running: false, stepId: step.id };
+            return { kind: 'build', text: `${over} is in BookForge's queue, not started. Press Start there.`, percent: null, running: false, stepId: step.id };
           default:
             continue;
         }
       }
     }
     return null;
+  }
+
+  /** This step's Apply, when `step` is it (a readings-only pass of the guide made from this step). */
+  private applyRunOf(step: QueueSnapshot['jobs'][number]['steps'][number]): GuideRun | null {
+    if (step.type !== 'foundry-job') return null;
+    const request = step.config['request'] as Record<string, unknown> | undefined;
+    if (request === undefined || request['readingsOnly'] === undefined || request['at'] !== this.at
+      || step.config['projectDir'] !== this.projectDir) return null;
+    switch (step.status) {
+      case 'running':
+        return { kind: 'apply', text: 'Applying the guide to the text…', percent: step.progress.percent ?? null, running: true, stepId: step.id };
+      case 'queued':
+      case 'waiting':
+        return { kind: 'apply', text: 'Applying the guide is queued in BookForge.', percent: null, running: false, stepId: step.id };
+      case 'held':
+        return { kind: 'apply', text: 'Applying the guide is in BookForge’s queue, not started. Press Start there.', percent: null, running: false, stepId: step.id };
+      default:
+        return null;
+    }
+  }
+
+  /**
+   * APPLY, or UPDATE THE APPLIED TEXT: unsaved changes are saved first, because
+   * what Apply writes is the guide as saved.
+   */
+  async apply(): Promise<void> {
+    if (this.changes() > 0) {
+      await this.save();
+      if (this.error() !== null) return;
+    }
+    this.busy.set(true);
+    this.error.set(null);
+    try {
+      const res = await this.electron.applyPronunciationGuide(this.projectDir, this.at);
+      if (!res.success) { this.error.set(res.error ?? 'The guide could not be applied.'); return; }
+      this.saved.set(`Applying ${res.places ?? 0} place(s) as “${APPLIED_LABEL}”`);
+    } finally {
+      this.busy.set(false);
+    }
+  }
+
+  /** Words whose applied state is changed here and not saved yet. */
+  appliedChanges(): number {
+    const forms = new Map<string, GuideReviewForm>((this.review()?.forms ?? []).map((f) => [`${f.kind}\u0000${f.key}`, f] as const));
+    return this.drafts().filter((d) => forms.get(d.id)?.applied !== d.applied).length;
+  }
+
+  setApplied(d: FormDraft, applied: boolean): void { this.update(d, { applied }); }
+
+  /** The word's state in the applied text, as its toggle says it. */
+  appliedWord(d: FormDraft): string {
+    const was = d.form.applied;
+    if (d.applied === was) return d.applied ? 'In the applied text' : 'Not in the applied text';
+    return d.applied ? 'Will be put back' : 'Will be taken out';
   }
 
   /** Queue a guide: the first one, or a rebuild from zero. */
@@ -797,6 +905,7 @@ export class PronunciationReviewComponent {
       modes,
       own: form.senses.map(() => ''),
       choices,
+      applied: form.applied,
     };
   }
 
@@ -806,7 +915,7 @@ export class PronunciationReviewComponent {
   }
 
   private editOf(d: FormDraft): GuideReviewFormEdit {
-    const base = { key: d.form.key, kind: d.form.kind };
+    const base = { key: d.form.key, kind: d.form.kind, applied: d.applied };
     if (d.leftWhole) return { ...base, decision: 'as-printed', senses: [], spots: [] };
     const dotted = isDotted(d.form.key);
     const senses: GuideReviewSense[] = d.form.senses.map((s, i) => {
@@ -837,7 +946,7 @@ export class PronunciationReviewComponent {
   }
 
   private snapshotOf(d: FormDraft): string {
-    return JSON.stringify([d.form.senses.map((_, i) => (d.modes[i] === 'none' ? null : this.readingOf(d, i))), d.choices]);
+    return JSON.stringify([d.applied, d.form.senses.map((_, i) => (d.modes[i] === 'none' ? null : this.readingOf(d, i))), d.choices]);
   }
 
   private update(d: FormDraft, change: Partial<FormDraft>): void {

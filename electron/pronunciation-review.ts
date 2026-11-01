@@ -19,12 +19,13 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 
 import {
-  guidePathsOfStep, readGlossary, writeGlossary,
+  applyReadingsOf, applyReadingsPath, guidePathsOfStep, readGlossary, writeGlossary,
   type GlossaryEntry, type GlossarySense, type PlacedOccurrence,
 } from './narration-glossary';
-import type {
-  GuideReview, GuideReviewForm, GuideReviewSave, GuideReviewSense,
+import {
+  type GuideReview, type GuideReviewForm, type GuideReviewSave, type GuideReviewSense,
 } from '../shared/pronunciation-guide';
+import { appliedStepOf, ledgerStepsOf } from './pronunciation-applied';
 
 /** A sentence for a spot the guide stored without one, from a fresh listing of the book. */
 export type SentenceOf = (at: string, printed: string, nth: number) => string | null;
@@ -67,7 +68,19 @@ export function readGuideReview(projectDir: string, at: string, sentenceOf: Sent
     })),
     by: entry.by,
     why: entry.why,
+    applied: entry.unapplied !== true,
   }));
+  /*
+   * WHAT APPLY WOULD WRITE NOW, against what the applied step was made with — the
+   * readings file the last Apply wrote at its press (`applyReadingsPath`). Anything
+   * different is a change the person has not put into the text yet.
+   */
+  const now = applyReadingsOf(glossary.entries);
+  const appliedStep = appliedStepOf(projectDir, at);
+  const usedFile = applyReadingsPath(files);
+  const used = fs.existsSync(usedFile)
+    ? JSON.stringify((JSON.parse(fs.readFileSync(usedFile, 'utf8')) as { readings?: unknown }).readings ?? null)
+    : null;
   return {
     projectDir,
     at,
@@ -75,6 +88,10 @@ export function readGuideReview(projectDir: string, at: string, sentenceOf: Sent
     version: versionOf(files.glossary),
     built: glossary.built ?? null,
     forms,
+    applyPlaces: now.length,
+    appliedStep,
+    applyPending: appliedStep !== null && used !== JSON.stringify(now),
+    landed: ledgerStepsOf(projectDir).some((s) => s.id === at),
   };
 }
 
@@ -122,6 +139,14 @@ export async function saveGuideReview(save: GuideReviewSave): Promise<{ forms: n
       }
     }
     const leftWhole = edit.decision === 'as-printed' && edit.senses.length === 0;
+    // Taken out of the applied text, or put back: the word's own decisions are untouched.
+    const appliedNow = edit.applied === undefined ? entry.unapplied !== true : edit.applied;
+    const appliedMoved = appliedNow !== (entry.unapplied !== true);
+    const withApplied = (e: GlossaryEntry): GlossaryEntry => {
+      if (!appliedMoved) return e;
+      const { unapplied: _was, ...rest } = e;
+      return appliedNow ? rest : { ...rest, unapplied: true };
+    };
     const meaningsChanged = edit.decision !== entry.decision || !sameSenses(entry.senses, edit.senses);
     const before = new Map(entry.occurrences.map((o) => [spotKey(o), o] as const));
     const spots: PlacedOccurrence[] = leftWhole ? [] : edit.spots.map((spot) => {
@@ -137,9 +162,12 @@ export async function saveGuideReview(save: GuideReviewSave): Promise<{ forms: n
       return { ...was, sense: spot.sense, p: null, byPerson: true };
     });
     const moved = spots.some((s, i) => s !== entry.occurrences[i]);
-    if (!meaningsChanged && !moved) return entry;
+    if (!meaningsChanged && !moved) {
+      if (appliedMoved) formsChanged += 1;
+      return withApplied(entry);
+    }
     formsChanged += 1;
-    return {
+    return withApplied({
       ...entry,
       decision: edit.decision,
       // A meaning a person wrote carries no model classification: it is taken as written.
@@ -150,7 +178,7 @@ export async function saveGuideReview(save: GuideReviewSave): Promise<{ forms: n
       by: meaningsChanged ? 'person' : entry.by,
       why: meaningsChanged ? `Decided in the review, ${new Date().toISOString().slice(0, 10)}.` : entry.why,
       at: new Date().toISOString(),
-    };
+    });
   });
   await writeGlossary(files.glossary, { ...glossary, entries });
   return { forms: formsChanged, spots: spotsChanged };

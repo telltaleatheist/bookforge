@@ -51,6 +51,8 @@ export interface GuideReviewForm {
   spots: GuideReviewSpot[];
   by: 'model' | 'person';
   why: string;
+  /** Whether Apply writes this word's readings into the text (false: a person took it out). */
+  applied: boolean;
 }
 
 export interface GuideReview {
@@ -68,6 +70,14 @@ export interface GuideReview {
   /** When the guide was last started from zero, if it says. */
   built: string | null;
   forms: GuideReviewForm[];
+  /** THE APPLY (Owen, 2026-11-01): how many places it would write into the text as the guide stands. */
+  applyPlaces: number;
+  /** The step an Apply of this guide landed as, or null when it has not been applied. */
+  appliedStep: { id: string; label: string } | null;
+  /** The guide as it stands would write something other than what the applied step was made with. */
+  applyPending: boolean;
+  /** Whether the step the guide belongs to has landed — Apply writes from a landed step. */
+  landed: boolean;
 }
 
 /** One form as the person left it. Its spots name their meaning by index into `senses`. */
@@ -77,6 +87,8 @@ export interface GuideReviewFormEdit {
   decision: GuideReviewForm['decision'];
   senses: GuideReviewSense[];
   spots: { at: string; nth: number; printed: string; sense: number | null }[];
+  /** Whether Apply writes it into the text; absent leaves it as it was. */
+  applied?: boolean;
 }
 
 export interface GuideReviewSave {
@@ -85,6 +97,33 @@ export interface GuideReviewSave {
   version: string;
   forms: GuideReviewFormEdit[];
 }
+
+/**
+ * WHAT THE CLEANUP MODAL WAS TOLD TO DO ABOUT THE GUIDE (Owen, 2026-11-01: *"make
+ * sure the user knows the pronunciation guide has to be processed before cleaning.
+ * maybe we even put 'generate pronunciation guide' in the cleanup modal"*). The ids
+ * travel on the cleanup's request as `hostChoice` — Foundry carries them and reads
+ * none of them. A request with no `hostChoice` (the CLI, an older Foundry) is
+ * cleaned as before: the guide is built inside the cleanup when the step has none.
+ */
+export const GUIDE_CHOICE = {
+  /** Read the step's guide as it stands. */
+  use: 'guide-use',
+  /** Queue the guide as its own row ahead of the cleanup. */
+  build: 'guide-build',
+  /** The same, starting over: every decision dropped, a person's included. */
+  rebuild: 'guide-rebuild',
+  /** No guide: the cleanup decides every form in its own sentence. */
+  none: 'guide-none',
+} as const;
+export type GuideChoice = typeof GUIDE_CHOICE[keyof typeof GUIDE_CHOICE];
+
+/**
+ * THE NAME A GUIDE'S APPLY LANDS AS — Foundry's readings-only pass takes it as the
+ * step's label AND its identity (`LedgerParams.readings`), so a second Apply from the
+ * same step replaces the first rather than stacking a sibling.
+ */
+export const APPLIED_LABEL = 'Pronunciation applied';
 
 /** The meaning a spot is put in when a person leaves just that spot to the narrator. */
 export const LEFT_TO_NARRATOR_MEANING = 'As printed — left to the narrator';

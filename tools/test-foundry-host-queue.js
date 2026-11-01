@@ -535,6 +535,35 @@ test('a text pass is identified by its RECORDS file — a clean names no outputP
   assert.notStrictEqual(other.id, first.id, 'two different records files are two honest rows');
 });
 
+test('a cleanup told to build its pronunciation guide first is chained under the guide row (Owen, 2026-11-01)', async () => {
+  await fresh('guide-first');
+  const asked = [];
+  host.setFoundrySeam({
+    runJob: null, setQueueRows: null, drained: null,
+    // main's queuePronunciationGuide, standing in: a run whose one step is the guide.
+    guideAhead: (dir, at, startOver) => {
+      asked.push({ dir, at, startOver });
+      const job = engine.enqueue({
+        title: 'guide',
+        steps: [{ type: 'foundry-job', label: 'Pronunciation guide', config: { request: { kind: 'guide' } }, sourceRef: { kind: 'none' } }],
+      });
+      return { jobId: job.id, stepId: job.steps[0].id };
+    },
+  });
+  const row = host.foundryHostQueue.enqueue({ ...textPass('clean', 'g1'), hostChoice: 'guide-build' }, null, PROJ);
+  assert.deepStrictEqual(asked, [{ dir: PROJ, at: 'step-1', startOver: false }], 'the guide is queued for the step the cleanup is made from');
+  const owner = engine.snapshot().jobs.find((j) => j.steps.some((s) => s.id === row.id));
+  const guide = owner.steps.find((s) => s.label === 'Pronunciation guide');
+  assert.ok(guide !== undefined, 'the cleanup went into the guide\'s run');
+  assert.strictEqual(owner.steps.find((s) => s.id === row.id).parentStepId, guide.id, 'and waits under the guide row');
+
+  host.foundryHostQueue.enqueue({ ...textPass('clean', 'g2'), hostChoice: 'guide-rebuild' }, null, PROJ);
+  assert.strictEqual(asked[1].startOver, true, 'Rebuild it first starts the guide over');
+  host.foundryHostQueue.enqueue({ ...textPass('clean', 'g3'), hostChoice: 'guide-use' }, null, PROJ);
+  host.foundryHostQueue.enqueue(textPass('clean', 'g4'), null, PROJ);
+  assert.strictEqual(asked.length, 2, 'Use this guide, and a request that says nothing, queue no guide');
+});
+
 test('THE ROW REPORTS WHAT IT MAKES: a text pass names its RECORDS file as outputPath, so their per-project shelf keeps it (Owen, 2026-09-07: no greyed step for a running clean)', async () => {
   await fresh('textpass-row-path');
   host.setFoundrySeam({ runJob: null, setQueueRows: null, drained: null });

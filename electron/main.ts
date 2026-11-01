@@ -132,7 +132,8 @@ import {
 import { hostStatusOf, type HostStatus } from './foundry-host-status';
 // The book's pronunciation guide: its own step, and BookForge's window over it.
 import type { NarrationGuideStepConfig } from './queue-steps/narration-guide';
-import type { GuideReviewSave } from '../shared/pronunciation-guide';
+import { APPLIED_LABEL, type GuideReviewSave } from '../shared/pronunciation-guide';
+import { guidePassOffer, type GuidePassOffer } from './pronunciation-offer';
 // BookForge's queue, offered to the hosted Foundry window — Owen's ruling of
 // 2026-08-18 that a press inside that window is scheduled here, not there. The
 // mapping and the two pushes live beside the rows' and the chip's, for the same
@@ -544,6 +545,13 @@ interface FoundryHostRecord {
    */
   onStatusOpen?(): void;
   /**
+   * THE HOST'S SECTION ON THE CLEANUP MODAL — foundry 4ae272b's `passOffer`. Ours is
+   * the pronunciation guide (electron/pronunciation-offer.ts); the choice comes back
+   * on the cleanup's request as `hostChoice`.
+   */
+  passOffer?(ask: { kind: 'clean'; projectDir: string; at: string | null; deferredFrom: string | null }):
+    Promise<GuidePassOffer | null>;
+  /**
    * The acts this host contributes to the tree. Recorded once, at mount;
    * `mountFoundry` runs exactly once, so a second registration is unreachable.
    */
@@ -790,6 +798,12 @@ interface FoundryMountModule {
    * c6e8824, for the pronunciation guide's own step. Optional for `runJob`'s reason.
    */
   printedFormsAt?(projectDir: string, at: string | null, onLine?: (line: string) => void): Promise<unknown>;
+  /**
+   * A READINGS-ONLY PASS from one step, planned and not queued — foundry 4ae272b. A
+   * `clean` request with `readingsOnly`, whose row is handed its readings file as a
+   * cleanup's is (`fixedReadings`). What the pronunciation guide's Apply queues.
+   */
+  planReadingsPass?(projectDir: string, stepId: string, label: string): Promise<FoundryJobRequest>;
   /**
    * OUR QUEUE HAS NO FOUNDRY WORK RUNNING — the one signal their vLLM reading
    * server's lifetime hangs on.
@@ -2919,7 +2933,7 @@ function promisedRowOf(projectDir: string, nodeId: string): FoundryJobRow | null
  * meant it should start over"); otherwise the guide keeps what it has and decides
  * only what is new.
  */
-function queuePronunciationGuide(projectDir: string, at: string, startOver: boolean): void {
+function queuePronunciationGuide(projectDir: string, at: string, startOver: boolean): { jobId: string; stepId: string } {
   const { title, steps } = guideManifestOf(projectDir);
   const config: NarrationGuideStepConfig = { projectDir, at, fromZero: startOver, bookTitle: title };
   const step = {
@@ -2930,8 +2944,8 @@ function queuePronunciationGuide(projectDir: string, at: string, startOver: bool
     sourceRef: { kind: 'none' as const },
   };
   if (steps.includes(at)) {
-    queueEngine.enqueue({ title, foundry: { projectDir, parentStepId: at }, steps: [step] });
-    return;
+    const job = queueEngine.enqueue({ title, foundry: { projectDir, parentStepId: at }, steps: [step] });
+    return { jobId: job.id, stepId: job.steps[0]!.id };
   }
   const row = promisedRowOf(projectDir, at);
   if (row === null) {
@@ -2940,7 +2954,41 @@ function queuePronunciationGuide(projectDir: string, at: string, startOver: bool
   }
   const owner = queueEngine.snapshot().jobs.find((j) => j.steps.some((s) => s.id === row.id));
   if (!owner) throw new Error(`The queue holds row ${row.id} in no run, which cannot happen.`);
-  queueEngine.appendStep(owner.id, { ...step, parentStepId: row.id });
+  const appended = queueEngine.appendStep(owner.id, { ...step, parentStepId: row.id });
+  return { jobId: owner.id, stepId: appended.id };
+}
+
+/**
+ * APPLY A STEP'S GUIDE — write its readings into the text as a step of their own
+ * (Owen, 2026-11-01: *"something we apply ... and then we can apply the fixes to
+ * whatever we generated it off of? with the ability to reverse it if we want. like
+ * applied changes"*). Foundry's readings-only pass (4ae272b) lands it as a child of
+ * the step, under APPLIED_LABEL: no model, no card, seconds. Pressed again it
+ * replaces the step it made, so a word taken out of the applied text goes back to
+ * its print by Applying again; going back to the step above undoes all of it.
+ *
+ * The readings are written at the press (`writeApplyReadings`) and the row is handed
+ * that file, so what lands is what the window showed when it was pressed.
+ */
+async function applyPronunciationGuide(projectDir: string, at: string): Promise<{ places: number }> {
+  if (!guideManifestOf(projectDir).steps.includes(at)) {
+    throw new Error('This step has not landed yet. Apply the guide once the work making it has finished.');
+  }
+  const { guidePathsOfStep, hasGuide, writeApplyReadings } = await import('./narration-glossary.js');
+  const files = guidePathsOfStep(projectDir, at);
+  if (!hasGuide(files)) throw new Error('This step has no pronunciation guide to apply. Build the guide first.');
+  if (typeof foundryMount.planReadingsPass !== 'function') {
+    throw new Error('The vendored Foundry is older than the readings pass, so the guide cannot be applied. '
+      + 'Re-vendor foundry-app.');
+  }
+  const { path: readings, places } = await writeApplyReadings(files);
+  if (places === 0) {
+    throw new Error('The guide reads every word as printed (or every word is taken out of the applied text), so '
+      + 'applying it would change nothing.');
+  }
+  const request = await foundryMount.planReadingsPass(projectDir, at, APPLIED_LABEL);
+  foundryHostQueue.enqueue({ ...request, applyReadings: readings }, at, projectDir);
+  return { places };
 }
 
 /** One guide window per step, raised rather than opened twice. */
@@ -13109,6 +13157,14 @@ ipcMain.handle('narration:text-readiness', async (
     }
   });
 
+  ipcMain.handle('pronunciation:apply', async (_event, projectDir: string, at: string) => {
+    try {
+      return { success: true, ...(await applyPronunciationGuide(projectDir, at)) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   ipcMain.handle('pronunciation:save', async (_event, save: GuideReviewSave) => {
     try {
       const { saveGuideReview } = await import('./pronunciation-review.js');
@@ -13977,6 +14033,8 @@ app.whenReady().then(async () => {
     // for the pair above — and it is not wrapped for the same reason: its one
     // refusal is a sentence that has to reach the chip somebody just pressed.
     onStatusOpen: () => showQueueInMainWindow(),
+    // The pronunciation guide's section on the cleanup modal (Owen, 2026-11-01).
+    passOffer: async (ask) => guidePassOffer(ask.projectDir, ask.at, ask.deferredFrom),
     // Narrate / Enhance / Assemble, on the provenance tree. NOT wrapped, unlike
     // the two announcements above: an operation is a button the user pressed,
     // and its refusal has to reach the tree that asked.
@@ -14060,6 +14118,8 @@ app.whenReady().then(async () => {
     printedFormsAt: typeof foundryMount.printedFormsAt === 'function'
       ? (dir, at, onLine) => foundryMount.printedFormsAt!(dir, at, onLine)
       : null,
+    // A cleanup told to build its pronunciation guide first queues it here, then chains under it.
+    guideAhead: (dir, at, startOver) => queuePronunciationGuide(dir, at, startOver),
   });
   /*
    * AND THE WORD FOR "STOPPED, NOT CANCELLED" — foundry `47ae0d4`.

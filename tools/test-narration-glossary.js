@@ -508,6 +508,29 @@ const entries = (where) => JSON.parse(fs.readFileSync(where.glossaryFile, 'utf8'
     })).senses[0].kind, 'initials');
   });
 
+  await test('Apply writes every reading the guide decided, never a kept place or a word taken out (2026-11-01)', () => {
+    const entry = (key, senses, occurrences, extra = {}) => ({
+      key, kind: 'caps', count: occurrences.length, printed: {}, decision: 'reading', senses, why: '', by: 'model',
+      occurrences, at: '', ...extra,
+    });
+    const letters = { meaning: 'Marines', kind: 'initials', reading: 'U S M C', periodIsPart: false };
+    const us = { meaning: 'United States', kind: 'initials', reading: 'U S', periodIsPart: true };
+    const word = { meaning: 'NATO', kind: 'acronym', reading: '', periodIsPart: false };
+    const at = (block, nth, printed, sense, endsSentence = false) => ({ at: block, nth, printed, sense, p: 1, endsSentence });
+    const entries = [
+      entry('USMC', [letters], [at('b1', 0, 'USMC', 0), at('b2', 0, 'USMC', null)]),
+      entry('u.s', [us], [at('b1', 0, 'U.S.', 0), at('b3', 1, 'U.S.', 0, true)]),
+      entry('NATO', [word], [at('b4', 0, 'NATO', 0)]),
+      entry('BEF', [{ ...letters, reading: 'B E F' }], [at('b5', 0, 'BEF', 0)], { unapplied: true }),
+      entry('AIDS', [{ ...word, reading: 'acquired', problem: 'refused' }], [at('b6', 0, 'AIDS', 0)]),
+    ];
+    assert.deepStrictEqual(glossary.applyReadingsOf(entries), [
+      { find: 'USMC', replace: 'U S M C', at: 'b1', nth: 0 },
+      { find: 'U.S.', replace: 'U S', at: 'b1', nth: 0 },
+      { find: 'U.S.', replace: 'U S.', at: 'b3', nth: 1 },
+    ], 'unplaced, as printed, taken out and refused places are not written');
+  });
+
   await test('millimeters are not a numeral; a corps numeral in capitals is (Blitzkrieg Legend, 2026-10-31)', () => {
     const abbr = (key) => ({ key, kind: 'abbreviation', count: 1, printed: { [key]: 1 }, samples: [], occurrences: [] });
     assert.strictEqual(glossary.senseProblem(abbr('mm'), { meaning: 'millimeters', kind: 'abbreviation', reading: 'millimeters', periodIsPart: true }), null);

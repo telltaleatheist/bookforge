@@ -193,6 +193,12 @@ export interface GlossaryEntry {
   why: string;
   /** Who decided the meanings: the model, or a person in the review. */
   by: 'model' | 'person';
+  /**
+   * A person took this word OUT of the applied text (Owen, 2026-11-01: "with the
+   * ability to reverse it if we want. like applied changes"). The guide still
+   * decides it, and a cleanup still reads it; only Apply leaves it as printed.
+   */
+  unapplied?: true;
   model?: string;
   /** The meanings question's digest — form, samples, prompt version, model. */
   question?: string;
@@ -784,6 +790,44 @@ export function spotReplace(occurrence: Pick<FormOccurrence, 'printed' | 'endsSe
 }
 
 export interface SpotReading { find: string; replace: string; at: string; nth: number }
+
+/**
+ * WHAT APPLY WRITES INTO THE TEXT (Owen, 2026-11-01: *"i think maybe we should be able
+ * to apply the pronunciation guide to any text ... with the ability to reverse it"*).
+ * Every place the guide decided a reading for — a word a person took out of the
+ * applied text aside — and nothing kept as printed, because a kept place changes
+ * nothing. Built from the guide alone (each placed occurrence carries its spelling,
+ * spot and whether it ends its sentence), so Apply asks no model and lists nothing.
+ */
+export function applyReadingsOf(entries: readonly GlossaryEntry[]): SpotReading[] {
+  const out: SpotReading[] = [];
+  for (const entry of entries) {
+    if (entry.unapplied === true) continue;
+    for (const placed of entry.occurrences) {
+      if (placed.sense === null) continue;
+      const sense = entry.senses[placed.sense];
+      if (sense === undefined || sense.problem !== undefined || sense.reading.length === 0) continue;
+      const replace = spotReplace({ printed: placed.printed, endsSentence: placed.endsSentence === true }, sense);
+      if (replace === placed.printed) continue;
+      out.push({ find: placed.printed, replace, at: placed.at, nth: placed.nth });
+    }
+  }
+  return out;
+}
+
+/** Where Apply's readings for a step's guide are written: `<guide>.apply.json`, beside it. */
+export function applyReadingsPath(files: GuideFiles): string {
+  return files.glossary.replace(/\.json$/, '.apply.json');
+}
+
+/** Write Apply's readings for a step's guide; how many places they change. */
+export async function writeApplyReadings(files: GuideFiles): Promise<{ path: string; places: number }> {
+  const glossary = readGlossary(files.glossary, files.book);
+  const readings = applyReadingsOf(glossary.entries);
+  const file = applyReadingsPath(files);
+  await writeAtomically(file, { format: FIXED_READINGS_FORMAT, readings });
+  return { path: file, places: readings.length };
+}
 
 /**
  * THE GUIDE'S SPOTS: every occurrence the guide DECIDED, read or kept.

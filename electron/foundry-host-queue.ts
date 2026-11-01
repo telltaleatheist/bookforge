@@ -54,6 +54,7 @@ import {
   start as engineStart,
 } from './queue-engine';
 import { TERMINAL_STEP_STATUSES } from '../shared/queue/engine-types';
+import { GUIDE_CHOICE } from '../shared/pronunciation-guide';
 import { getFoundryLogger } from './rolling-logger';
 import { stepFailure } from './queue-steps/runtime';
 import type { QueueJob, QueueStep } from '../shared/queue/engine-types';
@@ -510,6 +511,14 @@ let pushRows: ((projectDir: string, rows: readonly FoundryJobRow[]) => void) | n
 let sayDrained: (() => void) | null = null;
 let formsLister: FoundryFormsLister | null = null;
 let formsAtLister: FoundryFormsAtLister | null = null;
+let guideAhead: GuideAhead | null = null;
+
+/**
+ * QUEUE A STEP'S PRONUNCIATION GUIDE as its own row (main's `queuePronunciationGuide`),
+ * answering the run and the step it went into, so a cleanup told to build the guide
+ * first is chained under it in the same run.
+ */
+export type GuideAhead = (projectDir: string, at: string, startOver: boolean) => { jobId: string; stepId: string };
 
 /**
  * THE PRINTED FORMS OF THE BOOK A CLEANUP WILL READ — their `printedFormsForRun`:
@@ -533,8 +542,10 @@ export function setFoundrySeam(seam: {
   drained: (() => void) | null;
   printedForms?: FoundryFormsLister | null;
   printedFormsAt?: FoundryFormsAtLister | null;
+  guideAhead?: GuideAhead | null;
 }): void {
   runner = seam.runJob;
+  guideAhead = seam.guideAhead ?? null;
   formsLister = seam.printedForms ?? null;
   formsAtLister = seam.printedFormsAt ?? null;
   pushRows = seam.setQueueRows;
@@ -1102,6 +1113,43 @@ export const foundryHostQueue = {
      * refused when the row has already failed or been cancelled — appendStep
      * says so itself, in the parent's own words.
      */
+    /*
+     * THE GUIDE FIRST, AS ITS OWN ROW (Owen, 2026-11-01: *"make sure the user knows
+     * the pronunciation guide has to be processed before cleaning"*). The cleanup
+     * modal said so on the request (`hostChoice`, shared/pronunciation-guide.ts):
+     * the guide is queued under its step, and this row is chained under the guide,
+     * so the queue shows both and the cleanup reads a guide that is finished. The
+     * cleanup half of a checked pair follows its check, which is already behind the
+     * guide, so only the first row of a pair takes it.
+     */
+    const hostChoice = request['hostChoice'];
+    const guideFirst = (request.kind === 'clean' || request.kind === 'clean-triage')
+      && (hostChoice === GUIDE_CHOICE.build || hostChoice === GUIDE_CHOICE.rebuild);
+    const followsCheck = typeof request.after === 'string'
+      && foundrySteps().some(({ step }) => step.id === request.after && configOf(step)!.request.kind === 'clean-triage');
+    if (guideFirst && !followsCheck) {
+      if (guideAhead === null) {
+        throw new Error('This cleanup was asked to build its pronunciation guide first, and this app was mounted '
+          + 'without the door that queues one. Nothing was queued.');
+      }
+      const deferred = request['deferred'] as { from?: unknown } | undefined;
+      const at = typeof request['at'] === 'string' ? request['at']
+        : typeof deferred?.from === 'string' ? deferred.from : null;
+      if (at === null) {
+        throw new Error(`This ${request.kind} names no step it is made from, so its pronunciation guide has nowhere to be `
+          + 'built. Nothing was queued: press it again from one of the book\'s steps.');
+      }
+      const ahead = guideAhead(projectDir, at, hostChoice === GUIDE_CHOICE.rebuild);
+      const step = engineAppendStep(ahead.jobId, {
+        type: 'foundry-job',
+        label,
+        config: config as unknown as Record<string, unknown>,
+        sourceRef: { kind: 'none' },
+        parentStepId: ahead.stepId,
+      }, { deferPump: true });
+      return rowOf(step);
+    }
+
     if (request.after !== undefined) {
       if (typeof request.after !== 'string' || request.after === '') {
         throw new Error(

@@ -41,7 +41,7 @@ import {
   foundryFormsLister, foundryRowFailure, foundryRunner,
   parseFoundryProgressLine,
 } from '../foundry-host-queue';
-import type { FoundryJobStepConfig, FoundryRunOutcome } from '../foundry-host-queue';
+import type { FoundryJobRequest, FoundryJobStepConfig, FoundryRunOutcome } from '../foundry-host-queue';
 /*
  * ── THE SESSION THIS RUN OPENS IS WRITTEN DOWN WHERE A SWEEP CAN FIND IT ────
  *
@@ -56,6 +56,7 @@ import { recordInFlight, settleInFlight } from '../crucible/in-flight-ledger';
 import { FOUNDRY_SESSION_JOB_TYPE } from '../crucible/in-flight-sweep';
 import { stepFailure } from './runtime';
 import { chosenModelOf } from './ai-provider';
+import { GUIDE_CHOICE } from '../../shared/pronunciation-guide';
 /*
  * NOTHING IS IMPORTED FROM `text-server.ts` OR `narration-clean-text.ts` HERE
  * ANY MORE, and the absence is the statement.
@@ -101,9 +102,41 @@ import { chosenModelOf } from './ai-provider';
  * time it is rendered. Putting one in the gpu pool would make a two-second job
  * wait behind a nine-hour narration for a card it never wanted.
  */
+/**
+ * A READINGS-ONLY PASS (foundry 4ae272b) is a `clean` that opens no model: the
+ * pronunciation guide's Apply. It is the CPU's, on this machine, in seconds.
+ */
+function isReadingsPass(request: FoundryJobRequest | undefined): boolean {
+  return request !== undefined && request['readingsOnly'] !== undefined;
+}
+
+/**
+ * The kept spots for a cleanup made from an APPLIED step (the pronunciation guide's
+ * readings pass), or undefined when the step it is made from is any other. Read at
+ * the run, not the press: a cleanup ordered from a greyed apply row finds the
+ * record once that row has landed.
+ */
+async function appliedKeptReadings(
+  config: FoundryJobStepConfig,
+  ctx: { report: (p: { message: string; detail: string }) => void },
+): Promise<string | undefined> {
+  const deferred = config.request['deferred'] as { from?: unknown } | undefined;
+  const at = typeof config.request['at'] === 'string' ? config.request['at']
+    : typeof deferred?.from === 'string' ? deferred.from : null;
+  if (at === null) return undefined;
+  const { appliedStepInfo, keptReadingsOfApplied } = await import('../pronunciation-applied.js');
+  const info = appliedStepInfo(config.projectDir, at);
+  if (info === null) return undefined;
+  const kept = await keptReadingsOfApplied(info.record);
+  const said = `glossary: this step has the pronunciation guide applied; its ${kept.places} place(s) are kept as they are`;
+  ctx.report({ message: said, detail: said });
+  return kept.path;
+}
+
 function resourceFor(config: Record<string, unknown>): StepResource {
   const request = (config as unknown as FoundryJobStepConfig).request;
   const kind = request?.kind;
+  if (isReadingsPass(request)) return 'cpu';
   return kind === 'read' || kind === 'translate' || kind === 'simplify' || kind === 'clean'
     || kind === 'clean-triage' || kind === 'analysis-rank' || kind === 'analysis'
     ? 'gpu'
@@ -217,6 +250,7 @@ export const foundryJobStep: StepModule = {
    * asks the `analysis` class.
    */
   crucibleClass: (config: Record<string, unknown>): string | null => {
+    if (isReadingsPass((config as unknown as FoundryJobStepConfig).request)) return null;
     const kind = (config as unknown as FoundryJobStepConfig).request?.kind;
     switch (kind) {
       case 'read': return 'pages';
@@ -306,8 +340,9 @@ export const foundryJobStep: StepModule = {
      * together. NOT `isTextPass`: an analysis writes a REPORT (its
      * `outputPath`), not a records file, so its product is the rendering rule's.
      */
+    const readingsPass = isReadingsPass(config.request);
     const act: 'clean' | 'clean-triage' | 'translate' | 'simplify' | 'analysis-rank' | 'analysis' | null =
-      kind === 'clean' || kind === 'clean-triage' || kind === 'translate' || kind === 'simplify'
+      readingsPass ? null : kind === 'clean' || kind === 'clean-triage' || kind === 'translate' || kind === 'simplify'
         || kind === 'analysis-rank' || kind === 'analysis'
         ? kind : null;
     /*
@@ -517,7 +552,26 @@ export const foundryJobStep: StepModule = {
      * every decision already made kept.
      */
     let fixedReadings: string | undefined;
-    if (kind === 'clean' || kind === 'clean-triage') {
+    /*
+     * "CLEAN WITHOUT A GUIDE" (the cleanup modal's choice, Owen 2026-11-01): no
+     * readings are handed over and none are decided — every form goes to the
+     * sentence pass, as it did before the guide existed.
+     */
+    const noGuide = config.request['hostChoice'] === GUIDE_CHOICE.none;
+    const isCleanup = (kind === 'clean' || kind === 'clean-triage') && !readingsPass;
+    // A CLEANUP OF AN APPLIED STEP: its words are already said, and every place is kept (pronunciation-applied.ts).
+    const appliedKept = isCleanup && !noGuide ? await appliedKeptReadings(config, ctx) : undefined;
+    if (readingsPass) {
+      // THE GUIDE'S APPLY: the readings main wrote from the guide at the press, and nothing decided here.
+      const file = config.request['applyReadings'];
+      if (typeof file !== 'string' || file.length === 0) {
+        throw new Error('This readings pass names no readings file to write into the book, so it would change nothing. '
+          + 'Apply the pronunciation guide again from its window.');
+      }
+      fixedReadings = file;
+    } else if (appliedKept !== undefined) {
+      fixedReadings = appliedKept;
+    } else if (isCleanup && !noGuide) {
       if (venueServer === null) {
         throw new Error(
           `This ${kind} was not placed on a Crucible server, so its narration glossary has no model to `
