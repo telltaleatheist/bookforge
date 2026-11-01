@@ -107,7 +107,7 @@ import type {
   UnappliedWarning,
   WorkspacePlan,
 } from './types';
-import type { AskProgress, AskRequest, AskSession } from './ask';
+import type { AskProgress, AskRequest, AskSession, AskThread } from './ask';
 
 /**
  * What the File menu asked for, since main cannot press a button in a tab.
@@ -959,6 +959,10 @@ export interface FoundryApi {
     /** Every run kept for this project, oldest first. */
     sessions(projectDir: string): Promise<AskSession[]>;
     saveSession(projectDir: string, session: AskSession): Promise<void>;
+    /** The book's live thread — what the next question starts from — or null when there is none. */
+    thread(projectDir: string): Promise<AskThread | null>;
+    /** "New question": end the book's thread, so the next question starts fresh. */
+    endThread(projectDir: string): Promise<void>;
     onProgress(listener: (frame: AskProgress) => void): () => void;
   };
 

@@ -207,6 +207,8 @@ const api: FoundryApi = {
     cancel: (runId) => ipcRenderer.invoke('ask:cancel', runId),
     sessions: (projectDir) => ipcRenderer.invoke('ask:sessions', projectDir),
     saveSession: (projectDir, session) => ipcRenderer.invoke('ask:save-session', projectDir, session),
+    thread: (projectDir) => ipcRenderer.invoke('ask:thread', projectDir),
+    endThread: (projectDir) => ipcRenderer.invoke('ask:end-thread', projectDir),
     onProgress: (listener) => subscribe<AskProgress>('ask:progress', listener),
   },
 

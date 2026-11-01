@@ -106,6 +106,42 @@ export interface AskResult {
   readonly items: readonly AskMark[];
   readonly rounds: number;
   readonly seconds: number;
+  /**
+   * The thread this run leaves for the next question, as written to the book —
+   * or null when the model's note could not be had, in which case the thread
+   * has ENDED and `threadProblem` says why.
+   */
+  readonly thread: AskThread | null;
+  readonly threadProblem: string | null;
+}
+
+/**
+ * THE THREAD — what a follow-up question starts from. One per book, kept in
+ * `<project>/ops/ask-thread.json`, until "New question" ends it.
+ *
+ * Owen, 2026-11-01: *"maybe when it finishes its first run, it 'compacts' by
+ * summarizing what it found, and then i can ask more questions about the same
+ * subject if i want?"* So when a run finishes, the model writes one more short
+ * message, for ITSELF rather than for the person: what was asked, what it found
+ * (by block id), what it marked, what it searched and ruled out, what is still
+ * open. The next question starts from that note and the book as it stands —
+ * never from the rounds, which would not fit and are not needed. Each follow-up
+ * rewrites the note, so a long thread does not grow.
+ *
+ * THE NOTE IS LEADS, NOT FACTS. The person may have undone marks since, or
+ * edited the book, and a wrong line in a note would otherwise repeat in every
+ * answer after it; the follow-up is told to check what it relies on.
+ */
+export interface AskThread {
+  readonly format: 'ask-thread/v1';
+  /** The question that started the thread, which is what the panel names it by. */
+  readonly first: string;
+  /** How many questions it holds, the first one included. */
+  readonly turns: number;
+  /** When the note was last written, ISO 8601. */
+  readonly at: string;
+  /** The model's working note, in its own words. */
+  readonly note: string;
 }
 
 /**

@@ -27,6 +27,12 @@
  *     429 or a 5xx gets {@link ATTEMPTS} tries with a growing wait; any other
  *     refusal is the request being wrong and is said in the server's own words.
  *
+ * A FOLLOW-UP STARTS FROM A NOTE (Owen, 2026-11-01). When the summary is
+ * written, one more request on the same held session asks the model for a note
+ * to itself ({@link takeNote}); it is kept with the book ({@link AskThread}) and
+ * the next question opens with it, framed as leads to check
+ * ({@link threadOpening}). The rounds themselves are never carried over.
+ *
  * ── WHICH MACHINE AND WHICH MODEL ─────────────────────────────────────────
  *
  * The model is the Ask section's dropdown (`JobModelKind` `ask`, the same list
@@ -60,7 +66,7 @@ import { topRankedCrucible } from './crucible-models';
 import { clientFor, crucibleServerNamed, resolveEngine } from './crucible-registry';
 import { bookAtPosition, opsDir } from './projects';
 import { JOB_MODEL_CEILING_B } from '../shared/job-models';
-import type { AskMark, AskProgress, AskRequest, AskResult, AskSession } from '../shared/ask';
+import type { AskMark, AskProgress, AskRequest, AskResult, AskSession, AskThread } from '../shared/ask';
 
 /** Rounds of tool calls, stated in the prompt the way the experiment states it. */
 export const ASK_MAX_ROUNDS = 40;
@@ -243,6 +249,16 @@ export async function crucibleTarget(
 /** A message with the round it belongs to, for trimming. The round is never sent. */
 type Held = { message: ChatMessage; round?: number };
 
+/** The loop's end: the summary, and the conversation as it stands, which the note is asked on. */
+export interface Finished {
+  text: string;
+  rounds: number;
+  history: Held[];
+  fit: ReturnType<typeof fitter>;
+  tools: ChatTool[];
+  maxTokens: number;
+}
+
 async function runAsk(
   runId: string,
   request: AskRequest,
@@ -267,13 +283,17 @@ async function runAsk(
   };
 
   say('Starting…');
+  // Read before the model is loaded: a thread that cannot be read is said now, not after minutes of work.
+  const thread = await readAskThread(request.projectDir);
   const to = await crucibleTarget(request.server, request.model, ACT, say, signal);
   try {
-    const summary = await loop(to, request, box, signal, (r, prose, status) => {
+    const opening = thread === null ? request.request : threadOpening(thread, request.request);
+    const summary = await loop(to, opening, box, signal, (r, prose, status) => {
       round = r;
       if (prose !== null) says = clip(prose, 300);
       say(status);
     });
+    const kept = await keepThread(request.projectDir, thread, request.request, await takeNote(to, summary, box, signal, say));
     return {
       server: to.server,
       model: to.model,
@@ -281,9 +301,126 @@ async function runAsk(
       items: box.items(),
       rounds: summary.rounds,
       seconds: Math.round((Date.now() - t0) / 1000),
+      ...kept,
     };
   } finally {
     await to.session?.release();
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The thread a follow-up starts from
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Tokens for the note on a local model, whose thinking is off. A forwarded Claude
+ * is given the run's own budget instead: it thinks by default, and that thinking
+ * is paid out of the same `max_tokens`.
+ */
+export const NOTE_MAX_TOKENS = 2000;
+
+/** What the model is asked, after its summary, so a follow-up has something to start from. */
+export const NOTE_ASK = `The person may ask a follow-up question about this book. Write a working note for yourself to start from then; the person will not see it. Plain text, at most about 300 words:
+- what the person has asked so far, every question;
+- what you found, with block ids;
+- what you marked or revised, and under which reasons;
+- what you searched for or checked and ruled out;
+- what is still open or waiting on the person's decision.
+If you started from an earlier note, carry forward what still matters from it. Call no tools.`;
+
+/**
+ * THE FIRST MESSAGE OF A FOLLOW-UP: the note, framed as leads to check, then the
+ * person's words. It sits where the person's request sits on a first question, so
+ * the fitter keeps it through every cut ({@link fitter}).
+ */
+export function threadOpening(thread: AskThread, request: string): string {
+  return `This question continues an earlier conversation about this book. Below is the working note you wrote for yourself at the end of it. Treat it as leads to check, not facts: since then the person may have kept or undone your marks, or edited the book, and the book your tools read is the book as it stands now. Blocks they removed are hidden from you, so a block the note names may be gone. Confirm with a read or a search before you act on anything in it; you need not survey again what it already tells you.
+
+Your note, after ${thread.turns} ${thread.turns === 1 ? 'question' : 'questions'}:
+<note>
+${thread.note}
+</note>
+
+The person now says:
+${request}`;
+}
+
+/** The note, or why there is none. */
+type Noted = { note: string } | { problem: string };
+
+/**
+ * ONE MORE SHORT REQUEST, on the session the run still holds: the conversation
+ * as the loop left it, with the note asked for in the last message. The tools go
+ * with it, because a history holding tool calls is refused without them; any
+ * call in the answer is dropped. Weather is retried by {@link chatWithin}; what
+ * still fails ends the thread, and the run's marks land regardless.
+ */
+export async function takeNote(
+  to: Target,
+  finished: Finished,
+  box: AskToolbox,
+  signal: AbortSignal,
+  say: (status: string) => void,
+): Promise<Noted> {
+  say('Writing a note so you can ask a follow-up…');
+  const { wired } = finished.fit.wire(finished.history, finished.rounds, `${box.state()}\n\n${NOTE_ASK}`);
+  let reply: Awaited<ReturnType<CrucibleClient['chat']>>;
+  try {
+    reply = await chatWithin(to, {
+      model: to.model,
+      messages: wired,
+      maxTokens: to.local ? Math.min(finished.maxTokens, NOTE_MAX_TOKENS) : finished.maxTokens,
+      tools: finished.tools,
+      toolChoice: 'auto',
+      act: ACT,
+      signal,
+      ...(to.local ? { thinking: false } : {}),
+    });
+  } catch (err) {
+    if (signal.aborted) throw err;
+    return { problem: `The model's note for a follow-up could not be had (${err instanceof Error ? err.message : String(err)}), so your next question starts fresh.` };
+  }
+  const note = reply.content?.trim() ?? '';
+  if (note.length === 0) {
+    return { problem: `${to.model} wrote no note for a follow-up, so your next question starts fresh.` };
+  }
+  return { note };
+}
+
+/**
+ * THE NOTE, KEPT — or the thread ended when there is none, because a note one
+ * question behind would be read as if it were current. Neither can fail the run:
+ * its marks are the work, and a thread is only where the next question starts.
+ */
+async function keepThread(
+  projectDir: string,
+  before: AskThread | null,
+  request: string,
+  noted: Noted,
+): Promise<{ thread: AskThread | null; threadProblem: string | null }> {
+  if ('note' in noted) {
+    const thread: AskThread = {
+      format: 'ask-thread/v1',
+      first: before?.first ?? request,
+      turns: (before?.turns ?? 0) + 1,
+      at: new Date().toISOString(),
+      note: noted.note,
+    };
+    try {
+      await writeAskThread(projectDir, thread);
+      return { thread, threadProblem: null };
+    } catch (err) {
+      noted = { problem: `The note for a follow-up could not be kept (${err instanceof Error ? err.message : String(err)}), so your next question starts fresh.` };
+    }
+  }
+  try {
+    await endAskThread(projectDir);
+    return { thread: null, threadProblem: noted.problem };
+  } catch (err) {
+    return {
+      thread: null,
+      threadProblem: `${noted.problem} The earlier note could not be removed either (${err instanceof Error ? err.message : String(err)}); press New question before you ask again.`,
+    };
   }
 }
 
@@ -307,13 +444,13 @@ Old rounds are removed from this conversation from time to time to save space, s
  * summary), or at the round limit, where one last request asks only for the
  * summary and any tool call in its answer is dropped.
  */
-async function loop(
+export async function loop(
   to: Target,
-  request: AskRequest,
+  opening: string,
   box: AskToolbox,
   signal: AbortSignal,
   progress: (round: number, prose: string | null, status: string) => void,
-): Promise<{ text: string; rounds: number }> {
+): Promise<Finished> {
   const tools: ChatTool[] = box.tools.map((t) => ({
     type: 'function',
     function: { name: t.name, description: t.description, parameters: t.parameters },
@@ -322,9 +459,10 @@ async function loop(
   const fit = fitter(to.window, maxTokens, JSON.stringify(tools).length);
   const history: Held[] = [
     { message: { role: 'system', content: systemPrompt(ASK_MAX_ROUNDS) } },
-    { message: { role: 'user', content: request.request } },
+    { message: { role: 'user', content: opening } },
   ];
   let summary = '';
+  const done = (rounds: number): Finished => ({ text: summary, rounds, history, fit, tools, maxTokens });
 
   for (let round = 0; ; round += 1) {
     signal.throwIfAborted();
@@ -380,7 +518,7 @@ async function loop(
     progress(round, reply.content, `Round ${round + 1}: ${calls.length === 0 ? 'no tool calls' : calls.map((c) => c.function.name).join(', ')} · ${struck} marked${revised > 0 ? `, ${revised} revised` : ''}`);
 
     if (calls.length === 0) {
-      if (final) return { text: summary, rounds: round + 1 };
+      if (final) return done(round + 1);
       if (reply.finishReason === 'length') {
         // Ran out mid-thought: not the model's answer. Asked to act.
         history.push({
@@ -392,7 +530,7 @@ async function loop(
         });
         continue;
       }
-      return { text: summary, rounds: round + 1 };
+      return done(round + 1);
     }
 
     for (const call of calls) {
@@ -593,4 +731,61 @@ function isSession(value: unknown): value is AskSession {
     && typeof s['server'] === 'string' && typeof s['model'] === 'string' && typeof s['summary'] === 'string'
     && Array.isArray(s['items']) && s['items'].every(isMark)
     && typeof s['skipped'] === 'number' && typeof s['rounds'] === 'number' && typeof s['seconds'] === 'number';
+}
+
+/**
+ * `<project>/ops/ask-thread.json` — the one live thread of the book
+ * ({@link AskThread}), beside the sessions and for the same reason: it is about
+ * the book's edits, no step names it and no replay reads it. Absent is "no
+ * thread"; "New question" removes it.
+ */
+async function threadFile(projectDir: string): Promise<string> {
+  const at = await bookAtPosition(projectDir);
+  return path.join(opsDir(at.dir), 'ask-thread.json');
+}
+
+export async function readAskThread(projectDir: string): Promise<AskThread | null> {
+  return readThreadAt(await threadFile(projectDir));
+}
+
+export async function writeAskThread(projectDir: string, thread: AskThread): Promise<void> {
+  await writeThreadAt(await threadFile(projectDir), thread);
+}
+
+/** End the book's thread. A book with none has nothing to end. */
+export async function endAskThread(projectDir: string): Promise<void> {
+  await fsp.rm(await threadFile(projectDir), { force: true });
+}
+
+export async function readThreadAt(file: string): Promise<AskThread | null> {
+  let text: string;
+  try {
+    text = await fsp.readFile(file, 'utf8');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw err;
+  }
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    throw new Error(`${file} is not JSON, so the Ask thread cannot be continued. Press New question to start fresh.`);
+  }
+  if (!isThread(value)) {
+    throw new Error(`${file} is not an Ask thread this build can read. Press New question to start fresh.`);
+  }
+  return value;
+}
+
+export async function writeThreadAt(file: string, thread: AskThread): Promise<void> {
+  if (!isThread(thread)) throw new Error('That Ask thread is not one this build can keep.');
+  await writeAtomically(file, Buffer.from(`${JSON.stringify(thread, null, 2)}\n`, 'utf8'));
+}
+
+function isThread(value: unknown): value is AskThread {
+  if (typeof value !== 'object' || value === null) return false;
+  const t = value as Record<string, unknown>;
+  return t['format'] === 'ask-thread/v1' && typeof t['first'] === 'string' && typeof t['at'] === 'string'
+    && typeof t['note'] === 'string' && t['note'].length > 0
+    && typeof t['turns'] === 'number' && Number.isInteger(t['turns']) && t['turns'] >= 1;
 }

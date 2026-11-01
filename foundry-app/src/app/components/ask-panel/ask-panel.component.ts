@@ -36,9 +36,13 @@ import { JobModelComponent } from '../job-model/job-model.component';
  * (folded, open on a click), and the model's reply — its own summary — with
  * "Review changes" under it. A text box, Send, and Stop while it works.
  *
- * ONE REQUEST, ONE CONTEXT. Every Send starts the model fresh; the thread is
- * the person's record of what was asked and what came of it, never the model's
- * memory. "New chat" clears the thread from view and deletes nothing.
+ * A FOLLOW-UP CONTINUES FROM A NOTE, NOT FROM THE ROUNDS (Owen, 2026-11-01:
+ * *"maybe when it finishes its first run, it 'compacts' by summarizing what it
+ * found, and then i can ask more questions about the same subject"*). When a run
+ * ends, the model writes itself a short note, and the next Send starts from it
+ * ("Continuing …" over the box says so). "New question" removes the note, so the
+ * model forgets, and clears the thread from view; the kept runs and their review
+ * list are not deleted.
  *
  * IT DRAWS AND DOES NOT HOLD. The run and the thread live in `AskService`,
  * keyed by the book, because this section is destroyed every time the person
@@ -139,6 +143,11 @@ import { JobModelComponent } from '../job-model/job-model.component';
         </div>
 
         <div class="composer">
+          @if (continuing(); as on) {
+            <p class="continuing" [title]="on.first">
+              Continuing “{{ clipped(on.first) }}” · {{ on.turns }} {{ on.turns === 1 ? 'question' : 'questions' }} so far
+            </p>
+          }
           <textarea
             #box
             class="request"
@@ -164,7 +173,7 @@ import { JobModelComponent } from '../job-model/job-model.component';
             @if (busy()) {
               <button class="ghost" [disabled]="live()?.runId === null || live()?.phase === 'landing'" (click)="stop()">Stop</button>
             } @else {
-              <button class="ghost" [disabled]="exchanges().length === 0 && live() === null" title="Start over with an empty thread; nothing is deleted" (click)="newChat()">New chat</button>
+              <button class="ghost" [disabled]="exchanges().length === 0 && live() === null && continuing() === null" title="Start fresh: the model forgets this thread. Nothing on the book is undone." (click)="newChat()">New question</button>
               <button class="primary" [disabled]="!canSend()" (click)="send()">Send</button>
             }
           </div>
@@ -285,6 +294,12 @@ import { JobModelComponent } from '../job-model/job-model.component';
       font-family: inherit; font-size: 12px; line-height: 1.45;
     }
     .request:focus { outline: none; border-color: var(--accent); }
+    .continuing {
+      margin: 0;
+      font-size: 11px; line-height: 1.4;
+      color: var(--text-tertiary);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
     .bar { display: flex; align-items: center; gap: 6px; }
     .bar .model { flex: 1; min-width: 0; }
 
@@ -374,6 +389,12 @@ export class AskPanelComponent {
     return run.startedAt >= since ? run : null;
   });
 
+  /** The book's live thread: what the next Send continues from, or null when it starts fresh. */
+  protected readonly continuing = computed(() => {
+    const tab = this.tab();
+    return tab === null ? null : this.asks.threads().get(tab.path) ?? null;
+  });
+
   protected readonly canSend = computed(() =>
     this.tab() !== null && !this.busy() && this.modelReady() && this.server() !== null && this.draft().trim().length > 0);
 
@@ -420,7 +441,12 @@ export class AskPanelComponent {
 
   protected newChat(): void {
     const tab = this.tab();
-    if (tab !== null) this.asks.newChat(tab.path);
+    if (tab !== null) void this.asks.newChat(tab.path);
+  }
+
+  protected clipped(text: string): string {
+    const flat = text.replace(/\s+/g, ' ').trim();
+    return flat.length <= 60 ? flat : `${flat.slice(0, 60)}…`;
   }
 
   protected toggle(id: string): void {

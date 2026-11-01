@@ -1,5 +1,21 @@
 # Foundry's IPC channels — the whole list, for the collision audit
 
+## Ask's thread (2026-11-01)
+
+**COUNTED BY SCRIPT OVER `app/electron/ipc.ts`: 154 `ipcMain.handle` call sites,
+154 distinct channel names, zero `ipcMain.on`.** The figure before this change
+measured **152**; two doors arrived and none left.
+
+| Channel | Request/result |
+| --- | --- |
+| `ask:thread` | project → `AskThread` or null, read from `<project>/ops/ask-thread.json`: the model's own note from the last run, which the next `ask:start` on that project opens with. A file this build cannot read is refused by name. |
+| `ask:end-thread` | project → nothing. Removes the note ("New question"), so the next question starts fresh. A project with none has nothing to end. |
+
+`AskResult` gained `thread` and `threadProblem`: the note the run left, or null
+and the sentence saying why the thread ended.
+
+**FOR BOOKFORGE:** two more `ask:` handlers, registered by `mountFoundry` like the rest.
+
 ## The host's section on the Clean text card (2026-11-01)
 
 **COUNTED BY SCRIPT OVER `app/electron/ipc.ts`: 152 `ipcMain.handle` call sites,
@@ -1088,9 +1104,11 @@ cannot report a failure. They are registered in one function, `registerIpc`
 | `analysis:suggest-cancel` | Stop that run; the session is released and what already arrived is kept. |
 | `analysis:suggest-progress` | (main → renderer) One frame of a run: phase, a sentence, a fraction and a rough time left, the theme, the ids added and the stored list. |
 | `ask:cancel` | Stop a running Ask; nothing it marked is kept. |
+| `ask:end-thread` | End a book's Ask thread ("New question"): remove the model's note, so the next question starts fresh. |
 | `ask:save-session` | Keep a landed Ask run in `<project>/ops/ask-sessions.jsonl`, so its review card survives a reload. |
 | `ask:sessions` | Every Ask run kept for a project, oldest first. |
 | `ask:start` | Put a request to the open book; a model marks blocks with tools in main and the run arrives on `ask:progress`. Answers the run id at once. |
+| `ask:thread` | A book's live Ask thread — the note the next question opens with — or null. |
 | `app:hosted` | Whether another app mounted Foundry, so the renderer can drop the controls the host already answers. |
 | `book:amend` | Amend the tip edit step's ops in place, under the ledger's lock. |
 | `book:apply` | Land the proof sheet's stack of ops as a new edit step. |

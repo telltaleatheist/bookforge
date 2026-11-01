@@ -66,7 +66,7 @@ import { readCapability } from './crucible-dispatch';
 import { readEngineSettings, testUpstream, writeEngineSettings } from './crucible-settings';
 import { crucibleFaultWords, crucibleRunState, startCrucible } from './crucible-start';
 import { engineCatalog, jobModelOffer, pullSubject, rememberJobModel, removeModel } from './crucible-models';
-import { cancelAsk, readAskSessions, saveAskSession, startAsk } from './ask-document';
+import { cancelAsk, endAskThread, readAskSessions, readAskThread, saveAskSession, startAsk } from './ask-document';
 import { cancelSuggest, startSuggest } from './suggest-categories';
 import type { SuggestCategoriesRequest } from '../shared/category-suggestions';
 import type { AskRequest, AskSession } from '../shared/ask';
@@ -3406,6 +3406,8 @@ export function registerIpc(): void {
   ipcMain.handle('ask:sessions', (_event, projectDir: string) => readAskSessions(projectDir));
   ipcMain.handle('ask:save-session', (_event, projectDir: string, session: AskSession) =>
     saveAskSession(projectDir, session));
+  ipcMain.handle('ask:thread', (_event, projectDir: string) => readAskThread(projectDir));
+  ipcMain.handle('ask:end-thread', (_event, projectDir: string) => endAskThread(projectDir));
 
   ipcMain.handle('library:dir', () => readAppSettings().libraryDir);
   ipcMain.handle('library:set', (_event, dir: string) => {
