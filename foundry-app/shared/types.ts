@@ -3592,6 +3592,13 @@ export interface HostNode {
   state: HostNodeState;
   /** Present while it is running and the host is counting. See `HostNodeProgress`. */
   progress?: HostNodeProgress;
+  /**
+   * THE HOST OPERATION A CLICK ON THIS ROW RUNS, on this node's own id — the
+   * host's way of making a row that is a door rather than a product (BookForge's
+   * pronunciation guide, 2026-11-01: a guide's row on the tree opens the guide).
+   * Absent: a click only selects the row, as before.
+   */
+  opens?: string;
 }
 
 /**

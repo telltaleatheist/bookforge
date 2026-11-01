@@ -3120,6 +3120,13 @@ export class OpenDocumentsComponent {
   protected pickRow(row: Row): void {
     if (row.kind === 'host') {
       this.picked.set(row.key);
+      // A row the host made a door (`HostNode.opens`): the click runs that operation on the node.
+      const opens = row.node?.opens;
+      if (opens !== undefined && row.dir !== null) {
+        void this.hostOps.invoke(opens, row.dir, row.node!.id).catch((err: unknown) => {
+          this.notices.notice.set(err instanceof Error ? err.message : String(err));
+        });
+      }
       return;
     }
     /*
