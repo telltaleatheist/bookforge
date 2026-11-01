@@ -1,6 +1,7 @@
 /**
  * A STEP THE PRONUNCIATION GUIDE WAS APPLIED AS — Foundry's readings-only pass
- * (4ae272b), filed under APPLIED_LABEL as a child of the guide's step.
+ * (4ae272b), filed under APPLIED_LABEL ("Pronunciation adjusted", or "(n)" for a
+ * later sibling) as a child of the guide's step.
  *
  * Owen, 2026-11-01, agreeing the shape: the guide is applied as its own step, and
  * *"cleanup keeps respecting it"*. A cleanup made from an applied step therefore does
@@ -13,7 +14,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
-import { APPLIED_LABEL } from '../shared/pronunciation-guide';
+import { APPLIED_LABEL, appliedLabelFor, appliedLabelNumber } from '../shared/pronunciation-guide';
 
 interface LedgerStepRow {
   id: string;
@@ -31,10 +32,39 @@ export function ledgerStepsOf(projectDir: string): LedgerStepRow[] {
   return manifest.ledger?.steps ?? [];
 }
 
-/** The child of `at` an Apply of its guide landed as, or null. */
+/** Every child of `at` an Apply of its guide landed as, first to latest. */
+export function appliedStepsOf(projectDir: string, at: string): { id: string; label: string; n: number; children: number }[] {
+  const steps = ledgerStepsOf(projectDir);
+  return steps
+    .filter((s) => s.parent === at && appliedLabelNumber(s.params?.readings) !== null)
+    .map((s) => ({
+      id: s.id,
+      label: s.label ?? String(s.params!.readings),
+      n: appliedLabelNumber(s.params!.readings)!,
+      children: steps.filter((c) => c.parent === s.id).length,
+    }))
+    .sort((a, b) => a.n - b.n);
+}
+
+/** The LATEST child of `at` an Apply of its guide landed as, or null. */
 export function appliedStepOf(projectDir: string, at: string): { id: string; label: string } | null {
-  const step = ledgerStepsOf(projectDir).find((s) => s.parent === at && s.params?.readings === APPLIED_LABEL);
-  return step === undefined ? null : { id: step.id, label: step.label ?? APPLIED_LABEL };
+  const all = appliedStepsOf(projectDir, at);
+  const latest = all[all.length - 1];
+  return latest === undefined ? null : { id: latest.id, label: latest.label };
+}
+
+/**
+ * THE LABEL THE NEXT APPLY OF `at`'S GUIDE LANDS UNDER (shared/pronunciation-guide.ts
+ * `APPLIED_LABEL`): the latest adjusted step's own, so it is REPLACED, while nothing
+ * hangs under it; the next number once something does, so the branch built on it
+ * stays exactly as it was. A step with no ledger (the queue keepers' books) has none.
+ */
+export function nextAppliedLabel(projectDir: string, at: string): string {
+  if (!fs.existsSync(path.join(projectDir, 'project.json'))) return APPLIED_LABEL;
+  const all = appliedStepsOf(projectDir, at);
+  const latest = all[all.length - 1];
+  if (latest === undefined) return APPLIED_LABEL;
+  return latest.children === 0 ? appliedLabelFor(latest.n) : appliedLabelFor(latest.n + 1);
 }
 
 /**
@@ -47,7 +77,7 @@ export function appliedStepInfo(projectDir: string, stepId: string): { from: str
   // No manifest is no ledger, and a step of no ledger was applied from nothing (the queue keepers' books are such).
   if (!fs.existsSync(path.join(projectDir, 'project.json'))) return null;
   const step = ledgerStepsOf(projectDir).find((s) => s.id === stepId);
-  if (step === undefined || step.params?.readings !== APPLIED_LABEL) return null;
+  if (step === undefined || appliedLabelNumber(step.params?.readings) === null) return null;
   if (typeof step.payload !== 'string' || step.payload.length === 0 || typeof step.parent !== 'string') {
     throw new Error(`Step ${stepId} was applied from a pronunciation guide but names no records or no parent, `
       + 'so the places it wrote cannot be found.');

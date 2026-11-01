@@ -564,6 +564,51 @@ test('a cleanup told to build its pronunciation guide first is chained under the
   assert.strictEqual(asked.length, 2, 'Use this guide, and a request that says nothing, queue no guide');
 });
 
+test('a request filed UNDER a step of a run waits under it — the guide\'s "Pronunciation adjusted" (2026-11-01)', async () => {
+  await fresh('filed-under');
+  host.setFoundrySeam({ runJob: null, setQueueRows: null, drained: null });
+  const guide = engine.enqueue({
+    title: 'guide',
+    steps: [{ type: 'foundry-job', label: 'Pronunciation guide', config: { request: { kind: 'guide' } }, sourceRef: { kind: 'none' } }],
+  });
+  const pass = { ...textPass('clean', 'adj'), readingsOnly: { label: 'Pronunciation adjusted' }, applyReadings: 'x.apply.json' };
+  const row = host.foundryHostQueue.enqueue(pass, 'step-1', PROJ, { jobId: guide.id, stepId: guide.steps[0].id });
+  const owner = engine.snapshot().jobs.find((j) => j.id === guide.id);
+  assert.strictEqual(owner.steps.find((s) => s.id === row.id).parentStepId, guide.steps[0].id);
+});
+
+test('a readings pass with nothing to write finishes without asking Foundry and lands nothing (2026-11-01)', async () => {
+  await fresh('readings-empty');
+  engine.clearStepModules();
+  engine.registerStepModule(require(path.join(DIST, 'queue-steps', 'foundry-job.js')).foundryJobStep);
+  let seen = null;
+  host.setFoundrySeam({
+    runJob: (request) => {
+      seen = request;
+      return Promise.resolve({ id: 'r1', kind: 'clean', state: 'done', request, createdAt: Date.now() });
+    },
+    setQueueRows: null,
+    drained: null,
+  });
+  engine.start();
+  const file = path.join(SETTINGS_ROOT, 'empty.apply.json');
+  fs.writeFileSync(file, JSON.stringify({ format: 'fixed-readings/v1', readings: [] }));
+  const row = host.foundryHostQueue.enqueue(
+    { ...textPass('clean', 'empty'), readingsOnly: { label: 'Pronunciation adjusted' }, applyReadings: file }, null, PROJ);
+  const staged = engine.snapshot().jobs.find((j) => j.steps.some((s) => s.id === row.id));
+  if (staged.pending === true) engine.sendToQueue(staged.id);
+  else engine.start({ stepId: row.id });
+  let now = null;
+  for (let i = 0; i < 200; i++) {
+    await wait(25);
+    now = engine.snapshot().jobs.flatMap((j) => j.steps).find((s) => s.id === row.id);
+    if (now !== undefined && (now.status === 'done' || now.status === 'failed')) break;
+  }
+  assert.strictEqual(now.status, 'done', `the pass ${now.status}: ${now.error ?? ''}`);
+  assert.strictEqual(seen, null, 'Foundry was asked to land an empty pass, which it refuses by name');
+  assert.match(now.progress.message ?? '', /no "Pronunciation adjusted" step is made/);
+});
+
 test('THE ROW REPORTS WHAT IT MAKES: a text pass names its RECORDS file as outputPath, so their per-project shelf keeps it (Owen, 2026-09-07: no greyed step for a running clean)', async () => {
   await fresh('textpass-row-path');
   host.setFoundrySeam({ runJob: null, setQueueRows: null, drained: null });

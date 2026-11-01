@@ -281,6 +281,59 @@ test('a project whose last run is cleared is pushed once more, holding nothing',
   assert.strictEqual(pushes.length, 2);
 });
 
+test('a guide on disk is a mini row under its step, beside the queue\'s rows, and goes when it goes (Owen, 2026-11-01)', () => {
+  nodes.resetPushedProjects();
+  const pushes = [];
+  const push = (dir, list) => pushes.push({ dir, ids: list.map((n) => n.id) });
+  const guide = { id: 'bf-guide:step-0042', parentStepId: 'step-0042', title: 'Pronunciation guide · 3 words', detail: 'x', kind: 'guide', state: 'done' };
+  nodes.setDiskGuideNodes(PROJECT, [guide]);
+  nodes.publishHostNodes(snap([job([step()])]), push);
+  assert.deepStrictEqual(pushes[0].ids, [nodes.encodeNodeId('job_a1', 'step_x1'), 'bf-guide:step-0042'],
+    'merged into the push, which replaces the whole set');
+  nodes.publishHostNodes(snap([]), push);
+  assert.deepStrictEqual(pushes[1], { dir: PROJECT, ids: ['bf-guide:step-0042'] }, 'a cleared queue keeps the guide');
+  // While a guide RUN for that step is in the queue, its own row draws it: no second row.
+  const running = job([step({ id: 'step_g', type: 'narration-guide', label: 'Pronunciation guide', status: 'running',
+    config: { projectDir: PROJECT, at: 'step-0042' } })], { id: 'job_g' });
+  nodes.publishHostNodes(snap([running]), push);
+  assert.deepStrictEqual(pushes[2].ids, [nodes.encodeNodeId('job_g', 'step_g')]);
+  nodes.setDiskGuideNodes(PROJECT, []);
+  nodes.publishHostNodes(snap([]), push);
+  assert.deepStrictEqual(pushes[3], { dir: PROJECT, ids: [] }, 'a deleted guide is said gone');
+  assert.strictEqual(nodes.decodeNodeId('bf-guide:step-0042'), null, 'a guide row is no queue row: Retry/Dismiss refuse it');
+});
+
+test('the guide rows read from disk: words, the ones needing a look, applied or not, and only steps in the ledger', async () => {
+  const os = require('os');
+  // The guide reader pulls in the glossary, which pulls in the Crucible client's app paths.
+  require(path.join(REPO, 'cli', 'electron-stub.js'));
+  const guideNodes = require(path.join(DIST, 'pronunciation-guide-nodes.js'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bf-guide-nodes-'));
+  try {
+    fs.mkdirSync(path.join(dir, 'readings'));
+    fs.writeFileSync(path.join(dir, 'project.json'), JSON.stringify({ key: 'bk', ledger: { steps: [
+      { id: 's1' }, { id: 's2', parent: 's1', label: 'Pronunciation adjusted', params: { readings: 'Pronunciation adjusted' } },
+    ] } }));
+    const entry = (key, occurrences) => ({ key, kind: 'caps', count: 1, printed: {}, decision: 'reading',
+      senses: [{ meaning: 'm', reading: 'B E F', periodIsPart: false }], why: '', by: 'model', occurrences, at: '' });
+    const body = { format: 'narration-glossary/v2', book: 'bk', entries: [
+      entry('BEF', [{ at: 'b', nth: 0, printed: 'BEF', sense: 0, p: 1 }]),
+      entry('MG', [{ at: 'b', nth: 0, printed: 'MG', sense: null, p: 0.3 }]),
+    ] };
+    fs.writeFileSync(path.join(dir, 'readings', 'bk.s1.narration-glossary.json'), JSON.stringify(body));
+    fs.writeFileSync(path.join(dir, 'readings', 'bk.gone.narration-glossary.json'), JSON.stringify(body));
+    fs.writeFileSync(path.join(dir, 'readings', 'bk.s1.narration-glossary.pre-letters.json'), JSON.stringify(body));
+    const rows = await guideNodes.guideNodesOf(dir);
+    assert.strictEqual(rows.length, 1, 'a step not in the ledger draws nothing; a backup is not a guide');
+    assert.strictEqual(rows[0].title, 'Pronunciation guide · 2 words · 1 need a look');
+    assert.strictEqual(rows[0].detail, 'Applied as “Pronunciation adjusted”');
+    assert.strictEqual(rows[0].parentStepId, 's1');
+    assert.strictEqual(guideNodes.stepOfGuideNode(rows[0].id), 's1');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('two projects are two sets, and neither sees the other\'s rows', () => {
   nodes.resetPushedProjects();
   const sets = nodes.hostNodeSets(snap([

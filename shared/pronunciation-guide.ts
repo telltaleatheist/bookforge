@@ -120,10 +120,31 @@ export type GuideChoice = typeof GUIDE_CHOICE[keyof typeof GUIDE_CHOICE];
 
 /**
  * THE NAME A GUIDE'S APPLY LANDS AS — Foundry's readings-only pass takes it as the
- * step's label AND its identity (`LedgerParams.readings`), so a second Apply from the
- * same step replaces the first rather than stacking a sibling.
+ * step's label AND its identity (`LedgerParams.readings`), so an Apply under the same
+ * label replaces the step that label made (Owen, 2026-11-01: *"the pronunciation
+ * guide could be converted to a pronunciation adjusted line item, and we could delete
+ * that line item if we want to revert"*).
+ *
+ * A SIBLING, NEVER AN OVERWRITE, once work hangs under it (Owen: *"a user might apply
+ * other fixes to the pronunciation guide adjusted item ... it works like a git
+ * worktree where each computationally expensive step ... can be walked back"*). The
+ * re-apply of a guide whose adjusted step has children lands beside it as
+ * "Pronunciation adjusted (2)", then (3) — `appliedLabelFor`.
  */
-export const APPLIED_LABEL = 'Pronunciation applied';
+export const APPLIED_LABEL = 'Pronunciation adjusted';
+
+/** Which adjusted step a label names: 1 for the first, n for "Pronunciation adjusted (n)", null for any other label. */
+export function appliedLabelNumber(label: unknown): number | null {
+  if (label === APPLIED_LABEL) return 1;
+  if (typeof label !== 'string' || !label.startsWith(`${APPLIED_LABEL} (`)) return null;
+  const match = /^\((\d+)\)$/.exec(label.slice(APPLIED_LABEL.length + 1));
+  return match === null || Number(match[1]) < 2 ? null : Number(match[1]);
+}
+
+/** The label of the n-th adjusted step from one guide. */
+export function appliedLabelFor(n: number): string {
+  return n <= 1 ? APPLIED_LABEL : `${APPLIED_LABEL} (${n})`;
+}
 
 /** The meaning a spot is put in when a person leaves just that spot to the narrator. */
 export const LEFT_TO_NARRATOR_MEANING = 'As printed — left to the narrator';

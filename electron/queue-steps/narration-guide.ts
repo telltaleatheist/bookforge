@@ -32,6 +32,11 @@ export interface NarrationGuideStepConfig {
   fromZero: boolean;
   /** The book's title, for the row. */
   bookTitle: string;
+  /**
+   * A "Pronunciation adjusted" step is chained under this row (main's
+   * `buildPronunciationGuide`): the guide's last act writes the readings it reads.
+   */
+  applyAfter?: true;
 }
 
 export const narrationGuideStep: StepModule = {
@@ -68,7 +73,7 @@ export const narrationGuideStep: StepModule = {
     console.log(line);
     ctx.report({ message: line, detail: line });
 
-    const { ensureNarrationGlossary, guideAtStep } = await import('../narration-glossary.js');
+    const { ensureNarrationGlossary, guideAtStep, writeApplyReadings } = await import('../narration-glossary.js');
     const made = await ensureNarrationGlossary({
       source: guideAtStep(config.projectDir, config.at, foundryFormsAtLister()),
       server: venue.server,
@@ -79,6 +84,12 @@ export const narrationGuideStep: StepModule = {
     const done = `pronunciation guide: ${made.forms} printed form(s), ${made.readings} spot(s) decided`
       + `${made.unplaced > 0 ? `, ${made.unplaced} left to their sentence — review them in Foundry` : ''}`;
     ctx.report({ message: done, detail: done });
+    if (config.applyAfter === true) {
+      // What the adjusted step under this row writes into the text: none at all is a pass that lands nothing.
+      const apply = await writeApplyReadings(guideAtStep(config.projectDir, config.at, foundryFormsAtLister()).files);
+      const said = `pronunciation guide: ${apply.places} place(s) to write into the text as "Pronunciation adjusted"`;
+      ctx.report({ message: said, detail: said });
+    }
     broadcastToAllWindows('project:files-changed', config.projectDir);
     return { kind: 'none' };
   },

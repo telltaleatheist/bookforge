@@ -123,6 +123,7 @@ import {
   isChainable,
   planNodeAction,
   publishHostNodes,
+  setDiskGuideNodes,
   type HostNode,
   type HostNodeAction,
 } from './foundry-host-nodes';
@@ -134,6 +135,7 @@ import { hostStatusOf, type HostStatus } from './foundry-host-status';
 import type { NarrationGuideStepConfig } from './queue-steps/narration-guide';
 import { APPLIED_LABEL, type GuideReviewSave } from '../shared/pronunciation-guide';
 import { guidePassOffer, type GuidePassOffer } from './pronunciation-offer';
+import { stepOfGuideNode } from './pronunciation-guide-nodes';
 // BookForge's queue, offered to the hosted Foundry window — Owen's ruling of
 // 2026-08-18 that a press inside that window is scheduled here, not there. The
 // mapping and the two pushes live beside the rows' and the chip's, for the same
@@ -2933,9 +2935,17 @@ function promisedRowOf(projectDir: string, nodeId: string): FoundryJobRow | null
  * meant it should start over"); otherwise the guide keeps what it has and decides
  * only what is new.
  */
-function queuePronunciationGuide(projectDir: string, at: string, startOver: boolean): { jobId: string; stepId: string } {
+function queuePronunciationGuide(
+  projectDir: string,
+  at: string,
+  startOver: boolean,
+  /** The guide writes its Apply readings when it finishes, for the adjusted step chained under it. */
+  applyAfter = false,
+): { jobId: string; stepId: string } {
   const { title, steps } = guideManifestOf(projectDir);
-  const config: NarrationGuideStepConfig = { projectDir, at, fromZero: startOver, bookTitle: title };
+  const config: NarrationGuideStepConfig = {
+    projectDir, at, fromZero: startOver, bookTitle: title, ...(applyAfter ? { applyAfter: true } : {}),
+  };
   const step = {
     type: 'narration-guide' as const,
     label: startOver ? 'Pronunciation guide, starting over' : 'Pronunciation guide',
@@ -2970,6 +2980,45 @@ function queuePronunciationGuide(projectDir: string, at: string, startOver: bool
  * The readings are written at the press (`writeApplyReadings`) and the row is handed
  * that file, so what lands is what the window showed when it was pressed.
  */
+/**
+ * BUILD A STEP'S GUIDE FROM ITS TILE OR WINDOW, AND APPLY IT WHEN IT FINISHES (Owen,
+ * 2026-11-01: *"the pronunciation guide could be converted to a pronunciation adjusted
+ * line item, and we could delete that line item if we want to revert to what it was
+ * before"*). On a landed step the guide row is followed, in the same run, by the
+ * readings pass that lands "Pronunciation adjusted" under the step; the guide writes
+ * the readings that pass reads as its last act (`applyAfter`). The pass is planned
+ * BEFORE anything is queued, so a refusal leaves nothing half-queued. A greyed step
+ * gets the guide alone — the pass needs a landed step to plan from — and the window's
+ * Apply puts it in once the step has landed. A guide the cleanup modal queues
+ * (`guideAhead`) is read by its cleanup instead, and is applied by nobody.
+ */
+async function buildPronunciationGuide(projectDir: string, at: string, startOver: boolean): Promise<void> {
+  if (!guideManifestOf(projectDir).steps.includes(at)) {
+    queuePronunciationGuide(projectDir, at, startOver);
+    return;
+  }
+  const adjusted = await planAdjustedStep(projectDir, at);
+  const ahead = queuePronunciationGuide(projectDir, at, startOver, true);
+  foundryHostQueue.enqueue(adjusted, at, projectDir, ahead);
+}
+
+/**
+ * THE READINGS PASS THAT LANDS A GUIDE AS "Pronunciation adjusted" — under the label
+ * that replaces the latest adjusted step while nothing hangs under it, or the next
+ * "(n)" beside it once something does (`nextAppliedLabel`, Owen: *"it works like a
+ * git worktree"*). It reads the readings at the guide's fixed Apply path.
+ */
+async function planAdjustedStep(projectDir: string, at: string): Promise<FoundryJobRequest> {
+  if (typeof foundryMount.planReadingsPass !== 'function') {
+    throw new Error('The vendored Foundry is older than the readings pass, so the guide cannot be applied. '
+      + 'Re-vendor foundry-app.');
+  }
+  const { applyReadingsPath, guidePathsOfStep } = await import('./narration-glossary.js');
+  const { nextAppliedLabel } = await import('./pronunciation-applied.js');
+  const request = await foundryMount.planReadingsPass(projectDir, at, nextAppliedLabel(projectDir, at));
+  return { ...request, applyReadings: applyReadingsPath(guidePathsOfStep(projectDir, at)) };
+}
+
 async function applyPronunciationGuide(projectDir: string, at: string): Promise<{ places: number }> {
   if (!guideManifestOf(projectDir).steps.includes(at)) {
     throw new Error('This step has not landed yet. Apply the guide once the work making it has finished.');
@@ -2981,14 +3030,42 @@ async function applyPronunciationGuide(projectDir: string, at: string): Promise<
     throw new Error('The vendored Foundry is older than the readings pass, so the guide cannot be applied. '
       + 'Re-vendor foundry-app.');
   }
-  const { path: readings, places } = await writeApplyReadings(files);
+  const request = await planAdjustedStep(projectDir, at);
+  const { places } = await writeApplyReadings(files);
   if (places === 0) {
-    throw new Error('The guide reads every word as printed (or every word is taken out of the applied text), so '
-      + 'applying it would change nothing.');
+    throw new Error('The guide reads every word as printed (or every word is taken out of the adjusted text), so '
+      + 'applying it would change nothing. To go back to the text as it was, delete the "Pronunciation adjusted" step.');
   }
-  const request = await foundryMount.planReadingsPass(projectDir, at, APPLIED_LABEL);
-  foundryHostQueue.enqueue({ ...request, applyReadings: readings }, at, projectDir);
+  foundryHostQueue.enqueue(request, at, projectDir);
   return { places };
+}
+
+/**
+ * DELETE A STEP'S GUIDE — its decisions, its readings and its Apply readings. Every
+ * adjusted step it made stays exactly as it is: deleting one of those is how the text
+ * goes back, and is the tree's own Delete.
+ */
+async function deletePronunciationGuide(projectDir: string, at: string): Promise<void> {
+  const { applyReadingsPath, guidePathsOfStep, hasGuide } = await import('./narration-glossary.js');
+  const files = guidePathsOfStep(projectDir, at);
+  if (!hasGuide(files)) throw new Error('This step has no pronunciation guide to delete.');
+  for (const file of [files.glossary, files.readings, applyReadingsPath(files)]) fsSync.rmSync(file, { force: true });
+}
+
+/**
+ * THE GUIDES ON FOUNDRY'S TREE, from disk (electron/pronunciation-guide-nodes.ts):
+ * one project's read again and the tree re-pushed from the queue's current snapshot.
+ * A read that fails is said in the log and leaves the tree as it was — a guide row
+ * missing for a moment must not take the queue's own rows with it.
+ */
+async function refreshGuideNodes(projectDir: string): Promise<void> {
+  try {
+    const { guideNodesOf } = await import('./pronunciation-guide-nodes.js');
+    setDiskGuideNodes(projectDir, await guideNodesOf(projectDir));
+    publishHostNodes(queueEngine.snapshot(), (dir, nodes) => foundryMount.setHostNodes(dir, nodes));
+  } catch (err) {
+    console.error(`[pronunciation] the guides of ${projectDir} could not be read for the tree: ${(err as Error).message}`);
+  }
 }
 
 /** One guide window per step, raised rather than opened twice. */
@@ -3002,7 +3079,9 @@ const pronunciationWindows = new Map<string, BrowserWindow>();
  * A step of the book, landed or greyed (the queue is making it): the guide lists
  * the words AT that step. A row of ours (`bf-node:`) or an export file is not one.
  */
-function openPronunciationGuide(projectDir: string, nodeId: string): void {
+function openPronunciationGuide(projectDir: string, pressed: string): void {
+  // A guide's own mini row names the step it hangs under.
+  const nodeId = stepOfGuideNode(pressed) ?? pressed;
   if (!guideManifestOf(projectDir).steps.includes(nodeId) && promisedRowOf(projectDir, nodeId) === null) {
     const message = 'A pronunciation guide is made from a step of the book. Open it from one of the book\'s steps '
       + '(a greyed one the queue is making is fine), not from an exported file or a row of narration.';
@@ -13150,7 +13229,7 @@ ipcMain.handle('narration:text-readiness', async (
 
   ipcMain.handle('pronunciation:build', async (_event, projectDir: string, at: string, startOver: boolean) => {
     try {
-      queuePronunciationGuide(projectDir, at, startOver === true);
+      await buildPronunciationGuide(projectDir, at, startOver === true);
       return { success: true };
     } catch (err) {
       return { success: false, error: (err as Error).message };
@@ -13165,10 +13244,36 @@ ipcMain.handle('narration:text-readiness', async (
     }
   });
 
+  ipcMain.handle('pronunciation:delete', async (_event, projectDir: string, at: string) => {
+    try {
+      await deletePronunciationGuide(projectDir, at);
+      await refreshGuideNodes(projectDir);
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   ipcMain.handle('pronunciation:save', async (_event, save: GuideReviewSave) => {
     try {
       const { saveGuideReview } = await import('./pronunciation-review.js');
-      return { success: true, ...(await saveGuideReview(save)) };
+      const saved = await saveGuideReview(save);
+      /*
+       * A SAVED GUIDE THAT IS ALREADY IN THE TEXT IS PUT BACK IN THE TEXT: the adjusted
+       * step is re-applied (replaced, or a sibling beside one with work under it). A
+       * re-apply that cannot run is said beside the save, which did happen.
+       */
+      const { appliedStepOf } = await import('./pronunciation-applied.js');
+      let reapplied: { places?: number; reapplyError?: string } = {};
+      if (saved.forms + saved.spots > 0 && appliedStepOf(save.projectDir, save.at) !== null) {
+        try {
+          reapplied = { places: (await applyPronunciationGuide(save.projectDir, save.at)).places };
+        } catch (err) {
+          reapplied = { reapplyError: (err as Error).message };
+        }
+      }
+      await refreshGuideNodes(save.projectDir);
+      return { success: true, ...saved, ...reapplied };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -14175,6 +14280,30 @@ app.whenReady().then(async () => {
     foundryMount.setHostNodes(dir, nodes);
   });
   foundryMount.setHostStatus(hostStatusOf(seedSnapshot));
+
+  /*
+   * THE PRONUNCIATION GUIDES ON THE TREE, from disk (Owen, 2026-11-01: "a miniature
+   * line item in the work tree"). Every project read once, in the background — the
+   * library may be a share, and the window must not wait behind it — then one
+   * project again whenever a guide row or an adjusted step of it finishes, and on
+   * every save or delete in the guide window (`refreshGuideNodes`).
+   */
+  void (async () => {
+    const root = foundryProjectsDir();
+    if (!fsSync.existsSync(root)) return;
+    for (const name of await fs.readdir(root)) {
+      const dir = path.join(root, name);
+      if (fsSync.existsSync(path.join(dir, 'readings'))) await refreshGuideNodes(dir);
+    }
+  })().catch((err) => console.error(`[pronunciation] the guides on the tree could not be read: ${(err as Error).message}`));
+  queueEngine.onStepFinished((event) => {
+    const step = queueEngine.snapshot().jobs.flatMap((j) => j.steps).find((s) => s.id === event.stepId);
+    if (step === undefined) return;
+    const request = step.config['request'] as Record<string, unknown> | undefined;
+    const guideWork = step.type === 'narration-guide' || (step.type === 'foundry-job' && request?.['readingsOnly'] !== undefined);
+    const dir = step.config['projectDir'];
+    if (guideWork && typeof dir === 'string') void refreshGuideNodes(dir);
+  });
 
   // ── Reconcile the export trays with the versions pages ───────────────────
   //

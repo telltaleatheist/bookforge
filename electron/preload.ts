@@ -2383,11 +2383,17 @@ export interface ElectronAPI {
   /** The book's pronunciation guide, for BookForge's review window (electron/pronunciation-review.ts). */
   pronunciation: {
     read: (projectDir: string, at: string) => Promise<{ success: boolean; review?: GuideReview | null; error?: string }>;
-    save: (save: GuideReviewSave) => Promise<{ success: boolean; forms?: number; spots?: number; error?: string }>;
+    save: (save: GuideReviewSave) => Promise<{
+      success: boolean; forms?: number; spots?: number; error?: string;
+      /** Re-applied into the adjusted text: how many places, or why it could not be. */
+      places?: number; reapplyError?: string;
+    }>;
     /** Queue a new guide made from step `at`; `startOver` drops every decision first. */
     build: (projectDir: string, at: string, startOver: boolean) => Promise<{ success: boolean; error?: string }>;
     /** Write the guide's readings into the text as a step of their own (a readings-only pass). */
     apply: (projectDir: string, at: string) => Promise<{ success: boolean; places?: number; error?: string }>;
+    /** Delete a step's guide; every adjusted step it made stays. */
+    delete: (projectDir: string, at: string) => Promise<{ success: boolean; error?: string }>;
   };
   /**
    * The Versions page's entry payload, and the push that finishes it.
@@ -4046,6 +4052,7 @@ const electronAPI: ElectronAPI = {
     build: (projectDir: string, at: string, startOver: boolean) =>
       ipcRenderer.invoke('pronunciation:build', projectDir, at, startOver),
     apply: (projectDir: string, at: string) => ipcRenderer.invoke('pronunciation:apply', projectDir, at),
+    delete: (projectDir: string, at: string) => ipcRenderer.invoke('pronunciation:delete', projectDir, at),
   },
   versions: {
     pageData: (projectId: string) =>

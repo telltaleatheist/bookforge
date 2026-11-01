@@ -522,6 +522,36 @@ export type PushHostNodes = (projectDir: string, nodes: readonly HostNode[]) => 
 const pushedProjects = new Set<string>();
 
 /**
+ * THE GUIDES ON DISK, per project — the pronunciation guide's mini rows (Owen,
+ * 2026-11-01: *"we can view the guide by having a miniature line item in the work
+ * tree"*). Kept here and merged into every push, because a push REPLACES a project's
+ * whole set: a guide row that lived beside the queue's rows would be wiped by the
+ * next progress line. Read by main from disk (pronunciation-guide-nodes.ts).
+ */
+const diskGuideNodes = new Map<string, readonly HostNode[]>();
+
+/** Replace one project's disk guide rows; the next `publishHostNodes` draws them. */
+export function setDiskGuideNodes(projectDir: string, nodes: readonly HostNode[]): void {
+  if (nodes.length === 0) diskGuideNodes.delete(projectDir);
+  else diskGuideNodes.set(projectDir, nodes);
+}
+
+/**
+ * The queue's set with the disk guides added — except a guide whose step has a guide
+ * RUN in the queue right now, which the run's own row already draws (and says how
+ * far it has got).
+ */
+export function withDiskGuides(sets: Map<string, HostNode[]>): Map<string, HostNode[]> {
+  const out = new Map(sets);
+  for (const [projectDir, guides] of diskGuideNodes) {
+    const queued = out.get(projectDir) ?? [];
+    const running = new Set(queued.filter((n) => n.kind === 'guide').map((n) => n.parentStepId));
+    out.set(projectDir, [...queued, ...guides.filter((g) => !running.has(g.parentStepId))]);
+  }
+  return out;
+}
+
+/**
  * Wire the queue to the tree. Called once, at mount, with the seam's push door.
  *
  * `onQueueChanged` already coalesces progress (ten a second at most), so this
@@ -534,7 +564,7 @@ const pushedProjects = new Set<string>();
  * progress line.
  */
 export function publishHostNodes(snapshot: QueueSnapshot, push: PushHostNodes): void {
-  const sets = hostNodeSets(snapshot);
+  const sets = withDiskGuides(hostNodeSets(snapshot));
   for (const [projectDir, nodes] of sets) {
     push(projectDir, nodes);
     if (nodes.length === 0) pushedProjects.delete(projectDir);
@@ -550,4 +580,5 @@ export function publishHostNodes(snapshot: QueueSnapshot, push: PushHostNodes): 
 /** For the keeper suite, which drives `publishHostNodes` over several snapshots. */
 export function resetPushedProjects(): void {
   pushedProjects.clear();
+  diskGuideNodes.clear();
 }

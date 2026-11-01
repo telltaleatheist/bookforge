@@ -531,6 +531,43 @@ const entries = (where) => JSON.parse(fs.readFileSync(where.glossaryFile, 'utf8'
     ], 'unplaced, as printed, taken out and refused places are not written');
   });
 
+  await test('a re-apply replaces the adjusted step, unless work hangs under it: then a sibling, (2), (3) (Owen, 2026-11-01)', () => {
+    const shared = require(path.join(REPO, 'dist', 'shared', 'pronunciation-guide.js'));
+    const applied = require(path.join(REPO, 'dist', 'electron', 'pronunciation-applied.js'));
+    assert.strictEqual(shared.APPLIED_LABEL, 'Pronunciation adjusted');
+    assert.deepStrictEqual(['Pronunciation adjusted', 'Pronunciation adjusted (2)', 'Pronunciation adjusted (12)',
+      'Pronunciation adjusted (1)', 'Pronunciation adjusted 2', 'Cleaned', undefined].map(shared.appliedLabelNumber),
+    [1, 2, 12, null, null, null, null]);
+    assert.deepStrictEqual([1, 2, 3].map(shared.appliedLabelFor), ['Pronunciation adjusted', 'Pronunciation adjusted (2)', 'Pronunciation adjusted (3)']);
+
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bf-adjusted-'));
+    const ledger = (steps) => fs.writeFileSync(path.join(dir, 'project.json'), JSON.stringify({ key: 'bk', ledger: { steps } }));
+    const adj = (id, n, parent = 'c') => ({
+      id, parent, label: shared.appliedLabelFor(n), payload: `readings/${id}.clean.records.jsonl`,
+      params: { readings: shared.appliedLabelFor(n) },
+    });
+    try {
+      ledger([{ id: 'c' }]);
+      assert.strictEqual(applied.nextAppliedLabel(dir, 'c'), 'Pronunciation adjusted', 'the first apply');
+      assert.strictEqual(applied.appliedStepOf(dir, 'c'), null);
+      ledger([{ id: 'c' }, adj('a1', 1)]);
+      assert.strictEqual(applied.nextAppliedLabel(dir, 'c'), 'Pronunciation adjusted', 'nothing under it: replaced');
+      ledger([{ id: 'c' }, adj('a1', 1), { id: 'n1', parent: 'a1', label: 'Cleaned' }]);
+      assert.strictEqual(applied.nextAppliedLabel(dir, 'c'), 'Pronunciation adjusted (2)', 'work under it: a sibling');
+      ledger([{ id: 'c' }, adj('a1', 1), { id: 'n1', parent: 'a1' }, adj('a2', 2)]);
+      assert.deepStrictEqual(applied.appliedStepOf(dir, 'c'), { id: 'a2', label: 'Pronunciation adjusted (2)' }, 'the latest');
+      assert.strictEqual(applied.nextAppliedLabel(dir, 'c'), 'Pronunciation adjusted (2)', 'the sibling, bare, is replaced');
+      ledger([{ id: 'c' }, adj('a1', 1), { id: 'n1', parent: 'a1' }, adj('a2', 2), { id: 'n2', parent: 'a2' }]);
+      assert.strictEqual(applied.nextAppliedLabel(dir, 'c'), 'Pronunciation adjusted (3)');
+      const info = applied.appliedStepInfo(dir, 'a2');
+      assert.strictEqual(info.from, 'c', 'a numbered adjusted step is one too');
+      assert.ok(info.record.endsWith(`a2.clean.records.applied.json`));
+      assert.strictEqual(applied.appliedStepInfo(dir, 'n2'), null, 'a cleanup under it is not');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   await test('millimeters are not a numeral; a corps numeral in capitals is (Blitzkrieg Legend, 2026-10-31)', () => {
     const abbr = (key) => ({ key, kind: 'abbreviation', count: 1, printed: { [key]: 1 }, samples: [], occurrences: [] });
     assert.strictEqual(glossary.senseProblem(abbr('mm'), { meaning: 'millimeters', kind: 'abbreviation', reading: 'millimeters', periodIsPart: true }), null);

@@ -131,6 +131,13 @@ function lettersOf(key: string): string[] {
               <desktop-button variant="ghost" size="sm" (click)="confirmingRebuild.set(false)">Keep the guide</desktop-button>
               <desktop-button variant="danger" size="sm" (click)="build(true)" [disabled]="busy() || run() !== null">Rebuild</desktop-button>
             } @else {
+              @if (confirmingDelete()) {
+                <span class="confirm">Delete this guide? Rebuilding it takes the GPU. Any adjusted step it made stays as it is.</span>
+                <desktop-button variant="ghost" size="sm" (click)="confirmingDelete.set(false)">Keep it</desktop-button>
+                <desktop-button variant="danger" size="sm" (click)="deleteGuide()" [disabled]="busy()">Delete guide</desktop-button>
+              } @else {
+                <desktop-button variant="ghost" size="sm" (click)="confirmingDelete.set(true)" [disabled]="busy() || run() !== null">Delete guide…</desktop-button>
+              }
               <desktop-button variant="ghost" size="sm" (click)="confirmingRebuild.set(true)" [disabled]="busy() || run() !== null">Rebuild…</desktop-button>
               <desktop-button variant="primary" size="sm" (click)="save()" [disabled]="busy() || changes() === 0">
                 {{ changes() === 0 ? 'Saved' : 'Save ' + changes() + (changes() === 1 ? ' change' : ' changes') }}
@@ -152,9 +159,12 @@ function lettersOf(key: string): string[] {
       @if (error()) { <div class="error">{{ error() }}</div> }
 
       <!--
-        APPLY (Owen, 2026-11-01): the guide written into the text as a step of its
-        own, under this one — no model, seconds — and a word taken out of it or put
-        back by applying again. Going back to the step above undoes all of it.
+        THE ADJUSTED STEP (Owen, 2026-11-01): the guide written into the text as a
+        step of its own, "Pronunciation adjusted", under this one — no model, seconds.
+        Deleting that step goes back to the text as it was. A guide already in the text
+        is put back in it by Save; one that is not yet has its own button. A save
+        under an adjusted step with work built on it lands a sibling, "(2)", and
+        leaves that branch alone.
       -->
       @if (review(); as r) {
         @if (run() === null || run()!.kind !== 'apply') {
@@ -165,15 +175,18 @@ function lettersOf(key: string): string[] {
               } @else if (r.appliedStep === null) {
                 Not applied to the text yet. Apply writes <b>{{ r.applyPlaces }} {{ r.applyPlaces === 1 ? 'place' : 'places' }}</b>
                 into a new step under this one, “{{ appliedLabel }}”, with no model.
-              } @else if (r.applyPending || appliedChanges() > 0) {
-                <b>The applied text is older than the guide.</b> Update it to write your changes into “{{ r.appliedStep.label }}”.
+              } @else if (changes() > 0) {
+                Saving writes your changes into “{{ r.appliedStep.label }}” too.
+              } @else if (r.applyPending) {
+                <b>“{{ r.appliedStep.label }}” is older than the guide.</b> Update it to write the guide into the text again.
               } @else {
-                Applied in “{{ r.appliedStep.label }}”: {{ r.applyPlaces }} {{ r.applyPlaces === 1 ? 'place' : 'places' }}.
+                In the text as “{{ r.appliedStep.label }}”: {{ r.applyPlaces }} {{ r.applyPlaces === 1 ? 'place' : 'places' }}.
+                Delete that step to go back to the text as it was.
               }
             </span>
-            @if (r.landed && (r.appliedStep === null || r.applyPending || appliedChanges() > 0)) {
-              <desktop-button variant="primary" size="sm" (click)="apply()" [disabled]="busy() || run() !== null || r.applyPlaces + appliedChanges() === 0">
-                {{ r.appliedStep === null ? 'Apply to the text' : 'Update the applied text' }}
+            @if (r.landed && (r.appliedStep === null || (r.applyPending && changes() === 0))) {
+              <desktop-button variant="primary" size="sm" (click)="apply()" [disabled]="busy() || run() !== null || r.applyPlaces === 0">
+                {{ r.appliedStep === null ? 'Apply to the text' : 'Update it' }}
               </desktop-button>
             }
           </div>
@@ -251,7 +264,7 @@ function lettersOf(key: string): string[] {
                 @if (readsDifferently(d)) {
                   <button type="button" class="applied-toggle" [class.off]="!d.applied" [attr.aria-pressed]="d.applied"
                     (click)="setApplied(d, !d.applied)"
-                    [title]="d.applied ? 'Take this word out of the applied text' : 'Put this word back into the applied text'">
+                    [title]="d.applied ? 'Take this word out of the adjusted text' : 'Put this word back into the adjusted text'">
                     {{ appliedWord(d) }}</button>
                 }
               </div>
@@ -497,6 +510,7 @@ export class PronunciationReviewComponent {
   /** The guide changed on disk while there were changes here that a reload would drop. */
   readonly stale = signal(false);
   readonly confirmingRebuild = signal(false);
+  readonly confirmingDelete = signal(false);
 
   readonly show = signal<Show>('all');
   readonly group = signal<Group | null>(null);
@@ -646,18 +660,12 @@ export class PronunciationReviewComponent {
     }
   }
 
-  /** Words whose applied state is changed here and not saved yet. */
-  appliedChanges(): number {
-    const forms = new Map<string, GuideReviewForm>((this.review()?.forms ?? []).map((f) => [`${f.kind}\u0000${f.key}`, f] as const));
-    return this.drafts().filter((d) => forms.get(d.id)?.applied !== d.applied).length;
-  }
-
   setApplied(d: FormDraft, applied: boolean): void { this.update(d, { applied }); }
 
-  /** The word's state in the applied text, as its toggle says it. */
+  /** The word's state in the adjusted text, as its toggle says it. */
   appliedWord(d: FormDraft): string {
     const was = d.form.applied;
-    if (d.applied === was) return d.applied ? 'In the applied text' : 'Not in the applied text';
+    if (d.applied === was) return d.applied ? 'In the adjusted text' : 'Not in the adjusted text';
     return d.applied ? 'Will be put back' : 'Will be taken out';
   }
 
@@ -714,7 +722,24 @@ export class PronunciationReviewComponent {
       const res = await this.electron.savePronunciationGuide({ projectDir: review.projectDir, at: review.at, version: review.version, forms });
       if (!res.success) { this.error.set(res.error ?? 'Your changes could not be saved.'); return; }
       await this.load();
-      this.saved.set(`Saved ${res.forms ?? 0} word(s), ${res.spots ?? 0} place(s) moved`);
+      const into = res.places !== undefined ? `; ${res.places} place(s) going into the adjusted text` : '';
+      this.saved.set(`Saved ${res.forms ?? 0} word(s), ${res.spots ?? 0} place(s) moved${into}`);
+      if (res.reapplyError !== undefined) this.error.set(`Saved, but not written into the adjusted text: ${res.reapplyError}`);
+    } finally {
+      this.busy.set(false);
+    }
+  }
+
+  /** Delete this step's guide; every adjusted step it made stays. */
+  async deleteGuide(): Promise<void> {
+    this.busy.set(true);
+    this.error.set(null);
+    try {
+      const res = await this.electron.deletePronunciationGuide(this.projectDir, this.at);
+      if (!res.success) { this.error.set(res.error ?? 'The guide could not be deleted.'); return; }
+      this.confirmingDelete.set(false);
+      await this.load();
+      this.saved.set('Guide deleted');
     } finally {
       this.busy.set(false);
     }

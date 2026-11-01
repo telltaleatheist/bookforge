@@ -1034,7 +1034,17 @@ export const foundryHostQueue = {
    * other path by which a held row gets picked up, and no path by which a
    * released one does not.
    */
-  enqueue(request: FoundryJobRequest, parentStep: string | null, projectDir: string): FoundryJobRow {
+  enqueue(
+    request: FoundryJobRequest,
+    parentStep: string | null,
+    projectDir: string,
+    /**
+     * FILED UNDER A STEP OF A RUN OF OURS, when given: the pronunciation guide's
+     * Apply, chained under the guide row that writes its readings (main's
+     * `queuePronunciationGuide`). Foundry never passes it.
+     */
+    under?: { jobId: string; stepId: string },
+  ): FoundryJobRow {
     /*
      * TWO ROWS WRITING ONE FILE IS THE WORST OUTCOME AVAILABLE, so a second press
      * for the same product returns the row that is already there.
@@ -1091,6 +1101,17 @@ export const foundryHostQueue = {
       projectDir,
       label,
     };
+
+    if (under !== undefined) {
+      const step = engineAppendStep(under.jobId, {
+        type: 'foundry-job',
+        label,
+        config: config as unknown as Record<string, unknown>,
+        sourceRef: { kind: 'none' },
+        parentStepId: under.stepId,
+      }, { deferPump: true });
+      return rowOf(step);
+    }
 
     /*
      * A REQUEST THAT FOLLOWS A PENDING ROW JOINS THAT ROW'S RUN, under it.

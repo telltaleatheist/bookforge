@@ -2867,8 +2867,16 @@ export class ElectronService {
   }
 
   /** Write a person's review of a pronunciation guide; refused when the guide changed underneath. */
-  async savePronunciationGuide(save: GuideReviewSave): Promise<{ success: boolean; forms?: number; spots?: number; error?: string }> {
+  async savePronunciationGuide(save: GuideReviewSave): Promise<{
+    success: boolean; forms?: number; spots?: number; error?: string; places?: number; reapplyError?: string;
+  }> {
     if (this.isElectron) return (window as any).electron.pronunciation.save(save);
+    return { success: false, error: 'Not running in Electron' };
+  }
+
+  /** Delete step `at`'s guide; every adjusted step it made stays. */
+  async deletePronunciationGuide(projectDir: string, at: string): Promise<{ success: boolean; error?: string }> {
+    if (this.isElectron) return (window as any).electron.pronunciation.delete(projectDir, at);
     return { success: false, error: 'Not running in Electron' };
   }
 

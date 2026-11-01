@@ -34,6 +34,8 @@
  * a narration can both hold the card, because each queue believes it is the only
  * one. Declaring the resource here is what ends that: one card, one arbiter.
  */
+import * as fs from 'node:fs';
+
 import { noteStepStopped } from '../queue-engine';
 import type { StepModule, StepRunContext } from '../queue-engine';
 import type { ArtifactRef, JobStageProgress, StepResource } from '../../shared/queue/engine-types';
@@ -567,6 +569,17 @@ export const foundryJobStep: StepModule = {
       if (typeof file !== 'string' || file.length === 0) {
         throw new Error('This readings pass names no readings file to write into the book, so it would change nothing. '
           + 'Apply the pronunciation guide again from its window.');
+      }
+      /*
+       * NOTHING TO WRITE IS A PASS THAT LANDS NOTHING. A guide that reads every word
+       * as printed leaves the step above as it is; Foundry refuses an empty readings
+       * file by name (it would land a copy of the book), so the row finishes here.
+       */
+      const listed = JSON.parse(fs.readFileSync(file, 'utf8')) as { readings?: unknown[] };
+      if (!Array.isArray(listed.readings) || listed.readings.length === 0) {
+        const said = 'pronunciation guide: no word is said differently from print, so no "Pronunciation adjusted" step is made';
+        ctx.report({ message: said, detail: said });
+        return { kind: 'none' };
       }
       fixedReadings = file;
     } else if (appliedKept !== undefined) {
