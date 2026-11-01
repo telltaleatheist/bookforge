@@ -323,7 +323,7 @@ export const NOTE_MAX_TOKENS = 2000;
 export const NOTE_ASK = `The person may ask a follow-up question about this book. Write a working note for yourself to start from then; the person will not see it. Plain text, at most about 300 words:
 - what the person has asked so far, every question;
 - what you found, with block ids;
-- what you marked or revised, and under which reasons;
+- what you marked, revised or retyped, and under which reasons;
 - what you searched for or checked and ruled out;
 - what is still open or waiting on the person's decision.
 If you started from an earlier note, carry forward what still matters from it. Call no tools.`;
@@ -427,16 +427,16 @@ async function keepThread(
 function systemPrompt(maxRounds: number): string {
   return `You help a person edit a book they are turning into an audiobook. The book is a list of blocks (paragraphs, headings, captions, and so on), each with an id like e-123. Blocks the person already removed are hidden from you.
 
-Your job: carry out the person's request by MARKING blocks for removal, each with a short reason, or by REVISING the words of a block with exact substitutions, each with a short reason. You never change the book yourself; the person reviews your marks and revisions grouped by reason and decides. Marks and revisions are kept by the tools, not by you; use marks_summary or read with only:"marked" or only:"revised" to see them.
+Your job: carry out the person's request by MARKING blocks for removal, by REVISING the words of a block with exact substitutions, or by RETYPING a block whose kind was read wrong (a chapter heading read as a footnote, a quotation read as body text), each with a short reason. You never change the book yourself; the person reviews your marks, revisions and retypings grouped by reason and decides. They are kept by the tools, not by you; use marks_summary or read with only:"marked", only:"revised" or only:"retyped" to see them.
 
 Work the way a careful editor would with a long book:
 1. Survey: outline, then read a sample of the start and of a few chapters to learn how the book is built — what recurs, what is body text, what is apparatus.
 2. Turn what you find into rules. Search to see how far a pattern reaches and what it would catch by mistake. Use mark with dry_run first, then mark.
-3. Use exact ids for one-off judgment calls. To change words rather than remove a block, use revise on that block, quoting the exact text to replace. To make the same change in many blocks (a leading number on every paragraph, a recurring stray mark), use revise_pattern with dry_run first, and tighten the pattern until the examples show only what should change.
+3. Use exact ids for one-off judgment calls. To change words rather than remove a block, use revise on that block, quoting the exact text to replace. To make the same change in many blocks (a leading number on every paragraph, a recurring stray mark), use revise_pattern with dry_run first, and tighten the pattern until the examples show only what should change. Each block's kind is shown in brackets ([Footnote], [Section-header]; no tag is Text). To change a kind, use recategorize, by id or with category_is and a pattern (dry_run first); with starts_chapter:true it also starts a chapter at a heading. A heading and a chapter start are separate: say starts_chapter only when the book really divides there.
 4. Check your work: read with only:"unmarked" through each chapter's non-body regions, and spot-check what you marked, so nothing is missed and nothing wrongly caught. Unmark mistakes.
-5. When you are done, stop calling tools and write a short summary for the person: what you marked or revised under each reason and anything you were unsure of. If the person only asked a question, answer it in that summary and mark nothing.
+5. When you are done, stop calling tools and write a short summary for the person: what you marked, revised or retyped under each reason and anything you were unsure of. If the person only asked a question, answer it in that summary and mark nothing.
 
-Old rounds are removed from this conversation from time to time to save space, so do not rely on re-reading old results; call the tool again if you need it. The last message of every request states the marks and revisions so far. You have at most ${maxRounds} rounds of tool calls.`;
+Old rounds are removed from this conversation from time to time to save space, so do not rely on re-reading old results; call the tool again if you need it. The last message of every request states the marks, revisions and retypings so far. You have at most ${maxRounds} rounds of tool calls.`;
 }
 
 /**
@@ -514,8 +514,8 @@ export async function loop(
       round,
     });
     if (reply.content !== null && reply.content.trim().length > 0) summary = reply.content.trim();
-    const { struck, revised } = box.counts();
-    progress(round, reply.content, `Round ${round + 1}: ${calls.length === 0 ? 'no tool calls' : calls.map((c) => c.function.name).join(', ')} · ${struck} marked${revised > 0 ? `, ${revised} revised` : ''}`);
+    const { struck, revised, retyped } = box.counts();
+    progress(round, reply.content, `Round ${round + 1}: ${calls.length === 0 ? 'no tool calls' : calls.map((c) => c.function.name).join(', ')} · ${struck} marked${revised > 0 ? `, ${revised} revised` : ''}${retyped > 0 ? `, ${retyped} retyped` : ''}`);
 
     if (calls.length === 0) {
       if (final) return done(round + 1);
@@ -716,11 +716,21 @@ export async function saveAskSession(projectDir: string, session: AskSession): P
   await writeAtomically(file, Buffer.from(`${joined}${JSON.stringify(session)}\n`, 'utf8'));
 }
 
-function isMark(value: unknown): value is AskMark {
+/** A kept mark this build can read: every kind, the older strike and revision included. */
+export function isAskMark(value: unknown): value is AskMark {
   if (typeof value !== 'object' || value === null) return false;
   const m = value as Record<string, unknown>;
   if (typeof m['id'] !== 'string' || typeof m['reason'] !== 'string' || typeof m['before'] !== 'string') return false;
   if (m['kind'] === 'strike') return true;
+  if (m['kind'] === 'category') {
+    const chapter = m['chapter'];
+    const chapterOk = chapter === null || (typeof chapter === 'object' && chapter !== undefined
+      && ((chapter as Record<string, unknown>)['start'] === false
+        || ((chapter as Record<string, unknown>)['start'] === true
+          && typeof (chapter as Record<string, unknown>)['title'] === 'string')));
+    return typeof m['from'] === 'string' && typeof m['to'] === 'string' && chapterOk
+      && (m['chapterBefore'] === null || typeof m['chapterBefore'] === 'string');
+  }
   return m['kind'] === 'text' && typeof m['after'] === 'string';
 }
 
@@ -729,7 +739,7 @@ function isSession(value: unknown): value is AskSession {
   const s = value as Record<string, unknown>;
   return typeof s['id'] === 'string' && typeof s['at'] === 'string' && typeof s['request'] === 'string'
     && typeof s['server'] === 'string' && typeof s['model'] === 'string' && typeof s['summary'] === 'string'
-    && Array.isArray(s['items']) && s['items'].every(isMark)
+    && Array.isArray(s['items']) && s['items'].every(isAskMark)
     && typeof s['skipped'] === 'number' && typeof s['rounds'] === 'number' && typeof s['seconds'] === 'number';
 }
 

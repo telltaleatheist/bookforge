@@ -33,7 +33,9 @@ import { JobModelComponent } from '../job-model/job-model.component';
  * chat window at a minimum would make it a lot easier to understand."*
  *
  * So: the person's message, a "Working" line that holds the model's rounds
- * (folded, open on a click), and the model's reply — its own summary — with
+ * (OPEN while the run works, so the person sees what it is doing and that it is
+ * doing something — Owen, 2026-11-01; folded once it is a finished run, open on a
+ * click), and the model's reply — its own summary — with
  * "Review changes" under it. A text box, Send, and Stop while it works.
  *
  * A FOLLOW-UP CONTINUES FROM A NOTE, NOT FROM THE ROUNDS (Owen, 2026-11-01:
@@ -106,14 +108,14 @@ import { JobModelComponent } from '../job-model/job-model.component';
           @if (live(); as now) {
             <div class="msg person">{{ now.request }}</div>
             @if (now.phase === 'running' || now.phase === 'landing') {
-              <button class="working active" (click)="toggle('live')">
+              <button class="working active" (click)="liveFolded.set(!liveFolded())">
                 <span class="spinner" aria-hidden="true"></span>
                 Working… {{ now.round > 0 ? 'round ' + now.round + ' of ' + now.maxRounds : '' }}
-                @if (now.struck + now.revised > 0) {
-                  · {{ now.struck }} marked{{ now.revised > 0 ? ', ' + now.revised + ' revised' : '' }}
+                @if (now.struck + now.revised + now.retyped > 0) {
+                  · {{ now.struck }} marked{{ now.revised > 0 ? ', ' + now.revised + ' revised' : '' }}{{ now.retyped > 0 ? ', ' + now.retyped + ' retyped' : '' }}
                 }
               </button>
-              @if (unfolded().has('live')) {
+              @if (liveOpen()) {
                 <ol class="steps">
                   @for (step of now.steps; track $index) {
                     <li>{{ step.status }}@if (step.says; as said) {<span class="says">{{ said }}</span>}</li>
@@ -124,11 +126,11 @@ import { JobModelComponent } from '../job-model/job-model.component';
                 <p class="status">{{ now.status }}</p>
               }
             } @else {
-              <button class="working" (click)="toggle('live')">
-                <span class="twist">{{ unfolded().has('live') ? '▾' : '▸' }}</span>
+              <button class="working" (click)="liveFolded.set(!liveFolded())">
+                <span class="twist">{{ liveOpen() ? '▾' : '▸' }}</span>
                 {{ now.phase === 'cancelled' ? 'Stopped' : 'Stopped with a problem' }} after {{ elapsed(now) }}
               </button>
-              @if (unfolded().has('live')) {
+              @if (liveOpen()) {
                 <ol class="steps">
                   @for (step of now.steps; track $index) {
                     <li>{{ step.status }}@if (step.says; as said) {<span class="says">{{ said }}</span>}</li>
@@ -337,8 +339,16 @@ export class AskPanelComponent {
   protected readonly modelReady = signal(false);
   /** The server the dropdown's list was read from, which is where the run goes. */
   protected readonly server = signal<string | null>(null);
-  /** Which "Working" lines are open: session ids, and 'live' for the run in front. */
+  /** Which finished runs' "Working" lines are open, by session id. */
   protected readonly unfolded = signal<ReadonlySet<string>>(new Set());
+  /**
+   * THE RUN IN FRONT'S "Working" LINE IS OPEN UNLESS SOMEBODY FOLDED IT. Folded is
+   * what is held, not open, so a section made again — after a tab switch or a
+   * reload, while the run goes on in AskService — starts open, and every Send
+   * opens it again.
+   */
+  protected readonly liveFolded = signal(false);
+  protected readonly liveOpen = computed(() => !this.liveFolded());
 
   private readonly threadBox = viewChild<ElementRef<HTMLElement>>('thread');
 
@@ -426,11 +436,7 @@ export class AskPanelComponent {
     if (tab === null || !this.canSend()) return;
     const message = this.draft().trim();
     this.draft.set('');
-    this.unfolded.update((held) => {
-      const next = new Set(held);
-      next.delete('live');
-      return next;
-    });
+    this.liveFolded.set(false);
     void this.asks.start(tab, this.pane(), message, this.server(), this.model());
   }
 

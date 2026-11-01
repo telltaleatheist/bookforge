@@ -1,6 +1,6 @@
 import { ChangeDetectionStrategy, Component, computed, inject, signal } from '@angular/core';
 
-import { groupByReason, planUndo, type AskMark } from '@shared/ask';
+import { askMarkKey, askRowStates, groupByReason, planUndo, retypeSaid, type AskMark } from '@shared/ask';
 import type { ReplayedRow } from '@shared/ops';
 import { wordDiff, type ChangeRange } from '@shared/word-diff';
 
@@ -28,7 +28,8 @@ import { UiService } from '../../core/ui.service';
  *
  * The model's work is already on the book, so a row left alone is a decision
  * already made. "Undo selected" pushes `restore` for each strike and the
- * `before` text for each revision (a correction on a translated pass) as ONE
+ * `before` text for each revision (a correction on a translated pass), and the
+ * old kind and chapter for each retyping, as ONE
  * gesture on the pane's stack, so the undo itself can be taken back with one
  * press too.
  *
@@ -85,10 +86,10 @@ import { UiService } from '../../core/ui.service';
                     </span>
                   </button>
                 </div>
-                @for (item of group.items; track item.id) {
-                  @let moved = movedWhy().get(item.id);
+                @for (item of group.items; track key(item)) {
+                  @let moved = movedWhy().get(key(item));
                   @let undoing = isUndoing(item);
-                  <div class="row" [class.ghost]="moved !== undefined" [class.open]="opened().has(item.id)">
+                  <div class="row" [class.ghost]="moved !== undefined" [class.open]="opened().has(key(item))">
                     <button class="at" (click)="travel(book, item.id)">
                       <span class="at-id">{{ item.id }}</span>
                       @if (pageOf(item.id) > 0) {
@@ -96,9 +97,14 @@ import { UiService } from '../../core/ui.service';
                       }
                     </button>
 
-                    <div class="quote" (click)="toggleOpen(item.id)">
+                    <div class="quote" (click)="toggleOpen(key(item))">
                       @if (item.kind === 'strike') {
-                        <p class="q-line" [class.struck]="!undoing">{{ shown(item.id, item.before) }}</p>
+                        <p class="q-line" [class.struck]="!undoing">{{ shown(key(item), item.before) }}</p>
+                      } @else if (item.kind === 'category') {
+                        <p class="q-line">{{ shown(key(item), item.before) }}</p>
+                        <p class="q-line q-after q-retype" [class.undoing]="undoing">
+                          <span class="arrow">→ </span>{{ retyped(item) }}
+                        </p>
                       } @else {
                         <p class="q-line">
                           @for (part of partsOf(item.before, 'removed', item.id); track $index) {
@@ -120,7 +126,7 @@ import { UiService } from '../../core/ui.service';
                     @if (moved !== undefined) {
                       <span class="hit still"><span class="verdict gone">moved</span></span>
                     } @else {
-                      <button class="hit" (click)="flip(item.id)">
+                      <button class="hit" (click)="flip(key(item))">
                         <span class="verdict" [class.keep]="!undoing">{{ undoing ? 'UNDO' : 'KEEP' }}</span>
                       </button>
                     }
@@ -308,6 +314,8 @@ import { UiService } from '../../core/ui.service';
       border-radius: 2px;
     }
     .q-after { margin-top: 2px; }
+    /* A retyping says what kind the block becomes, in the "added" colour. */
+    .q-retype { color: var(--ask-new); font-size: 11px; }
     /* A revision set to Undo: its after is what goes, so it wears the cancel. */
     .q-after.undoing { text-decoration: line-through; opacity: 0.6; }
     .arrow { color: var(--text-tertiary); }
@@ -428,27 +436,37 @@ export class AskReviewDialogComponent {
    */
   protected readonly movedWhy = computed<ReadonlyMap<string, string>>(() => {
     const items = this.session()?.items ?? [];
-    const states = new Map([...this.rows()].map(([id, row]) => [id, { text: row.text, struck: row.struck === true }]));
+    const states = askRowStates([...this.rows().values()], this.pane()?.view()?.chapters ?? []);
     const plan = planUndo(items, states, this.pane()?.translated() === true);
-    return new Map(plan.skipped.map((skip) => [skip.item.id, skip.why]));
+    return new Map(plan.skipped.map((skip) => [askMarkKey(skip.item), skip.why]));
   });
 
   /** The marks a verdict can be passed on. */
   protected readonly undoable = computed<readonly AskMark[]>(() =>
-    (this.session()?.items ?? []).filter((item) => !this.movedWhy().has(item.id)));
+    (this.session()?.items ?? []).filter((item) => !this.movedWhy().has(askMarkKey(item))));
 
-  /** The ids set to Undo. Empty is every row kept, which is the default. */
+  /** The marks set to Undo, by `askMarkKey`. Empty is every row kept, which is the default. */
   private readonly undoing = signal<ReadonlySet<string>>(new Set());
   /** The rows somebody opened for the block's whole text. */
   protected readonly opened = signal<ReadonlySet<string>>(new Set());
   protected readonly working = signal(false);
 
   protected readonly chosen = computed<readonly AskMark[]>(() =>
-    this.undoable().filter((item) => this.undoing().has(item.id)));
+    this.undoable().filter((item) => this.undoing().has(askMarkKey(item))));
   protected readonly keptCount = computed(() => this.undoable().length - this.chosen().length);
 
   protected isUndoing(item: AskMark): boolean {
-    return this.undoing().has(item.id) && !this.movedWhy().has(item.id);
+    return this.undoing().has(askMarkKey(item)) && !this.movedWhy().has(askMarkKey(item));
+  }
+
+  /** A mark's row identity: a block's retyping and its revision are two rows. */
+  protected key(item: AskMark): string {
+    return askMarkKey(item);
+  }
+
+  /** What a retyping does, said for its row. */
+  protected retyped(item: Extract<AskMark, { kind: 'category' }>): string {
+    return retypeSaid(item);
   }
 
   protected undoingIn(items: readonly AskMark[]): number {
@@ -456,17 +474,17 @@ export class AskReviewDialogComponent {
   }
 
   protected allUndone(items: readonly AskMark[]): boolean {
-    const live = items.filter((item) => !this.movedWhy().has(item.id));
-    return live.length > 0 && live.every((item) => this.undoing().has(item.id));
+    const live = items.filter((item) => !this.movedWhy().has(askMarkKey(item)));
+    return live.length > 0 && live.every((item) => this.undoing().has(askMarkKey(item)));
   }
 
   protected pageOf(id: string): number {
     return this.rows().get(id)?.page ?? 0;
   }
 
-  /** A strike's quotation: clipped until the row is opened. */
-  protected shown(id: string, text: string): string {
-    return this.opened().has(id) || text.length <= CLIP ? text : `${text.slice(0, CLIP)}…`;
+  /** A strike's or a retyping's quotation: clipped until the row is opened. */
+  protected shown(key: string, text: string): string {
+    return this.opened().has(key) || text.length <= CLIP ? text : `${text.slice(0, CLIP)}…`;
   }
 
   /**
@@ -474,7 +492,7 @@ export class AskReviewDialogComponent {
    * `removed` ranges of the before, `added` ranges of the after.
    */
   protected partsOf(text: string, side: ChangeRange['kind'], id: string): readonly { text: string; changed: boolean }[] {
-    const item = this.session()?.items.find((one) => one.id === id);
+    const item = this.session()?.items.find((one) => one.id === id && one.kind === 'text');
     if (item === undefined || item.kind !== 'text') return [{ text, changed: false }];
     const diff = wordDiff(item.before, item.after);
     const ranges = side === 'removed' ? diff.removed : diff.added;
@@ -489,10 +507,10 @@ export class AskReviewDialogComponent {
     return out;
   }
 
-  protected flip(id: string): void {
+  protected flip(key: string): void {
     this.undoing.update((held) => {
       const next = new Set(held);
-      if (!next.delete(id)) next.add(id);
+      if (!next.delete(key)) next.add(key);
       return next;
     });
   }
@@ -502,9 +520,10 @@ export class AskReviewDialogComponent {
     this.undoing.update((held) => {
       const next = new Set(held);
       for (const item of items) {
-        if (this.movedWhy().has(item.id)) continue;
-        if (undo) next.add(item.id);
-        else next.delete(item.id);
+        const key = askMarkKey(item);
+        if (this.movedWhy().has(key)) continue;
+        if (undo) next.add(key);
+        else next.delete(key);
       }
       return next;
     });
@@ -515,13 +534,13 @@ export class AskReviewDialogComponent {
   }
 
   protected undoAll(): void {
-    this.undoing.set(new Set(this.undoable().map((item) => item.id)));
+    this.undoing.set(new Set(this.undoable().map((item) => askMarkKey(item))));
   }
 
-  protected toggleOpen(id: string): void {
+  protected toggleOpen(key: string): void {
     this.opened.update((held) => {
       const next = new Set(held);
-      if (!next.delete(id)) next.add(id);
+      if (!next.delete(key)) next.add(key);
       return next;
     });
   }

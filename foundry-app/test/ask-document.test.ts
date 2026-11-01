@@ -8,7 +8,7 @@ import { expect, test } from 'bun:test';
  * and back (shared/ask.ts).
  */
 const { askToolbox, applyEdits } = await import('../electron/ask-tools');
-const { groupByReason, planLanding, planUndo } = await import('../shared/ask');
+const { askMarkKey, groupByReason, planLanding, planUndo, retypeSaid } = await import('../shared/ask');
 import type { AskMark, AskRowState, AskView } from '../shared/ask';
 
 const VIEW: AskView = {
@@ -38,9 +38,9 @@ function tools() {
   return { box, run };
 }
 
-test('the eight tools are offered, each with a schema', () => {
+test('the nine tools are offered, each with a schema', () => {
   const { box } = tools();
-  expect(box.tools.map((t) => t.name)).toEqual(['outline', 'read', 'search', 'mark', 'revise', 'revise_pattern', 'unmark', 'marks_summary']);
+  expect(box.tools.map((t) => t.name)).toEqual(['outline', 'read', 'search', 'mark', 'revise', 'revise_pattern', 'recategorize', 'unmark', 'marks_summary']);
   for (const t of box.tools) expect((t.parameters as { type: string }).type).toBe('object');
 });
 
@@ -59,7 +59,7 @@ test('a span selects each start and what follows it, up to the next chapter', ()
   expect(box.items()).toEqual([]); // a dry run marks nothing
   run('mark', { span: { start: '^Study questions$', until: '^Chapter' }, reason: 'study question' });
   expect(box.items().map((m) => m.id)).toEqual(['e-3', 'e-4', 'e-7', 'e-8', 'e-9']);
-  expect(box.counts()).toEqual({ struck: 5, revised: 0 });
+  expect(box.counts()).toEqual({ struck: 5, revised: 0, retyped: 0 });
 });
 
 test('a pattern can be held to one chapter, and a range is inclusive', () => {
@@ -180,8 +180,8 @@ test('a strike supersedes a revision, and a marked block cannot be revised', () 
 
 const strike = (id: string, before: string, reason = 'r'): AskMark => ({ id, kind: 'strike', reason, before });
 const revision = (id: string, before: string, after: string, reason = 'r'): AskMark => ({ id, kind: 'text', reason, before, after });
-const rows = (entries: [string, string, boolean][]): Map<string, AskRowState> =>
-  new Map(entries.map(([id, text, struck]) => [id, { text, struck }]));
+const rows = (entries: [string, string, boolean, string?, (string | null)?][]): Map<string, AskRowState> =>
+  new Map(entries.map(([id, text, struck, category = 'Text', chapter = null]) => [id, { text, struck, category, chapter }]));
 
 test('a landing strikes and rewrites what is still what the run saw', () => {
   const items = [strike('a', 'A'), revision('b', 'B', 'B2')];
@@ -246,4 +246,111 @@ test('an undo skips every block that changed since the run, and says why', () =>
 test('marks group by reason in the order each reason first appears', () => {
   const groups = groupByReason([strike('a', 'A', 'x'), strike('b', 'B', 'y'), strike('c', 'C', 'x')]);
   expect(groups.map((g) => [g.reason, g.items.map((i) => i.id)])).toEqual([['x', ['a', 'c']], ['y', ['b']]]);
+});
+
+// ── Retyping (Owen, 2026-11-01: "if something is marked as a footnote but its
+// really a chapter title, it has the tools it needs to correct that?") ────────
+
+const RETYPE_VIEW: AskView = {
+  title: 'A Footnoted Book',
+  struck: 0,
+  chapters: [{ id: 'e-1', title: 'One' }],
+  blocks: [
+    { id: 'e-1', text: 'ONE', category: 'Section-header', chapter: 0 },
+    { id: 'e-2', text: 'Body text.', category: 'Text', chapter: 0 },
+    { id: 'e-3', text: 'THE *SECOND* PART', category: 'Footnote', chapter: 0 },
+    { id: 'e-4', text: '1 A real footnote.', category: 'Footnote', chapter: 0 },
+    { id: 'e-5', text: 'THE THIRD PART', category: 'Footnote', chapter: 0 },
+  ],
+};
+
+function retypeTools() {
+  const box = askToolbox(RETYPE_VIEW);
+  const run = (name: string, args: Record<string, unknown> = {}): string => box.tools.find((t) => t.name === name)!.run(args);
+  return { box, run };
+}
+
+test('recategorize by pattern within a kind: dry run first, then headings that start chapters', () => {
+  const { box, run } = retypeTools();
+  const dry = run('recategorize', { category_is: 'Footnote', pattern: '^[A-Z* ]+$', category: 'Section-header', starts_chapter: true, reason: 'heading read as a footnote', dry_run: true });
+  expect(dry).toContain('WOULD RETYPE 2 blocks');
+  expect(dry).toContain('e-3 [Footnote → Section-header; starts chapter "THE SECOND PART"]');
+  expect(box.items()).toEqual([]);
+  run('recategorize', { category_is: 'Footnote', pattern: '^[A-Z* ]+$', category: 'Section-header', starts_chapter: true, reason: 'heading read as a footnote' });
+  expect(box.counts()).toEqual({ struck: 0, revised: 0, retyped: 2 });
+  expect(box.items()).toEqual([
+    { id: 'e-3', kind: 'category', reason: 'heading read as a footnote', before: 'THE *SECOND* PART', from: 'Footnote', to: 'Section-header', chapter: { start: true, title: 'THE SECOND PART' }, chapterBefore: null },
+    { id: 'e-5', kind: 'category', reason: 'heading read as a footnote', before: 'THE THIRD PART', from: 'Footnote', to: 'Section-header', chapter: { start: true, title: 'THE THIRD PART' }, chapterBefore: null },
+  ]);
+  // What read shows now, and that search narrows by the kind a block now is.
+  expect(run('read', { from: 'e-3', count: 1 })).toContain('e-3 [RETYPED Footnote → Section-header; starts chapter "THE SECOND PART": heading read as a footnote]');
+  expect(run('search', { pattern: '.', category_is: 'Footnote' })).toMatch(/^1 matches/);
+  expect(run('marks_summary')).toContain('"heading read as a footnote" (retyped): 2');
+});
+
+test('recategorize refuses an unknown kind, a chapter at a non-heading, and one title for many blocks', () => {
+  const { run } = retypeTools();
+  expect(() => run('recategorize', { id: 'e-3', category: 'Heading', reason: 'r' })).toThrow(/category must be one of .*Section-header.*"Heading" is not/);
+  expect(() => run('recategorize', { id: 'e-3', category: 'Text', starts_chapter: true, reason: 'r' })).toThrow(/a chapter starts at a heading/);
+  expect(() => run('recategorize', { category_is: 'Footnote', category: 'Title', starts_chapter: true, chapter_title: 'X', reason: 'r' })).toThrow(/chapter_title names one chapter/);
+  expect(() => run('recategorize', { category: 'Title', reason: 'r' })).toThrow(/give id, a selector/);
+});
+
+test('a retyping sits beside a revision, a strike drops it, and unmark takes it off', () => {
+  const { box, run } = retypeTools();
+  run('recategorize', { id: 'e-4', category: 'Text', reason: 'not a note' });
+  run('revise', { id: 'e-4', edits: [{ find: '1 ', replace: '' }], reason: 'stray number' });
+  expect(box.items().map((m) => [m.kind, m.id])).toEqual([['text', 'e-4'], ['category', 'e-4']]);
+  expect(new Set(box.items().map(askMarkKey)).size).toBe(2);
+  run('unmark', { reason: 'not a note' });
+  expect(box.items().map((m) => m.kind)).toEqual(['text']);
+  run('recategorize', { id: 'e-5', category: 'Title', reason: 'title' });
+  expect(run('mark', { ids: ['e-5'], reason: 'gone' })).toContain('the retyping is dropped');
+  expect(box.items().filter((m) => m.kind === 'category')).toEqual([]);
+  run('recategorize', { id: 'e-5', category: 'Text', reason: 'r' });
+  expect(box.counts().retyped).toBe(0); // a block marked for removal is skipped
+  // Taking a chapter away is a retyping too, with the kind unchanged.
+  run('recategorize', { id: 'e-1', category: 'Section-header', starts_chapter: false, reason: 'no division' });
+  expect(box.items().find((m) => m.kind === 'category')).toEqual({
+    id: 'e-1', kind: 'category', reason: 'no division', before: 'ONE', from: 'Section-header', to: 'Section-header', chapter: { start: false }, chapterBefore: 'One',
+  });
+});
+
+const retype = (id: string, from: string, to: string, chapter: { start: true; title: string } | { start: false } | null, chapterBefore: string | null): AskMark =>
+  ({ id, kind: 'category', reason: 'r', before: id.toUpperCase(), from, to, chapter, chapterBefore });
+
+test('a retyping lands as a category op and a chapter op, and its undo is the opposite', () => {
+  const start = retype('a', 'Footnote', 'Section-header', { start: true, title: 'A' }, null);
+  const drop = retype('b', 'Section-header', 'Text', { start: false }, 'Old');
+  const kindOnly = retype('c', 'Text', 'Quote', null, null);
+  const landed = planLanding([start, drop, kindOnly], rows([['a', 'A', false, 'Footnote'], ['b', 'B', false, 'Section-header', 'Old'], ['c', 'C', false]]), true);
+  expect(landed.ops).toEqual([
+    { op: 'category', id: 'a', category: 'Section-header' },
+    { op: 'chapter', set: 'a', title: 'A' },
+    { op: 'category', id: 'b', category: 'Text' },
+    { op: 'chapter', remove: 'b' },
+    { op: 'category', id: 'c', category: 'Quote' },
+  ]);
+  expect(landed.corrections).toEqual([]); // a kind is shape: an op even on a translated pass
+  const undone = planUndo([start, drop, kindOnly], rows([['a', 'A', false, 'Section-header', 'A'], ['b', 'B', false, 'Text'], ['c', 'C', false, 'Quote']]), false);
+  expect(undone.ops).toEqual([
+    { op: 'category', id: 'a', category: 'Footnote' },
+    { op: 'chapter', remove: 'a' },
+    { op: 'category', id: 'b', category: 'Section-header' },
+    { op: 'chapter', set: 'b', title: 'Old' },
+    { op: 'category', id: 'c', category: 'Text' },
+  ]);
+  expect(retypeSaid(start as Extract<AskMark, { kind: 'category' }>)).toBe('Footnote → Section-header, starts a chapter, "A"');
+});
+
+test('a retyping is skipped when the kind or the chapter moved under it', () => {
+  const start = retype('a', 'Footnote', 'Section-header', { start: true, title: 'A' }, null);
+  expect(planLanding([start], rows([['a', 'A', false, 'Text']]), false).skipped.map((s) => s.why))
+    .toEqual(['its kind was changed while the model worked']);
+  expect(planLanding([start], rows([['a', 'A', false, 'Footnote', 'Someone']]), false).skipped.map((s) => s.why))
+    .toEqual(['the chapter at it was changed while the model worked']);
+  expect(planUndo([start], rows([['a', 'A', false, 'Footnote', 'A']]), false).skipped.map((s) => s.why))
+    .toEqual(['its kind has changed since the run']);
+  expect(planUndo([start], rows([['a', 'A', false, 'Section-header', 'Renamed']]), false).skipped.map((s) => s.why))
+    .toEqual(['the chapter at it has changed since the run']);
 });

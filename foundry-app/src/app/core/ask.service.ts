@@ -1,6 +1,7 @@
 import { Injectable, inject, signal } from '@angular/core';
 
 import {
+  askRowStates,
   planLanding,
   planUndo,
   type AskBlock,
@@ -130,7 +131,7 @@ export class AskService {
     const view = askViewOf(book, tab.title);
     this.setRun(projectDir, {
       phase: 'running', runId: null, request, status: 'Starting…', round: 0, maxRounds: 0,
-      says: null, struck: 0, revised: 0, message: null, steps: [], startedAt: Date.now(),
+      says: null, struck: 0, revised: 0, retyped: 0, message: null, steps: [], startedAt: Date.now(),
     });
     try {
       const runId = await api.ask.start({ projectDir, request, server, model, view });
@@ -156,7 +157,7 @@ export class AskService {
     if (frame.state === 'running') {
       this.setRun(frame.projectDir, {
         ...run, runId: frame.runId, status: frame.status, round: frame.round, maxRounds: frame.maxRounds,
-        says: frame.says, struck: frame.struck, revised: frame.revised,
+        says: frame.says, struck: frame.struck, revised: frame.revised, retyped: frame.retyped,
         steps: withStep(run.steps, frame, run.says),
       });
       return;
@@ -256,6 +257,7 @@ export interface AskRunState {
   readonly says: string | null;
   readonly struck: number;
   readonly revised: number;
+  readonly retyped: number;
   /** The closing sentence: what landed, or why nothing did. */
   readonly message: string | null;
   /** What the model did, round by round, for the thread's "Working" line. */
@@ -287,7 +289,7 @@ function withStep(steps: readonly AskStep[], frame: Extract<AskProgress, { state
 function failed(message: string, request: string): AskRunState {
   return {
     phase: 'failed', runId: null, request, status: '', round: 0, maxRounds: 0,
-    says: null, struck: 0, revised: 0, message, steps: [], startedAt: Date.now(),
+    says: null, struck: 0, revised: 0, retyped: 0, message, steps: [], startedAt: Date.now(),
   };
 }
 
@@ -320,7 +322,7 @@ export function askViewOf(book: Replayed, title: string): AskView {
 }
 
 function rowStates(book: Replayed): ReadonlyMap<string, AskRowState> {
-  return new Map(book.rows.map((row) => [row.id, { text: row.text, struck: row.struck === true }]));
+  return askRowStates(book.rows, book.chapters);
 }
 
 /**

@@ -78,7 +78,24 @@ export interface AskRequest {
   readonly view: AskView;
 }
 
-/** One block the run marked. A strike, or the words changed. */
+/**
+ * What a retyping does to the division above its block: a chapter starts there,
+ * under this title, or the one that starts there is taken away.
+ */
+export type AskChapterChange =
+  | { readonly start: true; readonly title: string }
+  | { readonly start: false };
+
+/**
+ * One block the run marked. A strike, the words changed, or the KIND of block it
+ * is changed (Owen, 2026-11-01: *"if something is marked as a footnote but its
+ * really a chapter title, it has the tools it needs to correct that?"*).
+ *
+ * A RETYPING IS ITS OWN MARK, BESIDE A REVISION. A footnote that is really a
+ * heading may also want its stray reference number taken out, and those are two
+ * decisions the person can keep one of; so one block can carry a `text` mark and
+ * a `category` mark at once, and `askMarkKey` is what tells the two apart.
+ */
 export type AskMark =
   | {
     readonly id: string;
@@ -93,7 +110,36 @@ export type AskMark =
     readonly reason: string;
     readonly before: string;
     readonly after: string;
+  }
+  | {
+    readonly id: string;
+    readonly kind: 'category';
+    readonly reason: string;
+    /** The block's text when the run saw it. */
+    readonly before: string;
+    /** The category it had, and the one it is given — the engine's spelling. Equal when only the chapter changes. */
+    readonly from: string;
+    readonly to: string;
+    /** The division above it, changed — or null to leave it as it was. */
+    readonly chapter: AskChapterChange | null;
+    /** The title of the chapter that started at the block when the run saw it, or null for none. */
+    readonly chapterBefore: string | null;
   };
+
+/** A mark's identity within a run: a block's retyping and its revision are two marks of one id. */
+export function askMarkKey(item: AskMark): string {
+  return `${item.kind === 'category' ? 'type' : 'mark'}:${item.id}`;
+}
+
+/** "Footnote → Section-header, starts a chapter" — what a retyping does, in a line. */
+export function retypeSaid(item: Extract<AskMark, { kind: 'category' }>): string {
+  const parts: string[] = [];
+  if (item.from !== item.to) parts.push(`${item.from} → ${item.to}`);
+  if (item.chapter !== null) {
+    parts.push(item.chapter.start ? `starts a chapter, "${item.chapter.title}"` : 'no chapter starts here');
+  }
+  return parts.join(', ');
+}
 
 /** What a finished run hands back. */
 export interface AskResult {
@@ -163,6 +209,7 @@ export type AskProgress =
     readonly says: string | null;
     readonly struck: number;
     readonly revised: number;
+    readonly retyped: number;
   }
   | {
     readonly runId: string;
@@ -206,6 +253,29 @@ export interface AskSession {
 export interface AskRowState {
   readonly text: string;
   readonly struck: boolean;
+  readonly category: string;
+  /** The title of the chapter that starts at this block, or null for none. */
+  readonly chapter: string | null;
+}
+
+/** Each row's state, off the pane's replay: its text, strike, category and the chapter starting at it. */
+export function askRowStates(
+  rows: readonly { readonly id: string; readonly text: string; readonly struck?: boolean; readonly category: string }[],
+  chapters: readonly { readonly id: string; readonly title: string }[],
+): ReadonlyMap<string, AskRowState> {
+  const starts = new Map(chapters.map((c) => [c.id, c.title]));
+  return new Map(rows.map((row) => [row.id, {
+    text: row.text,
+    struck: row.struck === true,
+    category: row.category,
+    chapter: starts.get(row.id) ?? null,
+  }]));
+}
+
+/** The chapter a retyping leaves at its block: its own change, or what was there. */
+function chapterAfter(item: Extract<AskMark, { kind: 'category' }>): string | null {
+  if (item.chapter === null) return item.chapterBefore;
+  return item.chapter.start ? item.chapter.title : null;
 }
 
 /** A mark a plan would not act on, and why — the second half of a sentence. */
@@ -256,6 +326,19 @@ export function planLanding(
       skipped.push({ item, why: 'its text was changed while the model worked' });
       continue;
     }
+    if (item.kind === 'category') {
+      if (row.category !== item.from) {
+        skipped.push({ item, why: 'its kind was changed while the model worked' });
+        continue;
+      }
+      if (row.chapter !== item.chapterBefore) {
+        skipped.push({ item, why: 'the chapter at it was changed while the model worked' });
+        continue;
+      }
+      ops.push(...retypeOps(item.id, item.from, item.to, item.chapterBefore, chapterAfter(item)));
+      acted.push(item);
+      continue;
+    }
     if (item.kind === 'strike') ops.push({ op: 'strike', id: item.id });
     else if (translated) corrections.push({ id: item.id, text: item.after });
     else ops.push({ op: 'text', id: item.id, text: item.after });
@@ -266,7 +349,8 @@ export function planLanding(
 
 /**
  * THE OPPOSITE OF THE CHOSEN MARKS — `restore` for a strike, the `before` text
- * for a revision (a correction on a translated pass).
+ * for a revision (a correction on a translated pass), the old kind and the old
+ * division for a retyping (always ops: a category is shape, not words).
  *
  * A mark is taken back only when its block is still what the run left: a strike
  * still struck over the same words, a revision still reading its `after`. A
@@ -299,6 +383,20 @@ export function planUndo(
         continue;
       }
       ops.push({ op: 'restore', id: item.id });
+    } else if (item.kind === 'category') {
+      if (row.struck) {
+        skipped.push({ item, why: 'it has been struck since the run' });
+        continue;
+      }
+      if (row.category !== item.to) {
+        skipped.push({ item, why: 'its kind has changed since the run' });
+        continue;
+      }
+      if (row.chapter !== chapterAfter(item)) {
+        skipped.push({ item, why: 'the chapter at it has changed since the run' });
+        continue;
+      }
+      ops.push(...retypeOps(item.id, item.to, item.from, chapterAfter(item), item.chapterBefore));
     } else {
       if (row.struck) {
         skipped.push({ item, why: 'it has been struck since the run' });
@@ -314,6 +412,27 @@ export function planUndo(
     acted.push(item);
   }
   return { ops, corrections, acted, skipped };
+}
+
+/**
+ * THE OPS THAT TAKE ONE BLOCK FROM ONE KIND AND CHAPTER TO ANOTHER — the landing
+ * and the undo are this with the two sides swapped. A `chapter set` retitles a
+ * division already there, so it is the op for both "start one" and "put its old
+ * title back"; only taking a division away is `remove`.
+ */
+function retypeOps(
+  id: string,
+  fromCategory: string,
+  toCategory: string,
+  fromChapter: string | null,
+  toChapter: string | null,
+): BookOp[] {
+  const ops: BookOp[] = [];
+  if (fromCategory !== toCategory) ops.push({ op: 'category', id, category: toCategory });
+  if (fromChapter !== toChapter) {
+    ops.push(toChapter === null ? { op: 'chapter', remove: id } : { op: 'chapter', set: id, title: toChapter });
+  }
+  return ops;
 }
 
 /** One reason and its marks, for the review card's groups. */

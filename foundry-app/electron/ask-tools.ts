@@ -30,8 +30,21 @@
  * which can be seen. A strike supersedes a revision (the words are moot once the
  * block goes) and says so; a revision of a block marked for removal is refused,
  * because the model has to unmark it first to mean it.
+ *
+ * A RETYPING SITS BESIDE EITHER (Owen, 2026-11-01: *"if something is marked as a
+ * footnote but its really a chapter title, it has the tools it needs to correct
+ * that?"*). `recategorize` changes what KIND of block a block is, and may start or
+ * take away the chapter division above it; a block can be retyped and revised at
+ * once, since a heading read as a footnote often carries a stray number too. A
+ * strike drops the retyping, for the strike's own reason: the block goes.
  */
-import type { AskBlock, AskMark, AskView } from '../shared/ask';
+import type { AskBlock, AskChapterChange, AskMark, AskView } from '../shared/ask';
+import { PDF_BLOCK_CATEGORIES } from '../shared/categories';
+
+/** Every kind a block can be given, in the engine's spelling. */
+const CATEGORIES: readonly string[] = PDF_BLOCK_CATEGORIES.map((c) => c.id);
+/** The kinds a chapter may be started at: a heading, which is what a chapter's first block is. */
+const HEADINGS: ReadonlySet<string> = new Set(['Title', 'Section-header']);
 
 /** One tool as the chat sends it, and its handler. */
 export interface AskTool {
@@ -42,14 +55,15 @@ export interface AskTool {
 }
 
 type Mark = { kind: 'strike'; reason: string } | { kind: 'text'; reason: string; after: string };
+type Retype = { reason: string; to: string; chapter: AskChapterChange | null };
 
 /** The tools, and the marks they keep. */
 export interface AskToolbox {
   readonly tools: readonly AskTool[];
   /** Every mark, in reading order. */
   items(): AskMark[];
-  /** How many blocks are marked for removal, and how many revised. */
-  counts(): { struck: number; revised: number };
+  /** How many blocks are marked for removal, how many revised, and how many retyped. */
+  counts(): { struck: number; revised: number; retyped: number };
   /**
    * THE WORK SO FAR, as the loop sends it at the end of every request: each
    * reason, marked or revised, its count and a few examples (marks_summary's
@@ -73,6 +87,9 @@ export function askToolbox(view: AskView): AskToolbox {
   const live: Live[] = view.blocks.map((b, index) => ({ ...b, index }));
   const byId = new Map(live.map((b) => [b.id, b]));
   const marks = new Map<string, Mark>();
+  const retypes = new Map<string, Retype>();
+  /** The chapter that starts at each block, by its title, as the person saw it. */
+  const startsAt = new Map(view.chapters.map((c) => [c.id, c.title]));
 
   const chapterTitle = (i: number): string => {
     if (i < 0) return '(before the first chapter)';
@@ -88,13 +105,24 @@ export function askToolbox(view: AskView): AskToolbox {
   };
   const struckMark = (b: Live): boolean => marks.get(b.id)?.kind === 'strike';
   const revisedMark = (b: Live): boolean => marks.get(b.id)?.kind === 'text';
+  const retypedMark = (b: Live): boolean => retypes.has(b.id);
+  /** The block's kind as the model now sees it: its retyping, or what the person saw. */
+  const categoryOf = (b: Live): string => retypes.get(b.id)?.to ?? b.category;
+
+  function chapterSaid(change: AskChapterChange | null): string {
+    if (change === null) return '';
+    return change.start ? `; starts chapter "${change.title}"` : '; no chapter starts here';
+  }
 
   function line(b: Live, n = 200): string {
     const mark = marks.get(b.id);
     const said = mark === undefined
       ? ''
       : mark.kind === 'strike' ? ` [MARKED: ${mark.reason}]` : ` [REVISED: ${mark.reason}]`;
-    const head = b.category === 'Text' ? '' : ` [${b.category}]`;
+    const retype = retypes.get(b.id);
+    const head = retype !== undefined
+      ? ` [RETYPED ${b.category} → ${retype.to}${chapterSaid(retype.chapter)}: ${retype.reason}]`
+      : b.category === 'Text' ? '' : ` [${b.category}]`;
     return `${b.id}${head}${said} ${clip(textOf(b), n)}`;
   }
 
@@ -116,7 +144,8 @@ export function askToolbox(view: AskView): AskToolbox {
     if (only === 'unmarked') return (b) => !struckMark(b);
     if (only === 'marked') return struckMark;
     if (only === 'revised') return revisedMark;
-    throw new Error('only must be "all", "unmarked", "marked" or "revised"');
+    if (only === 'retyped') return retypedMark;
+    throw new Error('only must be "all", "unmarked", "marked", "revised" or "retyped"');
   }
 
   function position(ref: unknown): number {
@@ -191,19 +220,34 @@ export function askToolbox(view: AskView): AskToolbox {
     return [...counts.entries()].map(([c, n]) => `ch${c}:${n}`).join(' ');
   }
 
-  function counts(): { struck: number; revised: number } {
+  function counts(): { struck: number; revised: number; retyped: number } {
     let struck = 0;
     let revised = 0;
     for (const mark of marks.values()) {
       if (mark.kind === 'strike') struck += 1;
       else revised += 1;
     }
-    return { struck, revised };
+    return { struck, revised, retyped: retypes.size };
   }
 
   function totals(): string {
-    const { struck, revised } = counts();
-    return `Total marked: ${struck}${revised > 0 ? `, revised: ${revised}` : ''}.`;
+    const { struck, revised, retyped } = counts();
+    return `Total marked: ${struck}${revised > 0 ? `, revised: ${revised}` : ''}${retyped > 0 ? `, retyped: ${retyped}` : ''}.`;
+  }
+
+  /** A category the engine knows, or a refusal listing the ones it does. */
+  function categoryArg(value: unknown, field: string): string {
+    if (typeof value !== 'string' || !CATEGORIES.includes(value)) {
+      throw new Error(`${field} must be one of ${CATEGORIES.join(', ')} (exactly as spelled)${typeof value === 'string' ? `; "${value}" is not` : ''}`);
+    }
+    return value;
+  }
+
+  /** A heading's words as a chapter title: its markers and its line breaks taken out. */
+  function titleOf(b: Live): string {
+    const title = textOf(b).replace(/\*+/g, '').replace(/\s+/g, ' ').trim();
+    if (title.length === 0) throw new Error(`${b.id} has no words to title a chapter with; give chapter_title`);
+    return title;
   }
 
   function reasonOf(a: Record<string, unknown>): string {
@@ -230,7 +274,12 @@ export function askToolbox(view: AskView): AskToolbox {
     },
     chapter: { type: 'integer', description: 'Limit pattern or span to this chapter number (from outline).' },
   };
-  const onlyProp = { type: 'string', enum: ['all', 'unmarked', 'marked', 'revised'] };
+  const onlyProp = { type: 'string', enum: ['all', 'unmarked', 'marked', 'revised', 'retyped'] };
+  const categoryIsProp = {
+    type: 'string',
+    enum: [...CATEGORIES],
+    description: 'Only blocks that are currently this kind (the [Kind] read and search show; no tag is Text).',
+  };
 
   const tools: AskTool[] = [
     {
@@ -242,13 +291,14 @@ export function askToolbox(view: AskView): AskToolbox {
           const blocks = live.filter((b) => b.chapter === i);
           if (blocks.length === 0) return `ch${i} "${c.title}" — already removed`;
           const revised = blocks.filter(revisedMark).length;
+          const retyped = blocks.filter(retypedMark).length;
           return `ch${i} "${c.title}" first=${blocks[0]!.id} blocks=${blocks.length} marked=${blocks.filter(struckMark).length}`
-            + (revised > 0 ? ` revised=${revised}` : '');
+            + (revised > 0 ? ` revised=${revised}` : '') + (retyped > 0 ? ` retyped=${retyped}` : '');
         });
         const before = live.filter((b) => b.chapter === -1).length;
-        const { struck, revised } = counts();
+        const { struck, revised, retyped } = counts();
         return [
-          `"${view.title}": ${live.length} live blocks, ${view.struck} already struck by the person (hidden), ${struck} marked, ${revised} revised.`,
+          `"${view.title}": ${live.length} live blocks, ${view.struck} already struck by the person (hidden), ${struck} marked, ${revised} revised, ${retyped} retyped.`,
           before ? `${before} blocks before the first chapter.` : '',
           ...rows,
         ].filter(Boolean).join('\n');
@@ -297,6 +347,7 @@ export function askToolbox(view: AskView): AskToolbox {
           flags: selectorProps.flags,
           chapter: selectorProps.chapter,
           only: onlyProp,
+          category_is: categoryIsProp,
           show: { type: 'integer', description: 'How many examples, at most 30 (default 10).' },
         },
         required: ['pattern'],
@@ -304,7 +355,8 @@ export function askToolbox(view: AskView): AskToolbox {
       run(a) {
         const re = regex(a['pattern'], a['flags']);
         const keep = filtered(a['only']);
-        const hits = live.filter((b) => keep(b)
+        const kind = a['category_is'] === undefined ? null : categoryArg(a['category_is'], 'category_is');
+        const hits = live.filter((b) => keep(b) && (kind === null || categoryOf(b) === kind)
           && (a['chapter'] === undefined || b.chapter === Number(a['chapter'])) && re.test(textOf(b)));
         const show = Math.min(30, Math.max(1, Number(a['show'] ?? 10)));
         return `${hits.length} matches (${hits.filter(struckMark).length} already marked). By chapter: ${perChapter(hits) || 'none'}\n${examples(hits, show)}`;
@@ -327,13 +379,19 @@ export function askToolbox(view: AskView): AskToolbox {
         const blocks = select(a);
         const fresh = blocks.filter((b) => !struckMark(b));
         const revised = fresh.filter(revisedMark).length;
+        const retyped = fresh.filter(retypedMark).length;
         const summary = `${blocks.length} blocks (${blocks.length - fresh.length} already marked). By chapter: ${perChapter(blocks) || 'none'}`;
         if (a['dry_run'] === true) {
-          return `WOULD MARK ${summary}${revised > 0 ? `; ${revised} of them are revised, and marking drops the revision` : ''}\n${examples(blocks, 12)}`;
+          return `WOULD MARK ${summary}${revised > 0 ? `; ${revised} of them are revised, and marking drops the revision` : ''}`
+            + `${retyped > 0 ? `; ${retyped} of them are retyped, and marking drops the retyping` : ''}\n${examples(blocks, 12)}`;
         }
-        for (const b of fresh) marks.set(b.id, { kind: 'strike', reason });
+        for (const b of fresh) {
+          marks.set(b.id, { kind: 'strike', reason });
+          retypes.delete(b.id);
+        }
         return `MARKED ${fresh.length} new as "${reason}". ${summary}.`
           + (revised > 0 ? ` ${revised} had been revised; the revision is dropped, since the block goes.` : '')
+          + (retyped > 0 ? ` ${retyped} had been retyped; the retyping is dropped, since the block goes.` : '')
           + ` ${totals()}`;
       },
     },
@@ -457,42 +515,149 @@ export function askToolbox(view: AskView): AskToolbox {
         return `REVISED ${changes.length} blocks as "${reason}". ${where}.${refused}\n${show(6)}\n${totals()}`;
       },
     },
+    /*
+     * ── WHAT KIND OF BLOCK IT IS (Owen, 2026-11-01) ─────────────────────────
+     *
+     * *"if something is marked as a footnote but its really a chapter title, it
+     * has the tools it needs to correct that?"* It had not: read showed the
+     * [Footnote] and nothing could change it. This is `mark`'s shape for the
+     * block's kind — one id, or a selector, narrowed by the kind a block is now,
+     * dry run first — and, for a heading, the division above it, since a title
+     * and a chapter start are two things in this book.
+     */
+    {
+      name: 'recategorize',
+      description: `Change what KIND of block blocks are (a heading read as a footnote, a quotation read as body text), with a short reason the person will review the changes under. Kinds, exactly as spelled: ${CATEGORIES.join(', ')}. Give id for one block, or a selector (ids, pattern, span or range, optionally chapter), and/or category_is to take only blocks that are currently that kind; category_is alone takes every block of that kind. starts_chapter:true also starts a chapter at each block (only when the new kind is Title or Section-header), titled with the block's words unless chapter_title is given (one block only); starts_chapter:false takes away a chapter that starts at the block. A heading does not start a chapter unless you say so. Blocks marked for removal are skipped. ALWAYS use dry_run:true first when you use a selector or category_is.`,
+      parameters: {
+        type: 'object',
+        properties: {
+          id: { type: 'string', description: 'One block to change.' },
+          ...selectorProps,
+          category_is: categoryIsProp,
+          category: { type: 'string', enum: [...CATEGORIES], description: 'The kind the blocks become.' },
+          starts_chapter: { type: 'boolean', description: 'true: a chapter starts at each block. false: no chapter starts there. Omit to leave the chapters as they are.' },
+          chapter_title: { type: 'string', description: 'The chapter\'s title, when one block starts a chapter and its own words are not the title.' },
+          reason: { type: 'string', description: 'Short label, e.g. "chapter heading read as a footnote". Changes are grouped by it for review.' },
+          dry_run: { type: 'boolean' },
+        },
+        required: ['category', 'reason'],
+      },
+      run(a) {
+        const reason = reasonOf(a);
+        const to = categoryArg(a['category'], 'category');
+        const kind = a['category_is'] === undefined ? null : categoryArg(a['category_is'], 'category_is');
+        const selected = ['ids', 'pattern', 'span', 'range'].some((k) => a[k] !== undefined);
+        let blocks: Live[];
+        if (a['id'] !== undefined) {
+          if (selected) throw new Error('give id or a selector (ids, pattern, span, range), not both');
+          if (typeof a['id'] !== 'string') throw new Error('id must be a block id');
+          const b = byId.get(a['id']);
+          if (b === undefined) throw new Error(`there is no live block ${a['id']} (it may be struck already, or not exist)`);
+          blocks = [b];
+        } else if (selected) {
+          blocks = select(a);
+        } else if (kind !== null) {
+          blocks = live.filter((b) => a['chapter'] === undefined || b.chapter === Number(a['chapter']));
+        } else {
+          throw new Error('give id, a selector (ids, pattern, span, range) or category_is to say which blocks');
+        }
+        if (kind !== null) blocks = blocks.filter((b) => categoryOf(b) === kind);
+
+        const starts = a['starts_chapter'];
+        if (starts !== undefined && typeof starts !== 'boolean') throw new Error('starts_chapter must be true or false');
+        if (starts === true && !HEADINGS.has(to)) {
+          throw new Error(`a chapter starts at a heading; give category Title or Section-header to start one, not ${to}`);
+        }
+        const named = a['chapter_title'];
+        if (named !== undefined) {
+          if (starts !== true) throw new Error('chapter_title goes with starts_chapter:true');
+          if (typeof named !== 'string' || named.trim().length === 0) throw new Error('chapter_title must be the title\'s words');
+          if (blocks.length !== 1) throw new Error(`chapter_title names one chapter, and this call takes ${blocks.length} blocks; let each be titled by its own words, or retype them one at a time`);
+        }
+
+        const skippedStruck = blocks.filter(struckMark).length;
+        const changes: { b: Live; retype: Retype }[] = [];
+        let unchanged = 0;
+        for (const b of blocks) {
+          if (struckMark(b)) continue;
+          const had = startsAt.get(b.id) ?? null;
+          let chapter: AskChapterChange | null = null;
+          if (starts === true) {
+            const title = typeof named === 'string' ? named.replace(/\s+/g, ' ').trim() : titleOf(b);
+            if (had !== title) chapter = { start: true, title };
+          } else if (starts === false && had !== null) {
+            chapter = { start: false };
+          }
+          if (to === b.category && chapter === null) {
+            unchanged += 1;
+            if (a['dry_run'] !== true) retypes.delete(b.id);
+            continue;
+          }
+          changes.push({ b, retype: { reason, to, chapter } });
+        }
+        const where = `By chapter: ${perChapter(changes.map((c) => c.b)) || 'none'}`;
+        const notes = (skippedStruck > 0 ? ` ${skippedStruck} marked for removal, skipped.` : '')
+          + (unchanged > 0 ? ` ${unchanged} already ${to}${starts === undefined ? '' : ' with the chapter as asked'}, left as they are.` : '');
+        const show = (n: number): string => {
+          const step = Math.max(1, changes.length / n);
+          const picked = changes.length <= n ? changes : Array.from({ length: n }, (_, i) => changes[Math.floor(i * step)]!);
+          return picked.map((c) => `${c.b.id} [${categoryOf(c.b)} → ${c.retype.to}${chapterSaid(c.retype.chapter)}] ${clip(textOf(c.b), 140)}`).join('\n');
+        };
+        if (a['dry_run'] === true) return `WOULD RETYPE ${changes.length} blocks. ${where}.${notes}\n${show(12)}`;
+        for (const c of changes) retypes.set(c.b.id, c.retype);
+        return `RETYPED ${changes.length} blocks as "${reason}". ${where}.${notes}\n${show(6)}\n${totals()}`;
+      },
+    },
     {
       name: 'unmark',
-      description: 'Take marks and revisions off: by selector, or every block marked or revised with a given reason. A revised block goes back to its original text.',
+      description: 'Take marks, revisions and retypings off: by selector, or every block marked, revised or retyped with a given reason. A revised block goes back to its original text, a retyped one to its original kind and chapter.',
       parameters: {
         type: 'object',
         properties: {
           ...selectorProps,
-          reason: { type: 'string', description: 'Unmark every block marked or revised with exactly this reason.' },
+          reason: { type: 'string', description: 'Unmark every block marked, revised or retyped with exactly this reason.' },
         },
       },
       run(a) {
         const byReason = a['reason'] !== undefined && ['ids', 'pattern', 'span', 'range'].every((k) => a[k] === undefined);
-        const blocks = byReason ? live.filter((b) => marks.get(b.id)?.reason === a['reason']) : select(a);
         let n = 0;
-        for (const b of blocks) if (marks.delete(b.id)) n += 1;
+        if (byReason) {
+          for (const b of live) {
+            if (marks.get(b.id)?.reason === a['reason'] && marks.delete(b.id)) n += 1;
+            if (retypes.get(b.id)?.reason === a['reason'] && retypes.delete(b.id)) n += 1;
+          }
+        } else {
+          for (const b of select(a)) {
+            if (marks.delete(b.id)) n += 1;
+            if (retypes.delete(b.id)) n += 1;
+          }
+        }
         return `Unmarked ${n}. ${totals()}`;
       },
     },
     {
       name: 'marks_summary',
-      description: 'Every reason used so far, whether it marks or revises, how many blocks each holds, and examples.',
+      description: 'Every reason used so far, whether it marks, revises or retypes, how many blocks each holds, and examples.',
       parameters: { type: 'object', properties: {} },
       run() {
-        const groups = new Map<string, { kind: Mark['kind']; blocks: Live[] }>();
+        const groups = new Map<string, { kind: Mark['kind'] | 'category'; blocks: Live[] }>();
+        const add = (kind: Mark['kind'] | 'category', reason: string, b: Live): void => {
+          const key = `${kind}\u0000${reason}`;
+          const held = groups.get(key);
+          if (held === undefined) groups.set(key, { kind, blocks: [b] });
+          else held.blocks.push(b);
+        };
         for (const b of live) {
           const mark = marks.get(b.id);
-          if (mark === undefined) continue;
-          const key = `${mark.kind}\u0000${mark.reason}`;
-          const held = groups.get(key);
-          if (held === undefined) groups.set(key, { kind: mark.kind, blocks: [b] });
-          else held.blocks.push(b);
+          if (mark !== undefined) add(mark.kind, mark.reason, b);
+          const retype = retypes.get(b.id);
+          if (retype !== undefined) add('category', retype.reason, b);
         }
-        if (groups.size === 0) return 'Nothing marked or revised yet.';
+        if (groups.size === 0) return 'Nothing marked, revised or retyped yet.';
+        const said = { strike: 'marked', text: 'revised', category: 'retyped' } as const;
         return [...groups.entries()].map(([key, g]) => {
           const reason = key.slice(key.indexOf('\u0000') + 1);
-          return `"${reason}" (${g.kind === 'strike' ? 'marked' : 'revised'}): ${g.blocks.length}\n${examples(g.blocks, 3)}`;
+          return `"${reason}" (${said[g.kind]}): ${g.blocks.length}\n${examples(g.blocks, 3)}`;
         }).join('\n\n');
       },
     },
@@ -509,10 +674,24 @@ export function askToolbox(view: AskView): AskToolbox {
       const out: AskMark[] = [];
       for (const b of live) {
         const mark = marks.get(b.id);
-        if (mark === undefined) continue;
-        out.push(mark.kind === 'strike'
-          ? { id: b.id, kind: 'strike', reason: mark.reason, before: b.text }
-          : { id: b.id, kind: 'text', reason: mark.reason, before: b.text, after: mark.after });
+        if (mark !== undefined) {
+          out.push(mark.kind === 'strike'
+            ? { id: b.id, kind: 'strike', reason: mark.reason, before: b.text }
+            : { id: b.id, kind: 'text', reason: mark.reason, before: b.text, after: mark.after });
+        }
+        const retype = retypes.get(b.id);
+        if (retype !== undefined) {
+          out.push({
+            id: b.id,
+            kind: 'category',
+            reason: retype.reason,
+            before: b.text,
+            from: b.category,
+            to: retype.to,
+            chapter: retype.chapter,
+            chapterBefore: startsAt.get(b.id) ?? null,
+          });
+        }
       }
       return out;
     },

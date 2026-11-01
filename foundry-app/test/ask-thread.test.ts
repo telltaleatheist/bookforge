@@ -112,3 +112,16 @@ test('the thread file: absent is none, it round-trips, and a bad one is refused 
   fs.writeFileSync(file, 'nope');
   await expect(ask.readThreadAt(file)).rejects.toThrow(/is not JSON/);
 });
+
+test('a kept run reads every kind of mark, a retyping included, and refuses a malformed one', () => {
+  const before = { id: 'e-1', reason: 'r', before: 'B' };
+  expect(ask.isAskMark({ ...before, kind: 'strike' })).toBe(true);
+  expect(ask.isAskMark({ ...before, kind: 'text', after: 'A' })).toBe(true);
+  const retype = { ...before, kind: 'category', from: 'Footnote', to: 'Section-header', chapter: { start: true, title: 'T' }, chapterBefore: null };
+  expect(ask.isAskMark(retype)).toBe(true);
+  expect(ask.isAskMark({ ...retype, chapter: null, chapterBefore: 'Old' })).toBe(true);
+  expect(ask.isAskMark({ ...retype, chapter: { start: false } })).toBe(true);
+  expect(ask.isAskMark({ ...retype, chapter: { start: true } })).toBe(false);
+  expect(ask.isAskMark({ ...retype, to: undefined })).toBe(false);
+  expect(ask.isAskMark({ ...retype, chapterBefore: undefined })).toBe(false);
+});
