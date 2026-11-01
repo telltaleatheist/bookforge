@@ -387,11 +387,14 @@ import { StudioItem } from '../../models/studio.types';
       margin-bottom: 4px;
     }
 
+    /* A row never pushes the list sideways: tags that don't fit are cut at the edge (the +N says how many more). */
     .item-meta {
       display: flex;
       align-items: center;
       gap: 8px;
       font-size: 11px;
+      min-width: 0;
+      overflow: hidden;
     }
 
     .status-badge {
@@ -459,6 +462,8 @@ import { StudioItem } from '../../models/studio.types';
       display: inline-flex;
       gap: 3px;
       margin-left: 4px;
+      min-width: 0;
+      overflow: hidden;
     }
 
     .tag-mini {

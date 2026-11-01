@@ -166,7 +166,7 @@ import { isBookPath } from '@shared/document/book-path';
           (reorder)="onBrowseReorder($event)"
         />
       } @else {
-      <desktop-split-pane [primarySize]="280" [minSize]="200" [maxSize]="500">
+      <desktop-split-pane [primarySize]="340" [minSize]="200" [maxSize]="500">
         <!-- Left Panel: List -->
         <div pane-primary class="list-panel">
           <div class="panel-header">
