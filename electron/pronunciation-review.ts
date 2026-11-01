@@ -58,6 +58,7 @@ export function readGuideReview(projectDir: string, at: string, sentenceOf: Sent
     decision: entry.decision,
     senses: entry.senses.map((s): GuideReviewSense => ({
       meaning: s.meaning, reading: s.reading, periodIsPart: s.periodIsPart,
+      ...(s.kind === undefined ? {} : { kind: s.kind }),
       ...(s.problem === undefined ? {} : { problem: s.problem }),
     })),
     spots: entry.occurrences.map((o) => ({
@@ -89,7 +90,9 @@ const spotKey = (o: { at: string; printed: string; nth: number }): string => `${
 
 function sameSenses(a: readonly GlossarySense[], b: readonly GuideReviewSense[]): boolean {
   return a.length === b.length && a.every((s, i) => s.meaning === b[i]!.meaning && s.reading === b[i]!.reading
-    && s.periodIsPart === b[i]!.periodIsPart);
+    && s.periodIsPart === b[i]!.periodIsPart
+    // A refused meaning a person decided is a change even when its reading is the one refused.
+    && (s.problem === undefined) === (b[i]!.problem === undefined));
 }
 
 /**

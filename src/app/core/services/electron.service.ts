@@ -2884,6 +2884,12 @@ export class ElectronService {
     return { success: false, error: 'Not running in Electron' };
   }
 
+  /** Stop one step of a queued run — the pronunciation guide's Stop. */
+  async cancelQueueStep(stepId: string, reason: string): Promise<{ success: boolean; error?: string }> {
+    if (this.isElectron) return (window as any).electron.queue.cancel({ stepId }, reason);
+    return { success: false, error: 'Not running in Electron' };
+  }
+
   /** The whole queue, every time it changes. */
   onQueueChanged(callback: (snapshot: QueueSnapshot) => void): () => void {
     if (!this.isElectron) return () => {};

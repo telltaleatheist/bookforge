@@ -459,7 +459,8 @@ const entries = (where) => JSON.parse(fs.readFileSync(where.glossaryFile, 'utf8'
     const ceo = { key: 'CEO', kind: 'caps', count: 1, printed: { CEO: 1 }, samples: [], occurrences: [] };
     assert.match(glossary.senseProblem(ceo, { meaning: 'chief', kind: 'abbreviation', reading: 'Chief Executive Officer', periodIsPart: false }),
       /never expanded/);
-    assert.strictEqual(glossary.acronymRead({ ...ceo, key: 'DC', printed: { DC: 1 } }, { meaning: 'x', kind: 'abbreviation', reading: 'D C', periodIsPart: false }).reading, '');
+    assert.strictEqual(glossary.acronymRead({ ...ceo, key: 'DC', printed: { DC: 1 } }, { meaning: 'x', kind: 'abbreviation', reading: 'D C', periodIsPart: false }).reading, 'D C',
+      'its letters spaced: the letters reading');
     assert.strictEqual(glossary.senseProblem({ ...ceo, key: 'THE', printed: { THE: 2 } }, { meaning: 'the', kind: 'word', reading: 'the', periodIsPart: false }), null);
     // The answer must say what each meaning is.
     assert.match(glossary.parseAnswer(JSON.stringify({ decision: 'reading', senses: [{ meaning: 'x', reading: 'y', periodIsPart: false }], why: '' })),
@@ -467,6 +468,51 @@ const entries = (where) => JSON.parse(fs.readFileSync(where.glossaryFile, 'utf8'
     assert.deepStrictEqual(glossary.parseAnswer(JSON.stringify({
       decision: 'reading', senses: [{ meaning: 'ESP', kind: 'acronym', reading: '', periodIsPart: false }], why: 'w',
     })).senses[0].kind, 'acronym');
+  });
+
+  await test('initials said letter by letter are spelled U S M C; never expanded (Owen, 2026-10-31)', () => {
+    const caps = (key) => ({ key, kind: 'caps', count: 1, printed: { [key]: 1 }, samples: [], occurrences: [] });
+    const sense = (kind, reading) => ({ meaning: 'm', kind, reading, periodIsPart: false });
+    const read = (form, s) => glossary.acronymRead(form, s);
+    assert.deepStrictEqual(read(caps('USMC'), sense('initials', '')), { meaning: 'm', kind: 'initials', reading: 'U S M C', periodIsPart: false });
+    assert.strictEqual(read(caps('NASA'), sense('acronym', '')).reading, '', 'said as a word: as printed');
+    // An expansion of a short run, or of a run with no vowel, is still initials: its letters.
+    assert.strictEqual(read(caps('BEF'), sense('abbreviation', 'British Expeditionary Force')).reading, 'B E F');
+    assert.strictEqual(read(caps('TV'), sense('abbreviation', 'television')).reading, 'T V');
+    assert.strictEqual(read(caps('NKVD'), sense('abbreviation', 'the Soviet secret police')).reading, 'N K V D', 'no vowel: letters');
+    // A longer run with a vowel may be a word: an expansion stays refused, for the sentence pass.
+    const aids = read(caps('AIDS'), sense('abbreviation', 'acquired immunodeficiency syndrome'));
+    assert.match(glossary.senseProblem(caps('AIDS'), aids), /never expanded/);
+    assert.strictEqual(read(caps('SOMUA'), sense('abbreviation', 'SOMUA')).reading, '', 'a long run given as printed stays as printed');
+    assert.strictEqual(read(caps('THE'), sense('word', 'the')).reading, 'the', 'a shouted word is its word');
+    assert.strictEqual(glossary.senseProblem(caps('USMC'), read(caps('USMC'), sense('initials', ''))), null);
+    // Dotted initials: their letters, the periods consumed with them.
+    const us = { key: 'u.s', kind: 'abbreviation', count: 2, printed: { 'U.S.': 2 }, samples: [], occurrences: [] };
+    const lettered = read(us, { meaning: 'United States', kind: 'abbreviation', reading: 'United States', periodIsPart: true });
+    assert.deepStrictEqual([lettered.reading, lettered.periodIsPart], ['U S', true]);
+    assert.strictEqual(glossary.senseProblem(us, lettered), null);
+    assert.strictEqual(read(us, sense('acronym', 'U.S.')).reading, '', 'called a word: as printed');
+    assert.strictEqual(read(us, sense('abbreviation', 'U.S.')).reading, 'U S', 'dotted initials given as printed are spelled');
+    assert.strictEqual(glossary.spotReplace({ printed: 'U.S.', endsSentence: false }, lettered), 'U S');
+    assert.strictEqual(glossary.spotReplace({ printed: 'U.S.', endsSentence: true }, lettered), 'U S.');
+    // Lower case used as a word stays a word, whatever the model calls it (esp is "essp").
+    assert.strictEqual(read({ ...us, key: 'esp', printed: { esp: 3 } }, sense('initials', 'E S P')).reading, '');
+    // The answer may say "initials".
+    assert.strictEqual(glossary.parseAnswer(JSON.stringify({
+      decision: 'reading', senses: [{ meaning: 'USMC', kind: 'initials', reading: '', periodIsPart: false }], why: 'w',
+    })).senses[0].kind, 'initials');
+  });
+
+  await test('millimeters are not a numeral; a corps numeral in capitals is (Blitzkrieg Legend, 2026-10-31)', () => {
+    const abbr = (key) => ({ key, kind: 'abbreviation', count: 1, printed: { [key]: 1 }, samples: [], occurrences: [] });
+    assert.strictEqual(glossary.senseProblem(abbr('mm'), { meaning: 'millimeters', kind: 'abbreviation', reading: 'millimeters', periodIsPart: true }), null);
+    assert.strictEqual(glossary.senseProblem(abbr('cm'), { meaning: 'centimeters', kind: 'abbreviation', reading: 'centimeters', periodIsPart: true }), null);
+    assert.match(glossary.senseProblem(abbr('ii'), { meaning: 'volume two', kind: 'numeral', reading: 'Volume Two', periodIsPart: true }),
+      /says more than the numeral/, 'a numeral meaning still says only its number');
+    const corps = { key: 'XXXXI', kind: 'caps', count: 1, printed: { XXXXI: 1 }, samples: [], occurrences: [] };
+    assert.strictEqual(glossary.senseProblem(corps, { meaning: 'corps', kind: 'numeral', reading: 'Forty-One', periodIsPart: false }), null);
+    assert.match(glossary.senseProblem(corps, { meaning: 'corps', kind: 'numeral', reading: 'the Forty-First Corps', periodIsPart: false }),
+      /says more than the numeral/);
   });
 
   await test('meanings said alike pool their weight; a numeral read without its name gets it back', () => {

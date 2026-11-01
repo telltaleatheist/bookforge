@@ -18,6 +18,11 @@ export interface GuideReviewSense {
   reading: string;
   /** Whether a period right after the form is this meaning's own ("esp." for especially). */
   periodIsPart: boolean;
+  /**
+   * What the guide's model said the meaning IS (initials said letter by letter, an acronym said as a
+   * word, an abbreviation, a numeral, a word). Absent on a meaning a person wrote.
+   */
+  kind?: 'initials' | 'acronym' | 'abbreviation' | 'numeral' | 'word';
   /** Why the guide could not give this meaning's reading to the book; its spots stay as printed. */
   problem?: string;
 }

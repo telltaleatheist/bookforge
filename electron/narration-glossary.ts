@@ -109,7 +109,7 @@ import type { FoundryFormsAtLister, FoundryFormsLister, FoundryJobRequest } from
 
 export const GLOSSARY_FORMAT = 'narration-glossary/v2';
 /** The prompt's version: meanings decided under another prompt are a different question. */
-export const GLOSSARY_PROMPT_VERSION = 'g6';
+export const GLOSSARY_PROMPT_VERSION = 'g7';
 /** What Foundry reads (its src/clean/fixed-readings.ts). */
 const FIXED_READINGS_FORMAT = 'fixed-readings/v1';
 
@@ -144,7 +144,7 @@ export interface PrintedForm {
  * the same book also used "esp." as an abbreviation — so the rule moved out of the
  * prompt's hope and into the classification the model is good at.
  */
-export type SenseKind = 'acronym' | 'abbreviation' | 'numeral' | 'word';
+export type SenseKind = 'initials' | 'acronym' | 'abbreviation' | 'numeral' | 'word';
 
 /** One way the book uses a form, and how it is said. */
 export interface GlossarySense {
@@ -361,8 +361,7 @@ export const GLOSSARY_SYSTEM = [
   '',
   'HOW THE AUTHOR PRINTED IT IS THE SIGNAL. Keep what the author printed wherever it can be said as printed:',
   '- A form in lower case used as an ordinary word in its sentences ("a laser", "his radar", a clipped word like "rep" or "lab", a word the author coined) is a word, said as printed, even if it began as initials or as a longer word. Never turn it into capitals and never expand it.',
-  '- Initials with periods ("U.S.", "e.g." aside) that stand for a name are said as their letters, as printed: never expanded into the name.',
-  '- Capitals (FBI, NASA, SPD) are said as printed: the voice reads them as letters or as a word. Never expand them into what they stand for.',
+  '- Initials, in capitals or with periods ("FBI", "USMC", "U.S."; "e.g." aside), are NEVER expanded into what they stand for: "US" is never "United States". Say only whether they are said LETTER BY LETTER (FBI, US, USMC, SS, BEF) or AS A WORD (NASA, NATO, AIDS, UNESCO).',
   '- A common English word set in capitals only for emphasis or display (THE, SHOT, REVOLUTION) is that word: give it in lower case.',
   '',
   'Expand only what a reader expands without thinking:',
@@ -376,7 +375,7 @@ export const GLOSSARY_SYSTEM = [
   '',
   'For each sense give:',
   '- "meaning": a few words naming it, enough to recognise it in a sentence.',
-  '- "kind": "acronym" if the form is initials (said as printed — never expanded); "abbreviation" if it shortens a word or phrase the narrator says in full; "numeral" for a roman numeral; "word" for a word or a name.',
+  '- "kind": "initials" if the form is initials said letter by letter, "acronym" if it is initials said as a word (both with "reading" "": the narrator is given the letters, never the name); "abbreviation" if it shortens a word or phrase the narrator says in full; "numeral" for a roman numeral; "word" for a word or a name.',
   '- "reading": the words the narrator says for it, in ordinary spelling, or "" if that sense is said as printed.',
   '- "periodIsPart": true if a period right after the form belongs to it as an abbreviation\'s period ("approx.", "ed.", "Dr."); false if a period after it can only end the sentence.',
   '',
@@ -398,7 +397,7 @@ const ANSWER_SCHEMA = {
         required: ['meaning', 'kind', 'reading', 'periodIsPart'],
         properties: {
           meaning: { type: 'string' },
-          kind: { type: 'string', enum: ['acronym', 'abbreviation', 'numeral', 'word'] },
+          kind: { type: 'string', enum: ['initials', 'acronym', 'abbreviation', 'numeral', 'word'] },
           reading: { type: 'string' },
           periodIsPart: { type: 'boolean' },
         },
@@ -467,13 +466,13 @@ export function parseAnswer(content: string): GlossaryAnswer | string {
   const senses: GlossarySense[] = [];
   for (const raw of one.senses as { meaning?: unknown; kind?: unknown; reading?: unknown; periodIsPart?: unknown }[]) {
     if (typeof raw?.meaning !== 'string' || typeof raw.reading !== 'string' || typeof raw.periodIsPart !== 'boolean'
-      || !['acronym', 'abbreviation', 'numeral', 'word'].includes(raw.kind as string)) {
+      || !['initials', 'acronym', 'abbreviation', 'numeral', 'word'].includes(raw.kind as string)) {
       return `a sense in the answer did not have its four fields (${content.slice(0, 80)})`;
     }
     senses.push({ meaning: raw.meaning.trim(), kind: raw.kind as SenseKind, reading: raw.reading.trim(), periodIsPart: raw.periodIsPart });
   }
-  // A lower-case acronym's reading is its capitals, given by rule, so it may come back empty.
-  if (one.decision === 'reading' && !senses.some((s) => s.reading.length > 0 || s.kind === 'acronym')) {
+  // Initials' reading is their letters, given by rule, so it may come back empty.
+  if (one.decision === 'reading' && !senses.some((s) => s.reading.length > 0 || s.kind === 'acronym' || s.kind === 'initials')) {
     return 'it chose a reading and gave none';
   }
   /*
@@ -505,10 +504,17 @@ export function senseProblem(form: PrintedForm, sense: GlossarySense): string | 
    * (spaced or not — the voice says them alike) or, where it is a common word set
    * in capitals for emphasis, as that word in lower case — never as what it stands for.
    */
-  if (form.kind === 'caps') {
+  /*
+   * A numeral printed in capitals the collector did not take for one ("XXXXI Corps",
+   * measured 2026-10-31 on Blitzkrieg Legend: "Forty-One" was refused as an
+   * expansion) is a numeral, held to the numeral's own rule below.
+   */
+  const capsNumeral = form.kind === 'caps' && sense.kind === 'numeral' && /^[IVXLCDM]+$/.test(form.key);
+  if (form.kind === 'caps' && !capsNumeral) {
     const letters = reading.replace(/[\s.]/g, '');
     if (letters.toUpperCase() !== form.key) return `"${form.key}" is printed in capitals and is never expanded ("${reading}")`;
   }
+  if (capsNumeral && !numberWordsOnly(reading)) return `the reading "${reading}" says more than the numeral`;
   // Initials with periods ("U.S.", "h.c.") likewise: their letters, never the name (measured: "United States").
   if (isDottedInitials(form) && reading.replace(/[\s.]/g, '').toLowerCase() !== form.key.replace(/\./g, '')) {
     return `"${Object.keys(form.printed)[0]}" is initials and is never expanded ("${reading}")`;
@@ -526,7 +532,8 @@ export function senseProblem(form: PrintedForm, sense: GlossarySense): string | 
   }
   // A lower-case numeral ("ii.", "xix") is read as its number and nothing else: measured
   // 2026-10-03, "Vol. ii." came back "Volume Two" — the word before it said twice.
-  if (form.kind === 'abbreviation' && /^[ivxlcdm]+$/.test(form.key) && !numberWordsOnly(reading)) {
+  // Only a MEANING that is a numeral: "mm" and "cm" are numeral letters too, and are millimeters (2026-10-31).
+  if (form.kind === 'abbreviation' && sense.kind === 'numeral' && /^[ivxlcdm]+$/.test(form.key) && !numberWordsOnly(reading)) {
     return `the reading "${reading}" says more than the numeral`;
   }
   return null;
@@ -550,12 +557,13 @@ function numberWordsOnly(reading: string): boolean {
 }
 
 /**
- * AN ACRONYM IS SAID AS PRINTED — never expanded, never re-cased. Owen,
- * 2026-10-03, on Deathstalker's "esp": *"esp is pronounced in this book. like
- * 'essp'. not 'ee ess pee'"* — and the principle under it, for any book: how the
- * author printed it is the signal. Capitals are read as letters or a word by the
- * voice; a lower-case acronym the author uses as a word is a word. So once the
- * model says a meaning IS an acronym, what it is said as is not a judgement.
+ * INITIALS ARE NEVER EXPANDED, AND HOW THEY ARE SAID FOLLOWS FROM WHAT THEY ARE.
+ * Owen, 2026-10-03, on Deathstalker's "esp": *"esp is pronounced in this book. like
+ * 'essp'. not 'ee ess pee'"* — how the author printed it is the signal: a lower-case
+ * acronym the author uses as a word is a word, said as printed. Capitals and dotted
+ * initials (2026-10-31, g7) are said AS A WORD (`acronym`: NASA, as printed) or
+ * LETTER BY LETTER (`initials`: spelled "U S M C" for the narrator, see `lettered`).
+ * So once the model says which a meaning is, its reading is not a judgement.
  */
 export function acronymRead(form: PrintedForm, sense: GlossarySense): GlossarySense {
   if (form.kind === 'roman') {
@@ -571,13 +579,61 @@ export function acronymRead(form: PrintedForm, sense: GlossarySense): GlossarySe
     }
     return sense;
   }
-  if (sense.kind === 'acronym') return { ...sense, reading: '', periodIsPart: false };
-  // Capitals read as their own letters ("D C" for "DC") are the form as printed; so are initials.
-  if (form.kind === 'caps' && sense.reading.replace(/[\s.]/g, '') === form.key) return { ...sense, reading: '' };
-  if (isDottedInitials(form) && sense.reading.replace(/[\s.]/g, '').toLowerCase() === form.key.replace(/\./g, '')) {
-    return { ...sense, reading: '' };
+  const initials = form.kind === 'caps' || isDottedInitials(form);
+  if (!initials) {
+    // Lower case used as a word ("esp", "laser"): said as printed, whatever the model called it.
+    if (sense.kind === 'acronym' || sense.kind === 'initials') return { ...sense, reading: '', periodIsPart: false };
+    return sense;
   }
+  if (sense.kind === 'acronym') return { ...sense, reading: '', periodIsPart: false };
+  if (sense.kind === 'initials') return lettered(form, sense);
+  const given = sense.reading.replace(/[\s.]/g, '');
+  // A shouted word ("THE" → "the") and a numeral keep their reading; one that is the form again is as printed.
+  if (sense.kind === 'word' || sense.kind === 'numeral') return given === form.key ? { ...sense, reading: '' } : sense;
+  /*
+   * ITS OWN LETTERS — as printed, spaced, or no reading at all. Spaced, dotted, or
+   * a short run they are said one by one; a longer run with a vowel, given as
+   * printed, may be a word (SOMUA) and stays as printed.
+   */
+  if (given === '' || given.toUpperCase() === lettersOf(form).join('')) {
+    return /\s/.test(sense.reading) || isDottedInitials(form) || lettersByRule(form) ? lettered(form, sense) : { ...sense, reading: '' };
+  }
+  /*
+   * AN EXPANSION IS REFUSED (`senseProblem`), but a short one still says what the
+   * form is: initials. Two or three capitals, or a run with no vowel, is said letter
+   * by letter whatever it stands for — Foundry's cleanup holds the same rule ("US"
+   * is "U S", never "us") — so it gets that reading rather than going to the
+   * sentence pass; so do initials with periods (U.S.S.R.), which are never a word. A
+   * longer run of capitals with a vowel may be said as a word (AIDS): refused.
+   */
+  if (isDottedInitials(form) || lettersByRule(form)) return lettered(form, sense);
   return sense;
+}
+
+/** The letters initials are said by, in capitals: "U.S." → U, S. */
+function lettersOf(form: PrintedForm): string[] {
+  return [...form.key.replace(/[^\p{L}]/gu, '').toUpperCase()];
+}
+
+/** Two or three letters, or no vowel: initials said letter by letter, whatever they stand for. */
+function lettersByRule(form: PrintedForm): boolean {
+  const letters = lettersOf(form);
+  return letters.length <= 3 || !letters.some((l) => 'AEIOUY'.includes(l));
+}
+
+/**
+ * INITIALS SAID LETTER BY LETTER ARE SPELLED FOR THE NARRATOR, SPACED (Owen,
+ * 2026-10-31): *"voice models often have trouble with acronyms. they sometimes try
+ * to read it as a word. USMC becomes yousmeck ... we cant spell it U. S. M. C.
+ * though because it reads the letters like theyre sentences, with big long pauses
+ * in there. maybe U S M C would be better"* — and *"i dont want it to spell out
+ * acronyms"*: never the name they stand for. Capitals, single spaces, no periods —
+ * the shape Foundry's cleanup already writes ("C E N T A G"). A dotted form's
+ * periods belong to it, so "U.S." is replaced whole (`spotReplace` keeps a period
+ * that also ends the sentence).
+ */
+function lettered(form: PrintedForm, sense: GlossarySense): GlossarySense {
+  return { ...sense, kind: 'initials', reading: lettersOf(form).join(' '), periodIsPart: isDottedInitials(form) };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1055,7 +1111,9 @@ export async function ensureNarrationGlossary(opts: EnsureGlossaryOptions): Prom
           const problem = senseProblem(form, sense);
           return problem === null ? sense : { ...sense, problem };
         });
-        return { ...base, decision: answer.decision, senses, why: answer.why };
+        // Initials the model kept as printed are spelled by rule, and a spelling is a reading.
+        const decision = senses.some((s) => s.reading.length > 0 && s.problem === undefined) ? 'reading' : answer.decision;
+        return { ...base, decision, senses, why: answer.why };
       };
 
       // ── Step 2: the meanings ──────────────────────────────────────────────
