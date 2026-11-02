@@ -210,6 +210,8 @@ const api: FoundryApi = {
     thread: (projectDir) => ipcRenderer.invoke('ask:thread', projectDir),
     endThread: (projectDir) => ipcRenderer.invoke('ask:end-thread', projectDir),
     onProgress: (listener) => subscribe<AskProgress>('ask:progress', listener),
+    presets: () => ipcRenderer.invoke('ask:presets'),
+    savePresets: (kept) => ipcRenderer.invoke('ask:save-presets', kept),
   },
 
   analysis: {

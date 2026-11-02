@@ -126,6 +126,12 @@ export class UiService {
    */
   readonly askReviewOpen = signal(false);
   /**
+   * Ask's Presets modal (Owen, 2026-11-02): the kept questions, each with a
+   * checkbox, and Send runs the checked ones in order. A modal for the same
+   * reason the review card is one: one question at a time.
+   */
+  readonly askPresetsOpen = signal(false);
+  /**
    * The Analysis dialog — read this book against the categories (docs/ANALYSIS.md).
    *
    * IT IS ONE OF THE FIVE THAT CONFIGURE AN ACT AGAINST THE POSITION, so it looks
@@ -397,6 +403,7 @@ export class UiService {
     this.metadataOpen,
     this.captureNewOpen,
     this.askReviewOpen,
+    this.askPresetsOpen,
     this.analysisOpen,
     this.confirmOpen,
   ] as const;
@@ -521,6 +528,14 @@ export class UiService {
 
   closeAskReview(): void {
     this.askReviewOpen.set(false);
+  }
+
+  openAskPresets(): void {
+    this.only(this.askPresetsOpen);
+  }
+
+  closeAskPresets(): void {
+    this.askPresetsOpen.set(false);
   }
 
   openAnalysis(): void {

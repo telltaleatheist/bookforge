@@ -1,5 +1,21 @@
 # Foundry's IPC channels — the whole list, for the collision audit
 
+## Ask's presets (2026-11-02)
+
+**COUNTED BY SCRIPT OVER `app/electron/ipc.ts`: 156 `ipcMain.handle` call sites,
+156 distinct channel names, zero `ipcMain.on`.** The figure before this change
+measured **154**; two doors arrived and none left.
+
+| Channel | Request/result |
+| --- | --- |
+| `ask:presets` | nothing → `AskPresetsKept`: the Presets modal's list and which were checked last, from `app-settings.json` (`askPresets`, `askPresetsChecked`); a null field is "never changed", which the renderer draws as the shipped defaults (shared/ask-presets.ts). |
+| `ask:save-presets` | `Partial<AskPresetsKept>` → `AskPresetsKept` as kept. A list of null restores the defaults. Clamped (`clampAskPresets`) and written whole: `writeAppSettings` now writes through a temp file and a rename (`writeAtomicallySync`), for every setting. |
+
+`AskSession` gained `highlights`, `hitLimit` and `chain` (all optional, so earlier runs still read), and
+`AskMark` four kinds: `join`, `split`, `restore`, `link`. `AskView` carries `struckBlocks` and `loose`.
+
+**FOR BOOKFORGE:** two more `ask:` handlers, registered by `mountFoundry` like the rest.
+
 ## Ask's thread (2026-11-01)
 
 **COUNTED BY SCRIPT OVER `app/electron/ipc.ts`: 154 `ipcMain.handle` call sites,

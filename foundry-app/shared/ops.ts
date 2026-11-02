@@ -921,9 +921,64 @@ export function replayOps(
    */
   chapters: readonly BookChapter[] = [],
 ): Replayed {
-  return ops.some((op) => STRUCTURAL.has(op.op))
+  const replayed = ops.some((op) => STRUCTURAL.has(op.op))
     ? interpret(rows, ops, loose, chapters)
     : fold(rows, ops, loose, chapters);
+  return unnoteRetyped(rows, replayed);
+}
+
+/**
+ * A NOTE RETYPED AS ANYTHING ELSE STOPS BEING A NOTE (Owen, 2026-11-01). In
+ * Escape from Camp 14 the engine read each chapter's number — "2" — as a
+ * footnote and bound it to the other lone "2"s in the book; retyping e-178 as a
+ * Title changed its label and left its `refs`, so a click on the heading still
+ * opened the note card on the table of contents.
+ *
+ * THE RULE IS THE REPLAY'S, applied to the chain's OUTCOME and on both paths: a
+ * row the FILE holds as a Footnote that the chain leaves as some other kind
+ * loses its `note` and its `refs`, and every number those refs claimed becomes
+ * a loose marker — "no note carries this number", the same flag a rebind loss
+ * raises — while the row leaves the loose notes, since it is no note at all.
+ * Nothing about the edit is recorded beside the category op, which is why a
+ * book's existing retypings pick this up by replay alone.
+ *
+ * RETYPING IT BACK TO A FOOTNOTE BRINGS THE LINKS BACK. The replay is a function
+ * of the file and the chain, and a chain that ends with the row a Footnote is
+ * one this rule never touches, so the file's refs stand again. That is the
+ * undo's own answer and not a resurrection by guesswork.
+ */
+function unnoteRetyped(fileRows: readonly BookRow[], replayed: Replayed): Replayed {
+  const wasNote = new Set(fileRows.filter((row) => row.category === 'Footnote').map((row) => row.id));
+  if (wasNote.size === 0) return replayed;
+  const texts = new Map(replayed.rows.map((row) => [row.id, row.text] as const));
+  const freed: BookLoose['markers'] = [];
+  const unnoted = new Set<string>();
+  const rows = replayed.rows.map((row) => {
+    if (!wasNote.has(row.id) || row.category === 'Footnote') return row;
+    if (row.refs === undefined && row.note === undefined) return row;
+    for (const ref of row.refs ?? []) {
+      const printed = row.note ?? printedOf(texts.get(ref.block)?.slice(ref.at, ref.at + ref.len) ?? '');
+      if (printed !== null) freed.push({ block: ref.block, at: ref.at, len: ref.len, printed });
+    }
+    unnoted.add(row.id);
+    const { refs: _refs, note: _note, ...rest } = row;
+    return rest;
+  });
+  if (unnoted.size === 0) return replayed;
+  return {
+    ...replayed,
+    rows,
+    loose: {
+      markers: [...replayed.loose.markers, ...freed],
+      notes: replayed.loose.notes.filter((id) => !unnoted.has(id)),
+    },
+  };
+}
+
+/** The number a reference's characters print — superscript or plain digits — or null. */
+function printedOf(run: string): number | null {
+  if (/^[⁰¹²³⁴⁵⁶⁷⁸⁹]+$/.test(run)) return printedNoteNumber(run);
+  return /^\d{1,3}$/.test(run) ? Number.parseInt(run, 10) : null;
 }
 
 /**

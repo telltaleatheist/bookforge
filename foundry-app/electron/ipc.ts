@@ -70,6 +70,7 @@ import { cancelAsk, endAskThread, readAskSessions, readAskThread, saveAskSession
 import { cancelSuggest, startSuggest } from './suggest-categories';
 import type { SuggestCategoriesRequest } from '../shared/category-suggestions';
 import type { AskRequest, AskSession } from '../shared/ask';
+import type { AskPresetsKept } from '../shared/ask-presets';
 import type { JobModelKind } from '../shared/job-models';
 import type {
   SettingsDocument,
@@ -3408,6 +3409,18 @@ export function registerIpc(): void {
     saveAskSession(projectDir, session));
   ipcMain.handle('ask:thread', (_event, projectDir: string) => readAskThread(projectDir));
   ipcMain.handle('ask:end-thread', (_event, projectDir: string) => endAskThread(projectDir));
+  // Ask's presets are the app's, kept in app-settings.json (shared/ask-presets.ts).
+  ipcMain.handle('ask:presets', (): AskPresetsKept => {
+    const kept = readAppSettings();
+    return { presets: kept.askPresets, checked: kept.askPresetsChecked };
+  });
+  ipcMain.handle('ask:save-presets', (_event, patch: Partial<AskPresetsKept>): AskPresetsKept => {
+    const kept = writeAppSettings({
+      ...(patch.presets === undefined ? {} : { askPresets: patch.presets }),
+      ...(patch.checked === undefined ? {} : { askPresetsChecked: patch.checked }),
+    });
+    return { presets: kept.askPresets, checked: kept.askPresetsChecked };
+  });
 
   ipcMain.handle('library:dir', () => readAppSettings().libraryDir);
   ipcMain.handle('library:set', (_event, dir: string) => {

@@ -35,6 +35,7 @@ import { foldQuotes, wordDiff, type ChangeRange, type WordDiff } from '@shared/w
 import { api } from '../../core/foundry';
 import { LedgerService } from '../../core/ledger.service';
 import { AnalysisViewService } from '../../core/analysis-view.service';
+import { AskService } from '../../core/ask.service';
 import { ChangesService } from '../../core/changes.service';
 import { StageService } from '../../core/stage.service';
 import type { LitRange } from '../../core/analysis';
@@ -4410,9 +4411,33 @@ export class BookViewComponent {
    * project changed, the step deleted — so there is no state in this component
    * that could go stale and nothing here to clear.
    */
-  private readonly hitLight = computed<ReadonlyMap<string, readonly LitRange[]>>(
-    () => this.analysis.lit(),
-  );
+  private readonly hitLight = computed<ReadonlyMap<string, readonly LitRange[]>>(() => {
+    const lit = this.analysis.lit();
+    const place = this.askLight();
+    if (place === null) return lit;
+    return new Map(lit).set(place.id, [place.range]);
+  });
+
+  private readonly asks = inject(AskService);
+
+  /**
+   * THE PLACE AN ASK RUN POINTED AT, when the person clicked it in the panel
+   * (Owen, 2026-11-02) — drawn with the analysis light's own runs, on the live
+   * pane of its book only, over the words it quoted or the whole block. It
+   * takes that block's analysis light for as long as it is lit: one block, one
+   * light, and the place is the thing just asked for.
+   */
+  private readonly askLight = computed<{ id: string; range: LitRange } | null>(() => {
+    const pointed = this.asks.pointed();
+    if (pointed === null || this.atStep() !== null || pointed.projectDir !== this.tab().path) return null;
+    const row = this.view()?.rows.find((one) => one.id === pointed.highlight.id);
+    if (row === undefined || row.struck === true) return null;
+    const quote = pointed.highlight.quote;
+    const at = quote === null ? -1 : row.text.indexOf(quote);
+    const start = at === -1 ? 0 : at;
+    const end = at === -1 ? row.text.length : at + quote!.length;
+    return { id: row.id, range: { start, end, key: pointed.key, category: 'ask' } };
+  });
 
   /**
    * WHICH SIDE OF THE OPEN COMPARISON THIS PANE IS — or neither, which is
@@ -4556,7 +4581,7 @@ export class BookViewComponent {
    * own argument: the panel draws the same selection on its card, and a copy on
    * this component would be a second opinion about which finding is lit.
    */
-  protected readonly chosenHit = computed<string | null>(() => this.analysis.selected());
+  protected readonly chosenHit = computed<string | null>(() => this.analysis.selected() ?? this.askLight()?.range.key ?? null);
 
   protected readonly lines = computed<Line[]>(() => {
     const book = this.book();
@@ -5700,7 +5725,8 @@ export class BookViewComponent {
      * null already, so the else-branch writes null over null once per click and
      * costs a comparison.
      */
-    if (from.hitKey !== null) this.analysis.select(from.hitKey);
+    // A place an Ask run pointed at is lit with these runs too, and is no analysis finding.
+    if (from.hitKey !== null && !from.hitKey.startsWith('ask:')) this.analysis.select(from.hitKey);
     else if (untracked(() => this.analysis.selected()) !== null) this.analysis.select(null);
     if (from.id === null) {
       // A press on the paper itself, off every block: the ordinary "let go of

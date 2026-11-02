@@ -107,3 +107,20 @@ test('weather is an unreachable server, a 5xx, a 429; any other refusal is not',
   expect(loop.isWeather(new sdk.CrucibleRefused(400, 'invalid_request', 'bad', null))).toBe(false);
   expect(loop.isWeather(new Error('anything else'))).toBe(false);
 });
+
+/*
+ * EIGHTY ROUNDS (Owen, 2026-11-02: runs reached forty). The window holds a long
+ * run because the history is cut in chunks; every request of an eighty-round run
+ * with fat read results is sent, and never more than HISTORY_HIGH rounds of it.
+ */
+test(`a ${loop.ASK_MAX_ROUNDS}-round run stays inside a 32k window the whole way`, () => {
+  expect(loop.ASK_MAX_ROUNDS).toBe(80);
+  const fit = loop.fitter(32_000, 4000, 20_000);
+  const h = history(0, 6000);
+  for (let round = 0; round < loop.ASK_MAX_ROUNDS; round += 1) {
+    const { wired, chars } = fit.wire(h, round, 'state of the work');
+    expect(callsIn(wired).length).toBeLessThanOrEqual(loop.HISTORY_HIGH);
+    expect(chars).toBeGreaterThan(0);
+    h.push(...roundOf(round, 6000));
+  }
+});

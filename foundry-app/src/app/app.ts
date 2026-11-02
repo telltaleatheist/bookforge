@@ -17,6 +17,7 @@ import { MintMetaDialogComponent } from './components/mint-meta-dialog/mint-meta
 import { SimplifyDialogComponent } from './components/simplify-dialog/simplify-dialog.component';
 import { CleanDialogComponent } from './components/clean-dialog/clean-dialog.component';
 import { AskReviewDialogComponent } from './components/ask-review-dialog/ask-review-dialog.component';
+import { AskPresetsDialogComponent } from './components/ask-presets-dialog/ask-presets-dialog.component';
 import { AnalysisDialogComponent } from './components/analysis-dialog/analysis-dialog.component';
 import { TranslateDialogComponent } from './components/translate-dialog/translate-dialog.component';
 import { CaptureNewDialogComponent } from './components/capture-new-dialog/capture-new-dialog.component';
@@ -120,7 +121,7 @@ const IS_MAC = navigator.platform.toUpperCase().includes('MAC');
     QueueBarComponent, ToastTrayComponent,
     OcrDialogComponent, ExportDialogComponent, TranslateDialogComponent,
     SimplifyDialogComponent, CleanDialogComponent,
-    MetadataDialogComponent, MintMetaDialogComponent, AskReviewDialogComponent,
+    MetadataDialogComponent, MintMetaDialogComponent, AskReviewDialogComponent, AskPresetsDialogComponent,
     AnalysisDialogComponent,
     ConfirmDialogComponent, HostOpDialogComponent, HostStatusComponent,
     CaptureNewDialogComponent, CaptureProgressComponent, SetupWizardComponent,
@@ -262,6 +263,9 @@ const IS_MAC = navigator.platform.toUpperCase().includes('MAC');
       -->
       @if (ui.askReviewOpen()) {
         <app-ask-review-dialog />
+      }
+      @if (ui.askPresetsOpen()) {
+        <app-ask-presets-dialog />
       }
 
       <!--
@@ -736,6 +740,11 @@ export class App {
     if (event.key === 'Escape' && this.ui.simplifyOpen()) {
       event.preventDefault();
       this.ui.closeSimplify();
+      return;
+    }
+    if (event.key === 'Escape' && this.ui.askPresetsOpen()) {
+      event.preventDefault();
+      this.ui.closeAskPresets();
       return;
     }
     if (event.key === 'Escape' && this.ui.metadataOpen()) {

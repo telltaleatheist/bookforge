@@ -1,6 +1,6 @@
 import { ChangeDetectionStrategy, Component, computed, inject, signal } from '@angular/core';
 
-import { askMarkKey, askRowStates, groupByReason, planUndo, retypeSaid, type AskMark } from '@shared/ask';
+import { askRowStates, planUndo, retypeSaid, reviewOf, structureSaid, type AskMark } from '@shared/ask';
 import type { ReplayedRow } from '@shared/ops';
 import { wordDiff, type ChangeRange } from '@shared/word-diff';
 
@@ -90,10 +90,10 @@ import { UiService } from '../../core/ui.service';
                   @let moved = movedWhy().get(key(item));
                   @let undoing = isUndoing(item);
                   <div class="row" [class.ghost]="moved !== undefined" [class.open]="opened().has(key(item))">
-                    <button class="at" (click)="travel(book, item.id)">
+                    <button class="at" (click)="travel(book, goesTo(item))">
                       <span class="at-id">{{ item.id }}</span>
-                      @if (pageOf(item.id) > 0) {
-                        <span class="at-page">≈ {{ pageOf(item.id) }}</span>
+                      @if (pageOf(goesTo(item)) > 0) {
+                        <span class="at-page">≈ {{ pageOf(goesTo(item)) }}</span>
                       }
                     </button>
 
@@ -104,6 +104,11 @@ import { UiService } from '../../core/ui.service';
                         <p class="q-line">{{ shown(key(item), item.before) }}</p>
                         <p class="q-line q-after q-retype" [class.undoing]="undoing">
                           <span class="arrow">→ </span>{{ retyped(item) }}
+                        </p>
+                      } @else if (item.kind === 'join' || item.kind === 'split' || item.kind === 'restore' || item.kind === 'link') {
+                        <p class="q-line" [class.struck]="item.kind === 'restore' && undoing">{{ shown(key(item), item.before) }}</p>
+                        <p class="q-line q-after q-retype" [class.undoing]="undoing" [title]="renamedOnUndo(item)">
+                          <span class="arrow">→ </span>{{ structure(item) }}
                         </p>
                       } @else {
                         <p class="q-line">
@@ -417,14 +422,19 @@ export class AskReviewDialogComponent {
     return 'This book is still opening.';
   });
 
-  /** The latest kept run for the book in front. */
+  /**
+   * The latest kept run for the book in front — or, when it was a step of a
+   * with its name (`reviewOf`, shared/ask.ts).
+   * with its name (, shared/ask.ts).
+   */
   protected readonly session = computed(() => {
     const tab = this.stage.activeDocument();
     if (tab === null || tab.kind !== 'book') return null;
-    return this.asks.latest().get(tab.path) ?? null;
+    const latest = this.asks.latest().get(tab.path) ?? null;
+    return latest === null ? null : reviewOf(this.asks.history().get(tab.path) ?? [latest], latest);
   });
 
-  protected readonly groups = computed(() => groupByReason(this.session()?.items ?? []));
+  protected readonly groups = computed(() => this.session()?.groups ?? []);
 
   /** The rows as the sheet draws them, by id. */
   private readonly rows = computed<ReadonlyMap<string, ReplayedRow>>(() =>
@@ -438,30 +448,54 @@ export class AskReviewDialogComponent {
     const items = this.session()?.items ?? [];
     const states = askRowStates([...this.rows().values()], this.pane()?.view()?.chapters ?? []);
     const plan = planUndo(items, states, this.pane()?.translated() === true);
-    return new Map(plan.skipped.map((skip) => [askMarkKey(skip.item), skip.why]));
+    return new Map(plan.skipped.map((skip) => [this.key(skip.item), skip.why]));
   });
 
   /** The marks a verdict can be passed on. */
   protected readonly undoable = computed<readonly AskMark[]>(() =>
-    (this.session()?.items ?? []).filter((item) => !this.movedWhy().has(askMarkKey(item))));
+    (this.session()?.items ?? []).filter((item) => !this.movedWhy().has(this.key(item))));
 
-  /** The marks set to Undo, by `askMarkKey`. Empty is every row kept, which is the default. */
+  /** The marks set to Undo, by row key (`reviewOf`'s `keyOf`). Empty is every row kept, which is the default. */
   private readonly undoing = signal<ReadonlySet<string>>(new Set());
   /** The rows somebody opened for the block's whole text. */
   protected readonly opened = signal<ReadonlySet<string>>(new Set());
   protected readonly working = signal(false);
 
   protected readonly chosen = computed<readonly AskMark[]>(() =>
-    this.undoable().filter((item) => this.undoing().has(askMarkKey(item))));
+    this.undoable().filter((item) => this.undoing().has(this.key(item))));
   protected readonly keptCount = computed(() => this.undoable().length - this.chosen().length);
 
   protected isUndoing(item: AskMark): boolean {
-    return this.undoing().has(askMarkKey(item)) && !this.movedWhy().has(askMarkKey(item));
+    return this.undoing().has(this.key(item)) && !this.movedWhy().has(this.key(item));
   }
 
   /** A mark's row identity: a block's retyping and its revision are two rows. */
   protected key(item: AskMark): string {
-    return askMarkKey(item);
+    return this.session()?.keyOf(item) ?? '';
+  }
+
+  /**
+   * WHERE A MARK'S BLOCK IS NOW, for its row's jump: a joined block lives in
+   * the one it went into, and a split block in its first half.
+   */
+  protected goesTo(item: AskMark): string {
+    if (item.kind === 'join') return item.into;
+    if (item.kind === 'split') return `${item.id}/1`;
+    return item.id;
+  }
+
+  /** What a join, a split, a restore or a link does, said for its row. */
+  protected structure(item: Extract<AskMark, { kind: 'join' | 'split' | 'restore' | 'link' }>): string {
+    return structureSaid(item);
+  }
+
+  /** The one thing undoing a join or a split cannot give back: the blocks' names. */
+  protected renamedOnUndo(item: AskMark): string {
+    if (item.kind === 'join' || item.kind === 'split') {
+      return 'Undo puts the words, kinds and chapter back exactly; the blocks come back under new names (…/1, …/2).';
+    }
+    if (item.kind === 'link') return 'A link cannot be undone from here yet: this program has no unlink.';
+    return '';
   }
 
   /** What a retyping does, said for its row. */
@@ -474,8 +508,8 @@ export class AskReviewDialogComponent {
   }
 
   protected allUndone(items: readonly AskMark[]): boolean {
-    const live = items.filter((item) => !this.movedWhy().has(askMarkKey(item)));
-    return live.length > 0 && live.every((item) => this.undoing().has(askMarkKey(item)));
+    const live = items.filter((item) => !this.movedWhy().has(this.key(item)));
+    return live.length > 0 && live.every((item) => this.undoing().has(this.key(item)));
   }
 
   protected pageOf(id: string): number {
@@ -520,7 +554,7 @@ export class AskReviewDialogComponent {
     this.undoing.update((held) => {
       const next = new Set(held);
       for (const item of items) {
-        const key = askMarkKey(item);
+        const key = this.key(item);
         if (this.movedWhy().has(key)) continue;
         if (undo) next.add(key);
         else next.delete(key);
@@ -534,7 +568,7 @@ export class AskReviewDialogComponent {
   }
 
   protected undoAll(): void {
-    this.undoing.set(new Set(this.undoable().map((item) => askMarkKey(item))));
+    this.undoing.set(new Set(this.undoable().map((item) => this.key(item))));
   }
 
   protected toggleOpen(key: string): void {

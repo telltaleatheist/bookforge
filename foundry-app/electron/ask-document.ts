@@ -59,17 +59,22 @@ import {
   type CrucibleClient,
 } from '@crucible/client';
 
-import { askToolbox, clip, type AskToolbox } from './ask-tools';
+import { askToolbox, clip, roundSaid, tallySaid, type AskSaid, type AskToolbox } from './ask-tools';
 import { writeAtomically } from './atomic';
 import { openSession, type HeldSession } from './crucible-dispatch';
 import { topRankedCrucible } from './crucible-models';
 import { clientFor, crucibleServerNamed, resolveEngine } from './crucible-registry';
 import { bookAtPosition, opsDir } from './projects';
 import { JOB_MODEL_CEILING_B } from '../shared/job-models';
-import type { AskMark, AskProgress, AskRequest, AskResult, AskSession, AskThread } from '../shared/ask';
+import type { AskHighlight, AskMark, AskProgress, AskRequest, AskResult, AskSession, AskThread } from '../shared/ask';
 
-/** Rounds of tool calls, stated in the prompt the way the experiment states it. */
-export const ASK_MAX_ROUNDS = 40;
+/**
+ * Rounds of tool calls, stated in the prompt the way the experiment states it.
+ * Eighty since Owen's runs began reaching forty (2026-11-02); the history is cut
+ * in chunks ({@link fitter}), so a long run's requests stay inside the window,
+ * and a run that still reaches the limit offers "Keep going" on its thread.
+ */
+export const ASK_MAX_ROUNDS = 80;
 
 /**
  * THE HISTORY IS CUT IN CHUNKS, NEVER ROUND BY ROUND (Owen, 2026-10-29).
@@ -253,10 +258,18 @@ type Held = { message: ChatMessage; round?: number };
 export interface Finished {
   text: string;
   rounds: number;
+  /** True when the run stopped at the round limit rather than by finishing. */
+  hitLimit: boolean;
   history: Held[];
   fit: ReturnType<typeof fitter>;
   tools: ChatTool[];
   maxTokens: number;
+}
+
+/** The three counts the progress frame has always carried, which the panel's older lines still read. */
+function threeCounts(box: AskToolbox): { struck: number; revised: number; retyped: number } {
+  const { struck, revised, retyped } = box.counts();
+  return { struck, revised, retyped };
 }
 
 async function runAsk(
@@ -278,7 +291,8 @@ async function runAsk(
       round,
       maxRounds: ASK_MAX_ROUNDS,
       says,
-      ...box.counts(),
+      ...threeCounts(box),
+      tally: tallySaid(box.counts()),
     });
   };
 
@@ -299,7 +313,9 @@ async function runAsk(
       model: to.model,
       summary: summary.text,
       items: box.items(),
+      highlights: box.highlights(),
       rounds: summary.rounds,
+      hitLimit: summary.hitLimit,
       seconds: Math.round((Date.now() - t0) / 1000),
       ...kept,
     };
@@ -323,7 +339,7 @@ export const NOTE_MAX_TOKENS = 2000;
 export const NOTE_ASK = `The person may ask a follow-up question about this book. Write a working note for yourself to start from then; the person will not see it. Plain text, at most about 300 words:
 - what the person has asked so far, every question;
 - what you found, with block ids;
-- what you marked, revised or retyped, and under which reasons;
+- what you marked, revised, retyped, joined, split, restored or linked, and under which reasons, and the places you pointed at;
 - what you searched for or checked and ruled out;
 - what is still open or waiting on the person's decision.
 If you started from an earlier note, carry forward what still matters from it. Call no tools.`;
@@ -427,16 +443,19 @@ async function keepThread(
 function systemPrompt(maxRounds: number): string {
   return `You help a person edit a book they are turning into an audiobook. The book is a list of blocks (paragraphs, headings, captions, and so on), each with an id like e-123. Blocks the person already removed are hidden from you.
 
-Your job: carry out the person's request by MARKING blocks for removal, by REVISING the words of a block with exact substitutions, or by RETYPING a block whose kind was read wrong (a chapter heading read as a footnote, a quotation read as body text), each with a short reason. You never change the book yourself; the person reviews your marks, revisions and retypings grouped by reason and decides. They are kept by the tools, not by you; use marks_summary or read with only:"marked", only:"revised" or only:"retyped" to see them.
+Your job: carry out the person's request by MARKING blocks for removal, by REVISING the words of a block with exact substitutions, by RETYPING a block whose kind was read wrong (a chapter heading read as a footnote, a quotation read as body text), by JOINING a block onto the one it continues, by SPLITTING a block read as two things, by RENAMING a chapter, by RESTORING a block the person removed by mistake, or by LINKING a footnote to its number — each with a short reason. You never change the book yourself; the person reviews all of these grouped by reason and decides. They are kept by the tools, not by you; use marks_summary or read with only:"marked", "revised", "retyped", "joined" or "split" to see them.
 
 Work the way a careful editor would with a long book:
 1. Survey: outline, then read a sample of the start and of a few chapters to learn how the book is built — what recurs, what is body text, what is apparatus.
 2. Turn what you find into rules. Search to see how far a pattern reaches and what it would catch by mistake. Use mark with dry_run first, then mark.
-3. Use exact ids for one-off judgment calls. To change words rather than remove a block, use revise on that block, quoting the exact text to replace. To make the same change in many blocks (a leading number on every paragraph, a recurring stray mark), use revise_pattern with dry_run first, and tighten the pattern until the examples show only what should change. Each block's kind is shown in brackets ([Footnote], [Section-header]; no tag is Text). To change a kind, use recategorize, by id or with category_is and a pattern (dry_run first); with starts_chapter:true it also starts a chapter at a heading. A heading and a chapter start are separate: say starts_chapter only when the book really divides there.
+3. Use exact ids for one-off judgment calls. To change words rather than remove a block, use revise on that block, quoting the exact text to replace. To make the same change in many blocks (a leading number on every paragraph, a recurring stray mark), use revise_pattern with dry_run first, and tighten the pattern until the examples show only what should change. Each block's kind is shown in brackets ([Footnote], [Section-header]; no tag is Text). To change a kind, use recategorize, by id or with category_is and a pattern (dry_run first); with starts_chapter:true it also starts a chapter at a heading. A heading and a chapter start are separate: say starts_chapter only when the book really divides there; rename_chapter gives an existing chapter a new title.
+   Prose broken in two by a picture or a caption: mark the picture and the caption for removal first, then join the block after them onto the block before them (join, dry_run first to see the seam). A heading run into the paragraph after it, or two paragraphs read as one: split at the exact words the second part begins with, giving a half its kind (first_category:"Section-header").
+   Blocks the person removed are hidden; read only:"struck" shows them, and restore proposes one back when it was removed by mistake. read only:"unlinked" shows footnotes nothing points at and numbers no note carries; link_footnote binds one to the other.
+   When the person asks where something is, or to show the evidence for what you say, use highlight: it changes nothing and lets the person click through to each place.
 4. Check your work: read with only:"unmarked" through each chapter's non-body regions, and spot-check what you marked, so nothing is missed and nothing wrongly caught. Unmark mistakes.
-5. When you are done, stop calling tools and write a short summary for the person: what you marked, revised or retyped under each reason and anything you were unsure of. If the person only asked a question, answer it in that summary and mark nothing.
+5. When you are done, stop calling tools and write a short summary for the person: what you changed under each reason and anything you were unsure of. If the person only asked a question, answer it in that summary (highlighting the places it rests on) and mark nothing.
 
-Old rounds are removed from this conversation from time to time to save space, so do not rely on re-reading old results; call the tool again if you need it. The last message of every request states the marks, revisions and retypings so far. You have at most ${maxRounds} rounds of tool calls.`;
+Old rounds are removed from this conversation from time to time to save space, so do not rely on re-reading old results; call the tool again if you need it. The last message of every request states your work so far. You have at most ${maxRounds} rounds of tool calls.`;
 }
 
 /**
@@ -462,7 +481,7 @@ export async function loop(
     { message: { role: 'user', content: opening } },
   ];
   let summary = '';
-  const done = (rounds: number): Finished => ({ text: summary, rounds, history, fit, tools, maxTokens });
+  const done = (rounds: number, hitLimit: boolean): Finished => ({ text: summary, rounds, hitLimit, history, fit, tools, maxTokens });
 
   for (let round = 0; ; round += 1) {
     signal.throwIfAborted();
@@ -514,11 +533,25 @@ export async function loop(
       round,
     });
     if (reply.content !== null && reply.content.trim().length > 0) summary = reply.content.trim();
-    const { struck, revised, retyped } = box.counts();
-    progress(round, reply.content, `Round ${round + 1}: ${calls.length === 0 ? 'no tool calls' : calls.map((c) => c.function.name).join(', ')} · ${struck} marked${revised > 0 ? `, ${revised} revised` : ''}${retyped > 0 ? `, ${retyped} retyped` : ''}`);
+
+    /*
+     * THE CALLS RUN BEFORE THE ROUND IS SAID, so its line can say what each one
+     * did (`read ch 12 (e-400–e-460)`, `search "Caption" → 14`) and its tally
+     * counts this round's marks rather than the last one's. The tools word it
+     * (ask-tools.ts `roundSaid`); this only joins it to the round.
+     */
+    const said: AskSaid[] = [];
+    for (const call of calls) {
+      const result = box.call(call.function.name, call.function.arguments);
+      said.push(result.said);
+      let content = result.content;
+      if (round + 1 >= ASK_MAX_ROUNDS) content += '\n\nNo more tool calls can be made. Write your summary for the person now.';
+      history.push({ message: { role: 'tool', toolCallId: call.id, content }, round });
+    }
+    progress(round, reply.content, `Round ${round + 1}: ${roundSaid(said)} · ${tallySaid(box.counts())}`);
 
     if (calls.length === 0) {
-      if (final) return done(round + 1);
+      if (final) return done(round + 1, true);
       if (reply.finishReason === 'length') {
         // Ran out mid-thought: not the model's answer. Asked to act.
         history.push({
@@ -530,27 +563,7 @@ export async function loop(
         });
         continue;
       }
-      return done(round + 1);
-    }
-
-    for (const call of calls) {
-      const tool = box.tools.find((t) => t.name === call.function.name);
-      let content: string;
-      try {
-        if (tool === undefined) {
-          throw new Error(`there is no tool "${call.function.name}"; the tools are ${box.tools.map((t) => t.name).join(', ')}`);
-        }
-        const parsed: unknown = call.function.arguments ? JSON.parse(call.function.arguments) : {};
-        if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-          throw new Error('the arguments must be a JSON object');
-        }
-        content = tool.run(parsed as Record<string, unknown>);
-      } catch (err) {
-        // A refusal is the tool's answer; the model reads it and corrects itself.
-        content = `couldn't run ${call.function.name}: ${(err as Error).message}`;
-      }
-      if (round + 1 >= ASK_MAX_ROUNDS) content += '\n\nNo more tool calls can be made. Write your summary for the person now.';
-      history.push({ message: { role: 'tool', toolCallId: call.id, content }, round });
+      return done(round + 1, false);
     }
   }
 }
@@ -731,7 +744,31 @@ export function isAskMark(value: unknown): value is AskMark {
     return typeof m['from'] === 'string' && typeof m['to'] === 'string' && chapterOk
       && (m['chapterBefore'] === null || typeof m['chapterBefore'] === 'string');
   }
-  return m['kind'] === 'text' && typeof m['after'] === 'string';
+  const str = (k: string): boolean => typeof m[k] === 'string';
+  const num = (k: string): boolean => typeof m[k] === 'number' && Number.isInteger(m[k]) && (m[k] as number) >= 0;
+  const kindOrNull = (k: string): boolean => m[k] === null || typeof m[k] === 'string';
+  switch (m['kind']) {
+    case 'text': return str('after');
+    case 'join': return str('category') && str('into') && str('intoBefore');
+    case 'split': return str('from') && num('at') && str('first') && str('second')
+      && kindOrNull('firstCategory') && kindOrNull('secondCategory') && kindOrNull('chapterBefore');
+    case 'restore': return true;
+    case 'link': return str('block') && num('at') && num('len') && str('blockBefore');
+    default: return false;
+  }
+}
+
+function isChainStep(value: unknown): boolean {
+  if (typeof value !== 'object' || value === null) return false;
+  const c = value as Record<string, unknown>;
+  return typeof c['chain'] === 'string' && typeof c['step'] === 'string'
+    && typeof c['index'] === 'number' && typeof c['of'] === 'number';
+}
+
+function isHighlight(value: unknown): value is AskHighlight {
+  if (typeof value !== 'object' || value === null) return false;
+  const h = value as Record<string, unknown>;
+  return typeof h['id'] === 'string' && (h['quote'] === null || typeof h['quote'] === 'string') && typeof h['note'] === 'string';
 }
 
 function isSession(value: unknown): value is AskSession {
@@ -740,6 +777,10 @@ function isSession(value: unknown): value is AskSession {
   return typeof s['id'] === 'string' && typeof s['at'] === 'string' && typeof s['request'] === 'string'
     && typeof s['server'] === 'string' && typeof s['model'] === 'string' && typeof s['summary'] === 'string'
     && Array.isArray(s['items']) && s['items'].every(isAskMark)
+    // Both absent on a run kept before they existed.
+    && (s['highlights'] === undefined || (Array.isArray(s['highlights']) && s['highlights'].every(isHighlight)))
+    && (s['hitLimit'] === undefined || typeof s['hitLimit'] === 'boolean')
+    && (s['chain'] === undefined || isChainStep(s['chain']))
     && typeof s['skipped'] === 'number' && typeof s['rounds'] === 'number' && typeof s['seconds'] === 'number';
 }
 

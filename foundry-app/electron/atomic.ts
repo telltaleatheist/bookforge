@@ -8,6 +8,7 @@
  * writing files that the book file and the ledger both depend on. Named for what
  * it does, so the next caller does not have to know what an EPUB is to find it.
  */
+import * as fs from 'node:fs';
 import { promises as fsp } from 'node:fs';
 import * as path from 'node:path';
 
@@ -51,6 +52,30 @@ export async function writeAtomically(destination: string, bytes: Buffer): Promi
       const code = (err as NodeJS.ErrnoException).code ?? '';
       if (!transient.has(code) || wait > 800) throw err;
       await new Promise((rest) => setTimeout(rest, wait));
+    }
+  }
+}
+
+/**
+ * `writeAtomically`, for a caller that cannot wait — the app's settings, whose
+ * readers and writers are synchronous all the way down. The same temp file
+ * beside the target, the same rename, and the same short retries of the same
+ * transient refusals, slept with `Atomics.wait` rather than a timer.
+ */
+export function writeAtomicallySync(destination: string, bytes: Buffer | string): void {
+  const target = path.resolve(destination);
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  const temporary = `${target}.writing`;
+  fs.writeFileSync(temporary, bytes);
+  const transient = new Set(['EPERM', 'EBUSY', 'EACCES']);
+  for (let wait = 50; ; wait *= 2) {
+    try {
+      fs.renameSync(temporary, target);
+      return;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code ?? '';
+      if (!transient.has(code) || wait > 800) throw err;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, wait);
     }
   }
 }

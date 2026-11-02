@@ -7,13 +7,13 @@ import { expect, test } from 'bun:test';
  * with (electron/ask-tools.ts), and the two plans that turn its marks into ops
  * and back (shared/ask.ts).
  */
-const { askToolbox, applyEdits } = await import('../electron/ask-tools');
+const { askToolbox, applyEdits, roundSaid, tallySaid } = await import('../electron/ask-tools');
 const { askMarkKey, groupByReason, planLanding, planUndo, retypeSaid } = await import('../shared/ask');
 import type { AskMark, AskRowState, AskView } from '../shared/ask';
 
 const VIEW: AskView = {
   title: 'A Test Book',
-  struck: 2,
+  struck: 2, struckBlocks: [], loose: { numbers: [], notes: [] },
   chapters: [{ id: 'e-1', title: 'One' }, { id: 'e-5', title: 'Two' }],
   blocks: [
     { id: 'e-1', text: 'Chapter One', category: 'Section-header', chapter: 0 },
@@ -33,14 +33,14 @@ function tools() {
   const run = (name: string, args: Record<string, unknown> = {}): string => {
     const tool = box.tools.find((t) => t.name === name);
     if (tool === undefined) throw new Error(`no tool ${name}`);
-    return tool.run(args);
+    return tool.run(args).content;
   };
   return { box, run };
 }
 
-test('the nine tools are offered, each with a schema', () => {
+test('the fifteen tools are offered, each with a schema', () => {
   const { box } = tools();
-  expect(box.tools.map((t) => t.name)).toEqual(['outline', 'read', 'search', 'mark', 'revise', 'revise_pattern', 'recategorize', 'unmark', 'marks_summary']);
+  expect(box.tools.map((t) => t.name)).toEqual(['outline', 'read', 'search', 'mark', 'revise', 'revise_pattern', 'recategorize', 'rename_chapter', 'join', 'split', 'restore', 'link_footnote', 'highlight', 'unmark', 'marks_summary']);
   for (const t of box.tools) expect((t.parameters as { type: string }).type).toBe('object');
 });
 
@@ -59,7 +59,7 @@ test('a span selects each start and what follows it, up to the next chapter', ()
   expect(box.items()).toEqual([]); // a dry run marks nothing
   run('mark', { span: { start: '^Study questions$', until: '^Chapter' }, reason: 'study question' });
   expect(box.items().map((m) => m.id)).toEqual(['e-3', 'e-4', 'e-7', 'e-8', 'e-9']);
-  expect(box.counts()).toEqual({ struck: 5, revised: 0, retyped: 0 });
+  expect(box.counts()).toMatchObject({ struck: 5, revised: 0, retyped: 0, joined: 0 });
 });
 
 test('a pattern can be held to one chapter, and a range is inclusive', () => {
@@ -110,7 +110,7 @@ test('revise_pattern changes many blocks at once, dry run first, and skips what 
   // A Watchtower-style book: a paragraph number before the prose, and one
   // paragraph whose prose itself opens with a number.
   const view: AskView = {
-    title: 'Numbered', struck: 0, chapters: [{ id: 'p-1', title: 'One' }],
+    title: 'Numbered', struck: 0, struckBlocks: [], loose: { numbers: [], notes: [] }, chapters: [{ id: 'p-1', title: 'One' }],
     blocks: [
       { id: 'p-1', text: '1 The earth is old, they say.', category: 'Text', chapter: 0 },
       { id: 'p-2', text: '2 “Who made it?” we ask.', category: 'Text', chapter: 0 },
@@ -120,7 +120,7 @@ test('revise_pattern changes many blocks at once, dry run first, and skips what 
     ],
   };
   const box = askToolbox(view);
-  const run = (name: string, args: Record<string, unknown>): string => box.tools.find((x) => x.name === name)!.run(args);
+  const run = (name: string, args: Record<string, unknown>): string => box.tools.find((x) => x.name === name)!.run(args).content;
   const find = '^\\d{1,3}\\s+(?=[A-Z“])';
   const dry = run('revise_pattern', { find, replace: '', reason: 'paragraph number', dry_run: true });
   expect(dry).toContain('WOULD REVISE 2 blocks');
@@ -253,7 +253,7 @@ test('marks group by reason in the order each reason first appears', () => {
 
 const RETYPE_VIEW: AskView = {
   title: 'A Footnoted Book',
-  struck: 0,
+  struck: 0, struckBlocks: [], loose: { numbers: [], notes: [] },
   chapters: [{ id: 'e-1', title: 'One' }],
   blocks: [
     { id: 'e-1', text: 'ONE', category: 'Section-header', chapter: 0 },
@@ -266,7 +266,7 @@ const RETYPE_VIEW: AskView = {
 
 function retypeTools() {
   const box = askToolbox(RETYPE_VIEW);
-  const run = (name: string, args: Record<string, unknown> = {}): string => box.tools.find((t) => t.name === name)!.run(args);
+  const run = (name: string, args: Record<string, unknown> = {}): string => box.tools.find((t) => t.name === name)!.run(args).content;
   return { box, run };
 }
 
@@ -277,7 +277,7 @@ test('recategorize by pattern within a kind: dry run first, then headings that s
   expect(dry).toContain('e-3 [Footnote → Section-header; starts chapter "THE SECOND PART"]');
   expect(box.items()).toEqual([]);
   run('recategorize', { category_is: 'Footnote', pattern: '^[A-Z* ]+$', category: 'Section-header', starts_chapter: true, reason: 'heading read as a footnote' });
-  expect(box.counts()).toEqual({ struck: 0, revised: 0, retyped: 2 });
+  expect(box.counts()).toMatchObject({ struck: 0, revised: 0, retyped: 2, joined: 0 });
   expect(box.items()).toEqual([
     { id: 'e-3', kind: 'category', reason: 'heading read as a footnote', before: 'THE *SECOND* PART', from: 'Footnote', to: 'Section-header', chapter: { start: true, title: 'THE SECOND PART' }, chapterBefore: null },
     { id: 'e-5', kind: 'category', reason: 'heading read as a footnote', before: 'THE THIRD PART', from: 'Footnote', to: 'Section-header', chapter: { start: true, title: 'THE THIRD PART' }, chapterBefore: null },
@@ -353,4 +353,41 @@ test('a retyping is skipped when the kind or the chapter moved under it', () => 
     .toEqual(['its kind has changed since the run']);
   expect(planUndo([start], rows([['a', 'A', false, 'Section-header', 'Renamed']]), false).skipped.map((s) => s.why))
     .toEqual(['the chapter at it has changed since the run']);
+});
+
+/*
+ * WHAT A ROUND SAYS (Owen, 2026-11-02): the working lines read *"read, read,
+ * read, read, etc"*. Each call says what it did, worded by its tool, and a
+ * round says each verb once.
+ */
+test('each call says what it did, and a refusal says what it was aimed at', () => {
+  const box = askToolbox(VIEW);
+  const said = (name: string, args: Record<string, unknown>) => box.call(name, JSON.stringify(args)).said;
+  expect(said('outline', {})).toEqual({ verb: 'outline', detail: '' });
+  expect(said('read', { chapter: 1, count: 3 })).toEqual({ verb: 'read', detail: 'ch 1 (e-5–e-6)' });
+  expect(said('read', { chapter: 0, only: 'unmarked', count: 2 })).toEqual({ verb: 'read', detail: 'unmarked in ch 0 (e-1)' });
+  expect(said('search', { pattern: 'cat' })).toEqual({ verb: 'search', detail: '"cat" → 2' });
+  expect(said('mark', { pattern: '^[0-9][.]', reason: 'study question', dry_run: true }))
+    .toEqual({ verb: 'dry run:', detail: '3 would be marked "study question"' });
+  expect(said('mark', { pattern: '^[0-9][.]', reason: 'study question' })).toEqual({ verb: 'marked', detail: '3 "study question"' });
+  expect(said('revise', { id: 'e-2', edits: [{ find: 'slept', replace: 'dozed' }], reason: 'word' }))
+    .toEqual({ verb: 'revised', detail: 'e-2 "word"' });
+  expect(said('recategorize', { id: 'e-3', category: 'Title', reason: 'heading' }))
+    .toEqual({ verb: 'retyped', detail: '1 → Title "heading"' });
+  expect(said('unmark', { reason: 'study question' })).toEqual({ verb: 'unmarked', detail: '3 "study question"' });
+  expect(said('read', { chapter: 99 })).toEqual({ verb: 'read', detail: 'ch 99 refused' });
+  expect(said('nonsense', {})).toEqual({ verb: 'nonsense', detail: 'is not a tool' });
+  expect(box.call('read', '{not json').said).toEqual({ verb: 'read', detail: 'from the start refused' });
+});
+
+test('a round says each verb once, caps its details, and tallies only what there is', () => {
+  const reads = [3, 4, 7, 8, 9].map((n) => ({ verb: 'read', detail: `ch ${n}` }));
+  expect(roundSaid([...reads, { verb: 'search', detail: '"Caption" → 14' }, { verb: 'read', detail: 'ch 10' }]))
+    .toBe('read ch 3, ch 4, ch 7 +3 more; search "Caption" → 14');
+  expect(roundSaid([{ verb: 'outline', detail: '' }, { verb: 'outline', detail: '' }])).toBe('outline ×2');
+  expect(roundSaid([])).toBe('no tool calls');
+  expect(roundSaid(Array.from({ length: 40 }, (_, i) => ({ verb: `v${i}`, detail: 'x'.repeat(20) }))).length).toBeLessThanOrEqual(221);
+  expect(tallySaid({ struck: 0, revised: 0, retyped: 0 })).toBe('nothing marked yet');
+  expect(tallySaid({ struck: 0, revised: 3, retyped: 0 })).toBe('3 revised');
+  expect(tallySaid({ struck: 2, revised: 1, retyped: 4 })).toBe('2 marked, 1 revised, 4 retyped');
 });

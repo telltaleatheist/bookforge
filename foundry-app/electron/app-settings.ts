@@ -19,7 +19,9 @@ import * as path from 'node:path';
 
 import { app } from 'electron';
 
+import { writeAtomicallySync } from './atomic';
 import { hostedLibraryDir } from './host';
+import { clampAskPresets, clampCheckedPresets, type AskPreset } from '../shared/ask-presets';
 import { readJson } from '../shared/json';
 import {
   ANY_SLOT,
@@ -341,6 +343,15 @@ export interface AppSettings {
    */
   lastJobModels: Partial<Record<JobModelKind, string>>;
 
+  /**
+   * ASK'S BUTTONS (Owen, 2026-11-02) — the person's own list, in order, or null
+   * for "never changed", which draws the shipped defaults
+   * (shared/ask-presets.ts). App-wide, not per book: the same jobs are asked
+   * of every book. Writing null is "Restore default buttons".
+   */
+  askPresets: AskPreset[] | null;
+  /** Which presets were checked when Send was last pressed, by id; null is never kept (the defaults). */
+  askPresetsChecked: string[] | null;
 }
 
 
@@ -783,6 +794,8 @@ export function readAppSettings(): AppSettings {
     setupCompleted: raw?.['setupCompleted'] === true,
     setupSkipped: clampSkipped(raw?.['setupSkipped']),
     lastJobModels: clampLastJobModels(raw?.['lastJobModels']),
+    askPresets: clampAskPresets(raw?.['askPresets']),
+    askPresetsChecked: clampCheckedPresets(raw?.['askPresetsChecked']),
   };
 }
 
@@ -824,14 +837,23 @@ export function writeAppSettings(patch: Partial<AppSettings>): AppSettings {
   if (patch.lastJobModels !== undefined) {
     root['lastJobModels'] = clampLastJobModels(patch.lastJobModels);
   }
+  if (patch.askPresets !== undefined) {
+    const kept = clampAskPresets(patch.askPresets);
+    if (kept === null) delete root['askPresets'];
+    else root['askPresets'] = kept;
+  }
+  if (patch.askPresetsChecked !== undefined) {
+    const checked = clampCheckedPresets(patch.askPresetsChecked);
+    if (checked === null) delete root['askPresetsChecked'];
+    else root['askPresetsChecked'] = checked;
+  }
   /*
    * NULL IS A VALUE HERE and clears the receipt — which is what re-installing
    * the page reader does. `undefined` still means "not in this patch", so the
    * two are genuinely different and the check has to be on `undefined` rather
    * than on truthiness.
    */
-  const file = settingsFile();
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, `${JSON.stringify(root, null, 2)}\n`, 'utf8');
+  // Whole or not at all: a write interrupted half way would read back as defaults, and lose every server and button.
+  writeAtomicallySync(settingsFile(), `${JSON.stringify(root, null, 2)}\n`);
   return readAppSettings();
 }

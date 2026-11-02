@@ -1,10 +1,11 @@
-import { Injectable, inject, signal } from '@angular/core';
+import { Injectable, computed, inject, signal } from '@angular/core';
 
 import {
   askRowStates,
+  askViewOf,
   planLanding,
   planUndo,
-  type AskBlock,
+  type AskHighlight,
   type AskMark,
   type AskPlan,
   type AskProgress,
@@ -12,9 +13,9 @@ import {
   type AskSession,
   type AskSkip,
   type AskThread,
-  type AskView,
 } from '@shared/ask';
 import type { Replayed } from '@shared/ops';
+import { AskChain, DEFAULT_CHECKED, askPresetsOrDefaults, type AskChainStep, type AskPreset, type AskPresetsKept, type AskStepEnd } from '@shared/ask-presets';
 
 import { BookStacksService, type BookStack } from './book-stacks.service';
 import { NoticeService } from './notice.service';
@@ -92,6 +93,134 @@ export class AskService {
   /** Which tab each run was started from, so the landing finds its pane. */
   private readonly tabOf = new Map<string, string>();
 
+  // ── The presets ────────────────────────────────────────────────────────────
+
+  /** What the settings hold (undefined until read). */
+  private readonly keptPresets = signal<AskPresetsKept | undefined>(undefined);
+  /** The modal's list — what is kept, or the shipped defaults. Its order is the run order. */
+  readonly presets = computed<readonly AskPreset[]>(() => askPresetsOrDefaults(this.keptPresets()?.presets ?? null));
+  /** Which were checked when Send was last pressed, or the defaults. */
+  readonly checkedPresets = computed<ReadonlySet<string>>(() => new Set(this.keptPresets()?.checked ?? DEFAULT_CHECKED));
+
+  async loadPresets(): Promise<void> {
+    if (!api || this.keptPresets() !== undefined) return;
+    try {
+      this.keptPresets.set(await api.ask.presets());
+    } catch (err) {
+      this.keptPresets.set({ presets: null, checked: null });
+      this.notices.notice.set(`Ask's presets could not be read, so the defaults are shown: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /** Keep the list (null restores the defaults) and/or which are checked. */
+  async savePresets(patch: { presets?: readonly AskPreset[] | null; checked?: readonly string[] }): Promise<void> {
+    if (!api) return;
+    try {
+      this.keptPresets.set(await api.ask.savePresets({
+        ...(patch.presets === undefined ? {} : { presets: patch.presets === null ? null : [...patch.presets] }),
+        ...(patch.checked === undefined ? {} : { checked: [...patch.checked] }),
+      }));
+    } catch (err) {
+      this.notices.notice.set(`Ask's presets could not be saved: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /**
+   * WHAT THE PRESETS MODAL SENDS WITH — the Ask panel's model choice, whether it
+   * is ready, whether a run is going, and the box's text ("Add preset" starts
+   * from it). The panel keeps it current; the modal only reads it.
+   */
+  readonly presetContext = signal<{
+    readonly server: string | null;
+    readonly model: string;
+    readonly ready: boolean;
+    readonly busy: boolean;
+    readonly draft: string;
+  } | null>(null);
+
+  // ── Running the checked presets ────────────────────────────────────────────
+
+  /**
+   * EACH BOOK'S DO ALL, while it runs — the sequence (`AskChain`, pure) and
+   * what its next step needs to start: the tab, the server, the model. The
+   * next step is started from `heard`, AFTER the step's marks have landed on
+   * the pane, so it reads the book with them pending on it.
+   */
+  private readonly chainsByBook = new Map<string, { chain: AskChain; tab: Tab; server: string | null; model: string }>();
+  /** "Presets: step 2 of 3 — Front & back matter", by book, while a chain runs. */
+  readonly chainSaid = signal<ReadonlyMap<string, string>>(new Map());
+  /** The sentence each book's last chain of presets ended on, until the next one starts. */
+  readonly chainOver = signal<ReadonlyMap<string, string>>(new Map());
+
+  /**
+   * SEND FROM THE PRESETS MODAL: the checked presets, in the list's order, each
+   * its own run on the book's thread. One is simply one run; two or more are a
+   * chain, labelled in the panel and in review.
+   */
+  async runPresets(tab: Tab, pane: BookStack, steps: readonly AskPreset[], server: string | null, model: string): Promise<void> {
+    if (steps.length === 0) return;
+    if (steps.length === 1) {
+      await this.start(tab, pane, steps[0]!.question, server, model);
+      return;
+    }
+    const chain = new AskChain(`chain-${Date.now().toString(36)}`, steps);
+    this.chainsByBook.set(tab.path, { chain, tab, server, model });
+    this.chainOver.update((held) => { const next = new Map(held); next.delete(tab.path); return next; });
+    const first = chain.current()!;
+    this.sayChain(tab.path);
+    await this.start(tab, pane, first.preset.question, server, model, first.step);
+  }
+
+  private sayChain(projectDir: string): void {
+    const held = this.chainsByBook.get(projectDir);
+    const said = held?.chain.said() ?? null;
+    this.chainSaid.update((map) => {
+      const next = new Map(map);
+      if (said === null) next.delete(projectDir);
+      else next.set(projectDir, said);
+      return next;
+    });
+  }
+
+  /** A step of the book's chain ended (after its landing): start the next, or close the chain with its sentence. */
+  private async stepEnded(projectDir: string, end: AskStepEnd): Promise<void> {
+    const held = this.chainsByBook.get(projectDir);
+    if (held === undefined) return;
+    const after = held.chain.ended(end);
+    if ('over' in after) {
+      this.chainsByBook.delete(projectDir);
+      this.sayChain(projectDir);
+      this.chainOver.update((map) => new Map(map).set(projectDir, after.over));
+      return;
+    }
+    this.sayChain(projectDir);
+    const pane = this.stacks.bookStackFor(held.tab.id);
+    if (pane === null) {
+      await this.stepEnded(projectDir, { state: 'failed', message: 'The book was closed, so the next step had nothing to work on.' });
+      return;
+    }
+    await this.start(held.tab, pane, after.next.preset.question, held.server, held.model, after.next.step);
+  }
+
+  /**
+   * THE PLACE THE PERSON CLICKED in a run's "Found N places" list — lit on its
+   * book's paper (book-view's `hitLight`, the analysis light's own runs) until
+   * another is clicked or the same one is clicked again. Keyed
+   * `ask:<session>:<index>`, which is never an analysis finding's key.
+   */
+  readonly pointed = signal<{ readonly projectDir: string; readonly key: string; readonly highlight: AskHighlight } | null>(null);
+
+  /** Light a place and bring it into view, or put it down when it is already lit. */
+  point(tabId: string, projectDir: string, key: string, highlight: AskHighlight): void {
+    const now = this.pointed();
+    if (now !== null && now.key === key && now.projectDir === projectDir) {
+      this.pointed.set(null);
+      return;
+    }
+    this.pointed.set({ projectDir, key, highlight });
+    this.stacks.bookStackFor(tabId)?.reveal(highlight.id);
+  }
+
   constructor() {
     api?.ask.onProgress((frame) => { void this.heard(frame); });
   }
@@ -119,19 +248,21 @@ export class AskService {
   }
 
   /** Ask. The view is the pane's own replay, read at this instant. */
-  async start(tab: Tab, pane: BookStack, request: string, server: string | null, model: string): Promise<void> {
+  async start(tab: Tab, pane: BookStack, request: string, server: string | null, model: string, chain?: AskChainStep): Promise<void> {
     if (!api) return;
     // A book tab's path IS its project directory (`Tab.path`).
     const projectDir = tab.path;
     const book = pane.view();
     if (book === null) {
       this.setRun(projectDir, failed('The book is still opening; ask again once it is on the page.', request));
+      if (chain !== undefined) await this.stepEnded(projectDir, { state: 'failed', message: 'the book was still opening.' });
       return;
     }
     const view = askViewOf(book, tab.title);
     this.setRun(projectDir, {
       phase: 'running', runId: null, request, status: 'Starting…', round: 0, maxRounds: 0,
-      says: null, struck: 0, revised: 0, retyped: 0, message: null, steps: [], startedAt: Date.now(),
+      says: null, struck: 0, revised: 0, retyped: 0, tally: '', message: null, steps: [], startedAt: Date.now(),
+      ...(chain === undefined ? {} : { chain }),
     });
     try {
       const runId = await api.ask.start({ projectDir, request, server, model, view });
@@ -140,11 +271,15 @@ export class AskService {
       if (now !== null && now.runId === null && now.phase === 'running') this.setRun(projectDir, { ...now, runId });
       await api.crucible.rememberJobModel('ask', model);
     } catch (err) {
-      this.setRun(projectDir, failed(err instanceof Error ? err.message : String(err), request));
+      const message = err instanceof Error ? err.message : String(err);
+      this.setRun(projectDir, failed(message, request));
+      if (chain !== undefined) await this.stepEnded(projectDir, { state: 'failed', message });
     }
   }
 
   async cancel(projectDir: string): Promise<void> {
+    // One Stop stops the whole chain: the running step, and every step after it.
+    this.chainsByBook.get(projectDir)?.chain.cancel();
     const run = this.runFor(projectDir);
     if (!api || run === null || run.runId === null) return;
     await api.ask.cancel(run.runId);
@@ -157,7 +292,7 @@ export class AskService {
     if (frame.state === 'running') {
       this.setRun(frame.projectDir, {
         ...run, runId: frame.runId, status: frame.status, round: frame.round, maxRounds: frame.maxRounds,
-        says: frame.says, struck: frame.struck, revised: frame.revised, retyped: frame.retyped,
+        says: frame.says, struck: frame.struck, revised: frame.revised, retyped: frame.retyped, tally: frame.tally,
         steps: withStep(run.steps, frame, run.says),
       });
       return;
@@ -166,15 +301,15 @@ export class AskService {
     this.tabOf.delete(frame.runId);
     if (frame.state !== 'done') {
       this.setRun(frame.projectDir, { ...run, phase: frame.state, message: frame.message });
+      if (run.chain !== undefined) await this.stepEnded(frame.projectDir, { state: frame.state, message: frame.message });
       return;
     }
     const pane = tabId === undefined ? null : this.stacks.bookStackFor(tabId);
     const book = pane?.view() ?? null;
     if (pane === null || book === null) {
-      this.setRun(frame.projectDir, {
-        ...run, phase: 'failed',
-        message: 'The book was closed before the model finished, so nothing it marked was put on it.',
-      });
+      const message = 'The book was closed before the model finished, so nothing it marked was put on it.';
+      this.setRun(frame.projectDir, { ...run, phase: 'failed', message });
+      if (run.chain !== undefined) await this.stepEnded(frame.projectDir, { state: 'failed', message });
       return;
     }
     this.setRun(frame.projectDir, { ...run, phase: 'landing', status: 'Putting the changes on the book…' });
@@ -189,6 +324,9 @@ export class AskService {
       model: result.model,
       summary: result.summary,
       items: landed.acted,
+      highlights: result.highlights,
+      hitLimit: result.hitLimit,
+      ...(run.chain === undefined ? {} : { chain: run.chain }),
       skipped: plan.skipped.length + landed.refused,
       rounds: result.rounds,
       seconds: result.seconds,
@@ -210,10 +348,15 @@ export class AskService {
         : `${saidChanges(landed.acted.length)} ${landed.acted.length === 1 ? 'is' : 'are'} waiting with your other edits; one undo takes ${landed.acted.length === 1 ? 'it' : 'them all'} back.`,
       skippedSentence(plan.skipped),
       landed.refused > 0 ? `${saidBlocks(landed.refused)} would not take the correction, and each one said why.` : '',
+      result.highlights.length > 0
+        ? `It pointed at ${result.highlights.length} ${result.highlights.length === 1 ? 'place' : 'places'}, listed under its reply.` : '',
+      result.hitLimit ? `It stopped at its limit of ${result.rounds - 1} rounds before it finished; Keep going picks up where it left off.` : '',
       kept ?? '',
       result.threadProblem ?? '',
     ].filter((s) => s.length > 0).join(' ');
     this.setRun(frame.projectDir, { ...run, phase: 'done', message: said });
+    // The marks are on the pane now, so the chain's next step reads them.
+    if (run.chain !== undefined) await this.stepEnded(frame.projectDir, { state: 'done' });
   }
 
   /**
@@ -258,12 +401,16 @@ export interface AskRunState {
   readonly struck: number;
   readonly revised: number;
   readonly retyped: number;
+  /** Everything the run holds so far, as a line — main's `tallySaid`. Empty before the first round. */
+  readonly tally: string;
   /** The closing sentence: what landed, or why nothing did. */
   readonly message: string | null;
   /** What the model did, round by round, for the thread's "Working" line. */
   readonly steps: readonly AskStep[];
   /** When Send was pressed, for "worked for 3m 20s". */
   readonly startedAt: number;
+  /** Which step of a chain of presets this run is. Absent on an ordinary question. */
+  readonly chain?: AskChainStep;
 }
 
 /** One line of a run's working: what happened, and what the model said, if it said something new. */
@@ -289,35 +436,7 @@ function withStep(steps: readonly AskStep[], frame: Extract<AskProgress, { state
 function failed(message: string, request: string): AskRunState {
   return {
     phase: 'failed', runId: null, request, status: '', round: 0, maxRounds: 0,
-    says: null, struck: 0, revised: 0, retyped: 0, message, steps: [], startedAt: Date.now(),
-  };
-}
-
-/**
- * THE BOOK AS THE PERSON SEES IT — the pane's replay with struck rows left out
- * and counted, and shelved rows left out entirely (they are not in the flow, so
- * not on the paper, and an edit of one would be about text nobody can see).
- */
-export function askViewOf(book: Replayed, title: string): AskView {
-  const starts = new Map(book.chapters.map((c, i) => [c.id, i]));
-  const blocks: AskBlock[] = [];
-  let chapter = -1;
-  let struck = 0;
-  for (const row of book.rows) {
-    if (row.shelf !== undefined) continue;
-    const at = starts.get(row.id);
-    if (at !== undefined) chapter = at;
-    if (row.struck === true) {
-      struck += 1;
-      continue;
-    }
-    blocks.push({ id: row.id, text: row.text, category: row.category, chapter });
-  }
-  return {
-    title,
-    blocks,
-    chapters: book.chapters.map((c) => ({ id: c.id, title: c.title })),
-    struck,
+    says: null, struck: 0, revised: 0, retyped: 0, tally: '', message, steps: [], startedAt: Date.now(),
   };
 }
 

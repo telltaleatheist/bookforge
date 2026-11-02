@@ -108,6 +108,7 @@ import type {
   WorkspacePlan,
 } from './types';
 import type { AskProgress, AskRequest, AskSession, AskThread } from './ask';
+import type { AskPresetsKept } from './ask-presets';
 
 /**
  * What the File menu asked for, since main cannot press a button in a tab.
@@ -964,6 +965,10 @@ export interface FoundryApi {
     /** "New question": end the book's thread, so the next question starts fresh. */
     endThread(projectDir: string): Promise<void>;
     onProgress(listener: (frame: AskProgress) => void): () => void;
+    /** The Presets modal's list and which were checked last, as kept (null fields: the defaults). */
+    presets(): Promise<AskPresetsKept>;
+    /** Keep what is given — a list (null restores the defaults) and/or the checked ids. Answers what is kept. */
+    savePresets(kept: Partial<AskPresetsKept>): Promise<AskPresetsKept>;
   };
 
   analysis: {

@@ -20,7 +20,7 @@ afterAll(() => fs.rmSync(userData, { recursive: true, force: true }));
 
 const VIEW: AskView = {
   title: 'A Test Book',
-  struck: 0,
+  struck: 0, struckBlocks: [], loose: { numbers: [], notes: [] },
   chapters: [{ id: 'e-1', title: 'One' }],
   blocks: [
     { id: 'e-1', text: 'Chapter One', category: 'Section-header', chapter: 0 },
