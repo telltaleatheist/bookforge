@@ -105,7 +105,7 @@ import { UiService } from '../../core/ui.service';
                         <p class="q-line q-after q-retype" [class.undoing]="undoing">
                           <span class="arrow">→ </span>{{ retyped(item) }}
                         </p>
-                      } @else if (item.kind === 'join' || item.kind === 'split' || item.kind === 'restore' || item.kind === 'link') {
+                      } @else if (item.kind === 'join' || item.kind === 'split' || item.kind === 'restore' || item.kind === 'link' || item.kind === 'unlink' || item.kind === 'revert') {
                         <p class="q-line" [class.struck]="item.kind === 'restore' && undoing">{{ shown(key(item), item.before) }}</p>
                         <p class="q-line q-after q-retype" [class.undoing]="undoing" [title]="renamedOnUndo(item)">
                           <span class="arrow">→ </span>{{ structure(item) }}
@@ -481,11 +481,13 @@ export class AskReviewDialogComponent {
   protected goesTo(item: AskMark): string {
     if (item.kind === 'join') return item.into;
     if (item.kind === 'split') return `${item.id}/1`;
+    // A revert of a join brings the block back as the survivor's second half; it is found from the survivor.
+    if (item.kind === 'revert') return item.original.kind === 'join' ? item.original.into : item.original.id;
     return item.id;
   }
 
   /** What a join, a split, a restore or a link does, said for its row. */
-  protected structure(item: Extract<AskMark, { kind: 'join' | 'split' | 'restore' | 'link' }>): string {
+  protected structure(item: Extract<AskMark, { kind: 'join' | 'split' | 'restore' | 'link' | 'unlink' | 'revert' }>): string {
     return structureSaid(item);
   }
 
@@ -494,7 +496,9 @@ export class AskReviewDialogComponent {
     if (item.kind === 'join' || item.kind === 'split') {
       return 'Undo puts the words, kinds and chapter back exactly; the blocks come back under new names (…/1, …/2).';
     }
-    if (item.kind === 'link') return 'A link cannot be undone from here yet: this program has no unlink.';
+    if (item.kind === 'revert' && (item.original.kind === 'join' || item.original.kind === 'split')) {
+      return 'Taking back a join or a split puts the words, kinds and chapter back exactly; the blocks come back under new names (…/1, …/2).';
+    }
     return '';
   }
 

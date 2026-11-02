@@ -35,6 +35,7 @@
  * session record (`AskSession`, kept in `<project>/ops/ask-sessions.jsonl`) is
  * where a reason lives.
  */
+import type { AskStackInput } from './ask-history';
 import type { AskChainStep } from './ask-presets';
 import type { BookOp, Replayed } from './ops';
 
@@ -111,6 +112,12 @@ export interface AskRequest {
   /** The dropdown's value: `''` is Automatic, `<upstream>/<id>` a cloud model, else a local id. */
   readonly model: string;
   readonly view: AskView;
+  /**
+   * THE BOOK'S EDITS, for the `history` and `revert` tools — the pane's file,
+   * every op it replays, and its redo pile (`BookStack.askStack`). Absent when
+   * the pane could not give it; the two tools then say so by name.
+   */
+  readonly stack?: AskStackInput;
 }
 
 /**
@@ -210,6 +217,34 @@ export type AskMark =
     readonly at: number;
     readonly len: number;
     readonly blockBefore: string;
+  }
+  | {
+    /** The note one of whose numbers comes off it (`UnlinkOp`) — `link`'s other half. */
+    readonly id: string;
+    readonly kind: 'unlink';
+    readonly reason: string;
+    readonly before: string;
+    readonly block: string;
+    readonly at: number;
+    readonly len: number;
+    readonly blockBefore: string;
+  }
+  | {
+    /**
+     * AN EARLIER EDIT, TAKEN BACK (shared/ask-history.ts) — by anyone, Ask or
+     * the person. `original` is that edit as the mark it would have been; this
+     * lands as `planUndo` of it, and is undone as `planLanding` of it, so a
+     * revert has no inverse of its own to get wrong.
+     */
+    readonly id: string;
+    readonly kind: 'revert';
+    readonly reason: string;
+    readonly before: string;
+    /** The history entry's handle, for the run that proposed it. */
+    readonly handle: string;
+    /** The original edit in plain words: "struck e-579". */
+    readonly said: string;
+    readonly original: AskMark;
   };
 
 /**
@@ -231,6 +266,8 @@ export function askMarkKey(item: AskMark): string {
     case 'text': return `mark:${item.id}`;
     case 'category': return `type:${item.id}`;
     case 'link': return `link:${item.id}:${item.block}:${item.at}`;
+    case 'unlink': return `unlink:${item.id}:${item.block}:${item.at}`;
+    case 'revert': return `revert:${item.handle}`;
     default: return `${item.kind}:${item.id}`;
   }
 }
@@ -248,7 +285,7 @@ export function retypeSaid(item: Extract<AskMark, { kind: 'category' }>): string
 }
 
 /** "joined to e-412", "split before "It was…"" — what a structural mark does, in a line, for the review card. */
-export function structureSaid(item: Extract<AskMark, { kind: 'join' | 'split' | 'restore' | 'link' }>): string {
+export function structureSaid(item: Extract<AskMark, { kind: 'join' | 'split' | 'restore' | 'link' | 'unlink' | 'revert' }>): string {
   switch (item.kind) {
     case 'join': return `joined to ${item.into}`;
     case 'split': {
@@ -258,6 +295,8 @@ export function structureSaid(item: Extract<AskMark, { kind: 'join' | 'split' | 
     }
     case 'restore': return 'restore';
     case 'link': return `linked to its number in ${item.block}`;
+    case 'unlink': return `unlinked from its number in ${item.block}`;
+    case 'revert': return `undo: ${item.said}`;
   }
 }
 
@@ -533,6 +572,17 @@ export function planLanding(
     return at;
   };
   for (const item of items) {
+    if (item.kind === 'revert') {
+      const back = planUndo([item.original], rows, translated);
+      if (back.skipped.length > 0) {
+        skipped.push({ item, why: back.skipped[0]!.why });
+        continue;
+      }
+      ops.push(...back.ops);
+      corrections.push(...back.corrections);
+      acted.push(item);
+      continue;
+    }
     const row = rows.get(item.id);
     if (row === undefined) {
       skipped.push({ item, why: 'it is no longer in the book' });
@@ -597,13 +647,13 @@ export function planLanding(
       acted.push(item);
       continue;
     }
-    if (item.kind === 'link') {
+    if (item.kind === 'link' || item.kind === 'unlink') {
       const block = rows.get(item.block);
       if (block === undefined || block.text !== item.blockBefore) {
         skipped.push({ item, why: `the block its number is printed in (${item.block}) was changed while the model worked` });
         continue;
       }
-      ops.push({ op: 'link', note: item.id, block: item.block, at: item.at, len: item.len });
+      ops.push({ op: item.kind, note: item.id, block: item.block, at: item.at, len: item.len });
       acted.push(item);
       continue;
     }
@@ -669,6 +719,18 @@ export function planUndo(
   /** Where each join in the chosen set went, to follow a chain to its survivor. */
   const joinedInto = new Map(joins.map((item) => [item.id, item.into]));
   for (const item of [...items.filter((one) => one.kind !== 'join'), ...joins.reverse()]) {
+    if (item.kind === 'revert') {
+      // Taking a revert back is making the original edit again, on its own checks.
+      const again = planLanding([item.original], now, translated);
+      if (again.skipped.length > 0) {
+        skipped.push({ item, why: again.skipped[0]!.why });
+        continue;
+      }
+      ops.push(...again.ops);
+      corrections.push(...again.corrections);
+      acted.push(item);
+      continue;
+    }
     if (item.kind === 'join') {
       const plan = unjoin(item, now, joinedInto);
       if (typeof plan === 'string') {
@@ -709,8 +771,14 @@ export function planUndo(
       skipped.push({ item, why: 'it is no longer in the book' });
       continue;
     }
-    if (item.kind === 'link') {
-      skipped.push({ item, why: 'a number linked to a note cannot be unlinked from here; this program has no unlink yet' });
+    if (item.kind === 'link' || item.kind === 'unlink') {
+      const block = now.get(item.block);
+      if (block === undefined || block.text !== item.blockBefore) {
+        skipped.push({ item, why: `the block its number is printed in (${item.block}) has changed since the run` });
+        continue;
+      }
+      ops.push({ op: item.kind === 'link' ? 'unlink' : 'link', note: item.id, block: item.block, at: item.at, len: item.len });
+      acted.push(item);
       continue;
     }
     if (item.kind === 'restore') {

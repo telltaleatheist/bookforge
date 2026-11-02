@@ -299,6 +299,23 @@ export interface LinkOp {
 }
 
 /**
+ * Take one reference number off a note — `link`'s exact inverse (Owen,
+ * 2026-11-02: Ask's links could not be taken back, because nothing could).
+ *
+ * The note loses that one ref and the number becomes loose — "no note carries
+ * this number" — by the bookkeeping a retyped note's numbers use; a note left
+ * with no refs at all goes to the loose notes. The ref is named whole (block,
+ * at, len), so an unlink never guesses which of a note's numbers was meant.
+ */
+export interface UnlinkOp {
+  op: 'unlink';
+  block: string;
+  at: number;
+  len: number;
+  note: string;
+}
+
+/**
  * Put a row the reflow shelved back into the flow.
  *
  * KEYED BY `id`, which is the amended spelling (docs/RENDERER.md §3): the shelf
@@ -323,6 +340,7 @@ export type BookOp =
   | InsertOp
   | ChapterOp
   | LinkOp
+  | UnlinkOp
   | RestoreFurnitureOp;
 
 /**
@@ -355,6 +373,7 @@ const PERFORMED = [
   'insert',
   'chapter',
   'link',
+  'unlink',
   'restore-furniture',
 ] as const;
 
@@ -375,6 +394,7 @@ const STRUCTURAL: ReadonlySet<string> = new Set([
   'insert',
   'chapter',
   'link',
+  'unlink',
   'restore-furniture',
 ]);
 
@@ -691,6 +711,19 @@ function opOf(line: string, at: number): BookOp {
         );
       }
       return { op: 'link', block, at: from, len, note };
+    }
+    case 'unlink': {
+      const block = nameOf(row['block']);
+      const note = nameOf(row['note']);
+      if (block === null || note === null) {
+        throw new BookOpsError(`${where} takes a reference number off a note without naming both the note and the block.`);
+      }
+      const from = offsetOf(row['at'], 0);
+      const len = offsetOf(row['len'], 1);
+      if (from === null || len === null) {
+        throw new BookOpsError(`${where} does not say which characters of "${block}" the reference number is.`);
+      }
+      return { op: 'unlink', block, at: from, len, note };
     }
     default: {
       /*
@@ -1460,6 +1493,26 @@ function interpret(
         const back = mutable(op.id);
         delete back.shelf;
         delete back.why;
+        break;
+      }
+
+      case 'unlink': {
+        const note = held.get(op.note);
+        if (note === undefined) { absent(op, op.note); break; }
+        const refs = note.refs ?? [];
+        const kept = refs.filter((ref) => !(ref.block === op.block && ref.at === op.at && ref.len === op.len));
+        if (kept.length === refs.length) {
+          refused(op, op.note, `"${op.note}" carries no reference number at those characters of "${op.block}", `
+            + 'so there is nothing to take off it.');
+          break;
+        }
+        const freed = mutable(op.note);
+        if (kept.length === 0) delete freed.refs;
+        else freed.refs = kept;
+        const printed = note.note ?? printedOf(held.get(op.block)?.text.slice(op.at, op.at + op.len) ?? '');
+        // A number that reads as no number cannot be flagged as one; the ref is still gone.
+        if (printed !== null) markers = [...markers, { block: op.block, at: op.at, len: op.len, printed }];
+        if (kept.length === 0) orphans.add(op.note);
         break;
       }
 

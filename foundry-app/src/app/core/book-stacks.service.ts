@@ -1,6 +1,7 @@
 import { Injectable, inject, signal } from '@angular/core';
 
 import { unwritten } from '@shared/ops';
+import type { AskStackInput } from '@shared/ask-history';
 import type { BookOp, PendingStack, Replayed } from '@shared/ops';
 import { fold } from '@shared/original';
 
@@ -170,6 +171,13 @@ export interface BookStack {
   correct(id: string, text: string): Promise<boolean>;
   /** Put a block in the middle of the sheet and pulse it — the panels' jump. */
   reveal(id: string): void;
+  /**
+   * EVERY EDIT THIS PANE REPLAYS, for Ask's `history` tool (Owen, 2026-11-02):
+   * the file, the earlier steps' ops, the tip's ops still in effect, the edits
+   * not yet applied with the act each was pushed as, and the redo pile. Null
+   * while the book is still opening.
+   */
+  askStack(): AskStackInput | null;
 }
 
 /** What a viewer leaves behind when its tab stops being the one on screen. */

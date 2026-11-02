@@ -28,6 +28,7 @@ import { REWRITE_LABELS } from '@shared/ledger';
 // The model's inline dialect, mirrored from the emitter's — see `cut`.
 import { INLINE_DROPPED, INLINE_ITALIC, INLINE_STRONG, inlineEmphasis } from '@shared/inline';
 import { replayOps, struckNotes, unwritten, type BookOp, type ReplayedRow } from '@shared/ops';
+import type { AskStackInput } from '@shared/ask-history';
 // The compare column's light: which characters went and which came, per block,
 // drawn through the same walk as the analysis's — see `cut`.
 import { foldQuotes, wordDiff, type ChangeRange, type WordDiff } from '@shared/word-diff';
@@ -3593,6 +3594,7 @@ export class BookViewComponent {
       translated: () => this.translation() !== null,
       correct: (id, text) => this.correct(id, text),
       reveal: (id) => this.scrollTo(id),
+      askStack: () => this.askStack(),
     };
     /*
      * IN AN EFFECT AND NOT ON THIS LINE, because a required input has no value
@@ -5808,6 +5810,43 @@ export class BookViewComponent {
   }
 
   /** Several ops as ONE gesture on the undo stack, described as `what`. */
+  /**
+   * THE STACK AS ASK'S HISTORY READS IT. `pending` begins as the tip's own ops
+   * (`landedOps`) by identity, so the shared head is what is saved and still in
+   * effect and the rest is unsaved. The journal is walked from its end against
+   * that unsaved tail so each op carries the act it was pushed as — "removing
+   * the chapter …" — where it was one; a single gesture, or an op recovered
+   * from the sidecar, carries none.
+   */
+  private askStack(): AskStackInput | null {
+    const book = this.book();
+    if (book === null) return null;
+    const landed = this.landedOps();
+    const pending = this.pending();
+    let shared = 0;
+    while (shared < landed.length && shared < pending.length && landed[shared] === pending[shared]) shared += 1;
+    const tail = pending.slice(shared);
+    const groups: (string | null)[] = tail.map(() => null);
+    let at = tail.length;
+    for (const gesture of [...this.did()].reverse()) {
+      if (at <= 0) break;
+      if (gesture.kind === 'op') at -= 1;
+      else if (gesture.kind === 'ops') {
+        for (let n = 0; n < gesture.count && at > 0; n += 1) groups[--at] = gesture.what;
+      }
+    }
+    return {
+      rows: book.rows,
+      loose: book.loose,
+      chapters: book.chapters,
+      earlier: book.ops,
+      kept: pending.slice(0, shared),
+      tail,
+      undone: this.undone(),
+      tailGroups: groups,
+    };
+  }
+
   private pushAsOne(what: string, ops: readonly BookOp[]): void {
     this.pushOps(ops, what);
   }
@@ -6091,6 +6130,7 @@ export class BookViewComponent {
       case 'move': return 'moving a block';
       case 'insert': return 'adding a block';
       case 'link': return 'binding a reference number';
+      case 'unlink': return 'unbinding a reference number';
       case 'restore-furniture': return 'putting a shelved row back';
       case 'chapter':
         if ('set' in op) return 'placing a chapter marker';
@@ -6118,6 +6158,7 @@ export class BookViewComponent {
       case 'split':
         return direction === 'undo' ? op.id : `${op.id}/1`;
       case 'link':
+      case 'unlink':
         return op.block;
       case 'chapter':
         if ('set' in op) return op.set;

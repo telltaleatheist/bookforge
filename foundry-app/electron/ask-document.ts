@@ -60,6 +60,7 @@ import {
 } from '@crucible/client';
 
 import { askToolbox, clip, roundSaid, tallySaid, type AskSaid, type AskToolbox } from './ask-tools';
+import { AskHistory } from '../shared/ask-history';
 import { writeAtomically } from './atomic';
 import { openSession, type HeldSession } from './crucible-dispatch';
 import { topRankedCrucible } from './crucible-models';
@@ -279,7 +280,9 @@ async function runAsk(
   emit: (frame: AskProgress) => void,
 ): Promise<AskResult> {
   const t0 = Date.now();
-  const box = askToolbox(request.view);
+  // Read before the model is loaded, like the thread: a book whose kept runs cannot be read says so now.
+  const history = request.stack === undefined ? null : new AskHistory(request.stack, await readAskSessions(request.projectDir));
+  const box = askToolbox(request.view, history);
   let round = 0;
   let says: string | null = null;
   const say = (status: string): void => {
@@ -339,7 +342,7 @@ export const NOTE_MAX_TOKENS = 2000;
 export const NOTE_ASK = `The person may ask a follow-up question about this book. Write a working note for yourself to start from then; the person will not see it. Plain text, at most about 300 words:
 - what the person has asked so far, every question;
 - what you found, with block ids;
-- what you marked, revised, retyped, joined, split, restored or linked, and under which reasons, and the places you pointed at;
+- what you marked, revised, retyped, joined, split, restored, linked or reverted (by history handle), and under which reasons, and the places you pointed at;
 - what you searched for or checked and ruled out;
 - what is still open or waiting on the person's decision.
 If you started from an earlier note, carry forward what still matters from it. Call no tools.`;
@@ -452,6 +455,7 @@ Work the way a careful editor would with a long book:
    Prose broken in two by a picture or a caption: mark the picture and the caption for removal first, then join the block after them onto the block before them (join, dry_run first to see the seam). A heading run into the paragraph after it, or two paragraphs read as one: split at the exact words the second part begins with, giving a half its kind (first_category:"Section-header").
    Blocks the person removed are hidden; read only:"struck" shows them, and restore proposes one back when it was removed by mistake. read only:"unlinked" shows footnotes nothing points at and numbers no note carries; link_footnote binds one to the other.
    When the person asks where something is, or to show the evidence for what you say, use highlight: it changes nothing and lets the person click through to each place.
+   The book's edits are in history, newest first, with who made them (the person, an earlier Ask run and its reason, or a panel). When the person says something was wrongly removed or changed, or asks what happened to a block, read history (filter by the block's id) before anything else; to take an edit back, use revert with its handle — it is proposed for review like everything else, and never pops the person's undo stack.
 4. Check your work: read with only:"unmarked" through each chapter's non-body regions, and spot-check what you marked, so nothing is missed and nothing wrongly caught. Unmark mistakes.
 5. When you are done, stop calling tools and write a short summary for the person: what you changed under each reason and anything you were unsure of. If the person only asked a question, answer it in that summary (highlighting the places it rests on) and mark nothing.
 
@@ -753,7 +757,10 @@ export function isAskMark(value: unknown): value is AskMark {
     case 'split': return str('from') && num('at') && str('first') && str('second')
       && kindOrNull('firstCategory') && kindOrNull('secondCategory') && kindOrNull('chapterBefore');
     case 'restore': return true;
-    case 'link': return str('block') && num('at') && num('len') && str('blockBefore');
+    case 'link':
+    case 'unlink': return str('block') && num('at') && num('len') && str('blockBefore');
+    case 'revert': return str('handle') && str('said')
+      && isAskMark(m['original']) && (m['original'] as Record<string, unknown>)['kind'] !== 'revert';
     default: return false;
   }
 }

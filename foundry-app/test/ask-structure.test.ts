@@ -185,7 +185,7 @@ test('the person\'s strikes are readable, and restore proposes one back; undo st
   expect(b.counts().restored).toBe(0);
 });
 
-test('link_footnote binds a loose note to its loose number; there is no unlink to undo it with', () => {
+test('link_footnote binds a loose note to its loose number, and its undo is an unlink', () => {
   const { b, run } = box();
   expect(run('read', { only: 'unlinked' })).toContain('a-8 [Footnote] [UNLINKED NOTE]');
   expect(run('read', { only: 'unlinked' })).toContain('a-7 [LOOSE NUMBER "²" at 13]');
@@ -199,7 +199,7 @@ test('link_footnote binds a loose note to its loose number; there is no unlink t
   const linked = replayOps(ROWS, [...STRUCK, ...landing.ops], { markers: [{ block: 'a-7', at: 13, len: 1, printed: 2 }], notes: ['a-8'] }, CHAPTERS);
   expect(linked.rows.find((r) => r.id === 'a-8')!.refs).toEqual([{ block: 'a-7', at: 13, len: 1 }]);
   expect(linked.loose).toEqual({ markers: [], notes: [] });
-  expect(planUndo([item], states(landing.ops).rows, false).skipped[0]!.why).toContain('no unlink');
+  expect(planUndo([item], states(landing.ops).rows, false).ops).toEqual([{ op: 'unlink', note: 'a-8', block: 'a-7', at: 13, len: 1 }]);
 });
 
 test('highlight points at a block or exact words in it, and changes nothing', () => {

@@ -40,6 +40,7 @@
  */
 import type { AskBlock, AskChapterChange, AskHighlight, AskMark, AskView } from '../shared/ask';
 import { PDF_BLOCK_CATEGORIES } from '../shared/categories';
+import { opIds, type AskHistory } from '../shared/ask-history';
 
 /** Every kind a block can be given, in the engine's spelling. */
 const CATEGORIES: readonly string[] = PDF_BLOCK_CATEGORIES.map((c) => c.id);
@@ -86,6 +87,7 @@ export interface AskCounts {
   readonly split: number;
   readonly restored: number;
   readonly linked: number;
+  readonly reverted: number;
   readonly highlighted: number;
 }
 
@@ -153,7 +155,7 @@ export function tallySaid(counts: Partial<AskCounts> & { struck: number; revised
   const said: [number | undefined, string][] = [
     [counts.struck, 'marked'], [counts.revised, 'revised'], [counts.retyped, 'retyped'],
     [counts.joined, 'joined'], [counts.split, 'split'], [counts.restored, 'restored'],
-    [counts.linked, 'linked'], [counts.highlighted, 'pointed at'],
+    [counts.linked, 'linked'], [counts.reverted, 'reverted'], [counts.highlighted, 'pointed at'],
   ];
   const parts = said.filter(([n]) => n !== undefined && n > 0).map(([n, word]) => `${n} ${word}`);
   return parts.length === 0 ? 'nothing marked yet' : parts.join(', ');
@@ -200,8 +202,15 @@ type Join = { reason: string; into: string };
 type Split = { reason: string; at: number; first: string; second: string; firstCategory: string | null; secondCategory: string | null };
 /** A link the model proposed: this note's number is printed in `block`, at these characters. */
 type Link = { reason: string; note: string; block: string; at: number; len: number };
+/** An earlier edit the model proposed taking back: the edit as a mark, and every block it names. */
+type Revert = { reason: string; said: string; original: AskMark; ids: readonly string[] };
 
-export function askToolbox(view: AskView): AskToolbox {
+/**
+ * `history` is the book's edits (shared/ask-history.ts), or null when the pane
+ * sent none — a run started by something that is not the book pane, or a test
+ * about the other tools. The two history tools say so by name.
+ */
+export function askToolbox(view: AskView, history: AskHistory | null = null): AskToolbox {
   const live: Live[] = view.blocks.map((b, index) => ({ ...b, index }));
   const byId = new Map(live.map((b) => [b.id, b]));
   /** The blocks the person struck, readable on purpose and proposed back by `restore`. */
@@ -215,6 +224,8 @@ export function askToolbox(view: AskView): AskToolbox {
   const restores = new Map<string, string>();
   const links: Link[] = [];
   const highlights: AskHighlight[] = [];
+  /** By history handle, in the order proposed. */
+  const reverts = new Map<string, Revert>();
   /** The chapter that starts at each block, by its title, as the person saw it. */
   const startsAt = new Map(view.chapters.map((c) => [c.id, c.title]));
   const looseNotes = new Set(view.loose.notes);
@@ -415,7 +426,7 @@ export function askToolbox(view: AskView): AskToolbox {
     }
     return {
       struck, revised, retyped: retypes.size, joined: joins.size, split: splits.size,
-      restored: restores.size, linked: links.length, highlighted: highlights.length,
+      restored: restores.size, linked: links.length, reverted: reverts.size, highlighted: highlights.length,
     };
   }
 
@@ -1214,6 +1225,96 @@ export function askToolbox(view: AskView): AskToolbox {
       },
       aim: (a) => ({ verb: 'point at', detail: typeof a['id'] === 'string' ? a['id'] : '' }),
     },
+    /*
+     * ── THE BOOK'S HISTORY (Owen, 2026-11-02) ────────────────────────────────
+     *
+     * Every edit, newest first — the person's, Ask's, a panel's — saved,
+     * unsaved and undone; and any of them proposed back as a mark (`revert`),
+     * whose inverse is the review card's own undo (shared/ask-history.ts).
+     */
+    {
+      name: 'history',
+      description: 'The book\'s edits, newest first: unsaved ones, saved ones back to the import, and ones the person undid (on the redo pile). Each has a handle (c12, r0), what it did in plain words, the block\'s words just before it, and who made it where known (an Ask run and its reason). Filter by id (edits naming that block) or kind (strike, restore, text, category, merge, split, chapter, link, unlink, insert, move). Page with offset and count. Use it when the person says something was wrongly removed or changed, or asks what happened to a block.',
+      parameters: {
+        type: 'object',
+        properties: {
+          id: { type: 'string', description: 'Only edits naming this block.' },
+          kind: { type: 'string', description: 'Only edits of this kind (the op word).' },
+          offset: { type: 'integer', description: 'Skip this many of the newest matches (default 0).' },
+          count: { type: 'integer', description: 'How many, at most 60 (default 25).' },
+        },
+      },
+      run(a) {
+        if (history === null) throw new Error('this book\'s history was not sent with the question, so it cannot be read');
+        const filter = {
+          ...(typeof a['id'] === 'string' ? { id: a['id'] } : {}),
+          ...(typeof a['kind'] === 'string' ? { kind: a['kind'] } : {}),
+          ...(typeof a['offset'] === 'number' ? { offset: a['offset'] } : {}),
+          ...(typeof a['count'] === 'number' ? { count: a['count'] } : {}),
+        };
+        const { entries, matched } = history.list(filter);
+        const offset = filter.offset ?? 0;
+        const lines = entries.map((e) => `${e.handle} [${e.where}] ${e.said}${e.text.length > 0 ? ` — "${e.text}"` : ''} (${e.from})`);
+        const more = offset + entries.length < matched ? `\n(${matched - offset - entries.length} older; offset:${offset + entries.length} for the next page)` : '';
+        return {
+          content: `${matched} of ${history.size()} edits match.\n${lines.join('\n') || '(none)'}${more}`,
+          said: { verb: 'read history', detail: words(String(matched), this.aim(a).detail) },
+        };
+      },
+      aim: (a) => ({
+        verb: 'read history',
+        detail: words(typeof a['id'] === 'string' ? `of ${a['id']}` : '', typeof a['kind'] === 'string' ? `[${a['kind']}]` : ''),
+      }),
+    },
+    {
+      name: 'revert',
+      description: 'Propose taking back earlier edits from history, by handle, with a short reason. Nothing is popped off the person\'s undo stack: each becomes a change the person reviews like any other ("undo: struck e-579"). An edit whose block has changed since in a way that makes the undo wrong is refused with the reason. Undone edits (r…) cannot be reverted. Use dry_run:true first.',
+      parameters: {
+        type: 'object',
+        properties: {
+          handles: { type: 'array', items: { type: 'string' }, description: 'History handles, e.g. ["c41", "c40"].' },
+          reason: { type: 'string', description: 'Short label, e.g. "struck by mistake with the caption".' },
+          dry_run: { type: 'boolean' },
+        },
+        required: ['handles', 'reason'],
+      },
+      run(a) {
+        const reason = reasonOf(a);
+        if (history === null) throw new Error('this book\'s history was not sent with the question, so nothing in it can be reverted');
+        const handles = a['handles'];
+        if (!Array.isArray(handles) || handles.length === 0 || !handles.every((h) => typeof h === 'string')) {
+          throw new Error('handles must be a non-empty array of history handles');
+        }
+        const planned: { handle: string; revert: Revert }[] = [];
+        for (const handle of new Set(handles as string[])) {
+          if (reverts.has(handle)) throw new Error(`${handle} is already proposed; unmark it first to change its reason`);
+          const original = history.revertable(handle, reason);
+          const entry = history.entry(handle)!;
+          const ids = opIds(entry.op);
+          for (const id of ids) {
+            const b = byId.get(id);
+            if (b !== undefined && (marks.has(id) || retypes.has(id) || structured(b) || linksOf(id).length > 0)) {
+              throw new Error(`${id} also carries a change from this run; unmark that first, so the two do not land on each other`);
+            }
+            if (restores.has(id)) throw new Error(`${id} also has a restore proposed in this run; unmark it first`);
+          }
+          for (const other of reverts.values()) {
+            if (other.ids.some((id) => ids.includes(id))) throw new Error(`${handle} names a block another revert in this run names; revert one at a time`);
+          }
+          planned.push({ handle, revert: { reason, said: entry.said, original, ids } });
+        }
+        const show = planned.map((p) => `${p.handle}: undo ${p.revert.said}`).join('\n');
+        if (a['dry_run'] === true) {
+          return { content: `WOULD REVERT ${planned.length}:\n${show}`, said: { verb: 'dry run:', detail: words(`${planned.length} would be reverted`, quoted(reason)) } };
+        }
+        for (const p of planned) reverts.set(p.handle, p.revert);
+        return {
+          content: `REVERT proposed for ${planned.length} as "${reason}":\n${show}\n${totals()}`,
+          said: { verb: 'reverted', detail: words(planned.length === 1 ? planned[0]!.handle : String(planned.length), quoted(reason)) },
+        };
+      },
+      aim: (a) => ({ verb: 'revert', detail: words(Array.isArray(a['handles']) ? (a['handles'] as unknown[]).join(', ') : '', quoted(a['reason'])) }),
+    },
     {
       name: 'unmark',
       description: 'Take marks, revisions, retypings, joins, splits, restores and links off: by selector, or every one with a given reason. A revised block goes back to its original text, a retyped one to its original kind and chapter.',
@@ -1241,6 +1342,7 @@ export function askToolbox(view: AskView): AskToolbox {
             if (splits.get(b.id)?.reason === reason && splits.delete(b.id)) n += 1;
           }
           for (const [id, why] of [...restores]) if (why === reason && restores.delete(id)) n += 1;
+          for (const [handle, r] of [...reverts]) if (r.reason === reason && reverts.delete(handle)) n += 1;
           dropLinks((l) => l.reason !== reason);
         } else {
           const ids = new Set<string>();
@@ -1261,6 +1363,7 @@ export function askToolbox(view: AskView): AskToolbox {
             if (splits.delete(id)) n += 1;
           }
           dropLinks((l) => !ids.has(l.note));
+          for (const [handle, r] of [...reverts]) if (r.ids.some((id) => ids.has(id)) && reverts.delete(handle)) n += 1;
         }
         return {
           content: `Unmarked ${n}. ${totals()}`,
@@ -1308,6 +1411,9 @@ export function askToolbox(view: AskView): AskToolbox {
         for (const [why, blocks] of restoreReasons) {
           parts.push(`"${why}" (restored): ${blocks.length}\n${blocks.slice(0, 3).map((b) => goneLine(b, 160)).join('\n')}`);
         }
+        const revertReasons = new Map<string, string[]>();
+        for (const [handle, r] of reverts) revertReasons.set(r.reason, [...(revertReasons.get(r.reason) ?? []), `${handle}: undo ${r.said}`]);
+        for (const [why, said] of revertReasons) parts.push(`"${why}" (reverted): ${said.length}\n${said.slice(0, 3).join('\n')}`);
         if (highlights.length > 0) {
           parts.push(`Places pointed at: ${highlights.length}\n${highlights.slice(-3).map((h) => `${h.id}: ${h.note}`).join('\n')}`);
         }
@@ -1418,6 +1524,9 @@ export function askToolbox(view: AskView): AskToolbox {
       for (const b of gone) {
         const why = restores.get(b.id);
         if (why !== undefined) out.push({ id: b.id, kind: 'restore', reason: why, before: b.text });
+      }
+      for (const [handle, r] of reverts) {
+        out.push({ id: r.original.id, kind: 'revert', reason: r.reason, before: r.original.before, handle, said: r.said, original: r.original });
       }
       return out;
     },

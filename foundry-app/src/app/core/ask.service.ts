@@ -265,7 +265,8 @@ export class AskService {
       ...(chain === undefined ? {} : { chain }),
     });
     try {
-      const runId = await api.ask.start({ projectDir, request, server, model, view });
+      const stack = pane.askStack();
+      const runId = await api.ask.start({ projectDir, request, server, model, view, ...(stack === null ? {} : { stack }) });
       this.tabOf.set(runId, tab.id);
       const now = this.runFor(projectDir);
       if (now !== null && now.runId === null && now.phase === 'running') this.setRun(projectDir, { ...now, runId });
