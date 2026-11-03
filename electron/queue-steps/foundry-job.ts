@@ -654,6 +654,11 @@ export const foundryJobStep: StepModule = {
         fromZero: false,
       });
       if (made.readingsPath !== null) fixedReadings = made.readingsPath;
+      // The step this cleanup lands as was made with that guide: its own guide tile opens it.
+      if (kind === 'clean' && typeof config.request.stepId === 'string') {
+        const { recordCleanedWith } = await import('../pronunciation-applied.js');
+        await recordCleanedWith(config.projectDir, config.request.stepId, source.files.step);
+      }
       /*
        * THE GUIDE APPLIED AFTER, NOT HERE (Owen, 2026-11-02): when its own
        * "Pronunciation adjusted" step follows this cleanup, every place the guide

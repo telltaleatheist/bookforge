@@ -133,7 +133,9 @@ import {
 import { hostStatusOf, type HostStatus } from './foundry-host-status';
 // The book's pronunciation guide: its own step, and BookForge's window over it.
 import type { NarrationGuideStepConfig } from './queue-steps/narration-guide';
-import { APPLIED_LABEL, type GuideReviewSave } from '../shared/pronunciation-guide';
+import { APPLIED_LABEL, GUIDE_CHOICE, type GuideReviewSave } from '../shared/pronunciation-guide';
+import { guidePathsOfStep, hasGuide } from './narration-glossary';
+import { guideTextMadeWith } from './pronunciation-applied';
 import { guidePassOffer, type GuidePassOffer } from './pronunciation-offer';
 import { stepOfGuideNode } from './pronunciation-guide-nodes';
 // BookForge's queue, offered to the hosted Foundry window — Owen's ruling of
@@ -142,7 +144,7 @@ import { stepOfGuideNode } from './pronunciation-guide-nodes';
 // reason they do.
 import {
   foundryFormsAtLister, foundryHostQueue, projectDirFromRequest, setFoundrySeam, watchFoundryQueue,
-  type FoundryJobRequest, type FoundryJobRow, type FoundryRunJobOptions, type FoundryRunOutcome,
+  type FoundryJobRequest, type FoundryJobRow, type FoundryJobStepConfig, type FoundryRunJobOptions, type FoundryRunOutcome,
 } from './foundry-host-queue';
 // This machine's Crucible servers, as the hosted window receives them — Owen's
 // ruling of 2026-09-14 that there is ONE registry and it is BookForge's. The
@@ -3041,6 +3043,9 @@ async function queueAdjustAfterCleanup(
   projectDir: string, guide: string, cleanStep: string, under: { jobId: string; stepId: string },
 ): Promise<void> {
   const planned = await planAdjustedStep(projectDir, guide, cleanStep);
+  // The cleanup reads this guide: written down now, so its greyed row opens it too.
+  const { recordCleanedWith } = await import('./pronunciation-applied.js');
+  await recordCleanedWith(projectDir, cleanStep, guide);
   const { applyReadings: _atPress, ...request } = planned;
   foundryHostQueue.enqueue({ ...request, applyGuideOf: guide }, cleanStep, projectDir, under);
 }
@@ -3104,6 +3109,33 @@ async function refreshGuideNodes(projectDir: string): Promise<void> {
 /** One guide window per step, raised rather than opened twice. */
 const pronunciationWindows = new Map<string, BrowserWindow>();
 
+/** Whether step `at` has a guide of its own on disk. */
+function guideOwnedBy(projectDir: string, at: string): boolean {
+  return hasGuide(guidePathsOfStep(projectDir, at));
+}
+
+/**
+ * The guide step `step`'s text was made with, or null: what was written down
+ * (`guideTextMadeWith`), else — for a greyed cleanup queued before cleanups were
+ * written down — the queue row that will land it, when it reads its input's guide.
+ */
+function guideMadeWithOf(projectDir: string, step: string): string | null {
+  const recorded = guideTextMadeWith(projectDir, step);
+  if (recorded !== null) return recorded;
+  for (const job of queueEngine.snapshot().jobs) {
+    for (const s of job.steps) {
+      if (s.type !== 'foundry-job' || s.status === 'cancelled') continue;
+      const config = s.config as unknown as FoundryJobStepConfig;
+      const request = config.request as unknown as Record<string, unknown> | undefined;
+      if (config.projectDir !== projectDir || request?.['stepId'] !== step || request['kind'] !== 'clean') continue;
+      const choice = request['hostChoice'];
+      const reads = choice === GUIDE_CHOICE.use || choice === GUIDE_CHOICE.build || choice === GUIDE_CHOICE.rebuild;
+      return reads && typeof config.parentStep === 'string' ? config.parentStep : null;
+    }
+  }
+  return null;
+}
+
 /**
  * OPEN A STEP'S GUIDE — BookForge's own window on `#/pronunciation`, MODAL over
  * the Foundry window it was pressed in. It opens whether or not the step has a
@@ -3121,7 +3153,15 @@ function openPronunciationGuide(projectDir: string, pressed: string): void {
     sayToUser('Nothing to open', 'The pronunciation guide cannot be opened from here', message);
     throw new Error(message);
   }
-  const windowKey = `${projectDir}\u0000${nodeId}`;
+  /*
+   * A STEP MADE WITH A GUIDE OPENS THAT GUIDE (Owen, 2026-11-02: a cleanup's guide
+   * "should already be done as part of that line item"). A cleaned or adjusted step
+   * with no guide of its own shows the one its text was made with, and says so; a
+   * guide for its own text is still one button away in that window.
+   */
+  const madeWith = guideOwnedBy(projectDir, nodeId) ? null : guideMadeWithOf(projectDir, nodeId);
+  const at = madeWith ?? nodeId;
+  const windowKey = `${projectDir}\u0000${at}`;
   const existing = pronunciationWindows.get(windowKey);
   if (existing !== undefined && !existing.isDestroyed()) {
     if (existing.isMinimized()) existing.restore();
@@ -3144,7 +3184,8 @@ function openPronunciationGuide(projectDir: string, pressed: string): void {
   pronunciationWindows.set(windowKey, win);
   win.on('closed', () => { pronunciationWindows.delete(windowKey); });
   win.webContents.on('did-finish-load', () => { win.webContents.setZoomLevel(loadZoomLevel()); });
-  const query = `project=${encodeURIComponent(projectDir)}&at=${encodeURIComponent(nodeId)}`;
+  const query = `project=${encodeURIComponent(projectDir)}&at=${encodeURIComponent(at)}`
+    + (madeWith === null ? '' : `&from=${encodeURIComponent(nodeId)}`);
   if (isDev) {
     void win.loadURL(`http://localhost:4250/#/pronunciation?${query}`);
   } else {

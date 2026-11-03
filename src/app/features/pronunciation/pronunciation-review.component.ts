@@ -147,6 +147,15 @@ function lettersOf(key: string): string[] {
         </div>
       </header>
 
+      @if (from) {
+        <div class="made-with">
+          <span class="msg">The step you opened was made with this guide: the cleanup kept its words as printed, and
+            “Pronunciation adjusted” writes them in. Delete that step to take the corrections out.</span>
+          <desktop-button variant="ghost" size="sm" (click)="buildForFrom()" [disabled]="busy()"
+            title="Rarely needed: a new guide made from the cleaned text itself">Build a guide for that step’s own text</desktop-button>
+        </div>
+      }
+
       @if (run(); as r) {
         <div class="building">
           <span class="msg">{{ r.text }}</span>
@@ -389,6 +398,10 @@ function lettersOf(key: string): string[] {
     .saved { color: var(--success-text); font-size: 12px; }
     .confirm { font-size: 12px; color: var(--text-secondary); max-width: 300px; }
 
+    .made-with { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 8px 12px; margin-bottom: 10px;
+      border-radius: 8px; border: 1px solid var(--border-subtle); background: var(--bg-card); font-size: 13px; }
+    .made-with .msg { flex: 1 1 260px; min-width: 0; color: var(--text-secondary); line-height: 1.45; }
+
     .building { display: flex; align-items: center; gap: 12px; padding: 8px 12px; margin-bottom: 10px; border-radius: 8px;
       background: var(--bg-card); border: 1px solid var(--border-subtle); font-size: 13px; }
     .building .msg { flex: 1; min-width: 0; color: var(--text-secondary); }
@@ -566,6 +579,8 @@ export class PronunciationReviewComponent {
   private projectDir = '';
   /** The book's step the window was opened from — what a new guide is made from. */
   private at = '';
+  /** The step pressed, when it was made with this guide (`at`'s) and has none of its own; otherwise null. */
+  protected from: string | null = null;
 
   constructor() {
     const project = this.route.snapshot.queryParamMap.get('project');
@@ -576,6 +591,8 @@ export class PronunciationReviewComponent {
     }
     this.projectDir = project;
     this.at = at;
+    const from = this.route.snapshot.queryParamMap.get('from');
+    this.from = from === null || from === '' ? null : from;
     /*
      * A GUIDE STEP THAT FINISHES says so on `project:files-changed`; the list is
      * read again then — unless there are unsaved changes, which are not dropped
@@ -677,6 +694,20 @@ export class PronunciationReviewComponent {
       const res = await this.electron.buildPronunciationGuide(this.projectDir, this.at, rebuild);
       if (!res.success) { this.error.set(res.error ?? 'The guide could not be queued.'); return; }
       this.confirmingRebuild.set(false);
+    } finally {
+      this.busy.set(false);
+    }
+  }
+
+  /** Queue a guide made from the pressed step's own text — the secondary path when that step was made with this one. */
+  async buildForFrom(): Promise<void> {
+    if (this.from === null) return;
+    this.busy.set(true);
+    this.error.set(null);
+    try {
+      const res = await this.electron.buildPronunciationGuide(this.projectDir, this.from, false);
+      if (!res.success) { this.error.set(res.error ?? 'The guide could not be queued.'); return; }
+      this.saved.set('A guide for that step is queued. Open it from that step once it has run.');
     } finally {
       this.busy.set(false);
     }

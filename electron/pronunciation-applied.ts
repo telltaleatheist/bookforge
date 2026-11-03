@@ -49,7 +49,15 @@ export function ledgerStepsOf(projectDir: string): LedgerStepRow[] {
  */
 const ADJUSTED_FORMAT = 'pronunciation-adjusted/v1';
 
-interface AdjustedRecord { format: typeof ADJUSTED_FORMAT; guides: Record<string, string> }
+/**
+ * `guides`: adjusted step → the step whose guide it applied. `cleaned`: cleanup step →
+ * the step whose guide that cleanup read (protected or written in) — so pressing the
+ * guide on a cleaned step opens the guide its text was made with, not an empty one
+ * offering to build another (Owen, 2026-11-02: *"pronunciation guide is one of the
+ * buttons it shows. but that should already be done as part of that line item"*).
+ * `cleaned` is absent from records written before it.
+ */
+interface AdjustedRecord { format: typeof ADJUSTED_FORMAT; guides: Record<string, string>; cleaned?: Record<string, string> }
 
 function adjustedRecordPath(projectDir: string): string {
   const manifest = path.join(projectDir, 'project.json');
@@ -60,25 +68,60 @@ function adjustedRecordPath(projectDir: string): string {
   return path.join(projectDir, 'readings', `${key}.pronunciation-adjusted.json`);
 }
 
-function adjustedGuides(projectDir: string): Record<string, string> {
+function adjustedRecord(projectDir: string): AdjustedRecord {
   const file = adjustedRecordPath(projectDir);
-  if (!fs.existsSync(file)) return {};
+  if (!fs.existsSync(file)) return { format: ADJUSTED_FORMAT, guides: {} };
   const body = JSON.parse(fs.readFileSync(file, 'utf8')) as Partial<AdjustedRecord>;
-  if (body.format !== ADJUSTED_FORMAT || typeof body.guides !== 'object' || body.guides === null) {
+  if (body.format !== ADJUSTED_FORMAT || typeof body.guides !== 'object' || body.guides === null
+    || (body.cleaned !== undefined && (typeof body.cleaned !== 'object' || body.cleaned === null))) {
     throw new Error(`${file} is not a ${ADJUSTED_FORMAT} record, so which guide each adjusted step came from cannot be read.`);
   }
-  return body.guides;
+  return { format: ADJUSTED_FORMAT, guides: body.guides, ...(body.cleaned === undefined ? {} : { cleaned: body.cleaned }) };
 }
 
-/** Write down that adjusted step `stepId` is the guide on step `guide`, applied. */
-export async function recordAdjusted(projectDir: string, stepId: string, guide: string): Promise<void> {
+function adjustedGuides(projectDir: string): Record<string, string> {
+  return adjustedRecord(projectDir).guides;
+}
+
+async function writeAdjustedRecord(projectDir: string, body: AdjustedRecord): Promise<void> {
   const file = adjustedRecordPath(projectDir);
-  const guides = { ...adjustedGuides(projectDir), [stepId]: guide };
-  const body: AdjustedRecord = { format: ADJUSTED_FORMAT, guides };
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(`${file}.partial`, `${JSON.stringify(body, null, 2)}\n`, 'utf8');
   const { renameWithRetry } = await import('./fs-retry.js');
   await renameWithRetry(`${file}.partial`, file);
+}
+
+/** Write down that adjusted step `stepId` is the guide on step `guide`, applied. */
+export async function recordAdjusted(projectDir: string, stepId: string, guide: string): Promise<void> {
+  const held = adjustedRecord(projectDir);
+  await writeAdjustedRecord(projectDir, { ...held, guides: { ...held.guides, [stepId]: guide } });
+}
+
+/** Write down that cleanup step `stepId` read the guide on step `guide`. */
+export async function recordCleanedWith(projectDir: string, stepId: string, guide: string): Promise<void> {
+  // A book with no manifest has no ledger to open a guide from (the queue keepers' books are such).
+  if (!fs.existsSync(path.join(projectDir, 'project.json'))) return;
+  const held = adjustedRecord(projectDir);
+  if (held.cleaned?.[stepId] === guide) return;
+  await writeAdjustedRecord(projectDir, { ...held, cleaned: { ...(held.cleaned ?? {}), [stepId]: guide } });
+}
+
+/**
+ * THE GUIDE STEP `step`'S TEXT WAS MADE WITH, from what was written down, or null:
+ * an adjusted step's guide (recorded, or its parent's for one from before the
+ * record), or the guide a cleanup read. Greyed steps count — both are written down
+ * when the work is queued, before it lands. A step with no ledger has none.
+ */
+export function guideTextMadeWith(projectDir: string, step: string): string | null {
+  if (!fs.existsSync(path.join(projectDir, 'project.json'))) return null;
+  const record = adjustedRecord(projectDir);
+  const recorded = record.guides[step] ?? record.cleaned?.[step];
+  if (recorded !== undefined) return recorded;
+  const row = ledgerStepsOf(projectDir).find((s) => s.id === step);
+  if (row !== undefined && typeof row.parent === 'string' && appliedLabelNumber(row.params?.readings) !== null) {
+    return row.parent;
+  }
+  return null;
 }
 
 interface AppliedRow { id: string; label: string; parent: string; guide: string; n: number; children: number }

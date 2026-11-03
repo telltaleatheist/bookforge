@@ -613,6 +613,50 @@ const entries = (where) => JSON.parse(fs.readFileSync(where.glossaryFile, 'utf8'
     }
   });
 
+  await test('a cleaned or adjusted step knows the guide its text was made with (Owen, 2026-11-02: "that should already be done as part of that line item")', async () => {
+    const shared = require(path.join(REPO, 'dist', 'shared', 'pronunciation-guide.js'));
+    const applied = require(path.join(REPO, 'dist', 'electron', 'pronunciation-applied.js'));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bf-made-with-'));
+    const ledger = (steps) => fs.writeFileSync(path.join(dir, 'project.json'), JSON.stringify({ key: 'bk', ledger: { steps } }));
+    const adj = (id, n, parent) => ({
+      id, parent, label: shared.appliedLabelFor(n), payload: `readings/${id}.clean.records.jsonl`,
+      params: { readings: shared.appliedLabelFor(n) },
+    });
+    try {
+      // Queued, not landed: A's cleanup C (greyed) and its adjusted step, both written down.
+      ledger([{ id: 'A' }]);
+      await applied.recordAdjusted(dir, 'adjA', 'A');
+      await applied.recordCleanedWith(dir, 'C', 'A');
+      assert.strictEqual(applied.guideTextMadeWith(dir, 'C'), 'A', 'the greyed cleanup opens A’s guide');
+      assert.strictEqual(applied.guideTextMadeWith(dir, 'adjA'), 'A', 'and so does its adjusted step');
+      assert.strictEqual(applied.guideTextMadeWith(dir, 'A'), null, 'A itself was made with no guide');
+      // The two records live side by side: writing one keeps the other.
+      const record = JSON.parse(fs.readFileSync(path.join(dir, 'readings', 'bk.pronunciation-adjusted.json'), 'utf8'));
+      assert.deepStrictEqual(record, { format: 'pronunciation-adjusted/v1', guides: { adjA: 'A' }, cleaned: { C: 'A' } });
+      await applied.recordAdjusted(dir, 'adjB', 'A');
+      assert.strictEqual(applied.guideTextMadeWith(dir, 'C'), 'A', 'an adjusted record written later keeps the cleanup’s');
+      // An adjusted step from before the record: its parent's guide.
+      ledger([{ id: 'A' }, adj('old', 1, 'A')]);
+      assert.strictEqual(applied.guideTextMadeWith(dir, 'old'), 'A');
+      // A record from before `cleaned` existed still reads.
+      fs.writeFileSync(path.join(dir, 'readings', 'bk.pronunciation-adjusted.json'),
+        JSON.stringify({ format: 'pronunciation-adjusted/v1', guides: { adjA: 'A' } }));
+      assert.strictEqual(applied.guideTextMadeWith(dir, 'C'), null);
+      assert.strictEqual(applied.guideTextMadeWith(dir, 'adjA'), 'A');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+    // A book with no manifest (the queue keepers') records nothing and knows nothing.
+    const bare = fs.mkdtempSync(path.join(os.tmpdir(), 'bf-made-with-bare-'));
+    try {
+      await applied.recordCleanedWith(bare, 'C', 'A');
+      assert.strictEqual(fs.existsSync(path.join(bare, 'readings')), false);
+      assert.strictEqual(applied.guideTextMadeWith(bare, 'C'), null);
+    } finally {
+      fs.rmSync(bare, { recursive: true, force: true });
+    }
+  });
+
   await test('millimeters are not a numeral; a corps numeral in capitals is (Blitzkrieg Legend, 2026-10-31)', () => {
     const abbr = (key) => ({ key, kind: 'abbreviation', count: 1, printed: { [key]: 1 }, samples: [], occurrences: [] });
     assert.strictEqual(glossary.senseProblem(abbr('mm'), { meaning: 'millimeters', kind: 'abbreviation', reading: 'millimeters', periodIsPart: true }), null);
