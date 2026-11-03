@@ -68,7 +68,7 @@ export const DEFAULT_ASK_PRESETS: readonly AskPreset[] = [
   },
   {
     id: 'builtin:pictures',
-    label: 'Pictures, captions & web addresses',
+    label: 'Pictures, captions & URLs',
     description: 'Strike pictures and captions, rejoin the prose they split, and take web addresses out.',
     question: 'Remove what a listener cannot see. Mark pictures and their captions for removal (search category_is '
       + '"Picture" and "Caption", dry_run first). Where a picture or caption split a sentence or a paragraph in two, join '

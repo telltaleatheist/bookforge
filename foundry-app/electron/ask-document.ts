@@ -797,6 +797,7 @@ function isSession(value: unknown): value is AskSession {
     && (s['hitLimit'] === undefined || typeof s['hitLimit'] === 'boolean')
     && (s['chain'] === undefined || isChainStep(s['chain']))
     && (s['conversation'] === undefined || typeof s['conversation'] === 'string')
+    && (s['preset'] === undefined || typeof s['preset'] === 'string')
     && typeof s['skipped'] === 'number' && typeof s['rounds'] === 'number' && typeof s['seconds'] === 'number';
 }
 

@@ -20,6 +20,7 @@ import { StageService } from '../../core/stage.service';
 import { UiService } from '../../core/ui.service';
 import { ConfirmService } from '../../core/confirm.service';
 import { runsOf } from '@shared/ask-conversations';
+import type { AskPreset } from '@shared/ask-presets';
 import { api } from '../../core/foundry';
 import { JobModelComponent } from '../job-model/job-model.component';
 
@@ -111,7 +112,7 @@ import { JobModelComponent } from '../job-model/job-model.component';
             </p>
           }
           @for (one of exchanges(); track one.session.id) {
-            <div class="msg person" [title]="one.session.request">{{ one.session.chain === undefined ? one.session.request : one.session.chain.step }}</div>
+            <div class="msg person" [title]="one.session.request">{{ one.session.chain?.step ?? one.session.preset ?? one.session.request }}</div>
             <button class="working" (click)="toggle(one.session.id)">
               <span class="twist">{{ unfolded().has(one.session.id) ? '▾' : '▸' }}</span>
               Worked for {{ duration(one.session.seconds) }} · {{ one.session.rounds }} {{ one.session.rounds === 1 ? 'round' : 'rounds' }}
@@ -166,7 +167,7 @@ import { JobModelComponent } from '../job-model/job-model.component';
             @if (chainSaid(); as step) {
               <p class="chain">{{ step }}</p>
             }
-            <div class="msg person">{{ now.chain === undefined ? now.request : now.chain.step }}</div>
+            <div class="msg person" [title]="now.request">{{ now.chain?.step ?? now.preset ?? now.request }}</div>
             @if (now.phase === 'running' || now.phase === 'landing') {
               <button class="working active" (click)="liveFolded.set(!liveFolded())">
                 <span class="spinner" aria-hidden="true"></span>
@@ -209,6 +210,19 @@ import { JobModelComponent } from '../job-model/job-model.component';
             <p class="continuing" [title]="on.title">
               Continuing “{{ clipped(on.title) }}” · {{ on.turns }} {{ on.turns === 1 ? 'question' : 'questions' }} so far
             </p>
+          }
+          <!--
+            THE PRESETS, ONE PRESS EACH (Owen, 2026-11-02) — the kept list, in its
+            order and with its names, so an edit in the Presets modal is an edit
+            here. A press runs that one at once; the modal is where several run
+            in order and where they are edited. The question is on hover.
+          -->
+          @if (presetRow().length > 0) {
+            <div class="presets">
+              @for (preset of presetRow(); track preset.id) {
+                <button class="preset" [disabled]="!canRunPreset()" [title]="preset.question" (click)="runPreset(preset)">{{ preset.label }}</button>
+              }
+            </div>
           }
           <textarea
             #box
@@ -284,7 +298,7 @@ import { JobModelComponent } from '../job-model/job-model.component';
     }
     .plus:hover:not(:disabled) { background: var(--bg-hover); color: var(--text-primary); }
     .plus:disabled { opacity: 0.4; cursor: default; }
-    .convs { border-bottom: 1px solid var(--border-subtle); }
+    .convs { flex-shrink: 0; border-bottom: 1px solid var(--border-subtle); }
     .conv-head {
       display: flex; align-items: baseline; gap: 6px; width: 100%;
       padding: 4px 12px 6px; background: transparent; border: none; text-align: left; cursor: pointer;
@@ -292,7 +306,7 @@ import { JobModelComponent } from '../job-model/job-model.component';
     .conv-head:hover { background: var(--bg-hover); }
     .conv-now { flex: 1; min-width: 0; font-size: 12px; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .conv-count { font-size: 11px; color: var(--text-tertiary); font-variant-numeric: tabular-nums; }
-    .conv-list { list-style: none; margin: 0; padding: 0 0 6px; max-height: 40%; overflow-y: auto; }
+    .conv-list { list-style: none; margin: 0; padding: 0 0 6px; max-height: 280px; overflow-y: auto; }
     .conv { display: flex; align-items: center; gap: 4px; padding: 0 8px 0 12px; }
     .conv.on .conv-title { font-weight: 600; }
     .conv-pick {
@@ -427,6 +441,16 @@ import { JobModelComponent } from '../job-model/job-model.component';
     .bar .spacer { flex: 1; }
 
     .chain { margin: 0; font-size: 11px; font-weight: 600; color: var(--accent); }
+    .presets { display: flex; flex-wrap: wrap; gap: 4px; }
+    .preset {
+      max-width: 100%; height: 24px; padding: 0 9px;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      background: var(--bg-input); color: var(--text-primary);
+      border: 1px solid var(--border-default); border-radius: 12px;
+      font-family: inherit; font-size: 11px; cursor: pointer;
+    }
+    .preset:hover:not(:disabled) { background: var(--bg-hover); border-color: var(--border-strong); }
+    .preset:disabled { opacity: 0.5; cursor: not-allowed; }
     .places-head { margin: 2px 0 0; font-size: 11px; font-weight: 600; color: var(--text-secondary); }
     .places { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
     .place {
@@ -651,6 +675,21 @@ export class AskPanelComponent {
     if (tab === null || this.busy() || !this.modelReady() || this.server() === null) return;
     this.liveFolded.set(false);
     void this.asks.start(tab, this.pane(), KEEP_GOING, this.server(), this.model());
+  }
+
+  /** The kept presets, in their order: the row above the box. */
+  protected readonly presetRow = computed(() => this.asks.presets());
+
+  /** A preset can run when a book is in front, nothing is running, and a model is chosen. */
+  protected readonly canRunPreset = computed(() =>
+    this.tab() !== null && !this.busy() && this.modelReady() && this.server() !== null);
+
+  /** One preset, now, as one run headed with its name. */
+  protected runPreset(preset: AskPreset): void {
+    const tab = this.tab();
+    if (tab === null || !this.canRunPreset()) return;
+    this.liveFolded.set(false);
+    void this.asks.runPresets(tab, this.pane(), [preset], this.server(), this.model());
   }
 
   /** Light a place the model pointed at, and go to it; clicking it again puts it down. */

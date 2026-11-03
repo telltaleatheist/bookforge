@@ -424,6 +424,12 @@ export interface AskSession {
   readonly chain?: AskChainStep;
   /** The conversation it belongs to. Absent on a run kept before conversations (`AskConversation.legacyRuns`). */
   readonly conversation?: string;
+  /**
+   * The preset it was started from, by its name ("Footnotes") — what the panel
+   * heads the run with, while `request` stays the full question the model was
+   * sent. Absent on a question typed into the box.
+   */
+  readonly preset?: string;
   /** How many marks were not landed because their block had changed during the run. */
   readonly skipped: number;
   readonly rounds: number;

@@ -187,7 +187,7 @@ export class AskService {
   async runPresets(tab: Tab, pane: BookStack, steps: readonly AskPreset[], server: string | null, model: string): Promise<void> {
     if (steps.length === 0) return;
     if (steps.length === 1) {
-      await this.start(tab, pane, steps[0]!.question, server, model);
+      await this.start(tab, pane, steps[0]!.question, server, model, undefined, steps[0]!.label);
       return;
     }
     const chain = new AskChain(`chain-${Date.now().toString(36)}`, steps);
@@ -280,7 +280,10 @@ export class AskService {
   }
 
   /** Ask. The view is the pane's own replay, read at this instant. */
-  async start(tab: Tab, pane: BookStack, request: string, server: string | null, model: string, chain?: AskChainStep): Promise<void> {
+  async start(
+    tab: Tab, pane: BookStack, request: string, server: string | null, model: string,
+    chain?: AskChainStep, preset?: string,
+  ): Promise<void> {
     if (!api) return;
     // A book tab's path IS its project directory (`Tab.path`).
     const projectDir = tab.path;
@@ -295,6 +298,7 @@ export class AskService {
       phase: 'running', runId: null, request, status: 'Starting…', round: 0, maxRounds: 0,
       says: null, struck: 0, revised: 0, retyped: 0, tally: '', message: null, steps: [], startedAt: Date.now(),
       ...(chain === undefined ? {} : { chain }),
+      ...(preset === undefined ? {} : { preset }),
     });
     try {
       const stack = pane.askStack();
@@ -363,6 +367,7 @@ export class AskService {
       highlights: result.highlights,
       hitLimit: result.hitLimit,
       ...(run.chain === undefined ? {} : { chain: run.chain }),
+      ...(run.preset === undefined ? {} : { preset: run.preset }),
       conversation: result.conversation.id,
       skipped: plan.skipped.length + landed.refused,
       rounds: result.rounds,
@@ -450,6 +455,8 @@ export interface AskRunState {
   readonly startedAt: number;
   /** Which step of a chain of presets this run is. Absent on an ordinary question. */
   readonly chain?: AskChainStep;
+  /** The preset a single run was started from, by name. Absent on a typed question. */
+  readonly preset?: string;
 }
 
 /** One line of a run's working: what happened, and what the model said, if it said something new. */

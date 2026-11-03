@@ -23,7 +23,7 @@ import type { BookRow } from '../shared/book';
 
 test('the defaults are the four jobs, in run order, each a full instruction naming its tools', () => {
   expect(presets.DEFAULT_ASK_PRESETS.map((p) => p.label))
-    .toEqual(['Correct chapters', 'Front & back matter', 'Pictures, captions & web addresses', 'Footnotes']);
+    .toEqual(['Correct chapters', 'Front & back matter', 'Pictures, captions & URLs', 'Footnotes']);
   const [chapters, matter, pictures, notes] = presets.DEFAULT_ASK_PRESETS;
   expect(chapters!.question).toContain('rename_chapter');
   expect(chapters!.question).toContain('Do NOT mark the table of contents');
@@ -158,4 +158,19 @@ test('review shows every step of a chain together, each group labelled with its 
   expect(review.skipped).toBe(2);
   expect(review.keyOf(one.items[0]!)).not.toBe(review.keyOf(two.items[0]!));
   expect(reviewOf([earlier], earlier).request).toBe('plain');
+});
+
+test('a run started from a preset is kept with the preset\'s name beside the full question', async () => {
+  const { readSessionsAt } = await import('../electron/ask-document');
+  const file = path.join(userData, 'sessions-preset.jsonl');
+  const kept: AskSession = {
+    id: 'r9', at: '2026-11-02T00:00:00Z', request: presets.DEFAULT_ASK_PRESETS[3]!.question, preset: 'Footnotes',
+    server: 's', model: 'm', summary: '', items: [], skipped: 0, rounds: 1, seconds: 1,
+  };
+  fs.writeFileSync(file, `${JSON.stringify(kept)}\n${JSON.stringify({ ...kept, id: 'r10', preset: 7 })}\n`);
+  await expect(readSessionsAt(file)).rejects.toThrow('Line 2');
+  fs.writeFileSync(file, `${JSON.stringify(kept)}\n`);
+  const [back] = await readSessionsAt(file);
+  expect(back!.preset).toBe('Footnotes');
+  expect(back!.request).toContain('link_footnote');
 });
