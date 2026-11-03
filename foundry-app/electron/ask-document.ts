@@ -24,7 +24,7 @@
  *   * A REPLY CUT OFF AT max_tokens WITH NO CALL IS NOT AN ANSWER — it ran out
  *     mid-thought — so it is nudged and the run goes on.
  *   * WEATHER IS RETRIED, MISCONFIGURATION IS NAMED. An unreachable server, a
- *     429 or a 5xx gets {@link ATTEMPTS} tries with a growing wait; any other
+ *     429 or a 5xx gets four tries with a growing wait; any other
  *     refusal is the request being wrong and is said in the server's own words.
  *
  * A FOLLOW-UP STARTS FROM A NOTE (Owen, 2026-11-01). When the summary is
@@ -49,15 +49,23 @@ import { randomUUID } from 'node:crypto';
 import { promises as fsp } from 'node:fs';
 import * as path from 'node:path';
 
+import type { CrucibleClient } from '@crucible/client';
 import {
-  CrucibleRefused,
-  CrucibleServerError,
-  CrucibleUnreachable,
-  type ChatMessage,
-  type ChatTool,
-  type ChatToolCall,
-  type CrucibleClient,
-} from '@crucible/client';
+  crucibleTransport,
+  DROPPED_NOTE,
+  HISTORY_HIGH,
+  HISTORY_LOW,
+  fitter,
+  logTo,
+  openCrucibleTarget,
+  runLoop,
+  takeNote as noteOf,
+  type CrucibleTarget,
+  type Finished,
+  type RetryPolicy,
+  type ToolSource,
+  type Transport,
+} from '@owen/tool-loop';
 
 import { askToolbox, clip, roundSaid, tallySaid, type AskSaid, type AskToolbox } from './ask-tools';
 import { AskHistory } from '../shared/ask-history';
@@ -71,7 +79,7 @@ import {
   type AskConversation,
 } from '../shared/ask-conversations';
 import { writeAtomically } from './atomic';
-import { openSession, type HeldSession } from './crucible-dispatch';
+import { openSession } from './crucible-dispatch';
 import { isWeather, topRankedCrucible } from './crucible-models';
 import { clientFor, crucibleServerNamed, resolveEngine } from './crucible-registry';
 import { bookAtPosition, opsDir } from './projects';
@@ -87,35 +95,23 @@ import type { AskHighlight, AskMark, AskProgress, AskRequest, AskResult, AskSess
 export const ASK_MAX_ROUNDS = 80;
 
 /**
- * THE HISTORY IS CUT IN CHUNKS, NEVER ROUND BY ROUND (Owen, 2026-10-29).
+ * THE LOOP ITSELF IS `@owen/tool-loop` (vendor/owen-tool-loop-*.tgz), taken out
+ * of this file on 2026-11-02 so Owen's other apps can run it with their own
+ * tools. What stays here is everything about books: the tools and their state
+ * (ask-tools.ts), the prompt, the note's wording, the conversations kept with
+ * the book. The numbers it runs Ask with are stated here:
  *
- * It grows until it holds HISTORY_HIGH rounds, then is cut back to the most
- * recent HISTORY_LOW in one step: whole rounds, a call leaving with its results.
- * Between two cuts every request begins with exactly the bytes the one before it
- * did, plus one more round, so Claude's prompt cache and vLLM's prefix cache
- * keep hitting. The experiment's loop trimmed old results every round, which
- * changed the prompt's start on every request and paid for the whole history
- * again each time.
- *
- * What the dropped rounds did is not lost: the tools hold every mark, and each
- * request ends with the current state of the work ({@link AskToolbox.state}).
+ *   * THE HISTORY IS CUT IN CHUNKS, NEVER ROUND BY ROUND (Owen, 2026-10-29) —
+ *     the module's `trim` policy: grow to HISTORY_HIGH rounds, cut back to the
+ *     latest HISTORY_LOW in one step, so Claude's prompt cache and vLLM's prefix
+ *     cache keep hitting. What dropped rounds did is not lost: the tools hold
+ *     every mark, and each request ends with {@link AskToolbox.state}.
+ *   * Tokens per reply: the experiment's 8000, or a quarter of a small window.
+ *   * Weather gets four tries, waiting 5 s and doubling.
  */
-export const HISTORY_HIGH = 20;
-export const HISTORY_LOW = 10;
-
-/** Tokens per reply: the experiment's 8000, or a quarter of a small window. */
+export { DROPPED_NOTE, HISTORY_HIGH, HISTORY_LOW, fitter };
 const MAX_REPLY_TOKENS = 8000;
-
-/**
- * CLAUDE'S WINDOW. Crucible's upstream listing states no window for a forwarded
- * model, and every Claude model the anthropic account serves takes 200k; a model
- * that takes less answers with a 400 naming its own limit, which is said by name.
- */
-const CLAUDE_WINDOW = 200_000;
-
-/** Tries for one chat against weather, and the first wait (doubled each time). */
-const ATTEMPTS = 4;
-const FIRST_WAIT_MS = 5_000;
+const RETRY: RetryPolicy = { attempts: 4, firstWaitMs: 5_000, log: logTo('ask') };
 
 /** What the act is shown as on the server — one lowercase word, Crucible's rule. */
 const ACT = 'ask';
@@ -179,22 +175,17 @@ export function cancelAsk(runId: string): void {
 /**
  * Where a run is pointed: the client, the model id, its window, and the hold.
  * Category suggestions (electron/suggest-categories.ts) point one chat the same
- * way, which is why this and {@link chatWithin} are exported.
+ * way, which is why this and {@link isWeather} are exported.
  */
-export interface Target {
-  server: string;
-  client: CrucibleClient;
-  model: string;
-  local: boolean;
-  /** Tokens, or null when nothing states it (a non-Claude upstream). */
-  window: number | null;
-  session: HeldSession | null;
-}
+export type Target = CrucibleTarget<CrucibleClient>;
 
 /**
  * THE SERVER AND MODEL A DROPDOWN NAMED, made ready: a local model loaded and
  * held by a session the caller releases, a forwarded one passed through.
- * `act` is what the server shows the work as.
+ * `act` is what the server shows the work as. The registry and the engine hop
+ * are this app's; making the model ready is the module's, holding the session
+ * through this app's own `openSession`, so one thing here holds every turn on a
+ * card.
  */
 export async function crucibleTarget(
   server: string | null,
@@ -211,70 +202,24 @@ export async function crucibleTarget(
   // The registered address may be an orchestrator; a session and a chat are
   // engine work, so the hop is followed once (crucible-dispatch.ts says why).
   const engine = (await resolveEngine(entry)).entry;
-  const client = clientFor(engine);
-
-  if (chosen.includes('/')) {
-    // Forwarded on the server's upstream account: nothing on the card to hold.
-    return {
-      server: entry.name,
-      client,
-      model: chosen,
-      local: false,
-      window: chosen.startsWith('anthropic/') ? CLAUDE_WINDOW : null,
-      session: null,
-    };
-  }
-
-  say(chosen.length === 0
-    ? `Asking ${entry.name} for its turn and its own model (up to ${JOB_MODEL_CEILING_B}B)…`
-    : `Asking ${entry.name} for its turn and loading ${chosen}…`);
-  const session = await openSession(
-    engine,
-    chosen.length === 0 ? { maxParamsB: JOB_MODEL_CEILING_B } : { model: chosen },
+  return openCrucibleTarget({
+    client: clientFor(engine),
+    server: entry.name,
+    chosen,
     act,
-    entry.name,
+    ceilingB: JOB_MODEL_CEILING_B,
     say,
     signal,
-  );
-  try {
-    const model = chosen.length > 0 ? chosen : session.model;
-    if (model === null) {
-      throw new Error(`${entry.name} opened its turn for Automatic and did not say which model it chose.`);
-    }
-    const info = (await client.models()).find((m) => m.id === model);
-    if (info === undefined) {
-      throw new Error(`${entry.name} opened its turn with ${model} and then did not list it, so its window is not known.`);
-    }
-    return {
-      server: entry.name,
-      client,
-      model,
-      local: true,
-      // The window in force; while a model is not resident the server states
-      // only the window it would load it at, which is the same number by intent.
-      window: info.maxModelLen ?? info.contextDefault,
-      session,
-    };
-  } catch (err) {
-    await session.release();
-    throw err;
-  }
+    openSession: (pick, said, stop) => openSession(engine, pick, act, entry.name, said, stop),
+  });
 }
 
-/** A message with the round it belongs to, for trimming. The round is never sent. */
-type Held = { message: ChatMessage; round?: number };
-
-/** The loop's end: the summary, and the conversation as it stands, which the note is asked on. */
-export interface Finished {
-  text: string;
-  rounds: number;
-  /** True when the run stopped at the round limit rather than by finishing. */
-  hitLimit: boolean;
-  history: Held[];
-  fit: ReturnType<typeof fitter>;
-  tools: ChatTool[];
-  maxTokens: number;
+/** Ask's chats through the module: its act, this app's own rule for weather. */
+function transportOf(to: Target): Transport {
+  return crucibleTransport(to, { act: ACT, isWeather });
 }
+
+export type { Finished };
 
 /** The three counts the progress frame has always carried, which the panel's older lines still read. */
 function threeCounts(box: AskToolbox): { struck: number; revised: number; retyped: number } {
@@ -385,7 +330,7 @@ type Noted = { note: string } | { problem: string };
  * ONE MORE SHORT REQUEST, on the session the run still holds: the conversation
  * as the loop left it, with the note asked for in the last message. The tools go
  * with it, because a history holding tool calls is refused without them; any
- * call in the answer is dropped. Weather is retried by {@link chatWithin}; what
+ * call in the answer is dropped. Weather is retried by the module; what
  * still fails ends the thread, and the run's marks land regardless.
  */
 export async function takeNote(
@@ -396,28 +341,20 @@ export async function takeNote(
   say: (status: string) => void,
 ): Promise<Noted> {
   say('Writing a note so you can ask a follow-up…');
-  const { wired } = finished.fit.wire(finished.history, finished.rounds, `${box.state()}\n\n${NOTE_ASK}`);
-  let reply: Awaited<ReturnType<CrucibleClient['chat']>>;
-  try {
-    reply = await chatWithin(to, {
-      model: to.model,
-      messages: wired,
-      maxTokens: to.local ? Math.min(finished.maxTokens, NOTE_MAX_TOKENS) : finished.maxTokens,
-      tools: finished.tools,
-      toolChoice: 'auto',
-      act: ACT,
-      signal,
-      ...(to.local ? { thinking: false } : {}),
-    });
-  } catch (err) {
-    if (signal.aborted) throw err;
-    return { problem: `The model's note for a follow-up could not be had (${err instanceof Error ? err.message : String(err)}), so your next question starts fresh.` };
+  const noted = await noteOf(transportOf(to), finished, {
+    signal,
+    state: box.state(),
+    ask: NOTE_ASK,
+    maxTokens: NOTE_MAX_TOKENS,
+    retry: RETRY,
+  });
+  if ('failed' in noted) {
+    return { problem: `The model's note for a follow-up could not be had (${noted.failed}), so your next question starts fresh.` };
   }
-  const note = reply.content?.trim() ?? '';
-  if (note.length === 0) {
+  if ('empty' in noted) {
     return { problem: `${to.model} wrote no note for a follow-up, so your next question starts fresh.` };
   }
-  return { note };
+  return { note: noted.note };
 }
 
 /**
@@ -472,9 +409,11 @@ Old rounds are removed from this conversation from time to time to save space, s
 }
 
 /**
- * THE ROUNDS. Ends when the model stops calling tools (its last prose is the
+ * THE ROUNDS, run by the module's loop with Ask's numbers, Ask's prompt and the
+ * book's tools. Ends when the model stops calling tools (its last prose is the
  * summary), or at the round limit, where one last request asks only for the
- * summary and any tool call in its answer is dropped.
+ * summary and any tool call in its answer is dropped. Each round's line says
+ * what its calls did (ask-tools.ts `roundSaid`) and the tally after them.
  */
 export async function loop(
   to: Target,
@@ -483,208 +422,35 @@ export async function loop(
   signal: AbortSignal,
   progress: (round: number, prose: string | null, status: string) => void,
 ): Promise<Finished> {
-  const tools: ChatTool[] = box.tools.map((t) => ({
-    type: 'function',
-    function: { name: t.name, description: t.description, parameters: t.parameters },
-  }));
-  const maxTokens = to.window === null ? MAX_REPLY_TOKENS : Math.min(MAX_REPLY_TOKENS, Math.floor(to.window / 4));
-  const fit = fitter(to.window, maxTokens, JSON.stringify(tools).length);
-  const history: Held[] = [
-    { message: { role: 'system', content: systemPrompt(ASK_MAX_ROUNDS) } },
-    { message: { role: 'user', content: opening } },
-  ];
-  let summary = '';
-  const done = (rounds: number, hitLimit: boolean): Finished => ({ text: summary, rounds, hitLimit, history, fit, tools, maxTokens });
-
-  for (let round = 0; ; round += 1) {
-    signal.throwIfAborted();
-    const final = round >= ASK_MAX_ROUNDS;
-    progress(round, null, final
-      ? `Round ${round}: asking ${to.model} for its summary…`
-      : `Round ${round + 1} of ${ASK_MAX_ROUNDS}: waiting for ${to.model}…`);
-    const { wired, chars } = fit.wire(history, round, box.state());
-    const reply = await chatWithin(to, {
-      model: to.model,
-      messages: wired,
-      maxTokens,
-      tools,
-      /*
-       * 'auto' EVEN ON THE LAST ROUND. Crucible refuses a tool_choice a
-       * forwarded model does not take (`UpstreamModelFacts.toolChoice`), and a
-       * refusal there would throw away forty rounds of marks for a summary. The
-       * last results already say no more calls can be made, and any call made
-       * anyway is dropped below.
-       */
-      toolChoice: 'auto',
-      act: ACT,
-      signal,
-      // Thinking is the chat template's switch on a local model, sent as
-      // chat_template_kwargs by the SDK. A forwarded Claude is sent nothing:
-      // the newer ones think by default and Crucible answers that thinking as
-      // `contentBlocks`, which the history below sends back.
-      ...(to.local ? { thinking: false } : {}),
-    });
-    if (reply.usage?.promptTokens) fit.measured(reply.usage.promptTokens, chars);
-    const calls: readonly ChatToolCall[] = final ? [] : reply.toolCalls;
-    /*
-     * CLAUDE'S OWN TURN GOES BACK AS IT CAME. Sonnet and Opus 5.5 think by
-     * default (Crucible 2.0.33 sends them adaptive thinking), and a tool loop
-     * keeps that thinking only if each turn's `contentBlocks` are sent back
-     * verbatim beside the same content and calls — the server refuses an edited
-     * turn `content_blocks_mismatch`. So they ride only when the calls are the
-     * reply's own; the last round drops its calls and is never sent again
-     * anyway. A local model answers no blocks, and its thinking is off.
-     */
-    const blocks = !final && reply.contentBlocks.length > 0 ? { contentBlocks: reply.contentBlocks } : {};
-    history.push({
-      message: {
-        role: 'assistant',
-        content: reply.content,
-        ...(calls.length > 0 ? { toolCalls: calls } : {}),
-        ...blocks,
-      },
-      round,
-    });
-    if (reply.content !== null && reply.content.trim().length > 0) summary = reply.content.trim();
-
-    /*
-     * THE CALLS RUN BEFORE THE ROUND IS SAID, so its line can say what each one
-     * did (`read ch 12 (e-400–e-460)`, `search "Caption" → 14`) and its tally
-     * counts this round's marks rather than the last one's. The tools word it
-     * (ask-tools.ts `roundSaid`); this only joins it to the round.
-     */
-    const said: AskSaid[] = [];
-    for (const call of calls) {
-      const result = box.call(call.function.name, call.function.arguments);
-      said.push(result.said);
-      let content = result.content;
-      if (round + 1 >= ASK_MAX_ROUNDS) content += '\n\nNo more tool calls can be made. Write your summary for the person now.';
-      history.push({ message: { role: 'tool', toolCallId: call.id, content }, round });
-    }
-    progress(round, reply.content, `Round ${round + 1}: ${roundSaid(said)} · ${tallySaid(box.counts())}`);
-
-    if (calls.length === 0) {
-      if (final) return done(round + 1, true);
-      if (reply.finishReason === 'length') {
-        // Ran out mid-thought: not the model's answer. Asked to act.
-        history.push({
-          message: {
-            role: 'user',
-            content: `Your last reply hit the ${maxTokens}-token limit before it called a tool. Keep your reasoning to a few sentences and make the next tool call now.`,
-          },
-          round,
-        });
-        continue;
-      }
-      return done(round + 1, false);
-    }
-  }
+  return runLoop<AskSaid>({
+    transport: transportOf(to),
+    tools: toolsOf(box),
+    system: systemPrompt(ASK_MAX_ROUNDS),
+    opening,
+    signal,
+    maxRounds: ASK_MAX_ROUNDS,
+    maxReplyTokens: MAX_REPLY_TOKENS,
+    state: () => box.state(),
+    retry: RETRY,
+    onProgress: (p) => progress(p.round, p.prose, p.status),
+    words: { round: (round, said) => `Round ${round + 1}: ${roundSaid(said)} · ${tallySaid(box.counts())}` },
+  });
 }
 
-/**
- * THE HISTORY, FITTED TO THE WINDOW — in chunks ({@link HISTORY_HIGH}).
- *
- * STATEFUL, because a cut is a fact about the run: once old rounds are gone they
- * stay gone, so the next request starts with the same bytes this one did. `cut`
- * is the first round still sent; everything before it is one short note on the
- * person's turn, which changes only at a cut.
- *
- * `state` is the work so far, rebuilt by the caller every round and sent as the
- * LAST message. It is never put in `history`, so old copies cannot pile up, and
- * it sits after everything that is cached, so it never moves the prefix.
- *
- * THE WINDOW IS STILL THE HARD LIMIT. The size is estimated from characters at
- * the ratio the last request measured (a cautious 0.4 until one has). When a
- * request does not fit, the history is cut back to HISTORY_LOW, then one round
- * at a time down to the last round, and a request that does not fit even then
- * is refused by name. With no stated window (a non-Claude upstream) only the
- * chunking applies, and the vendor's own 400 names its limit if it is outgrown.
- */
-export function fitter(window: number | null, maxTokens: number, toolChars: number): {
-  wire(history: readonly Held[], round: number, state: string): { wired: ChatMessage[]; chars: number };
-  measured(promptTokens: number, chars: number): void;
-} {
-  let tokensPerChar = 0.4;
-  let cut = 0;
-  const fits = (chars: number): boolean => window === null || chars * tokensPerChar + maxTokens <= window * 0.95;
-
-  function compose(history: readonly Held[], from: number, state: string): ChatMessage[] {
-    const out: ChatMessage[] = [];
-    for (const h of history) {
-      if (h.round !== undefined && h.round < from) continue;
-      const m = h.message;
-      if (h.round === undefined && m.role === 'user' && from > 0) {
-        // Said on the person's turn, which is where the rounds were.
-        out.push({ role: 'user', content: `${m.content}\n\n${DROPPED_NOTE}` });
-      } else {
-        out.push(m);
-      }
-    }
-    out.push({ role: 'user', content: state });
-    return out;
-  }
-  const size = (ms: readonly ChatMessage[]): number => JSON.stringify(ms).length + toolChars;
-
+/** The book's tools as the module's source: their specs, and a call by name with the model's own JSON. */
+function toolsOf(box: AskToolbox): ToolSource<AskSaid> {
+  const specs = box.tools.map((t) => ({
+    type: 'function' as const,
+    function: { name: t.name, description: t.description, parameters: t.parameters },
+  }));
   return {
-    wire(history, round, state) {
-      // Rounds 0..round-1 are complete; `round` is the one being asked for.
-      if (round - cut > HISTORY_HIGH) cut = round - HISTORY_LOW;
-      for (;;) {
-        const wired = compose(history, cut, state);
-        const chars = size(wired);
-        if (fits(chars)) return { wired, chars };
-        if (cut >= round - 1) {
-          throw new Error(
-            `The conversation no longer fits the model's ${window}-token window, even with only its last round kept `
-            + `(about ${Math.round(chars * tokensPerChar)} tokens plus ${maxTokens} for the reply). Pick a model with a larger window.`,
-          );
-        }
-        cut = round - cut > HISTORY_LOW ? round - HISTORY_LOW : cut + 1;
-      }
-    },
-    measured(promptTokens, chars) {
-      if (chars > 0) tokensPerChar = promptTokens / chars;
-    },
+    specs: () => specs,
+    call: (name, args) => box.call(name, args),
   };
 }
 
-/** Where dropped rounds were. */
-export const DROPPED_NOTE = '[Earlier rounds were removed. The tools hold the work so far.]';
-
 /** True for what a wait can end — one rule, kept beside the model listing that also retries on it. */
 export { isWeather };
-
-/** One chat, with weather retried inside {@link ATTEMPTS} and a growing wait. */
-export async function chatWithin(
-  to: Target,
-  options: Parameters<CrucibleClient['chat']>[0] & { signal: AbortSignal },
-): ReturnType<CrucibleClient['chat']> {
-  for (let attempt = 1; ; attempt += 1) {
-    try {
-      return await to.client.chat(options);
-    } catch (err) {
-      if (options.signal.aborted) throw err;
-      const said = err instanceof Error ? err.message : String(err);
-      if (!isWeather(err)) {
-        throw new Error(`${to.server} refused the request to ${to.model}: ${said}`);
-      }
-      if (attempt >= ATTEMPTS) {
-        throw new Error(`${to.server} did not answer ${to.model} after ${ATTEMPTS} tries: ${said}`);
-      }
-      const wait = FIRST_WAIT_MS * 2 ** (attempt - 1);
-      console.error(`[ask] ${to.server} / ${to.model}: ${said}; trying again in ${wait / 1000}s`);
-      await sleep(wait, options.signal);
-    }
-  }
-}
-
-function sleep(ms: number, signal: AbortSignal): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => { signal.removeEventListener('abort', stop); resolve(); }, ms);
-    const stop = (): void => { clearTimeout(timer); reject(signal.reason); };
-    signal.addEventListener('abort', stop, { once: true });
-  });
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // The sessions, kept in the project
