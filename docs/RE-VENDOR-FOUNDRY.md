@@ -171,6 +171,12 @@ a Foundry channel name now collides with one of ours. Both apps register into th
 same main process and `ipcMain.handle` throws on a duplicate, so a collision is
 an app that will not launch.
 
+The second is `test-foundry-deps-packaged`: the packaged app carries
+`foundry-app/dist` but not `foundry-app/node_modules`, so a package Foundry's
+main process newly requires must also be added to BookForge's own `package.json`
+(a `file:` tarball is copied into `vendor/`). Without it the dev checkout runs and
+the installed app does not start (2026-11-03, `@owen/tool-loop`).
+
 Trust the exit code / `ALL KEEPERS GREEN`, not a line count.
 
 If it does collide: the fix is on **our** side by precedent — BookForge renamed

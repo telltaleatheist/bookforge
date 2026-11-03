@@ -1111,6 +1111,10 @@ const SUITES = [
   'test-bridge-quit-and-owner',
   'test-quit-and-logs',
   'test-epub-inline-tags',
+  // The packaged app carries foundry-app/dist but not its node_modules, so every
+  // package Foundry's main process requires must be BookForge's own dependency
+  // (2026-11-03: the installed app died on '@owen/tool-loop').
+  'test-foundry-deps-packaged',
 ];
 
 /**
