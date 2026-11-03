@@ -135,7 +135,7 @@ import { hostStatusOf, type HostStatus } from './foundry-host-status';
 import type { NarrationGuideStepConfig } from './queue-steps/narration-guide';
 import { APPLIED_LABEL, GUIDE_CHOICE, type GuideReviewSave } from '../shared/pronunciation-guide';
 import { guidePathsOfStep, hasGuide } from './narration-glossary';
-import { guideTextMadeWith } from './pronunciation-applied';
+import { guideTextMadeWith, ledgerStepsOf } from './pronunciation-applied';
 import { guidePassOffer, type GuidePassOffer } from './pronunciation-offer';
 import { stepOfGuideNode } from './pronunciation-guide-nodes';
 // BookForge's queue, offered to the hosted Foundry window — Owen's ruling of
@@ -413,6 +413,20 @@ interface FoundryHostOperation {
     settings: Record<string, unknown>,
     context: FoundryHostInvokeContext,
   ): void | Promise<void>;
+  /**
+   * HOW THIS ACT STANDS AT NODE `nodeId` (foundry 6ba06d2, `HostOperationState`):
+   * a label for that node's tile, its hover, and whether it is already done there.
+   * Null draws the operation's own label. Asked when a card is picked; a throw is
+   * said in the tile's hover.
+   */
+  stateAt?(projectDir: string, nodeId: string): FoundryHostOperationState | null | Promise<FoundryHostOperationState | null>;
+}
+
+/** `HostOperationState` from foundry-app/shared/host-ops.ts — see `FoundryHostOperation.stateAt`. */
+interface FoundryHostOperationState {
+  readonly label?: string;
+  readonly detail?: string;
+  readonly done?: boolean;
 }
 
 /**
@@ -2908,6 +2922,7 @@ const FOUNDRY_HOST_OPERATIONS: readonly FoundryHostOperation[] = [
     kind: 'guide',
     appliesTo: 'book',
     invoke: (projectDir, nodeId) => openPronunciationGuide(projectDir, nodeId),
+    stateAt: (projectDir, nodeId) => pronunciationGuideStateAt(projectDir, nodeId),
   },
 ];
 
@@ -3134,6 +3149,29 @@ function guideMadeWithOf(projectDir: string, step: string): string | null {
     }
   }
   return null;
+}
+
+/**
+ * HOW THE GUIDE TILE STANDS AT A STEP (foundry 6ba06d2's `stateAt`): done when the
+ * step has a guide of its own, or its text was made with one — a cleanup that read
+ * its input's guide, a "Pronunciation adjusted" step (Owen, 2026-11-02: the guide
+ * *"should already be done as part of that line item"*). Pressing it then opens that
+ * guide (`openPronunciationGuide`). Null — the plain label — everywhere else.
+ */
+function pronunciationGuideStateAt(projectDir: string, pressed: string): FoundryHostOperationState | null {
+  const nodeId = stepOfGuideNode(pressed) ?? pressed;
+  if (!guideManifestOf(projectDir).steps.includes(nodeId) && promisedRowOf(projectDir, nodeId) === null) return null;
+  if (guideOwnedBy(projectDir, nodeId)) {
+    return { done: true, label: 'Pronunciation guide ✓', detail: 'This step has its own pronunciation guide. Open it to review or apply it.' };
+  }
+  const madeWith = guideMadeWithOf(projectDir, nodeId);
+  if (madeWith === null) return null;
+  const from = ledgerStepsOf(projectDir).find((s) => s.id === madeWith)?.label ?? madeWith;
+  return {
+    done: true,
+    label: 'Pronunciation guide ✓',
+    detail: `This step was made with the pronunciation guide on “${from}”. Open it to see what it decided.`,
+  };
 }
 
 /**
