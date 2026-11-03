@@ -66,7 +66,9 @@ import { readCapability } from './crucible-dispatch';
 import { readEngineSettings, testUpstream, writeEngineSettings } from './crucible-settings';
 import { crucibleFaultWords, crucibleRunState, startCrucible } from './crucible-start';
 import { engineCatalog, jobModelOffer, pullSubject, rememberJobModel, removeModel } from './crucible-models';
-import { cancelAsk, endAskThread, readAskSessions, readAskThread, saveAskSession, startAsk } from './ask-document';
+import {
+  cancelAsk, deleteAskConversation, readAskConversations, readAskSessions, renameAskConversation, saveAskSession, startAsk,
+} from './ask-document';
 import { cancelSuggest, startSuggest } from './suggest-categories';
 import type { SuggestCategoriesRequest } from '../shared/category-suggestions';
 import type { AskRequest, AskSession } from '../shared/ask';
@@ -3407,8 +3409,11 @@ export function registerIpc(): void {
   ipcMain.handle('ask:sessions', (_event, projectDir: string) => readAskSessions(projectDir));
   ipcMain.handle('ask:save-session', (_event, projectDir: string, session: AskSession) =>
     saveAskSession(projectDir, session));
-  ipcMain.handle('ask:thread', (_event, projectDir: string) => readAskThread(projectDir));
-  ipcMain.handle('ask:end-thread', (_event, projectDir: string) => endAskThread(projectDir));
+  // A book's conversations (shared/ask-conversations.ts), newest first; the first read migrates the old thread.
+  ipcMain.handle('ask:conversations', (_event, projectDir: string) => readAskConversations(projectDir));
+  ipcMain.handle('ask:delete-conversation', (_event, projectDir: string, id: string) => deleteAskConversation(projectDir, id));
+  ipcMain.handle('ask:rename-conversation', (_event, projectDir: string, id: string, title: string) =>
+    renameAskConversation(projectDir, id, title));
   // Ask's presets are the app's, kept in app-settings.json (shared/ask-presets.ts).
   ipcMain.handle('ask:presets', (): AskPresetsKept => {
     const kept = readAppSettings();
@@ -4091,8 +4096,8 @@ export function registerIpc(): void {
   ipcMain.handle('crucible:job-models', (_event, kind: JobModelKind, server: string | null) =>
     jobModelOffer(kind, server));
   /** The dialog's choice, remembered after its enqueue succeeded — `''` (Automatic) too. */
-  ipcMain.handle('crucible:remember-job-model', (_event, kind: JobModelKind, value: string) => {
-    rememberJobModel(kind, value);
+  ipcMain.handle('crucible:remember-job-model', (_event, kind: JobModelKind, value: string, server?: string) => {
+    rememberJobModel(kind, value, typeof server === 'string' ? server : undefined);
   });
 
   /**

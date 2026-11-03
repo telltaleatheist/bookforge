@@ -23,11 +23,31 @@
  *
  * One dropdown, two groups: Automatic and the server's own models (biggest
  * first, none over 27B) under the server's name, and every model its upstream
- * accounts serve under "Cloud — billed to your account". The rows themselves
- * are shared/job-models.ts, mirrored in BookForge, so the two apps offer one
- * list. A cloud row is never the first-run default and never reached by Automatic;
- * it opens chosen only because the person chose it last time, and then the line
- * under the box says whose account pays.
+ * accounts serve under "API models", each row ending "(API)". The rows
+ * themselves are shared/job-models.ts, mirrored in BookForge, so the two apps
+ * offer one list. A cloud row is never the first-run default and never reached
+ * by Automatic; it opens chosen only because the person chose it last time.
+ *
+ * NO BILLING SENTENCE (Owen, 2026-11-02): an API model bills to the chosen
+ * server's own API account, and the person is expected to know that; the
+ * "(API)" on the row is the whole of it. The yellow line that used to say so
+ * wrapped a word a line in the inspector's narrow column and sat over its
+ * buttons.
+ *
+ * ── A SERVER THAT DOES NOT ANSWER, AND ONE THAT REFUSES ──────────────────
+ *
+ * Weather — main retried inside its budget and the server still did not
+ * answer (`JobModelOffer.unreachable`) — is a disabled "Server not reachable"
+ * row, and the list is asked for again after {@link REASK_MS}. A refusal (a
+ * server not registered, a token refused) is a disabled row carrying the
+ * sentence's start, the whole sentence on its title.
+ *
+ * ── CHANGING THE SERVER KEEPS THE CHOICE ONLY WHERE IT EXISTS ────────────
+ *
+ * The first list read opens on the remembered choice (`preselected`); every
+ * later one keeps what is chosen when the new server offers it and is
+ * Automatic otherwise (`choiceOnServer`) — never an id that server has not
+ * got.
  *
  * ── WHICH SERVER IT ASKS ──────────────────────────────────────────────────
  *
@@ -42,12 +62,12 @@
  * nobody saw.
  */
 import {
-  ChangeDetectionStrategy, Component, computed, effect, input, model, output, signal,
+  ChangeDetectionStrategy, Component, DestroyRef, computed, effect, inject, input, model, output, signal,
 } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 
 import type { JobModelOffer } from '@shared/job-model-offer';
-import type { JobModelKind } from '@shared/job-models';
+import { choiceOnServer, type JobModelKind } from '@shared/job-models';
 
 import { api, hosted } from '../../core/foundry';
 
@@ -60,7 +80,9 @@ import { api, hosted } from '../../core/foundry';
       <div class="field">
         <label class="label" [for]="fieldId()">Model</label>
         @if (problem(); as why) {
-          <p class="problem">Could not list the models: {{ why }}</p>
+          <select [id]="fieldId()" disabled [title]="why"><option>{{ shortly(why) }}</option></select>
+        } @else if (unreachable(); as why) {
+          <select [id]="fieldId()" disabled [title]="why"><option>Server not reachable</option></select>
         } @else if (offer(); as said) {
           <select [id]="fieldId()" [ngModel]="value()" (ngModelChange)="value.set($event)">
             <optgroup [label]="'On ' + said.list.server">
@@ -69,28 +91,20 @@ import { api, hosted } from '../../core/foundry';
               }
             </optgroup>
             <!--
-              THE BILLED ROWS, GROUPED AND NAMED FOR WHAT THEY COST. Owen: the
-              ideal is that the user will not need them, because they are
-              expensive; they are here for a machine too weak to run a local one.
+              THE API ROWS — the server's upstream accounts. Owen: the ideal is
+              that the user will not need them, because they are expensive; they
+              are here for a machine too weak to run a local one.
             -->
             @if (cloud().length > 0) {
-              <optgroup label="Cloud — billed to your account">
+              <optgroup label="API models" [attr.title]="said.list.cloudNote">
                 @for (choice of cloud(); track choice.value) {
-                  <option [value]="choice.value">{{ choice.label }}</option>
+                  <option [value]="choice.value">{{ choice.label }} (API)</option>
                 }
               </optgroup>
             }
           </select>
-          @if (chosen(); as row) {
-            @if (row.detail !== null) {
-              <p class="says" [class.billed]="row.kind === 'cloud'">{{ row.detail }}</p>
-            }
-          }
-          @if (said.list.cloudNote; as note) {
-            <p class="says">{{ note }}</p>
-          }
         } @else {
-          <p class="says">Asking which models it can run…</p>
+          <select [id]="fieldId()" disabled><option>Asking which models it can run…</option></select>
         }
       </div>
     }
@@ -106,10 +120,7 @@ import { api, hosted } from '../../core/foundry';
        does an option (styles.scss says so for option). */
     optgroup { background: var(--bg-input); color: var(--text-tertiary); font-style: normal; }
     optgroup option { color: var(--text-primary); }
-    .says { margin: 0; font-size: 11px; line-height: 1.5; color: var(--text-tertiary); }
-    /* A billed row says whose account pays, in the colour this app warns in. */
-    .says.billed { color: var(--warn); }
-    .problem { margin: 0; font-size: 12px; line-height: 1.5; color: var(--warn); }
+    select { width: 100%; min-width: 0; }
   `],
 })
 export class JobModelComponent {
@@ -134,6 +145,8 @@ export class JobModelComponent {
 
   protected readonly offer = signal<JobModelOffer | null>(null);
   protected readonly problem = signal<string | null>(null);
+  /** The sentence for a server that did not answer within main's budget; asked again after a wait. */
+  protected readonly unreachable = computed(() => this.offer()?.unreachable ?? null);
 
   /** The server this list is asked of, or null for the top-ranked one; undefined is not asking. */
   private readonly target = computed<string | null | undefined>(() => {
@@ -154,6 +167,10 @@ export class JobModelComponent {
 
   /** Bumped per read, so an answer about the engine somebody has just stopped pointing at is dropped. */
   private asked = 0;
+  /** True once a list has been read, so a later read keeps the choice where it can (`choiceOnServer`). */
+  private readOnce = false;
+  /** The wait before asking a server that did not answer again. */
+  private again: ReturnType<typeof setTimeout> | null = null;
 
   constructor() {
     effect(() => {
@@ -166,18 +183,33 @@ export class JobModelComponent {
       }
       void this.read(kind, target);
     });
-    effect(() => { this.ready.emit(this.offer() !== null && this.chosen() !== null); });
+    effect(() => { this.ready.emit(this.offer() !== null && this.unreachable() === null && this.chosen() !== null); });
+    inject(DestroyRef).onDestroy(() => { if (this.again !== null) clearTimeout(this.again); });
+  }
+
+  /** A refusal's first sentence, short enough for a dropdown row; the title holds the rest. */
+  protected shortly(why: string): string {
+    const first = why.split(/(?<=[.:;])\s/)[0] ?? why;
+    return first.length > 60 ? `${first.slice(0, 59)}…` : first;
   }
 
   private async read(kind: JobModelKind, target: string | null): Promise<void> {
     if (!api) return;
     const ticket = ++this.asked;
+    if (this.again !== null) { clearTimeout(this.again); this.again = null; }
     this.offer.set(null);
     this.problem.set(null);
     try {
       const offer = await api.crucible.jobModels(kind, target);
       if (ticket !== this.asked) return;
-      this.value.set(offer.preselected);
+      if (offer.unreachable !== null) {
+        // Weather: say so in the box, and ask again after a wait, while this is still the question.
+        this.offer.set(offer);
+        this.again = setTimeout(() => { if (ticket === this.asked) void this.read(kind, target); }, REASK_MS);
+        return;
+      }
+      this.value.set(this.readOnce ? choiceOnServer(offer.list, this.value()) : offer.preselected);
+      this.readOnce = true;
       this.offer.set(offer);
       this.listedOn.emit(offer.list.server);
     } catch (err) {
@@ -186,3 +218,6 @@ export class JobModelComponent {
     }
   }
 }
+
+/** How long a picker waits before asking a server that did not answer again. */
+const REASK_MS = 15_000;

@@ -61,9 +61,18 @@ import {
 
 import { askToolbox, clip, roundSaid, tallySaid, type AskSaid, type AskToolbox } from './ask-tools';
 import { AskHistory } from '../shared/ask-history';
+import {
+  continuationOf,
+  isConversation,
+  migrateConversations,
+  newestFirst,
+  runsOf,
+  titleOf,
+  type AskConversation,
+} from '../shared/ask-conversations';
 import { writeAtomically } from './atomic';
 import { openSession, type HeldSession } from './crucible-dispatch';
-import { topRankedCrucible } from './crucible-models';
+import { isWeather, topRankedCrucible } from './crucible-models';
 import { clientFor, crucibleServerNamed, resolveEngine } from './crucible-registry';
 import { bookAtPosition, opsDir } from './projects';
 import { JOB_MODEL_CEILING_B } from '../shared/job-models';
@@ -281,7 +290,8 @@ async function runAsk(
 ): Promise<AskResult> {
   const t0 = Date.now();
   // Read before the model is loaded, like the thread: a book whose kept runs cannot be read says so now.
-  const history = request.stack === undefined ? null : new AskHistory(request.stack, await readAskSessions(request.projectDir));
+  const sessions = await readAskSessions(request.projectDir);
+  const history = request.stack === undefined ? null : new AskHistory(request.stack, sessions);
   const box = askToolbox(request.view, history);
   let round = 0;
   let says: string | null = null;
@@ -300,17 +310,20 @@ async function runAsk(
   };
 
   say('Starting…');
-  // Read before the model is loaded: a thread that cannot be read is said now, not after minutes of work.
-  const thread = await readAskThread(request.projectDir);
+  // Read before the model is loaded: a conversation that cannot be read is said now, not after minutes of work.
+  const ops = await opsOf(request.projectDir);
+  const conversation = request.conversation === null ? null : await conversationNamedIn(ops, request.conversation);
   const to = await crucibleTarget(request.server, request.model, ACT, say, signal);
   try {
-    const opening = thread === null ? request.request : threadOpening(thread, request.request);
+    const opening = conversation === null
+      ? request.request
+      : continuationOf(conversation, runsOf(conversation, sessions), request.request) ?? request.request;
     const summary = await loop(to, opening, box, signal, (r, prose, status) => {
       round = r;
       if (prose !== null) says = clip(prose, 300);
       say(status);
     });
-    const kept = await keepThread(request.projectDir, thread, request.request, await takeNote(to, summary, box, signal, say));
+    const kept = await keepConversation(ops, conversation, request.request, await takeNote(to, summary, box, signal, say));
     return {
       server: to.server,
       model: to.model,
@@ -348,9 +361,10 @@ export const NOTE_ASK = `The person may ask a follow-up question about this book
 If you started from an earlier note, carry forward what still matters from it. Call no tools.`;
 
 /**
- * THE FIRST MESSAGE OF A FOLLOW-UP: the note, framed as leads to check, then the
- * person's words. It sits where the person's request sits on a first question, so
- * the fitter keeps it through every cut ({@link fitter}).
+ * THE FIRST MESSAGE OF A FOLLOW-UP ON AN OLD THREAD — kept for the thread file's
+ * own keepers; a conversation opens with `continuationOf` (shared), which is
+ * this for a conversation with a note. It sits where the person's request sits
+ * on a first question, so the fitter keeps it through every cut ({@link fitter}).
  */
 export function threadOpening(thread: AskThread, request: string): string {
   return `This question continues an earlier conversation about this book. Below is the working note you wrote for yourself at the end of it. Treat it as leads to check, not facts: since then the person may have kept or undone your marks, or edited the book, and the book your tools read is the book as it stands now. Blocks they removed are hidden from you, so a block the note names may be gone. Confirm with a read or a search before you act on anything in it; you need not survey again what it already tells you.
@@ -407,38 +421,33 @@ export async function takeNote(
 }
 
 /**
- * THE NOTE, KEPT — or the thread ended when there is none, because a note one
- * question behind would be read as if it were current. Neither can fail the run:
- * its marks are the work, and a thread is only where the next question starts.
+ * THE CONVERSATION, KEPT — made when the question started one, its count and
+ * time moved on, and its note the one just written, or null when there is
+ * none: a note one question behind would be read as if it were current, and
+ * with none the next question continues from this run's question and answer.
+ * None of it can fail the run: its marks are the work, and a conversation is
+ * only where the next question starts.
  */
-async function keepThread(
-  projectDir: string,
-  before: AskThread | null,
+export async function keepConversation(
+  ops: string,
+  before: AskConversation | null,
   request: string,
   noted: Noted,
-): Promise<{ thread: AskThread | null; threadProblem: string | null }> {
-  if ('note' in noted) {
-    const thread: AskThread = {
-      format: 'ask-thread/v1',
-      first: before?.first ?? request,
-      turns: (before?.turns ?? 0) + 1,
-      at: new Date().toISOString(),
-      note: noted.note,
-    };
-    try {
-      await writeAskThread(projectDir, thread);
-      return { thread, threadProblem: null };
-    } catch (err) {
-      noted = { problem: `The note for a follow-up could not be kept (${err instanceof Error ? err.message : String(err)}), so your next question starts fresh.` };
-    }
-  }
+): Promise<{ conversation: AskConversation; noteProblem: string | null }> {
+  const at = new Date().toISOString();
+  const conversation: AskConversation = {
+    ...(before ?? { id: randomUUID(), title: titleOf(request), createdAt: at }),
+    updatedAt: at,
+    turns: (before?.turns ?? 0) + 1,
+    note: 'note' in noted ? noted.note : null,
+  } as AskConversation;
   try {
-    await endAskThread(projectDir);
-    return { thread: null, threadProblem: noted.problem };
+    await updateConversationsIn(ops, (all) => [...all.filter((one) => one.id !== conversation.id), conversation]);
+    return { conversation, noteProblem: 'note' in noted ? null : noted.problem };
   } catch (err) {
     return {
-      thread: null,
-      threadProblem: `${noted.problem} The earlier note could not be removed either (${err instanceof Error ? err.message : String(err)}); press New question before you ask again.`,
+      conversation,
+      noteProblem: `This conversation could not be kept with the book (${err instanceof Error ? err.message : String(err)}), so it may be missing from the list after a reload.`,
     };
   }
 }
@@ -642,13 +651,8 @@ export function fitter(window: number | null, maxTokens: number, toolChars: numb
 /** Where dropped rounds were. */
 export const DROPPED_NOTE = '[Earlier rounds were removed. The tools hold the work so far.]';
 
-/** True for what a wait can end: a server that did not answer, a 429, a 5xx. */
-export function isWeather(err: unknown): boolean {
-  if (err instanceof CrucibleUnreachable) return true;
-  if (err instanceof CrucibleServerError) return true;
-  if (err instanceof CrucibleRefused) return err.status === 429 || err.status === 408;
-  return false;
-}
+/** True for what a wait can end — one rule, kept beside the model listing that also retries on it. */
+export { isWeather };
 
 /** One chat, with weather retried inside {@link ATTEMPTS} and a growing wait. */
 export async function chatWithin(
@@ -700,7 +704,11 @@ async function sessionsFile(projectDir: string): Promise<string> {
 }
 
 export async function readAskSessions(projectDir: string): Promise<AskSession[]> {
-  const file = await sessionsFile(projectDir);
+  return readSessionsAt(await sessionsFile(projectDir));
+}
+
+/** The sessions file, read by its path. */
+export async function readSessionsAt(file: string): Promise<AskSession[]> {
   let text: string;
   try {
     text = await fsp.readFile(file, 'utf8');
@@ -788,31 +796,107 @@ function isSession(value: unknown): value is AskSession {
     && (s['highlights'] === undefined || (Array.isArray(s['highlights']) && s['highlights'].every(isHighlight)))
     && (s['hitLimit'] === undefined || typeof s['hitLimit'] === 'boolean')
     && (s['chain'] === undefined || isChainStep(s['chain']))
+    && (s['conversation'] === undefined || typeof s['conversation'] === 'string')
     && typeof s['skipped'] === 'number' && typeof s['rounds'] === 'number' && typeof s['seconds'] === 'number';
 }
 
 /**
- * `<project>/ops/ask-thread.json` — the one live thread of the book
- * ({@link AskThread}), beside the sessions and for the same reason: it is about
- * the book's edits, no step names it and no replay reads it. Absent is "no
- * thread"; "New question" removes it.
+ * The book's ops directory, where its sessions, its old thread and its
+ * conversations are kept. Everything below works on that directory, so a
+ * keeper drives it without a whole project; the doors name the project.
  */
-async function threadFile(projectDir: string): Promise<string> {
-  const at = await bookAtPosition(projectDir);
-  return path.join(opsDir(at.dir), 'ask-thread.json');
+async function opsOf(projectDir: string): Promise<string> {
+  return opsDir((await bookAtPosition(projectDir)).dir);
 }
 
-export async function readAskThread(projectDir: string): Promise<AskThread | null> {
-  return readThreadAt(await threadFile(projectDir));
+/**
+ * `ops/ask-thread.json` — the book's ONE thread, before conversations. Read
+ * once, by the migration (`readConversationsIn`), and removed after it.
+ * `ops/ask-conversations.json` — the book's conversations
+ * (shared/ask-conversations.ts), beside the sessions and for their reason: about
+ * the book's edits, named by no step, read by no replay. Written whole through
+ * `writeAtomically`.
+ */
+const THREAD_FILE = 'ask-thread.json';
+const CONVERSATIONS_FILE = 'ask-conversations.json';
+const SESSIONS_FILE = 'ask-sessions.jsonl';
+
+export async function readAskConversations(projectDir: string): Promise<AskConversation[]> {
+  return readConversationsIn(await opsOf(projectDir));
 }
 
-export async function writeAskThread(projectDir: string, thread: AskThread): Promise<void> {
-  await writeThreadAt(await threadFile(projectDir), thread);
+/**
+ * THE BOOK'S CONVERSATIONS, newest first. The first read of a book kept
+ * before conversations migrates its runs and its one thread
+ * (`migrateConversations`), writes the result, and only then removes the old
+ * thread file — so an interruption leaves the old thread to migrate again.
+ */
+export async function readConversationsIn(ops: string): Promise<AskConversation[]> {
+  const file = path.join(ops, CONVERSATIONS_FILE);
+  let text: string | null;
+  try {
+    text = await fsp.readFile(file, 'utf8');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+    text = null;
+  }
+  if (text === null) {
+    const thread = await readThreadAt(path.join(ops, THREAD_FILE));
+    const migrated = migrateConversations(thread, await readSessionsAt(path.join(ops, SESSIONS_FILE)));
+    if (migrated.length > 0 || thread !== null) {
+      await writeConversations(file, migrated);
+      await fsp.rm(path.join(ops, THREAD_FILE), { force: true });
+    }
+    return newestFirst(migrated);
+  }
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    throw new Error(`${file} is not JSON, so this book's Ask conversations cannot be read.`);
+  }
+  const body = value as { format?: unknown; conversations?: unknown };
+  if (typeof value !== 'object' || value === null || body.format !== 'ask-conversations/v1'
+    || !Array.isArray(body.conversations) || !body.conversations.every(isConversation)) {
+    throw new Error(`${file} is not a list of Ask conversations this build can read.`);
+  }
+  return newestFirst(body.conversations as AskConversation[]);
 }
 
-/** End the book's thread. A book with none has nothing to end. */
-export async function endAskThread(projectDir: string): Promise<void> {
-  await fsp.rm(await threadFile(projectDir), { force: true });
+async function writeConversations(file: string, conversations: readonly AskConversation[]): Promise<void> {
+  if (!conversations.every(isConversation)) throw new Error('Those Ask conversations are not ones this build can keep.');
+  await writeAtomically(file, Buffer.from(`${JSON.stringify({ format: 'ask-conversations/v1', conversations }, null, 2)}\n`, 'utf8'));
+}
+
+/** Read, change, write whole. One run per book at a time, so main is the only writer. */
+export async function updateConversationsIn(
+  ops: string,
+  change: (all: readonly AskConversation[]) => readonly AskConversation[],
+): Promise<AskConversation[]> {
+  const next = newestFirst(change(await readConversationsIn(ops)));
+  await writeConversations(path.join(ops, CONVERSATIONS_FILE), next);
+  return next;
+}
+
+/** One conversation by id, or the refusal: it was deleted while the panel still showed it. */
+export async function conversationNamedIn(ops: string, id: string): Promise<AskConversation> {
+  const found = (await readConversationsIn(ops)).find((one) => one.id === id);
+  if (found === undefined) {
+    throw new Error('That conversation is no longer kept with this book (it was deleted), so it cannot be continued. Press + to start a new one.');
+  }
+  return found;
+}
+
+/** Delete a conversation: its note and its place in the list. Its runs' edits stay on the book. */
+export async function deleteAskConversation(projectDir: string, id: string): Promise<AskConversation[]> {
+  return updateConversationsIn(await opsOf(projectDir), (all) => all.filter((one) => one.id !== id));
+}
+
+/** Rename a conversation. */
+export async function renameAskConversation(projectDir: string, id: string, title: string): Promise<AskConversation[]> {
+  const named = titleOf(title);
+  if (named.length === 0) throw new Error('A conversation needs a title.');
+  return updateConversationsIn(await opsOf(projectDir), (all) => all.map((one) => (one.id === id ? { ...one, title: named } : one)));
 }
 
 export async function readThreadAt(file: string): Promise<AskThread | null> {
@@ -827,10 +911,10 @@ export async function readThreadAt(file: string): Promise<AskThread | null> {
   try {
     value = JSON.parse(text);
   } catch {
-    throw new Error(`${file} is not JSON, so the Ask thread cannot be continued. Press New question to start fresh.`);
+    throw new Error(`${file} is not JSON, so the old Ask thread cannot be carried into a conversation.`);
   }
   if (!isThread(value)) {
-    throw new Error(`${file} is not an Ask thread this build can read. Press New question to start fresh.`);
+    throw new Error(`${file} is not an Ask thread this build can read, so it cannot be carried into a conversation.`);
   }
   return value;
 }

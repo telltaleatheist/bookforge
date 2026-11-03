@@ -108,7 +108,7 @@ test('the thread file: absent is none, it round-trips, and a bad one is refused 
   expect(await ask.readThreadAt(file)).toEqual(thread);
   await expect(ask.writeThreadAt(file, { ...thread, note: '' })).rejects.toThrow(/not one this build can keep/);
   fs.writeFileSync(file, '{"format":"ask-thread/v1"}');
-  await expect(ask.readThreadAt(file)).rejects.toThrow(/not an Ask thread this build can read\. Press New question/);
+  await expect(ask.readThreadAt(file)).rejects.toThrow(/not an Ask thread this build can read, so it cannot be carried into a conversation/);
   fs.writeFileSync(file, 'nope');
   await expect(ask.readThreadAt(file)).rejects.toThrow(/is not JSON/);
 });

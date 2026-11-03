@@ -12,9 +12,9 @@ import {
   type AskRowState,
   type AskSession,
   type AskSkip,
-  type AskThread,
 } from '@shared/ask';
 import type { Replayed } from '@shared/ops';
+import { newestFirst, type AskConversation } from '@shared/ask-conversations';
 import { AskChain, DEFAULT_CHECKED, askPresetsOrDefaults, type AskChainStep, type AskPreset, type AskPresetsKept, type AskStepEnd } from '@shared/ask-presets';
 
 import { BookStacksService, type BookStack } from './book-stacks.service';
@@ -47,9 +47,10 @@ import { api } from './foundry';
  * THE SESSION IS WRITTEN AFTER THE LANDING, holding only what landed, so the
  * review card never offers to undo something that was never done.
  *
- * THE THREAD IS MAIN'S. Main reads the book's note when a run starts and writes
- * the next one when it ends (electron/ask-document.ts, `AskThread`); this only
- * holds the copy the panel draws, and ends the thread on "New question".
+ * THE CONVERSATIONS ARE MAIN'S (shared/ask-conversations.ts). Main opens a run
+ * with the conversation's note and writes it again when the run ends; this
+ * holds the list the panel draws and which one each book is on — "+" is a new
+ * one, a row of the list goes back to an old one.
  */
 @Injectable({ providedIn: 'root' })
 export class AskService {
@@ -61,34 +62,60 @@ export class AskService {
   /** Each book's latest kept session, by project directory; null is "read, and there is none". */
   readonly latest = signal<ReadonlyMap<string, AskSession | null>>(new Map());
   /**
-   * Each book's kept sessions, oldest first: the conversation the panel draws.
-   * The model does not read them. What it carries from one question to the next
-   * is only its own note (`threads`), and only until "New question" — Owen's
-   * earlier *"one request per chat window, so the previous request's context
-   * doesnt leak"* still holds across a New question, which is the window's edge.
+   * Each book's kept sessions, oldest first — every conversation's runs. The
+   * model does not read them; what it carries from one question to the next is
+   * the conversation's note, or its last run's question and answer.
    */
   readonly history = signal<ReadonlyMap<string, readonly AskSession[]>>(new Map());
 
-  /** Each book's live thread, by project directory; null is "read, and there is none". */
-  readonly threads = signal<ReadonlyMap<string, AskThread | null>>(new Map());
+  /** Each book's conversations, newest first. */
+  readonly conversations = signal<ReadonlyMap<string, readonly AskConversation[]>>(new Map());
+  /** Which conversation each book is on, by id; null is a new one ("+"), which the next question starts. */
+  readonly active = signal<ReadonlyMap<string, string | null>>(new Map());
+
+  /** "+": the next question on this book starts a new conversation. The old ones are kept. */
+  newConversation(projectDir: string): void {
+    this.active.update((held) => new Map(held).set(projectDir, null));
+  }
+
+  /** Go back to a conversation: the panel shows its runs, and the next question continues it. */
+  openConversation(projectDir: string, id: string): void {
+    this.active.update((held) => new Map(held).set(projectDir, id));
+  }
+
+  /** The conversation a book is on, or null for a new one. */
+  activeOf(projectDir: string): AskConversation | null {
+    const id = this.active().get(projectDir) ?? null;
+    return id === null ? null : (this.conversations().get(projectDir) ?? []).find((one) => one.id === id) ?? null;
+  }
 
   /**
-   * "New question" — by project, the time before which the thread is not drawn.
-   * The sessions stay in the project, and the review card still reads the
-   * latest one; what is removed is the model's note, so it forgets.
+   * Delete a conversation — its note and its row — after the person agreed
+   * (the panel asks). The edits its runs made stay on the book.
    */
-  readonly clearedAt = signal<ReadonlyMap<string, number>>(new Map());
-
-  async newChat(projectDir: string): Promise<void> {
-    this.clearedAt.update((held) => new Map(held).set(projectDir, Date.now()));
+  async deleteConversation(projectDir: string, id: string): Promise<void> {
     if (!api) return;
     try {
-      await api.ask.endThread(projectDir);
-      this.setThread(projectDir, null);
+      const left = await api.ask.deleteConversation(projectDir, id);
+      this.conversations.update((held) => new Map(held).set(projectDir, left));
+      if (this.active().get(projectDir) === id) this.newConversation(projectDir);
     } catch (err) {
-      this.notices.notice.set(`The model's note could not be removed, so your next question would still continue the old one: ${err instanceof Error ? err.message : String(err)}`);
+      this.notices.notice.set(`That conversation could not be deleted: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
+
+  async renameConversation(projectDir: string, id: string, title: string): Promise<void> {
+    if (!api) return;
+    try {
+      const named = await api.ask.renameConversation(projectDir, id, title);
+      this.conversations.update((held) => new Map(held).set(projectDir, named));
+    } catch (err) {
+      this.notices.notice.set(`That conversation could not be renamed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /** The run the review card shows, by session id; null is the book's latest. */
+  readonly reviewing = signal<string | null>(null);
 
   /** Which tab each run was started from, so the landing finds its pane. */
   private readonly tabOf = new Map<string, string>();
@@ -239,9 +266,14 @@ export class AskService {
     } catch (err) {
       this.notices.notice.set(err instanceof Error ? err.message : String(err));
     }
-    // Apart from the sessions: a thread that cannot be read says so, and the review list is still drawn.
+    // Apart from the sessions: conversations that cannot be read say so, and the review list is still drawn.
     try {
-      this.setThread(projectDir, await api.ask.thread(projectDir));
+      const all = await api.ask.conversations(projectDir);
+      this.conversations.update((held) => new Map(held).set(projectDir, all));
+      // A book opens on the conversation it was last asked in, as its one thread used to continue.
+      if (!this.active().has(projectDir)) {
+        this.active.update((held) => new Map(held).set(projectDir, all[0]?.id ?? null));
+      }
     } catch (err) {
       this.notices.notice.set(err instanceof Error ? err.message : String(err));
     }
@@ -266,11 +298,14 @@ export class AskService {
     });
     try {
       const stack = pane.askStack();
-      const runId = await api.ask.start({ projectDir, request, server, model, view, ...(stack === null ? {} : { stack }) });
+      const conversation = this.active().get(projectDir) ?? null;
+      const runId = await api.ask.start({
+        projectDir, request, server, model, view, conversation, ...(stack === null ? {} : { stack }),
+      });
       this.tabOf.set(runId, tab.id);
       const now = this.runFor(projectDir);
       if (now !== null && now.runId === null && now.phase === 'running') this.setRun(projectDir, { ...now, runId });
-      await api.crucible.rememberJobModel('ask', model);
+      await api.crucible.rememberJobModel('ask', model, server ?? undefined);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.setRun(projectDir, failed(message, request));
@@ -328,6 +363,7 @@ export class AskService {
       highlights: result.highlights,
       hitLimit: result.hitLimit,
       ...(run.chain === undefined ? {} : { chain: run.chain }),
+      conversation: result.conversation.id,
       skipped: plan.skipped.length + landed.refused,
       rounds: result.rounds,
       seconds: result.seconds,
@@ -341,7 +377,12 @@ export class AskService {
       }
     }
     this.setLatest(frame.projectDir, session);
-    this.setThread(frame.projectDir, result.thread);
+    this.conversations.update((held) => new Map(held).set(frame.projectDir, newestFirst([
+      ...(held.get(frame.projectDir) ?? []).filter((one) => one.id !== result.conversation.id),
+      result.conversation,
+    ])));
+    // The next question continues this conversation, a chain of presets' next step included.
+    this.openConversation(frame.projectDir, result.conversation.id);
     this.history.update((held) => new Map(held).set(frame.projectDir, [...(held.get(frame.projectDir) ?? []), session]));
     const said = [
       landed.acted.length === 0
@@ -353,7 +394,7 @@ export class AskService {
         ? `It pointed at ${result.highlights.length} ${result.highlights.length === 1 ? 'place' : 'places'}, listed under its reply.` : '',
       result.hitLimit ? `It stopped at its limit of ${result.rounds - 1} rounds before it finished; Keep going picks up where it left off.` : '',
       kept ?? '',
-      result.threadProblem ?? '',
+      result.noteProblem ?? '',
     ].filter((s) => s.length > 0).join(' ');
     this.setRun(frame.projectDir, { ...run, phase: 'done', message: said });
     // The marks are on the pane now, so the chain's next step reads them.
@@ -380,9 +421,6 @@ export class AskService {
     this.runs.update((held) => new Map(held).set(projectDir, state));
   }
 
-  private setThread(projectDir: string, thread: AskThread | null): void {
-    this.threads.update((held) => new Map(held).set(projectDir, thread));
-  }
 
   private setLatest(projectDir: string, session: AskSession | null): void {
     this.latest.update((held) => new Map(held).set(projectDir, session));

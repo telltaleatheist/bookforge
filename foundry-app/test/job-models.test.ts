@@ -149,7 +149,7 @@ function fixture(options: { upstream?: 'ok' | 'missing' } = {}) {
 test('the door reads the pinned server, offers its rows, and opens on the last value used', async () => {
   const f = fixture();
   try {
-    spyOn(settings, 'readAppSettings').mockReturnValue({ lastJobModels: { translate: 'anthropic/claude-sonnet-5-5' } } as never);
+    spyOn(settings, 'readAppSettings').mockReturnValue({ lastJobModels: { translate: 'anthropic/claude-sonnet-5-5' }, lastJobServers: {} } as never);
     const answer = await models.jobModelOffer('translate', f.entry.name);
     expect(answer.list.server).toBe(f.entry.name);
     expect(answer.list.choices.map((c) => c.value)).toEqual(['', 'qwen3.8-27b-4bit', 'qwen3.5-9b', 'anthropic/claude-sonnet-5-5']);
@@ -161,7 +161,7 @@ test('the door reads the pinned server, offers its rows, and opens on the last v
 test('with no pin the door asks the top-ranked CRUCIBLE slot, never a cloud slot', async () => {
   const f = fixture();
   try {
-    spyOn(settings, 'readAppSettings').mockReturnValue({ lastJobModels: {} } as never);
+    spyOn(settings, 'readAppSettings').mockReturnValue({ lastJobModels: {}, lastJobServers: {} } as never);
     const answer = await models.jobModelOffer('clean', null);
     expect(answer.list.server).toBe(f.entry.name);
     expect(answer.preselected).toBe('');
@@ -171,7 +171,7 @@ test('with no pin the door asks the top-ranked CRUCIBLE slot, never a cloud slot
 test('a server too old for the upstream list still offers its own models, with the reason', async () => {
   const f = fixture({ upstream: 'missing' });
   try {
-    spyOn(settings, 'readAppSettings').mockReturnValue({ lastJobModels: {} } as never);
+    spyOn(settings, 'readAppSettings').mockReturnValue({ lastJobModels: {}, lastJobServers: {} } as never);
     const answer = await models.jobModelOffer('simplify', f.entry.name);
     expect(answer.list.choices.map((c) => c.kind)).toEqual(['automatic', 'local', 'local']);
     expect(answer.list.cloudNote).toContain('could not be read');
@@ -179,14 +179,21 @@ test('a server too old for the upstream list still offers its own models, with t
   } finally { f.close(); }
 });
 
-test('a server that cannot be reached is an error by name, not an empty list', async () => {
+/*
+ * UNREACHABLE IS WEATHER (Owen, 2026-11-02): retried inside the listing's budget, then
+ * said in the answer (`unreachable`) for the picker to show and ask again; only a
+ * misconfigured server — one not registered — is still refused by name.
+ */
+test('a server that cannot be reached is said in the answer, and one not registered refused by name', async () => {
   const f = fixture();
   const url = f.entry.url;
   f.close();
   spyOn(registry, 'crucibleServerNamed').mockReturnValue({ ...f.entry, url } as never);
-  spyOn(settings, 'readAppSettings').mockReturnValue({ lastJobModels: {} } as never);
+  spyOn(settings, 'readAppSettings').mockReturnValue({ lastJobModels: {}, lastJobServers: {} } as never);
   registry.forgetEngineTargets();
-  await expect(models.jobModelOffer('analysis', f.entry.name)).rejects.toThrow();
+  const answer = await models.jobModelOffer('analysis', f.entry.name);
+  expect(answer.list.choices).toEqual([]);
+  expect(answer.unreachable).toContain(`${f.entry.name} did not answer`);
   spyOn(registry, 'crucibleServerNamed').mockReturnValue(null);
   await expect(models.jobModelOffer('analysis', 'gone')).rejects.toThrow('"gone" is not a registered engine');
 });

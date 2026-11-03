@@ -207,8 +207,9 @@ const api: FoundryApi = {
     cancel: (runId) => ipcRenderer.invoke('ask:cancel', runId),
     sessions: (projectDir) => ipcRenderer.invoke('ask:sessions', projectDir),
     saveSession: (projectDir, session) => ipcRenderer.invoke('ask:save-session', projectDir, session),
-    thread: (projectDir) => ipcRenderer.invoke('ask:thread', projectDir),
-    endThread: (projectDir) => ipcRenderer.invoke('ask:end-thread', projectDir),
+    conversations: (projectDir) => ipcRenderer.invoke('ask:conversations', projectDir),
+    deleteConversation: (projectDir, id) => ipcRenderer.invoke('ask:delete-conversation', projectDir, id),
+    renameConversation: (projectDir, id, title) => ipcRenderer.invoke('ask:rename-conversation', projectDir, id, title),
     onProgress: (listener) => subscribe<AskProgress>('ask:progress', listener),
     presets: () => ipcRenderer.invoke('ask:presets'),
     savePresets: (kept) => ipcRenderer.invoke('ask:save-presets', kept),
@@ -291,7 +292,7 @@ const api: FoundryApi = {
     startCrucible: () => ipcRenderer.invoke('crucible:start'),
     catalog: (server) => ipcRenderer.invoke('crucible:catalog', server),
     jobModels: (kind, server) => ipcRenderer.invoke('crucible:job-models', kind, server),
-    rememberJobModel: (kind, value) => ipcRenderer.invoke('crucible:remember-job-model', kind, value),
+    rememberJobModel: (kind, value, server) => ipcRenderer.invoke('crucible:remember-job-model', kind, value, server),
     pull: (server, kind, id) => ipcRenderer.invoke('crucible:pull', server, kind, id),
     // NOT named `ask`: that is the helper on the line below, and a parameter of
     // that name shadows it into something with no call signature.

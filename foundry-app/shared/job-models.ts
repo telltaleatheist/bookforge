@@ -152,6 +152,16 @@ export function defaultJobModel(choices: JobModelChoices, lastUsed: string | und
   return AUTOMATIC_JOB_MODEL;
 }
 
+/**
+ * THE CHOICE WHEN THE SERVER CHANGES: what was chosen, when the new server
+ * offers it, else AUTOMATIC — never an id the server does not have (Owen,
+ * 2026-11-02: a model that is not on the Mac must not stay chosen when the Mac
+ * is).
+ */
+export function choiceOnServer(list: JobModelChoices, current: string): string {
+  return list.choices.some((c) => c.value === current) ? current : AUTOMATIC_JOB_MODEL;
+}
+
 function cloudAccountName(upstream: string): string {
   if (upstream === 'anthropic') return 'Claude';
   if (upstream === 'openai') return 'OpenAI';

@@ -26,6 +26,13 @@ export const JOB_MODEL_KINDS: readonly JobModelKind[] = ['clean', 'translate', '
 export interface JobModelOffer {
   readonly list: JobModelChoices;
   readonly preselected: string;
+  /**
+   * WEATHER, NOT A REFUSAL (Owen, 2026-11-02): the server did not answer within
+   * the listing's budget of tries, so `list.choices` is empty and this is the
+   * sentence. The picker shows "Server not reachable" and asks again after a
+   * wait. A misconfigured server still REJECTS, by name.
+   */
+  readonly unreachable: string | null;
 }
 
 /**

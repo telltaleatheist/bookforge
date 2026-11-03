@@ -1,5 +1,25 @@
 # Foundry's IPC channels — the whole list, for the collision audit
 
+## Ask's conversations (2026-11-02)
+
+**COUNTED BY SCRIPT OVER `app/electron/ipc.ts`: 157 `ipcMain.handle` call sites,
+157 distinct channel names, zero `ipcMain.on`.** The figure before this change
+measured **156**; three doors arrived and two left.
+
+| Channel | Request/result |
+| --- | --- |
+| `ask:conversations` | project → `AskConversation[]`, newest first, from `<project>/ops/ask-conversations.json`. The first read of a book kept before conversations migrates its runs and its one `ask-thread.json` (shared/ask-conversations.ts) and then removes that file. |
+| `ask:delete-conversation` | project, id → the list left. Removes the conversation and its note; its runs stay in `ask-sessions.jsonl` and nothing on the book is undone. |
+| `ask:rename-conversation` | project, id, title → the list. |
+| ~~`ask:thread`~~, ~~`ask:end-thread`~~ | **Gone.** A book's one thread is now its conversations; "New question" is the panel's "+", which deletes nothing. |
+
+`AskRequest` gained `conversation` (an id, or null for a new one); `AskResult`'s `thread` / `threadProblem`
+are now `conversation` / `noteProblem`; `AskSession` gained an optional `conversation`.
+`crucible:remember-job-model` takes an optional third argument, the server, and `crucible:job-models` answers
+`unreachable` (a sentence, or null) instead of rejecting for a server that did not answer.
+
+**FOR BOOKFORGE:** three `ask:` handlers in, two out, registered by `mountFoundry` like the rest.
+
 ## Ask's presets (2026-11-02)
 
 **COUNTED BY SCRIPT OVER `app/electron/ipc.ts`: 156 `ipcMain.handle` call sites,

@@ -107,7 +107,8 @@ import type {
   UnappliedWarning,
   WorkspacePlan,
 } from './types';
-import type { AskProgress, AskRequest, AskSession, AskThread } from './ask';
+import type { AskProgress, AskRequest, AskSession } from './ask';
+import type { AskConversation } from './ask-conversations';
 import type { AskPresetsKept } from './ask-presets';
 
 /**
@@ -960,10 +961,11 @@ export interface FoundryApi {
     /** Every run kept for this project, oldest first. */
     sessions(projectDir: string): Promise<AskSession[]>;
     saveSession(projectDir: string, session: AskSession): Promise<void>;
-    /** The book's live thread — what the next question starts from — or null when there is none. */
-    thread(projectDir: string): Promise<AskThread | null>;
-    /** "New question": end the book's thread, so the next question starts fresh. */
-    endThread(projectDir: string): Promise<void>;
+    /** The book's conversations, newest first. The first read of an older book migrates its one thread. */
+    conversations(projectDir: string): Promise<AskConversation[]>;
+    /** Delete one: its note and its place in the list. Edits its runs made stay on the book. Answers the list. */
+    deleteConversation(projectDir: string, id: string): Promise<AskConversation[]>;
+    renameConversation(projectDir: string, id: string, title: string): Promise<AskConversation[]>;
     onProgress(listener: (frame: AskProgress) => void): () => void;
     /** The Presets modal's list and which were checked last, as kept (null fields: the defaults). */
     presets(): Promise<AskPresetsKept>;
@@ -1589,7 +1591,8 @@ export interface FoundryApi {
      */
     jobModels(kind: JobModelKind, server: string | null): Promise<JobModelOffer>;
     /** Remember the model this kind of job was just sent with — `''` (Automatic) too. */
-    rememberJobModel(kind: JobModelKind, value: string): Promise<void>;
+    /** Remember the choice — and, where the picker chose one, the server — as this kind's default. */
+    rememberJobModel(kind: JobModelKind, value: string, server?: string): Promise<void>;
     /**
      * Start fetching one subject. Answers the TASK ID — the pull itself reports
      * on {@link onPullProgress}, because a model is gigabytes and no invoke

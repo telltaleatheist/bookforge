@@ -52,9 +52,27 @@ import { chapterSpan } from '../book-view/flow';
  * section and its word-correction box: the surfaces those addressed are gone, and
  * what is left is the three panels the proof sheet owns.
  */
-/** The panel's width before anyone drags it, and the narrowest it goes. */
-const DEFAULT_WIDTH = 260;
+/**
+ * The panel's width before anyone drags it, and the narrowest it goes. Doubled
+ * on 2026-11-02 (Owen: the right panel twice as wide by default), for Ask's
+ * conversation — and capped by {@link defaultWidth} so the book keeps a page.
+ */
+const DEFAULT_WIDTH = 520;
 const MIN_WIDTH = 220;
+/**
+ * What the default leaves the book, in px: a 400px page and the 10rem chip
+ * gutter the paper keeps (`calc(100% - 10rem)`, book-view). The library column
+ * is 384px; at the 1440px window the default is 496, at 1920 the full 520, and
+ * at the 900px minimum the floor.
+ */
+const BOOK_KEEPS = 560;
+const LIBRARY_WIDTH = 384;
+
+/** The default, fitted to this window: no wider than leaves the book its page. */
+function defaultWidth(): number {
+  const room = typeof window === 'undefined' ? DEFAULT_WIDTH : window.innerWidth - LIBRARY_WIDTH - BOOK_KEEPS;
+  return Math.max(MIN_WIDTH, Math.min(DEFAULT_WIDTH, room));
+}
 /** The shortest an open section can be dragged, in pixels: its header and a row or two. */
 const MIN_SECTION = 72;
 /** Ask starts with a larger share: it is the section that reads a conversation. */
@@ -70,9 +88,9 @@ const WEIGHTS_KEY = 'foundry.inspector.weights';
 function readWidth(): number {
   try {
     const n = Number(localStorage.getItem(WIDTH_KEY));
-    return Number.isFinite(n) && n >= MIN_WIDTH ? n : DEFAULT_WIDTH;
+    return Number.isFinite(n) && n >= MIN_WIDTH ? n : defaultWidth();
   } catch {
-    return DEFAULT_WIDTH;
+    return defaultWidth();
   }
 }
 
@@ -1002,8 +1020,9 @@ export class InspectorComponent {
   }
 
   protected resetWidth(): void {
-    this.width.set(DEFAULT_WIDTH);
-    keep(WIDTH_KEY, DEFAULT_WIDTH);
+    const width = defaultWidth();
+    this.width.set(width);
+    keep(WIDTH_KEY, width);
   }
 
   protected resetWeights(): void {

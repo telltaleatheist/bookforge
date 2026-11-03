@@ -35,6 +35,7 @@
  * session record (`AskSession`, kept in `<project>/ops/ask-sessions.jsonl`) is
  * where a reason lives.
  */
+import type { AskConversation } from './ask-conversations';
 import type { AskStackInput } from './ask-history';
 import type { AskChainStep } from './ask-presets';
 import type { BookOp, Replayed } from './ops';
@@ -112,6 +113,12 @@ export interface AskRequest {
   /** The dropdown's value: `''` is Automatic, `<upstream>/<id>` a cloud model, else a local id. */
   readonly model: string;
   readonly view: AskView;
+  /**
+   * WHICH CONVERSATION THIS QUESTION CONTINUES, by id — or null to start a new
+   * one (the panel's "+"). Main opens the run with that conversation's note, or
+   * with its last question and answer when it has none.
+   */
+  readonly conversation: string | null;
   /**
    * THE BOOK'S EDITS, for the `history` and `revert` tools — the pane's file,
    * every op it replays, and its redo pile (`BookStack.askStack`). Absent when
@@ -316,12 +323,13 @@ export interface AskResult {
   readonly hitLimit: boolean;
   readonly seconds: number;
   /**
-   * The thread this run leaves for the next question, as written to the book —
-   * or null when the model's note could not be had, in which case the thread
-   * has ENDED and `threadProblem` says why.
+   * The conversation this run belongs to, as written to the book after it — a
+   * new one when the question started one. Its `note` is null when the model's
+   * note could not be had, and `noteProblem` says why; the next question then
+   * continues from this run's question and answer.
    */
-  readonly thread: AskThread | null;
-  readonly threadProblem: string | null;
+  readonly conversation: AskConversation;
+  readonly noteProblem: string | null;
 }
 
 /**
@@ -414,6 +422,8 @@ export interface AskSession {
   readonly hitLimit?: boolean;
   /** Which step of a run of presets this run was. Absent on an ordinary question. */
   readonly chain?: AskChainStep;
+  /** The conversation it belongs to. Absent on a run kept before conversations (`AskConversation.legacyRuns`). */
+  readonly conversation?: string;
   /** How many marks were not landed because their block had changed during the run. */
   readonly skipped: number;
   readonly rounds: number;

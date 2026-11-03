@@ -33,6 +33,8 @@
  * both. A second copy would be two readers of one event vocabulary, drifting the
  * first time the server adds a frame.
  */
+import { CrucibleRefused, CrucibleServerError, CrucibleUnreachable } from '@crucible/client';
+
 import { followTask } from './crucible-coordinate';
 import { readAppSettings, writeAppSettings } from './app-settings';
 import { crucibleServerNamed, engineClientFor, slotAvailability } from './crucible-registry';
@@ -250,12 +252,40 @@ export async function removeModel(server: string, kind: string, id: string): Pro
  * owns the wire, and a dialog that opens again asks again.
  */
 export async function jobModelOffer(kind: JobModelKind, server: string | null): Promise<JobModelOffer> {
-  const list = await jobModelsOn(server);
-  return { list, preselected: defaultJobModel(list, readAppSettings().lastJobModels[kind]) };
+  const name = server !== null && server.length > 0 ? server : rememberedServer(kind) ?? topRankedCrucible();
+  try {
+    const list = await jobModelsOn(name);
+    return { list, preselected: defaultJobModel(list, readAppSettings().lastJobModels[kind]), unreachable: null };
+  } catch (err) {
+    if (!isWeather(err)) throw err;
+    return {
+      list: { server: name, choices: [], cloudNote: null },
+      preselected: '',
+      unreachable: `${name} did not answer: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
 }
 
-async function jobModelsOn(server: string | null): Promise<JobModelChoices> {
-  const name = server !== null && server.length > 0 ? server : topRankedCrucible();
+/** The server this kind was last sent to, while it is still registered and on; else null. */
+function rememberedServer(kind: JobModelKind): string | null {
+  const name = readAppSettings().lastJobServers[kind];
+  if (name === undefined) return null;
+  const entry = crucibleServerNamed(name);
+  return entry !== null && entry.enabled ? entry.name : null;
+}
+
+/** True for what a wait can end: a server that did not answer, a 429, a 5xx. */
+export function isWeather(err: unknown): boolean {
+  if (err instanceof CrucibleUnreachable) return true;
+  if (err instanceof CrucibleServerError) return true;
+  if (err instanceof CrucibleRefused) return err.status === 429 || err.status === 408;
+  return false;
+}
+
+/** Tries at listing a server's models, and the wait before each again. */
+const LISTING_WAITS_MS = [500, 1500];
+
+async function jobModelsOn(name: string): Promise<JobModelChoices> {
   const entry = crucibleServerNamed(name);
   if (entry === null) {
     throw new Error(
@@ -264,7 +294,18 @@ async function jobModelsOn(server: string | null): Promise<JobModelChoices> {
     );
   }
   const client = await engineClientFor(entry);
-  const local = await client.models();
+  // Weather inside a budget: a stale keep-alive or a busy server answers on the next try.
+  let local: Awaited<ReturnType<typeof client.models>>;
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      local = await client.models();
+      break;
+    } catch (err) {
+      const wait = LISTING_WAITS_MS[attempt];
+      if (!isWeather(err) || wait === undefined) throw err;
+      await new Promise((rest) => setTimeout(rest, wait));
+    }
+  }
   let cloud: Awaited<ReturnType<typeof client.upstreamModels>> | null = null;
   let cloudUnreadable: string | null = null;
   try {
@@ -301,7 +342,10 @@ export function topRankedCrucible(): string {
  * on it from one whose person chose Automatic (both carry no `chosenModel`), and
  * a rerun from the shelf is not somebody choosing anything.
  */
-export function rememberJobModel(kind: JobModelKind, value: string): void {
-  const last = readAppSettings().lastJobModels;
-  writeAppSettings({ lastJobModels: { ...last, [kind]: value } });
+export function rememberJobModel(kind: JobModelKind, value: string, server?: string): void {
+  const kept = readAppSettings();
+  writeAppSettings({
+    lastJobModels: { ...kept.lastJobModels, [kind]: value },
+    ...(server === undefined || server.length === 0 ? {} : { lastJobServers: { ...kept.lastJobServers, [kind]: server } }),
+  });
 }

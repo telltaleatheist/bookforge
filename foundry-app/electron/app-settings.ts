@@ -342,6 +342,13 @@ export interface AppSettings {
    * absent kind is a job never sent.
    */
   lastJobModels: Partial<Record<JobModelKind, string>>;
+  /**
+   * THE SERVER EACH KIND OF JOB WAS LAST SENT TO, by registry name — beside
+   * `lastJobModels` and written with it (Owen, 2026-11-02: Ask's picker keeps the
+   * last server and model). Only a default: a name no longer registered, or
+   * switched off, opens on the top-ranked server.
+   */
+  lastJobServers: Partial<Record<JobModelKind, string>>;
 
   /**
    * ASK'S BUTTONS (Owen, 2026-11-02) — the person's own list, in order, or null
@@ -794,6 +801,7 @@ export function readAppSettings(): AppSettings {
     setupCompleted: raw?.['setupCompleted'] === true,
     setupSkipped: clampSkipped(raw?.['setupSkipped']),
     lastJobModels: clampLastJobModels(raw?.['lastJobModels']),
+    lastJobServers: clampLastJobModels(raw?.['lastJobServers']),
     askPresets: clampAskPresets(raw?.['askPresets']),
     askPresetsChecked: clampCheckedPresets(raw?.['askPresetsChecked']),
   };
@@ -836,6 +844,9 @@ export function writeAppSettings(patch: Partial<AppSettings>): AppSettings {
   }
   if (patch.lastJobModels !== undefined) {
     root['lastJobModels'] = clampLastJobModels(patch.lastJobModels);
+  }
+  if (patch.lastJobServers !== undefined) {
+    root['lastJobServers'] = clampLastJobModels(patch.lastJobServers);
   }
   if (patch.askPresets !== undefined) {
     const kept = clampAskPresets(patch.askPresets);

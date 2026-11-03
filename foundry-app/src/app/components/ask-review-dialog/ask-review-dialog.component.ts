@@ -430,8 +430,10 @@ export class AskReviewDialogComponent {
   protected readonly session = computed(() => {
     const tab = this.stage.activeDocument();
     if (tab === null || tab.kind !== 'book') return null;
-    const latest = this.asks.latest().get(tab.path) ?? null;
-    return latest === null ? null : reviewOf(this.asks.history().get(tab.path) ?? [latest], latest);
+    const all = this.asks.history().get(tab.path) ?? [];
+    const asked = this.asks.reviewing();
+    const latest = (asked === null ? null : all.find((one) => one.id === asked) ?? null) ?? this.asks.latest().get(tab.path) ?? null;
+    return latest === null ? null : reviewOf(all.length > 0 ? all : [latest], latest);
   });
 
   protected readonly groups = computed(() => this.session()?.groups ?? []);

@@ -18,6 +18,9 @@ import { AskService, type AskRunState, type AskStep } from '../../core/ask.servi
 import type { BookStack } from '../../core/book-stacks.service';
 import { StageService } from '../../core/stage.service';
 import { UiService } from '../../core/ui.service';
+import { ConfirmService } from '../../core/confirm.service';
+import { runsOf } from '@shared/ask-conversations';
+import { api } from '../../core/foundry';
 import { JobModelComponent } from '../job-model/job-model.component';
 
 /**
@@ -60,12 +63,45 @@ import { JobModelComponent } from '../job-model/job-model.component';
   changeDetection: ChangeDetectionStrategy.OnPush,
   host: { '[class.shut]': '!open()' },
   template: `
-    <button class="head" (click)="open.set(!open())">
-      <span class="twist">{{ open() ? '▾' : '▸' }}</span>
-      <span class="label">Ask</span>
-    </button>
+    <div class="top">
+      <button class="head" (click)="open.set(!open())">
+        <span class="twist">{{ open() ? '▾' : '▸' }}</span>
+        <span class="label">Ask</span>
+      </button>
+      @if (open() && tab() !== null) {
+        <button class="plus" title="New conversation — the ones before it are kept" [disabled]="busy()" (click)="newConversation()">+</button>
+      }
+    </div>
     @if (open()) {
       <div class="body">
+        <!--
+          THE BOOK'S CONVERSATIONS (Owen, 2026-11-02), newest first, folded to
+          the one in front. A row goes back to it; its runs are drawn below and
+          the next message continues it. Delete asks first, on the app's own
+          card, and never undoes what its runs put on the book.
+        -->
+        @if (conversationList().length > 0) {
+          <div class="convs">
+            <button class="conv-head" (click)="listOpen.set(!listOpen())">
+              <span class="twist">{{ listOpen() ? '▾' : '▸' }}</span>
+              <span class="conv-now">{{ continuing()?.title ?? 'New conversation' }}</span>
+              <span class="conv-count">{{ conversationList().length }}</span>
+            </button>
+            @if (listOpen()) {
+              <ul class="conv-list">
+                @for (one of conversationList(); track one.id) {
+                  <li class="conv" [class.on]="one.id === continuing()?.id">
+                    <button class="conv-pick" [disabled]="busy()" (click)="openConversation(one.id)" [title]="one.title">
+                      <span class="conv-title">{{ one.title }}</span>
+                      <span class="conv-meta">{{ dated(one.updatedAt) }} · {{ one.turns }} {{ one.turns === 1 ? 'question' : 'questions' }}</span>
+                    </button>
+                    <button class="conv-x" title="Delete this conversation" [disabled]="busy()" (click)="deleteConversation(one.id, one.title)">✕</button>
+                  </li>
+                }
+              </ul>
+            }
+          </div>
+        }
         <div class="thread" #thread>
           @if (exchanges().length === 0 && live() === null) {
             <p class="empty">
@@ -117,8 +153,8 @@ import { JobModelComponent } from '../job-model/job-model.component';
             @if (one.latest && one.session.hitLimit === true && live() === null) {
               <button class="ghost review" [disabled]="busy() || !modelReady() || server() === null" title="Send a follow-up that carries on from the model's note" (click)="keepGoing()">Keep going</button>
             }
-            @if (one.latest && one.session.items.length > 0) {
-              <button class="ghost review" (click)="ui.openAskReview()">
+            @if (one.session.items.length > 0) {
+              <button class="ghost review" (click)="review(one.session.id)">
                 Review changes ({{ one.session.items.length }})
               </button>
             }
@@ -170,8 +206,8 @@ import { JobModelComponent } from '../job-model/job-model.component';
 
         <div class="composer">
           @if (continuing(); as on) {
-            <p class="continuing" [title]="on.first">
-              Continuing “{{ clipped(on.first) }}” · {{ on.turns }} {{ on.turns === 1 ? 'question' : 'questions' }} so far
+            <p class="continuing" [title]="on.title">
+              Continuing “{{ clipped(on.title) }}” · {{ on.turns }} {{ on.turns === 1 ? 'question' : 'questions' }} so far
             </p>
           }
           <textarea
@@ -185,22 +221,42 @@ import { JobModelComponent } from '../job-model/job-model.component';
             (input)="draft.set(box.value)"
             (keydown.enter)="enter($event)"
           ></textarea>
-          <div class="bar">
-            <div class="model">
-              <app-job-model
-                kind="ask"
-                [topRanked]="true"
-                [value]="model()"
-                (valueChange)="model.set($event)"
-                (ready)="modelReady.set($event)"
-                (listedOn)="server.set($event)"
-              />
+          <!--
+            SERVER, THEN MODEL, EACH THE PANEL'S WIDTH (Owen, 2026-11-02). They
+            used to share the button row, which squeezed the model dropdown to
+            nothing and wrapped its billing line a word a line over the buttons.
+            The model list is the chosen server's own (app-job-model, reading
+            main's one list); changing the server reads it again.
+          -->
+          <div class="pick">
+            <div class="field">
+              <label class="label" for="ask-server">Server</label>
+              @if (servers().length > 0) {
+                <select id="ask-server" [disabled]="busy()" [value]="server() ?? ''" (change)="choose($any($event.target).value)">
+                  @for (one of servers(); track one) {
+                    <option [value]="one" [selected]="one === server()">{{ one }}</option>
+                  }
+                </select>
+              } @else {
+                <select id="ask-server" disabled [title]="serversProblem() ?? 'Add one under Settings › Crucible Servers.'"><option>{{ serversProblem() === null ? 'No Crucible server' : 'Servers could not be read' }}</option></select>
+              }
             </div>
+            <app-job-model
+              kind="ask"
+              [topRanked]="true"
+              [server]="pinned()"
+              [value]="model()"
+              (valueChange)="model.set($event)"
+              (ready)="modelReady.set($event)"
+              (listedOn)="server.set($event)"
+            />
+          </div>
+          <div class="bar">
+            <span class="spacer"></span>
             @if (busy()) {
               <button class="ghost" [disabled]="live()?.runId === null || live()?.phase === 'landing'" (click)="stop()">Stop</button>
             } @else {
               <button class="ghost" title="Run kept questions on this book, one after another" (click)="ui.openAskPresets()">Presets</button>
-              <button class="ghost" [disabled]="exchanges().length === 0 && live() === null && continuing() === null" title="Start fresh: the model forgets this thread. Nothing on the book is undone." (click)="newChat()">New question</button>
               <button class="primary" [disabled]="!canSend()" (click)="send()">Send</button>
             }
           </div>
@@ -219,8 +275,41 @@ import { JobModelComponent } from '../job-model/job-model.component';
     }
     :host(.shut) { flex: 0 0 auto; }
 
+    .top { display: flex; align-items: center; }
+    .plus {
+      flex: 0 0 auto; margin-right: 8px;
+      width: 24px; height: 24px; display: inline-flex; align-items: center; justify-content: center;
+      background: transparent; border: 1px solid var(--border-default); border-radius: var(--radius-sm);
+      color: var(--text-secondary); font-size: 15px; line-height: 1; cursor: pointer;
+    }
+    .plus:hover:not(:disabled) { background: var(--bg-hover); color: var(--text-primary); }
+    .plus:disabled { opacity: 0.4; cursor: default; }
+    .convs { border-bottom: 1px solid var(--border-subtle); }
+    .conv-head {
+      display: flex; align-items: baseline; gap: 6px; width: 100%;
+      padding: 4px 12px 6px; background: transparent; border: none; text-align: left; cursor: pointer;
+    }
+    .conv-head:hover { background: var(--bg-hover); }
+    .conv-now { flex: 1; min-width: 0; font-size: 12px; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .conv-count { font-size: 11px; color: var(--text-tertiary); font-variant-numeric: tabular-nums; }
+    .conv-list { list-style: none; margin: 0; padding: 0 0 6px; max-height: 40%; overflow-y: auto; }
+    .conv { display: flex; align-items: center; gap: 4px; padding: 0 8px 0 12px; }
+    .conv.on .conv-title { font-weight: 600; }
+    .conv-pick {
+      flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 1px;
+      padding: 4px 6px; background: transparent; border: none; border-radius: var(--radius-sm); text-align: left; cursor: pointer;
+    }
+    .conv-pick:hover:not(:disabled) { background: var(--bg-hover); }
+    .conv-title { font-size: 12px; color: var(--text-primary); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .conv-meta { font-size: 10px; color: var(--text-tertiary); }
+    .conv-x {
+      flex: 0 0 auto; width: 20px; height: 20px; background: transparent; border: none; border-radius: var(--radius-sm);
+      color: var(--text-tertiary); font-size: 11px; cursor: pointer;
+    }
+    .conv-x:hover:not(:disabled) { background: var(--bg-hover); color: var(--error); }
     .head {
       display: flex; align-items: baseline; gap: 8px;
+      flex: 1;
       width: 100%;
       padding: 10px 12px 8px;
       background: transparent; border: none;
@@ -327,8 +416,15 @@ import { JobModelComponent } from '../job-model/job-model.component';
       color: var(--text-tertiary);
       white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     }
-    .bar { display: flex; align-items: center; gap: 6px; }
-    .bar .model { flex: 1; min-width: 0; }
+    .pick { display: flex; flex-direction: column; gap: 8px; }
+    .field { display: flex; flex-direction: column; gap: 6px; }
+    .label {
+      font-size: 10px; font-weight: 600; text-transform: uppercase;
+      letter-spacing: 0.08em; color: var(--text-tertiary);
+    }
+    .pick select { width: 100%; min-width: 0; }
+    .bar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+    .bar .spacer { flex: 1; }
 
     .chain { margin: 0; font-size: 11px; font-weight: 600; color: var(--accent); }
     .places-head { margin: 2px 0 0; font-size: 11px; font-weight: 600; color: var(--text-secondary); }
@@ -371,6 +467,7 @@ export class AskPanelComponent {
   protected readonly ui = inject(UiService);
   private readonly stage = inject(StageService);
   private readonly asks = inject(AskService);
+  private readonly confirm = inject(ConfirmService);
 
   /** The book pane this section is about — the inspector's own `sheet()`. */
   readonly pane = input.required<BookStack>();
@@ -380,8 +477,18 @@ export class AskPanelComponent {
   /** The dropdown's value; `''` is Automatic. */
   protected readonly model = signal('');
   protected readonly modelReady = signal(false);
-  /** The server the dropdown's list was read from, which is where the run goes. */
+  /** The server the model list was read from, which is where the run goes. */
   protected readonly server = signal<string | null>(null);
+  /**
+   * The server the person picked here, or '' before they have — when the
+   * model list asks main for the remembered one, else the top-ranked one, and
+   * says which on `listedOn`.
+   */
+  protected readonly pinned = signal('');
+  /** The registered Crucible servers that are switched on, by name. */
+  protected readonly servers = signal<readonly string[]>([]);
+  /** Why the servers could not be read, said on the empty box. */
+  protected readonly serversProblem = signal<string | null>(null);
   /** Which finished runs' "Working" lines are open, by session id. */
   protected readonly unfolded = signal<ReadonlySet<string>>(new Set());
   /**
@@ -396,7 +503,7 @@ export class AskPanelComponent {
   private readonly threadBox = viewChild<ElementRef<HTMLElement>>('thread');
 
   /** The book tab in front of the person, which is what the pane is drawing. */
-  private readonly tab = computed(() => {
+  protected readonly tab = computed(() => {
     const tab = this.stage.activeDocument();
     return tab !== null && tab.kind === 'book' && tab.viewOnly !== true ? tab : null;
   });
@@ -410,16 +517,24 @@ export class AskPanelComponent {
     return phase === 'running' || phase === 'landing';
   });
 
+  /** The book's conversations, newest first. */
+  protected readonly conversationList = computed(() => {
+    const tab = this.tab();
+    return tab === null ? [] : this.asks.conversations().get(tab.path) ?? [];
+  });
+  /** Whether the list of conversations is unfolded. */
+  protected readonly listOpen = signal(false);
+
   /**
-   * THE THREAD: every kept session since the last "New chat", each with the
-   * rounds of the run that made it when this window watched it, and the closing
-   * sentence about what landed for the run that just finished.
+   * THE CONVERSATION IN FRONT: its kept runs, each with the rounds of the run
+   * that made it when this window watched it, and the closing sentence about
+   * what landed for the run that just finished. A new conversation has none.
    */
   protected readonly exchanges = computed(() => {
     const tab = this.tab();
     if (tab === null) return [];
-    const since = this.asks.clearedAt().get(tab.path) ?? 0;
-    const sessions = (this.asks.history().get(tab.path) ?? []).filter((one) => Date.parse(one.at) >= since);
+    const conversation = this.continuing();
+    const sessions = conversation === null ? [] : runsOf(conversation, this.asks.history().get(tab.path) ?? []);
     const latest = this.asks.latest().get(tab.path) ?? null;
     const run = this.run();
     return sessions.map((session: AskSession) => {
@@ -437,15 +552,16 @@ export class AskPanelComponent {
   protected readonly live = computed<AskRunState | null>(() => {
     const run = this.run();
     if (run === null || run.phase === 'done') return null;
-    const tab = this.tab();
-    const since = tab === null ? 0 : this.asks.clearedAt().get(tab.path) ?? 0;
-    return run.startedAt >= since ? run : null;
+    return run;
   });
 
-  /** The book's live thread: what the next Send continues from, or null when it starts fresh. */
+  /** The conversation the next Send continues, or null when it starts a new one. */
   protected readonly continuing = computed(() => {
     const tab = this.tab();
-    return tab === null ? null : this.asks.threads().get(tab.path) ?? null;
+    if (tab === null) return null;
+    void this.asks.active();
+    void this.asks.conversations();
+    return this.asks.activeOf(tab.path);
   });
 
   protected readonly canSend = computed(() =>
@@ -464,7 +580,25 @@ export class AskPanelComponent {
     return this.asks.chainOver().get(tab.path) ?? null;
   });
 
+  /** A server picked: the model list is read from it, keeping the model only if it offers it. */
+  protected choose(name: string): void {
+    if (name.length === 0 || name === this.server()) return;
+    this.pinned.set(name);
+  }
+
+  private async loadServers(): Promise<void> {
+    if (!api) return;
+    try {
+      const view = await api.crucible.settings();
+      this.servers.set(view.servers.filter((one) => one.enabled).map((one) => one.name));
+    } catch (err) {
+      this.servers.set([]);
+      this.serversProblem.set(err instanceof Error ? err.message : String(err));
+    }
+  }
+
   constructor() {
+    void this.loadServers();
     void this.asks.loadPresets();
     // The Presets modal sends with this panel's choice of model, and starts "Add preset" from its box.
     effect(() => {
@@ -534,9 +668,48 @@ export class AskPanelComponent {
     if (tab !== null) void this.asks.cancel(tab.path);
   }
 
-  protected newChat(): void {
+  /** "+": the next message starts a new conversation; the ones before it are kept. */
+  protected newConversation(): void {
     const tab = this.tab();
-    if (tab !== null) void this.asks.newChat(tab.path);
+    if (tab === null) return;
+    this.asks.newConversation(tab.path);
+    this.listOpen.set(false);
+  }
+
+  protected openConversation(id: string): void {
+    const tab = this.tab();
+    if (tab === null) return;
+    this.asks.openConversation(tab.path, id);
+    this.listOpen.set(false);
+  }
+
+  /** Delete one, on the app's own confirm card. Its edits stay on the book. */
+  protected async deleteConversation(id: string, title: string): Promise<void> {
+    const tab = this.tab();
+    if (tab === null) return;
+    const agreed = await this.confirm.ask({
+      message: `Delete the conversation "${this.clipped(title)}"?`,
+      detail: [
+        'Its questions, answers and the model\'s note go from this list.',
+        'Nothing it changed on the book is undone — those edits stay, and Undo still takes them back.',
+      ],
+      confirm: 'Delete conversation',
+    });
+    if (agreed) await this.asks.deleteConversation(tab.path, id);
+  }
+
+  /** Open the review card on this run. */
+  protected review(sessionId: string): void {
+    this.asks.reviewing.set(sessionId);
+    this.ui.openAskReview();
+  }
+
+  /** "2 Nov" today's year, "2 Nov 2025" otherwise. */
+  protected dated(iso: string): string {
+    const at = new Date(iso);
+    if (Number.isNaN(at.getTime())) return '';
+    const sameYear = at.getFullYear() === new Date().getFullYear();
+    return at.toLocaleDateString(undefined, { day: 'numeric', month: 'short', ...(sameYear ? {} : { year: 'numeric' }) });
   }
 
   protected clipped(text: string): string {
