@@ -36,11 +36,11 @@
  */
 import * as fs from 'node:fs';
 
-import { noteStepStopped } from '../queue-engine';
+import { noteStepStopped, snapshot as engineSnapshot } from '../queue-engine';
 import type { StepModule, StepRunContext } from '../queue-engine';
 import type { ArtifactRef, JobStageProgress, StepResource } from '../../shared/queue/engine-types';
 import {
-  foundryFormsLister, foundryRowFailure, foundryRunner,
+  adjustPlanned, foundryFormsLister, foundryRowFailure, foundryRunner,
   parseFoundryProgressLine,
 } from '../foundry-host-queue';
 import type { FoundryJobRequest, FoundryJobStepConfig, FoundryRunOutcome } from '../foundry-host-queue';
@@ -59,6 +59,7 @@ import { FOUNDRY_SESSION_JOB_TYPE } from '../crucible/in-flight-sweep';
 import { stepFailure } from './runtime';
 import { chosenModelOf } from './ai-provider';
 import { GUIDE_CHOICE } from '../../shared/pronunciation-guide';
+import { TERMINAL_STEP_STATUSES } from '../../shared/queue/engine-types';
 /*
  * NOTHING IS IMPORTED FROM `text-server.ts` OR `narration-clean-text.ts` HERE
  * ANY MORE, and the absence is the statement.
@@ -133,6 +134,39 @@ async function appliedKeptReadings(
   const said = `glossary: this step has the pronunciation guide applied; its ${kept.places} place(s) are kept as they are`;
   ctx.report({ message: said, detail: said });
   return kept.path;
+}
+
+/**
+ * WHETHER THIS CLEANUP IS FOLLOWED BY ITS GUIDE'S "Pronunciation adjusted" STEP
+ * (foundry-host-queue `adjustAfter`, Owen 2026-11-02): a live child row of this one
+ * that applies a guide. Asked at the run, after any planning of it has settled, so
+ * the answer is the queue as it stands — an adjust removed from the queue, or one that
+ * could not be planned, leaves the cleanup writing the readings in itself, as before.
+ */
+async function adjustFollows(ctx: { jobId: string; stepId: string }): Promise<boolean> {
+  /*
+   * A DESCENDANT, NOT ONLY A CHILD: a checked cleanup is two rows, the check and then
+   * the cleanup under it, and the check must read the same words its cleanup will —
+   * printed and kept — or it judges a text nobody cleans.
+   */
+  const stepsOf = (): readonly { id: string; parentStepId?: string | null; status: string; config: unknown }[] =>
+    engineSnapshot().jobs.find((j) => j.id === ctx.jobId)?.steps ?? [];
+  const below = new Set([ctx.stepId]);
+  for (let grew = true; grew;) {
+    grew = false;
+    for (const s of stepsOf()) {
+      if (typeof s.parentStepId !== 'string' || !below.has(s.parentStepId) || below.has(s.id)) continue;
+      below.add(s.id);
+      grew = true;
+    }
+  }
+  for (const id of below) {
+    const planning = adjustPlanned(id);
+    if (planning !== undefined) await planning;
+  }
+  return stepsOf().some((s) => typeof s.parentStepId === 'string' && below.has(s.parentStepId)
+    && !TERMINAL_STEP_STATUSES.has(s.status as never)
+    && typeof (s.config as FoundryJobStepConfig | undefined)?.request?.['applyGuideOf'] === 'string');
 }
 
 function resourceFor(config: Record<string, unknown>): StepResource {
@@ -564,8 +598,22 @@ export const foundryJobStep: StepModule = {
     // A CLEANUP OF AN APPLIED STEP: its words are already said, and every place is kept (pronunciation-applied.ts).
     const appliedKept = isCleanup && !noGuide ? await appliedKeptReadings(config, ctx) : undefined;
     if (readingsPass) {
-      // THE GUIDE'S APPLY: the readings main wrote from the guide at the press, and nothing decided here.
-      const file = config.request['applyReadings'];
+      /*
+       * THE GUIDE'S APPLY: the readings main wrote from the guide at the press — or,
+       * for the step after a cleanup (`applyGuideOf`), written now from the guide as
+       * it stands, since the guide may have been built or edited since the press.
+       */
+      const guideOf = config.request['applyGuideOf'];
+      let file = config.request['applyReadings'];
+      if (typeof guideOf === 'string') {
+        const { guidePathsOfStep, hasGuide, writeApplyReadings } = await import('../narration-glossary.js');
+        const files = guidePathsOfStep(config.projectDir, guideOf);
+        if (!hasGuide(files)) {
+          throw new Error('The pronunciation guide this step applies is gone (it was deleted, or its build failed), so '
+            + 'there are no corrections to write in. Build the guide again from the step it belongs to.');
+        }
+        file = (await writeApplyReadings(files)).path;
+      }
       if (typeof file !== 'string' || file.length === 0) {
         throw new Error('This readings pass names no readings file to write into the book, so it would change nothing. '
           + 'Apply the pronunciation guide again from its window.');
@@ -606,6 +654,25 @@ export const foundryJobStep: StepModule = {
         fromZero: false,
       });
       if (made.readingsPath !== null) fixedReadings = made.readingsPath;
+      /*
+       * THE GUIDE APPLIED AFTER, NOT HERE (Owen, 2026-11-02): when its own
+       * "Pronunciation adjusted" step follows this cleanup, every place the guide
+       * decided is handed over KEPT (`replace` = `find`) — protected from the
+       * sentence pass and written by nobody — so the cleaned text keeps the printed
+       * words and the step after writes the readings into it. Deleting that step then
+       * takes the corrections out without cleaning again.
+       */
+      if (made.readingsPath !== null && await adjustFollows(ctx)) {
+        const { writeProtectOnlyReadings } = await import('../narration-glossary.js');
+        const kept = await writeProtectOnlyReadings(made.readingsPath);
+        fixedReadings = kept.path;
+        const said = `glossary: ${kept.places} place(s) the guide decided are kept as printed here, and written in by the `
+          + `"Pronunciation adjusted" step after this cleanup`;
+        ctx.report({ message: said, detail: said });
+      } else if (made.readingsPath !== null) {
+        const said = 'glossary: no "Pronunciation adjusted" step follows this cleanup, so the guide’s readings are written into the cleaned text';
+        ctx.report({ message: said, detail: said });
+      }
     }
 
     const run = async (): Promise<FoundryRunOutcome> => {

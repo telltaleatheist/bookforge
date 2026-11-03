@@ -830,6 +830,25 @@ export async function writeApplyReadings(files: GuideFiles): Promise<{ path: str
 }
 
 /**
+ * THE GUIDE'S PLACES, KEPT AND NOT READ — for a cleanup its "Pronunciation adjusted"
+ * step follows (Owen, 2026-11-02). Every spot of the guide's readings file with
+ * `replace` = `find`: Foundry protects a kept spot from the sentence pass and writes
+ * nothing over it (fixed-readings.ts), so the cleaned text keeps the printed word at
+ * every place the guide decided, and the readings pass after the cleanup finds it
+ * there to write the reading in. Written beside the readings as `.protect.json`.
+ */
+export async function writeProtectOnlyReadings(readingsPath: string): Promise<{ path: string; places: number }> {
+  const body = JSON.parse(fs.readFileSync(readingsPath, 'utf8')) as { format?: unknown; readings?: unknown };
+  if (body.format !== FIXED_READINGS_FORMAT || !Array.isArray(body.readings)) {
+    throw new Error(`${readingsPath} is not a ${FIXED_READINGS_FORMAT} file, so the guide's places cannot be kept.`);
+  }
+  const readings = (body.readings as SpotReading[]).map((r) => ({ find: r.find, replace: r.find, at: r.at, nth: r.nth }));
+  const file = readingsPath.replace(/\.json$/, '.protect.json');
+  await writeAtomically(file, { format: FIXED_READINGS_FORMAT, readings });
+  return { path: file, places: readings.length };
+}
+
+/**
  * THE GUIDE'S SPOTS: every occurrence the guide DECIDED, read or kept.
  *
  * A spot whose meaning is said as printed is handed over too, as a KEPT spot

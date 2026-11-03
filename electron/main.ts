@@ -2997,26 +2997,52 @@ async function buildPronunciationGuide(projectDir: string, at: string, startOver
     queuePronunciationGuide(projectDir, at, startOver);
     return;
   }
-  const adjusted = await planAdjustedStep(projectDir, at);
+  const adjusted = await planAdjustedStep(projectDir, at, at);
   const ahead = queuePronunciationGuide(projectDir, at, startOver, true);
   foundryHostQueue.enqueue(adjusted, at, projectDir, ahead);
 }
 
 /**
- * THE READINGS PASS THAT LANDS A GUIDE AS "Pronunciation adjusted" — under the label
- * that replaces the latest adjusted step while nothing hangs under it, or the next
- * "(n)" beside it once something does (`nextAppliedLabel`, Owen: *"it works like a
- * git worktree"*). It reads the readings at the guide's fixed Apply path.
+ * THE READINGS PASS THAT LANDS THE GUIDE ON STEP `guide` AS "Pronunciation adjusted"
+ * under step `parent` — the guide's own step, or (since 2026-11-02) a cleanup of it —
+ * under the label that replaces the latest adjusted step there while it is this
+ * guide's and nothing hangs under it, or the next "(n)" beside it otherwise
+ * (`nextAppliedLabel`, Owen: *"it works like a git worktree"*). It reads the readings
+ * at the guide's fixed Apply path. The step it will land as is written down with its
+ * guide (`recordAdjusted`) before it is queued, so it is known as this guide's from
+ * the moment it lands.
  */
-async function planAdjustedStep(projectDir: string, at: string): Promise<FoundryJobRequest> {
+async function planAdjustedStep(projectDir: string, guide: string, parent: string): Promise<FoundryJobRequest> {
   if (typeof foundryMount.planReadingsPass !== 'function') {
     throw new Error('The vendored Foundry is older than the readings pass, so the guide cannot be applied. '
       + 'Re-vendor foundry-app.');
   }
   const { applyReadingsPath, guidePathsOfStep } = await import('./narration-glossary.js');
-  const { nextAppliedLabel } = await import('./pronunciation-applied.js');
-  const request = await foundryMount.planReadingsPass(projectDir, at, nextAppliedLabel(projectDir, at));
-  return { ...request, applyReadings: applyReadingsPath(guidePathsOfStep(projectDir, at)) };
+  const { nextAppliedLabel, recordAdjusted } = await import('./pronunciation-applied.js');
+  const request = await foundryMount.planReadingsPass(projectDir, parent, nextAppliedLabel(projectDir, parent, guide));
+  if (typeof request.stepId !== 'string' || request.stepId === '') {
+    throw new Error('Foundry planned the "Pronunciation adjusted" step without saying which step it lands as, so it '
+      + 'could not be tied to its guide. Nothing was queued.');
+  }
+  await recordAdjusted(projectDir, request.stepId, guide);
+  return { ...request, applyReadings: applyReadingsPath(guidePathsOfStep(projectDir, guide)) };
+}
+
+/**
+ * THE GUIDE APPLIED AFTER ITS CLEANUP (Owen, 2026-11-02: *"it creates a pronunciation
+ * guide and then cleans the text ... the user can decide to remove the pronunciation
+ * corrections if they want"*). foundry-host-queue's `adjustAfter`: the readings pass
+ * planned against the cleanup's PROMISED step `cleanStep` (Foundry resolves the
+ * deferral at the run, once the cleanup has landed) and filed under the cleanup's row,
+ * so it waits for it and goes with it. It writes its readings from the guide when it
+ * runs (`applyGuideOf`), since the guide ahead of the cleanup may not exist yet.
+ */
+async function queueAdjustAfterCleanup(
+  projectDir: string, guide: string, cleanStep: string, under: { jobId: string; stepId: string },
+): Promise<void> {
+  const planned = await planAdjustedStep(projectDir, guide, cleanStep);
+  const { applyReadings: _atPress, ...request } = planned;
+  foundryHostQueue.enqueue({ ...request, applyGuideOf: guide }, cleanStep, projectDir, under);
 }
 
 async function applyPronunciationGuide(projectDir: string, at: string): Promise<{ places: number }> {
@@ -3030,13 +3056,20 @@ async function applyPronunciationGuide(projectDir: string, at: string): Promise<
     throw new Error('The vendored Foundry is older than the readings pass, so the guide cannot be applied. '
       + 'Re-vendor foundry-app.');
   }
-  const request = await planAdjustedStep(projectDir, at);
+  /*
+   * UNDER THE STEP ITS LATEST ADJUSTED STEP HANGS UNDER — a cleanup of this step, when
+   * the guide was applied after one — so Update replaces that step (or numbers the next
+   * beside it) rather than starting a second branch on the step above.
+   */
+  const { appliedStepOf } = await import('./pronunciation-applied.js');
+  const parent = appliedStepOf(projectDir, at)?.parent ?? at;
+  const request = await planAdjustedStep(projectDir, at, parent);
   const { places } = await writeApplyReadings(files);
   if (places === 0) {
     throw new Error('The guide reads every word as printed (or every word is taken out of the adjusted text), so '
       + 'applying it would change nothing. To go back to the text as it was, delete the "Pronunciation adjusted" step.');
   }
-  foundryHostQueue.enqueue(request, at, projectDir);
+  foundryHostQueue.enqueue(request, parent, projectDir);
   return { places };
 }
 
@@ -14225,6 +14258,8 @@ app.whenReady().then(async () => {
       : null,
     // A cleanup told to build its pronunciation guide first queues it here, then chains under it.
     guideAhead: (dir, at, startOver) => queuePronunciationGuide(dir, at, startOver),
+    // …and a cleanup with a guide is followed by the guide applied as its own step.
+    adjustAfter: (dir, guide, cleanStep, under) => queueAdjustAfterCleanup(dir, guide, cleanStep, under),
   });
   /*
    * AND THE WORD FOR "STOPPED, NOT CANCELLED" — foundry `47ae0d4`.

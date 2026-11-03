@@ -564,6 +564,63 @@ test('a cleanup told to build its pronunciation guide first is chained under the
   assert.strictEqual(asked.length, 2, 'Use this guide, and a request that says nothing, queue no guide');
 });
 
+test('a cleanup with a guide is followed by the guide applied as its own step, under the CLEANUP row (Owen, 2026-11-02)', async () => {
+  await fresh('guide-clean-adjust');
+  const adjusts = [];
+  const guideRun = () => {
+    const job = engine.enqueue({
+      title: 'guide',
+      steps: [{ type: 'foundry-job', label: 'Pronunciation guide', config: { request: { kind: 'guide' } }, sourceRef: { kind: 'none' } }],
+    });
+    return { jobId: job.id, stepId: job.steps[0].id };
+  };
+  host.setFoundrySeam({
+    runJob: null, setQueueRows: null, drained: null,
+    guideAhead: () => guideRun(),
+    // main's queueAdjustAfterCleanup, standing in: the readings pass, filed under the cleanup row.
+    adjustAfter: async (dir, guide, cleanStep, under) => {
+      adjusts.push({ dir, guide, cleanStep, under });
+      host.foundryHostQueue.enqueue({
+        ...textPass('clean', `adj-${cleanStep}`), readingsOnly: { label: 'Pronunciation adjusted' }, applyGuideOf: guide,
+      }, cleanStep, dir, under);
+    },
+  });
+  const row = host.foundryHostQueue.enqueue({ ...textPass('clean', 'c1'), stepId: 'clean-1', hostChoice: 'guide-build' }, null, PROJ);
+  assert.ok(host.adjustPlanned(row.id) !== undefined, 'the cleanup can ask whether its adjust is still being planned');
+  await host.adjustPlanned(row.id);
+  assert.strictEqual(host.adjustPlanned(row.id), undefined, 'and once it is planned, nothing is pending');
+  assert.strictEqual(adjusts.length, 1);
+  assert.strictEqual(adjusts[0].guide, 'step-1', 'the guide applied is the one on the step being cleaned');
+  assert.strictEqual(adjusts[0].cleanStep, 'clean-1', 'planned against the step the cleanup will land as');
+  const owner = engine.snapshot().jobs.find((j) => j.steps.some((s) => s.id === row.id));
+  const guide = owner.steps.find((s) => s.label === 'Pronunciation guide');
+  const clean = owner.steps.find((s) => s.id === row.id);
+  const adjust = owner.steps.find((s) => s.config.request.applyGuideOf === 'step-1');
+  assert.strictEqual(clean.parentStepId, guide.id, 'guide, then cleanup');
+  assert.ok(adjust !== undefined, 'the adjust went into the same run');
+  assert.strictEqual(adjust.parentStepId, clean.id, 'and waits under the cleanup');
+  assert.strictEqual(adjust.config.parentStep, 'clean-1', 'and is made from the cleaned step, not the step the guide is on');
+
+  // Use the existing guide: no guide row, still an adjust; without a guide, a check, or a readings pass: none.
+  const used = host.foundryHostQueue.enqueue({ ...textPass('clean', 'c2'), stepId: 'clean-2', hostChoice: 'guide-use' }, null, PROJ);
+  await host.adjustPlanned(used.id);
+  assert.strictEqual(adjusts.length, 2);
+  assert.strictEqual(adjusts[1].under.stepId, used.id);
+  host.foundryHostQueue.enqueue({ ...textPass('clean', 'c3'), stepId: 'clean-3', hostChoice: 'guide-none' }, null, PROJ);
+  host.foundryHostQueue.enqueue({ ...textPass('clean', 'c4'), stepId: 'clean-4' }, null, PROJ);
+  host.foundryHostQueue.enqueue({ ...textPass('clean-triage', 'c5'), stepId: 'clean-5', hostChoice: 'guide-use',
+    outputPath: `${PROJ}\records\c5.triage.json` }, null, PROJ);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.strictEqual(adjusts.length, 2, 'Clean without a guide, a request that says nothing, and a check are followed by nothing');
+
+  // Mounted without the door: refused by name, and nothing is queued.
+  host.setFoundrySeam({ runJob: null, setQueueRows: null, drained: null, guideAhead: () => guideRun() });
+  const before = engine.snapshot().jobs.length;
+  assert.throws(() => host.foundryHostQueue.enqueue({ ...textPass('clean', 'c6'), stepId: 'clean-6', hostChoice: 'guide-use' }, null, PROJ),
+    /without the door that queues it. Nothing was queued/);
+  assert.strictEqual(engine.snapshot().jobs.length, before);
+});
+
 test('a request filed UNDER a step of a run waits under it — the guide\'s "Pronunciation adjusted" (2026-11-01)', async () => {
   await fresh('filed-under');
   host.setFoundrySeam({ runJob: null, setQueueRows: null, drained: null });

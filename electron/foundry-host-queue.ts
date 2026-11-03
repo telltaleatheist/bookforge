@@ -55,6 +55,7 @@ import {
 } from './queue-engine';
 import { TERMINAL_STEP_STATUSES } from '../shared/queue/engine-types';
 import { GUIDE_CHOICE } from '../shared/pronunciation-guide';
+import { appliedStepInfo } from './pronunciation-applied';
 import { getFoundryLogger } from './rolling-logger';
 import { stepFailure } from './queue-steps/runtime';
 import type { QueueJob, QueueStep } from '../shared/queue/engine-types';
@@ -512,6 +513,62 @@ let sayDrained: (() => void) | null = null;
 let formsLister: FoundryFormsLister | null = null;
 let formsAtLister: FoundryFormsAtLister | null = null;
 let guideAhead: GuideAhead | null = null;
+let adjustAfter: AdjustAfter | null = null;
+
+/**
+ * APPLY A STEP'S GUIDE TO A CLEANUP OF IT, once that cleanup lands (Owen, 2026-11-02:
+ * the guide and the cleanup are one step, and the corrections are a step of their own
+ * under the cleaned text). main's `queueAdjustAfterCleanup`: plans the readings pass
+ * against the cleanup's PROMISED step `cleanStep` (the ledger id it will land as) and
+ * files it under the cleanup's row `under`, so it waits for the cleanup and goes
+ * with it. Asynchronous — planning reads the project — so the row is minted first and
+ * the pass follows; the cleanup asks `adjustPlanned` before it decides.
+ */
+export type AdjustAfter = (
+  projectDir: string, guide: string, cleanStep: string, under: { jobId: string; stepId: string },
+) => Promise<void>;
+
+/** A cleanup row's adjust still being planned, by the row's id. */
+const adjustPlans = new Map<string, Promise<void>>();
+
+/**
+ * THE PLANNING OF THE ADJUST BEHIND CLEANUP ROW `stepId`, while it is under way. A
+ * cleanup that finds none is either planned already (its adjust is a child row) or
+ * never had one, and reads its children to tell which.
+ */
+export function adjustPlanned(stepId: string): Promise<void> | undefined {
+  return adjustPlans.get(stepId);
+}
+
+/**
+ * THE STEP WHOSE GUIDE IS APPLIED AFTER THIS REQUEST, or null: a cleanup (not its
+ * check, not a readings pass) the modal sent with a guide choice other than "without",
+ * made from a step that is not itself an adjusted one (whose words are already said),
+ * and naming the ledger step it will land as.
+ */
+function adjustGuideOf(request: FoundryJobRequest, projectDir: string): string | null {
+  if (request.kind !== 'clean' || request['readingsOnly'] !== undefined) return null;
+  const choice = request['hostChoice'];
+  if (choice !== GUIDE_CHOICE.use && choice !== GUIDE_CHOICE.build && choice !== GUIDE_CHOICE.rebuild) return null;
+  if (typeof request.stepId !== 'string' || request.stepId === '') return null;
+  const deferred = request['deferred'] as { from?: unknown } | undefined;
+  const at = typeof request['at'] === 'string' ? request['at']
+    : typeof deferred?.from === 'string' ? deferred.from : null;
+  if (at === null || appliedStepInfo(projectDir, at) !== null) return null;
+  return at;
+}
+
+/** Plan the adjust behind the cleanup row just minted, and keep the promise for the cleanup to ask. */
+function chainAdjust(projectDir: string, guide: string, request: FoundryJobRequest, under: { jobId: string; stepId: string }): void {
+  const planning = adjustAfter!(projectDir, guide, request.stepId as string, under)
+    .catch((err: unknown) => {
+      // The cleanup then writes the guide's readings in itself (foundry-job), and says so on its row.
+      getFoundryLogger().error(`[foundry-host-queue] the "Pronunciation adjusted" step after cleanup row ${under.stepId} `
+        + `could not be queued: ${err instanceof Error ? err.message : String(err)}`);
+    })
+    .finally(() => { adjustPlans.delete(under.stepId); });
+  adjustPlans.set(under.stepId, planning);
+}
 
 /**
  * QUEUE A STEP'S PRONUNCIATION GUIDE as its own row (main's `queuePronunciationGuide`),
@@ -543,9 +600,11 @@ export function setFoundrySeam(seam: {
   printedForms?: FoundryFormsLister | null;
   printedFormsAt?: FoundryFormsAtLister | null;
   guideAhead?: GuideAhead | null;
+  adjustAfter?: AdjustAfter | null;
 }): void {
   runner = seam.runJob;
   guideAhead = seam.guideAhead ?? null;
+  adjustAfter = seam.adjustAfter ?? null;
   formsLister = seam.printedForms ?? null;
   formsAtLister = seam.printedFormsAt ?? null;
   pushRows = seam.setQueueRows;
@@ -1143,6 +1202,17 @@ export const foundryHostQueue = {
      * cleanup half of a checked pair follows its check, which is already behind the
      * guide, so only the first row of a pair takes it.
      */
+    /*
+     * AND THE GUIDE LAST, AS ITS OWN STEP (Owen, 2026-11-02): a cleanup with a guide
+     * protects the guide's places and is followed by the readings pass that writes
+     * them in as "Pronunciation adjusted" under the cleaned text. Refused before
+     * anything is queued when the door is missing, so a refusal leaves nothing half done.
+     */
+    const adjustGuide = adjustGuideOf(request, projectDir);
+    if (adjustGuide !== null && adjustAfter === null) {
+      throw new Error('This cleanup was asked to apply its pronunciation guide afterwards, and this app was mounted '
+        + 'without the door that queues it. Nothing was queued.');
+    }
     const hostChoice = request['hostChoice'];
     const guideFirst = (request.kind === 'clean' || request.kind === 'clean-triage')
       && (hostChoice === GUIDE_CHOICE.build || hostChoice === GUIDE_CHOICE.rebuild);
@@ -1168,6 +1238,7 @@ export const foundryHostQueue = {
         sourceRef: { kind: 'none' },
         parentStepId: ahead.stepId,
       }, { deferPump: true });
+      if (adjustGuide !== null) chainAdjust(projectDir, adjustGuide, request, { jobId: ahead.jobId, stepId: step.id });
       return rowOf(step);
     }
 
@@ -1193,6 +1264,7 @@ export const foundryHostQueue = {
         sourceRef: { kind: 'none' },
         parentStepId: followed.step.id,
       }, { deferPump: true });
+      if (adjustGuide !== null) chainAdjust(projectDir, adjustGuide, request, { jobId: followed.job.id, stepId: step.id });
       return rowOf(step);
     }
 
@@ -1212,6 +1284,7 @@ export const foundryHostQueue = {
     if (!step) {
       throw new Error('The queue minted a Foundry run with no step, which cannot happen.');
     }
+    if (adjustGuide !== null) chainAdjust(projectDir, adjustGuide, request, { jobId: job.id, stepId: step.id });
     return rowOf(step);
   },
 

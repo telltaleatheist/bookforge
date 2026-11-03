@@ -10,6 +10,14 @@
  * travels on the request as `hostChoice` (GUIDE_CHOICE), and a guide to build is
  * queued as its own row ahead of the cleanup (foundry-host-queue `guideAhead`).
  *
+ * Owen, 2026-11-02: *"pronunciation guide and clean text are closely linked enough that
+ * they can be the same step ... the user can decide to remove the pronunciation
+ * corrections if they want"*. So a guide choice is the whole chain: the guide (built,
+ * rebuilt or as it stands), the cleanup with the guide's places PROTECTED and not
+ * written, and the guide applied LAST as "Pronunciation adjusted" under the cleaned
+ * step (foundry-host-queue `adjustAfter`) — the one step to delete to take the
+ * corrections out, without cleaning again.
+ *
  * Foundry draws the words and reads none of them, so every sentence here is ours.
  */
 import { guidePathsOfStep, hasGuide, readGlossary } from './narration-glossary';
@@ -42,9 +50,13 @@ export const GUIDE_OPERATION_ID = 'bookforge.guide';
 const NO_GUIDE: GuidePassChoice = {
   id: GUIDE_CHOICE.none,
   label: 'Clean without a guide',
-  detail: 'The cleanup decides how each one is said in its own sentence.',
+  detail: 'The cleanup decides how each one is said in its own sentence, and nothing is applied after it.',
   queues: [],
 };
+
+/** The one line every guide choice shares: where the corrections land, and how to take them out. */
+const ADJUSTED_NOTE = 'The corrections land as their own step, “Pronunciation adjusted”, under the cleaned text. '
+  + 'Delete that step to take them out.';
 
 /**
  * The section for a cleanup made from step `at` (or the greyed row `deferredFrom`
@@ -78,13 +90,13 @@ export function guidePassOffer(projectDir: string, at: string | null, deferredFr
   if (!hasGuide(files)) {
     return {
       label: 'Pronunciation guide',
-      note: 'This step has no pronunciation guide yet. The guide has to be built before the cleanup can use it.',
+      note: `This step has no pronunciation guide yet. ${ADJUSTED_NOTE}`,
       choices: [
         {
           id: GUIDE_CHOICE.build,
-          label: 'Build the guide first',
-          detail: 'It reads the whole book and decides how initials, abbreviations and numerals are said, so the '
-            + 'cleanup doesn’t guess them one sentence at a time.',
+          label: 'Build a guide, clean, then apply it as its own step',
+          detail: 'The guide reads the whole book and decides how initials, abbreviations and numerals are said, so '
+            + 'the cleanup doesn’t guess them one sentence at a time and leaves them alone.',
           recommended: true,
           queues: ['Build the pronunciation guide'],
         },
@@ -99,19 +111,19 @@ export function guidePassOffer(projectDir: string, at: string | null, deferredFr
     : `, built ${new Date(glossary.built).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`;
   return {
     label: 'Pronunciation guide',
-    note: `This step has a guide: ${words} ${words === 1 ? 'word' : 'words'}${built}.`,
+    note: `This step has a guide: ${words} ${words === 1 ? 'word' : 'words'}${built}. ${ADJUSTED_NOTE}`,
     choices: [
       {
         id: GUIDE_CHOICE.use,
-        label: 'Use this guide',
-        detail: 'Its readings, and your changes to them, go into the cleaned text as they are.',
+        label: 'Use the existing guide, clean, then apply it',
+        detail: 'Its readings, and your changes to them, are applied after the cleanup as they are.',
         recommended: true,
         queues: [],
       },
       {
         id: GUIDE_CHOICE.rebuild,
-        label: 'Rebuild it first',
-        detail: 'Decides the whole book again. Your changes to the guide are dropped.',
+        label: 'Rebuild the guide, clean, then apply it',
+        detail: 'Decides the whole book again first. Your changes to the guide are dropped.',
         queues: ['Rebuild the pronunciation guide'],
       },
       { ...NO_GUIDE, label: 'Clean without it' },

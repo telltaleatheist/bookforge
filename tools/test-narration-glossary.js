@@ -555,7 +555,7 @@ const entries = (where) => JSON.parse(fs.readFileSync(where.glossaryFile, 'utf8'
       ledger([{ id: 'c' }, adj('a1', 1), { id: 'n1', parent: 'a1', label: 'Cleaned' }]);
       assert.strictEqual(applied.nextAppliedLabel(dir, 'c'), 'Pronunciation adjusted (2)', 'work under it: a sibling');
       ledger([{ id: 'c' }, adj('a1', 1), { id: 'n1', parent: 'a1' }, adj('a2', 2)]);
-      assert.deepStrictEqual(applied.appliedStepOf(dir, 'c'), { id: 'a2', label: 'Pronunciation adjusted (2)' }, 'the latest');
+      assert.deepStrictEqual(applied.appliedStepOf(dir, 'c'), { id: 'a2', label: 'Pronunciation adjusted (2)', parent: 'c' }, 'the latest');
       assert.strictEqual(applied.nextAppliedLabel(dir, 'c'), 'Pronunciation adjusted (2)', 'the sibling, bare, is replaced');
       ledger([{ id: 'c' }, adj('a1', 1), { id: 'n1', parent: 'a1' }, adj('a2', 2), { id: 'n2', parent: 'a2' }]);
       assert.strictEqual(applied.nextAppliedLabel(dir, 'c'), 'Pronunciation adjusted (3)');
@@ -563,6 +563,51 @@ const entries = (where) => JSON.parse(fs.readFileSync(where.glossaryFile, 'utf8'
       assert.strictEqual(info.from, 'c', 'a numbered adjusted step is one too');
       assert.ok(info.record.endsWith(`a2.clean.records.applied.json`));
       assert.strictEqual(applied.appliedStepInfo(dir, 'n2'), null, 'a cleanup under it is not');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  await test('the guide applied after its cleanup is the guide’s, under the cleaned step; another guide there is a sibling (Owen, 2026-11-02)', async () => {
+    const shared = require(path.join(REPO, 'dist', 'shared', 'pronunciation-guide.js'));
+    const applied = require(path.join(REPO, 'dist', 'electron', 'pronunciation-applied.js'));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bf-adjusted-after-'));
+    const ledger = (steps) => fs.writeFileSync(path.join(dir, 'project.json'), JSON.stringify({ key: 'bk', ledger: { steps } }));
+    const adj = (id, n, parent) => ({
+      id, parent, label: shared.appliedLabelFor(n), payload: `readings/${id}.clean.records.jsonl`,
+      params: { readings: shared.appliedLabelFor(n) },
+    });
+    try {
+      // A, cleaned as C; the guide on A applied under C, written down as A's.
+      ledger([{ id: 'A' }, { id: 'C', parent: 'A', action: 'clean' }]);
+      assert.strictEqual(applied.nextAppliedLabel(dir, 'C', 'A'), 'Pronunciation adjusted', 'the first under the cleanup');
+      await applied.recordAdjusted(dir, 'adjA', 'A');
+      ledger([{ id: 'A' }, { id: 'C', parent: 'A', action: 'clean' }, adj('adjA', 1, 'C')]);
+      assert.deepStrictEqual(applied.appliedStepOf(dir, 'A'), { id: 'adjA', label: 'Pronunciation adjusted', parent: 'C' },
+        'the guide on A knows it was applied under its cleanup');
+      assert.strictEqual(applied.appliedStepOf(dir, 'C'), null, 'and the cleaned step has no guide of its own applied');
+      assert.strictEqual(applied.nextAppliedLabel(dir, 'C', 'A'), 'Pronunciation adjusted', 'A again, nothing under it: replaced');
+      assert.strictEqual(applied.nextAppliedLabel(dir, 'C', 'C'), 'Pronunciation adjusted (2)',
+        'the cleaned step’s OWN guide is a sibling, never a replacement of A’s corrections');
+      // An adjusted step written down nowhere is from before: its guide is its parent's.
+      ledger([{ id: 'A' }, { id: 'C', parent: 'A', action: 'clean' }, adj('adjA', 1, 'C'), adj('old', 2, 'C')]);
+      assert.deepStrictEqual(applied.appliedStepOf(dir, 'C'), { id: 'old', label: 'Pronunciation adjusted (2)', parent: 'C' });
+      assert.strictEqual(applied.appliedStepOf(dir, 'A').id, 'adjA');
+      assert.strictEqual(applied.appliedStepInfo(dir, 'adjA').from, 'C', 'a cleanup of it keeps the places it wrote');
+
+      // The cleanup's half: every place the guide decided, kept and not read.
+      const readings = path.join(dir, 'g.readings.json');
+      fs.writeFileSync(readings, JSON.stringify({ format: 'fixed-readings/v1', readings: [
+        { find: 'USMC', replace: 'U S M C', at: 'b1', nth: 0 },
+        { find: 'esp', replace: 'esp', at: 'b2', nth: 1 },
+      ] }));
+      const kept = await glossary.writeProtectOnlyReadings(readings);
+      assert.strictEqual(kept.path, path.join(dir, 'g.readings.protect.json'));
+      assert.deepStrictEqual(JSON.parse(fs.readFileSync(kept.path, 'utf8')), { format: 'fixed-readings/v1', readings: [
+        { find: 'USMC', replace: 'USMC', at: 'b1', nth: 0 },
+        { find: 'esp', replace: 'esp', at: 'b2', nth: 1 },
+      ] });
+      assert.strictEqual(kept.places, 2);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

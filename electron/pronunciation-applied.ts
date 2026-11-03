@@ -32,39 +32,100 @@ export function ledgerStepsOf(projectDir: string): LedgerStepRow[] {
   return manifest.ledger?.steps ?? [];
 }
 
-/** Every child of `at` an Apply of its guide landed as, first to latest. */
-export function appliedStepsOf(projectDir: string, at: string): { id: string; label: string; n: number; children: number }[] {
+/**
+ * ── WHICH GUIDE AN ADJUSTED STEP CAME FROM ─────────────────────────────────────
+ *
+ * Owen, 2026-11-02: the guide and the cleanup run as one step — the guide is built
+ * on the step being cleaned, the cleanup protects its places without writing them,
+ * and the guide is applied LAST, as "Pronunciation adjusted" under the CLEANED step,
+ * so deleting that leaf takes the corrections out and leaves the cleanup alone. So
+ * an adjusted step's parent is no longer always the step its guide belongs to: the
+ * guide on A lands under A's cleanup.
+ *
+ * Each adjusted step this app queues is therefore written down with its guide's step
+ * in `readings/<key>.pronunciation-adjusted.json`. One that is not written down is
+ * from before (or from the guide's own Apply on its own step), and its guide is its
+ * parent's — which is what every adjusted step was until this.
+ */
+const ADJUSTED_FORMAT = 'pronunciation-adjusted/v1';
+
+interface AdjustedRecord { format: typeof ADJUSTED_FORMAT; guides: Record<string, string> }
+
+function adjustedRecordPath(projectDir: string): string {
+  const manifest = path.join(projectDir, 'project.json');
+  const key = (JSON.parse(fs.readFileSync(manifest, 'utf8').replace(/^﻿/, '')) as { key?: unknown }).key;
+  if (typeof key !== 'string' || key.length === 0) {
+    throw new Error(`${manifest} names no project key, so there is no telling where its adjusted steps are written down.`);
+  }
+  return path.join(projectDir, 'readings', `${key}.pronunciation-adjusted.json`);
+}
+
+function adjustedGuides(projectDir: string): Record<string, string> {
+  const file = adjustedRecordPath(projectDir);
+  if (!fs.existsSync(file)) return {};
+  const body = JSON.parse(fs.readFileSync(file, 'utf8')) as Partial<AdjustedRecord>;
+  if (body.format !== ADJUSTED_FORMAT || typeof body.guides !== 'object' || body.guides === null) {
+    throw new Error(`${file} is not a ${ADJUSTED_FORMAT} record, so which guide each adjusted step came from cannot be read.`);
+  }
+  return body.guides;
+}
+
+/** Write down that adjusted step `stepId` is the guide on step `guide`, applied. */
+export async function recordAdjusted(projectDir: string, stepId: string, guide: string): Promise<void> {
+  const file = adjustedRecordPath(projectDir);
+  const guides = { ...adjustedGuides(projectDir), [stepId]: guide };
+  const body: AdjustedRecord = { format: ADJUSTED_FORMAT, guides };
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(`${file}.partial`, `${JSON.stringify(body, null, 2)}\n`, 'utf8');
+  const { renameWithRetry } = await import('./fs-retry.js');
+  await renameWithRetry(`${file}.partial`, file);
+}
+
+interface AppliedRow { id: string; label: string; parent: string; guide: string; n: number; children: number }
+
+/** Every adjusted step in the ledger, with the guide each came from. */
+function appliedRows(projectDir: string): AppliedRow[] {
   const steps = ledgerStepsOf(projectDir);
+  const guides = adjustedGuides(projectDir);
   return steps
-    .filter((s) => s.parent === at && appliedLabelNumber(s.params?.readings) !== null)
+    .filter((s) => typeof s.parent === 'string' && appliedLabelNumber(s.params?.readings) !== null)
     .map((s) => ({
       id: s.id,
       label: s.label ?? String(s.params!.readings),
+      parent: s.parent!,
+      guide: guides[s.id] ?? s.parent!,
       n: appliedLabelNumber(s.params!.readings)!,
       children: steps.filter((c) => c.parent === s.id).length,
-    }))
-    .sort((a, b) => a.n - b.n);
+    }));
 }
 
-/** The LATEST child of `at` an Apply of its guide landed as, or null. */
-export function appliedStepOf(projectDir: string, at: string): { id: string; label: string } | null {
+/** Every step the guide on `at` landed as — under `at`, or under its cleanup — first to latest. */
+export function appliedStepsOf(projectDir: string, at: string): AppliedRow[] {
+  return appliedRows(projectDir).filter((row) => row.guide === at).sort((a, b) => a.n - b.n);
+}
+
+/** The LATEST step the guide on `at` landed as, and the step it hangs under, or null. */
+export function appliedStepOf(projectDir: string, at: string): { id: string; label: string; parent: string } | null {
   const all = appliedStepsOf(projectDir, at);
   const latest = all[all.length - 1];
-  return latest === undefined ? null : { id: latest.id, label: latest.label };
+  return latest === undefined ? null : { id: latest.id, label: latest.label, parent: latest.parent };
 }
 
 /**
- * THE LABEL THE NEXT APPLY OF `at`'S GUIDE LANDS UNDER (shared/pronunciation-guide.ts
- * `APPLIED_LABEL`): the latest adjusted step's own, so it is REPLACED, while nothing
- * hangs under it; the next number once something does, so the branch built on it
- * stays exactly as it was. A step with no ledger (the queue keepers' books) has none.
+ * THE LABEL THE NEXT ADJUSTED STEP UNDER `parent` LANDS AS, for the guide on step
+ * `guide` (shared/pronunciation-guide.ts `APPLIED_LABEL`). Labels are a question about
+ * SIBLINGS, since a label is which step it is under its parent: the latest adjusted
+ * step there keeps its label, so it is REPLACED, when it is this guide's and nothing
+ * hangs under it; otherwise the next number, so the branch built on it — or another
+ * guide's corrections beside it — stays exactly as it was. A step with no ledger (the
+ * queue keepers' books) has none.
  */
-export function nextAppliedLabel(projectDir: string, at: string): string {
+export function nextAppliedLabel(projectDir: string, parent: string, guide: string = parent): string {
   if (!fs.existsSync(path.join(projectDir, 'project.json'))) return APPLIED_LABEL;
-  const all = appliedStepsOf(projectDir, at);
-  const latest = all[all.length - 1];
+  const siblings = appliedRows(projectDir).filter((row) => row.parent === parent).sort((a, b) => a.n - b.n);
+  const latest = siblings[siblings.length - 1];
   if (latest === undefined) return APPLIED_LABEL;
-  return latest.children === 0 ? appliedLabelFor(latest.n) : appliedLabelFor(latest.n + 1);
+  return latest.children === 0 && latest.guide === guide ? appliedLabelFor(latest.n) : appliedLabelFor(latest.n + 1);
 }
 
 /**
