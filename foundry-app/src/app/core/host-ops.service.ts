@@ -1,7 +1,7 @@
 import { Injectable, signal } from '@angular/core';
 
 import { offeredFrom } from '@shared/host-ops';
-import type { HostNodeAction, HostOperationOffer, HostStatus } from '@shared/host-ops';
+import type { HostNodeAction, HostOperationOffer, HostOperationState, HostStatus } from '@shared/host-ops';
 import { fold } from '@shared/original';
 import type { HostNode, NodeOutput } from '@shared/types';
 
@@ -241,6 +241,15 @@ export class HostOpsService {
    */
   offer(operationId: string): HostOperationOffer | null {
     return this.registered().find((one) => one.id === operationId) ?? null;
+  }
+
+  /**
+   * How the host's stateful acts stand at one node (`HostOperationState`), keyed
+   * by operation id — empty standalone, or when no act declared it has a state.
+   */
+  async stateAt(projectDir: string, nodeId: string): Promise<Record<string, HostOperationState>> {
+    if (!api || !this.registered().some((one) => one.stateful === true)) return {};
+    return api.hostOps.state(projectDir, nodeId);
   }
 
   /**

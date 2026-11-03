@@ -1,5 +1,17 @@
 # Foundry's IPC channels — the whole list, for the collision audit
 
+## A host act's state at a node (2026-11-02)
+
+**COUNTED BY SCRIPT OVER `app/electron/ipc.ts`: 158 `ipcMain.handle` call sites,
+158 distinct channel names, zero `ipcMain.on`.** The figure before this change
+measured **157**; one door arrived and none left.
+
+| Channel | Request/result |
+| --- | --- |
+| `host-ops:state` | project, node id → `Record<operationId, HostOperationState>`: how each act the host registered a `stateAt` for stands at that node (a label, a hover, whether it is done there). Acts that answered null are left out; a host that throws is said in that act's hover. `HostOperationOffer` gained `stateful`. |
+
+**FOR BOOKFORGE:** one more `host-ops:` handler, registered by `mountFoundry` like the rest.
+
 ## Ask's conversations (2026-11-02)
 
 **COUNTED BY SCRIPT OVER `app/electron/ipc.ts`: 157 `ipcMain.handle` call sites,
@@ -61,6 +73,7 @@ measured **151** (the 149 below plus `analysis:suggest-start` and
 
 | Channel | Request/result |
 | --- | --- |
+| `host-ops:state` | How the host's stateful acts stand at one node — a tile can say an act is already done there. |
 | `host-ops:pass-offer` | inputPath, the row the card is aimed at (optional) → the host's `HostPassOffer` for that step, or null standalone, for a host with no `passOffer`, or for a document outside the library. Resolves the step exactly as `workspace:plan-clean` does and plans, mints and writes nothing. |
 
 **FOR BOOKFORGE:** `FoundryHost.passOffer(ask: HostPassAsk)` is the hook; the card

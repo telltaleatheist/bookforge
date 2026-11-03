@@ -36,7 +36,7 @@
  */
 import type { HostNode, HostOperationKind, NodeOutput } from '../shared/types';
 import type {
-  HostInvokeContext, HostNodeAction, HostOffers, HostOperationOffer, HostStatus,
+  HostInvokeContext, HostNodeAction, HostOffers, HostOperationOffer, HostOperationState, HostStatus,
 } from '../shared/host-ops';
 import { fold } from '../shared/original';
 import { broadcast } from './window';
@@ -102,7 +102,14 @@ import { broadcast } from './window';
  * a host written against the three-argument signature keeps working untouched,
  * because JavaScript ignores an argument nobody named.
  */
-export interface HostOperation extends HostOperationOffer {
+export interface HostOperation extends Omit<HostOperationOffer, 'stateful'> {
+  /**
+   * HOW THIS ACT STANDS AT NODE `nodeId` (`HostOperationState`), or null for the
+   * operation's own label. Registering it is what makes the offer `stateful`.
+   * Asked when a node is picked; a throw travels back and is drawn as the tile's
+   * hover, never as a silent default (`hostOperationStates`).
+   */
+  stateAt?(projectDir: string, nodeId: string): HostOperationState | null | Promise<HostOperationState | null>;
   invoke(
     projectDir: string,
     nodeId: string,
@@ -207,7 +214,39 @@ export function hostOperationOffers(): HostOperationOffer[] {
      * per field it costs.
      */
     ...(operation.submitLabel !== undefined ? { submitLabel: operation.submitLabel } : {}),
+    // And whether there is a state to ask about — the function itself cannot cross.
+    ...(operation.stateAt !== undefined ? { stateful: true as const } : {}),
   }));
+}
+
+/**
+ * HOW EVERY STATEFUL ACT STANDS AT ONE NODE — the body of `host-ops:state`,
+ * keyed by operation id. An act whose `stateAt` answered null, or that has none,
+ * is left out and draws its own label.
+ *
+ * A HOST THAT THROWS IS SAID, NOT SWALLOWED: its sentence becomes that tile's
+ * hover, because a tile that silently fell back to "not done" would be the very
+ * lie this door exists to stop telling — and failing the whole footer over one
+ * act's state would take the other acts away with it.
+ */
+export async function hostOperationStates(
+  projectDir: string,
+  nodeId: string,
+): Promise<Record<string, HostOperationState>> {
+  const out: Record<string, HostOperationState> = {};
+  for (const operation of operations) {
+    if (operation.stateAt === undefined) continue;
+    try {
+      const state = await operation.stateAt(projectDir, nodeId);
+      if (state !== null) out[operation.id] = state;
+    } catch (err) {
+      out[operation.id] = {
+        detail: `${operation.label}: the app could not say how this stands here — `
+          + `${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+  }
+  return out;
 }
 
 /**

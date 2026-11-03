@@ -13,7 +13,7 @@ import type { IncomingPairingRequest, RemotePairingProgress } from './remote-pai
 import type { BookOutcome } from './book';
 import type { CrucibleCoordinationMap, CrucibleCoordinationState } from './coordinate-wire';
 import type { CrucibleInstallEvent, CrucibleInstallStatus } from './crucible-install-wire';
-import type { HostMintMeta, HostNodeAction, HostOffers, HostPassOffer, HostStatus } from './host-ops';
+import type { HostMintMeta, HostNodeAction, HostOffers, HostOperationState, HostPassOffer, HostStatus } from './host-ops';
 import type { ReadAsk } from './ledger';
 import type {
   CapabilityRecord,
@@ -1274,6 +1274,11 @@ export interface FoundryApi {
     nodeAction(projectDir: string, nodeId: string, action: HostNodeAction): Promise<void>;
     /** This project's host nodes as they now stand. Empty is the ordinary answer. */
     nodes(projectDir: string): Promise<HostNode[]>;
+    /**
+     * How each of the host's stateful acts stands at node `nodeId`, keyed by
+     * operation id (`HostOperationOffer.stateful`). Empty standalone.
+     */
+    state(projectDir: string, nodeId: string): Promise<Record<string, HostOperationState>>;
     /**
      * Run one of the host's acts, from a node in the tree.
      *

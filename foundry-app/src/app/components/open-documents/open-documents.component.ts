@@ -14,7 +14,7 @@ import {
   canCleanFrom, canExportFrom, canReadPages, canSimplifyFrom, canTranslateFrom,
   hostActPositionFrom,
 } from '@shared/stages';
-import type { HostNodeAction } from '@shared/host-ops';
+import type { HostNodeAction, HostOperationState } from '@shared/host-ops';
 import { languageNameFor } from '@shared/languages';
 import { isTextPass, mintedFromPhotographs } from '@shared/ledger';
 import { pendingStepOf } from '@shared/pending';
@@ -933,6 +933,7 @@ import { ActionMenuComponent } from '../action-menu/action-menu.component';
                     class="op"
                     [class.audio-op]="act.audio"
                     [class.deferred]="act.deferred"
+                    [class.done]="act.done"
                     [title]="act.hint"
                     (click)="run($event, row, act)"
                   >
@@ -1701,6 +1702,10 @@ import { ActionMenuComponent } from '../action-menu/action-menu.component';
     */
     .op.deferred { border-style: dashed; opacity: 0.6; }
     .op.deferred:hover { opacity: 1; }
+    /* Already made here (HostOperationState.done): still pressable — it opens what
+       was made — and drawn settled rather than as work waiting to be ordered. */
+    .op.done { border-style: solid; opacity: 0.75; }
+    .op.done:hover { opacity: 1; }
     /* The host's acts wear the host's colour, here as well as on the cards they
        make, so pressing one is visibly ordering a different KIND of work. */
     .op.audio-op { color: var(--audio); border-color: rgba(240, 168, 96, 0.35); }
@@ -1839,7 +1844,35 @@ export class OpenDocumentsComponent {
         this.hostOps.ensure(project.dir);
       }
     });
+    /*
+     * HOW THE PICKED CARD'S HOST ACTS STAND THERE (`HostOperationState`) — asked
+     * once per card picked, and again when the host revises what it offers. The
+     * answer is keyed by the node it was asked about, so a slow answer for a card
+     * somebody has since left is never drawn on the one they moved to.
+     */
+    effect(() => {
+      this.hostOps.offersFor('book');
+      const row = this.pickedRow();
+      const nodeId = row === null || row.dir === null ? null : this.nodeIdFor(row);
+      if (row === null || row.dir === null || nodeId === null) return;
+      const key = `${row.dir}\u0000${nodeId}`;
+      void this.hostOps.stateAt(row.dir, nodeId).then((states) => {
+        this.hostStates.set({ key, states });
+      }).catch((err: unknown) => {
+        this.notices.notice.set(err instanceof Error ? err.message : String(err));
+      });
+    });
   }
+
+  /** The picked card's row, or null. */
+  private readonly pickedRow = computed(() => {
+    const key = this.picked();
+    if (key === null) return null;
+    return this.groups().flatMap((group) => group.rows).find((one) => one.key === key) ?? null;
+  });
+
+  /** The last answer from `host-ops:state`, and the node it is about (`dir` + NUL + node id). */
+  private readonly hostStates = signal<{ key: string; states: Record<string, HostOperationState> } | null>(null);
 
   /** The row a drop would land in front of, and whether the end of the list is the target. */
   protected readonly before = signal<string | null>(null);
@@ -3045,15 +3078,21 @@ export class OpenDocumentsComponent {
      * kind of row that carries somebody else's queue state.
      */
     if (row.node !== null && !CHAINABLE_FROM[row.node.state]) return out;
+    const nodeId = this.nodeIdFor(row);
+    const held = this.hostStates();
+    const states = held !== null && nodeId !== null && held.key === `${dir}\u0000${nodeId}` ? held.states : {};
     for (const offer of this.hostOps.offersFor(row.produces)) {
+      const state = states[offer.id];
+      const label = state?.label ?? offer.label;
       out.push({
         id: `host:${offer.id}`,
-        label: offer.label,
+        label,
         icon: iconForHostKind(offer.kind),
         audio: true,
         host: offer.id,
         form: offer.form !== undefined,
-        ...after(`${offer.label} — handled by the app Foundry is running inside`),
+        ...after(state?.detail ?? `${label} — handled by the app Foundry is running inside`),
+        done: state?.done === true,
       });
     }
     return out;
@@ -4207,6 +4246,8 @@ interface Act {
    * dim that what it starts will not start now.
    */
   deferred: boolean;
+  /** The host says this act is already done at this node (`HostOperationState.done`). */
+  done?: boolean;
 }
 
 const NO_ACTS: readonly Act[] = [];

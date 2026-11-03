@@ -143,7 +143,7 @@ import {
 import { catalogForThisMachine, onEnvInstallProgress } from './env-install';
 import { foundryHost, hosted, hostMintMeta, hostPassOffer } from './host';
 import {
-  actOnHostNode, hostNodesFor, hostOffers, hostOpensStatus, hostStatus,
+  actOnHostNode, hostNodesFor, hostOffers, hostOperationStates, hostOpensStatus, hostStatus,
   invokeHostOperation, openHostStatus,
 } from './host-ops';
 import type { HostNodeAction } from '../shared/host-ops';
@@ -1164,6 +1164,12 @@ export function registerIpc(): void {
     queue.seedHostQueueRows(projectDir);
     return hostNodesFor(projectDir);
   });
+  /*
+   * How the host's stateful acts stand at one node — asked when a card is picked,
+   * so a tile can say an act is already done there (`HostOperationState`).
+   */
+  ipcMain.handle('host-ops:state', (_event, projectDir: string, nodeId: string) =>
+    hostOperationStates(projectDir, nodeId));
   /*
    * The user pressed one of the host's acts, from a node in the tree.
    *

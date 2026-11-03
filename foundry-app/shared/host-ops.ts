@@ -260,6 +260,37 @@ export interface HostOperationOffer {
    * more optional field rather than a shape anybody has to migrate to.
    */
   submitLabel?: string;
+  /**
+   * TRUE WHEN THE HOST CAN SAY HOW THIS ACT STANDS AT A GIVEN NODE — that it is
+   * already done there, say — through `host-ops:state` (`HostOperationState`).
+   *
+   * Owen, 2026-11-02: a cleanup that built and used the pronunciation guide went
+   * on offering "Pronunciation guide" on the step it made, as if nothing had been
+   * done — *"that should already be done as part of that line item."* The label
+   * here is one per OPERATION; whether it is done is a fact per NODE, which only
+   * the host knows. So the offer says only that there is something to ask, and the
+   * window asks for the node it is drawing.
+   *
+   * ABSENT IS THE COMPATIBILITY PROMISE: an act that never declared it is never
+   * asked about, and draws exactly as it did.
+   */
+  stateful?: true;
+}
+
+/**
+ * HOW ONE HOST ACT STANDS AT ONE NODE — the answer to `host-ops:state`.
+ *
+ * THE HOST'S WORDS, DRAWN VERBATIM, like every other sentence on this socket:
+ * `label` replaces the operation's own on that node's tile ("Pronunciation guide
+ * ✓"), `detail` is the hover, and `done` draws the tile as a thing already made
+ * rather than a thing to start. Foundry reads none of them for meaning. The tile
+ * stays pressable when done — pressing it is still the host's act (opening what
+ * was made, for a guide).
+ */
+export interface HostOperationState {
+  label?: string;
+  detail?: string;
+  done?: boolean;
 }
 
 /**
