@@ -663,7 +663,7 @@ export function askToolbox(view: AskView, history: AskHistory | null = null): As
     },
     {
       name: 'revise',
-      description: 'Change words inside ONE block by exact substitution, with a short reason the person will review it under. Each edit replaces the text find with replace; find must occur in the block\'s current text exactly once, or give occurrence (1 = first) to say which. Edits apply in order, and either all of a call\'s edits apply or none do. Use mark, not revise, to remove a whole block. A block in a join or a split cannot be revised.',
+      description: 'Change words inside ONE block by exact substitution, with a short reason the person will review it under. Each edit replaces the text find with replace; find must occur in the block\'s current text exactly once, or give occurrence (1 = first) to say which. Edits apply in order, and either all of a call\'s edits apply or none do. Use mark, not revise, to remove a whole block. A block in a join or a split cannot be revised. A block with no words (a heading that was printed as a picture, an empty Title) has nothing to find: give text instead of edits to write its words.',
       parameters: {
         type: 'object',
         properties: {
@@ -680,10 +680,11 @@ export function askToolbox(view: AskView, history: AskHistory | null = null): As
               required: ['find', 'replace'],
             },
           },
+          text: { type: 'string', description: 'The words for a block that has none, instead of edits. Refused on a block that already has words.' },
           reason: { type: 'string', description: 'Short label, e.g. "spelled-out number". Changes are grouped by it for review.' },
           dry_run: { type: 'boolean' },
         },
-        required: ['id', 'edits', 'reason'],
+        required: ['id', 'reason'],
       },
       run(a) {
         const reason = reasonOf(a);
@@ -693,10 +694,33 @@ export function askToolbox(view: AskView, history: AskHistory | null = null): As
           throw new Error(`${id} is marked for removal; unmark it first if it should stay and be changed`);
         }
         if (structured(b)) throw new Error(`${id} is in a join or a split; unmark that first to change its words`);
-        const edits = a['edits'];
-        if (!Array.isArray(edits) || edits.length === 0) throw new Error('edits must be a non-empty array of {find, replace}');
         const before = textOf(b);
-        const after = applyEdits(before, edits, id);
+        /*
+         * AN EMPTY BLOCK IS WRITTEN WHOLE (Owen, 2026-11-04). "For the Soul of the
+         * People" printed two chapter headings as pictures; the model retyped each
+         * empty picture as a Title, named the chapter, and then could not give the
+         * Title its words, because every edit must FIND text and there was none.
+         * `text` is for exactly that block and no other: on a block with words it
+         * would be a whole-paragraph rewrite with nothing for the review to diff
+         * against, which is what `edits` exists to prevent.
+         */
+        let after: string;
+        if (a['text'] !== undefined) {
+          if (a['edits'] !== undefined) throw new Error('give edits or text, not both');
+          if (typeof a['text'] !== 'string') throw new Error('text must be a string');
+          if (before.trim().length > 0) {
+            throw new Error(`${id} already has words; change them with edits ({find, replace}), not text`);
+          }
+          after = a['text'];
+        } else {
+          const edits = a['edits'];
+          if (!Array.isArray(edits) || edits.length === 0) {
+            throw new Error(before.trim().length === 0
+              ? `${id} has no words to find; give text to write them`
+              : 'edits must be a non-empty array of {find, replace}');
+          }
+          after = applyEdits(before, edits, id);
+        }
         if (after.trim().length === 0) {
           throw new Error(`that would leave ${id} empty; use mark to remove a block`);
         }

@@ -106,6 +106,22 @@ test('revise substitutes exactly, and the mark keeps before and after', () => {
   expect(run('read', { only: 'revised' })).toContain('e-6 [REVISED: number] It rained for 20 days.');
 });
 
+test('revise writes the words of a block that has none, and only of such a block', () => {
+  // "For the Soul of the People": a heading printed as a picture, retyped to a Title, then given its words.
+  const view: AskView = { ...VIEW, blocks: [...VIEW.blocks, { id: 'e-10', text: '', category: 'Picture', chapter: 1 }] };
+  const box = askToolbox(view);
+  const run = (name: string, args: Record<string, unknown>): string => box.tools.find((x) => x.name === name)!.run(args).content;
+  expect(() => run('revise', { id: 'e-10', edits: [{ find: 'x', replace: 'y' }], reason: 'r' })).toThrow(/does not occur/);
+  expect(() => run('revise', { id: 'e-10', reason: 'r' })).toThrow(/has no words to find; give text/);
+  run('recategorize', { id: 'e-10', category: 'Title', reason: 'heading' });
+  run('revise', { id: 'e-10', text: 'Faith and the Fatherland', reason: 'heading from the contents' });
+  expect(box.items()).toContainEqual({ id: 'e-10', kind: 'text', reason: 'heading from the contents', before: '', after: 'Faith and the Fatherland' });
+  expect(box.counts()).toMatchObject({ revised: 1, retyped: 1 });
+  // A block with words is changed by edits, never written whole.
+  expect(() => run('revise', { id: 'e-6', text: 'Something else.', reason: 'r' })).toThrow(/already has words/);
+  expect(() => run('revise', { id: 'e-10', text: 'a', edits: [], reason: 'r' })).toThrow(/not both/);
+});
+
 test('revise_pattern changes many blocks at once, dry run first, and skips what it should', () => {
   // A Watchtower-style book: a paragraph number before the prose, and one
   // paragraph whose prose itself opens with a number.
