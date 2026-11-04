@@ -53,31 +53,25 @@ import { chapterSpan } from '../book-view/flow';
  * what is left is the three panels the proof sheet owns.
  */
 /**
- * The panel's width before anyone drags it, and the narrowest it goes. Doubled
- * on 2026-11-02 (Owen: the right panel twice as wide by default), for Ask's
- * conversation — and capped by {@link defaultWidth} so the book keeps a page.
+ * THE PANEL'S WIDTH IS A SHARE OF THE WINDOW, not a number of pixels (Owen,
+ * 2026-11-03: *"no matter how big it is, the left side nav can take 20% - 25%
+ * of the screen maybe. then the other 75% - 80% can be split between the right
+ * side nav and the main window/book"*). The library is 22% (open-documents);
+ * the default here is half of the 78% left, so the book and this panel stand
+ * even at every window size. A drag stores the share it ends on, so a dragged
+ * width keeps its proportion when the window changes size. Before this it was
+ * 520px fitted against a 384px library (doubled 2026-11-02 for Ask), and a
+ * width stored in pixels under the old key is no longer read.
  */
-const DEFAULT_WIDTH = 520;
+const DEFAULT_SHARE = 0.39;
+/** The narrowest it goes, in px, and the widest share of the window a drag can take. */
 const MIN_WIDTH = 220;
-/**
- * What the default leaves the book, in px: a 400px page and the 10rem chip
- * gutter the paper keeps (`calc(100% - 10rem)`, book-view). The library column
- * is 384px; at the 1440px window the default is 496, at 1920 the full 520, and
- * at the 900px minimum the floor.
- */
-const BOOK_KEEPS = 560;
-const LIBRARY_WIDTH = 384;
-
-/** The default, fitted to this window: no wider than leaves the book its page. */
-function defaultWidth(): number {
-  const room = typeof window === 'undefined' ? DEFAULT_WIDTH : window.innerWidth - LIBRARY_WIDTH - BOOK_KEEPS;
-  return Math.max(MIN_WIDTH, Math.min(DEFAULT_WIDTH, room));
-}
+const MAX_SHARE = 0.7;
 /** The shortest an open section can be dragged, in pixels: its header and a row or two. */
 const MIN_SECTION = 72;
 /** Ask starts with a larger share: it is the section that reads a conversation. */
 const DEFAULT_WEIGHTS: Record<string, number> = { chapters: 1, notes: 1, furniture: 1, ask: 1.5 };
-const WIDTH_KEY = 'foundry.inspector.width';
+const SHARE_KEY = 'foundry.inspector.share';
 const WEIGHTS_KEY = 'foundry.inspector.weights';
 
 /*
@@ -85,12 +79,13 @@ const WEIGHTS_KEY = 'foundry.inspector.weights';
  * data. Every read falls back to the defaults and every write may fail
  * quietly; the panel draws the same either way.
  */
-function readWidth(): number {
+function readShare(): number {
   try {
-    const n = Number(localStorage.getItem(WIDTH_KEY));
-    return Number.isFinite(n) && n >= MIN_WIDTH ? n : defaultWidth();
+    const held = localStorage.getItem(SHARE_KEY);
+    const n = held === null ? NaN : Number(held);
+    return Number.isFinite(n) && n > 0 && n <= MAX_SHARE ? n : DEFAULT_SHARE;
   } catch {
-    return defaultWidth();
+    return DEFAULT_SHARE;
   }
 }
 
@@ -116,7 +111,7 @@ function keep(key: string, value: unknown): void {
   selector: 'app-inspector',
   imports: [AskPanelComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
-  host: { '[style.width.px]': 'width()', '[style.min-width.px]': 'width()' },
+  host: { '[style.width.%]': 'share() * 100' },
   template: `
     @if (projectDir() !== null || sheet() !== null) {
       <!--
@@ -591,6 +586,8 @@ function keep(key: string, value: unknown): void {
       display: block;
       position: relative;
       height: 100%;
+      flex-shrink: 0;
+      min-width: 220px;
     }
 
     /* The width grip: the panel's left border, made grabbable. */
@@ -1009,8 +1006,8 @@ export class InspectorComponent {
 
   // ── The panel's size, the person's own ───────────────────────────────────
 
-  /** How wide the panel is, in pixels. */
-  protected readonly width = signal(readWidth());
+  /** How wide the panel is, as a share of the window's width. */
+  protected readonly share = signal(readShare());
   /** Each section's share of the height, by name; an open section's height is proportional to it. */
   private readonly weights = signal<Record<string, number>>(readWeights());
   private readonly panel = viewChild<ElementRef<HTMLElement>>('panel');
@@ -1020,9 +1017,8 @@ export class InspectorComponent {
   }
 
   protected resetWidth(): void {
-    const width = defaultWidth();
-    this.width.set(width);
-    keep(WIDTH_KEY, width);
+    this.share.set(DEFAULT_SHARE);
+    keep(SHARE_KEY, DEFAULT_SHARE);
   }
 
   protected resetWeights(): void {
@@ -1036,18 +1032,20 @@ export class InspectorComponent {
     const edge = down.currentTarget as HTMLElement;
     edge.setPointerCapture(down.pointerId);
     edge.classList.add('dragging');
-    const from = this.width();
+    const host = edge.parentElement as HTMLElement;
+    const from = host.getBoundingClientRect().width;
     const x0 = down.clientX;
-    const max = Math.max(MIN_WIDTH, Math.floor(window.innerWidth * 0.7));
     const move = (e: PointerEvent): void => {
-      this.width.set(Math.round(Math.min(max, Math.max(MIN_WIDTH, from + (x0 - e.clientX)))));
+      const whole = window.innerWidth;
+      const px = Math.min(whole * MAX_SHARE, Math.max(MIN_WIDTH, from + (x0 - e.clientX)));
+      this.share.set(Math.round((px / whole) * 1000) / 1000);
     };
     const up = (): void => {
       edge.removeEventListener('pointermove', move);
       edge.removeEventListener('pointerup', up);
       edge.removeEventListener('pointercancel', up);
       edge.classList.remove('dragging');
-      keep(WIDTH_KEY, this.width());
+      keep(SHARE_KEY, this.share());
     };
     edge.addEventListener('pointermove', move);
     edge.addEventListener('pointerup', up);

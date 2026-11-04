@@ -1122,12 +1122,21 @@ import { ActionMenuComponent } from '../action-menu/action-menu.component';
       app's navigator, it has grown what it draws twice, and both numbers came
       from the person using it. It is still put away with one click on the corner
       button, which is what keeps a widening cheap.
+
+      AND NOW IT IS A SHARE OF THE WINDOW (Owen, 2026-11-03: *"no matter how
+      big it is, the left side nav can take 20% - 25% of the screen maybe"*).
+      22%, so the 78% left splits evenly between the book and the inspector
+      (whose default is 39%). 384px was right for one window and wrong for every
+      other: on a wide screen it was a sliver, and the book and inspector fought
+      over the rest. 288px stays the floor, the width under which a card stops
+      reading.
     */
     :host {
       display: flex;
       flex-direction: column;
-      width: 384px;
-      min-width: 384px;
+      width: 22%;
+      min-width: 288px;
+      flex-shrink: 0;
       height: 100%;
     }
     /*

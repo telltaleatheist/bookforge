@@ -1840,8 +1840,16 @@ const OP_GESTURE: Gesture = { kind: 'op' };
        * HEADER" with the original panel up). So the fallback arm is absolute:
        * whatever the bench's width, the sheet leaves 5rem of gray a side, and
        * the chip has its room in every mode there is or will be.
+       *
+       * HALVED TO 2.5rem A SIDE (Owen, 2026-11-03: *"looks like the book has
+       * margins on the sides that could be used. we can reduce the margins a
+       * bit more, maybe half what they are on each side"*). Still absolute, for
+       * the reason above — but 2.5rem is less than the widest chip's ~5rem, so
+       * a "Section header" chip with a count can reach past the gray again.
+       * That trade was Owen's to make and is named here so it is not
+       * rediscovered as a bug.
        */
-      width: min(var(--measure-alone, 46rem), calc(100% - 10rem));
+      width: min(var(--measure-alone, 46rem), calc(100% - 5rem));
       margin: 0 auto;
       padding: 4.5rem var(--gutter) 6rem;
       border-radius: 2px;
@@ -1894,7 +1902,7 @@ const OP_GESTURE: Gesture = { kind: 'op' };
      * not have, and the category chip was the thing that paid for it.
      */
     .pair.aligned .sheet, .pair.aligned .tray {
-      width: min(var(--measure-aligned, 44rem), calc(100% - 10rem));
+      width: min(var(--measure-aligned, 44rem), calc(100% - 5rem));
     }
     /*
      * ── AND THE MEASURE IS THE READER'S (Owen, 2026-09-22) ───────────────────
@@ -1906,7 +1914,7 @@ const OP_GESTURE: Gesture = { kind: 'op' };
      * took half of it and left the rest gray. They are now DEFAULTS, written as
      * \`--measure-alone\` and \`--measure-aligned\` on the host by the drag on the
      * paper's edge (\`measure\` in the constructor), one per view so widening
-     * the pair never widens the lone sheet. The \`100% - 10rem\` arm still holds
+     * the pair never widens the lone sheet. The \`100% - 5rem\` arm still holds
      * in every case: the chip gutter is not the reader's to give away.
      */
     :host(.grip), :host(.grip) * { cursor: ew-resize !important; }
@@ -1929,7 +1937,7 @@ const OP_GESTURE: Gesture = { kind: 'op' };
      */
     .pair.aligned { justify-content: center; }
     .pair.aligned .context, .pair.aligned .bench {
-      flex: 0 1 calc(var(--measure-aligned, 44rem) + 10rem);
+      flex: 0 1 calc(var(--measure-aligned, 44rem) + 5rem);
     }
     /*
      * ── THE ORIGINAL OPEN: paper and scan stand together, centred ────────────
@@ -2767,7 +2775,7 @@ const OP_GESTURE: Gesture = { kind: 'op' };
       display: flex;
       gap: 6px;
       justify-content: flex-end;
-      width: min(var(--measure-alone, 46rem), calc(100% - 10rem));
+      width: min(var(--measure-alone, 46rem), calc(100% - 5rem));
       margin: 0 auto;
       padding: 0.75rem 0;
       pointer-events: none;
