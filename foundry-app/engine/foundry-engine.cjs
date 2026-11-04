@@ -31173,7 +31173,7 @@ var init_version = __esm({
     init_engine_import_meta_url();
     init_package();
     VERSION = package_default.version;
-    GIT_COMMIT = "src 6aa2443a1a8a".length > 0 ? "src 6aa2443a1a8a" : null;
+    GIT_COMMIT = "src b004a63d2ce7".length > 0 ? "src b004a63d2ce7" : null;
   }
 });
 
@@ -74233,7 +74233,8 @@ __export(triage_exports, {
   readTriageFile: () => readTriageFile,
   runCleanTriage: () => runCleanTriage,
   triageGroups: () => triageGroups,
-  triageQuestion: () => triageQuestion
+  triageQuestion: () => triageQuestion,
+  wireName: () => wireName
 });
 function triageGroups(units, unit = "block") {
   const maxUnits = unit === "sentence" ? GROUP_MAX_SENTENCES : GROUP_MAX_UNITS;
@@ -74296,6 +74297,9 @@ function withRemovalCriteria(list, removal) {
   const last = lines.map((line) => line.startsWith("- ")).lastIndexOf(true);
   return [...lines.slice(0, last + 1), extra, ...lines.slice(last + 1)].join("\n");
 }
+function wireName(parts) {
+  return parts.replace(/%/g, "%25").replace(/\//g, "%2F").replace(/\\/g, "%5C").replace(/\0/g, "%00").replace(/^\./, "%2E");
+}
 function triageQuestion(parts, unit = "block", text) {
   if (unit === "sentence") {
     if (text === void 0) throw new Error(`triageQuestion: a sentence question needs its sentence (${parts}).`);
@@ -74352,10 +74356,11 @@ async function runCleanTriage(opts) {
   await pool(groups.length, concurrency, async (index) => {
     const group = groups[index];
     const asked = units.slice(group.askFrom, group.askTo);
+    const names = asked.map((one) => wireName(one.parts));
     const body = JSON.stringify({
       model: opts.model,
       state: groupState(units, group, unit, removal),
-      questions: Object.fromEntries(asked.map((one) => [one.parts, triageQuestion(one.parts, unit, one.text)]))
+      questions: Object.fromEntries(asked.map((one, n) => [names[n], triageQuestion(one.parts, unit, one.text)]))
     });
     const reply = await askDecide(transport, url, body, {
       who: "clean-triage",
@@ -74363,8 +74368,8 @@ async function runCleanTriage(opts) {
       sleep,
       log: opts.log
     });
-    for (const unit2 of asked) {
-      const answer = reply.answers?.[unit2.parts];
+    for (const [n, unit2] of asked.entries()) {
+      const answer = reply.answers?.[names[n]];
       const p = answer === void 0 ? void 0 : yesProbability(answer);
       if (answer === void 0 || p === void 0 || typeof answer.label_mass !== "number") {
         throw new CleanTextError(`clean-triage: the door answered a group without a yes/no for ${unit2.parts}.`);
