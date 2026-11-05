@@ -137,13 +137,13 @@ tag is still emitted for a TABLE ROW, which is still a row of its own.
 
 ## The Budget seam
 
-`budget` is `engine/protocol.py`'s `Budget` Protocol: `max_chars(voice)`,
+`budget` is `text/budget.py`'s `Budget` Protocol: `max_chars(voice)`,
 `max_chars_per_sec(voice)`, `max_total_tokens(prompt_tokens, voice)`. It is
-imported under `TYPE_CHECKING` ONLY and duck-typed at runtime, so this module
-never imports `narrator.engine` - that package is being refactored by another
-builder, and a `Protocol` exists precisely so a consumer need not import the
-producer. Every number comes from the budget; there is no cap constant in this
-file. For Higgs v3 the catalog's measured `max_chars` (600 is the zero-shot
+imported under `TYPE_CHECKING` ONLY and duck-typed at runtime. It lived in
+`engine/protocol.py` until 2026-11-04 and moved down beside this module, which
+is its consumer, so nothing on the prep path imports `narrator.engine` - the
+model half that is leaving for Crucible. Every number comes from the budget;
+there is no cap constant in this file. For Higgs v3 the catalog's measured `max_chars` (600 is the zero-shot
 PLACEHOLDER; the fine-tune's value is the min of the ladder length-sweep and the
 corpus-derived cap = p1 training-clip seconds x chars/s) is simply what
 `max_chars(voice)` returns, and at that size no paragraph in the measured corpus
@@ -185,7 +185,7 @@ from .lang import (abbreviations_mapping, chars_remove,
 from .sml import SML_UNSPOKEN_PATTERN, sml_token, strip_escaped_sml  # noqa: F401
 
 if TYPE_CHECKING:  # pragma: no cover - typing only, never imported at runtime
-    from ..engine.protocol import Budget
+    from .budget import Budget
 
 
 # =============================================================================
@@ -2050,8 +2050,14 @@ class CatalogBudget:
     seconds x chars/s, and will be MEASURED) are both catalog rows. Whoever
     constructs this reads them from there.
 
-    Implements `engine/protocol.py`'s `Budget` structurally; it is not a
+    Implements `text/budget.py`'s `Budget` structurally; it is not a
     subclass, because a Protocol is what lets this module never import that one.
+
+    For a Higgs prep it is built by `compat/app.py:route_prep` from
+    `--chunk_max_chars` / `--chunk_floor_chars`: the band the rendering Crucible
+    states on `GET /v1/voices`, resolved by BookForge (`higgsPrepBudget` in
+    `electron/higgs-models.ts`) - so a prep reads no voice document to size a
+    chunk and imports no model code.
     """
     chars: int
     chars_per_sec: float = 0.0

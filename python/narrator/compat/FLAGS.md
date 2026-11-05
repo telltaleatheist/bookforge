@@ -5,16 +5,18 @@ complete table, generated from the same dict the code routes on
 (`compat/flags.py:FLAGS`) so the two cannot drift; `tests/test_compat_flags.py`
 asserts every row.
 
-**Counts: 59 flags - 37 ACCEPT, 17 IGNORE, 5 REFUSE.** Plus 18 engine names
+**Counts: 61 flags - 39 ACCEPT, 17 IGNORE, 5 REFUSE.** Plus 18 engine names
 refused by name on `--tts_engine`, and 4 near-misses refused for naming no
 registry id.
 
-**59, not 56, and the three extras are narrator's own.** `--higgs_voice`
+**61, not 56, and the five extras are narrator's own.** `--higgs_voice`
 (Higgs did not exist in e2a, and its voice is a catalog id rather than a prompt
 token), `--coverage_report` (e2a had no engine guarded by post-render forced
-alignment, so it needed no way to satisfy one) and `--chapter_gap` (e2a joined
-chapters butt-to-butt and had no notion of a gap between them). Everything else
-here is still e2a's argv answered by narrator.
+alignment, so it needed no way to satisfy one), `--chapter_gap` (e2a joined
+chapters butt-to-butt and had no notion of a gap between them), and the pair
+`--chunk_max_chars` / `--chunk_floor_chars` (2026-11-04: a Higgs prep's band,
+passed as numbers so prep imports no model code). Everything else here is still
+e2a's argv answered by narrator.
 
 **Changed for Higgs v3 (2026-09-04, the first cut-over slice):** `--tts_engine`
 now accepts `higgs-v3` as well as `orpheus`, on the prep, worker and retake
@@ -82,6 +84,8 @@ nothing downstream can tell; what changes is that a caller who used
 | `--take_temperatures` | `:3647` | -> `render.retake`; its COUNT sets `num_takes` |
 | `--tts_engine` | every spawn | SELECTS THE ENGINE: `orpheus` or `higgs-v3`, checked on the prep, worker and retake routes and resolved through `engine/registry.py`. NOT checked on `--assemble_only` / `--list_sessions` / `--resume_session` - see below |
 | `--higgs_voice` | the Higgs spawns | **narrator's own flag** - Higgs has no `--fine_tuned` voice TOKEN; its voice is a CATALOG ID naming a fine-tuned adapter or a set of reference clips. Recorded in `session-state.json` as `higgs_voice`, never as `fine_tuned` |
+| `--chunk_max_chars` | `parallel-tts-bridge.ts:prepareSession` (Higgs prep) | **narrator's own flag** (2026-11-04) - the packing CAP for a Higgs prep: the band the rendering Crucible states on `GET /v1/voices`, turned into a floor and a cap by `higgsPrepBudget` (`electron/higgs-models.ts`). It replaced `engine.higgs.v3_engine.higgs_v3_prep_budget`, which read the voice document, so a prep imports no model code. Both flags are required on a Higgs prep and refused by name on any other engine |
+| `--chunk_floor_chars` | `parallel-tts-bridge.ts:prepareSession` (Higgs prep) | **narrator's own flag** (2026-11-04) - the merge FLOOR beside `--chunk_max_chars`; equal to it when the voice states no safe band (a zero-shot voice's target, or the 600-char placeholder) |
 | `--fine_tuned` | `pushVoiceArgs` (`:244`, `:263`, `:277`, `:293`) | the Orpheus voice token -> `EngineConfig.voice` |
 | `--orpheus_model_dir` | `pushVoiceArgs:243, 276` | a merged fine-tune |
 | `--orpheus_adapter_dir` / `--orpheus_base_dir` | `pushVoiceArgs:268-270` | LoRA adapter over a shared base |

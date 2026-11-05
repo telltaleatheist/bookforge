@@ -511,28 +511,29 @@ export function narratorSpawnCrossesIntoWsl(
   return !onHost && narratorRunsInWsl(engine, phase);
 }
 
+/** What a host prep imports — and what `hostPrepRefusal` asks the tools env to import. */
+export const HOST_PREP_MODULES: readonly string[] = ['narrator.compat.app', 'narrator.text.prep'];
+
 /**
  * Can THIS machine run narrator's prep in the tools env? The refusal text, or null.
  *
  * MEASURED, not inferred from a package list: the tools env is asked to import
- * the modules `compat/app.py:route_prep` imports — `narrator.compat.app`,
- * `narrator.text.prep`, and for Higgs `narrator.engine.higgs.v3_engine` (the
- * prep budget lives there; the module is numpy + urllib, no server) — with the
- * same PYTHONPATH the spawn will carry. An ImportError here is the same
- * ImportError the prep would have died with, said BEFORE the job holds a GPU
- * lease and a session directory, and naming the interpreter and the module.
+ * the modules `compat/app.py:route_prep` imports — `narrator.compat.app` and
+ * `narrator.text.prep` — with the same PYTHONPATH the spawn will carry. The same
+ * two for every engine: until 2026-11-04 a Higgs prep also imported
+ * `narrator.engine.higgs.v3_engine` for its budget, and the budget arrives on
+ * the argv now (`higgsPrepBudgetArgs`), so a prep imports no model code. An
+ * ImportError here is the same ImportError the prep would have died with, said
+ * BEFORE the job holds a GPU lease and a session directory, and naming the
+ * interpreter and the module.
  *
  * Asked once per job by `prepareSession`, only on the `onHost` arm; the legacy
  * arm keeps the Higgs doctor it always had.
  */
-export async function hostPrepRefusal(engine: NarratorEngineId): Promise<string | null> {
+export async function hostPrepRefusal(): Promise<string | null> {
   const py = narratorNativePython(undefined);
   const pythonRoot = narratorPythonRoot();
-  const modules = [
-    'narrator.compat.app',
-    'narrator.text.prep',
-    ...(engine === 'higgs' ? ['narrator.engine.higgs.v3_engine'] : []),
-  ];
+  const modules = HOST_PREP_MODULES;
   const probe = `import importlib\n${modules.map((m) => `importlib.import_module(${JSON.stringify(m)})`).join('\n')}\n`;
   const args = [...py.args, '-c', probe];
   const env = buildToolsSpawnEnv({ PYTHONPATH: pythonRoot, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8' });

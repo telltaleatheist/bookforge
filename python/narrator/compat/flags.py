@@ -100,6 +100,17 @@ FLAGS: dict[str, tuple[str, str]] = {
         "Recorded in session-state as `higgs_voice` and handed to the engine "
         "config on the worker route"),
     '--fine_tuned': (ACCEPT, 'the Orpheus voice token'),
+    # NARRATOR'S OWN, 2026-11-04 (docs/REORG-PLAN.md B1): the Higgs prep's
+    # band as numbers, so prep reads no voice document and imports no engine.
+    '--chunk_max_chars': (
+        ACCEPT,
+        "narrator's own, Higgs PREP only: the packing cap, from the rendering "
+        "Crucible's GET /v1/voices band as BookForge resolves it "
+        "(higgsPrepBudget). Refused on any other engine"),
+    '--chunk_floor_chars': (
+        ACCEPT,
+        "narrator's own, Higgs PREP only: the merge floor beside "
+        "--chunk_max_chars; equal to it when the voice states no safe band"),
     '--orpheus_model_dir': (ACCEPT, 'a merged fine-tune'),
     '--orpheus_adapter_dir': (ACCEPT, 'a LoRA voice adapter'),
     '--orpheus_base_dir': (ACCEPT, 'the base the adapter is applied to'),

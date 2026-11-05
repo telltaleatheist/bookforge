@@ -104,6 +104,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument('--tts_engine', type=str, default=None)
     p.add_argument('--fine_tuned', type=str, default=None)
     p.add_argument('--higgs_voice', type=str, default=None)
+    p.add_argument('--chunk_max_chars', type=int, default=None)
+    p.add_argument('--chunk_floor_chars', type=int, default=None)
     p.add_argument('--orpheus_model_dir', type=str, default=None)
     p.add_argument('--orpheus_adapter_dir', type=str, default=None)
     p.add_argument('--orpheus_base_dir', type=str, default=None)
@@ -223,6 +225,35 @@ def route_resume_session(args) -> int:
     return _print_app_result(result)
 
 
+def _higgs_prep_budget_refusal(args) -> str | None:
+    """Why a Higgs prep's argv cannot be packed to, or None.
+
+    Checks the SHAPE only - present, positive, floor within cap. Which numbers
+    a voice gets (the venue's band, a zero-shot target, the placeholder, or a
+    refusal for a fine-tune with no floor) is `higgsPrepBudget`'s decision in
+    `electron/higgs-models.ts`, and repeating it here would be a second owner.
+    """
+    if not (args.higgs_voice or '').strip():
+        return ('A Higgs v3 prep needs --higgs_voice: the chunk band is the '
+                "VOICE's, stated by the Crucible that renders it, and there is "
+                'no engine-wide number to pack a book against.')
+    if args.chunk_max_chars is None or args.chunk_floor_chars is None:
+        return (f'A Higgs v3 prep for voice {args.higgs_voice!r} needs '
+                '--chunk_max_chars and --chunk_floor_chars: the band the rendering '
+                'Crucible states on GET /v1/voices, resolved by BookForge '
+                '(higgsPrepBudget). Refusing to pack the book at a number nobody '
+                'stated.')
+    if args.chunk_max_chars <= 0 or args.chunk_floor_chars <= 0:
+        return (f'Higgs v3 voice {args.higgs_voice!r} was handed a floor '
+                f'{args.chunk_floor_chars} and cap {args.chunk_max_chars}; both must '
+                'be positive whole numbers of characters.')
+    if args.chunk_floor_chars > args.chunk_max_chars:
+        return (f'Higgs v3 voice {args.higgs_voice!r} has a safe floor '
+                f'{args.chunk_floor_chars} and cap {args.chunk_max_chars}, which is '
+                'not a band the packer can pack between.')
+    return None
+
+
 def route_prep(args) -> int:
     """`--prep_only`. e2a handlers.py:47-76.
 
@@ -266,6 +297,7 @@ def route_prep(args) -> int:
     from ..render import session_store
     from ..text.epub import UnsupportedInput
     from ..text.normalize import UnsupportedEngine
+    from ..text.paragraph_packer import CatalogBudget
     from ..text.prep import PrepOptions, prep_session
 
     if not args.ebook:
@@ -284,6 +316,12 @@ def route_prep(args) -> int:
             f'--higgs_voice names a Higgs voice but --tts_engine is '
             f'{args.tts_engine or "(unset)"}. An Orpheus voice arrives in '
             f'--fine_tuned; the two are not interchangeable.')
+    if engine_id != 'higgs-v3' and (args.chunk_max_chars is not None
+                                    or args.chunk_floor_chars is not None):
+        raise FlagRefused(
+            f"--chunk_max_chars / --chunk_floor_chars are a Higgs prep's band but "
+            f'--tts_engine is {args.tts_engine or "(unset)"}. An Orpheus prep packs '
+            f'to ORPHEUS_MAX_CHARS with the parity packer, which reads neither.')
 
     ebook = os.path.abspath(args.ebook)
     session_id = args.session or str(uuid.uuid4())
@@ -302,19 +340,34 @@ def route_prep(args) -> int:
     # parity policy and a Higgs prep cannot silently get it.
     if engine_id == 'higgs-v3':
         optional['chunking'] = 'paragraph'
-        # THE VOICE'S OWN CAP, from the document BookForge wrote for this job.
-        # Without it prep reached for Orpheus's env budget and packed at 350
+        # THE VOICE'S OWN BAND, from the argv BookForge built for this job.
+        # Without one prep reached for Orpheus's env budget and packed at 350
         # (measured 2026-09-05: 1067 chunks of ~220 chars against a 900/1200
-        # certificate). Refuses by name with no --higgs_voice or with a
-        # fine-tune that declares no maxChars.
-        from ..engine.higgs.v3_engine import higgs_v3_prep_budget
-        try:
-            optional['budget'] = higgs_v3_prep_budget(args.higgs_voice)
-        except ValueError as refused:
-            # narrator's own named refusal - the same shape as UnsupportedInput
-            # below: the message IS the answer.
+        # certificate).
+        #
+        # It arrives as two numbers since 2026-11-04 (docs/REORG-PLAN.md, B1).
+        # Until then this line imported `engine.higgs.v3_engine.higgs_v3_prep_budget`,
+        # which loaded the voice document and re-derived the band - model code a
+        # prep has no use for, and the half that is leaving for Crucible. The
+        # band is the rendering Crucible's (`GET /v1/voices`), and the rule that
+        # turns it into a floor and a cap has ONE owner now: `higgsPrepBudget` in
+        # `electron/higgs-models.ts`. Refused by name, never defaulted, because
+        # a missing band is a caller that did not resolve one.
+        refused = _higgs_prep_budget_refusal(args)
+        if refused:
+            # The same shape as UnsupportedInput below: the message IS the answer.
             print(f'Error: {refused}', flush=True)
             return 1
+        optional['budget'] = CatalogBudget(chars=args.chunk_max_chars,
+                                           chars_per_sec=0.0,
+                                           floor_chars=args.chunk_floor_chars)
+        if args.chunk_floor_chars == args.chunk_max_chars:
+            print(f'[PREP] packs {args.higgs_voice!r} to {args.chunk_max_chars} chars '
+                  'per chunk (no safe band declared)', file=sys.stderr, flush=True)
+        else:
+            print(f'[PREP] packs {args.higgs_voice!r} BETWEEN {args.chunk_floor_chars} '
+                  f'and {args.chunk_max_chars} chars (the venue\'s safe band)',
+                  file=sys.stderr, flush=True)
         # ONE NUMBER: the budget's chars is the voice's targetChars (the
         # trainer's, or the placeholder for a zero-shot voice), and it is both
         # the cap and the merge floor - consecutive short prose paragraphs
@@ -327,10 +380,9 @@ def route_prep(args) -> int:
         # prose paragraphs travel together until the group reaches the FLOOR and
         # the result may grow to the CAP - so a pair that overflows the floor
         # still merges instead of shipping one short chunk. A voice with no band
-        # falls back to the cap for both: the old single-number behaviour.
-        optional['chunking_floor_chars'] = int(
-            getattr(optional['budget'], 'floor_chars', 0)
-            or optional['budget'].max_chars(args.higgs_voice))
+        # arrives with floor == cap: the old single-number behaviour, decided
+        # by `higgsPrepBudget` rather than here.
+        optional['chunking_floor_chars'] = args.chunk_floor_chars
     if args.fine_tuned:
         optional['fine_tuned'] = args.fine_tuned
     if args.output_format:

@@ -171,7 +171,7 @@ import { externalGpuJobLock } from '../shared/gpu/external-job-lock';
 import { TEXT_SERVER_PROTECT_RE } from './text-server';
 import { ownBatchPids, parseWmicProcessCsv } from '../shared/gpu/own-batch-processes';
 import {
-  HIGGS_VOICE_FLAG, higgsCheckpointArm, higgsModelForJob, higgsSpawnEnv,
+  HIGGS_VOICE_FLAG, higgsCheckpointArm, higgsModelForJob, higgsPrepBudgetArgs, higgsSpawnEnv,
   higgsVoiceCapsForModel, writeHiggsVoicesDocument,
 } from './higgs-models';
 import type { CrucibleStatedBand, HiggsModel, HiggsRenderOverride } from './higgs-models';
@@ -4329,7 +4329,7 @@ export async function prepareSession(
     // env; and THAT is measured, once, before anything spawns: can the tools
     // env import narrator's prep? Refused by name (interpreter, module, fix) if
     // not, rather than falling back into the guest.
-    const refusal = await hostPrepRefusal(engine);
+    const refusal = await hostPrepRefusal();
     if (refusal) throw new Error(refusal);
   }
   // There WAS an `else if (isHiggsJob(settings))` here that ran the Higgs doctor —
@@ -4426,6 +4426,12 @@ export async function prepareSession(
   const higgsModel = higgsModelForJob(settings);
   logHiggsOverride(settings, higgsModel);
   args.push(HIGGS_VOICE_FLAG, higgsModel.id);
+  // THE BAND, AS NUMBERS. The venue's `GET /v1/voices` band (`packed`, read by
+  // the caller) becomes a floor and a cap HERE, by `higgsPrepBudget`, and prep
+  // packs to what it is handed. Until 2026-11-04 prep re-derived the same two
+  // numbers from the voice document inside narrator's model code; it imports
+  // none now (docs/REORG-PLAN.md, B1).
+  args.push(...higgsPrepBudgetArgs(higgsModel, packed.band));
 
   // The XTTS sampling block that stood here (--temperature / --top_p / --top_k /
   // --repetition_penalty / --speed / --enable_text_splitting) is GONE. narrator

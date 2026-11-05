@@ -2298,6 +2298,95 @@ export function higgsVoicesDocument(
 }
 
 /**
+ * The base model's placeholder chunk length — what a voice with no safe band and
+ * no target is packed to. It is narrator's `v3_served.MAX_CHARS` (600), which
+ * `higgs_v3_prep_budget` read through `HiggsV3Defaults.MAX_CHARS` until the rule
+ * moved here; `tools/test-higgs-prep-budget.js` holds the two equal while the
+ * engine half is still in this repo.
+ */
+export const HIGGS_PREP_PLACEHOLDER_CHARS = 600;
+
+/** The two numbers a Higgs prep packs a book between. */
+export interface HiggsPrepBudget {
+  /** The merge floor: short paragraphs travel together until a group reaches it. */
+  floorChars: number;
+  /** The packing cap: no group crosses it. */
+  capChars: number;
+}
+
+/**
+ * THE BAND A HIGGS PREP PACKS TO, from the rendering Crucible's numbers.
+ *
+ * Until 2026-11-04 this rule lived in narrator's model code
+ * (`engine/higgs/v3_engine.py:higgs_v3_prep_budget`), which read the voice
+ * document `higgsVoicesDocument` wrote and re-derived the band from it. Prep is
+ * BookForge's text work and the engine half is leaving for Crucible
+ * (docs/REORG-PLAN.md, B1), so the rule moved to the side that already holds the
+ * venue's band — `CrucibleStatedBand`, from `GET /v1/voices` — and prep is
+ * handed the answer as `--chunk_max_chars` / `--chunk_floor_chars`.
+ *
+ * The rule is the old one, branch for branch, over the same numbers the
+ * document carried (`safeMinChars` = `floorChars`, `safeMaxChars` =
+ * `ceilingChars`, `targetChars` = `targetChars`):
+ *
+ *  - a floor AND a ceiling → pack between them;
+ *  - otherwise a FINE-TUNE is refused by name: its band is measured on its own
+ *    training clips, and packing it at the base model's placeholder is a book
+ *    rendered at someone else's length;
+ *  - otherwise (the model's own voice, a zero-shot clone) the target is both
+ *    floor and cap, and with no target the placeholder is;
+ *  - a stated floor at or above the ceiling is not a band, and is refused.
+ *
+ * Note what a ceiling WITHOUT a floor does for a non-fine-tune: the target (or
+ * the placeholder) wins, not the ceiling. That is what narrator did, and this
+ * is a move, not a redesign.
+ */
+export function higgsPrepBudget(model: HiggsModel, band: CrucibleStatedBand): HiggsPrepBudget {
+  const floor = band.floorChars;
+  const ceiling = band.ceilingChars;
+  let floorChars: number;
+  let capChars: number;
+  if (floor && ceiling) {
+    // A STATED floor at the ceiling is not a band (narrator's loader refused it
+    // as `_safe_band`): the merge rule could never end a group on the floor.
+    // floor == cap is legitimate only as the single number below.
+    if (floor >= ceiling) {
+      throw new Error(
+        `Higgs voice "${model.id}": crucible "${band.server}" states safe_min_chars ${floor} at or `
+        + `above its packing ceiling ${ceiling} for voice "${band.voice}", which is not a band.`,
+      );
+    }
+    floorChars = floor;
+    capChars = ceiling;
+  } else if (model.kind === 'checkpoint') {
+    throw new Error(
+      `Higgs voice "${model.id}" is a fine-tune and crucible "${band.server}" states no safe band `
+      + `for it (safe_min_chars ${JSON.stringify(floor)}, safe_max_chars ${JSON.stringify(ceiling)} `
+      + `for voice "${band.voice}" on GET /v1/voices). Its band comes from THAT model's own training `
+      + `clip lengths, in its crucible-voice.toml — refusing to pack a book at the base model's `
+      + `${HIGGS_PREP_PLACEHOLDER_CHARS}-char placeholder.`,
+    );
+  } else if (band.targetChars) {
+    floorChars = capChars = band.targetChars;
+  } else {
+    floorChars = capChars = HIGGS_PREP_PLACEHOLDER_CHARS;
+  }
+  if (floorChars > capChars || capChars <= 0) {
+    throw new Error(
+      `Higgs voice "${model.id}" has a safe floor ${floorChars} and cap ${capChars} from crucible `
+      + `"${band.server}", which is not a band the packer can pack between.`,
+    );
+  }
+  return { floorChars, capChars };
+}
+
+/** `higgsPrepBudget` as the prep argv carries it. */
+export function higgsPrepBudgetArgs(model: HiggsModel, band: CrucibleStatedBand): string[] {
+  const { floorChars, capChars } = higgsPrepBudget(model, band);
+  return ['--chunk_max_chars', String(capChars), '--chunk_floor_chars', String(floorChars)];
+}
+
+/**
  * Write the voice document somewhere a spawn can name, and return that path.
  *
  * A FILE RATHER THAN AN ENVIRONMENT VALUE because that is what narrator reads:

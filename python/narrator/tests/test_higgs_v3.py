@@ -47,7 +47,6 @@ from narrator.engine.higgs.v3_engine import (HiggsV3Budget,           # noqa: E4
                                              HiggsV3Config,
                                              HiggsV3Defaults,
                                              HiggsV3Engine,
-                                             higgs_v3_prep_budget,
                                              higgs_v3_stop_policy)
 from narrator.engine.higgs.v3_served import (HiggsV3ServedBackend,    # noqa: E402
                                              HiggsV3ServerError)
@@ -946,15 +945,22 @@ class ZeroShotBaseWeightsTest(V3TestCase):
         self.assertEqual(extra['top_k'], 50)
         self.assertEqual(extra['repetition_penalty'], 1.0)
 
-    def test_the_prep_packs_it_at_its_target_and_not_as_a_fine_tune(self):
+    def test_it_loads_as_a_clone_with_its_target_and_not_as_a_fine_tune(self):
         """The SECOND refusal of the same shape, one step further down the
         same load: the safe-band check asked "does this voice name a
         directory?" and a zero-shot voice now does. It has no measured band
-        and its declared target is the answer."""
+        and its declared target is the answer.
+
+        Prep no longer asks this loader (2026-11-04: `higgsPrepBudget` in
+        electron/higgs-models.ts takes the band off the venue, and a clips voice
+        is never refused there), so what is pinned here is the loader's own
+        half: the directory lands as `base_dir`, nothing is a checkpoint, and
+        the target is carried."""
         self._document(self._entry(self.base_weights()))
-        budget = higgs_v3_prep_budget('zeroshot')
-        self.assertEqual(budget.chars, 600)
-        self.assertEqual(budget.floor_chars, 600)
+        voice = v3_config.load_voice('zeroshot', placeholder_max_chars=600)
+        self.assertIsNone(voice.checkpoint_dir)
+        self.assertEqual(voice.base_dir, self.base_weights())
+        self.assertEqual(voice.target_chars, 600)
 
     def test_v3_defaults_are_stamped_without_losing_the_base_dir(self):
         """`apply_v3_voice_defaults` rebuilds a hand-built voice to stamp v3's
@@ -2527,6 +2533,47 @@ class VoiceTuningTest(V3TestCase):
         budget = HiggsV3Budget(config)
         self.assertEqual(budget.max_chars(), int(config.max_chars))
         self.assertEqual(budget.max_chars_source(), 'placeholder')
+
+
+    # -- the document's band refusals -----------------------------------------
+    #
+    # These were asserted THROUGH a Higgs prep until 2026-11-04, when prep
+    # stopped reading the document (the band arrives on its argv). They are the
+    # loader's refusals and they still guard every voice the engine loads, so
+    # they are asserted against the loader itself. BookForge's document writer
+    # refuses the same three before a spawn (`higgsVoicesDocument`).
+
+    def _banded(self, **entry):
+        return self._voices_file({'ds-ft': dict(
+            {'kind': 'checkpoint', 'checkpointDir': '/models/ds-merged',
+             'clips': [{'path': self.clip, 'transcript': X2_TEXT, 'seconds': 27.42}]},
+            **entry)})
+
+    def test_a_target_above_the_stated_limit_is_refused_by_name(self):
+        from narrator.engine.higgs.config import load_voices
+        path = self._banded(maxChars=900, targetChars=1500)
+        with self.assertRaises(ValueError) as caught:
+            load_voices(path, placeholder_max_chars=600)
+        self.assertIn('targetChars 1500', str(caught.exception))
+        self.assertIn('maxChars 900', str(caught.exception))
+
+    def test_a_safe_cap_above_the_stated_limit_is_refused_by_name(self):
+        from narrator.engine.higgs.config import load_voices
+        path = self._banded(maxChars=900, safeMinChars=600, safeMaxChars=1500)
+        with self.assertRaises(ValueError) as caught:
+            load_voices(path, placeholder_max_chars=600)
+        self.assertIn('safeMaxChars 1500', str(caught.exception))
+        self.assertIn('maxChars 900', str(caught.exception))
+
+    def test_a_floor_at_or_above_the_cap_is_refused_by_name(self):
+        from narrator.engine.higgs.config import load_voices
+        for lo, hi in ((700, 700), (800, 700)):
+            with self.subTest(band=(lo, hi)):
+                path = self._banded(maxChars=900, safeMinChars=lo, safeMaxChars=hi)
+                with self.assertRaises(ValueError) as caught:
+                    load_voices(path, placeholder_max_chars=600)
+                self.assertIn(f'safeMinChars {lo}', str(caught.exception))
+                self.assertIn('not a band', str(caught.exception))
 
 
 class SeedRuleTest(V3TestCase):

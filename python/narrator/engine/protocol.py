@@ -660,35 +660,11 @@ class Codec(Protocol):
 # ---------------------------------------------------------------------------
 
 
-@runtime_checkable
-class Budget(Protocol):
-    """How much one chunk may carry, per voice. The chunk packer asks THIS.
-
-    Every method takes `voice` because tuning is keyed on (engine, voice), not
-    on voice alone and never on a module constant: deathstalker reads ~23.5 ch/s
-    where the Orpheus default guard is 19.0, and a per-voice model has its own
-    packed-chunk size in the catalog.
-    """
-
-    def max_chars(self, voice=None) -> int:
-        """The largest chunk, in characters of text, the packer may build."""
-
-    def max_chars_per_sec(self, voice=None) -> float:
-        """Characters of text per second of audio above which the audio is too
-        short for the text (0 = no guard)."""
-
-    def max_total_tokens(self, prompt_tokens: int, voice=None) -> int:
-        """The largest TOTAL sequence - prompt plus generated - one chunk may
-        run to.
-
-        The generation budget is therefore `max_total_tokens(p) - p`. Orpheus's
-        audio-token cap is independent of the prompt (3,700 audio tokens
-        whatever the prompt costs), so its answer GROWS with the prompt; Higgs's
-        8,192-token context is a hard ceiling the prompt eats into, so its
-        answer is constant and it refuses a prompt that already fills the
-        window. Llasa's 2,048-token wall is what proved both shapes have to be
-        expressible here.
-        """
+#: Defined in `text/budget.py` since 2026-11-04 and re-exported here, so every
+#: engine budget is still held to ONE definition. It moved down because the
+#: chunk packer is BookForge's and a prep must not import the model half to
+#: learn a chunk's size - the same reason `text/gaps.py` moved (see its header).
+from ..text.budget import Budget  # noqa: E402,F401  (re-export)
 
 
 # ---------------------------------------------------------------------------

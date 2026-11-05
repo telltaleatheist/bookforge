@@ -246,7 +246,7 @@ function lift(name) {
   console.log('4. the tools env is MEASURED before a Crucible-venue prep spawns');
 
   await check('a tools env whose python is not a python is refused naming the interpreter', async () => {
-    const refusal = await narratorSpawn.hostPrepRefusal('higgs');
+    const refusal = await narratorSpawn.hostPrepRefusal();
     assert.ok(typeof refusal === 'string' && refusal.length > 0, 'an empty file passed as a python');
     assert.ok(refusal.includes(fakePython), `the refusal must name the interpreter: ${refusal}`);
     assert.ok(/cannot run narrator's prep/.test(refusal), refusal);
@@ -268,13 +268,13 @@ function lift(name) {
   const realPython = process.platform === 'win32'
     ? path.join(realToolsEnv, 'python.exe') : path.join(realToolsEnv, 'bin', 'python');
   if (fs.existsSync(realPython)) {
-    await check(`this machine's tools env can prep for both engines (${realToolsEnv})`, async () => {
+    await check(`this machine's tools env can prep (${realToolsEnv})`, async () => {
       process.env.BOOKFORGE_TOOLS_ENV = realToolsEnv;
       try {
-        for (const engine of ['higgs', 'orpheus']) {
-          const refusal = await narratorSpawn.hostPrepRefusal(engine);
-          assert.strictEqual(refusal, null, `${engine}: ${refusal}`);
-        }
+        // ONE probe for every engine since 2026-11-04: a Higgs prep's budget is
+        // on its argv, so it imports no `narrator.engine` module to learn it.
+        const refusal = await narratorSpawn.hostPrepRefusal();
+        assert.strictEqual(refusal, null, refusal);
       } finally {
         process.env.BOOKFORGE_TOOLS_ENV = FAKE_TOOLS_ENV;
       }
@@ -294,7 +294,7 @@ function lift(name) {
     const src = fs.readFileSync(path.join(REPO, 'electron', 'parallel-tts-bridge.ts'), 'utf8');
     const at = src.indexOf('export async function prepareSession(');
     const body = src.slice(at, src.indexOf('const home = sessionHomeFor(', at));
-    assert.ok(/await hostPrepRefusal\(engine\)/.test(body),
+    assert.ok(/await hostPrepRefusal\(\)/.test(body),
       'prepareSession no longer measures the tools env before it spawns');
     assert.ok(!/higgsEnvironmentRefusal/.test(body),
       'the local Higgs doctor is back in prepareSession — that question belongs to the '

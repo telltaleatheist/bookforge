@@ -85,6 +85,13 @@ class TableTest(unittest.TestCase):
     #: second engine needs one flag of its own and it is named here rather than
     #: allowed by loosening the test.
     NARRATOR_ADDED_FLAGS = {
+        '--chunk_max_chars':
+            "A Higgs PREP's packing cap as a number (2026-11-04): the band the "
+            'rendering Crucible states on GET /v1/voices, resolved by BookForge, '
+            'so prep imports no model code. e2a packed to ORPHEUS_MAX_CHARS.',
+        '--chunk_floor_chars':
+            'The merge floor beside --chunk_max_chars. e2a had no merge floor '
+            'and no Higgs engine.',
         '--higgs_voice':
             'Higgs has no --fine_tuned voice TOKEN - its voice is a CATALOG ID '
             'naming a fine-tuned adapter or a set of reference clips. e2a never '

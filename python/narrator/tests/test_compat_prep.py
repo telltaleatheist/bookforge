@@ -346,8 +346,6 @@ class PrepRefusalTest(_PrepDoorTest):
 class HiggsEngineTest(_PrepDoorTest):
     """THE FIRST CUT-OVER SLICE: Higgs jobs spawn narrator's compat doors."""
 
-    VOICES_ENV = 'NARRATOR_HIGGS_VOICES'
-
     #: THE BAND, AND WHERE THE TWO NUMBERS COME FROM. Identical to
     #: `HiggsSentencePerParagraphTest.SAFE_MIN/SAFE_MAX`, deliberately: both
     #: classes stand in for the same catalog voice, so a reader comparing them
@@ -356,69 +354,32 @@ class HiggsEngineTest(_PrepDoorTest):
     #: 600 is the deathstalker entry's own `safeMinChars` in
     #: `electron/data/higgs-models.json` (its `_safeBandNote`: the training
     #: corpus's interquartile range, ds_v5 p25 598 -> floor 600).
-    #: 900 is this fixture's long-standing cap for the same voice - the MLX
-    #: certificate for the ds merge ("900, CERTIFIED for THIS directory ON THIS
-    #: BACKEND", the `mlx._maxCharsNote`), sitting inside the 1200 `maxChars`
-    #: the served length sweep certified. Neither number is invented here.
+    #: 900 is this fixture's long-standing cap for the same voice - and the
+    #: PC's Crucible states exactly 600-900 for deathstalker on GET /v1/voices
+    #: (measured 2026-11-04). Neither number is invented here.
     #:
-    #: WHY A BAND AT ALL: `v3_engine.higgs_v3_prep_budget` takes the merge FLOOR
-    #: from `safeMinChars` and the packing CAP from `safeMaxChars`, and REFUSES a
-    #: fine-tune that declares neither. `targetChars` - one number doing both
-    #: jobs - survives only for zero-shot voices, which have no measured band.
+    #: HOW THEY ARRIVE, since 2026-11-04 (docs/REORG-PLAN.md, B1): on the argv,
+    #: as `--chunk_floor_chars` / `--chunk_max_chars`. BookForge turns the
+    #: venue's band into them (`higgsPrepBudget`, electron/higgs-models.ts,
+    #: kept by tools/test-higgs-prep-budget.js); prep reads no voice document
+    #: and imports no `narrator.engine` module to size a chunk. The refusals a
+    #: voice DOCUMENT earns (a target or a safe cap above maxChars, a floor at
+    #: or above the cap) are the loader's, and are tested against the loader in
+    #: `test_higgs_v3.VoiceDocumentBandTest`.
     SAFE_MIN = 600
     SAFE_MAX = 900
-    #: The model's STATED limit, which is not the packing cap: the band sits
-    #: inside it. A safe cap may never exceed it. (`load_voice` no longer
-    #: refuses a fine-tune that omits `maxChars` - Owen, 2026-09-19: it is the
-    #: CLIENT's packing size, and the screening render of an unmeasured
-    #: checkpoint is what produces it. The SAFE BAND is a different
-    #: declaration and prep still refuses a fine-tune without one.)
-    STATED_MAX = 1200
 
-    def setUp(self):
-        super().setUp()
-        # A Higgs prep reads the voice document: the chunk cap is the VOICE's
-        # measured safe band, and a prep without one is refused. The fixture
-        # is a fine-tune (a merged dir carrying generation_config.json) banded
-        # at 600-900 inside a stated 1200 - the deathstalker numbers.
-        self.checkpoint = os.path.join(self.root, 'ds-merged')
-        os.makedirs(self.checkpoint, exist_ok=True)
-        with open(os.path.join(self.checkpoint, 'config.json'), 'w',
-                  encoding='utf-8') as handle:
-            handle.write('{}')
-        with open(os.path.join(self.checkpoint, 'generation_config.json'), 'w',
-                  encoding='utf-8') as handle:
-            handle.write('{"temperature": 1.0, "top_p": 0.95, "top_k": 50, '
-                         '"repetition_penalty": 1.0}')
-        self.voices_path = os.path.join(self.root, 'voices.json')
-        # maxChars is the model's stated limit (informative, a ceiling);
-        # safeMinChars/safeMaxChars are the band the prep packs BETWEEN.
-        self.write_voices({'ds_ad4l': {'kind': 'checkpoint',
-                                       'checkpointDir': self.checkpoint,
-                                       'maxChars': self.STATED_MAX,
-                                       'maxCharsSource': 'length-sweep',
-                                       'safeMinChars': self.SAFE_MIN,
-                                       'safeMaxChars': self.SAFE_MAX}})
-        self._saved_voices = os.environ.get(self.VOICES_ENV)
-        os.environ[self.VOICES_ENV] = self.voices_path
-        self.addCleanup(self._restore_voices)
-
-    def write_voices(self, document):
-        import json as _json
-        with open(self.voices_path, 'w', encoding='utf-8') as handle:
-            _json.dump(document, handle)
-
-    def _restore_voices(self):
-        if self._saved_voices is None:
-            os.environ.pop(self.VOICES_ENV, None)
-        else:
-            os.environ[self.VOICES_ENV] = self._saved_voices
-
-    def _higgs_argv(self, *, voice='ds_ad4l', engine='higgs-v3', extra=()):
+    def _higgs_argv(self, *, voice='ds_ad4l', engine='higgs-v3', extra=(),
+                    floor=SAFE_MIN, cap=SAFE_MAX):
+        band = []
+        if cap is not None:
+            band += ['--chunk_max_chars', str(cap)]
+        if floor is not None:
+            band += ['--chunk_floor_chars', str(floor)]
         return ['--headless', '--ebook', self.ebook,
                 '--session', self.session_id, '--language', 'en',
                 '--tts_engine', engine, '--device', 'CUDA',
-                '--prep_only', '--higgs_voice', voice, *extra]
+                '--prep_only', '--higgs_voice', voice, *band, *extra]
 
     def test_a_higgs_prep_packs_at_the_voices_SAFE_BAND_never_at_orpheus_350(self):
         """MEASURED BUG (2026-09-05, both arms): the route built no budget, prep
@@ -492,101 +453,49 @@ class HiggsEngineTest(_PrepDoorTest):
                 f'floor while its neighbour would have fitted the cap: {chunk!r}')
             self.assertLessEqual(len(chunk), self.SAFE_MAX)
 
-    def test_the_trainers_band_is_read_from_the_document_not_from_maxChars(self):
-        """Owen, 2026-09-05: "maxChars is informative, [the band] is used by the
-        code directly".
-
-        REWRITTEN 2026-09-13 - this was `test_the_trainers_target_is_both_cap_and
-        _floor`, and what it asserted (floor == cap == targetChars) is the
-        retired contract AND the shipped bug; see `test_a_higgs_prep_fills_toward
-        _the_cap`. What survives of its intent is the plumbing half: THIS voice's
-        own two numbers reach the packer, and neither of them is `maxChars`.
-        Different values from the fixture's, so a constant cannot pass it.
-        """
-        self.write_voices({'ds_ad4l': {'kind': 'checkpoint',
-                                       'checkpointDir': self.checkpoint,
-                                       'maxChars': 900,
-                                       'maxCharsSource': 'length-sweep',
-                                       'safeMinChars': 500,
-                                       'safeMaxChars': 700}})
-        code, out = self._run(self._higgs_argv())
+    def test_the_band_is_read_from_the_argv(self):
+        """THIS run's two numbers reach the packer - different values from the
+        fixture's, so a constant cannot pass it."""
+        code, out = self._run(self._higgs_argv(floor=500, cap=700))
         self.assertEqual(code, 0, out)
         record = self._read_state_the_way_the_bridge_does()[1]['bookforge_chunking']
         self.assertEqual(record['floor_chars'], 500)
         self.assertEqual(record['budget']['max_chars'], 700)
-        # The STATED limit is not the packing cap: the band sits inside it.
-        self.assertNotEqual(record['budget']['max_chars'], 900)
 
-    def test_a_fine_tune_with_no_safe_band_is_refused_at_prep(self):
-        """RE-AIMED 2026-09-13: the refusal is about the BAND now, not about
-        `targetChars`, and it names both keys the operator has to write.
-
-        A fine-tune declaring a `maxChars` and nothing else used to be packed at
-        that stated limit; `higgs_v3_prep_budget` refuses it instead, because a
-        stated ceiling is not a measured safe length. Half a band is refused for
-        the same reason - a floor with no cap is not a band.
-        """
-        for entry in ({'maxChars': 900, 'maxCharsSource': 'length-sweep'},
-                      {'maxChars': 900, 'maxCharsSource': 'length-sweep',
-                       'safeMinChars': 600},
-                      {'maxChars': 900, 'maxCharsSource': 'length-sweep',
-                       'safeMaxChars': 800}):
-            with self.subTest(declares=sorted(entry)):
-                self.write_voices({'ds_ad4l': dict(
-                    entry, kind='checkpoint', checkpointDir=self.checkpoint)})
-                code, out = self._run(self._higgs_argv())
+    def test_a_higgs_prep_with_no_band_is_refused_by_name(self):
+        """Half a band is no band, and neither is none: a caller that did not
+        resolve the venue's numbers is refused, never packed at a default."""
+        for floor, cap in ((None, None), (600, None), (None, 900)):
+            with self.subTest(floor=floor, cap=cap):
+                code, out = self._run(self._higgs_argv(floor=floor, cap=cap))
                 self.assertNotEqual(code, 0, out)
-                self.assertIn('safeMinChars', out)
-                self.assertIn('safeMaxChars', out)
+                self.assertIn('--chunk_max_chars', out)
+                self.assertIn('--chunk_floor_chars', out)
                 self.assertIn('ds_ad4l', out)
-                # AND NOT PACKED AT THE STATED LIMIT, which is the thing the
-                # refusal exists to prevent.
-                self.assertNotIn('prep packs', out)
+                self.assertFalse(os.path.isdir(self._session_dir()),
+                                 'a refused prep still wrote a session')
 
-    def test_a_target_above_the_cap_is_refused_by_name(self):
-        self.write_voices({'ds_ad4l': {'kind': 'checkpoint',
-                                       'checkpointDir': self.checkpoint,
-                                       'maxChars': 900,
-                                       'maxCharsSource': 'length-sweep',
-                                       'targetChars': 1500}})
-        code, out = self._run(self._higgs_argv())
-        self.assertNotEqual(code, 0)
-        self.assertIn('targetChars 1500', out)
-        self.assertIn('maxChars 900', out)
+    def test_a_floor_above_the_cap_is_refused_by_name(self):
+        code, out = self._run(self._higgs_argv(floor=800, cap=700))
+        self.assertNotEqual(code, 0, out)
+        self.assertIn('not a band', out)
 
-    def test_a_safe_cap_above_the_stated_limit_is_refused_by_name(self):
-        """The band's half of the test above. `maxChars` is the model's stated
-        limit, so a safe band may sit inside it and never past it
-        (`engine/higgs/config.py:_safe_band`)."""
-        self.write_voices({'ds_ad4l': {'kind': 'checkpoint',
-                                       'checkpointDir': self.checkpoint,
-                                       'maxChars': 900,
-                                       'maxCharsSource': 'length-sweep',
-                                       'safeMinChars': 600,
-                                       'safeMaxChars': 1500}})
-        code, out = self._run(self._higgs_argv())
-        self.assertNotEqual(code, 0)
-        self.assertIn('safeMaxChars 1500', out)
-        self.assertIn('maxChars 900', out)
-
-    def test_a_floor_at_or_above_the_cap_is_refused_by_name(self):
-        """floor == cap IS THE OLD BUG, declared explicitly, and the document
-        door refuses it: the merge rule (`group_len < floor_chars and
-        merged_len <= cap`) can never terminate a group on a floor it cannot get
-        under the cap to reach, so short chunks ship."""
-        for lo, hi in ((700, 700), (800, 700)):
-            with self.subTest(band=(lo, hi)):
-                self.write_voices({'ds_ad4l': {'kind': 'checkpoint',
-                                               'checkpointDir': self.checkpoint,
-                                               'maxChars': 900,
-                                               'maxCharsSource': 'length-sweep',
-                                               'safeMinChars': lo,
-                                               'safeMaxChars': hi}})
-                code, out = self._run(self._higgs_argv())
+    def test_a_nonpositive_band_is_refused_by_name(self):
+        for floor, cap in ((0, 700), (600, 0), (-1, 700)):
+            with self.subTest(floor=floor, cap=cap):
+                code, out = self._run(self._higgs_argv(floor=floor, cap=cap))
                 self.assertNotEqual(code, 0, out)
-                self.assertIn(f'safeMinChars {lo}', out)
-                self.assertIn(f'safeMaxChars {hi}', out)
-                self.assertIn('not a band', out)
+                self.assertIn('positive', out)
+
+    def test_floor_equal_to_cap_is_the_single_number_of_a_voice_with_no_band(self):
+        """A zero-shot voice or the model's own has no measured band, and
+        `higgsPrepBudget` hands it floor == cap (its target, or the 600-char
+        placeholder). Prep packs to that one number, as it always did."""
+        code, out = self._run(self._higgs_argv(floor=600, cap=600))
+        self.assertEqual(code, 0, out)
+        record = self._read_state_the_way_the_bridge_does()[1]['bookforge_chunking']
+        self.assertEqual(record['floor_chars'], 600)
+        self.assertEqual(record['budget']['max_chars'], 600)
 
     def test_a_higgs_prep_never_reads_ORPHEUS_MAX_CHARS(self):
         """Both ends again: 123 must reach neither the cap nor the floor."""
@@ -598,23 +507,44 @@ class HiggsEngineTest(_PrepDoorTest):
         self.assertEqual(record['budget']['max_chars'], self.SAFE_MAX)
         self.assertEqual(record['floor_chars'], self.SAFE_MIN)
 
-    def test_a_fine_tune_with_a_BAND_and_no_maxChars_preps(self):
-        """RETIRED REFUSAL (Owen, 2026-09-19). A fine-tune that declares no
-        `maxChars` used to be refused before any chunk was packed; it now
-        preps, because `maxChars` is the CLIENT's packing size and the safe
-        BAND - which this voice does declare - is what prep actually packs to.
+    def test_a_higgs_prep_reads_no_voice_document_and_imports_no_engine(self):
+        """THE POINT OF B1, measured in a fresh interpreter: a Higgs prep with
+        NARRATOR_HIGGS_VOICES naming a file that does not exist completes, and
+        not one `narrator.engine` module is loaded by the time it has."""
+        import subprocess
+        child = (
+            'import io, json, os, sys\n'
+            'from contextlib import redirect_stdout\n'
+            'sys.path.insert(0, sys.argv[1])\n'
+            'from narrator.compat import app\n'
+            'buf = io.StringIO()\n'
+            'with redirect_stdout(buf):\n'
+            '    code = app.main(json.loads(sys.argv[2]))\n'
+            'print(json.dumps({"code": code, "out": buf.getvalue()[-2000:], '
+            '"engine": sorted(m for m in sys.modules '
+            'if m == "narrator.engine" or m.startswith("narrator.engine."))}))\n')
+        env = dict(os.environ)
+        env['NARRATOR_HIGGS_VOICES'] = os.path.join(self.root, 'no-such-voices.json')
+        python_root = os.path.dirname(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))))
+        argv = self._higgs_argv() + ['--session_dir', self._session_dir()]
+        proc = subprocess.run(
+            [sys.executable, '-c', child, python_root, json.dumps(argv)],
+            env=env, capture_output=True, text=True, encoding='utf-8')
+        self.assertEqual(proc.returncode, 0, proc.stderr[-2000:])
+        result = json.loads(proc.stdout.strip().splitlines()[-1])
+        self.assertEqual(result['code'], 0, result['out'])
+        self.assertEqual(result['engine'], [],
+                         'a Higgs prep imported model code to learn a chunk size')
 
-        The refusal that remains is the band's, and it is a different
-        declaration: `test_a_fine_tune_with_no_safe_band_is_refused_at_prep`
-        holds that one."""
-        self.write_voices({'ds_ad4l': {'kind': 'checkpoint',
-                                       'checkpointDir': self.checkpoint,
-                                       'safeMinChars': self.SAFE_MIN,
-                                       'safeMaxChars': self.SAFE_MAX}})
-        code, out = self._run(self._higgs_argv())
-        self.assertEqual(code, 0, out)
-        record = self._read_state_the_way_the_bridge_does()[1]['bookforge_chunking']
-        self.assertEqual(record['budget']['max_chars'], self.SAFE_MAX)
+    def test_a_band_on_a_non_higgs_prep_is_refused_by_name(self):
+        argv = ['--headless', '--ebook', self.ebook, '--session', self.session_id,
+                '--language', 'en', '--tts_engine', 'orpheus', '--prep_only',
+                '--fine_tuned', 'deathstalker', '--chunk_max_chars', '900',
+                '--chunk_floor_chars', '600']
+        code, out = self._door_refusal(argv)
+        self.assertNotEqual(code, 0)
+        self.assertIn('--chunk_max_chars', out)
 
     def test_a_higgs_prep_without_a_voice_is_refused_by_name(self):
         argv = [a for a in self._higgs_argv() if a not in ('--higgs_voice', 'ds_ad4l')]
@@ -705,7 +635,9 @@ class HiggsEngineTest(_PrepDoorTest):
             code, out = self._run(['--headless', '--prep_only',
                                    '--ebook', self.ebook,
                                    '--session', self.session_id,
-                                   '--higgs_voice', 'ds_ad4l'])
+                                   '--higgs_voice', 'ds_ad4l',
+                                   '--chunk_max_chars', str(self.SAFE_MAX),
+                                   '--chunk_floor_chars', str(self.SAFE_MIN)])
             self.assertEqual(code, 0, out)
             _, state = self._read_state_the_way_the_bridge_does()
             self.assertEqual(state['bookforge_chunking']['policy'], 'paragraph')
@@ -1031,41 +963,14 @@ class HiggsSentencePerParagraphTest(_PrepDoorTest):
     #: NOT a subclass of `HiggsEngineTest`, deliberately: inheriting that class
     #: would inherit its twenty tests and re-run every one of them against this
     #: book, which is neither what they assert nor a second opinion about it.
-    VOICES_ENV = 'NARRATOR_HIGGS_VOICES'
-    #: THE SAFE BAND IS THE FIXTURE'S LOAD-BEARING HALF:
-    #: `v3_engine.higgs_v3_prep_budget` takes the merge FLOOR from `safeMinChars`
-    #: and the packing CAP from `safeMaxChars`, and refuses a fine-tune that
-    #: declares neither rather than packing at the base model's placeholder.
+    #: THE SAFE BAND IS THE FIXTURE'S LOAD-BEARING HALF: the merge FLOOR and the
+    #: packing CAP arrive on the argv (`--chunk_floor_chars` /
+    #: `--chunk_max_chars`), the venue's band as BookForge resolves it.
     SAFE_MIN = 600
     SAFE_MAX = 900
 
     def setUp(self):
         super().setUp()
-        self.checkpoint = os.path.join(self.root, 'ds-merged')
-        os.makedirs(self.checkpoint, exist_ok=True)
-        for name, body in (('config.json', '{}'),
-                           ('generation_config.json',
-                            '{"temperature": 1.0, "top_p": 0.95, "top_k": 50}')):
-            with open(os.path.join(self.checkpoint, name), 'w',
-                      encoding='utf-8') as handle:
-                handle.write(body)
-        self.voices_path = os.path.join(self.root, 'voices.json')
-        with open(self.voices_path, 'w', encoding='utf-8') as handle:
-            json.dump({'ds_ad4l': {'kind': 'checkpoint',
-                                   'checkpointDir': self.checkpoint,
-                                   'maxChars': 1200,
-                                   'maxCharsSource': 'length-sweep',
-                                   'safeMinChars': self.SAFE_MIN,
-                                   'safeMaxChars': self.SAFE_MAX}}, handle)
-        saved = os.environ.get(self.VOICES_ENV)
-        os.environ[self.VOICES_ENV] = self.voices_path
-
-        def restore():
-            if saved is None:
-                os.environ.pop(self.VOICES_ENV, None)
-            else:
-                os.environ[self.VOICES_ENV] = saved
-        self.addCleanup(restore)
         self.ebook = build_rows_epub(
             os.path.join(self.root, f'rows-{self.session_id}.epub'), self.ROWS)
 
@@ -1074,7 +979,9 @@ class HiggsSentencePerParagraphTest(_PrepDoorTest):
         return ['--headless', '--ebook', self.ebook,
                 '--session', self.session_id, '--language', 'en',
                 '--tts_engine', 'higgs-v3', '--device', 'CUDA',
-                '--prep_only', '--higgs_voice', voice, *extra]
+                '--prep_only', '--higgs_voice', voice,
+                '--chunk_max_chars', str(self.SAFE_MAX),
+                '--chunk_floor_chars', str(self.SAFE_MIN), *extra]
 
     def test_the_flag_gives_one_chunk_per_row_and_records_that_it_did(self):
         code, out = self._run(self._higgs_argv(extra=('--sentence_per_paragraph',)))

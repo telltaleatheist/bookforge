@@ -315,15 +315,15 @@ def _chunking(options: PrepOptions, epub_book) -> tuple:
         # is a variable a Higgs spawn deliberately never carries - so e2a's 350
         # default packed every Higgs book in ~220-char chunks against a voice
         # document saying 900/1200 (measured 2026-09-05, both arms). The route
-        # builds the Higgs budget from the voice document
-        # (`engine.higgs.v3_engine.higgs_v3_prep_budget`); a caller that did not
-        # is refused here, by name, rather than answered with another engine's
-        # number.
+        # builds the Higgs budget from `--chunk_max_chars` / `--chunk_floor_chars`
+        # (the rendering Crucible's band, resolved by BookForge); a caller that
+        # did not is refused here, by name, rather than answered with another
+        # engine's number.
         raise PrepError(
-            'A Higgs v3 prep was given no Budget. The chunk cap is the VOICE\'s '
-            'measured maxChars from NARRATOR_HIGGS_VOICES (route_prep builds it via '
-            'higgs_v3_prep_budget); refusing to pack the book at Orpheus\'s '
-            'ORPHEUS_MAX_CHARS / 350-char default.')
+            "A Higgs v3 prep was given no Budget. The chunk band is the VOICE's, "
+            'stated by the Crucible that renders it (route_prep builds it from '
+            '--chunk_max_chars / --chunk_floor_chars); refusing to pack the book at '
+            "Orpheus's ORPHEUS_MAX_CHARS / 350-char default.")
     else:
         budget = orpheus_budget_from_env()
     source_kind = options.source_kind or resolve_source_kind(epub_book)
