@@ -1403,6 +1403,7 @@ export interface ElectronAPI {
     onInstallEvent: (callback: (event: CrucibleInstallDoorEvent) => void) => () => void;
     /** Check or repair one server; the steps arrive on `onRepairEvent`. */
     repair: (name: string, options: { verifyOnly: boolean }) => Promise<{ success: boolean; error?: string }>;
+    repairStop: (name: string, taskId: string) => Promise<{ success: boolean; error?: string }>;
     onRepairEvent: (callback: (event: CrucibleRepairEvent) => void) => () => void;
     /** `POST /install` — **Try again**, shown only on `cannot` or `failed`. */
     installRetry: () => Promise<{ success: boolean; error?: string }>;
@@ -2961,6 +2962,7 @@ const electronAPI: ElectronAPI = {
     // Foundry's retry is `crucible:install-retry`; ours is `-start`, and it
     // never collided.
     installStatus: () => ipcRenderer.invoke('crucible:host-install-status'),
+    repairStop: (name: string, taskId: string) => ipcRenderer.invoke('crucible:repair-stop', name, taskId),
     repair: (name: string, options: { verifyOnly: boolean }) => ipcRenderer.invoke('crucible:repair', name, options),
     onRepairEvent: (callback: (event: CrucibleRepairEvent) => void) => {
       const listener = (_event: Electron.IpcRendererEvent, repairEvent: CrucibleRepairEvent) => callback(repairEvent);

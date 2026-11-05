@@ -57,6 +57,7 @@ import {
             <p class="rep-meta">{{ words }}</p>
           }
           @if (stopWords(); as words) { <p class="rep-meta">{{ words }}</p> }
+          @if (stopFailed(); as words) { <p class="rep-meta">{{ words }}</p> }
         }
 
         @if (v.refusal; as r) {
@@ -127,6 +128,7 @@ export class CrucibleRepairComponent {
     return res.broken.filter((f) => !said.has(`${f.subject.kind}/${f.subject.id}`));
   });
 
+  readonly stopFailed = signal<string | null>(null);
   readonly stopWords = computed(() => {
     const v = this.view();
     return v ? crucibleRepairStopWords(v) : null;
@@ -191,6 +193,7 @@ export class CrucibleRepairComponent {
   }
 
   async stop(taskId: string): Promise<void> {
-    await this.electron.crucible.cancelSetUp(this.server(), taskId);
+    const res = await this.electron.crucible.repairStop(this.server(), taskId);
+    this.stopFailed.set(res.success ? null : `Could not stop it: ${res.error ?? 'no reason given'}`);
   }
 }

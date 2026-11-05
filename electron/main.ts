@@ -9008,6 +9008,16 @@ function setupIpcHandlers(): void {
     return { success: true };
   });
 
+  ipcMain.handle('crucible:repair-stop', async (_event, name: string, taskId: string) => {
+    try {
+      const { processRepairDeps, stopCrucibleRepair } = await import('./crucible/repair.js');
+      await stopCrucibleRepair(name, taskId, processRepairDeps());
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   ipcMain.handle('crucible:cancel-setup', async (_event, name: string, taskId: string) => {
     try {
       const { cancelServerSetup } = await import('./crucible/module-setup.js');

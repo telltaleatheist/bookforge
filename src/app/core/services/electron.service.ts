@@ -4279,6 +4279,10 @@ export class ElectronService {
         ? (window as any).electron.crucible.coordinate(name)
         : Promise.resolve({ success: false, error: 'Not running in Electron' }),
 
+    repairStop: (name: string, taskId: string): Promise<{ success: boolean; error?: string }> =>
+      this.isElectron
+        ? (window as any).electron.crucible.repairStop(name, taskId)
+        : Promise.resolve({ success: false, error: 'Not running in Electron' }),
     cancelSetUp: (name: string, taskId: string): Promise<{ success: boolean; error?: string }> =>
       this.isElectron
         ? (window as any).electron.crucible.cancelSetUp(name, taskId)

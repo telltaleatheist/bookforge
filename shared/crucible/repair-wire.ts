@@ -165,11 +165,12 @@ export function crucibleRepairHeadline(result: CrucibleRepairResult): string {
 /**
  * WHAT STOP WILL ACTUALLY DO, said before it is pressed. A hash stops within about a
  * megabyte and between subjects at the next one, so those need no words; a rebuild is
- * not interrupted, and this computer's door has no task to stop.
+ * not interrupted. On this computer the server and its service come first, and they
+ * cannot be stopped: Stop appears when the server's own task begins.
  */
 export function crucibleRepairStopWords(view: CrucibleRepairView): string | null {
   if (view.phase !== 'running') return null;
-  if (view.local) return "This repair runs on this computer and can't be stopped from here.";
+  if (view.local && view.taskId === null) return 'Stop appears once the server starts checking.';
   if (view.step === 'rebuild') return 'Stop takes effect after this environment finishes.';
   if (view.step === 'repull') return 'Stop halts the download; the next repair finishes it.';
   return null;

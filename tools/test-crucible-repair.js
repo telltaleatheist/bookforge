@@ -96,7 +96,7 @@ function startFake(behaviour) {
   });
 }
 
-const remoteDeps = { isLocal: async () => false, localRepair: async () => { throw new Error('the local door was used for a remote row'); }, sleep: async () => {} };
+const remoteDeps = { localClient: async () => { throw new Error('a remote row has no local client'); }, isLocal: async () => false, localRepair: async () => { throw new Error('the local door was used for a remote row'); }, sleep: async () => {} };
 
 async function run(server, verifyOnly, deps) {
   const events = [];
@@ -231,6 +231,7 @@ async function main() {
       localRepair: async (options) => {
         assert.deepStrictEqual(options.scope, { verifyOnly: false });
         options.onStep({ name: 'server', status: 'ok', detail: 'The server answers.' });
+        options.onTask('local-task');
         options.onRepair({ step: 'plan', state: 'running', subject: null, detail: null, bytesToCheck: 10 });
         options.onProgress({ bytesDone: 5, bytesTotal: 10, file: 'x' });
         return { server: 'reinstalled', service: 'started', healthy: true, task: RESULT, detail: null };
@@ -239,6 +240,7 @@ async function main() {
     await check('this machine\'s row goes through bootstrap, into the same view', () => {
       assert.strictEqual(view.local, true);
       assert.strictEqual(view.phase, 'done');
+      assert.strictEqual(view.taskId, 'local-task', 'the task id is what lets Stop appear here');
       assert.ok(events.some((e) => e.kind === 'host-step'));
       assert.match(view.hostNote, /reinstalled/);
       assert.match(view.hostNote, /started/);
@@ -259,6 +261,34 @@ async function main() {
     });
   }
 
+  {
+    const asked = [];
+    const refused = (state) => run('here', false, {
+      isLocal: async () => true,
+      localClient: async () => ({ task: async (id) => { asked.push(id); return { state }; } }),
+      localRepair: async (options) => {
+        options.onTask('local-task');
+        throw Object.assign(new Error(`the repair task local-task ended ${state}`), { code: 'repair_failed', command: null });
+      },
+    });
+    const cancelled = await refused('cancelled');
+    const failed = await refused('failed');
+    await check('a stopped local repair reads as stopped, and only the task can say so', () => {
+      assert.strictEqual(cancelled.view.refusal.code, 'repair_cancelled');
+      assert.strictEqual(cancelled.view.refusal.message, 'The repair was stopped.');
+      assert.deepStrictEqual(asked, ['local-task', 'local-task']);
+      assert.strictEqual(failed.view.refusal.code, 'repair_failed', 'a task that failed keeps its own words');
+      assert.match(failed.view.refusal.message, /ended failed/);
+    });
+    const stopped = [];
+    await door.stopCrucibleRepair(wire.CRUCIBLE_REPAIR_HERE, 'local-task', {
+      localClient: async () => ({ cancelTask: async (id) => { stopped.push(id); } }),
+    });
+    await check('Stop with no row asks the server on this computer', () => {
+      assert.deepStrictEqual(stopped, ['local-task']);
+    });
+  }
+
   await check('Stop says what it will do, before it is pressed', () => {
     const at = (step, local = false) => wire.reduceCrucibleRepair(
       wire.reduceCrucibleRepair(null, { kind: 'started', server: 's', verifyOnly: false, local, taskId: null }),
@@ -267,7 +297,9 @@ async function main() {
     assert.match(wire.crucibleRepairStopWords(at('rebuild')), /after this environment finishes/);
     assert.match(wire.crucibleRepairStopWords(at('repull')), /next repair finishes it/);
     assert.strictEqual(wire.crucibleRepairStopWords(at('verify')), null);
-    assert.match(wire.crucibleRepairStopWords(at('verify', true)), /can't be stopped from here/);
+    assert.match(wire.crucibleRepairStopWords(at('verify', true)), /Stop appears once the server starts checking/);
+    const running = wire.reduceCrucibleRepair(at('verify', true), { kind: 'task', server: 's', taskId: 't' });
+    assert.strictEqual(wire.crucibleRepairStopWords(running), null, 'with a task, a local repair stops like any other');
   });
 
   await check('a check that changed nothing never says it repaired anything', () => {

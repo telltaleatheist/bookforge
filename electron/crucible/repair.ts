@@ -25,6 +25,7 @@
 
 import {
   CrucibleRefused,
+  type CrucibleClient,
   type RepairResult,
   type TaskRepairData,
 } from '@crucible/client';
@@ -55,6 +56,7 @@ export interface RepairDeps {
   /** `@crucible/bootstrap`'s `repair`, with this app's runner and distro already applied. */
   readonly localRepair: (options: {
     scope: { verifyOnly: false };
+    onTask: (taskId: string) => void;
     onStep: (step: { name: string; status: 'running' | 'ok' | 'failed'; detail: string }) => void;
     onRepair: (data: TaskRepairData) => void;
     onProgress: (progress: { bytesDone: number; bytesTotal: number | null; file: string }) => void;
@@ -65,6 +67,8 @@ export interface RepairDeps {
     healthy: boolean;
     detail: string | null;
   }>;
+  /** This machine's server, by its own config: a broken Crucible may have no row to reach it by. */
+  readonly localClient: () => Promise<Pick<CrucibleClient, 'task' | 'cancelTask'>>;
   readonly sleep?: (ms: number) => Promise<void>;
   readonly streamLostBudgetMs?: number;
 }
@@ -209,12 +213,28 @@ async function repairThroughBootstrap(
   deps: RepairDeps,
 ): Promise<void> {
   emit({ kind: 'started', server, verifyOnly: false, local: true, taskId: null });
+  let taskId: string | null = null;
   const outcome = await deps.localRepair({
     scope: { verifyOnly: false },
+    onTask: (id) => {
+      taskId = id;
+      emit({ kind: 'task', server, taskId: id });
+    },
     onStep: (step) => emit({ kind: 'host-step', server, name: step.name, status: step.status, detail: step.detail }),
     onRepair: (data) => emit(frameEvent(server, data)),
     onProgress: (p) => emit({ kind: 'progress', server, bytesDone: p.bytesDone, bytesTotal: p.bytesTotal, file: p.file }),
+  }).catch(async (err: unknown) => {
+    // The door refuses any task that did not finish, a stopped one too. The task itself says which.
+    if (taskId === null) throw err;
+    const id: string = taskId;
+    const status = await deps.localClient().then((client) => client.task(id)).catch(() => null);
+    if (status?.state === 'cancelled') return null;
+    throw err;
   });
+  if (outcome === null) {
+    emit({ kind: 'refused', server, code: 'repair_cancelled', message: 'The repair was stopped.', command: null, needsUpdate: false });
+    return;
+  }
   if (outcome.task === null) {
     // Only a verify-only run should end here, and this door is never one. Said, not assumed.
     emit({
@@ -246,6 +266,14 @@ export async function repairCrucibleHere(
   }
 }
 
+/** Stop a running repair. A row's server is asked through the row; this computer's through its own config. */
+export async function stopCrucibleRepair(server: string, taskId: string, deps: RepairDeps): Promise<void> {
+  const client = server === CRUCIBLE_REPAIR_HERE
+    ? await deps.localClient()
+    : await crucibleClientFor(server, CRUCIBLE_CLIENT_NAME);
+  await client.cancelTask(taskId);
+}
+
 /** The real world's deps. Lazily imported, as `install.ts` does with the package. */
 export function processRepairDeps(): RepairDeps {
   return {
@@ -270,6 +298,14 @@ export function processRepairDeps(): RepairDeps {
         { ...options, distro: getWslDistro(), clientName: CRUCIBLE_CLIENT_NAME },
         crucibleProcessRunner(),
       );
+    },
+    localClient: async () => {
+      const { readLocalConfig } = await import('@crucible/bootstrap');
+      const { CrucibleClient: Client } = await import('@crucible/client');
+      const { crucibleProcessRunner } = await import('./host-runner.js');
+      const { getWslDistro } = await import('../tool-paths.js');
+      const config = await readLocalConfig({ distro: getWslDistro() }, crucibleProcessRunner());
+      return new Client({ url: config.url, token: config.token, clientName: CRUCIBLE_CLIENT_NAME });
     },
   };
 }
