@@ -25,8 +25,8 @@
  * caller that needs one says so by name rather than this guessing.
  *
  * A TOKEN NEVER APPEARS IN A LOG, A FILENAME OR AN ARGV. Callers put it in the
- * child's ENVIRONMENT — see `higgs_download.py`'s and `orpheus_download.py`'s
- * invocations, which pass `HF_TOKEN` that way for exactly this reason.
+ * child's ENVIRONMENT — see `higgs_download.py`'s invocation, which passes
+ * `HF_TOKEN` that way for exactly this reason.
  */
 import * as fs from 'fs';
 import * as os from 'os';

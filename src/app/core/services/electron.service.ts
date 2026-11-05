@@ -321,20 +321,6 @@ export interface InstalledRecord {
   installedAt: string;
 }
 
-export interface EnvDiagnosticCheck {
-  name: string;
-  status: 'ok' | 'warn' | 'fail';
-  detail: string;
-  hint: string;
-}
-
-export interface EnvDiagnosticResult {
-  ok: boolean;
-  engine?: string;
-  checks: EnvDiagnosticCheck[];
-  error?: string;
-}
-
 /**
  * The Doctor's wire types (Settings → Doctor).
  *
@@ -3908,12 +3894,6 @@ export class ElectronService {
     uninstall: (id: string): Promise<void> => {
       if (this.isElectron) {
         return (window as any).electron.components.uninstall(id);
-      }
-      return Promise.reject(new Error('Not running in Electron'));
-    },
-    testEnv: (id: string): Promise<EnvDiagnosticResult> => {
-      if (this.isElectron) {
-        return (window as any).electron.components.testEnv(id);
       }
       return Promise.reject(new Error('Not running in Electron'));
     },

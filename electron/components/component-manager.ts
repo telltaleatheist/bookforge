@@ -23,7 +23,6 @@ import { LLAMA_CUDA_ID, downloadLlamaCudaInto } from './llama-cuda';
 import { CUDA_RVC_ID, installCudaRvc, isCudaRvcInstalled, uninstallCudaRvc, cudaRvcMarkerPath } from './cuda-rvc';
 import { ensureRvcVoice, removeRvcVoice, isRvcVoiceInstalled, rvcVoiceModelDir } from '../rvc-models';
 import { getPythonInvocation, buildToolsSpawnEnv } from '../narrator-paths';
-import { shouldUseWsl2ForOrpheus } from '../tool-paths';
 import type {
   IComponentManager,
   OptionalComponent,
@@ -39,7 +38,6 @@ import type {
   VerifySpec,
   SystemProfile,
   Platform,
-  EnvDiagnosticResult,
 } from './component-types';
 import { getMainLogger } from '../rolling-logger';
 import { renameSyncWithRetry } from '../fs-retry';
@@ -926,18 +924,6 @@ async function uninstall(id: string): Promise<void> {
 // resolveEntry — the integration seam
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * Marker file standing in for the WSL Orpheus env on the Windows side. The real
- * env lives inside WSL and can't be a Windows `entryPath` (resolveEntry checks it
- * with fs.existsSync, and a `\\wsl$` path requires WSL to be running). This local
- * marker is the component's entryPath when Orpheus is enabled via WSL, so the
- * 'orpheus' component reports Installed (gating the engine into the UI). The
- * actual env is resolved/rewritten in the WSL spawn path, not from this value.
- */
-function wslOrpheusMarkerPath(): string {
-  return path.join(app.getPath('userData'), 'components', 'wsl-orpheus.marker');
-}
-
 function resolveEntry(id: string): string | null {
   const record = getRecord(id);
   if (!record || !record.entryPath) {
@@ -969,54 +955,6 @@ async function buildStatus(
 
   // Already recorded?
   let record = getRecord(component.id);
-
-  // Orpheus enabled via WSL earlier, but the toggle is now off → drop the stale
-  // WSL marker record so the engine disappears (and Windows-side detection, if
-  // any, can take over below).
-  if (
-    record &&
-    component.id === 'orpheus' &&
-    record.entryPath === wslOrpheusMarkerPath() &&
-    !shouldUseWsl2ForOrpheus()
-  ) {
-    dropRecord(component.id);
-    try {
-      if (fs.existsSync(record.entryPath)) fs.unlinkSync(record.entryPath);
-    } catch {
-      /* best-effort marker cleanup */
-    }
-    record = undefined;
-  }
-
-  // Orpheus via WSL2: when the user has enabled "WSL2 for Orpheus" in Settings,
-  // the engine runs in WSL (vLLM CUDA graphs) rather than a Windows conda env.
-  // Mark the component Installed off the explicit toggle — that's the user's
-  // declaration their WSL env is set up (Settings has a "Verify WSL Setup"
-  // button to confirm), and it avoids spawning a slow WSL probe on every status
-  // refresh. The entryPath is a local marker (the real env lives in WSL); the
-  // spawn layer rewrites to `-n <wslOrpheusCondaEnv>`. This owns Orpheus while
-  // WSL is on, so the Windows-side external detection below is skipped.
-  if (!record && component.id === 'orpheus' && shouldUseWsl2ForOrpheus()) {
-    const marker = wslOrpheusMarkerPath();
-    try {
-      fs.mkdirSync(path.dirname(marker), { recursive: true });
-      if (!fs.existsSync(marker)) {
-        fs.writeFileSync(marker, 'Orpheus runs via WSL2 (CUDA graphs). See Settings → WSL2 for Orpheus.\n');
-      }
-      record = {
-        id: component.id,
-        version: component.version,
-        source: 'external',
-        path: path.dirname(marker),
-        entryPath: marker,
-        installedAt: new Date().toISOString(),
-      };
-      putRecord(record);
-      clog(`[COMPONENTS] orpheus: enabled via WSL2 (Settings toggle); engine available`);
-    } catch (err) {
-      cwarn(`[COMPONENTS] orpheus: failed to write WSL marker: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  }
 
   // For external components that aren't recorded yet, auto-detect and, on a hit,
   // record so they surface as Installed.
@@ -1161,90 +1099,6 @@ export async function runInstaller(
 }
 
 /** Component ids that have a downloadable installer for the current platform. */
-// ─────────────────────────────────────────────────────────────────────────────
-// Env diagnostics — run env_diagnostics.py inside a component's resolved env
-// ─────────────────────────────────────────────────────────────────────────────
-
-// Components whose id is also a diagnostic engine name (env_diagnostics.py ENGINES).
-// Down to one: xtts, voxtral and f5 left the build on 2026-09-05 along with the
-// components whose envs this diagnostic ran inside.
-const DIAGNOSTIC_ENGINES = new Set(['orpheus']);
-
-/** asar → asar.unpacked rewrite (a spawned python can't read inside the archive).
- *  Inlined rather than importing narrator-paths, which imports this module (cycle). */
-function unpackedScriptPath(p: string): string {
-  return p.includes('app.asar') && !p.includes('app.asar.unpacked')
-    ? p.replace('app.asar', 'app.asar.unpacked')
-    : p;
-}
-
-function locateEnvDiagnosticsScript(): string | null {
-  const candidates = [
-    path.join(app.getAppPath(), 'electron', 'python', 'env_diagnostics.py'),
-    path.join(__dirname, '..', 'python', 'env_diagnostics.py'),
-    path.join(__dirname, '..', '..', '..', 'electron', 'python', 'env_diagnostics.py'),
-  ];
-  for (const c of candidates) {
-    const real = unpackedScriptPath(c);
-    if (fs.existsSync(real)) return real;
-  }
-  return null;
-}
-
-async function testEnv(id: string): Promise<EnvDiagnosticResult> {
-  // Component ids carry an '-env' suffix (voxtral-env, f5-env); the diagnostic's
-  // engine name does not (orpheus stays orpheus).
-  const engine = id.toLowerCase().replace(/-env$/, '');
-  if (!DIAGNOSTIC_ENGINES.has(engine)) {
-    return { ok: false, checks: [], error: `No environment diagnostic is defined for "${id}".` };
-  }
-  const entry = resolveEntry(id);
-  if (!entry) {
-    return {
-      ok: false, checks: [],
-      error: `${id} is not installed or located yet — add or locate it in Settings → Add-ons first.`,
-    };
-  }
-  const py = envPython(entry);
-  if (!fs.existsSync(py)) {
-    return { ok: false, checks: [], error: `No Python interpreter was found in the env at ${py}.` };
-  }
-  const script = locateEnvDiagnosticsScript();
-  if (!script) {
-    return { ok: false, checks: [], error: 'env_diagnostics.py was not found in the app bundle.' };
-  }
-  const minVram = getComponent(id)?.requirements?.minVramMB ?? 0;
-  // torch/vLLM imports are slow (tens of seconds) — give it generous headroom.
-  const res = spawnSync(py, [script, '--engine', engine, '--min-vram-mb', String(minVram)], {
-    encoding: 'utf8', timeout: 180000, windowsHide: true, cwd: entry,
-  });
-  if (res.error) {
-    return { ok: false, checks: [], error: `Could not run the diagnostic: ${res.error.message}` };
-  }
-  // The script prints exactly one JSON object to stdout; torch/vLLM warnings go
-  // to stderr. Extract the object defensively in case anything leaks to stdout.
-  const stdout = res.stdout || '';
-  const start = stdout.indexOf('{');
-  const end = stdout.lastIndexOf('}');
-  if (start === -1 || end <= start) {
-    const tail = `${stdout}${res.stderr || ''}`.trim().slice(-500);
-    return { ok: false, checks: [], error: `The diagnostic produced no result. Output: ${tail}` };
-  }
-  try {
-    const parsed = JSON.parse(stdout.slice(start, end + 1));
-    return {
-      ok: !!parsed.ok,
-      engine: parsed.engine,
-      checks: Array.isArray(parsed.checks) ? parsed.checks : [],
-    };
-  } catch (e) {
-    return {
-      ok: false, checks: [],
-      error: `Could not parse the diagnostic output: ${e instanceof Error ? e.message : String(e)}`,
-    };
-  }
-}
-
 export function listInstallableIds(): string[] {
   return installableExternalIds();
 }
@@ -1300,5 +1154,4 @@ export const componentManager: IComponentManager = {
   setExternalPath,
   uninstall,
   resolveEntry,
-  testEnv,
 };

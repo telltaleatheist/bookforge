@@ -3,25 +3,15 @@
  * detect, install, verify, and resolve. Ships with the app; later remote-
  * fetchable for updatability.
  *
- * Phase 1 entries: Calibre (external), Tesseract (external), Orpheus
- * (external + managed stub).
+ * Phase 1 entries: Calibre (external), Tesseract (external).
  */
 
-import * as os from 'os';
-import * as path from 'path';
-
-import { getConfiguredToolsEnvPath } from '../tool-paths';
-import { getActiveToolsEnvPath, getToolsEnvDir } from '../tools-env-bootstrap';
 import { rvcVoiceComponents } from './rvc-voice-components';
 import { llamaCudaComponent } from './llama-cuda';
 import { cudaRvcComponent } from './cuda-rvc';
 import { rvcEnvComponent } from './rvc-env';
 import { whisperxEnvComponent } from './whisperx-env';
-import type {
-  OptionalComponent,
-  ComponentArtifact,
-  Platform,
-} from './component-types';
+import type { OptionalComponent } from './component-types';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Calibre — binary, external-only (managed can be added later)
@@ -66,129 +56,6 @@ const calibre: OptionalComponent = {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Orpheus — conda-env, external + managed (stub URLs until hosting is chosen)
-//
-// GPU NOTE: Orpheus runs on EITHER an NVIDIA CUDA GPU (vLLM backend) OR Apple
-// Silicon (MLX backend). The locked GpuKind type has no "cuda-or-apple-silicon"
-// member, and we may not modify the contract. So we declare requirements.gpu =
-// 'cuda' here and rely on system-probe.evaluate()'s special rule: for a
-// conda-env component, a 'cuda' GPU requirement is ALSO satisfied by Apple
-// Silicon. This keeps the contract unchanged while encoding the real
-// capability. See electron/components/system-probe.ts → evaluate().
-// ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * Build the external-detection candidate conda env locations for Orpheus:
- * named envs (orpheus_tts / orpheus_env) under common conda installs, plus a
- * prefix env (orpheus_env) sitting beside the e2a install.
- */
-function getOrpheusEnvCandidates(): { platform: Platform; path: string }[] {
-  const homeDir = os.homedir();
-  const candidates: { platform: Platform; path: string }[] = [];
-
-  const envNames = ['orpheus_tts', 'orpheus_env'];
-
-  // Named envs under common conda roots (envs/<name>).
-  const unixCondaRoots = [
-    path.join(homeDir, 'miniforge3'),
-    path.join(homeDir, 'Miniforge3'),
-    path.join(homeDir, 'miniconda3'),
-    path.join(homeDir, 'anaconda3'),
-    '/opt/conda',
-    '/opt/homebrew/Caskroom/miniconda/base',
-    '/opt/homebrew/Caskroom/miniforge/base',
-  ];
-  const winCondaRoots = [
-    path.join(homeDir, 'Miniforge3'),
-    path.join(homeDir, 'miniconda3'),
-    path.join(homeDir, 'Miniconda3'),
-    path.join(homeDir, 'anaconda3'),
-    path.join(homeDir, 'Anaconda3'),
-    'C:\\ProgramData\\Miniforge3',
-    'C:\\ProgramData\\miniconda3',
-    'C:\\ProgramData\\Anaconda3',
-  ];
-
-  // On Apple Silicon, Orpheus has NO env of its own — it rides the TOOLS env,
-  // whose MLX stack (mlx-audio + snac) renders Orpheus directly (the model
-  // weights pull from HuggingFace on first use). Detecting Orpheus AT the tools
-  // env makes resolveEntry('orpheus') return that path. Tried FIRST on darwin;
-  // Windows/Linux keep the vLLM orpheus_tts env candidates below.
-  //
-  // The `<e2aParent>/orpheus_env` and `<e2a>/orpheus_env` rows that used to
-  // follow are GONE with Phase 6: they made the component catalog — the thing
-  // that decides which python renders a book — depend on where an ebook2audiobook
-  // checkout happened to be, and on a machine with two checkouts they resolved by
-  // whichever directory the search reached first.
-  const toolsEnvRoots: string[] = [];
-  const activeToolsEnv = getActiveToolsEnvPath();
-  if (activeToolsEnv) toolsEnvRoots.push(activeToolsEnv);
-  const statedToolsEnv = getConfiguredToolsEnvPath();
-  if (statedToolsEnv) toolsEnvRoots.push(statedToolsEnv);
-  toolsEnvRoots.push(getToolsEnvDir());
-  for (const r of toolsEnvRoots) {
-    candidates.push({ platform: 'darwin', path: r });
-  }
-
-  for (const root of unixCondaRoots) {
-    for (const name of envNames) {
-      const envPath = path.join(root, 'envs', name);
-      candidates.push({ platform: 'darwin', path: envPath });
-      candidates.push({ platform: 'linux', path: envPath });
-    }
-  }
-  for (const root of winCondaRoots) {
-    for (const name of envNames) {
-      candidates.push({ platform: 'win32', path: path.join(root, 'envs', name) });
-    }
-  }
-
-  return candidates;
-}
-
-// Managed artifacts: per-platform stub entries (url:'' until hosting is chosen).
-const orpheusArtifacts: ComponentArtifact[] = [
-  { platform: 'darwin', arch: 'arm64', gpu: 'apple-silicon', url: '', sha256: '', bytes: 0, condaUnpack: true },
-  { platform: 'win32', arch: 'x64', gpu: 'cuda', url: '', sha256: '', bytes: 0, condaUnpack: true },
-  { platform: 'linux', arch: 'x64', gpu: 'cuda', url: '', sha256: '', bytes: 0, condaUnpack: true },
-];
-
-const orpheus: OptionalComponent = {
-  id: 'orpheus',
-  name: 'Orpheus TTS',
-  description:
-    'High-quality neural TTS with strong prosody. Runs on an NVIDIA CUDA GPU (vLLM) or Apple Silicon (MLX).',
-  kind: 'conda-env',
-  // Mac: Orpheus rides the e2a env (MLX) — no separate managed download, so
-  // detect-only (no broken "Install" against a stub artifact). The model weights
-  // pull from HuggingFace into the e2a model dir on first use. Windows/Linux: the
-  // dedicated vLLM env is located (external) or, later, managed.
-  acquisition: process.platform === 'darwin' ? ['external'] : ['external', 'managed'],
-  sizeBytes: 0,
-  requirements: {
-    // 'cuda' here means CUDA OR Apple Silicon for conda-env components — see the
-    // GPU NOTE above and system-probe.evaluate().
-    gpu: 'cuda',
-    minVramMB: 6000,
-  },
-  artifacts: orpheusArtifacts,
-  detect: {
-    candidates: getOrpheusEnvCandidates(),
-    envVar: 'ORPHEUS_ENV_PATH',
-  },
-  // Mac rides the e2a env (MLX stack) → prove it with `mlx_audio`. Windows/Linux
-  // use the dedicated vLLM env → prove it with `orpheus_tts`.
-  verify: {
-    kind: 'python-import',
-    module: process.platform === 'darwin' ? 'mlx_audio' : 'orpheus_tts',
-  },
-  version: '',
-  entryPath: '', // env root, resolved from detection (external) or install dir (managed)
-  externalHelpUrl:
-    'https://github.com/canopyai/Orpheus-TTS#installation',
-};
-
-// ─────────────────────────────────────────────────────────────────────────────
 // Catalog
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -199,7 +66,6 @@ const orpheus: OptionalComponent = {
 export function getCatalog(): OptionalComponent[] {
   return [
     calibre,
-    orpheus,
     llamaCudaComponent(),
     cudaRvcComponent(),
     rvcEnvComponent(),

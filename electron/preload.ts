@@ -4,7 +4,6 @@ import type {
   SystemProfile,
   InstallResult,
   InstallProgress,
-  EnvDiagnosticResult,
 } from './components/component-types';
 import type { GuideReview, GuideReviewSave } from '../shared/pronunciation-guide';
 import type { DoctorReport } from './doctor';
@@ -2068,7 +2067,6 @@ export interface ElectronAPI {
     installers: () => Promise<{ ids: string[]; notes: Record<string, string | null> }>;
     cancel: (id: string) => Promise<void>;
     uninstall: (id: string) => Promise<void>;
-    testEnv: (id: string) => Promise<EnvDiagnosticResult>;
     onProgress: (callback: (p: InstallProgress) => void) => () => void;
     /** The startup upgrade sweep: null until it has finished. */
     upgrades: () => Promise<StartupUpgradeReport | null>;
@@ -3509,8 +3507,6 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('components:cancel', id),
     uninstall: (id: string) =>
       ipcRenderer.invoke('components:uninstall', id),
-    testEnv: (id: string) =>
-      ipcRenderer.invoke('components:test-env', id),
     onProgress: (callback: (p: InstallProgress) => void) => {
       const listener = (_event: Electron.IpcRendererEvent, p: InstallProgress) => callback(p);
       ipcRenderer.on('components:progress', listener);
