@@ -1,8 +1,8 @@
 diff --git a/foundry-app/angular.json b/foundry-app/angular.json
-index 8d70d002..06658d34 100644
+index 8d70d002..1af9e2de 100644
 --- a/foundry-app/angular.json
 +++ b/foundry-app/angular.json
-@@ -19,7 +19,7 @@
+@@ -19,12 +19,13 @@
          "build": {
            "builder": "@angular/build:application",
            "options": {
@@ -11,6 +11,12 @@ index 8d70d002..06658d34 100644
              "browser": "src/main.ts",
              "index": "src/index.html",
              "tsConfig": "tsconfig.app.json",
+             "inlineStyleLanguage": "scss",
+             "styles": ["src/styles.scss"],
++            "stylePreprocessorOptions": { "includePaths": ["../src/app/creamsicle-desktop/styles"] },
+             "assets": [
+               {
+                 "glob": "pdf.worker.min.mjs",
 diff --git a/foundry-app/electron/window.ts b/foundry-app/electron/window.ts
 index 181d6d79..fe0fc8f7 100644
 --- a/foundry-app/electron/window.ts
@@ -6731,6 +6737,100 @@ index 00000000..fb806361
 + * stay in the tree, unreached, so putting them back is this one line.
 + */
 +export const PAGE_TOOLS = false;
+diff --git a/foundry-app/src/styles.scss b/foundry-app/src/styles.scss
+index a4c58ca5..798fe1dd 100644
+--- a/foundry-app/src/styles.scss
++++ b/foundry-app/src/styles.scss
+@@ -2,41 +2,48 @@
+    dark theme, so the two apps read as siblings: warm charcoal neutrals rather
+    than cold grays, cyan accent, 1px borders, small radii.
+ 
++   THE VALUES ARE BOOKFORGE'S OWN VARIABLES (src/app/creamsicle-desktop/styles/
++   _variables.scss, reached through angular.json's includePaths), so a palette
++   change there reaches this window. The ok/warn/error triple is BookForge's dark
++   theme's own literals (_themes.scss), which have no variable there.
++
+    The names stay Foundry's — semantic, not BookForge's class vocabulary — so a
+    component asks for a ROLE (--bg-sunken, --border-subtle) and the mapping to a
+    palette entry lives here and only here. */
++@use 'variables' as bf;
++
+ :root {
+   /* Backgrounds, deepest first. The document is the only bright thing on
+      screen, which is the point of a viewer that fills the window. */
+-  --bg-sunken: #0e0d0c;
+-  --bg-base: #181715;
+-  --bg-elevated: #211f1c;
+-  --bg-input: #2a2824;
++  --bg-sunken: #{bf.$neutral-950};
++  --bg-base: #{bf.$neutral-900};
++  --bg-elevated: #{bf.$neutral-850};
++  --bg-input: #{bf.$neutral-800};
+   --bg-hover: rgba(255, 255, 255, 0.05);
+   --bg-active: rgba(255, 255, 255, 0.08);
+-  --bg-overlay: rgba(24, 23, 21, 0.9);
++  --bg-overlay: #{rgba(bf.$neutral-900, 0.9)};
+ 
+-  --border-subtle: #2a2824;
+-  --border-default: #403c36;
+-  --border-strong: #565149;
++  --border-subtle: #{bf.$neutral-800};
++  --border-default: #{bf.$neutral-700};
++  --border-strong: #{bf.$neutral-600};
+ 
+-  --text-primary: #faf9f7;
+-  --text-secondary: #928b7f;
+-  --text-tertiary: #706a60;
+-  --text-muted: #565149;
++  --text-primary: #{bf.$neutral-50};
++  --text-secondary: #{bf.$neutral-400};
++  --text-tertiary: #{bf.$neutral-500};
++  --text-muted: #{bf.$neutral-600};
+   /* For text ON a filled accent. BookForge puts white here; cyan-400 is bright
+      enough that white sits near 1.7:1, so Foundry uses the near-black instead —
+      same button, legible label. */
+-  --text-inverse: #181715;
++  --text-inverse: #{bf.$neutral-900};
+ 
+-  --accent: #22d3ee;
+-  --accent-hover: #67e8f9;
+-  --accent-active: #a5f3fc;
++  --accent: #{bf.$cyan-400};
++  --accent-hover: #{bf.$cyan-300};
++  --accent-active: #{bf.$cyan-200};
+   /* The saturated end of the ramp, for fills that must stay readable under
+      white-ish text (badges, selection). */
+-  --accent-strong: #06b6d4;
+-  --accent-soft: rgba(6, 182, 212, 0.2);
+-  --accent-faint: rgba(6, 182, 212, 0.12);
++  --accent-strong: #{bf.$cyan-500};
++  --accent-soft: #{rgba(bf.$cyan-500, 0.2)};
++  --accent-faint: #{rgba(bf.$cyan-500, 0.12)};
+ 
+   /* AUDIO — the one colour in this palette that does not name a state.
+      It names an OWNER: the acts on the provenance tree that belong to the
+@@ -62,7 +69,7 @@
+   --radius: 8px;
+   --radius-lg: 12px;
+ 
+-  --focus-ring: 0 0 0 2px rgba(34, 211, 238, 0.4);
++  --focus-ring: 0 0 0 2px #{rgba(bf.$cyan-400, 0.4)};
+ 
+   /*
+    * `--rail-h` STOOD HERE AND IS GONE WITH THE GEOMETRY IT DESCRIBED.
+@@ -77,9 +84,9 @@
+    * with an extra step in front of it.
+    */
+ 
+-  --scrollbar-track: #2a2824;
+-  --scrollbar-thumb: #06b6d4;
+-  --scrollbar-thumb-hover: #22d3ee;
++  --scrollbar-track: #{bf.$neutral-800};
++  --scrollbar-thumb: #{bf.$cyan-500};
++  --scrollbar-thumb-hover: #{bf.$cyan-400};
+ 
+   /* The stacks, not the webfonts: this app runs offline, so nothing is fetched
+      and Segoe UI is what actually resolves on Windows. Outfit / DM Sans /
 diff --git a/foundry-app/tools/test-crucible-setup-surface.js b/foundry-app/tools/test-crucible-setup-surface.js
 index 7c6c5458..545581d3 100644
 --- a/foundry-app/tools/test-crucible-setup-surface.js
