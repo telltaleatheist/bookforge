@@ -6201,7 +6201,7 @@ async function applyM4bMetadata(
   // cover-strip pass needed.
   if (Object.keys(metadataToApply).length > 0) {
     console.log('[PARALLEL-TTS] Applying metadata to M4B:', JSON.stringify(metadataToApply, null, 2));
-    await applyMetadata(inputPath, metadataToApply, { timeoutMs: 300_000 });
+    await applyMetadata(inputPath, metadataToApply);
   }
 
   // Rename and move if custom filename specified and outputDir is valid

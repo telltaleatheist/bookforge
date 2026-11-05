@@ -2554,7 +2554,7 @@ export async function startReassembly(
 
         mark('completeness gate');
 
-        // Write the book's tags and cover. IN PLACE, via mutagen — only the moov
+        // Write the book's tags and cover, without ever risking it (m4b-tags.ts) — only the moov
         // is rewritten, not the audio (see `applyM4bMetadata`).
         if (outputPath && fs.existsSync(outputPath)) {
           await applyM4bMetadata(outputPath, config.metadata, jobId,
@@ -3255,16 +3255,18 @@ async function applyM4bMetadata(
   activeMetadataAborts.set(jobId, controller);
 
   try {
-    // NOT A REMUX. This comment said "a single lossless `-c copy` remux" for long
-    // enough to be quoted in a plan to remove the pass: `applyMetadata` writes
-    // the tags and the cover IN PLACE with mutagen (electron/scripts/
-    // write_m4b_tags.py), touching the moov and never the audio or the chapters.
-    // It maps only the chosen cover, so no separate cover-strip pass is needed.
-    // The timeout stays generous because it is a network share, not because the
-    // file is re-encoded.
+    // NOT A REMUX, and no audio is re-encoded (narrator/assemble/m4b-tags.ts). It maps
+    // only the chosen cover, so no separate cover-strip pass is needed. Tags that do not
+    // fit the padding cost a whole-file copy on the same volume, so that is what the row
+    // says while it happens. No timeout: stopping it is the signal, and a copy of a book
+    // on a network share takes as long as it takes.
     await applyMetadata(m4bPath, metadataToApply, {
-      timeoutMs: 300_000,
-      signal: controller.signal
+      signal: controller.signal,
+      onProgress: ({ phase, bytesDone, bytesTotal }) => {
+        reportProgress(50, phase === 'copying'
+          ? `Writing a new copy with the metadata: ${Math.round((bytesDone / bytesTotal) * 100)}%`
+          : 'Checking the new copy against the original...');
+      },
     });
     console.log('[REASSEMBLY] Metadata applied successfully');
     return { success: true };

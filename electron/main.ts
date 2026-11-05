@@ -5453,9 +5453,8 @@ function setupIpcHandlers(): void {
                 if (meta.series !== undefined) m4bMeta.series = meta.series;
                 if (meta.contributors !== undefined) m4bMeta.contributors = meta.contributors;
                 if (embedCoverHere) m4bMeta.coverPath = absCoverPath;
-                // applyMetadata rewrites atomically (temp + rename over the file); an
-                // EBUSY/EPERM on the Syncthing-synced drive throws and is surfaced as
-                // a warning rather than corrupting the file in place.
+                // applyMetadata cannot leave a damaged book (m4b-tags.ts). A file held on
+                // the Syncthing-synced drive refuses by name and is surfaced as a warning.
                 await applyMetadata(m4bPath, m4bMeta as any);
                 console.log(`[project:update-metadata] Updated M4B metadata in ${rel}${embedCoverHere ? ' (+cover)' : ''}`);
               } catch (m4bErr) {
@@ -14342,6 +14341,14 @@ app.whenReady().then(async () => {
   // `library:set-root` will have swept nothing because a fresh library has no
   // pre-sidecar projects in it.
   if (customLibraryRoot) {
+    // A tag write's whole-file copy that a crash left beside a book. Not on the library's
+    // first listing's time: a share that is not up yet says so here and is swept next start.
+    void import('./narrator/assemble/m4b-tags.js')
+      .then(({ sweepM4bTagLeftovers }) => sweepM4bTagLeftovers(manifestService.getProjectsPath()))
+      .then((removed) => {
+        if (removed.length > 0) console.log(`[Startup] Removed ${removed.length} interrupted tag write(s): ${removed.join(', ')}`);
+      })
+      .catch((err: Error) => console.warn(`[Startup] Could not sweep interrupted tag writes: ${err.message}`));
     void sweepEditorState(manifestService.getProjectsPath())
       .then(({ scanned, migrated, failed }) => {
         console.log(

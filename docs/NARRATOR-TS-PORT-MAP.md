@@ -103,6 +103,7 @@ Legend: **P** = port (live CPU), **D** = dead (do not port), **C** = Crucible-bo
     date `©day`, description `desc`, `stik=2`, cover PNG if `.png` else JPEG; empty/None values skipped
     (not cleared); lock backoff delays `(0, .3, .6, 1.2, 2.0)` on EACCES/EBUSY/EPERM.
   - The cover attach inside assembly is the same writer with only `covr`.
+  - **ASSEMBLY STEP CHECKLIST:** `encode.attach_cover` is still Python mutagen, which can move all the audio in place on the only copy. When assembly is ported it must call `electron/narrator/assemble/m4b-tags.ts` (`setM4bItems` with `coverItem`), so it takes the same safe path (Owen, 2026-11-05). Note that `audiobookItems` also sets `stik`; `attach_cover` does not, so it passes only the `covr` item.
 
 ### `text/` (5,775) — the prep path (largest, riskiest)
 

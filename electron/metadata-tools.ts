@@ -25,14 +25,14 @@
  *     attached_pic cover. Standard mp4 metadata keys don't need it.
  */
 
-import { spawn, execFileSync, ChildProcess } from 'child_process';
+import { spawn, execFileSync } from 'child_process';
 import * as path from 'path';
 import * as os from 'os';
 import * as fs from 'fs';
 import { app } from 'electron';
 import { getFfmpegPath, getFfprobePath } from './tool-paths';
-import { getPythonInvocation, buildToolsSpawnEnv, toUnpackedPath } from './narrator-paths';
 import { renameWithRetry, unlinkWithRetry, LARGE_FILE_RETRY_DELAYS_MS } from './fs-retry';
+import { audiobookItems, ffmpegM4bProbe, setM4bItems, type M4bTagProgress } from './narrator/assemble/m4b-tags';
 
 /**
  * Name prefix of the scratch file {@link embedVttInM4b} muxes into before it
@@ -326,105 +326,54 @@ export function removeCover(filePath: string): Promise<void> {
   });
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// In-place tag/cover writer (mutagen)
-// ─────────────────────────────────────────────────────────────────────────────
-
-function resolveM4bTagScript(): string {
-  const candidates = [
-    path.join(app.getAppPath(), 'electron', 'scripts', 'write_m4b_tags.py'),
-    path.join(__dirname, '..', '..', 'electron', 'scripts', 'write_m4b_tags.py'),
-    path.join(__dirname, 'scripts', 'write_m4b_tags.py'),
-  ];
-  const found = candidates.find((p) => fs.existsSync(p)) || candidates[candidates.length - 1];
-  // Packaged: the spawned python can't read inside app.asar — hand it the
-  // asarUnpack'd real file (dist/electron/scripts/** is unpacked).
-  return toUnpackedPath(found);
-}
+// ─────────────────────────────
+// Tags and cover
+// ─────────────────────────────
 
 /**
- * Write tags + cover into an M4B IN PLACE via mutagen (see write_m4b_tags.py).
- * Only the metadata atoms are rewritten — the audio bitstream and chapters are
- * untouched — so this is near-instant regardless of file size, versus the whole
- * -c copy remux it replaces. Runs in the bundled e2a env (mutagen is an e2a dep).
+ * Write tags + cover so that a crash at any point leaves a whole book
+ * (narrator/assemble/m4b-tags.ts): in place when they fit the padding, otherwise a new
+ * file beside the original, verified, then one rename.
  */
-function writeM4bTagsInPlace(
+async function writeM4bTagsInPlace(
   filePath: string,
   tags: Record<string, string>,
   coverPath: string | undefined,
-  options?: { timeoutMs?: number; signal?: AbortSignal }
+  options?: { signal?: AbortSignal; onProgress?: (progress: M4bTagProgress) => void }
 ): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (options?.signal?.aborted) { resolve(); return; }
-    if (!fs.existsSync(filePath)) { reject(new Error(`File not found: ${filePath}`)); return; }
-
-    const script = resolveM4bTagScript();
-    const py = getPythonInvocation();
-    const env = buildToolsSpawnEnv();
-    const args = [...py.args, '-u', script];
-    const payload = JSON.stringify({ file: filePath, tags, cover: coverPath ?? null });
-    console.log(`[METADATA-TOOLS] mutagen tag write: ${py.command} ${script}`);
-
-    let child: ChildProcess;
-    try {
-      child = spawn(py.command, args, { env, windowsHide: true });
-    } catch (err) { reject(err instanceof Error ? err : new Error(String(err))); return; }
-
-    const timeoutMs = options?.timeoutMs ?? 120_000;
-    let settled = false;
-    let onAbort: (() => void) | null = null;
-    const done = (fn: () => void) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      if (onAbort && options?.signal) options.signal.removeEventListener('abort', onAbort);
-      fn();
-    };
-    const timer = setTimeout(() => {
-      try { child.kill('SIGKILL'); } catch { /* already dead */ }
-      done(() => reject(new Error('write_m4b_tags timed out')));
-    }, timeoutMs);
-    if (options?.signal) {
-      onAbort = () => { try { child.kill('SIGKILL'); } catch { /* already dead */ } done(() => resolve()); };
-      options.signal.addEventListener('abort', onAbort, { once: true });
-    }
-
-    let stdout = '';
-    let stderr = '';
-    child.stdout?.on('data', (d: Buffer) => { stdout += d.toString(); });
-    child.stderr?.on('data', (d: Buffer) => { stderr = appendCapped(stderr, d.toString()); });
-    child.on('error', (err) => done(() => reject(err)));
-    child.on('close', () => {
-      const lines = stdout.split('\n').map((l) => l.trim()).filter(Boolean);
-      for (let i = lines.length - 1; i >= 0; i--) {
-        try {
-          const r = JSON.parse(lines[i]);
-          if (typeof r.ok === 'boolean') {
-            return r.ok ? done(() => resolve())
-                        : done(() => reject(new Error(r.error || 'write_m4b_tags failed')));
-          }
-        } catch { /* not the JSON result line */ }
-      }
-      done(() => reject(new Error(stderr.trim().slice(-400) || 'write_m4b_tags produced no result')));
-    });
-
-    try { child.stdin?.write(payload); child.stdin?.end(); }
-    catch (err) { done(() => reject(err instanceof Error ? err : new Error(String(err)))); }
+  if (options?.signal?.aborted) return;
+  if (!fs.existsSync(filePath)) throw new Error(`File not found: ${filePath}`);
+  const cover = coverPath ? { data: await fs.promises.readFile(coverPath), path: coverPath } : null;
+  await setM4bItems(filePath, audiobookItems(tags, cover), {
+    probe: ffmpegM4bProbe(getFfmpegPath(), getFfprobePath()),
+    signal: options?.signal,
+    onProgress: options?.onProgress,
   });
+}
+
+/** A whole-file copy with nobody listening still says how it is doing, every 10 %. */
+function logTagProgress(filePath: string): (progress: M4bTagProgress) => void {
+  let shown = -1;
+  return ({ phase, bytesDone, bytesTotal }) => {
+    const tenth = Math.floor((bytesDone / bytesTotal) * 10);
+    if (phase === 'copying' && tenth === shown) return;
+    shown = tenth;
+    console.log(`[METADATA-TOOLS] ${phase} ${path.basename(filePath)}: ${tenth * 10}%`);
+  };
 }
 
 /**
  * Apply metadata (and optionally swap the cover) on an audiobook file.
  *
- * Writes IN PLACE via mutagen (see writeM4bTagsInPlace) — no full-file remux, so
- * this is near-instant even on a 500 MB audiobook, and it can't corrupt the audio
- * or chapters (it never touches them). Narrator → composer and series → grouping
- * preserve the long-standing m4b-tool mapping.
+ * Never risks the book (see writeM4bTagsInPlace). A write that fits the file's padding
+ * is near-instant; one that does not costs a whole-file copy on the same volume, which
+ * `onProgress` reports. Narrator → composer and series → grouping preserve the
+ * long-standing m4b-tool mapping.
  */
 export function applyMetadata(
   filePath: string,
   metadata: AudiobookMetadata,
-  options?: { timeoutMs?: number; signal?: AbortSignal }
+  options?: { signal?: AbortSignal; onProgress?: (progress: M4bTagProgress) => void }
 ): Promise<void> {
   // Build artist string from contributors if available
   const artistString = metadata.contributors && metadata.contributors.length > 0
@@ -463,8 +412,8 @@ export function applyMetadata(
   }
 
   return writeM4bTagsInPlace(filePath, tags, optimizedCoverPath, {
-    timeoutMs: options?.timeoutMs ?? 120_000,
     signal: options?.signal,
+    onProgress: options?.onProgress ?? logTagProgress(filePath),
   }).then(
     () => { cleanupOptimizedCover(); },
     (err) => { cleanupOptimizedCover(); throw err; }

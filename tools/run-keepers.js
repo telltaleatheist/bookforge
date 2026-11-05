@@ -221,6 +221,8 @@ const SUITES = [
   'test-crucible-venue-band',
   // The real server's settings document, which the fake once hid a broken wizard from.
   'test-crucible-settings-real-doc',
+  // A tag write never risks the book, killed at each point of both paths (Owen 2026-11-05).
+  'test-m4b-tags',
   // THE BAND PREP IS HANDED (2026-11-04, docs/REORG-PLAN.md B1). The venue's
   // band becomes a floor and a cap in ONE place — `higgsPrepBudget` — and rides
   // the prep argv, so narrator's prep imports no model code to learn it. The
