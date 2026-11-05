@@ -18,10 +18,10 @@ index 8d70d002..1af9e2de 100644
                {
                  "glob": "pdf.worker.min.mjs",
 diff --git a/foundry-app/electron/preload.ts b/foundry-app/electron/preload.ts
-index f5f13654..b1d8d15b 100644
+index 6cfa8732..2cfb83b8 100644
 --- a/foundry-app/electron/preload.ts
 +++ b/foundry-app/electron/preload.ts
-@@ -437,3 +437,19 @@ const api: FoundryApi = {
+@@ -438,3 +438,19 @@ const api: FoundryApi = {
  };
  
  contextBridge.exposeInMainWorld('foundry', api);
@@ -59,7 +59,7 @@ index 181d6d79..fe0fc8f7 100644
      show: false,
      webPreferences: {
 diff --git a/foundry-app/package-lock.json b/foundry-app/package-lock.json
-index 7db01843..cd80dfb2 100644
+index 7db01843..6f750641 100644
 --- a/foundry-app/package-lock.json
 +++ b/foundry-app/package-lock.json
 @@ -14,10 +14,10 @@
@@ -1481,7 +1481,7 @@ index 7db01843..cd80dfb2 100644
        "version": "0.1.0",
 -      "resolved": "file:../packages/foundry-core",
 +      "resolved": "file:../vendor/owen-foundry-core-0.1.0.tgz",
-+      "integrity": "sha512-YzEmQHEl9ukOZMpURcpnlIDYNou5QGbEDJw7dhqqxHng8XGPO7er0ROAs7/GSohGENQi5XQy+/XPK0qxbslGVA==",
++      "integrity": "sha512-YTWUQm+XlGhlOK0qMGk+LEiujLXvUj10N9ygfMX0mtyNOnN5bRYXafkMmB1UJNHoZUIhgJ0P3hSlUUqD8H9WHw==",
        "license": "UNLICENSED",
        "dependencies": {
          "libheif-js": "1.19.8",
