@@ -56,8 +56,10 @@ all four servers; BookForge merges.
 
 - Behaviour unchanged unless a ruling above says otherwise. Faithful ports: *"we're
   just trying to organize things better and we can work on cleaning it up later."*
-- Branches/worktrees only. No merge to main, no release, no deploy without the lead
-  saying Owen has tested. Never move HEAD of a checkout another agent uses.
+- COMMIT TO MAIN AND PUSH AS YOU GO (Owen, 2026-11-04: "we can commit to main/push as we go").
+  Work in a branch/worktree, and when a step passes its gates and the lead accepts it,
+  rebase onto origin/main and push it to main. Never move HEAD of a checkout another
+  agent uses. RELEASES, DEPLOYS and PROMOTES still wait for Owen's test pass.
 - No GPU use without Owen's named go. No installer packaging.
 - Baseline first, prove "unchanged" with numbers (tests, channel lists, byte diffs).
 - Report to bookforge pc 1 when each step is done: commits, what changed, gate
