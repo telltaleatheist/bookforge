@@ -25,7 +25,6 @@
             "tsConfig": "tsconfig.app.json",
             "inlineStyleLanguage": "scss",
             "styles": ["src/styles.scss"],
-            "stylePreprocessorOptions": { "includePaths": ["../src/app/creamsicle-desktop/styles"] },
             "assets": [
               {
                 "glob": "pdf.worker.min.mjs",
