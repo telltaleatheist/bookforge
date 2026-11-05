@@ -1,7 +1,9 @@
 # libxml2 as WebAssembly
 
-**Status: the shim, the build script and `electron/narrator/text/html/libxml2-wasm.ts` have never been
-compiled or run.** There is no `libxml2.wasm` yet. Installing Emscripten is waiting on Owen.
+**Status: built once, not yet held to Python.** `libxml2.wasm` is 350,777 bytes, sha256
+`f8a5bf7d88e41fc8fad5e2b16256c4b026de4f405278aafc2e7bb1458c47c5d6`, from Emscripten 6.0.13 with the
+source below. Its only warnings were two deprecated line-number calls in `shim.c`. The byte comparison
+against Python on the library has not run yet.
 
 Narrator's prep reads every EPUB's package files through libxml2's XML parser, and its nav and
 every document through its HTML parser and serializer before BeautifulSoup sees them, and real books depend on that parser's recovery rules: 247 documents in
@@ -15,7 +17,7 @@ engine at the same version instead of a copy of its rules. See `docs/NARRATOR-TS
 | `shim.c` | The calls lxml 6.1.1 makes, and nothing more |
 | `build.js` | Checks the source hash, configures, compiles |
 | `LICENSE.libxml2` | libxml2's licence, which ships with the binary |
-| `libxml2.wasm` | The built binary, committed once it exists |
+| `libxml2.wasm` | The built binary (sha256 `f8a5bf7d…c47c5d6`) |
 
 The app and its install use only the committed binary. They never need Emscripten.
 
