@@ -1,8 +1,9 @@
-import { ChangeDetectionStrategy, Component, DestroyRef, computed, inject, input, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, DestroyRef, computed, inject, input, output, signal } from '@angular/core';
 
 import { DesktopButtonComponent } from '../../../creamsicle-desktop';
 import { ElectronService } from '../../../core/services/electron.service';
 import {
+  CRUCIBLE_REPAIR_HERE,
   crucibleRepairBytes,
   crucibleRepairHeadline,
   reduceCrucibleRepair,
@@ -25,7 +26,10 @@ import {
   template: `
     <div class="rep">
       <div class="rep-actions">
-        <desktop-button variant="ghost" size="sm" [disabled]="running()" (click)="start(true)">Check only</desktop-button>
+        <!-- A check asks a running server by its row. With no row there is nobody to ask. -->
+        @if (server() !== HERE) {
+          <desktop-button variant="ghost" size="sm" [disabled]="running()" (click)="start(true)">Check only</desktop-button>
+        }
         @if (confirming()) {
           <span class="rep-confirm">
             Verify everything and download again whatever is broken?
@@ -103,7 +107,11 @@ import {
 export class CrucibleRepairComponent {
   private readonly electron = inject(ElectronService);
 
-  readonly server = input.required<string>();
+  readonly HERE = CRUCIBLE_REPAIR_HERE;
+  /** A row's name, or the engine on this computer when no row names it. */
+  readonly server = input<string>(CRUCIBLE_REPAIR_HERE);
+  /** A run ended, so what the host knows about this machine may have changed. */
+  readonly finished = output<void>();
   readonly view = signal<CrucibleRepairView | null>(null);
   readonly confirming = signal(false);
 
@@ -155,6 +163,7 @@ export class CrucibleRepairComponent {
     const stop = this.electron.crucible.onRepairEvent((event) => {
       if (event.server !== this.server()) return;
       this.view.update((v) => reduceCrucibleRepair(v, event));
+      if (event.kind === 'done' || event.kind === 'refused') this.finished.emit();
     });
     inject(DestroyRef).onDestroy(stop);
   }

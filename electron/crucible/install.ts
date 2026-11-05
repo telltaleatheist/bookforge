@@ -881,9 +881,10 @@ export async function existingCrucibleOn(
     const { crucibleProcessRunner } = await import('./host-runner.js');
     return bootstrap.detectHost({ distro: getWslDistro() }, crucibleProcessRunner());
   },
-): Promise<{ sentence: string } | null> {
+): Promise<{ sentence: string; repairable: boolean } | null> {
   if (facts.discovered.present) {
     return {
+      repairable: true,
       sentence: `This computer already has a Crucible, ${facts.discovered.serverName} at `
         + `${facts.discovered.url}. Add it rather than installing a second one.`,
     };
@@ -892,12 +893,14 @@ export async function existingCrucibleOn(
     const { server } = await detect();
     if (server === null) return null;
     return {
+      repairable: true,
       sentence: 'This computer already has Crucible installed, but its settings could not be read, '
         + 'so BookForge cannot connect to it yet. Repair it, or start it once, rather than '
         + 'installing a second copy.',
     };
   } catch (err) {
     return {
+      repairable: false,
       sentence: 'BookForge could not tell whether this computer already has a Crucible '
         + `(${err instanceof Error ? err.message : String(err)}), so it is not offering to install `
         + 'one. Try again in a moment.',

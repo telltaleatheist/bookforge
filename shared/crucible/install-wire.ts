@@ -220,7 +220,11 @@ export interface CrucibleInstallPlan {
    * answered at all, which is not a yes to installing another. Null only when the machine
    * was asked and said no.
    */
-  existing: { readonly sentence: string } | null;
+  existing: {
+    readonly sentence: string;
+    /** It was found, so Repair can be offered. False when the question could not be answered. */
+    readonly repairable: boolean;
+  } | null;
   /** Crucible's own README — the argument behind the sequence. */
   readme: string;
   /*

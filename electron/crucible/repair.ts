@@ -4,9 +4,14 @@
  * Owen, 2026-11-04: "a doctor that repairs broken environments by redownloading them
  * if they arent right." Two doors, one answer:
  *
- *  - THIS MACHINE'S engine goes through `@crucible/bootstrap`'s `repair()`, because the
- *    server and its service cannot be repaired from inside themselves.
- *  - ONE ON ANOTHER MACHINE has only its own `repair` task, submitted over the API.
+ *  - REPAIRING THIS MACHINE'S engine goes through `@crucible/bootstrap`'s `repair()`,
+ *    because the server and its service cannot be repaired from inside themselves.
+ *  - EVERYTHING ELSE is the server's own `repair` task, submitted over the API.
+ *
+ * CHECK ONLY NEVER TAKES THE FIRST DOOR, on any row. `repair({scope:{verifyOnly:true}})`
+ * makes only the TASK verify-only: before the task it can still reinstall the runtime and
+ * start the service. A check asks the server that is running, and if none answers it
+ * says so and has touched nothing.
  *
  * Both end in the same `RepairResult`, and `shared/crucible/repair-wire.ts` is the one
  * view of it. Whether a row is this machine's is decided the way the uninstall door
@@ -24,12 +29,13 @@ import {
   type TaskRepairData,
 } from '@crucible/client';
 
-import type {
-  CrucibleRepairEvent,
-  CrucibleRepairResult,
+import {
+  CRUCIBLE_REPAIR_HERE,
+  type CrucibleRepairEvent,
+  type CrucibleRepairResult,
 } from '../../shared/crucible/repair-wire';
 import { CRUCIBLE_CLIENT_NAME, crucibleClientFor } from './servers';
-import { transportFailureCause } from './transport-failure';
+import { crucibleUnavailableCause } from './transport-failure';
 
 /** The app's shape IS the SDK's, and the compiler is what says so (install-door.ts does the same). */
 const asAppResult = (result: RepairResult): CrucibleRepairResult => result;
@@ -48,7 +54,7 @@ export interface RepairDeps {
   readonly isLocal: (server: string) => Promise<boolean>;
   /** `@crucible/bootstrap`'s `repair`, with this app's runner and distro already applied. */
   readonly localRepair: (options: {
-    scope: { verifyOnly: boolean };
+    scope: { verifyOnly: false };
     onStep: (step: { name: string; status: 'running' | 'ok' | 'failed'; detail: string }) => void;
     onRepair: (data: TaskRepairData) => void;
     onProgress: (progress: { bytesDone: number; bytesTotal: number | null; file: string }) => void;
@@ -71,6 +77,17 @@ function frameEvent(server: string, data: TaskRepairData): CrucibleRepairEvent {
   return {
     kind: 'frame', server, step: data.step, state: data.state,
     subject: data.subject, detail: data.detail, bytesToCheck: data.bytesToCheck,
+  };
+}
+
+/** Nobody answered, so nothing happened. Which of the two buttons was pressed changes the cure. */
+function notAnswering(server: string, cause: string, verifyOnly: boolean, local: boolean): CrucibleRepairEvent {
+  const cure = verifyOnly
+    ? `Check only asks the running server and never starts or installs anything.${local ? ' Repair is what brings this computer\'s engine back.' : ''}`
+    : 'Start that server, then run this again.';
+  return {
+    kind: 'refused', server, code: 'server_not_answering', needsUpdate: false, command: null,
+    message: `crucible "${server}" did not answer (${cause}), so nothing was checked or changed. ${cure}`,
   };
 }
 
@@ -108,7 +125,7 @@ async function followRepairTask(
       }
       break;
     } catch (err) {
-      const cause = transportFailureCause(err);
+      const cause = crucibleUnavailableCause(err);
       if (cause === null) throw err;
       const now = Date.now();
       lostSince = lostSince ?? now;
@@ -144,29 +161,23 @@ export async function repairCrucibleServer(
   deps: RepairDeps,
 ): Promise<void> {
   const scope = { verifyOnly: options.verifyOnly };
-  let local = false;
   try {
-    local = await deps.isLocal(server);
-    emit({ kind: 'started', server, verifyOnly: options.verifyOnly, local, taskId: null });
-    if (local) {
-      const outcome = await deps.localRepair({
-        scope,
-        onStep: (step) => emit({ kind: 'host-step', server, name: step.name, status: step.status, detail: step.detail }),
-        onRepair: (data) => emit(frameEvent(server, data)),
-        onProgress: (p) => emit({ kind: 'progress', server, bytesDone: p.bytesDone, bytesTotal: p.bytesTotal, file: p.file }),
-      });
-      const notes = [
-        outcome.server === 'reinstalled' ? 'The server would not answer, so it was reinstalled.' : null,
-        outcome.service === 'started' ? 'Its service was not running and was started.' : null,
-      ].filter((n): n is string => n !== null);
-      emit({ kind: 'done', server, result: asAppResult(outcome.task), hostNote: notes.length > 0 ? notes.join(' ') : null });
+    const local = await deps.isLocal(server);
+    if (local && !options.verifyOnly) {
+      await repairThroughBootstrap(server, emit, deps);
       return;
     }
-    const client = await crucibleClientFor(server, CRUCIBLE_CLIENT_NAME);
+    emit({ kind: 'started', server, verifyOnly: options.verifyOnly, local: false, taskId: null });
     let taskId: string;
     try {
+      const client = await crucibleClientFor(server, CRUCIBLE_CLIENT_NAME);
       taskId = await client.submitTask({ type: 'repair', scope });
     } catch (err) {
+      const cause = crucibleUnavailableCause(err);
+      if (cause !== null) {
+        emit(notAnswering(server, cause, options.verifyOnly, local));
+        return;
+      }
       if (tooOldForRepair(err)) {
         emit({
           kind: 'refused', server, code: 'server_needs_update', needsUpdate: true, command: null,
@@ -181,6 +192,42 @@ export async function repairCrucibleServer(
     emit(await followRepairTask(server, taskId, emit, deps));
   } catch (err) {
     emit(refusalOf(server, err));
+  }
+}
+
+/** The one door that may reinstall the runtime or start the service. Never a check. */
+async function repairThroughBootstrap(
+  server: string,
+  emit: (event: CrucibleRepairEvent) => void,
+  deps: RepairDeps,
+): Promise<void> {
+  emit({ kind: 'started', server, verifyOnly: false, local: true, taskId: null });
+  const outcome = await deps.localRepair({
+    scope: { verifyOnly: false },
+    onStep: (step) => emit({ kind: 'host-step', server, name: step.name, status: step.status, detail: step.detail }),
+    onRepair: (data) => emit(frameEvent(server, data)),
+    onProgress: (p) => emit({ kind: 'progress', server, bytesDone: p.bytesDone, bytesTotal: p.bytesTotal, file: p.file }),
+  });
+  const notes = [
+    outcome.server === 'reinstalled' ? 'The server would not answer, so it was reinstalled.' : null,
+    outcome.service === 'started' ? 'Its service was not running and was started.' : null,
+  ].filter((n): n is string => n !== null);
+  emit({ kind: 'done', server, result: asAppResult(outcome.task), hostNote: notes.length > 0 ? notes.join(' ') : null });
+}
+
+/**
+ * REPAIR THE ENGINE ON THIS COMPUTER WHEN NO ROW NAMES IT. A Crucible too broken to
+ * answer, or with a config nothing can read, may never have become a row, and it is
+ * exactly the one that needs this. Same door, same events, keyed CRUCIBLE_REPAIR_HERE.
+ */
+export async function repairCrucibleHere(
+  emit: (event: CrucibleRepairEvent) => void,
+  deps: RepairDeps,
+): Promise<void> {
+  try {
+    await repairThroughBootstrap(CRUCIBLE_REPAIR_HERE, emit, deps);
+  } catch (err) {
+    emit(refusalOf(CRUCIBLE_REPAIR_HERE, err));
   }
 }
 

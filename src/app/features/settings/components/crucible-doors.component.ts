@@ -19,6 +19,7 @@ import type { CrucibleUninstallPlan } from '@shared/crucible/uninstall-wire';
 import type { CruciblePairingPrompt } from '@shared/crucible/connect-wire';
 import { CrucibleEngineControlsComponent } from './crucible-engine-controls.component';
 import { CrucibleInstallProgressComponent } from './crucible-install-progress.component';
+import { CrucibleRepairComponent } from './crucible-repair.component';
 
 /**
  * HOW A PERSON GETS A CRUCIBLE — and, since PHASE13, how little of that is
@@ -98,7 +99,7 @@ import { CrucibleInstallProgressComponent } from './crucible-install-progress.co
   standalone: true,
   imports: [
     CommonModule, FormsModule, DesktopButtonComponent,
-    CrucibleEngineControlsComponent, CrucibleInstallProgressComponent,
+    CrucibleEngineControlsComponent, CrucibleInstallProgressComponent, CrucibleRepairComponent,
   ],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
@@ -147,6 +148,10 @@ import { CrucibleInstallProgressComponent } from './crucible-install-progress.co
                     BookForge will use it like any other engine.
                   </p>
                   <ng-container [ngTemplateOutlet]="adoptForm" />
+                  @if (repairHereOffered()) {
+                    <p class="hint">If it is not working, Repair checks it and puts back what is broken.</p>
+                    <app-crucible-repair (finished)="repairedHere()" />
+                  }
                 </div>
               }
             }
@@ -155,6 +160,9 @@ import { CrucibleInstallProgressComponent } from './crucible-install-progress.co
             <div class="panel">
               <p class="machine">{{ p.machine }}</p>
               <p class="hint">{{ p.existing?.sentence }}</p>
+              @if (repairHereOffered()) {
+                <app-crucible-repair (finished)="repairedHere()" />
+              }
               <ng-container [ngTemplateOutlet]="connectForm" />
             </div>
           } @else if (face() === 'install') {
@@ -296,8 +304,19 @@ import { CrucibleInstallProgressComponent } from './crucible-install-progress.co
         }
 
         <!-- ── 3. Get one on this machine ──────────────────────────────── -->
+        <!--
+          A BROKEN ONE WITH NO ROW STILL GETS REPAIR: it may be too broken to answer or to be
+          added, and it is the one that needs this most.
+        -->
+        @if (repairHereOffered()) {
+          <div class="panel">
+            <p class="hint">{{ plan()?.existing?.sentence ?? 'If the engine on this computer is not working, Repair checks it and puts back what is broken.' }}</p>
+            <app-crucible-repair (finished)="repairedHere()" />
+          </div>
+        }
+
         <!-- NOT DRAWN when this machine has one: its row is above, or the Add door is. -->
-        @if (!thisMachineHasOne()) {
+        @if (installDoorOffered()) {
         <button class="door" type="button" (click)="toggle('install')">
           <span class="door-name">Set an engine up on this machine</span>
           <span class="door-note">
@@ -758,8 +777,22 @@ export class CrucibleDoorsComponent {
     return found !== null && found.present ? found.registeredAs : null;
   });
 
-  /** A Crucible's config was found here, registered or not. Install is not offered. */
-  readonly thisMachineHasOne = computed<boolean>(() => this.discovered()?.present === true);
+  /**
+   * Install is offered once this machine has been asked and said no. A failed measurement
+   * leaves the door, with its error beside it: the press asks again and still refuses.
+   */
+  readonly installDoorOffered = computed<boolean>(() => {
+    if (this.discovered()?.present !== false) return false;
+    return this.error() !== null || this.plan()?.existing === null;
+  });
+
+  /** A Crucible is on this computer and no row names it. */
+  readonly repairHereOffered = computed<boolean>(() => {
+    const found = this.discovered();
+    if (found === null) return false;
+    if (found.present) return found.registeredAs === null;
+    return this.plan()?.existing?.repairable === true;
+  });
 
   readonly serverCount = computed<number>(() => this.servers()?.servers.length ?? 0);
   readonly serverNames = computed<string>(
@@ -801,6 +834,14 @@ export class CrucibleDoorsComponent {
     // a host could in principle change it.
     effect(() => {
       if (this.mode() === 'probing' && this.plan() === null && this.error() === null) {
+        void this.loadPlan();
+      }
+    });
+    // Settings asks too, once no config was found: detectHost finds a runtime whose config
+    // cannot be read, and Install must not be drawn until that has been asked.
+    effect(() => {
+      if (this.mode() === 'doors' && this.discovered()?.present === false
+        && this.plan() === null && this.error() === null) {
         void this.loadPlan();
       }
     });
@@ -939,6 +980,13 @@ export class CrucibleDoorsComponent {
         this.cancelPairing();
       }
     }, request.interval * 1000);
+  }
+
+  /** A repair here may have made it readable, or brought it back. Ask again. */
+  async repairedHere(): Promise<void> {
+    this.plan.set(null);
+    await this.loadServers();
+    this.changed.emit();
   }
 
   private async loadPlan(): Promise<void> {

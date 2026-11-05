@@ -8998,12 +8998,13 @@ function setupIpcHandlers(): void {
       return { success: false, error: `A check or repair of crucible "${name}" is already running.` };
     }
     repairsRunning.add(name);
-    const { processRepairDeps, repairCrucibleServer } = await import('./crucible/repair.js');
-    void repairCrucibleServer(
-      name, { verifyOnly: options.verifyOnly === true },
-      (repairEvent) => broadcastToAllWindows('crucible:repair-event', repairEvent),
-      processRepairDeps(),
-    ).finally(() => { repairsRunning.delete(name); });
+    const { processRepairDeps, repairCrucibleHere, repairCrucibleServer } = await import('./crucible/repair.js');
+    const { CRUCIBLE_REPAIR_HERE } = await import('../shared/crucible/repair-wire.js');
+    const emit = (repairEvent: unknown) => broadcastToAllWindows('crucible:repair-event', repairEvent);
+    const run = name === CRUCIBLE_REPAIR_HERE
+      ? repairCrucibleHere(emit, processRepairDeps())
+      : repairCrucibleServer(name, { verifyOnly: options.verifyOnly === true }, emit, processRepairDeps());
+    void run.finally(() => { repairsRunning.delete(name); });
     return { success: true };
   });
 

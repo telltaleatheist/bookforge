@@ -173,14 +173,67 @@ async function main() {
   }
 
   {
-    const { events, view } = await run('here', true, {
+    const fake = await startFake('run');
+    const server = registerFake(fake.url);
+    const { view } = await run(server, true, {
+      isLocal: async () => true,
+      localRepair: async () => { throw new Error('a check took the door that can reinstall and start things'); },
+      sleep: async () => {},
+    });
+    await fake.close();
+    await check('Check only on this machine\'s row asks the running server, never bootstrap', () => {
+      assert.strictEqual(view.phase, 'done', JSON.stringify(view.refusal));
+      assert.deepStrictEqual(fake.state.submitted[0], { type: 'repair', scope: { verify_only: true } });
+    });
+  }
+
+  {
+    const fake = await startFake('run');
+    const server = registerFake(fake.url);
+    await fake.close();
+    const { view } = await run(server, true, {
+      isLocal: async () => true,
+      localRepair: async () => { throw new Error('a check took the door that can reinstall and start things'); },
+      sleep: async () => {},
+    });
+    await check('Check only with nobody answering says so, and touched nothing', () => {
+      assert.strictEqual(view.phase, 'refused');
+      assert.strictEqual(view.refusal.code, 'server_not_answering', view.refusal.message);
+      assert.match(view.refusal.message, /nothing was checked or changed/);
+      assert.match(view.refusal.message, /Repair is what brings this computer's engine back/);
+    });
+  }
+
+  {
+    const emitted = [];
+    await door.repairCrucibleHere((e) => emitted.push(e), {
+      isLocal: async () => { throw new Error('there is no row to ask about'); },
+      localRepair: async (options) => {
+        assert.deepStrictEqual(options.scope, { verifyOnly: false });
+        return { server: 'reinstalled', service: 'started', healthy: true, task: RESULT };
+      },
+    });
+    await check('a broken Crucible with no row can still be repaired, under its own key', () => {
+      assert.ok(emitted.every((e) => e.server === wire.CRUCIBLE_REPAIR_HERE));
+      assert.strictEqual(emitted.at(-1).kind, 'done');
+      assert.throws(() => servers.validateServerName(wire.CRUCIBLE_REPAIR_HERE), 'it can never be a row');
+    });
+    const doors = fs.readFileSync(path.join(REPO, 'src/app/features/settings/components/crucible-doors.component.ts'), 'utf8');
+    await check('every door a machine with no row can land on offers it', () => {
+      assert.strictEqual((doors.match(/<app-crucible-repair \(finished\)="repairedHere\(\)" \/>/g) ?? []).length, 3,
+        'the existing face, the adopt face and settings');
+    });
+  }
+
+  {
+    const { events, view } = await run('here', false, {
       isLocal: async () => true,
       localRepair: async (options) => {
-        assert.deepStrictEqual(options.scope, { verifyOnly: true });
+        assert.deepStrictEqual(options.scope, { verifyOnly: false });
         options.onStep({ name: 'server', status: 'ok', detail: 'The server answers.' });
         options.onRepair({ step: 'plan', state: 'running', subject: null, detail: null, bytesToCheck: 10 });
         options.onProgress({ bytesDone: 5, bytesTotal: 10, file: 'x' });
-        return { server: 'reinstalled', service: 'started', healthy: true, task: { ...RESULT, verifyOnly: true } };
+        return { server: 'reinstalled', service: 'started', healthy: true, task: RESULT };
       },
     });
     await check('this machine\'s row goes through bootstrap, into the same view', () => {
@@ -238,7 +291,8 @@ async function main() {
   await check('the screens and the press all ask first', () => {
     const doors = fs.readFileSync(path.join(REPO, 'src/app/features/settings/components/crucible-doors.component.ts'), 'utf8');
     assert.ok(/if \(plan\.existing !== null\) return 'existing';/.test(doors), 'the wizard asks before the install face');
-    assert.ok(/@if \(!thisMachineHasOne\(\)\)/.test(doors), 'settings hides the install door');
+    assert.ok(/@if \(installDoorOffered\(\)\)/.test(doors), 'settings hides the install door');
+    assert.ok(/this\.plan\(\)\?\.existing === null/.test(doors), 'and only draws it once the machine said no');
     const main = fs.readFileSync(path.join(REPO, 'electron/main.ts'), 'utf8');
     const press = main.slice(main.indexOf("ipcMain.handle('crucible:host-install',"));
     assert.ok(press.indexOf('crucible_already_here') < press.indexOf('runCrucibleInstall('), 'the press refuses first');

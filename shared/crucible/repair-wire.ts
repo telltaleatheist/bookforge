@@ -75,6 +75,13 @@ export interface CrucibleRepairView {
   readonly refusal: { readonly code: string; readonly message: string; readonly command: string | null; readonly needsUpdate: boolean } | null;
 }
 
+/**
+ * The engine on this computer when no row names it: it may be too broken to answer, and
+ * its config may be unreadable, which is why it has no row. A key, never shown. The
+ * colon makes it an invalid server name (`validateServerName`), so no row can have it.
+ */
+export const CRUCIBLE_REPAIR_HERE = ':this-computer';
+
 const subjectWords = (s: CrucibleRepairSubject | null): string => (s === null ? '' : `${s.kind} ${s.id}`);
 
 const STEP_WORDS: Readonly<Record<CrucibleRepairStep, string>> = {
