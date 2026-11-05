@@ -56,6 +56,30 @@ export const isPySpace = (ch: string): boolean => PY_SPACE_ONE.test(ch);
 
 export const pyStrip = (text: string): string => text.replace(PY_SPACE_EDGES, '');
 
+const PY_SPACE_END = new RegExp(`[${PY_SPACE}]+$`);
+
+/** `str.rstrip`. */
+export const pyRstrip = (text: string): string => text.replace(PY_SPACE_END, '');
+
+/** `str.split()`. */
+export const pySplit = (text: string): string[] => text.split(PY_SPACE_RUN).filter((word) => word);
+
+/** `len(str)`: code points, where `.length` counts UTF-16 units. */
+export function pyLen(text: string): number {
+  let n = text.length;
+  for (let i = 0; i < text.length - 1; i += 1) {
+    const unit = text.charCodeAt(i);
+    if (unit >= 0xd800 && unit <= 0xdbff) {
+      const next = text.charCodeAt(i + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        n -= 1;
+        i += 1;
+      }
+    }
+  }
+  return n;
+}
+
 /** `re.sub(r'\s+', ' ', text)`. */
 export const pyCollapseSpace = (text: string, replacement = ' '): string => text.replace(PY_SPACE_RUN, replacement);
 
