@@ -749,7 +749,10 @@ export async function runSentenceAlign(o: RunSentenceAlignOptions): Promise<Sent
       ...diff.stats,
       alignWindows: windows.length, alignWindowsFailed: alignFailed.length,
       tooLongForAligner: tooLong.reduce((n, t) => n + t.sentences.length, 0),
-      cues: cues.length, notPlaced: placements.length - cues.length, correctedToHeard: corrections.length,
+      // WRITTEN, not placed: a misplaced cue is placed and then kept out of the VTT
+      // above, so counting before that filter said 42 for a file holding 22.
+      cues: written, misplaced: misplaced.size, notPlaced: placements.length - cues.length,
+      correctedToHeard: corrections.length,
       edgesWithoutPause: noPause, collapsed, overlappedNext: overlap.trimmed.length, tooShort,
     };
     const report = {
@@ -782,11 +785,12 @@ export async function runSentenceAlign(o: RunSentenceAlignOptions): Promise<Sent
       barelyMatched: { count: barelyIdx.length, note: 'misplaced: the heard words in the span agree on < 30 % of the text - not written to the VTT', sentences: barelyIdx },
       tooShort: { count: tooShort, note: `cues shorter than ${MIN_CUE_S} s: no sentence is read that fast, so the audio went to a neighbour - exclusion candidates`, sentences: cues.filter((c) => c.flagged.includes('too-short')).map((c) => c.index) } }, null, 1));
     log(`discrepancies: ${Object.entries(discrepancies.summary).map(([k, v]) => `${k} ${v.count} (${v.seconds} s)`).join(', ') || 'none'} -> ${discrepanciesPath}`);
-    log(`wrote ${cues.length} cue(s) to ${o.outVttPath}; ${stats.notPlaced} sentence(s) not placed, `
+    log(`wrote ${written} cue(s) to ${o.outVttPath} (${misplaced.size} misplaced and left out); `
+      + `${stats.notPlaced} sentence(s) not placed, `
       + `${noPause} edge(s) without a pause, ${collapsed} collapsed, ${overlap.trimmed.length} overlapping the next, `
       + `${tooShort} shorter than ${MIN_CUE_S} s; report ${o.reportPath}`);
     progress('write', 1, 'Done');
-    return { vttPath: o.outVttPath, reportPath: o.reportPath, cues: cues.length, stats };
+    return { vttPath: o.outVttPath, reportPath: o.reportPath, cues: written, stats };
   } finally {
     envStop.abort();
     o.signal?.removeEventListener('abort', onCallerAbort);

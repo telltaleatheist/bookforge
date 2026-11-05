@@ -78,7 +78,7 @@ import {
   crucibleRemovalDisposition,
   crucibleRemovedLine,
 } from '../../shared/crucible/server-queue';
-import { queueFullLine, watchQueueWait, type CrucibleQueuePlace } from './queue-wait';
+import { installingLine, queueFullLine, watchQueueWait, type CrucibleQueuePlace } from './queue-wait';
 import { noteInFlightEvent, recordInFlight } from './in-flight-ledger';
 import { artifactOnDiskIn, createArtifactsOwed } from './artifacts-owed';
 import { holdRenderAtSubmit, processDirOfSentencesDir, writeRenderHoldRecord } from './render-holds';
@@ -464,6 +464,11 @@ export function describeCrucibleRefusal(err: unknown, server: string): CrucibleR
     return new CrucibleRenderRefused(
       err.code, `${at} would not take this render into its line: ${err.serverMessage}`, full,
     );
+  }
+  // `409 installing`: the server is fetching what this render needs. The same wait.
+  const installing = installingLine(err, server);
+  if (installing !== null && err instanceof CrucibleRefused) {
+    return new CrucibleRenderRefused(err.code, `${at} could not take this render yet. ${installing}`, installing);
   }
   if (err instanceof CrucibleRefused) {
     return new CrucibleRenderRefused(

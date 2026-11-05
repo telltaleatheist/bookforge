@@ -23,7 +23,9 @@
  *
  * ── What it refuses, and what it never does ────────────────────────────────
  *
- * **Every refusal is by name, and none is retried.** A `409 server_busy` and a
+ * **Every refusal is by name, and only one is waited on here:** `409 installing`, with
+ * a sentence and a budget (`INSTALL_WAIT_BUDGET_MS`), because no caller has anything
+ * else to do about it and a CLI has no queue to park in. A `409 server_busy` and a
  * `409 leased` both arrive as {@link CrucibleJobRefused} carrying the SDK's
  * own `busyLine` ("GPU busy: foundry, tts 62% done", "leased: foundry,
  * translate, until …") for the caller that can WAIT — the queue holds the row
@@ -114,7 +116,7 @@ import {
   crucibleRemovalDisposition,
   crucibleRemovedLine,
 } from '../../shared/crucible/server-queue';
-import { queueFullLine, watchQueueWait } from './queue-wait';
+import { installingLine, queueFullLine, watchQueueWait } from './queue-wait';
 import { CRUCIBLE_CLIENT_NAME, crucibleClientFor } from './servers';
 import { noteInFlightEvent, recordInFlight } from './in-flight-ledger';
 import { artifactOnDiskIn, createArtifactsOwed } from './artifacts-owed';
@@ -363,6 +365,17 @@ export function describeCrucibleJobRefusal(err: unknown, server: string, verb: s
       err.code, server, `${at} would not take ${verb} into its line: ${err.serverMessage}`, full,
     );
   }
+  /*
+   * `409 installing` IS A WAIT TOO. `runCrucibleJob` has already waited out its budget
+   * by the time this reads it, so what is left is the same park as a full line: the
+   * row keeps its sentence and the admission tick submits again.
+   */
+  const installing = installingLine(err, server);
+  if (installing !== null && err instanceof CrucibleRefused) {
+    return new CrucibleJobRefused(
+      err.code, server, `${at} could not take ${verb} yet. ${installing}`, installing,
+    );
+  }
   if (err instanceof CrucibleRefused) {
     return new CrucibleJobRefused(
       err.code, server, `${at} refused ${verb} (HTTP ${err.status}): ${err.serverMessage}`,
@@ -563,6 +576,16 @@ export function warmingHeadline(message: string): string {
   return message.slice(0, cut);
 }
 
+/**
+ * HOW LONG A SUBMIT WAITS ON `409 installing`, and how often it asks again. Weather
+ * gets a budget and a wait with a sentence (CLAUDE.md, "no fallbacks"). A voice is a
+ * minute or two and a whole job environment is many, so half an hour covers what a
+ * first run on a fresh machine meets. Past it the refusal is a `busyLine`: a queue row
+ * parks and asks again, and a CLI run ends saying what is still installing.
+ */
+const INSTALL_WAIT_BUDGET_MS = 30 * 60_000;
+const INSTALL_WAIT_POLL_MS = 15_000;
+
 export type CrucibleJobProgress =
   | {
       readonly kind: 'progress';
@@ -624,6 +647,8 @@ export interface RunCrucibleJobOptions {
   readonly onLog?: (line: string) => void;
   /** Cancels: before the submit, nothing is submitted; after it, the job is DELETEd. */
   readonly signal?: AbortSignal;
+  /** The wait on `409 installing`, for a keeper that cannot sit through the real one. */
+  readonly installWait?: { readonly budgetMs: number; readonly pollMs: number };
   /**
    * A directory to write every artifact into, under its server name, with its
    * provenance sidecar beside it (the SDK's atomic writer). Must exist. Omit to
@@ -766,16 +791,36 @@ export async function runCrucibleJob(options: RunCrucibleJobOptions): Promise<Cr
     }
     log(`submitting ${verb} to crucible "${server}"`
       + `${options.model === undefined ? '' : ` with model "${options.model}"`}`);
-    try {
-      jobId = await client.submit({
-        type,
-        ...(options.model === undefined ? {} : { model: options.model }),
-        params: options.params,
-        inputs,
-        queue: options.queue ?? CRUCIBLE_BATCH_QUEUE,
-      });
-    } catch (err) {
-      throw describeCrucibleJobRefusal(err, server, verb);
+    const waitBudgetMs = options.installWait?.budgetMs ?? INSTALL_WAIT_BUDGET_MS;
+    const pollMs = options.installWait?.pollMs ?? INSTALL_WAIT_POLL_MS;
+    const firstAsked = Date.now();
+    let lastSaid = '';
+    for (;;) {
+      try {
+        jobId = await client.submit({
+          type,
+          ...(options.model === undefined ? {} : { model: options.model }),
+          params: options.params,
+          inputs,
+          queue: options.queue ?? CRUCIBLE_BATCH_QUEUE,
+        });
+        break;
+      } catch (err) {
+        const line = installingLine(err, server);
+        if (line === null || Date.now() - firstAsked >= waitBudgetMs) {
+          throw describeCrucibleJobRefusal(err, server, verb);
+        }
+        if (line !== lastSaid) { log(line); lastSaid = line; }
+        options.onProgress?.({ kind: 'warming', message: line });
+        await new Promise<void>((resolve) => {
+          const done = (): void => { clearTimeout(timer); options.signal?.removeEventListener('abort', done); resolve(); };
+          const timer = setTimeout(done, pollMs);
+          options.signal?.addEventListener('abort', done);
+        });
+        if (options.signal?.aborted) {
+          throw new CrucibleJobCancelled(server, null, `the ${type} job was cancelled while the server was installing what it needs`);
+        }
+      }
     }
     log(`crucible "${server}" admitted ${verb} as ${jobId}`);
   }

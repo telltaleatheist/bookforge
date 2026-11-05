@@ -70,13 +70,14 @@ const { check, summary } = makeChecker();
  * The fake's `echo`-like job type: `behaviour` decides what a submit does.
  *   'run'      queued, warming, progress ×2 (with extra), cue, artifact ×N, done
  *   'busy'     409 server_busy naming the holder
+ *   'installing' 409 installing (the real server's words) until `installsLeft` runs out, then runs
  *   'disabled' 409 job_type_disabled
  *   'auth'     401
  *   'failed'   runs, then ends `failed`
  *   'cancel'   one artifact, then holds until DELETE, then `cancelled`
  *   'malformed' a done frame the SDK cannot read
  */
-function startFake(behaviour, onSubmit = () => {}) {
+function startFake(behaviour, onSubmit = () => {}, installsLeft = { n: 0 }) {
   return startFakeCrucible(async (req, res, ctx) => {
     const { state, send, sseWriter, url } = ctx;
     const route = url.pathname;
@@ -84,6 +85,16 @@ function startFake(behaviour, onSubmit = () => {}) {
     if (route === '/v1/jobs' && req.method === 'POST') {
       const body = JSON.parse((await ctx.readBody(req)).toString('utf-8'));
       state.submitted.push(body);
+      if (behaviour === 'installing' && installsLeft.n > 0) {
+        installsLeft.n -= 1;
+        // The body the Mac sent on 2026-11-05, naming a voice it did not have yet.
+        send(res, 409, { error: { code: 'installing',
+          message: "pulling the RVC voice 'deathstalker-rvc-v1' (about 185 MB); submit this job again after it.",
+          details: { job_type: 'rvc', task_id: 'task-1', reason: 'installing',
+            message: "pulling the RVC voice 'deathstalker-rvc-v1' (about 185 MB)",
+            plan: null, steps: [], step: null, progress: 0.5, line: null } } });
+        return true;
+      }
       if (behaviour === 'busy') {
         send(res, 409, { error: { code: 'server_busy', message: 'one job at a time, and it is not yours', details: {
           holder: 'foundry', job_id: 'j-held', type: 'tts', model: 'deathstalker', status: 'running',
@@ -326,6 +337,68 @@ async function refusals() {
         assert.strictEqual(caught.busyLine, undefined,
           'busyLine is present ONLY on the refusals a row can WAIT out');
       }
+    });
+  }
+
+  {
+    // 409 installing is WEATHER: both the CLI and a queue row come through this door.
+    const left = { n: 2 };
+    const fake = await startFake('installing', () => {}, left);
+    const server = registerFake(fake.url);
+    const logs = [];
+    const seen = [];
+    let outcome = null;
+    let caught = null;
+    try {
+      outcome = await job.runCrucibleJob({
+        server, type: 'asr', model: 'm', params: {}, inputs: { x: Buffer.from('a') },
+        installWait: { budgetMs: 5000, pollMs: 5 },
+        onLog: (l) => logs.push(l), onProgress: (p) => seen.push(p),
+      });
+    } catch (err) { caught = err; } finally { await fake.close(); }
+    await check('409 installing: the door waits, says what is installing, and the job then runs', () => {
+      assert.strictEqual(caught, null, String(caught));
+      assert.ok(outcome && outcome.jobId, 'the job ran');
+      assert.strictEqual(fake.state.submitted.length, 3, 'asked again until the install was done');
+      assert.ok(logs.some((l) => /is installing what this job needs: pulling the RVC voice/.test(l)), logs.join('\n'));
+      assert.ok(seen.some((p) => p.kind === 'warming' && /\(50%\)/.test(p.message)), 'a bar has the sentence');
+      assert.strictEqual(logs.filter((l) => /is installing/.test(l)).length, 1, 'said once, not per poll');
+    });
+  }
+
+  {
+    const fake = await startFake('installing', () => {}, { n: 1e6 });
+    const server = registerFake(fake.url);
+    let caught = null;
+    try {
+      await job.runCrucibleJob({
+        server, type: 'asr', model: 'm', params: {}, inputs: { x: Buffer.from('a') },
+        installWait: { budgetMs: 30, pollMs: 5 },
+      });
+    } catch (err) { caught = err; } finally { await fake.close(); }
+    await check('past its budget it is a WAIT the queue parks on, never a failure', () => {
+      assert.ok(caught instanceof job.CrucibleJobRefused, String(caught));
+      assert.strictEqual(caught.code, 'installing');
+      assert.match(caught.busyLine, /is installing what this job needs/);
+      const runtime = require(path.join(REPO, 'dist', 'electron', 'queue-steps', 'runtime.js'));
+      assert.strictEqual(runtime.busyLineOf(caught), caught.busyLine, 'the queue reads it as a park');
+    });
+  }
+
+  {
+    const fake = await startFake('installing', () => {}, { n: 1e6 });
+    const server = registerFake(fake.url);
+    const stop = new AbortController();
+    let caught = null;
+    try {
+      await job.runCrucibleJob({
+        server, type: 'asr', model: 'm', params: {}, inputs: { x: Buffer.from('a') }, signal: stop.signal,
+        installWait: { budgetMs: 60_000, pollMs: 60_000 },
+        onProgress: () => stop.abort(),
+      });
+    } catch (err) { caught = err; } finally { await fake.close(); }
+    await check('a cancel during the wait ends it at once, as a cancel', () => {
+      assert.ok(caught instanceof job.CrucibleJobCancelled, String(caught));
     });
   }
 

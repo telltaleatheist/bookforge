@@ -118,6 +118,21 @@ export function watchQueueWait(options: {
 }
 
 /**
+ * `409 installing` → the sentence a WAITING row reads, or null for any other error.
+ * The job named something the server does not have yet, and the server started
+ * installing it on the submit (reason `installing`), or another install has the
+ * lane (`task_busy`). A first run on a fresh machine meets this. Nobody has to repair
+ * anything, and asking again once it is in is all that is owed.
+ */
+export function installingLine(err: unknown, server: string): string | null {
+  if (!(err instanceof CrucibleRefused) || err.code !== 'installing') return null;
+  const d = (err.details ?? {}) as { message?: unknown; progress?: unknown };
+  const what = typeof d.message === 'string' && d.message.trim() !== '' ? d.message.trim() : err.serverMessage;
+  const pct = typeof d.progress === 'number' ? ` (${Math.round(d.progress * 100)}%)` : '';
+  return `Crucible "${server}" is installing what this job needs: ${what}${pct}`;
+}
+
+/**
  * `409 queue_full` → the sentence a WAITING row reads, or null for any other
  * error. The server's line is full (50 of this client's, or 200 in all): no
  * repair is owed by anyone, the line drains on its own, so the row waits.

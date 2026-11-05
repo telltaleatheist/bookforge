@@ -153,6 +153,9 @@ check('the book-length transcribe says speech_only: false, so Crucible 1.0.52 do
   // detector is to be adopted after a comparison run, not by a server default (2026-09-27).
   const src = require('fs').readFileSync(require('path').join(__dirname, '..', 'electron', 'crucible', 'sentence-align.ts'), 'utf8');
   assert.match(src, /params: \{ language: o\.language, vad_filter: false, speech_only: false, word_timestamps: true \}/);
+  // The count is what reached the VTT: a misplaced cue is placed, then left out.
+  assert.match(src, /cues: written, misplaced: misplaced\.size/);
+  assert.match(src, /cues: written, stats \}/);
 });
 
 console.log(`\nsentence-align: ${passed} passed, ${failed.length} failed${failed.length ? ': ' + failed.join('; ') : ''}`);
