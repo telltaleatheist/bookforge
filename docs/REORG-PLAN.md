@@ -83,3 +83,5 @@ all four servers; BookForge merges.
 (Owen's test list, C4 additions) Victoria's laptop, after the update reaches her, at her desk: `crucible doctor --verify-only --json` (read-only, 20-30 min, no GPU); read any `broken` rows before anyone runs repair there. B-Sides needs the same Repair button and detect-first install (b-side repo, no dev in this reorg).
 
 (Later) RVC voices are `unverified` in repair: the manifest pins only the archive, so damage to unpacked files can't be detected. Closing that means re-download and compare.
+
+(Owen's test list, A4 addition) Foundry: watch for a brief flicker when quitting. The offscreen walk's watcher flagged a window handle at exit on 3 of 4 runs of the new build and 0 of 5 of the old, with no visible window ever seen; unexplained. Not exercised offscreen: real window chrome and focus, native file dialogs, the Apply/Discard answers on the close question, anything needing a live model server or running job.
