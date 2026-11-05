@@ -88,10 +88,12 @@ function foundryChannels() {
   const malformed = [];
   const CALLS = [
     /ipcMain\s*\.\s*(?:handle|handleOnce|on|once)\s*\(\s*['"`]([^'"`]+)['"`]/g,
-    /\bbroadcast\s*\(\s*['"`]([^'"`]+)['"`]/g,
+    // Compiled, a library push reads `(0, platform_1.broadcast)('x', …)`.
+    /\bbroadcast\)?\s*\(\s*['"`]([^'"`]+)['"`]/g,
     /\.send\s*\(\s*['"`]([^'"`]+)['"`]/g,
     /\bipcRenderer\s*\.\s*(?:invoke|on|once|send)\s*\(\s*['"`]([^'"`]+)['"`]/g,
-    /\b(?:ask|subscribe)\s*\(\s*['"`]([^'"`]+)['"`]/g,
+    // The preload's helpers take a type argument: `subscribe<HostNodes>('host-ops:changed', …)`.
+    /\b(?:ask|subscribe)\s*(?:<[^>()]*>)?\s*\(\s*['"`]([^'"`]+)['"`]/g,
   ];
   const files = [
     ...fs.readdirSync(WINDOW_MAIN).filter((f) => f.endsWith('.ts')).map((f) => path.join(WINDOW_MAIN, f)),
