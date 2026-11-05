@@ -85,3 +85,5 @@ all four servers; BookForge merges.
 (Later) RVC voices are `unverified` in repair: the manifest pins only the archive, so damage to unpacked files can't be detected. Closing that means re-download and compare.
 
 (Owen's test list, A4 addition) Foundry: watch for a brief flicker when quitting. The offscreen walk's watcher flagged a window handle at exit on 3 of 4 runs of the new build and 0 of 5 of the old, with no visible window ever seen; unexplained. Not exercised offscreen: real window chrome and focus, native file dialogs, the Apply/Discard answers on the close question, anything needing a live model server or running job.
+
+(Decision for Owen, later) Editing an m4b's tags or cover when they outgrow the padding on a moov-first file moves all the audio in place on the book's only copy (`applyMetadata` → `writeM4bTagsInPlace`, including on Z:), so a crash or NAS drop partway through can damage the book. Today's behaviour, kept by the port, which only tightens lock retries to before the first byte. Safer: temp copy and swap, at the cost of copying the whole file on the NAS. Owen's rule is that audiobooks are never lost.
