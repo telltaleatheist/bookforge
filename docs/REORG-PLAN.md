@@ -64,3 +64,11 @@ all four servers; BookForge merges.
 - Baseline first, prove "unchanged" with numbers (tests, channel lists, byte diffs).
 - Report to bookforge pc 1 when each step is done: commits, what changed, gate
   results, what the next dev needs.
+
+## Owen's test list (collected as work lands)
+
+- **Foundry from source** (`npm run electron:dev` in the foundry repo): open a book, OCR/translate, Ask, export, analysis, library list, settings, page tools on a photographed book. Clean text and the pronunciation guide are gone from Foundry (A3).
+- **Packaged Foundry**: the engine loads mupdf's wasm from inside the asar; only a packaged run proves it (A2). Read a PDF's pages through Crucible end to end.
+- **Leftover Python folders** Foundry no longer uses, to delete by hand: `%LOCALAPPDATA%\foundry\envs\windows-x64` and `nli-windows-x64` on the PC; `~/Library/Application Support/foundry/envs/` on the Mac.
+- **BookForge**: Generate Sentences uses Qwen3-ASR, with no size picker (B2).
+- **Crucible flip** (after all tests): Higgs worker (C1), built-in voices at the machine's width, install/repair (C4); the stream must sound exactly as today.
