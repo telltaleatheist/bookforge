@@ -1232,7 +1232,7 @@ def cmd_generate_sentences(args):
     _require(bool(args.out), "--out <file.vtt> is required for --generate-sentences")
     _require(bool(shutil.which("node")), "node not found on PATH")
     _require(GEN_SENTENCES.is_file(), f"missing adapter {GEN_SENTENCES}")
-    _require((REPO_ROOT / "dist" / "electron" / "transcribe-bridge.js").is_file(),
+    _require((REPO_ROOT / "dist" / "electron" / "crucible" / "asr.js").is_file(),
              "BookForge is not built — run `npx tsc -p tsconfig.electron.json` first")
     _require(not (args.whisper_model and args.epub),
              "--whisper-model applies to whisper mode only (epub-align's rough model is fixed)")
@@ -1295,6 +1295,8 @@ def cmd_generate_sentences(args):
         cmd += ["--report-hole-min", str(args.report_min_hole)]
     if args.whisper_model:
         cmd += ["--whisper-model", args.whisper_model]
+    if args.crucible_server:
+        cmd += ["--crucible-server", args.crucible_server]
     if args.language and args.language != "en":
         cmd += ["--language", args.language]
     if args.device:
@@ -2497,6 +2499,7 @@ Everything below --epub in the flag list is epub-align only and refused without
 it. --embed also seals the VTT into the m4b as a verified mov_text subtitle track,
 which is the app's embed-only model.""",
         "reads": ["--config", "--dry-run", "--audio", "--out", "--epub", "--whisper-model",
+                  "--crucible-server",
                   "--device", "--embed", "--language", "--report", "--min-hole",
                   "--rough-cache", "--align-workers", "--snap-silence", "--no-snap-silence",
                   "--no-paragraph-split", "--report-min-hole"],

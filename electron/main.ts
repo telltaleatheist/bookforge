@@ -10011,40 +10011,6 @@ function setupIpcHandlers(): void {
     return componentManager.testEnv(id);
   });
 
-  // ── Whisper transcription models ──────────────────────────────────────────
-  // The Whisper RUNTIME (id 'whisper') installs/removes through the components:*
-  // IPCs above. These handle the model WEIGHTS (small/medium/large-v3/distil),
-  // downloaded from HuggingFace into <userData>/runtime/whisper-models/<id>.
-  ipcMain.handle('whisper:list-models', async () => {
-    try {
-      const { listWhisperModels } = await import('./whisper-models.js');
-      return { success: true, data: listWhisperModels() };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  ipcMain.handle('whisper:download-model', async (event, id: string) => {
-    try {
-      const { downloadWhisperModel } = await import('./whisper-models.js');
-      const result = await downloadWhisperModel(id, (p) => {
-        event.sender.send('whisper:download-progress', p);
-      });
-      return result;
-    } catch (err) {
-      return { ok: false, error: (err as Error).message };
-    }
-  });
-
-  ipcMain.handle('whisper:delete-model', async (_event, id: string) => {
-    try {
-      const { deleteWhisperModel } = await import('./whisper-models.js');
-      return deleteWhisperModel(id);
-    } catch (err) {
-      return { ok: false, error: (err as Error).message };
-    }
-  });
-
   // ── RVC enhancement voices ────────────────────────────────────────────────
   // RVC voice models are first-class optional components (kind 'rvc-model') and
   // flow through the SAME components:* IPC + ComponentService the XTTS voices used —

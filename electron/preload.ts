@@ -13,7 +13,6 @@ import type { StartupUpgradeReport } from './components/startup-upgrade-check';
 import type { StarterStatus } from './update/starter-library';
 import type { OrpheusBatchConfig } from './orpheus-batch';
 import type { EpubPreservingEdits } from './epub-processor';
-import type { WhisperModelStatus, WhisperDownloadProgress } from './whisper-models';
 import type { CorrectSentencesSession, GenerateCandidatesResult } from './correct-sentences-bridge';
 import type { JobStageProgress } from './job-stages';
 // The Adopt door's wire shapes, imported rather than re-declared for the reason
@@ -2078,12 +2077,6 @@ export interface ElectronAPI {
     upgrades: () => Promise<StartupUpgradeReport | null>;
     onUpgradesAvailable: (callback: (report: StartupUpgradeReport) => void) => () => void;
   };
-  whisper: {
-    listModels: () => Promise<{ success: boolean; data?: WhisperModelStatus[]; error?: string }>;
-    downloadModel: (id: string) => Promise<{ ok: boolean; error?: string }>;
-    deleteModel: (id: string) => Promise<{ ok: boolean; error?: string }>;
-    onDownloadProgress: (callback: (p: WhisperDownloadProgress) => void) => () => void;
-  };
   update: {
     // Managed binaries (ffmpeg, yt-dlp, …) — our server-hosted, watched components.
     listComponents: (force?: boolean) => Promise<ComponentUpdateStatus[]>;
@@ -3539,21 +3532,6 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.on('components:upgrades-available', listener);
       return () => {
         ipcRenderer.removeListener('components:upgrades-available', listener);
-      };
-    },
-  },
-  whisper: {
-    listModels: () =>
-      ipcRenderer.invoke('whisper:list-models'),
-    downloadModel: (id: string) =>
-      ipcRenderer.invoke('whisper:download-model', id),
-    deleteModel: (id: string) =>
-      ipcRenderer.invoke('whisper:delete-model', id),
-    onDownloadProgress: (callback: (p: WhisperDownloadProgress) => void) => {
-      const listener = (_event: Electron.IpcRendererEvent, p: WhisperDownloadProgress) => callback(p);
-      ipcRenderer.on('whisper:download-progress', listener);
-      return () => {
-        ipcRenderer.removeListener('whisper:download-progress', listener);
       };
     },
   },

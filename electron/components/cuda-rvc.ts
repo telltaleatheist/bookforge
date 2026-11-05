@@ -8,14 +8,13 @@
  * True and `urvc` auto-selects the GPU (no device flag needed) — RVC runs ~5×
  * faster.
  *
- * This is the RVC sibling of `cuda-tts` (which overlays the e2a env). It reuses
- * the EXACT same cp311 `torch 2.7.1+cu126` wheels cuda-tts hosts — the rvc-env's
- * torch is pinned to 2.7.1 specifically so the same wheel applies — so there's
- * no new download to host. Part of the unified "GPU acceleration" choice, which
- * installs cuda-tts + llama-cuda + cuda-rvc together.
+ * It was the RVC sibling of `cuda-tts` (the e2a-env overlay, deleted 2026-11-04
+ * with the local whisper path, docs/REORG-PLAN.md B2) and installs the same
+ * hosted cp311 `torch 2.7.1+cu126` wheels — the rvc-env's torch is pinned to
+ * 2.7.1 specifically so that wheel applies.
  *
  * Mac: not applicable — the macOS rvc-env ships MPS-native torch, so RVC uses
- * the GPU there with no overlay (this component is win32-only, like cuda-tts).
+ * the GPU there with no overlay (this component is win32-only).
  */
 
 import { app } from 'electron';
@@ -28,7 +27,7 @@ import { downloadFile } from './downloader';
 import { RVC_ENV_ID } from './rvc-env';
 import type { OptionalComponent, InstallProgress } from './component-types';
 
-// ── Pins (must match the rvc-env's torch 2.7.1 + the cuda-tts wheel) ──────────
+// ── Pins (must match the rvc-env's torch 2.7.1 + the hosted cu126 wheel) ──────
 const TORCH_VERSION = '2.7.1';
 const CU_TAG = 'cu126';
 const PY_TAG = 'cp311-cp311';          // rvc-env is Python 3.11 (BookForge fork relaxation)

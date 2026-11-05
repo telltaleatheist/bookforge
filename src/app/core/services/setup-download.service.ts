@@ -208,17 +208,6 @@ export class SetupDownloadService {
 
   // ── Runner ─────────────────────────────────────────────────────────────────
 
-  private needsEngine(id: string): boolean {
-    // CUDA TTS pip-installs PyTorch into the bundled env, so the env must be
-    // unpacked first (same gating as voices/language packs that spawn its python).
-    // The Whisper runtime overlay pip-installs into the same env too.
-    if (id === 'cuda-tts' || id === 'whisper') return true;
-    const kind = this.components.components().find((c) => c.component.id === id)?.component.kind;
-    // stt-model downloads spawn the bundled python (huggingface_hub), so they
-    // also wait for the engine.
-    return kind === 'stt-model';
-  }
-
   private draining = false;
 
   /**
@@ -228,7 +217,7 @@ export class SetupDownloadService {
    * added items join the live queue without restarting it.
    */
   /**
-   * Download priority: GPU acceleration packs (llama-cuda, cuda-tts) are
+   * Download priority: GPU acceleration packs (llama-cuda, cuda-rvc) are
    * prerequisites for fast AI/TTS, so they download BEFORE optional content (extra
    * voices, language packs). Lower sorts first. Keyed off the component's GPU
    * requirement so any future GPU pack is prioritized automatically.
@@ -362,12 +351,6 @@ export class SetupDownloadService {
       while ((id = this.nextToRun()) !== null) {
         const curId: string = id;
 
-        // Voices / language packs / CUDA-TTS spawn the bundled python — wait for
-        // the engine to finish setting up BEFORE marking the item active, so it
-        // shows "Queued" (not a stuck "downloading 0%") while the engine unpacks.
-        if (this.needsEngine(curId)) {
-          await this.runtime.whenReady();
-        }
         if (this.cancelled || !this.selected().has(curId)) {
           continue;
         }

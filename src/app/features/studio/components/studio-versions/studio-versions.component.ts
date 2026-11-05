@@ -3,7 +3,7 @@ import {
 } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
-import { ElectronService, WhisperModelStatus } from '../../../../core/services/electron.service';
+import { ElectronService } from '../../../../core/services/electron.service';
 import { ComponentService } from '../../../../core/services/component.service';
 import { NoticeService } from '../../../../core/services/notice.service';
 import { SettingsService } from '../../../../core/services/settings.service';
@@ -638,7 +638,7 @@ const AUDIO_EXTS = new Set([
                 <input type="radio" name="gsmethod" value="whisper"
                        [checked]="pickerMethod() === 'whisper'"
                        (change)="pickerMethod.set('whisper')" />
-                <span class="gs-mname">Transcribe from audio (Whisper)</span>
+                <span class="gs-mname">Transcribe from audio</span>
                 <span class="gs-mnote">Listens to the narration and writes out the words it hears.</span>
               </label>
             </div>
@@ -654,33 +654,7 @@ const AUDIO_EXTS = new Set([
           }
 
           @if (pickerMethod() === 'whisper') {
-            <div class="gs-models">
-              @for (m of whisperModels(); track m.id) {
-                <label class="gs-model" [class.sel]="pickerModelId() === m.id">
-                  <input type="radio" name="gsmodel" [value]="m.id"
-                         [checked]="pickerModelId() === m.id"
-                         (change)="pickerModelId.set(m.id)" />
-                  <span class="gs-mname">{{ m.label }}</span>
-                  <span class="gs-mnote">{{ m.note }}</span>
-                  <span class="gs-mside">
-                    @if (m.present) {
-                      <span class="gs-ok">Ready</span>
-                    } @else {
-                      <span class="gs-size">{{ formatMB(m.sizeMB) }} download</span>
-                    }
-                  </span>
-                </label>
-              }
-            </div>
-
-            @if (pickerNeedsDownload()) {
-              <div class="gs-note">This model isn’t downloaded yet — the queued job downloads it
-                first, then transcribes.</div>
-            }
-            @if (!whisperRuntimeInstalled()) {
-              <div class="gs-note">The speech-to-text engine (~35 MB) installs automatically when
-                the job runs.</div>
-            }
+            <div class="gs-note">Transcribed by Qwen3-ASR on your Crucible server.</div>
           }
 
           @if (pickerIsRegenerate()) {
@@ -693,7 +667,7 @@ const AUDIO_EXTS = new Set([
           <div class="gs-actions">
             <button class="act" (click)="closeSentencePicker()">Cancel</button>
             <button class="act primary" (click)="startGenerateSentences(pv)"
-                    [disabled]="pickerMethod() === 'whisper' ? !pickerModelId() : !pickerEpubId()">Add to queue</button>
+                    [disabled]="pickerMethod() === 'epub-align' && !pickerEpubId()">Add to queue</button>
           </div>
         </div>
       </div>
@@ -1158,7 +1132,6 @@ const AUDIO_EXTS = new Set([
     .gs-method.unavail .gs-mname, .gs-method.unavail .gs-mnote { opacity: 0.55; }
     .gs-install { padding: 4px 12px; font-size: 0.75rem; }
     .gs-eblabel { display: block; font-size: 0.78rem; font-weight: 600; margin: 0 0 6px 2px; }
-    .gs-models { display: flex; flex-direction: column; gap: 8px; }
     .gs-model {
       display: grid; grid-template-columns: auto 1fr auto; align-items: center;
       gap: 4px 10px; padding: 10px 12px; border-radius: 8px; cursor: pointer;
@@ -1169,7 +1142,6 @@ const AUDIO_EXTS = new Set([
     .gs-mname { font-size: 0.86rem; font-weight: 600; }
     .gs-mnote { grid-column: 2; font-size: 0.72rem; color: var(--text-secondary); }
     .gs-mside { grid-column: 3; grid-row: span 2; display: flex; align-items: center; }
-    .gs-ok { font-size: 0.72rem; color: var(--success, #22c55e); font-weight: 600; }
     .gs-size { font-size: 0.72rem; color: var(--text-secondary); white-space: nowrap; }
     .gs-note { margin-top: 12px; font-size: 0.75rem; color: var(--text-secondary); line-height: 1.45; }
     .gs-err { margin-top: 12px; font-size: 0.78rem; color: #ef4444; }
@@ -2890,13 +2862,11 @@ export class StudioVersionsComponent {
   fmtSize(b: number): string { return b > 1e6 ? (b / 1e6).toFixed(1) + ' MB' : Math.round(b / 1e3) + ' KB'; }
   fmtDate(iso: string): string { const d = new Date(iso); return isNaN(+d) ? '' : d.toLocaleDateString(); }
 
-  // ── Generate sentences (Whisper) ──────────────────────────────────────────
+  // ── Generate sentences ────────────────────────────────────────────────────
 
   // The picker holds the row it was opened on, resolved path included — the queued
   // job needs that path, and it must be the one main resolved for this row.
   readonly pickerVariant = signal<ResolvedProjectVariant | null>(null);
-  readonly whisperModels = signal<WhisperModelStatus[]>([]);
-  readonly pickerModelId = signal<string | null>(null);
   readonly pickerError = signal<string | null>(null);
   /** Alignment method: 'epub-align' aligns the project ebook; 'whisper' transcribes. */
   readonly pickerMethod = signal<'epub-align' | 'whisper'>('whisper');
@@ -2912,7 +2882,6 @@ export class StudioVersionsComponent {
       badge: v.metadata?.language || undefined,
     })));
 
-  readonly whisperRuntimeInstalled = computed(() => this.components.isInstalled('whisper'));
   /** The epub-align method needs the whisperx alignment env — no silent runtime fallback. */
   readonly alignEngineInstalled = computed(() => this.components.isInstalled('whisperx-env'));
   /** Live label while the alignment engine install runs, else null. The install
@@ -2995,20 +2964,8 @@ export class StudioVersionsComponent {
     return !!variant && this.hasAuthoritativeTranscript(variant);
   });
 
-  formatMB(mb: number): string {
-    return mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${mb} MB`;
-  }
-
-  /** True when the selected model still has to be downloaded (drives the hint). */
-  pickerNeedsDownload(): boolean {
-    const id = this.pickerModelId();
-    if (!id) return false;
-    return this.whisperModels().some(m => m.id === id && !m.present);
-  }
-
   async openSentencePicker(v: ResolvedProjectVariant): Promise<void> {
     this.pickerError.set(null);
-    this.pickerModelId.set(null);
     this.pickerVariant.set(v);
     // Component state must be known before defaulting the method (epub-align
     // requires the alignment engine); ensureLoaded is cached after first use.
@@ -3026,32 +2983,16 @@ export class StudioVersionsComponent {
       this.pickerMethod.set('whisper');
       this.pickerEpubId.set(null);
     }
-    // Ensure runtime state is fresh, then load models.
+    // Ensure runtime state is fresh.
     await this.components.refresh();
     // The fresh probe may contradict the cached default (engine removed since).
     if (this.pickerMethod() === 'epub-align' && !this.alignEngineInstalled()) {
       this.pickerMethod.set('whisper');
     }
-    await this.reloadWhisperModels();
   }
 
   closeSentencePicker(): void {
     this.pickerVariant.set(null);
-  }
-
-  private async reloadWhisperModels(): Promise<void> {
-    const res = await this.electron.whisper.listModels();
-    if (res.success && res.data) {
-      this.whisperModels.set(res.data);
-      // Default-select the first downloaded model, else the first in the catalog
-      // (it downloads in the background when the job is queued).
-      if (!this.pickerModelId() && res.data.length > 0) {
-        const present = res.data.find(m => m.present);
-        this.pickerModelId.set((present ?? res.data[0]).id);
-      }
-    } else {
-      this.pickerError.set(res.error || 'Could not load the speech-to-text models.');
-    }
   }
 
   async startGenerateSentences(v: ResolvedProjectVariant): Promise<void> {
@@ -3069,21 +3010,6 @@ export class StudioVersionsComponent {
       return;
     }
 
-    // Both methods need a whisper model: whisper transcribes with it; epub-align
-    // still runs a rough pass to anchor the alignment. In epub mode we don't make
-    // the user choose — fall back to the smallest present model, else the first.
-    let modelId = this.pickerModelId();
-    if (!modelId) {
-      if (method === 'whisper') { this.pickerError.set('Pick a model first.'); return; }
-      const models = this.whisperModels();
-      const present = models.filter(m => m.present).sort((a, b) => a.sizeMB - b.sizeMB)[0];
-      modelId = (present ?? models[0])?.id ?? null;
-      if (!modelId) { this.pickerError.set('No speech-to-text model is available.'); return; }
-    }
-
-    // The queue job owns ALL prerequisites: it installs the speech-to-text
-    // engine if missing, downloads the model if missing (deduped with any dock
-    // download), then transcribes. Nothing to pre-arrange here.
     // The path is the one main resolved for this row — never rebuilt here, and never
     // queued unverified: a job pointed at a nonexistent m4b would sit in the queue
     // and fail minutes later, far from this click.
@@ -3096,7 +3022,6 @@ export class StudioVersionsComponent {
       return;
     }
     const m4bPath = v.absPath;
-    const modelLabel = this.whisperModels().find(m => m.id === modelId)?.label || modelId;
     await this.queue.addJob({
       type: 'generate-sentences',
       epubPath: m4bPath, // used only for the queue row's filename
@@ -3114,8 +3039,6 @@ export class StudioVersionsComponent {
         projectId: pid,
         variantId: v.id,
         m4bPath,
-        modelId,
-        modelLabel,
         language: v.metadata?.language || 'auto',
         method,
         ...(method === 'epub-align' ? { epubVariantId: this.pickerEpubId()! } : {}),
@@ -3127,8 +3050,7 @@ export class StudioVersionsComponent {
       (wasRegenerate
         ? 'Re-transcription was added to the queue — it replaces the current synced text when it runs. '
         : 'Transcription was added to the queue. ')
-      + 'Open the Queue tab and press Start to run it.'
-      + (this.pickerNeedsDownload() ? ' The job downloads the speech-to-text model first.' : ''),
+      + 'Open the Queue tab and press Start to run it.',
     );
   }
 }

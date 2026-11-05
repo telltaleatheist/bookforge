@@ -20,12 +20,8 @@ import { systemProbe } from './system-probe';
 import { downloadAndExtract, downloadFile } from './downloader';
 import { getExternalInstaller, installableExternalIds, ExternalInstaller } from './external-installers';
 import { LLAMA_CUDA_ID, downloadLlamaCudaInto } from './llama-cuda';
-import { CUDA_TTS_ID, installCudaTts, isCudaTtsInstalled, uninstallCudaTts, cudaTtsMarkerPath } from './cuda-tts';
 import { CUDA_RVC_ID, installCudaRvc, isCudaRvcInstalled, uninstallCudaRvc, cudaRvcMarkerPath } from './cuda-rvc';
-import { WHISPER_ENV_ID, installWhisperEnv, isWhisperEnvInstalled, uninstallWhisperEnv, whisperEnvMarkerPath } from './whisper-env';
 import { ensureRvcVoice, removeRvcVoice, isRvcVoiceInstalled, rvcVoiceModelDir } from '../rvc-models';
-import { downloadWhisperModel, deleteWhisperModel, isWhisperModelPresent, whisperModelDir } from '../whisper-models';
-import { whisperModelIdFromComponentId } from './whisper-model-components';
 import { getPythonInvocation, buildToolsSpawnEnv } from '../narrator-paths';
 import { shouldUseWsl2ForOrpheus } from '../tool-paths';
 import type {
@@ -538,42 +534,6 @@ function chmodEntry(entryPath: string): void {
   }
 }
 
-// CUDA TTS (kind 'binary', id 'cuda-tts') — overlay GPU PyTorch into the env
-// ─────────────────────────────────────────────────────────────────────────────
-
-async function fetchCudaTts(
-  component: OptionalComponent,
-  emit: (p: InstallProgress) => void
-): Promise<InstallResult> {
-  const id = component.id;
-  const controller = new AbortController();
-  inFlight.set(id, { controller, tempDir: null });
-  try {
-    await installCudaTts(emit, controller.signal);
-    const marker = cudaTtsMarkerPath() || '';
-    const record: InstalledRecord = {
-      id,
-      version: component.version,
-      source: 'managed',
-      path: marker,
-      entryPath: marker, // the env marker; resolveEntry checks it exists
-      bytes: component.sizeBytes || undefined,
-      installedAt: new Date().toISOString(),
-    };
-    putRecord(record);
-    emit({ id, phase: 'done', pct: 100, message: `${component.name} installed.` });
-    return { id, ok: true, record };
-  } catch (err) {
-    const message = controller.signal.aborted
-      ? 'Install cancelled'
-      : (err instanceof Error ? err.message : String(err));
-    emit({ id, phase: 'error', pct: 0, message });
-    return { id, ok: false, error: message };
-  } finally {
-    inFlight.delete(id);
-  }
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // CUDA RVC (kind 'binary', id 'cuda-rvc') — overlay GPU PyTorch into the rvc-env
 // ─────────────────────────────────────────────────────────────────────────────
@@ -605,48 +565,6 @@ async function fetchCudaRvc(
       ? 'Install cancelled'
       : (err instanceof Error ? err.message : String(err));
     emit({ id, phase: 'error', pct: 0, message });
-    return { id, ok: false, error: message };
-  } finally {
-    inFlight.delete(id);
-  }
-}
-
-// Whisper speech-to-text (kind 'binary', id 'whisper') — overlay faster-whisper +
-// av into the runtime env so "Generate sentences" can transcribe an audiobook.
-// ─────────────────────────────────────────────────────────────────────────────
-
-async function fetchWhisperEnv(
-  component: OptionalComponent,
-  emit: (p: InstallProgress) => void
-): Promise<InstallResult> {
-  const id = component.id;
-  const controller = new AbortController();
-  inFlight.set(id, { controller, tempDir: null });
-  clog(`[COMPONENTS] ${id}: install start (pip overlay into runtime env)`);
-  try {
-    await installWhisperEnv(emit, controller.signal);
-    const marker = whisperEnvMarkerPath() || '';
-    const record: InstalledRecord = {
-      id,
-      version: component.version,
-      source: 'managed',
-      path: marker,
-      entryPath: marker,
-      bytes: component.sizeBytes || undefined,
-      installedAt: new Date().toISOString(),
-    };
-    putRecord(record);
-    emit({ id, phase: 'done', pct: 100, message: `${component.name} installed.` });
-    clog(`[COMPONENTS] ${id}: installed (marker: ${marker})`);
-    return { id, ok: true, record };
-  } catch (err) {
-    const message = controller.signal.aborted
-      ? 'Install cancelled'
-      : (err instanceof Error ? err.message : String(err));
-    emit({ id, phase: 'error', pct: 0, message });
-    cerror(`[COMPONENTS] ${id}: install failed: ${message}`, {
-      id, message, stack: err instanceof Error ? err.stack : undefined,
-    });
     return { id, ok: false, error: message };
   } finally {
     inFlight.delete(id);
@@ -709,65 +627,6 @@ async function fetchRvcVoice(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Whisper speech-to-text model (kind 'stt-model') — download the CTranslate2
-// snapshot into runtime/whisper-models/<id>, reusing downloadWhisperModel (which
-// dedups concurrent callers, e.g. a queued generate-sentences job).
-// ─────────────────────────────────────────────────────────────────────────────
-
-async function fetchWhisperModel(
-  component: OptionalComponent,
-  emit: (p: InstallProgress) => void
-): Promise<InstallResult> {
-  const id = component.id;
-  const modelId = whisperModelIdFromComponentId(id);
-  if (!modelId) {
-    return { id, ok: false, error: `Not a Whisper model component: ${id}` };
-  }
-  // downloadWhisperModel dedups internally; there's no cancellable controller, but
-  // we register an entry so listStatus/cancel see a consistent in-flight map.
-  const controller = new AbortController();
-  inFlight.set(id, { controller, tempDir: null });
-  try {
-    emit({ id, phase: 'download', pct: 0, message: `Downloading ${component.name}…` });
-    const result = await downloadWhisperModel(modelId, (p) => {
-      emit({
-        id,
-        phase: 'download',
-        pct: p.pct,
-        receivedBytes: p.receivedBytes,
-        totalBytes: p.totalBytes,
-        message: `Downloading ${component.name}… ${p.pct}%`,
-      });
-    });
-    if (!result.ok) throw new Error(result.error || 'Download failed');
-
-    const dir = whisperModelDir(modelId);
-    const record: InstalledRecord = {
-      id,
-      version: component.version,
-      source: 'managed',
-      path: dir,
-      entryPath: dir, // the model dir; resolveEntry checks it exists
-      bytes: component.sizeBytes || undefined,
-      installedAt: new Date().toISOString(),
-    };
-    putRecord(record);
-    emit({ id, phase: 'done', pct: 100, message: `${component.name} installed.` });
-    clog(`[COMPONENTS] ${id}: Whisper model installed at ${dir}`);
-    return { id, ok: true, record };
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    emit({ id, phase: 'error', pct: 0, message });
-    cerror(`[COMPONENTS] ${id}: Whisper model install failed: ${message}`, {
-      id, message, stack: err instanceof Error ? err.stack : undefined,
-    });
-    return { id, ok: false, error: message };
-  } finally {
-    inFlight.delete(id);
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // Managed install
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -797,28 +656,10 @@ async function install(
     return fetchRvcVoice(component, emit);
   }
 
-  // Whisper models download a HF snapshot into runtime/whisper-models via
-  // downloadWhisperModel — different mechanism, same contract.
-  if (component.kind === 'stt-model') {
-    return fetchWhisperModel(component, emit);
-  }
-
-  // CUDA TTS overlays a GPU PyTorch build into the runtime env (pip), not a
-  // download-into-dir — its own branch, same install()/progress contract.
-  if (component.id === CUDA_TTS_ID) {
-    return fetchCudaTts(component, emit);
-  }
-
-  // CUDA RVC overlays a GPU PyTorch build into the rvc-env (pip), same mechanism
-  // as cuda-tts but targeting the enhancement engine's env.
+  // CUDA RVC overlays a GPU PyTorch build into the rvc-env (pip) — its own
+  // branch, same install()/progress contract.
   if (component.id === CUDA_RVC_ID) {
     return fetchCudaRvc(component, emit);
-  }
-
-  // Whisper overlays faster-whisper + av into the runtime env via pip — the same
-  // overlay model as cuda-tts.
-  if (component.id === WHISPER_ENV_ID) {
-    return fetchWhisperEnv(component, emit);
   }
 
   emit({ id, phase: 'resolve', pct: 0, message: 'Resolving artifact…' });
@@ -1035,20 +876,8 @@ async function uninstall(id: string): Promise<void> {
     return;
   }
 
-  // CUDA TTS isn't a dir under components/ — it's an overlay in the runtime env.
+  // CUDA RVC isn't a dir under components/ — it's an overlay in the rvc-env.
   // Revert to CPU torch + clear the marker, then drop the record.
-  if (id === CUDA_TTS_ID) {
-    try {
-      uninstallCudaTts();
-    } catch (err) {
-      cerror(`[COMPONENTS] ${id}: revert to CPU torch failed:`, err);
-    }
-    dropRecord(id);
-    clog(`[COMPONENTS] ${id}: reverted GPU TTS overlay`);
-    return;
-  }
-
-  // CUDA RVC is the same kind of overlay, in the rvc-env.
   if (id === CUDA_RVC_ID) {
     try {
       uninstallCudaRvc();
@@ -1057,18 +886,6 @@ async function uninstall(id: string): Promise<void> {
     }
     dropRecord(id);
     clog(`[COMPONENTS] ${id}: reverted GPU RVC overlay`);
-    return;
-  }
-
-  // Whisper overlay: pip-uninstall faster-whisper + av from the runtime env + clear marker.
-  if (id === WHISPER_ENV_ID) {
-    try {
-      uninstallWhisperEnv();
-    } catch (err) {
-      cerror(`[COMPONENTS] ${id}: remove Whisper overlay failed:`, err);
-    }
-    dropRecord(id);
-    clog(`[COMPONENTS] ${id}: removed Whisper overlay`);
     return;
   }
 
@@ -1085,18 +902,6 @@ async function uninstall(id: string): Promise<void> {
     return;
   }
 
-  // Whisper models live in runtime/whisper-models (not components/<id>) — delete
-  // the model folder via whisper-models, then drop the record.
-  if (getComponent(id)?.kind === 'stt-model') {
-    const modelId = whisperModelIdFromComponentId(id);
-    if (modelId) {
-      const res = deleteWhisperModel(modelId);
-      if (!res.ok) cerror(`[COMPONENTS] ${id}: failed to remove Whisper model: ${res.error}`);
-    }
-    dropRecord(id);
-    clog(`[COMPONENTS] ${id}: removed Whisper model`);
-    return;
-  }
 
   if (record.source === 'managed') {
     const dir = getInstallDir(id);
@@ -1265,44 +1070,8 @@ async function buildStatus(
     clog(`[COMPONENTS] ${component.id}: detected RVC voice at ${dir}`);
   }
 
-  // Whisper models: the model folder lives in runtime/whisper-models, so one
-  // downloaded via the settings panel (or the picker) surfaces as Installed for
-  // free, and a record whose folder was deleted out-of-band self-corrects.
-  if (!record && component.kind === 'stt-model') {
-    const modelId = whisperModelIdFromComponentId(component.id);
-    if (modelId && isWhisperModelPresent(modelId)) {
-      const dir = whisperModelDir(modelId);
-      record = {
-        id: component.id,
-        version: component.version,
-        source: 'managed',
-        path: dir,
-        entryPath: dir,
-        bytes: component.sizeBytes || undefined,
-        installedAt: new Date().toISOString(),
-      };
-      putRecord(record);
-      clog(`[COMPONENTS] ${component.id}: detected Whisper model at ${dir}`);
-    }
-  }
-
-  // CUDA TTS: the marker lives in the runtime env, so it auto-clears if the env
-  // is re-unpacked (app update) — detection always reflects the real env state.
-  if (!record && component.id === CUDA_TTS_ID && isCudaTtsInstalled()) {
-    const marker = cudaTtsMarkerPath() || '';
-    record = {
-      id: component.id,
-      version: component.version,
-      source: 'managed',
-      path: marker,
-      entryPath: marker,
-      installedAt: new Date().toISOString(),
-    };
-    putRecord(record);
-    clog(`[COMPONENTS] ${component.id}: detected CUDA PyTorch overlay in env`);
-  }
-
-  // CUDA RVC: same marker-in-env detection, for the enhancement engine's env.
+  // CUDA RVC: the marker lives in the rvc-env, so it auto-clears if the env is
+  // re-unpacked (app update) — detection always reflects the real env state.
   if (!record && component.id === CUDA_RVC_ID && isCudaRvcInstalled()) {
     const marker = cudaRvcMarkerPath();
     record = {
@@ -1315,21 +1084,6 @@ async function buildStatus(
     };
     putRecord(record);
     clog(`[COMPONENTS] ${component.id}: detected CUDA PyTorch overlay in RVC env`);
-  }
-
-  // Whisper: marker-in-env detection (auto-clears if the env re-unpacks).
-  if (!record && component.id === WHISPER_ENV_ID && isWhisperEnvInstalled()) {
-    const marker = whisperEnvMarkerPath() || '';
-    record = {
-      id: component.id,
-      version: component.version,
-      source: 'managed',
-      path: marker,
-      entryPath: marker,
-      installedAt: new Date().toISOString(),
-    };
-    putRecord(record);
-    clog(`[COMPONENTS] ${component.id}: detected Whisper overlay in runtime env`);
   }
 
   let state: ComponentState;

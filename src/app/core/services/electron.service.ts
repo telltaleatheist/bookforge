@@ -222,7 +222,6 @@ export type ComponentKind =
   | 'binary'
   | 'conda-env'
   | 'rvc-model'
-  | 'stt-model'
   | 'blocks-model'
   | 'system';
 
@@ -414,24 +413,6 @@ export interface ComponentUpgrade {
 export interface StartupUpgradeReport {
   upgrades: ComponentUpgrade[];
   problems: string[];
-}
-
-/** A Whisper transcription model in the catalog, with a present/absent flag. */
-export interface WhisperModelStatus {
-  id: string;
-  hfRepo: string;
-  label: string;
-  note: string;
-  sizeMB: number;
-  present: boolean;
-}
-
-/** Progress tick while a Whisper model downloads. */
-export interface WhisperDownloadProgress {
-  id: string;
-  pct: number;
-  receivedBytes: number;
-  totalBytes: number;
 }
 
 interface BrowseResult {
@@ -3976,36 +3957,6 @@ export class ElectronService {
     onUpgradesAvailable: (cb: (report: StartupUpgradeReport) => void): () => void => {
       if (this.isElectron) {
         return (window as any).electron.components.onUpgradesAvailable(cb);
-      }
-      return () => {};
-    },
-  };
-
-  // ── Whisper transcription models ───────────────────────────────────────────
-  // The runtime (id 'whisper') installs through `components`; these manage the
-  // downloadable model weights used by "Generate sentences".
-  readonly whisper = {
-    listModels: (): Promise<{ success: boolean; data?: WhisperModelStatus[]; error?: string }> => {
-      if (this.isElectron) {
-        return (window as any).electron.whisper.listModels();
-      }
-      return Promise.resolve({ success: false, error: 'Not running in Electron' });
-    },
-    downloadModel: (id: string): Promise<{ ok: boolean; error?: string }> => {
-      if (this.isElectron) {
-        return (window as any).electron.whisper.downloadModel(id);
-      }
-      return Promise.resolve({ ok: false, error: 'Not running in Electron' });
-    },
-    deleteModel: (id: string): Promise<{ ok: boolean; error?: string }> => {
-      if (this.isElectron) {
-        return (window as any).electron.whisper.deleteModel(id);
-      }
-      return Promise.resolve({ ok: false, error: 'Not running in Electron' });
-    },
-    onDownloadProgress: (cb: (p: WhisperDownloadProgress) => void): () => void => {
-      if (this.isElectron) {
-        return (window as any).electron.whisper.onDownloadProgress(cb);
       }
       return () => {};
     },

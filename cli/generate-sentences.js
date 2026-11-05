@@ -2,9 +2,11 @@
  * generate-sentences.js — audio → sentence-level VTT through BookForge's REAL
  * machinery, two modes:
  *
- *   WHISPER (default): faster-whisper transcription — the app's "Generate sentences"
- *     path (transcribe-bridge → transcribe_audiobook.py, bundled e2a env, never WSL).
- *     Words come from the audio, so ASR spelling errors are possible.
+ *   TRANSCRIBE (default): the app's "Generate sentences" path — a Crucible `asr` job
+ *     with Qwen3-ASR (crucible/asr.ts transcribeAtVenue). The server is
+ *     --crucible-server when given, else the routing record decides, exactly as the
+ *     app's row does. Words come from the audio, so ASR spelling errors are possible.
+ *     (It was faster-whisper on this machine until 2026-11-04, docs/REORG-PLAN.md B2.)
  *
  *   EPUB-ALIGN (--epub given): the ebook text is GROUND TRUTH; WhisperX forced
  *     alignment supplies only the timings (whisperx-align-bridge →
@@ -24,13 +26,12 @@
  *     node --require ./cli/electron-stub.js cli/generate-sentences.js \
  *          --clips <dir|list.txt> --epub book.epub --out-dir <dir> --crucible-server <name> [--language en]
  *
- * Reuses, unchanged: component install (whisper pip overlay / whisperx-env),
- * whisper-model download cache, both python pipelines, the app's m4b subtitle
- * embed (+read-back verify) with all its ffmpeg gotchas. This file adds only
- * argument plumbing and console progress.
+ * Reuses, unchanged: the app's Crucible doors and the app's m4b subtitle embed
+ * (+read-back verify) with all its ffmpeg gotchas. This file adds only argument
+ * plumbing and console progress.
  *
  *   node --require ./cli/electron-stub.js cli/generate-sentences.js \
- *        --audio book.m4b --out book.vtt [--epub book.epub] [--whisper-model small]
+ *        --audio book.m4b --out book.vtt [--epub book.epub] [--crucible-server <name>]
  *        [--language en] [--device auto|cpu|cuda] [--embed] [--report coverage.json]
  *        [--hole-min 30] [--rough-cache rough.json] [--align-workers N]
  *        [--snap-silence 0.6 | --no-snap-silence] [--no-paragraph-split]
@@ -174,33 +175,6 @@ function printCoverageSummary(reportPath) {
   }
 }
 
-async function ensureWhisperReady(modelId) {
-  const { isWhisperEnvInstalled } = require('../dist/electron/components/whisper-env.js');
-  const { componentManager } = require('../dist/electron/components/component-manager.js');
-  const { WHISPER_ENV_ID } = require('../dist/electron/components/whisper-env.js');
-  const wm = require('../dist/electron/whisper-models.js');
-
-  if (!isWhisperEnvInstalled()) {
-    console.log('[sentences] whisper engine overlay not installed — installing (pip, one-time)...');
-    const inst = await componentManager.install(WHISPER_ENV_ID, (p) => {
-      if (p.message) console.log(`[sentences] ${p.message}`);
-    });
-    if (!inst.ok) throw new Error(inst.error || 'whisper engine install failed');
-  }
-  if (!wm.getWhisperModelDef(modelId)) {
-    const ids = wm.WHISPER_MODELS.map((m) => m.id).join(', ');
-    throw new Error(`unknown --whisper-model '${modelId}' (available: ${ids})`);
-  }
-  if (!wm.isWhisperModelPresent(modelId)) {
-    console.log(`[sentences] whisper model '${modelId}' not on disk — downloading...`);
-    const dl = await wm.downloadWhisperModel(modelId, (p) => {
-      if (p && p.message) console.log(`[sentences] ${p.message}`);
-    });
-    if (!dl || dl.ok !== true) throw new Error((dl && dl.error) || `download failed for whisper model ${modelId}`);
-  }
-  return wm.whisperModelDir(modelId);
-}
-
 /** Audio files a clips run accepts from a directory. */
 const CLIP_EXT = /\.(wav|flac|mp3|m4a|ogg|opus|aac)$/i;
 
@@ -272,8 +246,11 @@ async function main() {
   const args = parseArgs(process.argv.slice(2));
   if (args.clips !== undefined) return runClipsMode(args);
   if (args['crucible-server'] === true) throw new Error('--crucible-server needs a server name');
-  if (args['crucible-server'] !== undefined && !args.epub) {
-    throw new Error('--crucible-server applies to --epub (the Crucible sentence pipeline); whisper mode runs here');
+  // ONE ASR MODEL (Qwen3-ASR on a Crucible) — there is no size to choose any more,
+  // and a flag that chose one would be a flag that does nothing.
+  if (args['whisper-model'] !== undefined) {
+    throw new Error('--whisper-model is gone: transcription is Qwen3-ASR on a Crucible (crucible/asr.ts), '
+      + 'the one model the app uses. Drop the flag.');
   }
   // ARGUMENTS FIRST, FILESYSTEM SECOND. The existence checks used to sit up here,
   // above every flag check, so a bad flag combination was reported as "audio file
@@ -396,52 +373,50 @@ async function main() {
       console.log(`[sentences]   ${JSON.stringify(st)}`);
     } else if (reportPath) printCoverageSummary(reportPath);
   } else {
-    // WHISPER: pure transcription through the app's transcribe pipeline.
-    const modelId = args['whisper-model'] || 'small';
-    const modelDir = await ensureWhisperReady(modelId);
-    const tb = require('../dist/electron/transcribe-bridge.js');
+    // TRANSCRIBE: the app's own door — a Crucible asr job, Qwen3-ASR.
+    const { transcribeAtVenue } = require('../dist/electron/crucible/asr.js');
+    const { processVenueHost } = require('../dist/electron/crucible/generation-venue.js');
+    const crucibleServer = args['crucible-server'] === undefined ? undefined : String(args['crucible-server']);
 
     const controller = new AbortController();
     let stopping = false;
     const stopAndExit = (sig) => {
       if (stopping) return;
       stopping = true;
-      console.log(`\n[sentences] ${sig} — aborting transcription...`);
+      console.log(`\n[sentences] ${sig} — cancelling the Crucible job...`);
       controller.abort();
       setTimeout(() => process.exit(130), 1500);  // abort-path: SIGINT/SIGTERM teardown
     };
     process.on('SIGINT', () => stopAndExit('SIGINT'));
     process.on('SIGTERM', () => stopAndExit('SIGTERM'));
+    if (args.device !== undefined) {
+      console.log(`[sentences] --device ${args.device} is not read: the Crucible server runs the model on its own card`);
+    }
 
-    console.log(`[sentences] WHISPER: "${path.basename(args.audio)}" model=${modelId} lang=${language} device=${args.device || 'auto'}`);
+    console.log(`[sentences] TRANSCRIBE: "${path.basename(args.audio)}" lang=${language}`
+      + (crucibleServer ? ` on crucible "${crucibleServer}"` : ' (the routing record picks the server)'));
     const outTmp = path.resolve(args.out);
     fs.mkdirSync(path.dirname(outTmp), { recursive: true });
-    let lastPct = -1;
-    const r = await tb.transcribeAudiobook({
-      audioPath: args.audio,
-      modelDir,
-      outPath: outTmp,
+    let lastLine = '';
+    const r = await transcribeAtVenue({
+      ...(crucibleServer ? { crucible: { server: crucibleServer } } : {}),
+      host: processVenueHost(),
+      audioPath: path.resolve(args.audio),
       language,
-      device: args.device || 'auto',
+      outVttPath: outTmp,
       signal: controller.signal,
-      onStage: (s) => console.log(`[sentences] stage: ${s}`),
-      onDevice: (d) => console.log(`[sentences] device: ${d}`),
-      onProgress: (frac, det) => {
-        const pct = Math.floor(frac * 100);
-        if (pct !== lastPct) {
-          lastPct = pct;
-          const extra = det && det.cues != null ? ` (${det.cues} cues)` : '';
-          process.stdout.write(`\r[sentences] transcribing ${pct}%${extra}   `);
-        }
+      onLog: (line) => console.log(`[sentences] ${line}`),
+      onProgress: (p) => {
+        const line = `[sentences] ${p.stage} ${Math.floor(p.fraction * 100)}%`
+          + (p.cues !== null ? ` (${p.cues} segments)` : '');
+        if (line !== lastLine) { lastLine = line; console.log(line); }
       },
     });
-    console.log('');
-    if (!r.ok) throw new Error(`transcription failed: ${r.error}`);
     vttSource = outTmp;
-    cues = r.cues || 0;
+    cues = r.cues;
   }
 
-  // Land the VTT at --out (align mode produced a temp file; whisper wrote in place).
+  // Land the VTT at --out (align mode produced a temp file; transcribe wrote in place).
   const outPath = path.resolve(args.out);
   if (path.resolve(vttSource) !== outPath) {
     fs.mkdirSync(path.dirname(outPath), { recursive: true });

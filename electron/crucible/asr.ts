@@ -4,14 +4,13 @@
  * ── What this is ───────────────────────────────────────────────────────────
  *
  * `electron/generate-sentences-bridge.ts` transcribes an audiobook into a
- * synced WebVTT by spawning `electron/scripts/transcribe_audiobook.py`
- * (faster-whisper, the bundled env, this machine's card) and then embeds the
- * VTT into the m4b. A Crucible `asr` job does the transcription on a server
- * (crucible `docs/PHASE4-AUDIO.md` §3) and hands back `transcript.json` —
- * whisper's own segments in absolute book time. This module is the swap: the
- * m4b goes up, the transcript comes back, and the same VTT lands at the same
- * temp path the local script writes to, so the embed, the binding and the
- * manifest link behind it cannot tell which machine transcribed the book.
+ * synced WebVTT and then embeds the VTT into the m4b. The transcription is a
+ * Crucible `asr` job (crucible `docs/PHASE4-AUDIO.md` §3): the m4b goes up,
+ * `transcript.json` — the model's segments in absolute book time — comes back,
+ * and the VTT lands at the path the bridge embeds from. It used to be
+ * `electron/scripts/transcribe_audiobook.py` (faster-whisper on this machine's
+ * card); that spawn is deleted (docs/REORG-PLAN.md, B2), and this door is the
+ * only way a book is transcribed.
  *
  * ── Two things stay on this side, on purpose ───────────────────────────────
  *
@@ -19,20 +18,18 @@
  * and the WebVTT stay in BookForge … Crucible returns what the model said and
  * asserts nothing about the client's units." {@link transcriptToVtt} is that
  * grouping — words into a cue at sentence-final punctuation or 240 characters,
- * a word-less segment as one cue, then the boundary dedupe — and it is a
- * TRANSLATION of `transcribe_audiobook.py`'s `group_segments`, rule for rule.
- * R1 note (crucible `docs/ARCHITECTURE.md`): that makes it a second copy of
- * the grouping rule until the local script is deleted with the spawn layer
- * after Owen's in-app pass (docs/CRUCIBLE_ROLLOUT_PLAN.md tier 3); until then
- * `tools/test-crucible-asr.js` pins the rule on both sides' fixture.
+ * a word-less segment as one cue, then the boundary dedupe — a translation of
+ * the deleted `transcribe_audiobook.py`'s `group_segments`, rule for rule, and
+ * now its only copy. `tools/test-crucible-asr.js` pins it.
  *
- * **The model id table.** BookForge names whisper sizes `tiny` … `large-v3`
- * (`electron/whisper-models.ts`); Crucible names its manifests
- * `faster-whisper-<size>` (`crucible/asr/*.toml`). A coincidence of spelling
- * is not an identity, so the correspondence is DECLARED and an unmapped size is
- * refused by name. There is no default model on either side: an ASR pass at
- * the wrong size is a transcript that looks fine and is worse, with nothing in
- * it to say so.
+ * **ONE MODEL: Qwen3-ASR-1.7B** (Owen, 2026-09-24: ASR is Qwen3-ASR, whisper is
+ * retiring — "ums matter"). It is the model the epub-align path already
+ * transcribes with (`sentence-align.ts`), named once here as
+ * {@link CRUCIBLE_ASR_MODEL}. The whisper SIZE table that stood here
+ * (`tiny` … `large-v3` → `faster-whisper-<size>`) is gone: no Crucible ships
+ * those manifests, so every Whisper-method row was refused at the server.
+ * Qwen's rules are not whisper's, and {@link crucibleAsrParams} states them:
+ * no VAD, the language always told (there is no auto-detect).
  *
  * ── What is NOT here ───────────────────────────────────────────────────────
  *
@@ -75,27 +72,17 @@ import { venueForRunStep, type RunVenue, type StepVenue } from './step-venue';
 import { renameSyncWithRetry } from '../fs-retry';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// The model id table
+// The model, its language and its params
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * BookForge whisper model id (`whisper-models.ts`) → Crucible `asr` manifest id
- * (PHASE4-AUDIO.md §3, six manifests). Every BookForge size has a manifest; the
- * distilled model is the one whose two names differ in more than a prefix.
- *
- * The table decides WHICH id to ask for; the server decides whether it has it
- * (`assertCrucibleAsrModelOffered` reads `GET /v1/info`'s `asr` rows before a
- * 900 MB upload, and the submit refuses `model_not_installed` by name for a
- * manifest whose weights were never pulled).
+ * THE asr model BookForge transcribes with — on the Whisper method and on the
+ * epub-align path alike (`sentence-align.ts` re-exports it as
+ * `SENTENCE_ASR_MODEL`). The server decides whether it has it
+ * (`assertCrucibleModelOffered` reads `GET /v1/info`'s `asr` rows before a
+ * 900 MB upload, and the submit refuses `model_not_installed` by name).
  */
-export const CRUCIBLE_ASR_MODEL_BY_WHISPER_MODEL: Readonly<Record<string, string>> = {
-  'tiny': 'faster-whisper-tiny',
-  'base': 'faster-whisper-base',
-  'small': 'faster-whisper-small',
-  'medium': 'faster-whisper-medium',
-  'large-v3': 'faster-whisper-large-v3',
-  'distil-large-v3': 'faster-whisper-distil-large-v3',
-};
+export const CRUCIBLE_ASR_MODEL = 'qwen3-asr-1.7b';
 
 /** A model this door cannot ask for, or a document it cannot read, named. */
 export class CrucibleAsrRefused extends Error {
@@ -107,45 +94,43 @@ export class CrucibleAsrRefused extends Error {
   }
 }
 
-/** Which Crucible asr model transcribes with this BookForge whisper size. */
-export function crucibleAsrModelFor(whisperModelId: string): string {
-  const id = (whisperModelId ?? '').trim();
-  if (id === '') {
-    throw new CrucibleAsrRefused(
-      'crucible_asr_model_not_named',
-      'a Crucible transcription needs the whisper size the row selected. There is no default '
-      + 'model on either side: a transcript at the wrong size looks fine and is worse.',
-    );
-  }
-  const mapped = CRUCIBLE_ASR_MODEL_BY_WHISPER_MODEL[id];
-  if (mapped === undefined) {
-    throw new CrucibleAsrRefused(
-      'crucible_asr_model_unmapped',
-      `whisper model "${id}" has no Crucible asr manifest in CRUCIBLE_ASR_MODEL_BY_WHISPER_MODEL `
-      + `(mapped: ${Object.keys(CRUCIBLE_ASR_MODEL_BY_WHISPER_MODEL).join(', ')}). Transcribe it `
-      + 'locally, or add the manifest on the server and the row here.',
-    );
-  }
-  return mapped;
-}
-
 /**
- * The language code to send. `transcribe_audiobook.py` maps the ISO 639-2
- * "language not known" sentinels a media file carries when its tag is unset —
- * `und`, `undetermined`, `unknown`, `mul` — and an empty string onto
- * auto-detect, because they literally mean "detect it" and whisper rejects
- * them as codes. Crucible spells auto-detect as the VALUE `"auto"`
- * (PHASE4 §3: a value meaning "detect it", not an absence). Everything else is
- * sent as given, lower-cased: faster-whisper's own code list is the server's
- * authority and it refuses an unknown one by name before the job is queued.
+ * The language code Qwen is told. Qwen3-ASR has NO auto-detect: Crucible
+ * refuses `auto` by name (`language_unsupported_by_engine`), and its language
+ * set is ISO 639-1 codes (`en`, `de`, `fr`, … `yue` — crucible
+ * `jobs/align/__init__.py:QWEN3_LANGUAGES`).
+ *
+ *  - The "not known" values a book or a media tag carries — empty, `auto`,
+ *    and the ISO 639-2 sentinels `und` / `undetermined` / `unknown` / `mul` —
+ *    are sent as `en`. That is the rule the epub-align path has always used
+ *    (`language && language !== 'auto' ? language : 'en'`), and English is what
+ *    an untagged book in this library is.
+ *  - A region tag is dropped (`en-US` → `en`): the model is per language.
+ *  - Anything else is sent as given, lower-cased, and the SERVER is the
+ *    authority on whether Qwen speaks it — it refuses an unsupported code by
+ *    name before the job is queued.
  */
 export function crucibleAsrLanguage(language: string | undefined): string {
   const raw = (language ?? '').trim().toLowerCase();
   if (raw === '' || raw === 'auto' || raw === 'und' || raw === 'undetermined'
       || raw === 'unknown' || raw === 'mul') {
-    return 'auto';
+    return 'en';
   }
-  return raw;
+  return raw.split(/[-_]/)[0];
+}
+
+/**
+ * The asr params, exactly what `sentence-align.ts` sends Qwen.
+ *
+ * `vad_filter: false` because Qwen refuses VAD by name
+ * (`vad_unsupported_by_engine`). `speech_only: false` SAID OUT LOUD because from
+ * Crucible 1.0.52 an unset `speech_only` resolves to `not vad_filter` — it would
+ * switch on Crucible's own silence detector, which nothing here has been
+ * measured against. `word_timestamps: true` because the cue grouping is word by
+ * word.
+ */
+export function crucibleAsrParams(language: string | undefined): Record<string, unknown> {
+  return { language: crucibleAsrLanguage(language), vad_filter: false, speech_only: false, word_timestamps: true };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -298,8 +283,8 @@ export interface VttCue {
 }
 
 /**
- * Whisper's segments → sentence cues, the way `transcribe_audiobook.py`'s
- * `group_segments` does it: words accumulate into a cue that ends at a word
+ * The model's segments → sentence cues, the way the deleted
+ * `transcribe_audiobook.py`'s `group_segments` did it: words accumulate into a cue that ends at a word
  * carrying sentence-final punctuation or once the cue holds 240 characters; a
  * segment with no word timings is one cue of its own text; then cues are
  * sorted by start and any cue beginning inside an already-kept cue's span
@@ -398,8 +383,6 @@ export interface RunCrucibleAsrOptions {
   readonly server: string;
   /** The audiobook. Its EXTENSION is load-bearing: it becomes the file's name on the server and ffmpeg reads the container off it. */
   readonly audioPath: string;
-  /** BookForge's whisper size, mapped through {@link crucibleAsrModelFor}. */
-  readonly whisperModelId: string;
   /** ISO code, `auto`, or one of the tag sentinels; see {@link crucibleAsrLanguage}. */
   readonly language?: string;
   /** Where the local script would have written the VTT. Written whole, then renamed into place. */
@@ -415,7 +398,7 @@ export interface CrucibleAsrOutcome {
   /** The model the server ran and its pinned revision — what the job log records. */
   readonly model: string;
   readonly revision: string;
-  /** The language whisper detected (or was told). */
+  /** The language the model was told. */
   readonly language: string;
   readonly durationSec: number;
 }
@@ -443,8 +426,8 @@ export async function runCrucibleAsr(options: RunCrucibleAsrOptions): Promise<Cr
       'a Crucible transcription writes its VTT where the local script writes it, and no path was given.',
     );
   }
-  const model = crucibleAsrModelFor(options.whisperModelId);
-  const language = crucibleAsrLanguage(options.language);
+  const model = CRUCIBLE_ASR_MODEL;
+  const params = crucibleAsrParams(options.language);
   // The name the server stores the upload under. Only the basename crosses —
   // the server writes it into the job's scratch — and its extension is what
   // ffmpeg reads the container from (`AsrOptions.filename`).
@@ -462,9 +445,7 @@ export async function runCrucibleAsr(options: RunCrucibleAsrOptions): Promise<Cr
       server,
       type: 'asr',
       model,
-      // All three required, none defaulted by the server (PHASE4 §3). `true`
-      // and `true` are what the local script hardcodes on its transcribe call.
-      params: { language, vad_filter: true, word_timestamps: true },
+      params,
       inputs: { [filename]: audioPath },
       artifactsTo: scratch,
       ...(options.signal === undefined ? {} : { signal: options.signal }),
@@ -556,7 +537,6 @@ export interface TranscribeAtVenueOptions {
   /** The routing record and the network — `processVenueHost()` in the app, a fixture in a keeper. */
   readonly host: VenueHost;
   readonly audioPath: string;
-  readonly whisperModelId: string;
   readonly language?: string;
   readonly outVttPath: string;
   readonly onProgress?: (progress: CrucibleAsrProgress) => void;
@@ -579,9 +559,8 @@ export interface TranscribeAtVenueOutcome {
  * same one the render and the Listen path make (`decideWhereGenerationRuns`:
  * the caller named it → the routing record), so the machine that transcribes a
  * book is chosen the way the machine that renders one is. There is no local
- * whisper spawn any more and no fallback to one: with no server reachable this
- * THROWS with the reason, and the row fails saying which server it could not
- * reach.
+ * spawn and no fallback to one: with no server reachable this THROWS with the
+ * reason, and the row fails saying which server it could not reach.
  */
 export async function transcribeAtVenue(options: TranscribeAtVenueOptions): Promise<TranscribeAtVenueOutcome> {
   const log = options.onLog ?? (() => undefined);
@@ -595,7 +574,6 @@ export async function transcribeAtVenue(options: TranscribeAtVenueOptions): Prom
   const crucible = await runCrucibleAsr({
     server: venue.server,
     audioPath: options.audioPath,
-    whisperModelId: options.whisperModelId,
     ...(options.language === undefined ? {} : { language: options.language }),
     outVttPath: options.outVttPath,
     ...(options.onProgress === undefined ? {} : { onProgress: options.onProgress }),

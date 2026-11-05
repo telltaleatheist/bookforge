@@ -5,16 +5,16 @@
  *   npx tsc -p tsconfig.electron.json && node tools/test-crucible-asr.js
  *
  * `electron/crucible/asr.ts` sends an audiobook to a Crucible `asr` job and
- * writes the SAME WebVTT the local `transcribe_audiobook.py` writes, at the
- * same path, so the embed and the binding behind it cannot tell which machine
- * transcribed the book. Against a FAKE Crucible, this pins:
+ * writes the WebVTT the bridge embeds, at the path it embeds from. Against a
+ * FAKE Crucible, this pins:
  *
- *  1. The model id table: every BookForge whisper size names its Crucible
- *     manifest, and an unmapped size is refused by name — there is no default
- *     model on either side.
- *  2. The language sentinels a media tag carries (`und`, `unknown`, …) become
- *     the VALUE `auto`; a real code is sent as given.
- *  3. The cue grouping is the local script's, rule for rule: a cue ends at
+ *  1. ONE model, Qwen3-ASR-1.7B — the same id the epub-align path uses — and
+ *     the whisper size table it replaced is gone (no Crucible shipped those
+ *     manifests, so every Whisper-method row was refused; REORG B2).
+ *  2. Qwen is always told the language: the not-known values a media tag
+ *     carries (`und`, `unknown`, …) are English, a region tag is dropped, and
+ *     the params are Qwen's (no VAD, `speech_only: false`, word timestamps).
+ *  3. The cue grouping is the deleted local script's, rule for rule: a cue ends at
  *     sentence-final punctuation or 240 characters, a word-less segment is one
  *     cue, boundary duplicates are dropped, timestamps are `HH:MM:SS.mmm`.
  *  4. The m4b goes up under its own basename (the extension is what ffmpeg
@@ -56,13 +56,13 @@ const { check, summary } = makeChecker();
 
 /** A transcript the fake serves: two sentences in one word-timed segment, a word-less one, a boundary duplicate. */
 const TRANSCRIPT = {
-  model: 'faster-whisper-large-v3',
+  model: 'qwen3-asr-1.7b',
   revision: 'edaa852ec7e1',
-  hf_repo: 'Systran/faster-whisper-large-v3',
+  hf_repo: 'Qwen/Qwen3-ASR-1.7B',
   language: 'en',
-  language_probability: 0.99,
-  language_requested: 'auto',
-  vad_filter: true,
+  language_probability: 1.0,
+  language_requested: 'en',
+  vad_filter: false,
   word_timestamps: true,
   duration_s: 12.5,
   window_s: 900,
@@ -94,7 +94,7 @@ const TRANSCRIPT = {
  * The fake asr server. `behaviour`:
  *   'run'       info offers asr with large-v3; the job runs to done with transcript.json
  *   'no-asr'    info offers no asr capability
- *   'no-model'  info offers asr with only faster-whisper-base
+ *   'no-model'  info offers asr with only whisper-large-v3-turbo
  *   'busy'      the submit is 409 server_busy
  */
 function startFake(behaviour) {
@@ -105,8 +105,8 @@ function startFake(behaviour) {
     if (route === '/v1/info' && req.method === 'GET') {
       state.infoAsked = (state.infoAsked || 0) + 1;
       const asrRows = behaviour === 'no-model'
-        ? [{ id: 'faster-whisper-base', revision: 'ebe41f70', source: 'Systran/faster-whisper-base', resident: false, vram_bytes: 1 }]
-        : [{ id: 'faster-whisper-large-v3', revision: 'edaa852e', source: 'Systran/faster-whisper-large-v3', resident: false, vram_bytes: 1 }];
+        ? [{ id: 'whisper-large-v3-turbo', revision: 'ebe41f70', source: 'openai/whisper-large-v3-turbo', resident: false, vram_bytes: 1 }]
+        : [{ id: 'qwen3-asr-1.7b', revision: 'edaa852e', source: 'Qwen/Qwen3-ASR-1.7B', resident: false, vram_bytes: 1 }];
       const capabilities = behaviour === 'no-asr'
         ? [{ job_type: 'echo', models: [] }]
         : [{ job_type: 'echo', models: [] }, { job_type: 'asr', models: asrRows }];
@@ -155,7 +155,7 @@ function startFake(behaviour) {
     if (artifact && req.method === 'GET') {
       const name = decodeURIComponent(artifact[2]);
       if (name === 'transcript.json.provenance.json') {
-        send(res, 200, provenanceFor('transcript.json', 'asr', 'faster-whisper-large-v3'));
+        send(res, 200, provenanceFor('transcript.json', 'asr', 'qwen3-asr-1.7b'));
         return true;
       }
       if (name === 'transcript.json') {
@@ -177,28 +177,27 @@ function freshAudio(name) {
 }
 
 async function tables() {
-  await check('every BookForge whisper size maps to its Crucible manifest id', () => {
-    assert.deepStrictEqual(asr.CRUCIBLE_ASR_MODEL_BY_WHISPER_MODEL, {
-      'tiny': 'faster-whisper-tiny',
-      'base': 'faster-whisper-base',
-      'small': 'faster-whisper-small',
-      'medium': 'faster-whisper-medium',
-      'large-v3': 'faster-whisper-large-v3',
-      'distil-large-v3': 'faster-whisper-distil-large-v3',
-    });
-    assert.strictEqual(asr.crucibleAsrModelFor('large-v3'), 'faster-whisper-large-v3');
-    assert.strictEqual(asr.crucibleAsrModelFor('distil-large-v3'), 'faster-whisper-distil-large-v3');
+  await check('ONE model: Qwen3-ASR-1.7B, the one the epub-align path transcribes with', () => {
+    assert.strictEqual(asr.CRUCIBLE_ASR_MODEL, 'qwen3-asr-1.7b');
+    const align = require(path.join(REPO, 'dist', 'electron', 'crucible', 'sentence-align.js'));
+    assert.strictEqual(align.SENTENCE_ASR_MODEL, asr.CRUCIBLE_ASR_MODEL, 'two names for one model');
+    assert.strictEqual(asr.CRUCIBLE_ASR_MODEL_BY_WHISPER_MODEL, undefined, 'the whisper size table is back');
+    assert.strictEqual(asr.crucibleAsrModelFor, undefined, 'the whisper size mapping is back');
   });
-  await check('an unmapped size is refused by name — no default model on either side', () => {
-    assert.throws(() => asr.crucibleAsrModelFor('large-v2'), (err) => err.code === 'crucible_asr_model_unmapped');
-    assert.throws(() => asr.crucibleAsrModelFor(''), (err) => err.code === 'crucible_asr_model_not_named');
-  });
-  await check('the media-tag sentinels become the value `auto`; a real code is sent as given', () => {
+  await check('Qwen is always TOLD the language: the not-known values are English, a region tag is dropped', () => {
+    // Crucible refuses `auto` for Qwen by name (language_unsupported_by_engine);
+    // English for an untagged book is the epub-align path's own rule.
     for (const raw of [undefined, '', 'auto', 'und', 'UND', 'undetermined', 'unknown', 'mul']) {
-      assert.strictEqual(asr.crucibleAsrLanguage(raw), 'auto', `${JSON.stringify(raw)} → auto`);
+      assert.strictEqual(asr.crucibleAsrLanguage(raw), 'en', `${JSON.stringify(raw)} → en`);
     }
     assert.strictEqual(asr.crucibleAsrLanguage('en'), 'en');
     assert.strictEqual(asr.crucibleAsrLanguage('DE'), 'de');
+    assert.strictEqual(asr.crucibleAsrLanguage('en-US'), 'en');
+    assert.strictEqual(asr.crucibleAsrLanguage('pt_BR'), 'pt');
+  });
+  await check('the params are the ones Qwen accepts: no VAD, speech_only said out loud, word timestamps', () => {
+    assert.deepStrictEqual(asr.crucibleAsrParams('und'),
+      { language: 'en', vad_filter: false, speech_only: false, word_timestamps: true });
   });
 }
 
@@ -267,20 +266,20 @@ async function happyPath() {
   let outcome;
   try {
     outcome = await asr.runCrucibleAsr({
-      server, audioPath: audio, whisperModelId: 'large-v3', language: 'und', outVttPath: outVtt,
+      server, audioPath: audio, language: 'und', outVttPath: outVtt,
       onProgress: (p) => progress.push(p), onLog: (l) => log.push(l),
     });
   } finally {
     await fake.close();
   }
-  await check('the m4b goes up under its own basename and the params are exactly the three required ones', () => {
+  await check('the m4b goes up under its own basename and the params are exactly Qwen\'s four', () => {
     assert.strictEqual(fake.state.uploads.length, 1);
     assert.strictEqual(fake.state.uploads[0].filename, 'The Mutineer.m4b', 'the extension is what ffmpeg reads');
     assert.strictEqual(fake.state.uploads[0].bytes.toString(), 'fake-m4b-bytes');
     const body = fake.state.submitted[0];
     assert.strictEqual(body.type, 'asr');
-    assert.strictEqual(body.model, 'faster-whisper-large-v3');
-    assert.deepStrictEqual(body.params, { language: 'auto', vad_filter: true, word_timestamps: true });
+    assert.strictEqual(body.model, 'qwen3-asr-1.7b');
+    assert.deepStrictEqual(body.params, { language: 'en', vad_filter: false, speech_only: false, word_timestamps: true });
     assert.deepStrictEqual(Object.keys(body.inputs), ['The Mutineer.m4b']);
   });
   await check('the server was asked whether it offers the model BEFORE the upload', () => {
@@ -291,7 +290,7 @@ async function happyPath() {
     const text = fs.readFileSync(outVtt, 'utf-8');
     assert.ok(text.startsWith('WEBVTT\n\n00:00:00.200 --> 00:00:01.100\nHe walked.\n'), text.slice(0, 80));
     assert.strictEqual(outcome.cues, 4);
-    assert.strictEqual(outcome.model, 'faster-whisper-large-v3');
+    assert.strictEqual(outcome.model, 'qwen3-asr-1.7b');
     assert.strictEqual(outcome.language, 'en');
     assert.strictEqual(outcome.durationSec, 12.5);
     assert.ok(!fs.existsSync(`${outVtt}.${process.pid}.part`), 'no temp file left beside the VTT');
@@ -308,7 +307,7 @@ async function happyPath() {
     assert.strictEqual(progress[3].cues, 2);
   });
   await check('the provenance (server, model fingerprint) is on the job log', () => {
-    assert.ok(log.some((l) => /faster-whisper-large-v3@abc1234/.test(l) && /fake-crucible 0\.5\.0/.test(l)), log.join('\n'));
+    assert.ok(log.some((l) => /qwen3-asr-1\.7b@abc1234/.test(l) && /fake-crucible 0\.5\.0/.test(l)), log.join('\n'));
   });
 }
 
@@ -324,7 +323,7 @@ async function refusals() {
     const outVtt = path.join(path.dirname(audio), 'out.vtt');
     let caught = null;
     try {
-      await asr.runCrucibleAsr({ server, audioPath: audio, whisperModelId: 'large-v3', language: 'en', outVttPath: outVtt });
+      await asr.runCrucibleAsr({ server, audioPath: audio, language: 'en', outVttPath: outVtt });
     } catch (err) { caught = err; } finally { await fake.close(); }
     await check(`${behaviour}: refused by name as ${code}, with ${uploads} upload(s) made and no VTT written`, () => {
       assert.ok(caught instanceof job.CrucibleJobRefused, `got ${caught}`);
@@ -334,7 +333,7 @@ async function refusals() {
       if (behaviour === 'busy') {
         assert.strictEqual(caught.busyLine, 'busy: bookforge/mac, align qwen3-aligner, 10% done — aligned 140 of 1400 chunk(s)');
       }
-      if (behaviour === 'no-model') assert.ok(/faster-whisper-base/.test(caught.message), 'names what it does offer');
+      if (behaviour === 'no-model') assert.ok(/whisper-large-v3-turbo/.test(caught.message), 'names what it does offer');
     });
   }
 }
@@ -343,7 +342,7 @@ async function venueDoor() {
   {
     /*
      * THERE IS NO LOCAL ARM LEFT. This check used to pin the opposite — the
-     * legacy switch reaching `transcribe_audiobook.py` here — and that switch
+     * legacy switch reaching the local whisper script here — and that switch
      * and the spawn behind it are deleted (docs/LEGACY-REMOVAL.md). What must
      * be true now is the thing the old arm hid: with nothing to place the work
      * on, the door REFUSES BY NAME and touches no card, rather than quietly
@@ -354,7 +353,7 @@ async function venueDoor() {
     try {
       await asr.transcribeAtVenue({
         host: noServerHost(),
-        audioPath: freshAudio('book.m4b'), whisperModelId: 'large-v3', outVttPath: outVtt,
+        audioPath: freshAudio('book.m4b'), outVttPath: outVtt,
       });
     } catch (err) { caught = err; }
     await check('with nothing enabled the door refuses by name and transcribes nothing here', () => {
@@ -378,7 +377,7 @@ async function venueDoor() {
     try {
       outcome = await asr.transcribeAtVenue({
         host: crucibleHost(server),
-        audioPath: audio, whisperModelId: 'large-v3', language: 'en', outVttPath: outVtt,
+        audioPath: audio, language: 'en', outVttPath: outVtt,
       });
     } finally {
       await fake.close();
@@ -401,7 +400,7 @@ async function venueDoor() {
         // NOTHING ENABLED: the record would refuse, so this proves the caller's
         // own instruction is answered before the record is ever read.
         host: noServerHost(),
-        audioPath: audio, whisperModelId: 'large-v3', language: 'en', outVttPath: path.join(path.dirname(audio), 'o.vtt'),
+        audioPath: audio, language: 'en', outVttPath: path.join(path.dirname(audio), 'o.vtt'),
       });
     } finally {
       await fake.close();
@@ -424,7 +423,7 @@ async function venueDoor() {
       outcome = await asr.transcribeAtVenue({
         runVenue: { where: 'crucible', server: mineName }, runVenueSource: 'the queue row',
         host: crucibleHost(otherName),
-        audioPath: audio, whisperModelId: 'large-v3', language: 'en', outVttPath: path.join(path.dirname(audio), 'o.vtt'),
+        audioPath: audio, language: 'en', outVttPath: path.join(path.dirname(audio), 'o.vtt'),
         onLog: (l) => log.push(l),
       });
     } finally {
@@ -460,7 +459,7 @@ async function venueDoor() {
       asr.transcribeAtVenue({
         runVenue: { where: 'crucible', server: 'mac' }, crucible: { server: 'local' },
         host: crucibleHost('local'),
-        audioPath: freshAudio('book.m4b'), whisperModelId: 'large-v3', outVttPath: path.join(work, 'never2.vtt'),
+        audioPath: freshAudio('book.m4b'), outVttPath: path.join(work, 'never2.vtt'),
       }),
       (err) => err.code === 'run_venue_disagrees',
     );

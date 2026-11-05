@@ -32,7 +32,6 @@ export type ComponentKind =
   | 'binary'     // an executable (downloadable archive, or a user's own install)
   | 'conda-env'  // a conda env (conda-pack tarball, or a user's own `conda create`)
   | 'rvc-model'  // an RVC enhancement voice tarball extracted into the rvc-models dir
-  | 'stt-model'  // a faster-whisper (CTranslate2) model dir fetched into runtime/whisper-models
   | 'system';    // provided by the OS (e.g. Apple Vision); nothing to download
 
 /**

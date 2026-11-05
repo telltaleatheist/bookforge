@@ -40,8 +40,6 @@ interface GsStepConfig {
   projectId: string;
   variantId: string;
   m4bPath: string;
-  modelId: string;
-  modelLabel?: string;
   language?: string;
   method?: 'whisper' | 'epub-align';
   epubVariantId?: string;
@@ -136,7 +134,6 @@ export const generateSentencesStep: StepModule = {
         projectId: config.projectId,
         variantId: config.variantId,
         m4bPath: config.m4bPath,
-        modelId: config.modelId,
         language: config.language || 'auto',
         method: config.method,
         epubVariantId: config.epubVariantId,

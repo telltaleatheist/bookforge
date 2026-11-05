@@ -79,9 +79,8 @@ import type { ComponentKind } from './component-types';
  * content — a tool at the wrong version breaks the pipeline that drives it, so
  * keeping it current is maintenance of a choice the user already made.
  *
- * Everything absent from this set is weights: `rvc-model`,
- * `stt-model`. Those are present or absent (rule 0). `system`
- * is here-or-not by definition and has nothing to download.
+ * Everything absent from this set is weights (`rvc-model`), present or absent
+ * (rule 0). `system` is here-or-not by definition and has nothing to download.
  */
 const TOOL_KINDS: ReadonlySet<ComponentKind> = new Set<ComponentKind>([
   'binary', 'conda-env',

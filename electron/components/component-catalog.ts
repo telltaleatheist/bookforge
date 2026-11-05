@@ -13,11 +13,8 @@ import * as path from 'path';
 import { getConfiguredToolsEnvPath } from '../tool-paths';
 import { getActiveToolsEnvPath, getToolsEnvDir } from '../tools-env-bootstrap';
 import { rvcVoiceComponents } from './rvc-voice-components';
-import { whisperModelComponents } from './whisper-model-components';
 import { llamaCudaComponent } from './llama-cuda';
-import { cudaTtsComponent } from './cuda-tts';
 import { cudaRvcComponent } from './cuda-rvc';
-import { whisperEnvComponent } from './whisper-env';
 import { rvcEnvComponent } from './rvc-env';
 import { whisperxEnvComponent } from './whisperx-env';
 import { qwenAlignEnvComponent } from './qwen-align-env';
@@ -196,7 +193,7 @@ const orpheus: OptionalComponent = {
 // Catalog
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Built fresh on every call because the voice/whisper-model entries are read off
+// Built fresh on every call because the voice entries are read off
 // disk. Nothing here is fetched from a network catalog any more: the remote
 // catalog served exactly two lists — the XTTS voices and the Stanza language
 // packs — and both left the build (2026-09-05).
@@ -205,14 +202,11 @@ export function getCatalog(): OptionalComponent[] {
     calibre,
     orpheus,
     llamaCudaComponent(),
-    cudaTtsComponent(),
     cudaRvcComponent(),
-    whisperEnvComponent(),
     rvcEnvComponent(),
     whisperxEnvComponent(),
     qwenAlignEnvComponent(),
     ...rvcVoiceComponents(),
-    ...whisperModelComponents(),
   ];
 }
 

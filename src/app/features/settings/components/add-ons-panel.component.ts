@@ -86,8 +86,8 @@ import { ComponentStatus, OptionalComponent, EnvDiagnosticResult } from '../../.
               <div class="gpu-explainer">
                 <span class="gpu-spark">⚡</span>
                 We found your <strong>{{ gpu }}</strong> —
-                {{ status.component.id === 'cuda-tts'
-                   ? 'add GPU acceleration to generate audiobook narration much faster.'
+                {{ status.component.id === 'cuda-rvc'
+                   ? 'add GPU acceleration to voice enhancement.'
                    : 'add GPU acceleration to run on-device AI cleanup much faster.' }}
               </div>
             }
@@ -666,7 +666,7 @@ export class AddOnsPanelComponent implements OnInit {
     }
     const excluded = new Set(this.exclude());
     return this.svc.components().filter(
-      s => s.component.kind !== 'stt-model' &&
+      s =>
         // RVC enhancement VOICES (kind 'rvc-model') + the RVC engine + its CUDA
         // overlay all live on the dedicated Voice Enhancement screen, not in this
         // general tools hub.
@@ -684,11 +684,11 @@ export class AddOnsPanelComponent implements OnInit {
       .map(c => c.component.id)),
   );
 
-  /** The CUDA download-on-demand packs (llama LLM + PyTorch + RVC). Treated
+  /** The CUDA download-on-demand packs (llama LLM + RVC PyTorch). Treated
    *  as one "GPU acceleration" group — co-selected at first run and grouped in
    *  the GPU-only view, so the user makes a single GPU choice for every phase. */
   isCudaPack(id: string): boolean {
-    return id === 'llama-cuda' || id === 'cuda-tts' || id === 'cuda-rvc';
+    return id === 'llama-cuda' || id === 'cuda-rvc';
   }
 
   /*

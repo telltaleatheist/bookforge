@@ -41,7 +41,7 @@ import { readAlignment } from '@crucible/client';
 
 import { CRUCIBLE_CLIENT_NAME, crucibleClientFor } from './servers';
 import { assertCrucibleModelOffered, runCrucibleJob, type CrucibleJobProgress } from './job';
-import { readCrucibleTranscript, vttTimestamp } from './asr';
+import { CRUCIBLE_ASR_MODEL, readCrucibleTranscript, vttTimestamp } from './asr';
 import {
   diffBookAgainstHeard, placeWindow, planAlignWindows,
   type BookSentence, type HeardWord, type SentencePlacement,
@@ -55,7 +55,8 @@ import { repeatedRuns } from '../../shared/sentence-align/repeat-loops';
 import { MIN_CUE_S, trimOverlaps } from '../../shared/sentence-align/overlaps';
 import { renameSyncWithRetry } from '../fs-retry';
 
-export const SENTENCE_ASR_MODEL = 'qwen3-asr-1.7b';
+/** The one asr model, owned by `asr.ts` (the Whisper method transcribes with the same one). */
+export const SENTENCE_ASR_MODEL = CRUCIBLE_ASR_MODEL;
 export const SENTENCE_ALIGN_MODEL = 'qwen3-aligner';
 /**
  * THE SECOND OPINION (Owen 2026-09-27: "Have whisper large turbo or something run on the problematic spots"). A

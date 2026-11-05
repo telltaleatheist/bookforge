@@ -751,17 +751,13 @@ export interface AudiobookJobConfig {
 }
 
 // Generate-sentences job configuration — transcribe an audiobook m4b into a synced
-// VTT with Whisper and link it to the ONE variant it describes.
+// VTT (Qwen3-ASR on a Crucible) and link it to the ONE variant it describes.
 export interface GenerateSentencesJobConfig {
   type: 'generate-sentences';
   projectId: string;
   variantId: string;
   /** Absolute path to the audiobook m4b to transcribe. */
   m4bPath: string;
-  /** Whisper model id (small | medium | large-v3 | distil-large-v3). */
-  modelId: string;
-  /** Human-readable model name for the queue row (e.g. "Medium"). */
-  modelLabel?: string;
   /** ISO language code, or 'auto' (default). */
   language?: string;
   /** Alignment method: 'whisper' transcribes audio; 'epub-align' force-aligns the project's ebook text to the audio (accurate text). Absent = 'whisper'. */

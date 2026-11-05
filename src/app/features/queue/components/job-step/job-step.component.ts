@@ -492,12 +492,6 @@ export class JobStepComponent {
         }
         if (config['pattern']) tags.push(config['pattern']);
         break;
-
-      case 'generate-sentences':
-        if (config['modelLabel'] || config['modelId']) {
-          tags.push(`${config['modelLabel'] || config['modelId']} model`);
-        }
-        break;
     }
 
     if (job.orpheusMemoryLevel) tags.push(`⚡ ${job.orpheusMemoryLevel}`);
