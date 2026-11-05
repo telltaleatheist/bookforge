@@ -1586,7 +1586,15 @@ test('a reach answer that CHANGES publishes a snapshot, with nothing queued', as
   // follows `reachTtlMs`) wound down to test speed: an answer ages out, the
   // next sweep asks again, and THAT is when a machine's going away is noticed.
   await fresh('reach-publish', [gpu], host, { admissionRecheckMs: 100, reachSweepMs: 30 });
-  await settle();
+  // WAITED FOR, not read once. A re-probe in flight reads `unknown` by design, and on
+  // a 30 ms sweep a single read lands in that window: 1 run in 30 on Windows, the same
+  // rate before and after the B2 deletions, failing on this assertion (2026-11-05). The
+  // deadlines here only bound how long something that never happens takes to fail.
+  const until = async (met) => {
+    const deadline = Date.now() + 5000;
+    while (!met() && Date.now() < deadline) await wait(5);
+  };
+  await until(() => engine.snapshot().servers[0].reach === 'ready');
   assert.strictEqual(engine.snapshot().servers[0].reach, 'ready', 'it was up to begin with');
 
   // Only now does anyone listen, and only then does the machine go away. The
@@ -1594,11 +1602,11 @@ test('a reach answer that CHANGES publishes a snapshot, with nothing queued', as
   const seen = [];
   const off = engine.onQueueChanged((snap) => { seen.push(snap.servers); });
   host.reach = { mac: { reachable: false, detail: 'Nothing answered at http://mac:7100.' } };
-  await wait(120);
-  await settle();
+  const isDown = (rows) => rows.some((r) => r.reach === 'unreachable');
+  await until(() => seen.some(isDown));
   off();
 
-  const down = seen.find((rows) => rows.some((r) => r.reach === 'unreachable'));
+  const down = seen.find(isDown);
   assert.ok(down, 'the page was told, with an empty queue and nothing else to report');
   assert.strictEqual(down[0].detail, 'Nothing answered at http://mac:7100.');
 });
