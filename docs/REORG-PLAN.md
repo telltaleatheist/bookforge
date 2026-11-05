@@ -72,3 +72,8 @@ all four servers; BookForge merges.
 - **Leftover Python folders** Foundry no longer uses, to delete by hand: `%LOCALAPPDATA%\foundry\envs\windows-x64` and `nli-windows-x64` on the PC; `~/Library/Application Support/foundry/envs/` on the Mac.
 - **BookForge**: Generate Sentences uses Qwen3-ASR, with no size picker (B2).
 - **Crucible flip** (after all tests): Higgs worker (C1), built-in voices at the machine's width, install/repair (C4); the stream must sound exactly as today.
+
+## Later, after the reorg (recorded so it isn't lost)
+
+- Library files still over ~800 lines, left because they can be split any time without touching BookForge's window copy: node/workspace 2,370, capture 2,282, crucible-dispatch 2,062, book 1,972, ask-tools 1,622, crucible-registry 1,358, engine 1,182, app-settings 874, crucible-coordinate 816. `job-queue-carry` (1,527) is one linear function: splitting it is a rewrite, not a move.
+- Members made public so the split window modules can reach them: tidy back when convenient.
