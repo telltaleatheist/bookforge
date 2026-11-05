@@ -391,7 +391,7 @@ before step 5 — keep 5 before 6).
 
 **Keep even though "Orpheus":** the `orpheus` row of `engine_profiles` (pads=True) and the padded assembly path,
 the inhomogeneity rewrite, and `normalize_gaps` — existing Orpheus sessions on disk are still REASSEMBLED
-(the three goldens are Orpheus). Ask Owen whether reassembly of Orpheus-era sessions must survive; if not,
+(the three goldens are Orpheus). DECIDED 2026-11-05 (lead): `normalize_gaps` is not ported and stays working in Python until step 8; see the entry for Owen in docs/REORG-PLAN.md, and re-read it before step 8, because he can overrule it. If Orpheus reassembly goes,
 the padded path + normalize_gaps + Orpheus goldens can go too (big simplification).
 
 **Risks:**

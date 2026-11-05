@@ -83,45 +83,6 @@
             "PYTHONUNBUFFERED": "1"
           },
           "cwd": "C:/FAKE/userData"
-        },
-        "resume": {
-          "command": "C:/FAKE/e2a/python_env/python.exe",
-          "viaWsl": false,
-          "args": [
-            "-u",
-            "-m",
-            "narrator.compat.app",
-            "--headless",
-            "--resume_session",
-            "C:/lib/tmp/ebook-abc"
-          ],
-          "env": {
-            "PROBE_PATH": "C:/lib/rejects",
-            "PROBE_PLAIN": "x",
-            "PYTHONIOENCODING": "utf-8",
-            "PYTHONPATH": "<REPO>/python",
-            "PYTHONUNBUFFERED": "1"
-          },
-          "cwd": "C:/FAKE/userData"
-        },
-        "list": {
-          "command": "C:/FAKE/e2a/python_env/python.exe",
-          "viaWsl": false,
-          "args": [
-            "-u",
-            "-m",
-            "narrator.compat.app",
-            "--headless",
-            "--list_sessions"
-          ],
-          "env": {
-            "PROBE_PATH": "C:/lib/rejects",
-            "PROBE_PLAIN": "x",
-            "PYTHONIOENCODING": "utf-8",
-            "PYTHONPATH": "<REPO>/python",
-            "PYTHONUNBUFFERED": "1"
-          },
-          "cwd": "C:/FAKE/userData"
         }
       }
     },
@@ -196,45 +157,6 @@
             "en",
             "--alignment",
             "C:/lib/tmp/ebook-abc/alignment.json"
-          ],
-          "env": {
-            "PROBE_PATH": "C:/lib/rejects",
-            "PROBE_PLAIN": "x",
-            "PYTHONIOENCODING": "utf-8",
-            "PYTHONPATH": "<REPO>/python",
-            "PYTHONUNBUFFERED": "1"
-          },
-          "cwd": "C:/FAKE/userData"
-        },
-        "resume": {
-          "command": "C:/FAKE/e2a/python_env/python.exe",
-          "viaWsl": false,
-          "args": [
-            "-u",
-            "-m",
-            "narrator.compat.app",
-            "--headless",
-            "--resume_session",
-            "C:/lib/tmp/ebook-abc"
-          ],
-          "env": {
-            "PROBE_PATH": "C:/lib/rejects",
-            "PROBE_PLAIN": "x",
-            "PYTHONIOENCODING": "utf-8",
-            "PYTHONPATH": "<REPO>/python",
-            "PYTHONUNBUFFERED": "1"
-          },
-          "cwd": "C:/FAKE/userData"
-        },
-        "list": {
-          "command": "C:/FAKE/e2a/python_env/python.exe",
-          "viaWsl": false,
-          "args": [
-            "-u",
-            "-m",
-            "narrator.compat.app",
-            "--headless",
-            "--list_sessions"
           ],
           "env": {
             "PROBE_PATH": "C:/lib/rejects",
@@ -323,45 +245,6 @@
             "en",
             "--alignment",
             "C:/lib/tmp/ebook-abc/alignment.json"
-          ],
-          "env": {
-            "PROBE_PATH": "C:/lib/rejects",
-            "PROBE_PLAIN": "x",
-            "PYTHONIOENCODING": "utf-8",
-            "PYTHONPATH": "<REPO>/python",
-            "PYTHONUNBUFFERED": "1"
-          },
-          "cwd": "C:/FAKE/userData"
-        },
-        "resume": {
-          "command": "C:/FAKE/e2a/python_env/python.exe",
-          "viaWsl": false,
-          "args": [
-            "-u",
-            "-m",
-            "narrator.compat.app",
-            "--headless",
-            "--resume_session",
-            "C:/lib/tmp/ebook-abc"
-          ],
-          "env": {
-            "PROBE_PATH": "C:/lib/rejects",
-            "PROBE_PLAIN": "x",
-            "PYTHONIOENCODING": "utf-8",
-            "PYTHONPATH": "<REPO>/python",
-            "PYTHONUNBUFFERED": "1"
-          },
-          "cwd": "C:/FAKE/userData"
-        },
-        "list": {
-          "command": "C:/FAKE/e2a/python_env/python.exe",
-          "viaWsl": false,
-          "args": [
-            "-u",
-            "-m",
-            "narrator.compat.app",
-            "--headless",
-            "--list_sessions"
           ],
           "env": {
             "PROBE_PATH": "C:/lib/rejects",

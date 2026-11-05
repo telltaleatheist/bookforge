@@ -423,14 +423,14 @@ for (const arm of ARMS) {
      */
     assert.strictEqual(envOf(doors.prep).NARRATOR_ENGINE, 'higgs-v3',
       'prep does not name its engine');
-    for (const d of ['assembly', 'align', 'resume', 'list']) {
+    for (const d of ['assembly', 'align']) {
       assert.ok(!('NARRATOR_ENGINE' in envOf(doors[d])),
         `${d} names an engine — it is engine-agnostic and runs in the tools env`);
     }
   });
 
   check(`${arm}: the tools doors are NEVER routed through WSL`, () => {
-    for (const d of ['assembly', 'align', 'resume', 'list']) {
+    for (const d of ['assembly', 'align']) {
       assert.strictEqual(doors[d].viaWsl, false,
         `${d} was routed through WSL; assembly reads a session normalised onto `
         + 'Windows and the 9p mount would dominate the job');

@@ -254,17 +254,15 @@ if (require.main === module) {
     align: ['align', '--session-dir', WIN_SESSION,
             '--report', WIN_SESSION + '\\coverage.json',
             '--language', 'en', '--alignment', WIN_SESSION + '\\alignment.json'],
-    resume: ['--headless', '--resume_session', WIN_SESSION],
-    list: ['--headless', '--list_sessions'],
   };
 
-  // engine: undefined means the tools env (assembly/resume/list); 'orpheus' is
+  // engine: undefined means the tools env (assembly); 'orpheus' is
   // the render engine. Higgs is covered by tools/test-higgs-engine.js, which owns
   // the voice document this capture would have to fake.
   /*
-   * FIVE DOORS. `worker` and `retake` were the local renderer's own phase and
+   * THREE DOORS. `resume` and `list` became TypeScript readers. `worker` and `retake` were the local renderer's own phase and
    * went with it (docs/LEGACY-REMOVAL.md); `buildNarratorSpawn` still builds the
-   * other five and a flag lost from any of them is still silent and expensive.
+   * others and a flag lost from any of them is still silent and expensive.
    *
    * `prep` names the HIGGS engine now, not Orpheus. Orpheus is retired and
    * cannot render, so a prep plan captured for it would pin an environment no
@@ -274,8 +272,6 @@ if (require.main === module) {
     { name: 'prep', engine: 'higgs', phase: 'prep' },
     { name: 'assembly', engine: undefined, phase: 'assembly' },
     { name: 'align', engine: undefined, phase: 'align' },
-    { name: 'resume', engine: undefined, phase: 'resume' },
-    { name: 'list', engine: undefined, phase: 'list' },
   ];
 
   /**

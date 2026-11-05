@@ -164,16 +164,9 @@ const noSessionDir = refuse('assembly with no --session_dir', {
   args: ['--headless', '--session', 'x', '--output_dir', SCRATCH, '--assemble_only'],
 });
 
-// A session directory that is not one.
-const badSession = refuse('resume of a directory that is not a session', {
-  phase: 'resume',
-  args: ['--headless', '--resume_session', path.join(SCRATCH, 'not-a-session')],
-});
-
 const CASES = [
   { r: nearMiss, mustSay: /--tts_engine higgs disagrees with NARRATOR_ENGINE/i },
   { r: noSessionDir, mustSay: /--session_dir/ },
-  { r: badSession, mustSay: /not found|No session|session-state/i },
 ];
 
 console.log('narrator refuses on STDOUT, which is the whole point');

@@ -31,13 +31,13 @@
  * |---------|-----------------------------|------------------|-----------------|
  * | orpheus | WSL `orpheus_tts`           | `narrator-mlx`   | managed orpheus |
  * | higgs   | WSL `higgs3`                | refused by name  | refused by name |
- * | (none)  | native tools env — assembly / resume / list, every platform      |
+ * | (none)  | native tools env — assembly, every platform                      |
  *
- * A phase with no engine is not a phase with a default engine. Assembly, resume
- * and list are engine-AGNOSTIC doors: they read a session that already records
- * which engine rendered it, they need numpy/soundfile/mutagen and nothing else,
- * and they run natively on every platform including Windows-with-WSL. Naming an
- * engine on one of those is a caller mistake and is refused rather than ignored,
+ * A phase with no engine is not a phase with a default engine. Assembly is an
+ * engine-AGNOSTIC door: it reads a session that already records which engine
+ * rendered it, it needs numpy/soundfile/mutagen and nothing else, and it runs
+ * natively on every platform including Windows-with-WSL. Naming an engine on it
+ * is a caller mistake and is refused rather than ignored,
  * because "ignored" would silently route an assembly into a 6 GB vLLM env.
  *
  * ── What crosses into the process, and what does not ────────────────────────
@@ -127,7 +127,7 @@ export type NarratorEngineId = 'orpheus' | 'higgs';
  * so the module selection lives in ONE table rather than being invented twice.
  */
 export type NarratorPhase =
-  'serve' | 'prep' | 'worker' | 'align' | 'assembly' | 'resume' | 'list';
+  'serve' | 'prep' | 'worker' | 'align' | 'assembly';
 
 export interface NarratorSpawnRequest {
   /**
@@ -194,7 +194,7 @@ export interface NarratorSpawnRequest {
    *
    * With this set the phase never enters the guest: the interpreter is the
    * tools env (`narratorNativePython(undefined)` — the same bundled python that
-   * already runs assembly, resume and list natively on every platform), every
+   * already runs assembly natively on every platform), every
    * path stays a host path, and the session lives where the caller put it.
    *
    * ── Why the TOOLS env and not "the engine's native env" ─────────────────
@@ -325,8 +325,6 @@ const PHASE_MODULE: Record<NarratorPhase, string> = {
   prep: 'narrator.compat.app',
   align: 'narrator.cli',
   assembly: 'narrator.compat.app',
-  resume: 'narrator.compat.app',
-  list: 'narrator.compat.app',
 };
 
 /**
@@ -345,10 +343,6 @@ const PHASE_MODULE: Record<NarratorPhase, string> = {
  * fact of Phase 1, not a design, and Phase 3 of the e2a removal moves both to the
  * tools env unconditionally. Modelling that as 'optional' says the truth now and
  * makes the Phase 3 edit one call site rather than a rule change.
- *
- * `resume` and `list` are 'refused' rather than 'optional' for the same reason
- * ignoring the engine would be wrong: naming one would silently route a session
- * listing into a multi-gigabyte TTS environment that may not even be installed.
  *
  * ── `align` is 'refused' too, and it is worth saying why ────────────────────
  *
@@ -372,8 +366,6 @@ const PHASE_ENGINE: Record<NarratorPhase, 'required' | 'refused' | 'optional'> =
   worker: 'required',
   align: 'refused',
   assembly: 'optional',
-  resume: 'refused',
-  list: 'refused',
 };
 
 /**
@@ -596,8 +588,7 @@ export function buildNarratorSpawn(req: NarratorSpawnRequest): NarratorSpawnPlan
     throw new Error(
       `buildNarratorSpawn: phase '${phase}' is engine-agnostic and runs in the tools ` +
         `environment on every platform, but engine '${engine}' was named. A session ` +
-        'already records which engine rendered it; resume and list read that and need ' +
-        'no TTS environment. Drop the engine.',
+        'already records which engine rendered it and needs no TTS environment. Drop the engine.',
     );
   }
   if (rule === 'required' && !engine) {

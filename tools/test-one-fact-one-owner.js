@@ -72,6 +72,8 @@ require(path.join(REPO, 'cli', 'electron-stub.js'));
 const ACRONYMS_JSON = path.join(REPO, 'python', 'narrator', 'text', 'caps_acronyms.json');
 const PACKER_PY = path.join(REPO, 'python', 'narrator', 'text', 'paragraph_packer.py');
 const LISTEN_TEXT_TS = path.join(REPO, 'shared', 'listen-text', 'normalize.ts');
+/** The one fold since B6 step 4, which Listen re-exports. */
+const CAPS_TS = path.join(REPO, 'electron', 'narrator', 'text', 'caps.ts');
 const BANDS_JSON = path.join(REPO, 'electron', 'data', 'higgs-safe-bands.json');
 const CATALOG_JSON = path.join(REPO, 'electron', 'data', 'higgs-models.json');
 /** The loader reads the DIST copy, which is the only seam it has (see the header). */
@@ -120,22 +122,22 @@ test('narrator derives that set as lettered UNION spokenAsWord, and says so', ()
 });
 
 test('Listen derives it from the JSON too, and consults nothing else', () => {
-  const ts = read(LISTEN_TEXT_TS);
-  assert.ok(/export const CAPS_ACRONYMS[^=]*=\s*new Set\(\[\s*\.\.\.capsAcronymCategory\('lettered'\),\s*\.\.\.capsAcronymCategory\('spokenAsWord'\),\s*\]\)/.test(ts),
-    'CAPS_ACRONYMS in normalize.ts is no longer the union of the two JSON categories');
+  const ts = read(CAPS_TS);
+  assert.ok(/export const CAPS_ACRONYMS[^=]*=\s*new Set\(\[\s*\.\.\.category\('lettered'\),\s*\.\.\.category\('spokenAsWord'\),\s*\]\)/.test(ts),
+    'CAPS_ACRONYMS in caps.ts is no longer the union of the two JSON categories');
   assert.ok(/return CAPS_ACRONYMS\.has\(upper\) \|\| !VOWEL\.test\(upper\)/.test(ts),
     "foldCapsRun's keep test no longer reads CAPS_ACRONYMS — narrator's `_is_acronym` is "
     + '`in CAPS_ACRONYMS or no vowel`, and the mirror must be the same two clauses');
 });
 
-test('NO SECOND HARD-CODED ACRONYM SET in shared/listen-text/normalize.ts', () => {
+test('NO SECOND HARD-CODED ACRONYM SET in caps.ts or Listen', () => {
   // `KEEP_AS_PRINTED = new Set(['WWI', 'WWII'])` sat four lines under the comment
   // that forbids exactly this. The JSON is the place; a private list is how one
   // reader stops moving with the other.
-  const ts = read(LISTEN_TEXT_TS);
+  const ts = read(LISTEN_TEXT_TS) + read(CAPS_TS);
   const literalSets = [...ts.matchAll(/new Set\(\s*\[\s*(['"])/g)];
   assert.deepStrictEqual(literalSets.map((m) => m.index), [],
-    'normalize.ts builds a Set from string literals again. Caps tokens belong in '
+    'normalize.ts or caps.ts builds a Set from string literals again. Caps tokens belong in '
     + 'python/narrator/text/caps_acronyms.json, where narrator reads them too — a set written '
     + 'here moves on its own, which is how WWII reached a book as "Wwii".');
 });

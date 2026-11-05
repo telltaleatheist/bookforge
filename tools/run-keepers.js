@@ -223,6 +223,10 @@ const SUITES = [
   'test-crucible-settings-real-doc',
   // A tag write never risks the book, killed at each point of both paths (Owen 2026-11-05).
   'test-m4b-tags',
+  // The manifest and session readers, held to the Python's captured bytes and refusals.
+  'test-narrator-session',
+  // The shared text rules, held to the Python's captured answers.
+  'test-narrator-text',
   // THE BAND PREP IS HANDED (2026-11-04, docs/REORG-PLAN.md B1). The venue's
   // band becomes a floor and a cap in ONE place — `higgsPrepBudget` — and rides
   // the prep argv, so narrator's prep imports no model code to learn it. The

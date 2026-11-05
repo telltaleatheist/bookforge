@@ -97,128 +97,12 @@ import { expandNumbersEn } from '../../electron/number-expansion.js';
 // the scripture book name, printed in full. See its header for why it is a
 // deterministic exception and what stops it being wrong.
 import { expandBibleReferences } from './bible-books.js';
-// THE ONE ACRONYM LIST, narrator's file (python/narrator/text/caps_acronyms.json):
-// a relative import so tsc emits the JSON into dist beside the compiled module
-// and the packaged app carries it; narrator loads the same file standalone.
-import capsAcronyms from '../../python/narrator/text/caps_acronyms.json';
+// THE ONE ACRONYM LIST AND THE ONE CAPS FOLD, owned by the narrator's text rules so a
+// heading cannot be read two ways. Re-exported because Listen's consumers spell and fold.
+import { CHARS_REMOVE } from '../../electron/narrator/text/spoken.js';
+import { foldCapsRun } from '../../electron/narrator/text/caps.js';
 
-/**
- * THE ONE acronym list, validated exactly as narrator validates it.
- *
- * A mirror of `_load_caps_acronyms` (python/narrator/text/paragraph_packer.py):
- * both keys must be non-empty lists of upper-case tokens, and a malformed file
- * is refused BY NAME rather than silently reducing to an empty set — an empty
- * set here would title-case every acronym in every heading and say nothing.
- */
-function capsAcronymCategory(key: 'lettered' | 'spokenAsWord'): readonly string[] {
-  const rows = (capsAcronyms as Record<string, unknown>)[key];
-  if (!Array.isArray(rows) || rows.length === 0
-      || !rows.every((r) => typeof r === 'string' && r && r === r.toUpperCase())) {
-    throw new Error(
-      `python/narrator/text/caps_acronyms.json: "${key}" must be a non-empty list of `
-      + 'upper-case tokens; this is the one acronym list three code paths read, and a '
-      + 'malformed entry would silently change what a caps run folds to.',
-    );
-  }
-  return rows as string[];
-}
-
-/**
- * Capitalized tokens that are read as LETTERS despite carrying a vowel — the
- * `lettered` half of THE ONE acronym list (python/narrator/text/
- * caps_acronyms.json), which narrator's caps fold reads too. It was a second
- * copy for one day (2026-09-06) and diverged that day. A miss reads "USA" as a
- * word: fix it in the JSON, and both readers move together.
- *
- * EXPORTED FOR THE SPELLING CONSUMER, which legitimately needs this half alone:
- * `lettered` is what Listen SPELLS ("F B I"), and a `spokenAsWord` entry must
- * never be spelled. The caps fold below uses the UNION instead — see
- * `CAPS_ACRONYMS`.
- */
-export const LETTERED_ACRONYMS: ReadonlySet<string> = new Set(capsAcronymCategory('lettered'));
-
-/**
- * What the caps fold keeps as printed: `lettered` ∪ `spokenAsWord`, which is
- * exactly narrator's `CAPS_ACRONYMS` (paragraph_packer.py `_load_caps_acronyms`,
- * `frozenset(lettered) | frozenset(spokenAsWord)`).
- *
- * BOTH CATEGORIES ARE ACRONYMS TO THIS RULE — narrator's own words: "a lettered
- * one (FBI) and a word-like one (NASA) are both kept as printed". Listen's fold
- * read `lettered` ALONE until 2026-09-13, so all fifteen `spokenAsWord` entries
- * were title-cased on Listen and kept in the m4b: a heading reached the engine
- * as "Nasa" from one reader and "NASA" from the other. That is the same
- * one-fact-two-owners shape the list was created to end.
- *
- * There was a second, HARD-CODED set here too (`KEEP_AS_PRINTED = ['WWI',
- * 'WWII']`), added four lines under the comment forbidding exactly that. It was
- * a band-aid over this missing union and it is gone; both tokens now live in the
- * JSON, where narrator reads them as well — before that, narrator's `_is_acronym`
- * saw the `I` as a vowel and put "Wwii" in the audiobook.
- */
-export const CAPS_ACRONYMS: ReadonlySet<string> = new Set([
-  ...capsAcronymCategory('lettered'),
-  ...capsAcronymCategory('spokenAsWord'),
-]);
-
-const VOWEL = /[AEIOUY]/;
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Caps headings — a mirror of narrator's `fold_caps_run` (paragraph_packer.py)
-// ─────────────────────────────────────────────────────────────────────────────
-//
-// A caps heading is a WORD problem, not an acronym problem: "DOES GOD HOLD
-// CHILDREN RESPONSIBLE" reached the book model in capitals and came back "dues"
-// (Owen's ruling behind main fcb3c95e, the packer's fold). Listen text never
-// passes through the packer, and a word test rightly leaves each of those
-// tokens alone — they are English words — so the heading shape stayed untreated
-// here until the PC pointed at it (2026-09-06). Same rule, same guard: the whole
-// text when every word is caps, or a LEADING RUN of two or more caps words, is
-// folded word by word to Title Case; a word that reads as letters (the acronym
-// tests) is kept as printed.
-
-const HAS_UPPER = /\p{Lu}/u;
-const HAS_LOWER = /\p{Ll}/u;
-
-/** All the token's letters are capitals; punctuation and digits ride along. */
-function isCapsWord(token: string): boolean {
-  return HAS_UPPER.test(token) && !HAS_LOWER.test(token);
-}
-
-/** The token's letters, as the acronym tests read them. */
-function lettersOf(token: string): string {
-  return token.replace(/[^A-Za-z]/g, '');
-}
-
-/** Lower the token and capitalise its first LETTER: `KELSIER'S,` → `Kelsier's,`. */
-function titleCase(token: string): string {
-  const lowered = token.toLowerCase();
-  const i = lowered.search(/\p{L}/u);
-  return i < 0 ? lowered : lowered.slice(0, i) + lowered[i].toUpperCase() + lowered.slice(i + 1);
-}
-
-/**
- * `text` with its leading run of caps words (or all of it) folded to Title
- * Case, acronyms kept. A run of ONE caps word is folded only when it is the
- * whole text (a one-word heading such as `INTRODUCTION.`); one caps word at the
- * head of a longer sentence ("I", "A", a shouted word) is left alone.
- */
-export function foldCapsRun(text: string): string {
-  const tokens = (text || '').split(' ');
-  let run = 0;
-  while (run < tokens.length && (tokens[run] === '' || isCapsWord(tokens[run]))) run++;
-  const capsWords = tokens.slice(0, run).filter((t) => t).length;
-  if (capsWords === 0) return text;
-  const whole = run === tokens.length;
-  if (capsWords < 2 && !whole) return text;
-  const keep = (t: string): boolean => {
-    const letters = lettersOf(t);
-    if (!letters) return true;
-    const upper = letters.toUpperCase();
-    return CAPS_ACRONYMS.has(upper) || !VOWEL.test(upper);
-  };
-  const folded = tokens.slice(0, run).map((t) => (!t || keep(t) ? t : titleCase(t)));
-  return [...folded, ...tokens.slice(run)].join(' ');
-}
+export { CAPS_ACRONYMS, LETTERED_ACRONYMS, foldCapsRun } from '../../electron/narrator/text/caps.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Unspoken glyphs — narrator's `strip_unspoken_glyphs`, widened for web pages
@@ -241,8 +125,8 @@ export function foldCapsRun(text: string): string {
 // themselves. Stripping is a loss, so the set is enumerated, not "everything
 // odd".
 
-/** e2a `chars_remove` (python/narrator/text/lang.py) — the book path's set. */
-const NARRATOR_CHARS_REMOVE = '\\|©®™*`\u00a0';
+/** The book path's set, in a character class. */
+const NARRATOR_CHARS_REMOVE = CHARS_REMOVE.replace(/\\/g, '\\\\');
 /** What web pages add: bullets, geometric markers, daggers, arrows, pilcrow, box drawing. */
 const WEB_DECORATION = '\u2022\u25e6\u25aa\u25ab\u25a0\u25a1\u25cf\u25cb\u2605\u2606\u25ba\u25b6\u25c4\u25c0\u25b2\u25bc'
   + '\u2192\u2190\u2191\u2193\u21d2\u21d0\u2020\u2021\u00b6\u2500-\u257f\u2580-\u259f^~_#';
