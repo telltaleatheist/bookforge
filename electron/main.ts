@@ -1,4 +1,5 @@
-import { app, BrowserWindow, ipcMain, dialog, Menu, protocol } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog, Menu, protocol, type WebContents } from 'electron';
+import { openNarrateOverlay, registerNarrateOverlayDoors, type NarrateOverlayDeps } from './narrate-overlay';
 import * as path from 'path';
 import * as fs from 'fs/promises';
 import * as fsSync from 'fs';
@@ -2115,26 +2116,26 @@ async function narrateFromFoundry(
   };
 
   /*
-   * NO MAIN WINDOW IS A REFUSAL, SAID OUT LOUD — `showQueueInMainWindow`'s rule,
-   * for the same reason. There is no second place to put somebody and nothing
-   * quieter to do; the throw travels back over `host-ops:invoke` and Foundry
-   * says it at the button that was pressed.
-   *
-   * Sent to `mainWindow` ALONE and never broadcast: a standalone listen or
-   * editor popup carries the same shell, and a broadcast would have every one of
-   * them open a narration dialog for a press meant for one place.
+   * THE DIALOG OPENS OVER THE BOOK WINDOW (Owen's ruling, REORG-PLAN B5): the
+   * Narrate overlay is BookForge's own renderer laid over the window the press
+   * came from, so nothing switches windows (electron/narrate-overlay.ts). The
+   * press was made in that window, so it is there; if it closed in between, the
+   * throw travels back over `host-ops:invoke` and is said.
    */
-  if (!mainWindow || mainWindow.isDestroyed()) {
-    throw new Error(
-      'BookForge has no main window open, so there is nowhere to ask you how this book should be '
-      + 'read. Its main window was closed while this one stayed up — open BookForge and press '
-      + 'Narrate again.');
+  const bookWindow = foundryMount.foundryWindow();
+  if (bookWindow === null || bookWindow.isDestroyed()) {
+    throw new Error('The book window closed before the Narrate dialog could open over it. Open the book and press Narrate again.');
   }
-  if (mainWindow.isMinimized()) mainWindow.restore();
-  mainWindow.show();
-  mainWindow.focus();
-  mainWindow.webContents.send('foundry-host:narrate', opened);
+  openNarrateOverlay(bookWindow, opened, narrateOverlayDeps);
 }
+
+/** What the Narrate overlay needs from this file. See electron/narrate-overlay.ts. */
+const narrateOverlayDeps: NarrateOverlayDeps = {
+  preload: path.join(__dirname, 'preload.js'),
+  load: (contents, hash) => { void loadBookForgeRenderer(contents, hash); },
+  zoomLevel: () => loadZoomLevel(),
+  sayInWindow: (host, text) => host.webContents.send('host-ops:notice', text),
+};
 
 /**
  * ONE LINE PER NARRATE PRESS: what Foundry says about the POSITION and what the
@@ -3545,6 +3546,18 @@ const isDev = !app.isPackaged;
 // dev and packaged (asar) layouts.
 const codeRoot = path.join(__dirname, '..', '..');
 
+/**
+ * Load BookForge's renderer into `contents`, at `hash` when one is given: the dev
+ * server in dev, the built index packaged. THE ONE PLACE that is written, so every
+ * page loaded through it has the main window's origin, and so its localStorage
+ * (the Narrate overlay depends on that: electron/narrate-overlay.ts).
+ */
+function loadBookForgeRenderer(contents: WebContents, hash?: string): Promise<void> {
+  if (isDev) return contents.loadURL(hash === undefined ? 'http://localhost:4250' : `http://localhost:4250/#${hash}`);
+  const indexPath = path.join(codeRoot, 'dist', 'renderer', 'browser', 'index.html');
+  return hash === undefined ? contents.loadFile(indexPath) : contents.loadFile(indexPath, { hash });
+}
+
 function createWindow(): void {
   // Get icon path - in dev it's in project root, in prod it's in app resources
   const iconPath = isDev
@@ -3588,14 +3601,14 @@ function createWindow(): void {
 
   // Load Angular app
   if (isDev) {
-    mainWindow.loadURL('http://localhost:4250');
+    void loadBookForgeRenderer(mainWindow.webContents);
     // mainWindow.webContents.openDevTools();  // Uncomment to debug
   } else {
     // Use codeRoot for reliable path resolution in packaged apps
     const appPath = codeRoot;
     const indexPath = path.join(appPath, 'dist', 'renderer', 'browser', 'index.html');
 
-    mainWindow.loadFile(indexPath).catch(err => {
+    loadBookForgeRenderer(mainWindow.webContents).catch(err => {
       // Show error in window if file not found
       mainWindow?.loadURL(`data:text/html,
         <html><body style="background:#1a1a1a;color:#fff;font-family:system-ui;padding:40px;">
@@ -13811,6 +13824,7 @@ app.whenReady().then(async () => {
   })();
 
   startingUp('mounting the hosted Foundry');
+  registerNarrateOverlayDoors(narrateOverlayDeps);
   foundryMount.mountFoundry({
     modelPreparationReady: () => !firstRunModels.pending,
     // A GETTER, not a captured string. Foundry answers `readAppSettings()` from

@@ -66,6 +66,13 @@ export const routes: Routes = [
     loadComponent: () => import('./features/pronunciation/pronunciation-review.component').then(m => m.PronunciationReviewComponent)
   },
   {
+    // The Narrate overlay (electron/narrate-overlay.ts). The shell draws the
+    // dialog itself and no outlet, so the route has nothing to load; it is here
+    // so the hash matches a route rather than ending in a navigation error.
+    path: 'narrate',
+    children: []
+  },
+  {
     // Listen window (Play / Stream player) - opens in separate Electron window
     path: 'listen',
     loadComponent: () => import('./features/studio/components/listen-window/listen-window.component').then(m => m.ListenWindowComponent)

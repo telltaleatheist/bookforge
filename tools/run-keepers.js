@@ -936,6 +936,8 @@ const SUITES = [
   // BookForge's own window. The half of that press worth keeping, which of a
   // project's exports it means, is test-foundry-narrate-target below.
   'test-foundry-narrate-target',
+  // B5: Narrate is today's dialog drawn over the book window (electron/narrate-overlay.ts).
+  'test-narrate-overlay',
   'test-foundry-landing',
   'test-foundry-adopt',
   'test-foundry-export-landing',

@@ -1579,17 +1579,23 @@ export class ElectronService {
   }
 
   /**
-   * Narrate was pressed in the hosted Foundry, and main has raised this window
-   * so the narration dialog can be asked here.
+   * The Narrate overlay's target: the book Narrate was pressed on in the book
+   * window. Asked once, by the shell, when this page is the overlay
+   * (electron/narrate-overlay.ts).
    *
    * Owen, 2026-08-26: "Foundry is just for text changes, not for audio changes."
-   * The target arrives fully resolved — main has already decided which exported
-   * EPUB the press meant, and made the file when the press was on a step that
-   * had not produced one.
+   * The dialog stays this app's; since B5 it is drawn over the book window. The
+   * target arrives fully resolved — main has already decided which exported EPUB
+   * the press meant, and made the file when the press was on a step that had not
+   * produced one.
    */
-  onFoundryNarrate(callback: (target: NarrateTarget) => void): () => void {
-    if (!this.isElectron) return () => { /* nothing subscribed */ };
-    return (window as any).electron.foundryHost.onNarrate(callback);
+  narrateOverlayTarget(): Promise<NarrateTarget> {
+    return (window as any).electron.foundryHost.narrateTarget();
+  }
+
+  /** The overlay's dialog closed: queued `jobs` runs, or was cancelled. Main removes the overlay. */
+  narrateOverlayDone(outcome: { queued: boolean; jobs: number }): Promise<void> {
+    return (window as any).electron.foundryHost.narrateDone(outcome);
   }
 
   // ─────────────────────────────────────────────────────────────────────────────

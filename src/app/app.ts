@@ -12,7 +12,7 @@ import { UpdateBannerComponent } from './components/update-banner/update-banner.
 import { ToastHostComponent } from './components/toast-host/toast-host.component';
 import { QueueChipComponent } from './features/queue/components/queue-chip/queue-chip.component';
 import { QueueToastsService } from './features/queue/services/queue-toasts.service';
-import { isStandaloneWindow } from './core/window-role';
+import { isNarrateOverlay, isStandaloneWindow } from './core/window-role';
 import { ElectronService } from './core/services/electron.service';
 import { LibraryService } from './core/services/library.service';
 import { RuntimeService } from './core/services/runtime.service';
@@ -43,6 +43,11 @@ import { NoticeService } from './core/services/notice.service';
     NarrationModalComponent
   ],
   template: `
+    <!-- THE NARRATE OVERLAY DRAWS NOTHING BUT THE DIALOG. This page is laid over
+         the book window (electron/narrate-overlay.ts), on a transparent page, and
+         everything down to the toast stack is this app's chrome, which it has no
+         use for. The narration dialog below is the same block for both. -->
+    @if (!isNarrateOverlay) {
     <!-- First-run setup overlay: blocks ONLY on a setup ERROR (needs attention).
          The normal unpack no longer blocks — the user stays on the guided Setup
          page with a bottom progress bar (see setup-progress below); the queue
@@ -137,6 +142,7 @@ import { NoticeService } from './core/services/notice.service';
          non-blocking half of the dialog vocabulary). The bottom-left notice
          banner it replaced is gone (unified 2026-08-17). -->
     <app-toast-host />
+    }
 
     <!-- THE NARRATION DIALOG, hosted once for the whole app.
          Its doors are the versions page's Narrate button, the sentence-cache
@@ -159,7 +165,7 @@ import { NoticeService } from './core/services/notice.service';
         [outputFilename]="r.target.outputFilename"
         [isArticle]="r.target.isArticle"
         [pending]="r.target.pending"
-        (cancelled)="narrationDialog.close()"
+        (cancelled)="onNarrationCancelled()"
         (queued)="onNarrationQueued($event)"
       />
     }
@@ -429,6 +435,8 @@ export class App implements OnInit {
   // WINDOW, and the queue mirror needs the same answer to keep once-per-event
   // effects from running once per window.
   readonly isStandaloneWindow = computed(() => isStandaloneWindow());
+  /** Read once: this page is opened AT its route and never leaves it. */
+  readonly isNarrateOverlay = isNarrateOverlay();
 
   // Navigation items for the nav rail
   readonly navItems: NavRailItem[] = [
@@ -473,6 +481,23 @@ export class App implements OnInit {
   ngOnInit() {
     this.themeService.initializeTheme();
 
+    /*
+     * THE NARRATE OVERLAY STARTS NONE OF THE SHELL'S WORK. Everything below this
+     * branch is the main window's: the Crucible presence notices, the completion
+     * toasts, the conversion and open-queue listeners, the component-upgrade
+     * check. The first-run redirect and the setup overlay and bar are already off
+     * here, as in every standalone window (`isStandaloneWindow()`). All this page
+     * does is ask main for the book Narrate was pressed on and open the dialog on
+     * it, with the same context the press always used: 'document', because the
+     * press was made on an exported EPUB or on a step that just made one.
+     */
+    if (this.isNarrateOverlay) {
+      void this.electron.narrateOverlayTarget().then((target: NarrationTarget) => {
+        this.narrationDialog.open(target, 'document');
+      });
+      return;
+    }
+
     // The local Crucible's presence at startup, drawn by THIS APP.
     this.watchEnginePresence();
 
@@ -508,29 +533,6 @@ export class App implements OnInit {
     });
     this.destroyRef.onDestroy(unsubscribeOpenQueue);
 
-    /*
-     * NARRATE WAS PRESSED IN FOUNDRY'S WINDOW.
-     *
-     * Owen, 2026-08-26: "Foundry is just for text changes, not for audio
-     * changes." The dialog that used to be described as a static form and drawn
-     * over there is this app's own again, so the press crosses as a raise of
-     * this window plus the book it named — main has already resolved which
-     * exported EPUB it meant (electron/foundry-narrate-target.ts) and, on a step
-     * press, made the file.
-     *
-     * It lands in the SHELL rather than on a page because Foundry's press
-     * carries no route: there may be no book on screen at all, and sending the
-     * user through a navigation first would put a list between them and the
-     * dialog they just asked for.
-     */
-    const unsubscribeNarrate = this.electron.onFoundryNarrate((target: NarrationTarget) => {
-      // 'document': the press was made ON an exported EPUB (or on a step that
-      // just made one), so this run reads that file. Foundry has no view of
-      // the sentence cache and cannot ask for a cache-only run.
-      this.narrationDialog.open(target, 'document');
-    });
-    this.destroyRef.onDestroy(unsubscribeNarrate);
-
     // The main process checks at startup whether any INSTALLED component is
     // behind what the catalog names (and whether foundry has published a release
     // newer than the pin). Listening here — in the shell, beside the dock —
@@ -552,9 +554,21 @@ export class App implements OnInit {
    * were added to a list the user is not looking at, and a dialog that simply
    * vanished would be indistinguishable from one that failed silently.
    */
-  onNarrationQueued(_event: { jobs: number }): void {
+  onNarrationQueued(event: { jobs: number }): void {
     this.narrationDialog.close();
+    // Over the book window, main removes this page and the window says it is
+    // queued, pointing at its queue shelf; nothing navigates the main window.
+    if (this.isNarrateOverlay) {
+      void this.electron.narrateOverlayDone({ queued: true, jobs: event.jobs });
+      return;
+    }
     void this.router.navigate(['/queue']);
+  }
+
+  /** The dialog was cancelled. Over the book window, main removes this page too. */
+  onNarrationCancelled(): void {
+    this.narrationDialog.close();
+    if (this.isNarrateOverlay) void this.electron.narrateOverlayDone({ queued: false, jobs: 0 });
   }
 
   /**

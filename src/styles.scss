@@ -32,6 +32,13 @@ body {
   text-rendering: optimizeLegibility;
 }
 
+// The Narrate overlay is a transparent page laid over the book window
+// (electron/narrate-overlay.ts): only the dialog and its own backdrop paint.
+html.narrate-overlay,
+html.narrate-overlay body {
+  background: transparent;
+}
+
 // =============================================================================
 // TYPOGRAPHY DEFAULTS
 // =============================================================================

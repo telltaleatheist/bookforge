@@ -9,3 +9,18 @@
  * stay in the tree, unreached, so putting them back is this one line.
  */
 export const PAGE_TOOLS = false;
+
+/**
+ * A line BookForge says in this window's notice tray (preload's `bookforgeWindow`).
+ * The key is always there in BookForge; missing, this window was not opened by it,
+ * and that is said rather than quietly listening to nothing.
+ */
+export function onHostNotice(listener: (text: string) => void): () => void {
+  const bridge = (window as unknown as {
+    bookforgeWindow?: { onHostNotice(listener: (text: string) => void): () => void };
+  }).bookforgeWindow;
+  if (bridge === undefined) {
+    throw new Error('This window has no bookforgeWindow bridge, so it was not opened by BookForge.');
+  }
+  return bridge.onHostNotice(listener);
+}

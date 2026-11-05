@@ -17,7 +17,7 @@
 // `#/alignment` was here until 2026-09-05. It opened the sentence-alignment
 // popup, which only the bilingual translate pipeline ever raised; the route, its
 // component and the window that loaded it all went with that feature.
-const STANDALONE_ROUTES = ['#/editor', '#/listen', '#/pronunciation'] as const;
+const STANDALONE_ROUTES = ['#/editor', '#/listen', '#/pronunciation', '#/narrate'] as const;
 
 /**
  * True in a popup window (listen / editor), false in the main one.
@@ -27,6 +27,15 @@ const STANDALONE_ROUTES = ['#/editor', '#/listen', '#/pronunciation'] as const;
  * never navigates out of it, but a cached answer would be wrong for the beat
  * before the first navigation resolves.
  */
+/**
+ * The Narrate overlay: this renderer laid over the book window, drawing only the
+ * narration dialog (electron/narrate-overlay.ts). A standalone window, and more:
+ * the shell draws none of its chrome and starts none of its work.
+ */
+export function isNarrateOverlay(): boolean {
+  return window.location.hash.startsWith('#/narrate');
+}
+
 export function isStandaloneWindow(): boolean {
   const hash = window.location.hash;
   return STANDALONE_ROUTES.some((route) => hash.startsWith(route));

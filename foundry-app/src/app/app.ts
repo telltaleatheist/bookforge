@@ -31,6 +31,7 @@ import { OpenDocumentsService, pathIsProject } from './core/documents.service';
 import { ConfirmService } from './core/confirm.service';
 import { IntakeWorkspaceService, isWorkspaceImage } from './core/intake-workspace.service';
 import { NoticeService } from './core/notice.service';
+import { onHostNotice } from './core/bookforge-window';
 import { PdfPagesService } from './core/pdf-pages.service';
 import { PositionSyncService } from './core/position-sync.service';
 import { ProjectsService } from './core/projects.service';
@@ -256,6 +257,9 @@ export class App {
   }
 
   constructor() {
+    // What BookForge says about work it did for this window, e.g. a narration queued.
+    onHostNotice((text) => this.notices.notice.set(text));
+
     // The File menu's Settings item. Main cannot route; it can only say where.
     api?.onNavigate((route) => { void this.router.navigateByUrl(route); });
 

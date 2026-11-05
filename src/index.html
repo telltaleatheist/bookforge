@@ -13,6 +13,9 @@
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400;1,9..40,500&family=JetBrains+Mono:wght@400;500;600&family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 </head>
 <body>
+  <!-- The Narrate overlay is a transparent page over the book window
+       (electron/narrate-overlay.ts); marked before anything paints. -->
+  <script>if (location.hash.indexOf('#/narrate') === 0) document.documentElement.classList.add('narrate-overlay');</script>
   <app-root></app-root>
 </body>
 </html>

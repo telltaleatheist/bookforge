@@ -437,3 +437,19 @@ const api: FoundryApi = {
 };
 
 contextBridge.exposeInMainWorld('foundry', api);
+
+/*
+ * BOOKFORGE'S OWN PUSHES INTO ITS BOOK WINDOW, under a key of their own so the
+ * library's `FoundryApi` stays exactly the library's. Read by
+ * src/app/core/bookforge-window.ts.
+ *
+ * `host-ops:notice`: one line for the window's notice tray, said by BookForge
+ * about work it did for this window (the Narrate overlay: "it is queued").
+ */
+contextBridge.exposeInMainWorld('bookforgeWindow', {
+  onHostNotice: (listener: (text: string) => void): (() => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, text: string): void => listener(text);
+    ipcRenderer.on('host-ops:notice', handler);
+    return () => { ipcRenderer.removeListener('host-ops:notice', handler); };
+  },
+});
