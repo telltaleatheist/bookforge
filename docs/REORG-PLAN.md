@@ -37,7 +37,7 @@ bookforge half"*).
 **C — Crucible (crucible pc 1), repo `crucible`.** Runs in parallel with A.
 C1 Higgs owned by Crucible (step a done on `feat/higgs-owned`) · C2 every GPU job
 BookForge still runs locally has a Crucible service (whisper/ASR, separator, ...) ·
-C3 env recipes drop narrator once BookForge no longer needs it. Releases held for
+C3 env recipes drop narrator once BookForge no longer needs it. C4 install review: one Crucible per machine (WSL bridge = one copy managing another), one shared bootstrap installer, each app pulls only the packages it needs (BookForge: Higgs, Qwen3-ASR, …), resumable downloads, a doctor that re-downloads broken environments. Releases held for
 Owen's test pass.
 
 **B — BookForge (bookforge pc 2), repo `bookforge`, worktrees only.**
@@ -47,7 +47,7 @@ narrator's Higgs code · B2 BookForge's GPU-script callers switch to Crucible se
 window copy, page tools removed · B4 BookForge colour scheme · B5 Narrate modal in the
 Foundry window. bookforge pc 2, while B3-B5 wait on Phase A: **B6 narrator's audiobook half → TypeScript**
 (assemble, render session/retakes, VTT, text rules, compat, cli/manifest, gap
-normalizing, m4b tags) — then python/ and electron/scripts/*.py leave BookForge.
+normalizing, m4b tags; Orpheus paths NOT ported; cover re-encode may differ in bytes; cli/*.py and ClipForge stay as they are; map in docs/NARRATOR-TS-PORT-MAP.md) — then python/ and electron/scripts/*.py leave BookForge.
 
 **Final:** Owen tests BookForge + Crucible together; Crucible releases and deploys to
 all four servers; BookForge merges.
