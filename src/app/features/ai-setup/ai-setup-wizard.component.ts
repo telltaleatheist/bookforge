@@ -8,7 +8,6 @@ import { AiService } from '../../core/services/ai.service';
 import { SettingsService } from '../../core/services/settings.service';
 import { ElectronService } from '../../core/services/electron.service';
 import {
-  CRUCIBLE_TEXT_ACT_NAMES,
   CRUCIBLE_UPSTREAM_NAMES,
   type CrucibleEngineSettings,
   type CrucibleEngineSettingsPatch,
@@ -16,7 +15,6 @@ import {
   type CrucibleLocalModelChoice,
   type CrucibleModelRow,
   type CrucibleCapabilityView,
-  type CrucibleTextActName,
   type CrucibleUpstreamName,
   type CrucibleUpstreamProbe,
 } from '@shared/crucible/settings-wire';
@@ -247,7 +245,7 @@ import {
             <h3 class="cru-acts-head">Where each job runs</h3>
             <p class="muted">{{ routesIntroWords }}</p>
 
-            @for (act of textActs; track act) {
+            @for (act of textActs(); track act) {
               <div class="setting-row">
                 <label class="setting-label">{{ classWords(act) }}</label>
                 <select
@@ -801,7 +799,8 @@ export class AiSetupWizardComponent implements OnInit {
   // engine's words) beside a control for the second. A screen that let
   // somebody pick a local model id would be the deleted record coming back.
 
-  readonly textActs = CRUCIBLE_TEXT_ACT_NAMES;
+  /** The classes this server routes, in its order. Which ones is the server's to say. */
+  readonly textActs = computed<readonly string[]>(() => Object.keys(this.engineSettings()?.routes ?? {}));
 
   /** `GET /v1/capability` on the chosen server. Null until it has been asked. */
   readonly capability = signal<CrucibleCapabilityView | null>(null);
@@ -1159,15 +1158,16 @@ export class AiSetupWizardComponent implements OnInit {
    * the translation panel read them too — two screens composing this sentence
    * separately is the one-fact-two-owners shape the audit exists to prevent.
    */
-  runsOnNow(act: CrucibleTextActName): string {
+  runsOnNow(act: string): string {
     return routeWords(this.capability(), act) ?? capabilityWords(this.capability(), act);
   }
 
   /** `this engine — qwen3.5-9b`, or `this engine — nothing on it fits`. */
-  localOptionFor(act: CrucibleTextActName): string {
+  localOptionFor(act: string): string {
     const doc = this.engineSettings();
     if (doc === null) return localRouteWords(null);
     const row = doc.routes[act];
+    if (row === undefined) return localRouteWords(null);
     // The local model for a class that is CURRENTLY routed upstream is not in
     // the document — §3.1 puts the selected local model on a `local` row only
     // — so the honest answer there is the capability record's, which keeps the
@@ -1191,7 +1191,7 @@ export class AiSetupWizardComponent implements OnInit {
     const ids = new Set<string>();
     const doc = this.engineSettings();
     if (doc !== null) {
-      for (const act of this.textActs) {
+      for (const act of this.textActs()) {
         const row = doc.routes[act];
         if (row.route === 'upstream' && row.model !== null) ids.add(row.model);
       }
@@ -1203,7 +1203,7 @@ export class AiSetupWizardComponent implements OnInit {
   }
 
   /** Which option the select is showing: the routed id, `local`, or the free-text one. */
-  routeSelectValue(act: CrucibleTextActName): string {
+  routeSelectValue(act: string): string {
     if (this.routeChoices()[act] === this.OTHER_ROUTE) return this.OTHER_ROUTE;
     const doc = this.engineSettings();
     if (doc === null) return this.LOCAL_ROUTE;
@@ -1211,14 +1211,14 @@ export class AiSetupWizardComponent implements OnInit {
     return row.route === 'upstream' && row.model !== null ? row.model : this.LOCAL_ROUTE;
   }
 
-  routeDraft(act: CrucibleTextActName): string { return this.routeDrafts()[act] ?? ''; }
+  routeDraft(act: string): string { return this.routeDrafts()[act] ?? ''; }
 
-  setRouteDraft(act: CrucibleTextActName, value: string): void {
+  setRouteDraft(act: string, value: string): void {
     this.routeDrafts.update((map) => ({ ...map, [act]: value }));
   }
 
   /** Picking an option IS the write, except for the one that opens a box. */
-  async chooseRoute(act: CrucibleTextActName, value: string): Promise<void> {
+  async chooseRoute(act: string, value: string): Promise<void> {
     if (value === this.OTHER_ROUTE) {
       this.routeChoices.update((map) => ({ ...map, [act]: this.OTHER_ROUTE }));
       return;
@@ -1236,7 +1236,7 @@ export class AiSetupWizardComponent implements OnInit {
    * validator on this side would be a second opinion about which ids are
    * legal, disagreeing with the engine the first time either of them changes.
    */
-  async setRouteFromDraft(act: CrucibleTextActName): Promise<void> {
+  async setRouteFromDraft(act: string): Promise<void> {
     const id = this.routeDraft(act).trim();
     if (id.length === 0) return;
     await this.writeEngineSettings({ routes: { [act]: id } });
@@ -1359,11 +1359,11 @@ export class AiSetupWizardComponent implements OnInit {
    * only `clean translate simplify analysis` can (§1), everything else is
    * refused `route_not_routable` — so the offer is only made where it is real.
    */
-  unavailableOffers(): { reason: string; capabilities: string[]; routable: CrucibleTextActName[] }[] {
-    const acts = new Set<string>(this.textActs);
+  unavailableOffers(): { reason: string; capabilities: string[]; routable: string[] }[] {
+    const acts = new Set<string>(this.textActs());
     return unavailableGroups(this.capability()).map((group) => ({
       ...group,
-      routable: group.capabilities.filter((c) => acts.has(c)) as CrucibleTextActName[],
+      routable: group.capabilities.filter((c) => acts.has(c)) ,
     }));
   }
 
@@ -1375,21 +1375,21 @@ export class AiSetupWizardComponent implements OnInit {
    * says otherwise — a starting position for a select, not a route: nothing is
    * written until the button is pressed.
    */
-  offerUpstream(act: CrucibleTextActName): CrucibleUpstreamName {
+  offerUpstream(act: string): CrucibleUpstreamName {
     return this.offerUpstreams()[act] ?? this.upstreamNames[0];
   }
 
-  setOfferUpstream(act: CrucibleTextActName, name: string): void {
+  setOfferUpstream(act: string, name: string): void {
     this.offerUpstreams.update((map) => ({ ...map, [act]: name as CrucibleUpstreamName }));
   }
 
-  offerModel(act: CrucibleTextActName): string { return this.offerModels()[act] ?? ''; }
+  offerModel(act: string): string { return this.offerModels()[act] ?? ''; }
 
-  setOfferModel(act: CrucibleTextActName, value: string): void {
+  setOfferModel(act: string, value: string): void {
     this.offerModels.update((map) => ({ ...map, [act]: value }));
   }
 
-  offerButton(act: CrucibleTextActName): string {
+  offerButton(act: string): string {
     return offerButtonWords(this.offerUpstream(act), act);
   }
 
@@ -1420,7 +1420,7 @@ export class AiSetupWizardComponent implements OnInit {
    *   5. **Capability is re-read** by {@link writeEngineSettings}, because the
    *      engine recomputed it and the step's answer is drawn from it.
    */
-  async connectAndRoute(act: CrucibleTextActName): Promise<void> {
+  async connectAndRoute(act: string): Promise<void> {
     const server = this.crucibleServer();
     if (!server) return;
     const name = this.offerUpstream(act);

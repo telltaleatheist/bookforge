@@ -1,0 +1,697 @@
+{
+ "local_models": {
+  "generate": null,
+  "decide": null,
+  "embed": null,
+  "rerank": null,
+  "pages": null,
+  "tts": null,
+  "asr": null,
+  "align": null,
+  "rvc": null,
+  "denoise": null,
+  "image": null,
+  "sfx": null,
+  "music": null,
+  "song": null,
+  "cutout": null,
+  "select": null,
+  "video": null,
+  "score": null
+ },
+ "local_model_choices": {
+  "generate": [
+   {
+    "id": "qwen3.8-27b-4bit",
+    "memory_bytes_estimate": 21633171456,
+    "fits": true,
+    "low_vram": false,
+    "installed": true
+   },
+   {
+    "id": "qwen3.5-9b",
+    "memory_bytes_estimate": 20950548480,
+    "fits": true,
+    "low_vram": false,
+    "installed": true
+   },
+   {
+    "id": "qwen3.5-4b",
+    "memory_bytes_estimate": 13393958393,
+    "fits": true,
+    "low_vram": false,
+    "installed": true
+   },
+   {
+    "id": "qwen3.5-2b",
+    "memory_bytes_estimate": 8376315577,
+    "fits": true,
+    "low_vram": false,
+    "installed": true
+   },
+   {
+    "id": "qwen3.5-4b-8bit",
+    "memory_bytes_estimate": 6300000000,
+    "fits": true,
+    "low_vram": false,
+    "installed": false
+   },
+   {
+    "id": "qwen3.5-0.8b",
+    "memory_bytes_estimate": 4837071033,
+    "fits": true,
+    "low_vram": false,
+    "installed": false
+   }
+  ],
+  "decide": [
+   {
+    "id": "qwen3.8-27b-4bit-vl",
+    "memory_bytes_estimate": 23673280922,
+    "fits": false,
+    "low_vram": false,
+    "installed": true
+   },
+   {
+    "id": "qwen3.5-9b-vl",
+    "memory_bytes_estimate": 22990657946,
+    "fits": false,
+    "low_vram": false,
+    "installed": true
+   },
+   {
+    "id": "qwen3.8-27b-4bit",
+    "memory_bytes_estimate": 21633171456,
+    "fits": true,
+    "low_vram": false,
+    "installed": true
+   },
+   {
+    "id": "qwen3.5-9b",
+    "memory_bytes_estimate": 20950548480,
+    "fits": true,
+    "low_vram": false,
+    "installed": true
+   },
+   {
+    "id": "qwen3.5-4b",
+    "memory_bytes_estimate": 13393958393,
+    "fits": true,
+    "low_vram": false,
+    "installed": true
+   },
+   {
+    "id": "qwen3.5-2b",
+    "memory_bytes_estimate": 8376315577,
+    "fits": true,
+    "low_vram": false,
+    "installed": true
+   },
+   {
+    "id": "qwen3.5-4b-8bit",
+    "memory_bytes_estimate": 6300000000,
+    "fits": true,
+    "low_vram": false,
+    "installed": false
+   },
+   {
+    "id": "qwen3.5-0.8b",
+    "memory_bytes_estimate": 4837071033,
+    "fits": true,
+    "low_vram": false,
+    "installed": false
+   }
+  ],
+  "embed": [
+   {
+    "id": "qwen3-embedding-8b",
+    "memory_bytes_estimate": 17099115936,
+    "fits": true,
+    "low_vram": false,
+    "installed": true
+   }
+  ],
+  "rerank": [
+   {
+    "id": "qwen3.8-27b-4bit",
+    "memory_bytes_estimate": 21633171456,
+    "fits": true,
+    "low_vram": false,
+    "installed": true
+   },
+   {
+    "id": "qwen3.5-9b",
+    "memory_bytes_estimate": 20950548480,
+    "fits": true,
+    "low_vram": false,
+    "installed": true
+   },
+   {
+    "id": "qwen3-reranker-8b",
+    "memory_bytes_estimate": 18341622912,
+    "fits": true,
+    "low_vram": false,
+    "installed": true
+   },
+   {
+    "id": "qwen3.5-4b",
+    "memory_bytes_estimate": 13393958393,
+    "fits": true,
+    "low_vram": false,
+    "installed": true
+   },
+   {
+    "id": "qwen3.5-2b",
+    "memory_bytes_estimate": 8376315577,
+    "fits": true,
+    "low_vram": false,
+    "installed": true
+   },
+   {
+    "id": "qwen3.5-4b-8bit",
+    "memory_bytes_estimate": 6300000000,
+    "fits": true,
+    "low_vram": false,
+    "installed": false
+   },
+   {
+    "id": "qwen3.5-0.8b",
+    "memory_bytes_estimate": 4837071033,
+    "fits": true,
+    "low_vram": false,
+    "installed": false
+   }
+  ],
+  "pages": [
+   {
+    "id": "dots-ocr",
+    "memory_bytes_estimate": 12878610432,
+    "fits": true,
+    "low_vram": false,
+    "installed": true
+   }
+  ],
+  "tts": [
+   {
+    "id": "deathstalker",
+    "memory_bytes_estimate": 19000000000,
+    "fits": true,
+    "low_vram": false,
+    "installed": true
+   },
+   {
+    "id": "higgs-default",
+    "memory_bytes_estimate": 19000000000,
+    "fits": true,
+    "low_vram": false,
+    "installed": true
+   },
+   {
+    "id": "mistborn",
+    "memory_bytes_estimate": 19000000000,
+    "fits": true,
+    "low_vram": false,
+    "installed": true
+   },
+   {
+    "id": "owen-audiobook",
+    "memory_bytes_estimate": 19000000000,
+    "fits": true,
+    "low_vram": false,
+    "installed": true
+   },
+   {
+    "id": "owen-youtube",
+    "memory_bytes_estimate": 19000000000,
+    "fits": true,
+    "low_vram": false,
+    "installed": true
+   },
+   {
+    "id": "sigma",
+    "memory_bytes_estimate": 19000000000,
+    "fits": true,
+    "low_vram": false,
+    "installed": true
+   },
+   {
+    "id": "thirdreich",
+    "memory_bytes_estimate": 19000000000,
+    "fits": true,
+    "low_vram": false,
+    "installed": true
+   }
+  ],
+  "asr": [
+   {
+    "id": "qwen3-asr-1.7b",
+    "memory_bytes_estimate": 11006754728,
+    "fits": true,
+    "low_vram": false,
+    "installed": true
+   },
+   {
+    "id": "qwen3-asr-0.6b",
+    "memory_bytes_estimate": 8184324920,
+    "fits": true,
+    "low_vram": false,
+    "installed": true
+   },
+   {
+    "id": "whisper-large-v3-turbo",
+    "memory_bytes_estimate": 3228497665,
+    "fits": true,
+    "low_vram": false,
+    "installed": true
+   },
+   {
+    "id": "whisper-tiny",
+    "memory_bytes_estimate": 1686151006,
+    "fits": true,
+    "low_vram": false,
+    "installed": true
+   }
+  ],
+  "align": [
+   {
+    "id": "qwen3-aligner",
+    "memory_bytes_estimate": 5905580032,
+    "fits": true,
+    "low_vram": false,
+    "installed": true
+   }
+  ],
+  "rvc": [
+   {
+    "id": "deathstalker-rvc-v1",
+    "memory_bytes_estimate": 2684354560,
+    "fits": true,
+    "low_vram": false,
+    "installed": false
+   },
+   {
+    "id": "deathstalker-rvc-v3",
+    "memory_bytes_estimate": 2684354560,
+    "fits": true,
+    "low_vram": false,
+    "installed": true
+   },
+   {
+    "id": "girlfriend",
+    "memory_bytes_estimate": 2684354560,
+    "fits": true,
+    "low_vram": false,
+    "installed": false
+   },
+   {
+    "id": "mistborn-rvc-v1",
+    "memory_bytes_estimate": 2684354560,
+    "fits": true,
+    "low_vram": false,
+    "installed": false
+   },
+   {
+    "id": "owen-morgan",
+    "memory_bytes_estimate": 2684354560,
+    "fits": true,
+    "low_vram": false,
+    "installed": false
+   },
+   {
+    "id": "sigma",
+    "memory_bytes_estimate": 2684354560,
+    "fits": true,
+    "low_vram": false,
+    "installed": true
+   },
+   {
+    "id": "us-female-1",
+    "memory_bytes_estimate": 2684354560,
+    "fits": true,
+    "low_vram": false,
+    "installed": false
+   }
+  ],
+  "denoise": [
+   {
+    "id": "instrumental-roformer-becruily",
+    "memory_bytes_estimate": 2523719636,
+    "fits": true,
+    "low_vram": false,
+    "installed": true
+   },
+   {
+    "id": "vocals-roformer",
+    "memory_bytes_estimate": 2523719636,
+    "fits": true,
+    "low_vram": false,
+    "installed": true
+   },
+   {
+    "id": "bleed-suppressor-roformer",
+    "memory_bytes_estimate": 2523715460,
+    "fits": true,
+    "low_vram": false,
+    "installed": true
+   },
+   {
+    "id": "instrumental-roformer-unwa-v1e",
+    "memory_bytes_estimate": 2523715460,
+    "fits": true,
+    "low_vram": false,
+    "installed": true
+   },
+   {
+    "id": "denoise-roformer",
+    "memory_bytes_estimate": 2523710036,
+    "fits": true,
+    "low_vram": false,
+    "installed": true
+   }
+  ],
+  "image": [
+   {
+    "id": "qwen-image-2.1",
+    "memory_bytes_estimate": 19000000000,
+    "fits": true,
+    "low_vram": false,
+    "installed": true
+   },
+   {
+    "id": "dreamshaper-xl-lightning",
+    "memory_bytes_estimate": 7300000000,
+    "fits": true,
+    "low_vram": false,
+    "installed": true
+   }
+  ],
+  "sfx": [
+   {
+    "id": "stable-audio-3-small-sfx",
+    "memory_bytes_estimate": 3500000000,
+    "fits": true,
+    "low_vram": false,
+    "installed": true
+   }
+  ],
+  "music": [
+   {
+    "id": "stable-audio-3-medium",
+    "memory_bytes_estimate": 6800000000,
+    "fits": true,
+    "low_vram": false,
+    "installed": true
+   }
+  ],
+  "song": [
+   {
+    "id": "yue2-3b",
+    "memory_bytes_estimate": 16000000000,
+    "fits": true,
+    "low_vram": false,
+    "installed": true
+   }
+  ],
+  "cutout": [
+   {
+    "id": "birefnet",
+    "memory_bytes_estimate": 4500000000,
+    "fits": true,
+    "low_vram": false,
+    "installed": true
+   }
+  ],
+  "select": [
+   {
+    "id": "sam2.1-hiera-large",
+    "memory_bytes_estimate": 4000000000,
+    "fits": true,
+    "low_vram": false,
+    "installed": true
+   }
+  ],
+  "video": [
+   {
+    "id": "ltx-2.5-distilled",
+    "memory_bytes_estimate": 20500000000,
+    "fits": true,
+    "low_vram": false,
+    "installed": true
+   }
+  ],
+  "score": [
+   {
+    "id": "sheetsage2",
+    "memory_bytes_estimate": 6000000000,
+    "fits": true,
+    "low_vram": false,
+    "installed": false
+   }
+  ]
+ },
+ "choice_problems": {},
+ "routes": {
+  "generate": {
+   "route": "local",
+   "model": "qwen3.8-27b-4bit"
+  }
+ },
+ "upstreams": {
+  "anthropic": {
+   "configured": true,
+   "key_hint": "…xxxx"
+  },
+  "openai": {
+   "configured": false,
+   "key_hint": null
+  },
+  "ollama": {
+   "configured": false,
+   "url": null
+  }
+ },
+ "upstream_labels": {
+  "anthropic": "Anthropic",
+  "openai": "OpenAI",
+  "ollama": "Ollama"
+ },
+ "desktop_allowance_bytes": 3221225472,
+ "desktop_allowance_basis": "stated",
+ "desktop_reserve": "kept 3.0 GiB for this PC's desktop (as set for this machine)",
+ "backend_kind": "cuda-linux",
+ "tailscale_advertise": [],
+ "lan_advertise": [],
+ "audio_low_vram": {
+  "on": false,
+  "state": "auto",
+  "set_by": "crucible",
+  "recorded": {
+   "on": false,
+   "auto": true
+  },
+  "pending": false,
+  "card": {
+   "verdict": "not_needed",
+   "available_bytes": 22535995392,
+   "models": [
+    {
+     "id": "yue2-3b",
+     "whole_bytes": 16000000000,
+     "low_bytes": 7300000000
+    }
+   ],
+   "needing": [],
+   "words": "this card does not need it: yue2-3b fits whole (14.9 GiB of 21.0 GiB)"
+  },
+  "words": "[audio] low_vram is off, set automatically: this card does not need it: yue2-3b fits whole (14.9 GiB of 21.0 GiB)"
+ },
+ "llm_concurrency": [
+  {
+   "model": "dots-ocr",
+   "display": "dots.ocr",
+   "manifest": 16,
+   "set": null,
+   "running": null
+  },
+  {
+   "model": "qwen3.5-0.8b",
+   "display": "Qwen 3.5 · 0.8B",
+   "manifest": 16,
+   "set": null,
+   "running": null
+  },
+  {
+   "model": "qwen3.5-2b",
+   "display": "Qwen 3.5 · 2B",
+   "manifest": 16,
+   "set": null,
+   "running": null
+  },
+  {
+   "model": "qwen3.5-4b",
+   "display": "Qwen 3.5 · 4B",
+   "manifest": 16,
+   "set": null,
+   "running": null
+  },
+  {
+   "model": "qwen3.5-4b-8bit",
+   "display": "Qwen 3.5 · 4B (8-bit)",
+   "manifest": 4,
+   "set": null,
+   "running": null
+  },
+  {
+   "model": "qwen3.5-9b",
+   "display": "Qwen 3.5 · 9B",
+   "manifest": 16,
+   "set": null,
+   "running": null
+  },
+  {
+   "model": "qwen3.5-9b-vl",
+   "display": "Qwen 3.5 · 9B · with vision",
+   "manifest": 16,
+   "set": null,
+   "running": null
+  },
+  {
+   "model": "qwen3.8-27b-4bit",
+   "display": "Qwen 3.8 · 27B (4-bit)",
+   "manifest": 16,
+   "set": null,
+   "running": null
+  },
+  {
+   "model": "qwen3.8-27b-4bit-vl",
+   "display": "Qwen 3.8 · 27B (4-bit) · with vision",
+   "manifest": 16,
+   "set": null,
+   "running": null
+  }
+ ],
+ "name": "crucible@example-host",
+ "host": "127.0.0.1",
+ "port": 7100,
+ "advertise": [
+  "example-host.example.invalid:7100"
+ ],
+ "cors_origins": [
+  "capacitor://localhost"
+ ],
+ "open_pairing": true,
+ "auth": "none",
+ "install_on_submit": true,
+ "retention_days": 7,
+ "max_session_hold_s": 0,
+ "token_hint": "…xxxx",
+ "hf": {
+  "configured": true,
+  "token_hint": "…xxxx",
+  "from_environment": false
+ },
+ "video_desktop": null,
+ "tts_engines": [
+  {
+   "engine": "higgs-v3",
+   "memory_bytes_estimate": 19000000000,
+   "estimate_basis": "declared",
+   "estimate_note": "SGLang-Omni's configured reservation as first stated (`--mem-fraction-static 0.60 holds ~19 GB at 16 in flight`, BookForge higgs-models.json, 2026-09-05), and KNOWN LOW since the fp32 vocoder: 2026-11-02 at 16 in flight the WSL VM held 22,290 MiB (23.4e9 bytes) on this card. Not raised to that reading because it is a 16-wide figure, the width is now 12, and a 23.4e9 estimate would refuse every load while the desktop holds more than ~2.4 GB (streaming holds ~3.8). Owed: a reading at 12, which replaces this number.",
+   "max_num_seqs": 12,
+   "max_num_seqs_note": "12 since 2026-11-02, down from 16, chosen to FIT and not yet speed-measured. Observed on example-host (RTX 3090 Ti 24 GB) 2026-11-02: the thirdreich fine-tune at 16 in flight, mem-fraction-static 0.60, cuda_graph_max_bs 16 and the fp32 vocoder (narrator 2.0.24 hiss fix) held 22,290 MiB in the WSL VM (Windows GPU Process Memory counter for vmwp) with the desktop at ~1.7 GiB, the card at 24,024 of 24,564 MiB and ~0.45 GiB spilled to shared memory - the WDDM paging that 2026-09-19 measured as 4-10x slower with no error. The 16 before was vllm-omni's own stage-0 value and a measured ceiling at the OLD fractions (11,387-11,584 chars/min, 2026-09-05), taken before the fp32 vocoder. THE deathstalker CAP CERTIFICATE RAN AT 64; nothing measured says whether width moves the safe chunk length. It is also the width of narrator's own batch (v3_served.serve_concurrency), so it moves concurrent POSTs and VRAM pressure together. Owed: a chars/min and VRAM reading at 12.",
+   "resident": null
+  }
+ ],
+ "read_only_tables": {},
+ "bound": {
+  "host": "127.0.0.1",
+  "port": 7100
+ },
+ "restart_pending": [],
+ "job_types": [
+  {
+   "job_type": "echo",
+   "enabled": true,
+   "fits": true,
+   "env_built": null,
+   "why": "echo — always available: the test job type; it never touches the accelerator"
+  },
+  {
+   "job_type": "llm",
+   "enabled": true,
+   "fits": true,
+   "env_built": true,
+   "why": "generate — qwen3.8-27b-4bit (goal 27B; 4-bit fits with 2.1 GiB to spare): it needs 18.9 GiB — 16.8 GiB weights + 1.4 GiB overhead + 0.7 GiB KV for 8192 tokens x 1 in flight and there is 21.0 GiB available (24.0 GiB card less a 3.0 GiB desktop allowance); 6 of 6 qwen3.8 and qwen3.5 variants fit; decide — qwen3.5-9b (goal 9B; bf16 fits with 2.2 GiB to spare): it needs 18.8 GiB — 16.8 GiB weights + 1.4 GiB overhead + 0.6 GiB KV for 8192 tokens x 2 in flight and there is 21.0 GiB available (24.0 GiB card less a 3.0 GiB desktop allowance); 6 of 8 qwen3.8 and qwen3.5 variants fit. qwen3.8-27b-4bit also fits, and is above the 9B goal, which the automatic pick never exceeds; Settings can still choose it. With images: qwen3.5-4b, the largest model that reads images and fits at or below the 9B goal, because qwen3.5-9b-vl, the vision form of qwen3.5-9b, needs 21.5 GiB — 17.6 GiB weights + 3.3 GiB overhead + 0.6 GiB KV for 8192 tokens x 2 in flight and there is only 21.0 GiB.; embed — qwen3-embedding-8b (goal 8B; 16-bit fits with 5.1 GiB to spare): it needs 15.9 GiB — 14.1 GiB weights + 0.7 GiB overhead + 1.1 GiB KV for 8192 tokens x 1 in flight and there is 21.0 GiB available (24.0 GiB card less a 3.0 GiB desktop allowance); 1 of 1 embedding models fit; rerank — qwen3-reranker-8b (goal 8B; 16-bit fits with 3.9 GiB to spare): it needs 17.1 GiB — 15.3 GiB weights + 0.7 GiB overhead + 1.1 GiB KV for 8192 tokens x 1 in flight and there is 21.0 GiB available (24.0 GiB card less a 3.0 GiB desktop allowance); 7 of 7 rerankers and text models fit. qwen3.8-27b-4bit, qwen3.5-9b also fit, and are above the 8B goal, which the automatic pick never exceeds; Settings can still choose one.; pages — dots-ocr fits: it needs 12.0 GiB and there is 21.0 GiB available (24.0 GiB card less a 3.0 GiB desktop allowance); 1 of 1 page readers fit"
+  },
+  {
+   "job_type": "asr",
+   "enabled": true,
+   "fits": true,
+   "env_built": true,
+   "why": "asr — qwen3-asr-1.7b fits: it needs 10.3 GiB and there is 21.0 GiB available (24.0 GiB card less a 3.0 GiB desktop allowance); 4 of 4 transcribers fit"
+  },
+  {
+   "job_type": "tts",
+   "enabled": true,
+   "fits": true,
+   "env_built": true,
+   "why": "tts — deathstalker fits: it needs 17.7 GiB and there is 21.0 GiB available (24.0 GiB card less a 3.0 GiB desktop allowance); 7 of 7 voices fit"
+  },
+  {
+   "job_type": "align",
+   "enabled": true,
+   "fits": true,
+   "env_built": true,
+   "why": "align — qwen3-aligner fits: it needs 5.5 GiB and there is 21.0 GiB available (24.0 GiB card less a 3.0 GiB desktop allowance); 1 of 1 aligners fit"
+  },
+  {
+   "job_type": "rvc",
+   "enabled": true,
+   "fits": true,
+   "env_built": true,
+   "why": "rvc — deathstalker-rvc-v1 fits: it needs 2.5 GiB and there is 21.0 GiB available (24.0 GiB card less a 3.0 GiB desktop allowance); 7 of 7 RVC models fit"
+  },
+  {
+   "job_type": "denoise",
+   "enabled": true,
+   "fits": true,
+   "env_built": true,
+   "why": "denoise — instrumental-roformer-becruily fits: it needs 2.4 GiB and there is 21.0 GiB available (24.0 GiB card less a 3.0 GiB desktop allowance); 5 of 5 separator models fit"
+  },
+  {
+   "job_type": "image",
+   "enabled": true,
+   "fits": true,
+   "env_built": true,
+   "why": "image — qwen-image-2.1 fits: it needs 17.7 GiB and there is 21.0 GiB available (24.0 GiB card less a 3.0 GiB desktop allowance); 2 of 2 image models fit"
+  },
+  {
+   "job_type": "audio",
+   "enabled": true,
+   "fits": true,
+   "env_built": true,
+   "why": "sfx — stable-audio-3-small-sfx fits: it needs 3.3 GiB and there is 21.0 GiB available (24.0 GiB card less a 3.0 GiB desktop allowance); 1 of 1 sound-effect models fit; music — stable-audio-3-medium fits: it needs 6.3 GiB and there is 21.0 GiB available (24.0 GiB card less a 3.0 GiB desktop allowance); 1 of 1 music models fit; song — yue2-3b fits: it needs 14.9 GiB and there is 21.0 GiB available (24.0 GiB card less a 3.0 GiB desktop allowance); 1 of 1 song models fit"
+  },
+  {
+   "job_type": "segment",
+   "enabled": true,
+   "fits": true,
+   "env_built": true,
+   "why": "cutout — birefnet fits: it needs 4.2 GiB and there is 21.0 GiB available (24.0 GiB card less a 3.0 GiB desktop allowance); 1 of 1 cutout models fit; select — sam2.1-hiera-large fits: it needs 3.7 GiB and there is 21.0 GiB available (24.0 GiB card less a 3.0 GiB desktop allowance); 1 of 1 selection models fit"
+  },
+  {
+   "job_type": "video",
+   "enabled": true,
+   "fits": true,
+   "env_built": true,
+   "why": "video — ltx-2.5-distilled fits: it needs 19.1 GiB and there is 21.0 GiB available (24.0 GiB card less a 3.0 GiB desktop allowance); 1 of 1 video models fit"
+  },
+  {
+   "job_type": "score",
+   "enabled": false,
+   "fits": true,
+   "env_built": false,
+   "why": "score — sheetsage2 fits: it needs 5.6 GiB and there is 21.0 GiB available (24.0 GiB card less a 3.0 GiB desktop allowance); 1 of 1 score transcribers fit"
+  }
+ ]
+}

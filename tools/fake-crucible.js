@@ -831,7 +831,8 @@ function sessionHeldRefusal(held) {
  * other four, which stay here only while the fleet still serves them.
  * `decide` is not routable, so it has a capability row and no route.
  */
-const LLM_CLASSES = ['clean', 'translate', 'simplify', 'analysis', 'generate'];
+// What a real server routes since 2.0.33. `tools/fixtures/crucible-settings-real.json` is why.
+const LLM_CLASSES = ['generate'];
 const UNROUTABLE_LLM_CLASSES = ['decide'];
 const UPSTREAM_NAMES = ['anthropic', 'openai', 'ollama'];
 /** The five classes only the WSL2 engine serves, and the one sentence for all of them (3.3). */

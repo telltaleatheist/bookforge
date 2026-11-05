@@ -418,7 +418,7 @@ async function main() {
     routes.forgetCrucibleRoutes();
     const routed = await startFake({ settings: {
       upstreams: { anthropic: { key: 'sk-ant-1234' } },
-      routes: { translate: 'anthropic/claude-sonnet' },
+      routes: { generate: 'anthropic/claude-sonnet' },
     } });
     try {
       const name = registerFake(routed.url);
@@ -556,7 +556,7 @@ async function main() {
     coordinate.resetCoordinationForTests();
 
     const withKey = await startFake({ settings: {
-      upstreams: { openai: { key: 'sk-oai-9' } }, routes: { clean: 'openai/gpt-5' },
+      upstreams: { openai: { key: 'sk-oai-9' } }, routes: { generate: 'openai/gpt-5' },
     } });
     const bare = await startFake({});
     try {

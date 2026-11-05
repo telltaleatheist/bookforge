@@ -253,14 +253,14 @@ const { check, summary } = makeChecker();
   });
 
   await check('a capability document crossing the seam really has a route on every row', async () => {
-    await withFake({ routes: { simplify: 'openai/gpt-x' }, upstreams: { openai: { key: 'sk-zzzz' } } },
+    await withFake({ routes: { generate: 'openai/gpt-x' }, upstreams: { openai: { key: 'sk-zzzz' } } },
       async ({ name }) => {
         const record = await seam.crucibleCapabilityWithRoutes(name);
         for (const row of record.classes) {
           assert.ok(row.route === 'local' || row.route === 'upstream',
             `${row.capability} came across as ${JSON.stringify(row.route)}`);
         }
-        assert.strictEqual(record.classes.find((c) => c.capability === 'simplify').route, 'upstream');
+        assert.strictEqual(record.classes.find((c) => c.capability === 'generate').route, 'upstream');
       });
   });
 
@@ -273,18 +273,18 @@ const { check, summary } = makeChecker();
     await withFake({}, async ({ name, door }) => {
       const before = await seam.crucibleEngineSettings(name);
       assert.strictEqual(before.upstreams.anthropic.configured, false);
-      assert.strictEqual(before.routes.translate.route, 'local');
+      assert.strictEqual(before.routes.generate.route, 'local');
 
       // The wizard's one press, on the wire: `{upstreams, routes}` together.
       // §3.2 applies upstreams, then routes, then validates — which is what
       // makes this ONE request rather than a key saved and a route attempted.
       const after = await seam.putCrucibleEngineSettings(name, {
         upstreams: { anthropic: { key: KEY } },
-        routes: { translate: 'anthropic/claude-window-1' },
+        routes: { generate: 'anthropic/claude-window-1' },
       });
       assert.strictEqual(door.settings.puts.length, 1, 'the panel sent more than one write');
-      assert.strictEqual(after.routes.translate.route, 'upstream');
-      assert.strictEqual(after.routes.translate.model, 'anthropic/claude-window-1');
+      assert.strictEqual(after.routes.generate.route, 'upstream');
+      assert.strictEqual(after.routes.generate.model, 'anthropic/claude-window-1');
       assert.strictEqual(after.upstreams.anthropic.configured, true);
 
       // The answer is the WHOLE document, so a re-read must agree with it —
@@ -339,7 +339,7 @@ const { check, summary } = makeChecker();
     await withFake({}, async ({ name }) => {
       let caught = null;
       try {
-        await seam.putCrucibleEngineSettings(name, { routes: { clean: 'openai/gpt-x' } });
+        await seam.putCrucibleEngineSettings(name, { routes: { generate: 'openai/gpt-x' } });
       } catch (err) { caught = err; }
       assert.ok(caught !== null, 'routing to an unconfigured account was allowed');
       assert.strictEqual(caught.code, 'route_upstream_unconfigured');
@@ -426,10 +426,10 @@ const { check, summary } = makeChecker();
     await withFake({ localModelFor: () => null }, async ({ name }) => {
       const record = await seam.crucibleCapabilityWithRoutes(name);
       const groups = words.unavailableGroups(record);
-      const textGroup = groups.find((g) => g.capabilities.includes('translate'));
+      const textGroup = groups.find((g) => g.capabilities.includes('generate'));
       assert.ok(textGroup !== undefined, 'a class with nothing that fits is not reported at all');
-      const offer = words.unavailableOfferWords(['translate']);
-      assert.ok(offer.includes('translating'), offer);
+      const offer = words.unavailableOfferWords(['generate']);
+      assert.ok(offer.includes('text jobs'), offer);
       for (const vendor of ['Anthropic', 'OpenAI', 'an Ollama server']) {
         assert.ok(offer.includes(vendor), `the offer does not name ${vendor}: ${offer}`);
       }

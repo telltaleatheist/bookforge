@@ -58,7 +58,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { engineOf } from '@crucible/client';
 import type { EngineRef, ServerInfo } from '@crucible/client';
-import type { CrucibleRouteKind, CrucibleTextActName } from '../../shared/crucible/settings-wire';
+import type { CrucibleRouteKind } from '../../shared/crucible/settings-wire';
 import type { EngineRole, EngineUpstreams } from '../../shared/queue/slot-sets';
 import { renameSyncWithRetry } from '../fs-retry';
 
@@ -657,7 +657,7 @@ export function crucibleRoutesKnownFor(): string[] {
  * lives beside the record so neither caller writes it twice.
  */
 export function routesFromSettings(
-  routes: Readonly<Record<CrucibleTextActName, { route: CrucibleRouteKind }>>,
+  routes: Readonly<Record<string, { route: CrucibleRouteKind }>>,
 ): Record<string, CrucibleRouteKind> {
   const out: Record<string, CrucibleRouteKind> = {};
   for (const [capability, row] of Object.entries(routes)) out[capability] = row.route;

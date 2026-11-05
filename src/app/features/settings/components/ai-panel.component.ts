@@ -8,7 +8,6 @@ import { DialogService } from '../../../creamsicle-desktop/services/dialog.servi
 import { ElectronService } from '../../../core/services/electron.service';
 import { SettingsService } from '../../../core/services/settings.service';
 import {
-  CRUCIBLE_TEXT_ACT_NAMES,
   CRUCIBLE_UPSTREAM_NAMES,
   type CrucibleCapabilityView,
   type CrucibleEngineSettings,
@@ -778,10 +777,10 @@ export class AiPanelComponent implements OnInit {
   /** Is any account set up? Decides whether to explain where account rows come from. */
   readonly modelClasses = computed<readonly string[]>(() => {
     const choices = this.engine()?.localModels?.choices ?? {};
-    // THE FOUR TEXT ACTS ARE LEFT OUT, not merely ungrouped: without this they
-    // would land under "Other" and the rows the header retires would be back.
-    return Object.keys(choices)
-      .filter((key) => !(CRUCIBLE_TEXT_ACT_NAMES as readonly string[]).includes(key));
+    // `generate` IS LEFT OUT, not merely ungrouped: each text job chooses its model in
+    // the window that starts it, and a row here would be the second place the header
+    // retires. It would land under "Other" without this.
+    return Object.keys(choices).filter((key) => key !== 'generate');
   });
 
   /**

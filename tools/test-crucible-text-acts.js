@@ -175,9 +175,8 @@ async function main() {
   await check('the four acts are free act labels, and no longer crucible classes', () => {
     assert.deepStrictEqual(
       [...acts.CRUCIBLE_TEXT_ACTS], ['clean', 'translate', 'simplify', 'analysis']);
-    assert.deepStrictEqual(
-      [...wire.CRUCIBLE_TEXT_ACT_NAMES], [...acts.CRUCIBLE_TEXT_ACTS],
-      'the renderer\'s spelling and the main process\'s must agree — one fact, two copies');
+    assert.strictEqual(wire.CRUCIBLE_TEXT_ACT_NAMES, undefined,
+      'the labels are the main process\'s; the renderer reads what a server routes');
 
     /*
      * Crucible 2.0.32 made an act a free label and aa83285 (2.0.33) retired the

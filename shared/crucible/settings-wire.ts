@@ -378,20 +378,6 @@ export interface CrucibleActivityView {
 // Which Crucible model each text act runs on (docs/CRUCIBLE_ROLLOUT_PLAN 2.6)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * The four acts, exactly as crucible's `capability.py` names its capability
- * classes — Owen's ruling of 2026-09-13: *"they can't lie to the user and say a
- * translate job is running when it's actually a simplify job."*
- *
- * Spelled here for the renderer and in `electron/crucible/text-acts.ts` for the
- * main process, which is two copies of one fact — so the keeper
- * `tools/test-crucible-text-acts.js` asserts they agree, and that both agree
- * with crucible's own file.
- */
-export const CRUCIBLE_TEXT_ACT_NAMES = ['clean', 'translate', 'simplify', 'analysis'] as const;
-
-export type CrucibleTextActName = (typeof CRUCIBLE_TEXT_ACT_NAMES)[number];
-
 /*
  * `CrucibleTextActModels` IS DELETED, and so is the record it described
  * (2026-09-14, `<userData>/crucible-models.json`).
@@ -567,8 +553,8 @@ export interface CrucibleLocalModels {
 }
 
 export interface CrucibleEngineSettings {
-  /** One entry per llm class, always all four. */
-  routes: Record<CrucibleTextActName, CrucibleRouteRow>;
+  /** One entry per class this server routes. Which ones is the server's to say. */
+  routes: Record<string, CrucibleRouteRow>;
   /** One entry per upstream name, always all three (the SDK requires each). */
   upstreams: Record<CrucibleUpstreamName, CrucibleUpstreamRow>;
   desktopAllowanceBytes: number;
@@ -599,7 +585,7 @@ export interface CrucibleEngineSettings {
  */
 export interface CrucibleEngineSettingsPatch {
   /** `'local'`, or an upstream model id `<upstream>/<model>`. */
-  routes?: Partial<Record<CrucibleTextActName, string>>;
+  routes?: Record<string, string>;
   /** A key or a url to set; `null` REMOVES that upstream. */
   upstreams?: Partial<Record<CrucibleUpstreamName, { key: string } | { url: string } | null>>;
   desktopAllowanceBytes?: number;

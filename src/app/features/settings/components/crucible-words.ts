@@ -34,7 +34,6 @@ import type {
 import type {
   CrucibleCapabilityView,
   CrucibleRouteRow,
-  CrucibleTextActName,
   CrucibleUpstreamName,
   CrucibleUpstreamRow,
 } from '@shared/crucible/settings-wire';
@@ -196,7 +195,7 @@ export function joinWords(parts: readonly string[]): string {
  */
 export function capabilityWords(
   record: CrucibleCapabilityView | null,
-  act: CrucibleTextActName,
+  act: string,
 ): string {
   if (record === null) return 'asking the engine…';
   const row = record.classes.find((c) => c.capability === act);
@@ -228,7 +227,7 @@ export function capabilityWords(
  * to say about the ordinary case, and a row reading "runs here" beside every
  * local class would be a screen announcing the absence of news.
  */
-export function routeWords(record: CrucibleCapabilityView | null, act: CrucibleTextActName): string | null {
+export function routeWords(record: CrucibleCapabilityView | null, act: string): string | null {
   if (record === null) return null;
   const row = record.classes.find((c) => c.capability === act);
   if (row === undefined || row.route !== 'upstream') return null;
@@ -292,11 +291,10 @@ export const ENGINE_SETTINGS_INTRO =
 
 /** Above the four route rows. */
 export const ENGINE_ROUTES_INTRO =
-  'Cleaning up text, translating, simplifying and analysing a book are four separate jobs, and '
-  + 'each can run somewhere different. Left alone they run on the engine\'s own card, on whichever '
-  + 'model that machine measured itself and picked. Point one at Anthropic, OpenAI or an Ollama '
-  + 'server instead and it goes there from then on — chosen now, not reached for later when '
-  + 'something fails.';
+  'Cleaning up text, translating, simplifying and analysing a book all run as one kind of '
+  + 'work. Left alone it runs on the engine\'s own card. Point it at Anthropic, OpenAI or an '
+  + 'Ollama server instead and it goes there from then on — chosen now, not reached for later '
+  + 'when something fails.';
 
 /** Above the local-model rows. */
 export const ENGINE_LOCAL_MODELS_INTRO =

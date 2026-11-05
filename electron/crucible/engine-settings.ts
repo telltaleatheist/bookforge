@@ -63,14 +63,12 @@ import type {
   CrucibleEngineSettingsPatch,
   CrucibleEngineSettingsRefusal,
   CrucibleRouteRow,
-  CrucibleTextActName,
   CrucibleUpstreamName,
   CrucibleUpstreamProbe,
   CrucibleUpstreamRow,
   CrucibleUpstreamTestResult,
 } from '../../shared/crucible/settings-wire';
 import { CRUCIBLE_UPSTREAM_NAMES } from '../../shared/crucible/settings-wire';
-import { CRUCIBLE_TEXT_ACTS } from './text-acts';
 import { crucibleClientFor, CRUCIBLE_CLIENT_NAME } from './servers';
 import {
   noteCrucibleRoutes,
@@ -259,24 +257,15 @@ function settingsFailure(server: string, door: string, err: unknown): unknown {
  * `readSettings` insists on `upstreams` (all three, by name), on
  * `desktop_allowance_bytes` and on `backend_kind`, so none of those is checked
  * again here — a second reader of the same fact is the thing this file exists
- * not to be. It reads `routes` as whatever keys the document carried, because
- * the SDK serves clients that do not know what a text act is. A Crucible
- * server routes every routable class (`classnames.ROUTABLE_CLASSES`, which
- * holds the four text acts), so a document missing one of OUR acts is not the
- * document the contract describes and is refused by name.
+ * not to be. `routes` is whatever classes the document carries, and which classes
+ * are routable is the server's to say. Requiring four named ones here is how the
+ * wizard went dark for every server after Crucible retired them (2.0.33, 2026-10-25:
+ * a server now routes `generate`), so this names none.
  */
 function projectSettings(doc: SettingsDocument, server: string): CrucibleEngineSettings {
-  const routes = {} as Record<CrucibleTextActName, CrucibleRouteRow>;
-  for (const act of CRUCIBLE_TEXT_ACTS) {
-    const row = doc.routes[act];
-    if (row === undefined) {
-      throw new CrucibleEngineSettingsError(
-        'settings_document_unreadable',
-        `"${server}" answered with a settings document that routes no "${act}". Every Crucible `
-          + 'server routes each text act; this one is not speaking the contract.',
-      );
-    }
-    routes[act] = { route: row.route, model: row.model };
+  const routes: Record<string, CrucibleRouteRow> = {};
+  for (const [capability, row] of Object.entries(doc.routes)) {
+    routes[capability] = { route: row.route, model: row.model };
   }
 
   const upstreams = {} as Record<CrucibleUpstreamName, CrucibleUpstreamRow>;
@@ -434,7 +423,7 @@ export async function putCrucibleEngineSettings(
    * placing rows on the lane the operator just changed — and this is the one
    * function through which a route can change from inside this app.
    */
-  // A SUBSET, not the table: this document names only the four llm classes,
+  // A SUBSET, not the table: this document names only the routable classes,
   // and replacing the table with it wiped every other class's route
   // (`noteCrucibleRouteSubset`, 2026-09-24).
   noteCrucibleRouteSubset(server, routesFromSettings(after.routes));
