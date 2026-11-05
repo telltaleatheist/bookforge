@@ -16,15 +16,12 @@ import { renameWithRetry, unlinkWithRetry, isTransientFsError, renameSyncWithRet
 import { uniqueOutputStem, uniqueOutputPath } from './output-naming';
 import { getReassemblyLogger } from './rolling-logger';
 import * as manifestService from './manifest-service';
-import { enhanceSentences, rvcEnhancementReady } from './rvc-bridge';
 import { normalizeSentenceGaps } from './denoise-bridge';
-import { getRvcVoiceById, resolveRvcIndexRate } from './rvc-models';
 import { renderBesideRecordingFilename, registerRvcAudiobookVariant, resolveRvcVariantFiling } from './audiobook-variant-filing';
 import { sumFlacDurationsSeconds } from './flac-duration';
 import { resolveOrpheusPostRenderFilter, resolveOrpheusSentenceGap, resolveOrpheusMinChunkGap, DEFAULT_SENTENCE_GAP } from './orpheus-assembly-tuning';
 import { regenerateBoundSidecars } from './sidecar-migration';
 import { resolveClosedSession } from './chapter-closer';
-import { acquireGpu, releaseGpu, warnProceedingWithoutGpu } from './gpu-arbiter';
 import { StageTracker, type StageSpec, type JobStageProgress } from './job-stages';
 import { coverageReportPath, summarizeCoverageReport } from './coverage-align-job';
 import { seedSessionAuthorship } from './session-authorship';
@@ -259,10 +256,8 @@ export interface ReassemblyConfig {
     description?: string;
   };
   excludedChapters: number[];
-  /** Optional RVC voice-enhancement pass run BEFORE assembly: convert the cached
-   *  XTTS sentences through an RVC voice into a tmp dir, then assemble THAT set.
-   *  The cached XTTS sentences are left untouched, so the same session can be
-   *  re-enhanced later with a different voice. voiceId is the RVC asset id. */
+  /** A row from before the `rvc-enhancement` step: REFUSED by name below. The
+   *  conversion is that step's now, on a Crucible (docs/REORG-PLAN.md, B2). */
   rvcEnhancement?: {
     voiceId: string;
     indexRate?: number;
@@ -276,8 +271,7 @@ export interface ReassemblyConfig {
   /**
    * A pre-rendered set of sentence files, produced by an upstream queue step —
    * `final-denoise` or `rvc-enhancement`. When set, assemble THIS set via
-   * `--sentences_dir`. Takes precedence over the inline `rvcEnhancement` pass,
-   * which then doesn't run.
+   * `--sentences_dir`.
    *
    * IT IS KEPT, NOT DELETED. Those steps now write DURABLE sets inside the
    * session (`chapters/sentences-denoised`, `chapters/sentences-rvc-<voice>`)
@@ -393,7 +387,6 @@ export interface ReassemblyProgress {
 const STAGE_GAP: StageSpec = { name: 'gap', label: 'Normalizing sentence gaps', weight: 7 };
 /* There is no denoise stage here any more: the roformer pass is its own queue
  * step (`final-denoise`) with its own row and its own progress. */
-const STAGE_RVC: StageSpec = { name: 'rvc', label: 'Enhancing voice', weight: 25 };
 /** H:MM for progress messages — "0:41 of 34:29" reads as movement even between ticks. */
 function formatClock(seconds: number): string {
   const s = Math.max(0, Math.floor(seconds));
@@ -1142,6 +1135,16 @@ export async function startReassembly(
     reassemblyLog.error('Refused: finalDenoise on an assembly config', { jobId });
     return { success: false, error };
   }
+  // THE SAME RULE FOR THE VOICE CONVERSION. A set handed in by `sentencesDir` always
+  // won over this field, so only a config that would have converted is refused.
+  if (config.rvcEnhancement?.voiceId && !config.sentencesDir) {
+    const error =
+      'This assembly asks for a voice conversion, which assembly no longer performs: it is its own '
+      + 'step now ("Voice enhancement"), on a Crucible. Queue the run again from the narration '
+      + 'dialog — assembling this row as-is would silently produce unconverted audio.';
+    reassemblyLog.error('Refused: rvcEnhancement on an assembly config', { jobId });
+    return { success: false, error };
+  }
 
   /*
    * WHAT ENGINE RENDERED THIS SESSION — asked FIRST, because the answer can be a
@@ -1380,10 +1383,8 @@ export async function startReassembly(
   // leaving the whole UI frozen at zero through the slowest part of the job.
   // No denoise bar: the denoise is its own step now, with its own row and its own
   // bar, and declaring one here would be an assembly claiming work it never does.
-  const willRvc = !!config.rvcEnhancement?.voiceId && !config.sentencesDir;
   const stages = new StageTracker([
     ...(resolvedGap !== undefined ? [STAGE_GAP] : []),
-    ...(willRvc ? [STAGE_RVC] : []),
     ...STAGE_ALWAYS,
   ]);
 
@@ -1584,73 +1585,6 @@ export async function startReassembly(
     reassemblyLog.info('Assembling pre-rendered sentence set', {
       jobId, dir: config.sentencesDir, dispose: config.disposeSentencesDir === true,
     });
-  } else if (config.rvcEnhancement?.voiceId) {
-    const voice = getRvcVoiceById(config.rvcEnhancement.voiceId);
-    if (!voice) {
-      return { success: false, error: `RVC enhancement: unknown voice "${config.rvcEnhancement.voiceId}".` };
-    }
-    const ready = rvcEnhancementReady();
-    if (!ready.ok) {
-      return { success: false, error: `RVC enhancement unavailable: ${ready.reason}` };
-    }
-    // Convert the GAP-normalized set when the gap step above ran, else the raw
-    // cached sentences. (A denoise in front of this is the `final-denoise` STEP,
-    // which arrives as `config.sentencesDir` and takes the branch above instead.)
-    const srcSentences = gapDir ?? path.join(config.processDir, 'chapters', 'sentences');
-    if (!fs.existsSync(srcSentences)) {
-      return { success: false, error: 'RVC enhancement: cached sentences not found for this session.' };
-    }
-    const tmpDir = path.join(narratorScratchRoot(), `rvc-${jobId}`);
-    // Re-points the merge-and-delete tracker at the RVC scratch. THIS set is
-    // genuinely anonymous — an inline pass named after a job id, not the durable
-    // per-voice set the `rvc-enhancement` step writes — so it is disposed of.
-    activeRvcDirs.set(jobId, tmpDir);
-    // Take the shared GPU lease for the RVC pass: without it this co-resides with a
-    // running/loading Orpheus or XTTS job (or the cleanup LLM) and the pair OOMs the
-    // card. Parallel-TTS jobs hold this same lease across their whole run, so this
-    // waits its turn instead of colliding.
-    const gpuOwner = `rvc:reassembly:${jobId}`;
-    emitStage('rvc', null, 'Waiting for the GPU…');
-    const lease = await acquireGpu(gpuOwner, { timeoutMs: 10 * 60_000 });
-    // Proceed on a timeout (unchanged): this pass sits mid-reassembly with the
-    // sentences already rendered, and refusing here would throw that run away.
-    warnProceedingWithoutGpu(lease, `the RVC enhancement for job ${jobId}`);
-    try {
-      reassemblyLog.info('RVC enhancement starting', { jobId, voice: voice.label, model: voice.modelName });
-      emitStage('rvc', null, `Enhancing voice with ${voice.label}…`);
-      await enhanceSentences({
-        sentencesDir: srcSentences,
-        outputDir: tmpDir,
-        modelName: voice.modelName,
-        indexRate: resolveRvcIndexRate(voice, config.rvcEnhancement.indexRate),
-        protectRate: config.rvcEnhancement.protectRate ?? 0.5,
-        nSemitones: config.rvcEnhancement.nSemitones ?? 0,
-        // Absent stays absent — that is what leaves urvc on its own default.
-        f0Method: config.rvcEnhancement.f0Method,
-        hopLength: config.rvcEnhancement.hopLength,
-        onProgress: (done, total) => emitStage(
-          'rvc',
-          total ? (done / total) * 100 : null,
-          `Enhancing voice with ${voice.label}… (${done}/${total})`,
-        ),
-      });
-      rvcSentencesDir = tmpDir;
-      emitStage('rvc', 100, 'Voice enhancement complete');
-      reassemblyLog.info('RVC enhancement complete', { jobId, dir: tmpDir });
-    } catch (err) {
-      // Delete the partial scratch set — this early return skips the assembly
-      // completion handler where cleanupStagingDir normally runs.
-      cleanupStagingDir(jobId);
-      return { success: false, error: `RVC enhancement failed: ${(err as Error).message || err}` };
-    } finally {
-      releaseGpu(gpuOwner);
-      // The gap scratch has served its purpose (RVC read from it) — drop it now;
-      // the tracker points at the RVC scratch (success and failure alike), so
-      // cleanupStagingDir would otherwise leave the gap dir behind.
-      if (gapDir) {
-        try { fs.rmSync(gapDir, { recursive: true, force: true }); } catch { /* best-effort */ }
-      }
-    }
   }
 
   /*

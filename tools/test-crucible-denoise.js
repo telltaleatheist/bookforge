@@ -159,8 +159,6 @@ async function identity() {
   await check('the wire names a MANIFEST, which is not the local checkpoint filename', () => {
     assert.strictEqual(denoise.CRUCIBLE_DENOISE_MODEL, 'denoise-roformer');
     const bridge = fs.readFileSync(path.join(REPO, 'electron', 'denoise-bridge.ts'), 'utf-8');
-    assert.ok(/denoise_mel_band_roformer_aufr33_sdr_27\.9959\.ckpt/.test(bridge),
-      'the local path still resolves the model by checkpoint filename — two names for one model');
     assert.ok(!bridge.includes(`'${denoise.CRUCIBLE_DENOISE_MODEL}'`),
       'the manifest id is the wire\'s and is not spelled a second time in the local bridge');
   });

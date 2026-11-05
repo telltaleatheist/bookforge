@@ -295,27 +295,13 @@ check('nothing anywhere defaults, repairs or renames a missing venue', () => {
 // 4. THE RECORD THAT DOES NOT KNOW — written down, not papered over
 // ─────────────────────────────────────────────────────────────────────────────
 
-check('the RVC record carries NO venue field, and says why in both copies', () => {
-  // Its one producer is the RVC pass inside a TTS session, which runs
-  // `enhanceSentences` — the local urvc spawn, on this machine's card, whatever
-  // venue the render went to. A field here would be absent on every row this
-  // code can write, which reads as "a record from before the field" and is a lie
-  // about the reason. The Crucible `rvc` door knows its venue and files no
-  // analytics record at all, so there is no row to put it on.
-  const main = source('electron/parallel-tts-bridge.ts');
-  const rvcInterface = /interface RvcJobAnalytics \{([\s\S]*?)\n\}/.exec(main);
-  assert.ok(rvcInterface, 'RvcJobAnalytics must exist in the main-process copy');
-  // A DECLARATION, not the word: both copies are required (below) to NAME the
-  // absent field in the comment explaining why it is absent.
-  assert.ok(
-    !/crucibleServer\s*\??:/.test(rvcInterface[1]),
-    'the RVC record must not carry a venue field it can never fill',
-  );
-  assert.match(
-    rvcInterface[1], /enhanceSentences/,
-    'and must name the local spawn that is the reason, so the omission reads as a '
-    + 'finding rather than an oversight',
-  );
+check('the stored RVC record carries NO venue field, and says why', () => {
+  // Its one producer was the RVC pass inside a TTS session, which ran
+  // `enhanceSentences` — the local urvc spawn. That pass is deleted (REORG B2), so
+  // only the renderer's reader of stored rows remains. A field here would be absent
+  // on every row, which reads as "a record from before the field" and is a lie.
+  assert.ok(!/interface RvcJobAnalytics/.test(source('electron/parallel-tts-bridge.ts')),
+    'the main process writes no RVC record any more');
 
   const renderer = source('src/app/core/models/analytics.types.ts');
   const rendererInterface = /export interface RvcJobAnalytics \{([\s\S]*?)\n\}/.exec(renderer);
@@ -323,8 +309,7 @@ check('the RVC record carries NO venue field, and says why in both copies', () =
   assert.ok(!/crucibleServer\s*\??:/.test(rendererInterface[1]));
   assert.match(
     rendererInterface[1], /rvc-bridge|enhanceSentences/,
-    'the renderer copy must carry the same reason — two copies of a type with one '
-    + 'explanation between them is one place for the reason to be lost',
+    'the stored rows\' type must carry the reason',
   );
 });
 

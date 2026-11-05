@@ -75,7 +75,6 @@ interface TtsCompleteEvent {
   /** An operator removed the render from the server's line (`ConversionSession.crucibleRemovedLine`). */
   removedLine?: string;
   analytics?: unknown;
-  rvcAnalytics?: unknown;
   wasStopped?: boolean;
   sessionId?: string;
   sessionDir?: string;
@@ -746,7 +745,6 @@ export const ttsConversionStep: StepModule = {
           projectDir,
           language: config.language,
           skipAssembly: config.skipAssembly === true,
-          rvcAnalytics: result.rvcAnalytics,
         },
       };
     } finally {

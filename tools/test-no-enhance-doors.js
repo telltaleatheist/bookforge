@@ -280,7 +280,7 @@ check('the denoise job type is still spelled on the Crucible seam', () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 const RVC_KEPT = {
-  'electron/rvc-bridge.ts': 'the convert spawn',
+  'electron/rvc-bridge.ts': 'where the rvc-env is',
   'electron/rvc-job.ts': 'the queue row',
   'electron/components/rvc-env.ts': 'the env (which also carries audio-separator for denoise)',
   'electron/components/cuda-rvc.ts': 'the GPU overlay',
@@ -296,6 +296,20 @@ for (const [file, role] of Object.entries(RVC_KEPT)) {
       + 'queue step kind and its own Crucible job.');
   });
 }
+
+check('no assembly runs a local voice conversion or denoise; a stale row is refused by name', () => {
+  // REORG B2: both are Crucible queue steps. A row from before the split must SAY
+  // so, because assembling it would produce unprocessed audio in silence.
+  const bridge = fs.readFileSync(path.join(REPO, 'electron', 'reassembly-bridge.ts'), 'utf8');
+  assert.ok(/config\.rvcEnhancement\?\.voiceId && !config\.sentencesDir/.test(bridge)
+    && /asks for a voice conversion, which assembly no longer performs/.test(bridge));
+  assert.ok(/asks for a final denoise, which assembly no longer performs/.test(bridge));
+  for (const file of ['reassembly-bridge.ts', 'parallel-tts-bridge.ts', 'rvc-bridge.ts']) {
+    const src = fs.readFileSync(path.join(REPO, 'electron', file), 'utf8');
+    assert.ok(!/ultimate_rvc\.cli|enhanceSentences\(|denoiseSentences\(/.test(src), `${file} still converts locally`);
+  }
+  assert.ok(!exists('electron/scripts/separator_worker.py'), 'the resident local separator is back');
+});
 
 check("the rvc-enhancement step kind is still in the queue's vocabulary", () => {
   const where = hits("'rvc-enhancement'");

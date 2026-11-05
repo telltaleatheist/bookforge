@@ -10,8 +10,8 @@
  * null headless). No conversion logic lives here.
  *
  * NOT `--rvc` (cli/rvc-convert.js). That drives
- * `rvc-bridge.convertFileRvcChunked` over ONE FINISHED AUDIO FILE — the
- * memory-safe whole-book reconstruction. THIS is the pass the app runs over a
+ * `crucible/rvc-file.convertFileAtVenue` over ONE FINISHED AUDIO FILE — the
+ * whole-book reconstruction. THIS is the pass the app runs over a
  * session's PER-SENTENCE cache, writing a durable derived set that assembly
  * then reads via `--sentences_dir`. Two different jobs with two different
  * outputs; the CLI names both rather than picking one and calling it "RVC".

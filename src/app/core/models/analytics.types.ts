@@ -301,12 +301,11 @@ export interface RvcJobAnalytics {
   /*
    * NO `crucibleServer` HERE, AND THAT IS THE MEASUREMENT, NOT AN OMISSION.
    *
-   * The only thing that writes this record is the RVC pass inside a TTS session
-   * (`parallel-tts-bridge.ts`), and that pass runs `enhanceSentences`
-   * (`electron/rvc-bridge.ts`) — the local urvc spawn on THIS machine's card.
-   * It has no Crucible venue to report, so there is nothing to record and a
-   * field here would be permanently absent, which reads as "old record" and
-   * would be a lie about why.
+   * What wrote this record was the RVC pass inside a TTS session, which ran
+   * `enhanceSentences` (`electron/rvc-bridge.ts`) — the local urvc spawn on THIS
+   * machine's card. That pass is deleted (docs/REORG-PLAN.md, B2), so nothing
+   * writes one now and this type only reads stored rows: they had no Crucible
+   * venue to report, and a field here would be permanently absent.
    *
    * The Crucible `rvc` door (`electron/crucible/rvc.ts`, reached by the
    * standalone `rvc-enhancement` queue step through `electron/rvc-job.ts`) DOES

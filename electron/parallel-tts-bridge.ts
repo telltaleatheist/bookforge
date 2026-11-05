@@ -124,9 +124,6 @@ function writeWorkerLog(line: string): void {
 import { applyMetadata, AudiobookMetadata, embedAndVerifyVtt, deleteSidecarsForM4b } from './metadata-tools';
 import { regenerateBoundSidecars } from './sidecar-migration';
 import * as manifestService from './manifest-service';
-import { enhanceSentences, rvcEnhancementReady } from './rvc-bridge';
-import { denoiseSentences, finalDenoiseReady } from './denoise-bridge';
-import { getRvcVoiceById, resolveRvcIndexRate } from './rvc-models';
 
 import { ActiveBatchProgress, ActiveBatchState, toActiveBatchProgress } from './mlx-batch-progress';
 
@@ -2723,8 +2720,8 @@ export interface ParallelConversionConfig {
   isArticle?: boolean;
   // Optional RVC voice-enhancement pass. When enabled, each rendered TTS sentence
   // is re-rendered through an RVC voice model (warm-model batch) BEFORE assembly,
-  // and the enhanced set is assembled via e2a's --sentences_dir. The original XTTS
-  // sentences are left cached/untouched so either version can be (re)assembled.
+  // and the enhanced set is assembled via --sentences_dir. It is its own queue step
+  // now (`main.ts` chains it off this field); an INLINE assembly refuses it by name.
   rvcEnhancement?: {
     enabled: boolean;
     voiceId: string;     // enhancement-voice asset id (resolved to model name in the backend)
@@ -2734,9 +2731,8 @@ export interface ParallelConversionConfig {
     f0Method?: string;   // rmvpe|crepe|crepe-tiny; absent = urvc's own default
     hopLength?: number;  // crepe-family only; absent = urvc's own default
   };
-  // Final-audio denoise: run the block-based roformer denoise pass (denoise-bridge)
-  // over the rendered sentences after generation, BEFORE any RVC pass and before
-  // assembly. Orpheus voices are trained on a deliberate faint room-hiss bed
+  // Final-audio denoise: its own queue step now (`main.ts` chains it off this field);
+  // an INLINE assembly refuses it by name. Orpheus voices are trained on a deliberate faint room-hiss bed
   // (~-65 dBFS; load-bearing for reliable end-of-audio), so raw renders carry a
   // hiss during speech that cuts out at the digitally-silent assembly gaps — this
   // strips it once, over the sentence set. false/absent = zero behavioral change.
@@ -3327,39 +3323,6 @@ export async function initializeLogger(libraryPath: string): Promise<void> {
 // Mirrors src/app/core/models/analytics.types.ts RvcJobAnalytics. The main
 // process defines its own copy (electron tsconfig doesn't compile src/), same
 // pattern as ai-bridge.ts's CleanupJobAnalytics. The renderer persists it as-is.
-interface RvcJobAnalytics {
-  jobId: string;
-  startedAt: string;
-  completedAt: string;
-  durationSeconds: number;
-  totalSentences: number;
-  sentencesPerMinute: number;
-  modelName: string;
-  voiceLabel?: string;
-  indexRate: number;
-  protectRate?: number;
-  success: boolean;
-  outputPath?: string;
-  error?: string;
-  /*
-   * NO `crucibleServer`, UNLIKE THE TTS RECORD, AND IT IS A FINDING RATHER THAN
-   * AN OVERSIGHT (2026-09-15).
-   *
-   * The one producer of this record is the RVC pass inside a TTS session below,
-   * and it runs `enhanceSentences` — the LOCAL urvc spawn (`rvc-bridge.ts`), on
-   * this machine's card, whatever venue the render itself went to. It has no
-   * Crucible server, so it has no name to record, and a field that is absent on
-   * every row this code can write would read as "a record from before the
-   * field" and be a lie about why.
-   *
-   * The Crucible `rvc` door (`electron/crucible/rvc.ts`, reached by the
-   * standalone `rvc-enhancement` queue step through `electron/rvc-job.ts`) DOES
-   * resolve a venue and names it in its log — but it files no analytics record
-   * at all. Give that step a record and the venue goes on it; it is not this
-   * interface's to carry on its behalf.
-   */
-}
-
 interface ConversionSession {
   jobId: string;
   config: ParallelConversionConfig;
@@ -3368,17 +3331,6 @@ interface ConversionSession {
   startTime: number;
   cancelled: boolean;
   assemblyProcess: ChildProcess | null;
-  // RVC enhancement: when an enhancement pass runs, the enhanced sentence files
-  // land here and assembly is pointed at them via e2a's --sentences_dir.
-  rvcSentencesDir?: string;
-  // Final-audio denoise: when the denoise pass runs, the denoised sentence files
-  // land here. It runs BEFORE any RVC pass (which then reads from here), and when
-  // no RVC pass follows, assembly is pointed at it via --sentences_dir.
-  denoisedSentencesDir?: string;
-  // Performance record for the RVC pass (surfaced on the complete event so the
-  // renderer can persist it as its own 'rvc' analytics entry). RVC is a sub-pass
-  // of the TTS job, not a separate queue job, so it rides along here.
-  rvcAnalytics?: RvcJobAnalytics;
   // Resume job tracking
   isResumeJob?: boolean;
   baselineCompleted?: number;  // Sentences already done before resume started
@@ -5540,13 +5492,32 @@ async function completeAfterWorkers(session: ConversionSession): Promise<void> {
       return;
     }
 
+    /*
+     * AN INLINE ASSEMBLY DOES NO ENHANCEMENT PASS. The denoise and the voice
+     * conversion are GPU work, so they are Crucible jobs on their own queue steps
+     * ("Denoise", "Voice enhancement"), which every run the app composes uses. The
+     * local passes that stood here are deleted (docs/REORG-PLAN.md, B2). A config
+     * that still asks for one is a row queued before the split, and it must SAY so:
+     * assembling anyway would hand back a book nobody could tell was unprocessed.
+     */
+    if (session.config.finalDenoise || session.config.rvcEnhancement?.enabled) {
+      const msg = 'This run asks to denoise or convert the voice inside its own assembly, which no '
+        + 'longer happens: both are queue steps of their own, on a Crucible. The rendered sentences '
+        + 'are cached. Queue the run again from the narration dialog.';
+      console.error(`[PARALLEL-TTS] ${msg}`);
+      await logger.log('ERROR', session.jobId, msg);
+      emitComplete(session, false, undefined, msg);
+      activeSessions.delete(session.jobId);
+      return;
+    }
+
     // Completeness gate: workers deliberately tolerate individual sentence
     // failures ("warn and continue"), which is right for one flaky sentence but
     // means a worker can report success with holes — 2026-07-05, a poisoned CUDA
     // context fast-failed ~1200 sentences in seconds and this path would have
     // assembled the last two-thirds of the book as a gap and called it success.
     // Verify every required sentence file exists on disk BEFORE spending time on
-    // RVC/assembly. On failure the session is already cached above, so Continue
+    // assembly. On failure the session is already cached above, so Continue
     // re-renders exactly the missing sentences. A gate that can't verify is a
     // failure too — never assemble unverified. (NO FALLBACKS.)
     try {
@@ -5572,145 +5543,9 @@ async function completeAfterWorkers(session: ConversionSession): Promise<void> {
       return;
     }
 
-    // Final-audio denoise (optional): block-based roformer pass over the rendered
-    // sentences (see denoise-bridge). Runs FIRST — before any RVC pass — because
-    // RVC extracts f0/content features from its input and input noise corrupts
-    // that extraction; the roformer is proven zero-change on clean audio, so the
-    // compose is always safe. The original sentences stay cached and untouched.
-    if (session.config.finalDenoise) {
-      const sentencesDir = session.prepInfo?.chaptersDirSentences;
-      if (!sentencesDir) {
-        emitComplete(session, false, undefined, 'Final denoise: sentences directory unknown.');
-        activeSessions.delete(session.jobId);
-        return;
-      }
-      const dnReady = finalDenoiseReady();
-      if (!dnReady.ok) {
-        emitComplete(session, false, undefined, `Final denoise unavailable: ${dnReady.reason}`);
-        activeSessions.delete(session.jobId);
-        return;
-      }
-      const dnOutDir = path.join(path.dirname(sentencesDir), 'sentences_denoised');
-      try {
-        await logger.log('INFO', session.jobId, 'Final denoise starting (block-based roformer)');
-        await denoiseSentences({
-          sentencesDir,
-          outputDir: dnOutDir,
-          onLog: (message) => { void logger.log('INFO', session.jobId, message); },
-          onProgress: (done, total) => {
-            if (!IN_APP) return;
-            const progress: AggregatedProgress = {
-              phase: 'enhancing',
-              totalSentences: session.prepInfo!.totalSentences,
-              completedSentences: session.prepInfo!.totalSentences,
-              completedInSession: session.isResumeJob ? (session.totalMissing || 0) : session.prepInfo!.totalSentences,
-              percentage: 95,
-              activeWorkers: 0,
-              workers: session.workers,
-              estimatedRemaining: 0,
-              message: `Denoising audio… (block ${done}/${total})`,
-            };
-            rendererSend('parallel-tts:progress', { jobId: session.jobId, progress });
-          },
-        });
-        session.denoisedSentencesDir = dnOutDir;
-        await logger.log('INFO', session.jobId, `Final denoise complete: ${dnOutDir}`);
-      } catch (err) {
-        emitComplete(session, false, undefined, `Final denoise failed: ${err}`);
-        activeSessions.delete(session.jobId);
-        return;
-      }
-    }
-
-    // RVC voice enhancement (optional): re-render every sentence through an RVC
-    // model with a single warm model load, then assemble the ENHANCED set via
-    // --sentences_dir. The original XTTS sentences stay cached and untouched.
-    // Reads the DENOISED set when the denoise pass above ran (denoise → RVC).
-    if (session.config.rvcEnhancement?.enabled) {
-      const rvc = session.config.rvcEnhancement;
-      const voice = getRvcVoiceById(rvc.voiceId);
-      const sentencesDir = session.denoisedSentencesDir ?? session.prepInfo?.chaptersDirSentences;
-      if (!voice) {
-        emitComplete(session, false, undefined, `RVC enhancement: unknown voice "${rvc.voiceId}".`);
-        activeSessions.delete(session.jobId);
-        return;
-      }
-      if (!sentencesDir) {
-        emitComplete(session, false, undefined, 'RVC enhancement: sentences directory unknown.');
-        activeSessions.delete(session.jobId);
-        return;
-      }
-      const ready = rvcEnhancementReady();
-      if (!ready.ok) {
-        emitComplete(session, false, undefined, `RVC enhancement unavailable: ${ready.reason}`);
-        activeSessions.delete(session.jobId);
-        return;
-      }
-      const rvcOutDir = path.join(path.dirname(sentencesDir), 'sentences_rvc');
-      const rvcIndexRate = resolveRvcIndexRate(voice, rvc.indexRate);
-      const rvcStart = Date.now();
-      let rvcTotal = 0;  // captured from progress; total sentences enhanced
-      try {
-        await logger.log('INFO', session.jobId, `RVC enhancement starting (voice: ${voice.label}, model: ${voice.modelName})`);
-        await enhanceSentences({
-          sentencesDir,
-          outputDir: rvcOutDir,
-          modelName: voice.modelName,
-          indexRate: rvcIndexRate,
-          protectRate: rvc.protectRate ?? 0.5,
-          nSemitones: rvc.nSemitones ?? 0,
-          // Absent stays absent — that is what leaves urvc on its own default.
-          f0Method: rvc.f0Method,
-          hopLength: rvc.hopLength,
-          onProgress: (done, total) => {
-            rvcTotal = total;
-            if (!IN_APP) return;
-            const progress: AggregatedProgress = {
-              phase: 'enhancing',
-              totalSentences: session.prepInfo!.totalSentences,
-              completedSentences: session.prepInfo!.totalSentences,
-              completedInSession: session.isResumeJob ? (session.totalMissing || 0) : session.prepInfo!.totalSentences,
-              percentage: 95,
-              activeWorkers: 0,
-              workers: session.workers,
-              estimatedRemaining: 0,
-              message: `Enhancing voice with ${voice.label}… (${done}/${total})`,
-            };
-            rendererSend('parallel-tts:progress', { jobId: session.jobId, progress });
-          },
-        });
-        session.rvcSentencesDir = rvcOutDir;
-        // Record RVC performance — surfaced on the complete event, persisted by
-        // the renderer as its own 'rvc' analytics entry.
-        const rvcDuration = Math.round((Date.now() - rvcStart) / 1000);
-        const rvcSentences = rvcTotal || session.prepInfo?.totalSentences || 0;
-        const rvcMinutes = rvcDuration / 60;
-        session.rvcAnalytics = {
-          jobId: session.jobId,
-          startedAt: new Date(rvcStart).toISOString(),
-          completedAt: new Date().toISOString(),
-          durationSeconds: rvcDuration,
-          totalSentences: rvcSentences,
-          sentencesPerMinute: rvcMinutes > 0 ? Math.round((rvcSentences / rvcMinutes) * 10) / 10 : 0,
-          modelName: voice.modelName,
-          voiceLabel: voice.label,
-          indexRate: rvcIndexRate,
-          protectRate: rvc.protectRate ?? 0.5,
-          success: true,
-          outputPath: rvcOutDir,
-        };
-        await logger.log('INFO', session.jobId, `RVC enhancement complete: ${rvcOutDir} (${session.rvcAnalytics.sentencesPerMinute} sent/min)`);
-      } catch (err) {
-        emitComplete(session, false, undefined, `RVC enhancement failed: ${err}`);
-        activeSessions.delete(session.jobId);
-        return;
-      }
-    }
-
     /*
-     * THE INLINE PATH'S OWN HAND-OFF — after the denoise and the RVC pass, which
-     * are the card's, and before `runAssembly`, which is ffmpeg on the CPU. A
-     * `skipAssembly` run said this above and this call is then a no-op.
+     * THE INLINE PATH'S OWN HAND-OFF — before `runAssembly`, which is ffmpeg on
+     * the CPU. A `skipAssembly` run said this above and this call is then a no-op.
      *
      * The inline path aligns NOTHING, and it did not before either: the phase
      * this replaced ran on both arms, but the audiobook it produced carried the
@@ -5719,7 +5554,7 @@ async function completeAfterWorkers(session: ConversionSession): Promise<void> {
      * `narrator align` / "Generate sentences" over the finished book.
      */
     announceGpuPhaseOver(session,
-      'the render and the enhancement passes have settled; what is left is the assembly');
+      'the render has settled; what is left is the assembly');
 
     try {
       const outputPath = await runAssembly(session);
@@ -5923,14 +5758,6 @@ async function runAssembly(session: ConversionSession): Promise<string> {
     // (tools/smoke-narrator-assembly.js) — the flags were right, the plan was
     // right, and every book would have failed to assemble.
     '--session_dir', prepInfo.processDir,
-    // When an enhancement pass ran, assemble the ENHANCED sentence set (chapter
-    // mapping / metadata / VTT still come from the session state). RVC output
-    // wins when both passes ran — it was rendered FROM the denoised set.
-    ...(session.rvcSentencesDir
-      ? ['--sentences_dir', session.rvcSentencesDir]
-      : session.denoisedSentencesDir
-        ? ['--sentences_dir', session.denoisedSentencesDir]
-        : []),
     '--device', asmDeviceArg,
     '--language', settings.language,
     // THE JOB'S OWN ENGINE, in narrator's spelling. Not the literal 'xtts' this
@@ -7688,9 +7515,6 @@ function emitComplete(
     ...(session.crucibleRemovedLine === undefined
       ? {}
       : { removedLine: session.crucibleRemovedLine }),
-    // Present only when an RVC enhancement pass ran; persisted as a separate
-    // 'rvc' analytics entry by the renderer.
-    rvcAnalytics: session.rvcAnalytics,
     sessionId: session.prepInfo?.sessionId,
     sessionDir: session.prepInfo?.sessionDir
   });

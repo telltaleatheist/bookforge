@@ -463,11 +463,9 @@ export interface ReassemblyJobConfig {
     description?: string;
   };
   excludedChapters: number[];
-  /** Optional RVC voice enhancement run inline before assembly (LEGACY / fallback
-   *  path). The preferred flow is now a separate 'rvc-enhancement' job that writes
-   *  enhanced sentences and hands the dir to this job via `sentencesDir`. This
-   *  inline path only runs when `sentencesDir` is absent, so the two never
-   *  double-process. voiceId is the RVC asset id; the backend resolves the model. */
+  /** A row from before the 'rvc-enhancement' step: the bridge REFUSES it by name.
+   *  The conversion is that step's now, on a Crucible, and it hands this job the
+   *  enhanced set via `sentencesDir`. */
   rvcEnhancement?: { voiceId: string; indexRate?: number; protectRate?: number; nSemitones?: number };
   /** A pre-rendered set of sentence files (e.g. produced by an upstream
    *  'rvc-enhancement' job in [library]/tmp). When set, assemble THIS set via
@@ -943,7 +941,6 @@ export interface JobResult {
   analytics?: any;
   // RVC enhancement analytics (present when an RVC pass ran inside a TTS job);
   // persisted as a separate 'rvc' entry, not merged into the TTS analytics.
-  rvcAnalytics?: any;
   // TTS session info (for caching after completion)
   sessionId?: string;
   sessionDir?: string;

@@ -66,8 +66,7 @@
  * each block to a Crucible `denoise` job instead, and `denoiseAtVenue` decides
  * which — the RUN's already-resolved venue first (the session's own
  * `settings.crucible.server`, PHASE7-LANES.md §4.4: one book, one GPU), else the
- * one decision every GPU door makes. The legacy switch is what keeps the local
- * worker, and it says so by name.
+ * one decision every GPU door makes. With no server this refuses by name.
  *
  * ONLY THE MODEL MOVES. The blocks, the offsets manifest, the frame-exact
  * checks and the slicing all still happen here, because PHASE4-AUDIO.md §4.2
@@ -319,7 +318,7 @@ export interface DeriveHooks {
    * resident local worker, which is every denoise today. `runFinalDenoise`
    * decides it once (`denoiseAtVenue`); nothing else here reads it.
    */
-  crucible?: { server: string };
+  crucible: { server: string };
 }
 
 export interface DerivedSet {
@@ -398,8 +397,7 @@ export async function deriveDenoisedSentences(
       signal: hooks.signal,
       onProgress: hooks.onDenoiseProgress,
       onLog: hooks.log,
-      // Absent = the resident local worker. Only the model moves.
-      ...(hooks.crucible === undefined ? {} : { crucible: hooks.crucible }),
+      crucible: hooks.crucible,
     });
 
     // The denoise has read the gap set for the last time; drop it before the copy
@@ -471,7 +469,7 @@ export async function runFinalDenoise(
 
   try {
     const log = (message: string): void => console.log(`[DENOISE-JOB] ${jobId}: ${message}`);
-    const hooks: DeriveHooks = {
+    const hooks: Omit<DeriveHooks, 'crucible'> = {
       signal: abort.signal,
       log,
       onGapStart: () => sendProgress(mainWindow, jobId, {

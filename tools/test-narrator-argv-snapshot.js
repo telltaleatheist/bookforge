@@ -49,6 +49,10 @@
  *
  * ── Re-baselines, and what each one was for ─────────────────────────────────
  *
+ * 2026-11-04, `assembly-render` ONLY, for the deletion of the inline denoise and
+ * RVC passes (REORG B2): the `--sentences_dir` spread that named their output went
+ * with them. The regeneration masked that spread and required equality first.
+ *
  * 2026-11-04, `align` ONLY, for the deletion of the local aligner (REORG B2). Its
  * literal lost `--backend`, `--device`, `--python` and `--workers` and gained
  * `--alignment`: the argv that already ran for every routed row, now the only

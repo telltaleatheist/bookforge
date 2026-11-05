@@ -104,8 +104,7 @@ export const reassemblyStep: StepModule = {
    * Same shape as foundry-job's resourceFor: the type is one, the resource is
    * the config's.
    */
-  resource: (config: Record<string, unknown>) =>
-    config['rvcEnhancement'] ? 'gpu' : 'cpu',
+  resource: () => 'cpu',
 
   async run(ctx: StepRunContext): Promise<ArtifactRef> {
     const config = ctx.step.config as unknown as ReassemblyStepConfig;

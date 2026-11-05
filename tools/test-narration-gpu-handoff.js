@@ -108,7 +108,7 @@ function liftedChannel() {
 }
 
 /** Run the shipped tail with fakes, recording the order it did things in. */
-async function runShippedTail({ skipAssembly }) {
+async function runShippedTail({ skipAssembly, ...asked }) {
   const order = [];
   const completions = [];
   const session = {
@@ -123,6 +123,7 @@ async function runShippedTail({ skipAssembly }) {
     },
     config: {
       skipAssembly,
+      ...asked,
       bfpPath: '/lib/projects/Letter_to_the_American_Church',
       settings: { language: 'en' },
     },
@@ -139,7 +140,7 @@ async function runShippedTail({ skipAssembly }) {
   const tail = new Function(
     'announceGpuPhaseOver', 'cacheSessionToProject',
     'emitComplete', 'activeSessions', 'logger',
-    'rolling_logger_1', 'chapter_closer_1', 'denoise_bridge_1', 'rvc_models_1', 'rvc_bridge_1',
+    'rolling_logger_1', 'chapter_closer_1',
     'findMissingSentenceFiles', 'runAssembly', 'removeScratchSession', 'rendererSend',
     `${lift('completeAfterWorkers')}\nreturn completeAfterWorkers;`,
   )(
@@ -162,7 +163,6 @@ async function runShippedTail({ skipAssembly }) {
     { log: noopLog, logError: noopLog },
     { getTTSLogger: () => ({ info() {}, warn() {}, error() {} }) },
     { stopChapterCloser: async () => { order.push('stop-chapter-closer'); return null; } },
-    {}, {}, {},
     async () => { order.push('completeness-gate'); return []; },
     async () => { order.push('assemble'); return '/lib/output/letter.m4b'; },
     async () => { order.push('remove-scratch'); },
@@ -297,10 +297,19 @@ function fakeCtx(stepId) {
     assert.ok(/render/.test(line), `unhelpful reason: ${line}`);
   });
 
+  await check('an INLINE run asking for a local enhancement pass is refused by name, and assembles nothing', async () => {
+    // Both passes are Crucible queue steps now (REORG B2). A stale row must SAY so:
+    // assembling it would hand back a book nobody could tell was unprocessed.
+    for (const asked of [{ finalDenoise: true }, { rvcEnhancement: { enabled: true, voiceId: 'x' } }]) {
+      const { order, completions } = await runShippedTail({ skipAssembly: false, ...asked });
+      assert.ok(!order.includes('assemble'), `it assembled anyway: ${order.join(' → ')}`);
+      assert.strictEqual(completions.at(-1).ok, false);
+      assert.match(completions.at(-1).error, /queue steps of their own/);
+    }
+  });
+
   await check('the INLINE path announces once, before the assembly', async () => {
     // The CLI and the language-learning wizard, which assemble in the same step.
-    // The enhancement passes are GPU work and run between the render and the
-    // assembly, so the hand-off can only be at the end of them.
     const { order } = await runShippedTail({ skipAssembly: false });
     const announcements = order.filter((s) => s.startsWith('gpu-phase-over'));
     assert.strictEqual(announcements.length, 1,

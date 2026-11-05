@@ -1,37 +1,22 @@
 /**
  * Final-audio denoise runner (block-based mel-band roformer).
  *
- * Strips the faint background hiss that hiss-bed-trained voices reproduce
- * (Orpheus voices are trained on a deliberate ~-65 dBFS room-hiss bed —
- * load-bearing for reliable end-of-audio — so every raw render carries a hiss
- * during speech that cuts out at the digitally-silent assembly gaps). This runs
- * ONCE over a session's rendered sentence files, post-generation / pre-assembly,
- * as a sibling of the RVC enhancement pass: the denoised sentences land in a
- * separate dir (same `{i}.<ext>` stems) that either feeds the RVC pass
- * (denoise-first: RVC extracts f0/content features from its input, and input
- * noise corrupts that extraction) or goes straight to e2a assembly via
- * `--sentences_dir`. The original sentences are never mutated.
+ * Strips the faint background hiss that hiss-bed-trained voices reproduce. This
+ * runs ONCE over a session's rendered sentence files, post-generation /
+ * pre-assembly: the denoised sentences land in a separate dir (same `{i}.<ext>`
+ * stems), and the original sentences are never mutated.
  *
- * Engine: the audio-separator package inside the RVC engine env (rvc-env) with
- * the denoise mel-band roformer — the exact model + invocation proven by the
- * seed-clip pipeline (bookforge_train/build_rvc_seeds.py). For efficiency it
- * does NOT denoise ~1,400 tiny files individually (a model load each): the
- * sentences are concatenated into ~22-minute blocks (with an offsets manifest of
- * every sentence's exact sample count), the blocks are denoised by ONE RESIDENT
- * separator process (`electron/scripts/separator_worker.py` — started once, model
- * loaded once, fed one block at a time over stdin), and each "(dry)" stem is
- * sliced back at the recorded offsets. The roformer preserves timing exactly, so
- * offset slicing is safe — and that invariant is VERIFIED per block (dry frames
- * must equal block frames).
+ * The model is a Crucible's (`crucible/denoise.ts`, the `denoise-roformer`
+ * manifest); the local resident worker is deleted (docs/REORG-PLAN.md, B2). This
+ * side does not send ~1,400 tiny files one by one: the sentences are concatenated
+ * into ~22-minute blocks (with an offsets manifest of every sentence's exact sample
+ * count), each block is one job, and each primary stem is sliced back at the
+ * recorded offsets. The roformer preserves timing exactly, so offset slicing is
+ * safe — and that invariant is VERIFIED per block (stem frames must equal block
+ * frames).
  *
- * The resident worker replaced a per-block `python run_audio_separator.py` spawn.
- * Blocking was never the batching — the ~22-minute blocks already were — but each
- * spawn still paid a fresh interpreter start, `import torch`, CUDA context and
- * checkpoint read (10-25 s) before ~85 s of real work. A 15-hour book is ~44
- * blocks, so that was ~44 model loads, roughly a third of the pass. One load now
- * serves the whole book. The maths is untouched: the worker constructs the same
- * `Separator` with the same parameters the CLI's argparse defaults produced and
- * reuses it across files exactly as audio-separator's own multi-file CLI loop does.
+ * `denoiseFile` is ClipForge's single-file pass, which still runs audio-separator
+ * in the rvc-env on this machine. ClipForge is out of the reorganisation's scope.
  *
  * Rates: the model is 44.1 kHz native — feeding other rates makes its librosa
  * front-end crash — so sentences are resampled to 44.1 kHz stereo while building
@@ -55,12 +40,6 @@ import { relocatableEnvBinDirs, relocatableBinaryPath } from './tools-env-bootst
 import { toUnpackedPath } from './narrator-paths';
 import { crucibleBlockSeparator, type BlockSeparator } from './crucible/denoise';
 
-/** The proven denoise model (44.1 kHz native — see the rate note above). */
-const DENOISE_MODEL = 'denoise_mel_band_roformer_aufr33_sdr_27.9959.ckpt';
-
-/** The stem the denoise model emits for "the signal minus the noise". */
-const DENOISE_STEM = 'dry';
-
 /** The model's native rate. Blocks are built at this rate; the dry stem must
  *  come back at it too. */
 const DENOISE_SR = 44100;
@@ -79,8 +58,7 @@ function separatorModelDir(): string {
 /** The shipped run_audio_separator.py launcher (asarUnpack'd real file in
  *  packaged builds). Resolved rather than invoked as a console script — the
  *  audio-separator one is unusable directly (no __main__ guard, stale .exe
- *  shebang).
- *  One-shot only: the block pass uses the resident worker below. */
+ *  shebang). */
 function resolveSeparatorLauncher(): string {
   const candidates = [
     path.join(app.getAppPath(), 'electron', 'scripts', 'run_audio_separator.py'),
@@ -90,21 +68,6 @@ function resolveSeparatorLauncher(): string {
   const found = candidates.find((p) => fs.existsSync(p));
   if (!found) {
     throw new Error('run_audio_separator.py is missing from the app bundle.');
-  }
-  return toUnpackedPath(found);
-}
-
-/** The shipped separator_worker.py resident worker (asarUnpack'd real file in
- *  packaged builds). Same dev+packaged resolution as the launcher above. */
-function resolveSeparatorWorker(): string {
-  const candidates = [
-    path.join(app.getAppPath(), 'electron', 'scripts', 'separator_worker.py'),
-    path.join(__dirname, '..', '..', 'electron', 'scripts', 'separator_worker.py'),
-    path.join(__dirname, 'scripts', 'separator_worker.py'),
-  ];
-  const found = candidates.find((p) => fs.existsSync(p));
-  if (!found) {
-    throw new Error('separator_worker.py is missing from the app bundle.');
   }
   return toUnpackedPath(found);
 }
@@ -129,22 +92,13 @@ export interface DenoiseReadiness {
   reason?: string;
 }
 
-/** Whether a final-denoise pass can run right now. The model weights themselves
- *  are NOT checked: audio-separator downloads them into the pinned model dir on
- *  first use, and a failed download exits non-zero → the job fails loudly. The
- *  audio_separator Python API the resident worker imports is likewise not probed
- *  here (that would cost a python spawn on every readiness check) — the worker
- *  emits a "fatal" event and exits non-zero if the import fails, which surfaces
- *  as a hard job failure. What IS checked is that the worker script shipped. */
+/** Whether this machine has what a denoise pass needs of it: the rvc-env, whose
+ *  ffmpeg/ffprobe build the blocks and slice the stems back (the model is a
+ *  Crucible's), and whose python runs ClipForge's one-shot separator. */
 export function finalDenoiseReady(): DenoiseReadiness {
   const root = getRvcEnvRoot();
   if (!root) return { ok: false, reason: 'The RVC engine env (which carries audio-separator) is not installed.' };
   if (!getRvcPython()) return { ok: false, reason: 'The RVC engine env is installed but its Python runtime was not found.' };
-  try {
-    resolveSeparatorWorker();
-  } catch (err) {
-    return { ok: false, reason: `${err instanceof Error ? err.message : String(err)}` };
-  }
   return { ok: true };
 }
 
@@ -164,19 +118,14 @@ export interface DenoiseSentencesOptions {
   /** Abort to cancel the run (kills the in-flight separator/ffmpeg child). */
   signal?: AbortSignal;
   /**
-   * SEPARATE THE BLOCKS ON A NAMED CRUCIBLE SERVER INSTEAD OF HERE.
-   *
-   * Everything else is unchanged: this side still builds the ~22-minute blocks,
-   * still records the offsets manifest, still checks that the primary stem came
-   * back at 44.1 kHz the same length sample for sample, and still slices it back
-   * into the session's own format. Only the model moves — which is exactly what
-   * PHASE4-AUDIO.md §4.2 rules ("Blocking stays in the client … Crucible
-   * denoises one thing at a time").
-   *
-   * Absent means the resident `separator_worker.py` in the rvc-env, which is
-   * every denoise today. `denoise-job.ts` decides which, once.
+   * THE CRUCIBLE SERVER THAT SEPARATES THE BLOCKS. This side still builds the
+   * ~22-minute blocks, still records the offsets manifest, still checks that the
+   * primary stem came back at 44.1 kHz the same length sample for sample, and still
+   * slices it back into the session's own format. Only the model is remote, which is
+   * exactly what PHASE4-AUDIO.md §4.2 rules ("Blocking stays in the client …
+   * Crucible denoises one thing at a time"). `denoise-job.ts` decides which server.
    */
-  crucible?: { server: string };
+  crucible: { server: string };
 }
 
 /** One sentence's slot in a block: its original filename and its exact length
@@ -200,15 +149,12 @@ interface BlockPlan {
  * `outputDir`. Every input must produce an output or the run fails loudly.
  */
 export async function denoiseSentences(opts: DenoiseSentencesOptions): Promise<string> {
-  // THE ENV IS NEEDED EITHER WAY, AND NOT FOR THE SAME REASON. Locally it
-  // carries the model; on a Crucible run it still carries the ffmpeg/ffprobe
-  // that build the blocks and slice the stems back, so the readiness check
-  // stands for both venues — what a Crucible removes is the separator, not the
-  // block machinery (PHASE4-AUDIO.md §4.2: blocking stays in the client).
+  // THE ENV CARRIES THE ffmpeg/ffprobe that build the blocks and slice the stems
+  // back. What a Crucible removes is the separator, not the block machinery
+  // (PHASE4-AUDIO.md §4.2: blocking stays in the client).
   const ready = finalDenoiseReady();
   if (!ready.ok) throw new Error(ready.reason);
   const root = getRvcEnvRoot()!;
-  const python = getRvcPython()!;
   const ffmpeg = relocatableBinaryPath(root, 'ffmpeg');
   const ffprobe = relocatableBinaryPath(root, 'ffprobe');
   if (!ffmpeg || !ffprobe) throw new Error(`RVC env at ${root} is missing ffmpeg/ffprobe`);
@@ -303,20 +249,14 @@ export async function denoiseSentences(opts: DenoiseSentencesOptions): Promise<s
       blocks: blocks.map((b) => ({ block: path.basename(b.blockPath), frames: b.frames, segments: b.segments })),
     }, null, 2));
 
-    // 3. Denoise every block through ONE resident separator process (started here,
-    //    model loaded once), verify each (dry) stem, slice it back at the recorded
-    //    offsets into the output dir.
+    // 3. Denoise every block on the server, verify each primary stem, slice it back
+    //    at the recorded offsets into the output dir.
     opts.onProgress?.(0, blocks.length);
-    // ONE SEAM, TWO ENGINES. Which stem is the primary one is the separator's to
-    // say — locally by the `(dry)` marker in the filename, remotely because
-    // `done` names it — and everything after that line is identical.
-    const separator: BlockSeparator = opts.crucible
-      ? crucibleBlockSeparator({
-        server: opts.crucible.server,
-        onLog: (line) => opts.onLog?.(line),
-        ...(opts.signal === undefined ? {} : { signal: opts.signal }),
-      })
-      : localBlockSeparator(python, root, opts.signal);
+    const separator: BlockSeparator = crucibleBlockSeparator({
+      server: opts.crucible.server,
+      onLog: (line) => opts.onLog?.(line),
+      ...(opts.signal === undefined ? {} : { signal: opts.signal }),
+    });
     try {
       opts.onLog?.(separator.starting(blocks.length));
       opts.onLog?.(await separator.start(work, blocks.length));
@@ -385,9 +325,8 @@ export interface DenoiseFileOptions {
   /** Written as a PCM WAV at the INPUT's native rate + channel count. */
   outputPath: string;
   /**
-   * Checkpoint filename inside the pinned audio-separator model dir. EXPLICIT —
-   * that dir also holds the dereverb / dereverb-echo roformers, which emit
-   * differently-named stems, so guessing one would silently change the effect.
+   * Checkpoint filename inside the pinned audio-separator model dir. EXPLICIT:
+   * a ClipForge recipe names the checkpoint and the stem it keeps.
    */
   model: string;
   /** Stem to keep, WITHOUT parentheses: 'dry' (denoise), 'noreverb' (dereverb), … */
@@ -670,247 +609,7 @@ function runFfmpeg(ffmpeg: string, root: string, args: string[], signal?: AbortS
   return runChild(child, 'ffmpeg', signal);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// The resident separator worker
-// ─────────────────────────────────────────────────────────────────────────────
-
-/** Protocol sentinel. Every line separator_worker.py means us to READ starts with
- *  it, so nothing the library prints on stdout can be mistaken for a response. */
-const WORKER_SENTINEL = '@@BFSEP@@';
-
-interface SeparatorWorkerEvent {
-  event: 'loading' | 'ready' | 'result' | 'fatal';
-  ok?: boolean;
-  error?: string;
-  outputs?: string[];
-  seconds?: number;
-  loadSeconds?: number;
-  model?: string;
-}
-
-/**
- * One long-lived `separator_worker.py` process: the checkpoint is read ONCE at
- * `start()` and every subsequent `separate()` is pure inference.
- *
- * Strictly one request in flight — the worker is a blocking readline loop, and the
- * block pass is deliberately serial anyway (one GPU pass at a time). Overlapping
- * requests are an error, not a queue.
- *
- * Death is always loud. A worker exit that we did not ask for, a "fatal" event, an
- * unparseable protocol line and an abort all latch a failure that rejects the
- * in-flight request AND every later one — the pass never limps on with a dead
- * worker, and it never silently re-spawns one (that would be the per-block spawn
- * this class exists to delete).
- */
-class ResidentSeparator {
-  private child: ChildProcess | null = null;
-  private exited = false;
-  private stopping = false;
-  private stdoutBuf = '';
-  private logTail = '';
-  private waiter: { resolve: (evt: SeparatorWorkerEvent) => void; reject: (err: Error) => void } | null = null;
-  private failure: Error | null = null;
-  private readonly onAbort = () => this.fail(new Error('Final denoise cancelled'));
-
-  constructor(
-    private readonly python: string,
-    private readonly root: string,
-    private readonly modelFilename: string,
-    private readonly signal?: AbortSignal,
-  ) {}
-
-  /**
-   * Spawn the worker and wait until the model is resident. Resolves with the load
-   * duration in seconds (the one number worth logging — it is the whole reason
-   * this class exists, and it is what the caller's "still loading" line reports).
-   */
-  async start(initialOutputDir: string): Promise<number> {
-    if (this.child) throw new Error('The resident separator worker is already started.');
-    throwIfAborted(this.signal);
-    const modelDir = separatorModelDir();
-    fs.mkdirSync(modelDir, { recursive: true });
-    fs.mkdirSync(initialOutputDir, { recursive: true });
-
-    const child = spawn(this.python, [
-      resolveSeparatorWorker(),
-      '--model_filename', this.modelFilename,
-      '--model_file_dir', modelDir,
-      '--output_dir', initialOutputDir,
-      '--output_format', 'WAV',
-    ], {
-      cwd: this.root, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'], env: spawnEnv(this.root),
-    });
-    this.child = child;
-    child.stdout!.setEncoding('utf8');
-    child.stdout!.on('data', (chunk: string) => this.onStdout(chunk));
-    child.stderr!.setEncoding('utf8');
-    child.stderr!.on('data', (chunk: string) => { this.logTail = (this.logTail + chunk).slice(-4000); });
-    child.on('error', (err) => this.fail(err instanceof Error ? err : new Error(String(err))));
-    // 'exit', not 'close' — the same Windows pipe-inheritance race documented on
-    // runChild applies here: a sibling child can hold this worker's stdout write
-    // handle open, so 'close' may never arrive even after the process is gone.
-    child.on('exit', (code) => {
-      this.exited = true;
-      if (this.stopping) return;
-      this.fail(new Error(`audio-separator worker exited with code ${code}: ${this.logTail.trim()}`));
-    });
-
-    if (this.signal) this.signal.addEventListener('abort', this.onAbort, { once: true });
-
-    const ready = await this.awaitEvent();
-    if (ready.event !== 'ready') {
-      throw new Error(`audio-separator worker reported "${ready.event}" instead of becoming ready: ${ready.error ?? this.logTail.trim()}`);
-    }
-    if (typeof ready.loadSeconds !== 'number') {
-      throw new Error('audio-separator worker became ready without reporting a model-load duration.');
-    }
-    return ready.loadSeconds;
-  }
-
-  /** Separate ONE file into `outputDir`. Rejects on any worker failure. */
-  async separate(inputPath: string, outputDir: string): Promise<void> {
-    if (this.failure) throw this.failure;
-    const child = this.child;
-    if (!child || this.exited) throw new Error('The resident separator worker is not running.');
-    throwIfAborted(this.signal);
-    const pending = this.awaitEvent();
-    try {
-      child.stdin!.write(`${JSON.stringify({ input: inputPath, outputDir })}\n`);
-    } catch (err) {
-      this.fail(err instanceof Error ? err : new Error(String(err)));
-    }
-    const evt = await pending;
-    if (evt.event !== 'result') {
-      throw new Error(`audio-separator worker sent "${evt.event}" instead of a result: ${evt.error ?? this.logTail.trim()}`);
-    }
-    if (!evt.ok) {
-      throw new Error(`audio-separator (denoise) failed on ${path.basename(inputPath)}: ${evt.error ?? this.logTail.trim()}`);
-    }
-    if (!Array.isArray(evt.outputs)) {
-      throw new Error(`audio-separator worker reported success for ${path.basename(inputPath)} without an output list.`);
-    }
-  }
-
-  /**
-   * Stop the worker. Closing its stdin is the natural end — its readline returns
-   * EOF and the loop breaks — which also means the worker dies on its own if this
-   * process ever disappears without calling dispose. A worker that ignores EOF is
-   * killed outright: this is native Windows python, not a WSL guest GPU process.
-   */
-  async dispose(): Promise<void> {
-    if (this.signal) this.signal.removeEventListener('abort', this.onAbort);
-    this.stopping = true;
-    const child = this.child;
-    if (!child || this.exited) return;
-    try { child.stdin?.end(); } catch { /* the pipe may already be gone */ }
-    await new Promise<void>((resolve) => {
-      if (this.exited) { resolve(); return; }
-      const timer = setTimeout(() => { this.kill(); resolve(); }, 5000);
-      child.once('exit', () => { clearTimeout(timer); resolve(); });
-    });
-  }
-
-  private awaitEvent(): Promise<SeparatorWorkerEvent> {
-    if (this.failure) return Promise.reject(this.failure);
-    if (this.waiter) return Promise.reject(new Error('Two separator requests overlapped — the resident worker serves exactly one at a time.'));
-    return new Promise<SeparatorWorkerEvent>((resolve, reject) => { this.waiter = { resolve, reject }; });
-  }
-
-  private onStdout(chunk: string): void {
-    this.stdoutBuf += chunk;
-    for (;;) {
-      const nl = this.stdoutBuf.indexOf('\n');
-      if (nl < 0) break;
-      const line = this.stdoutBuf.slice(0, nl);
-      this.stdoutBuf = this.stdoutBuf.slice(nl + 1);
-      this.onLine(line);
-    }
-  }
-
-  private onLine(raw: string): void {
-    const line = raw.replace(/\r$/, '');
-    const at = line.indexOf(WORKER_SENTINEL);
-    if (at < 0) {
-      if (line.trim()) this.logTail = (`${this.logTail + line}\n`).slice(-4000);
-      return;
-    }
-    let evt: SeparatorWorkerEvent;
-    try {
-      evt = JSON.parse(line.slice(at + WORKER_SENTINEL.length)) as SeparatorWorkerEvent;
-    } catch {
-      this.fail(new Error(`audio-separator worker sent an unparseable protocol line: ${line.slice(0, 300)}`));
-      return;
-    }
-    if (evt.event === 'loading') return; // informational — 'ready' or 'fatal' follows
-    const waiter = this.waiter;
-    if (!waiter) {
-      this.fail(new Error(`audio-separator worker sent an unexpected "${evt.event}" with no request in flight.`));
-      return;
-    }
-    this.waiter = null;
-    waiter.resolve(evt);
-  }
-
-  private fail(err: Error): void {
-    if (!this.failure) this.failure = err;
-    const waiter = this.waiter;
-    this.waiter = null;
-    if (waiter) waiter.reject(this.failure);
-    this.kill();
-  }
-
-  private kill(): void {
-    const child = this.child;
-    if (!child || this.exited) return;
-    try { child.kill(); } catch { /* already gone */ }
-    // Belt and braces for a process that ignores the first signal. On Windows
-    // kill() is TerminateProcess and this second attempt never fires; on POSIX it
-    // upgrades SIGTERM to SIGKILL. Unref'd so a lingering timer cannot hold the app.
-    const hard = setTimeout(() => {
-      if (this.exited) return;
-      try { child.kill('SIGKILL'); } catch { /* already gone */ }
-    }, 2000);
-    hard.unref();
-  }
-}
-
-/**
- * {@link ResidentSeparator} as a {@link BlockSeparator} — the local venue.
- *
- * The one thing it adds is WHICH STEM IS THE ANSWER: audio-separator names its
- * outputs `<input>_(dry)_<model>.wav`, so the denoised audio is the file whose
- * name carries `(dry)` and exactly one must. (Zero means the model produced
- * something other than what it is supposed to; two means nothing can say which
- * one is the denoised audio.) Its Crucible twin does not re-derive this from a
- * filename — `done` names the primary stem there — which is why the choice
- * lives behind the seam rather than in the block loop.
- */
-function localBlockSeparator(python: string, root: string, signal?: AbortSignal): BlockSeparator {
-  const worker = new ResidentSeparator(python, root, DENOISE_MODEL, signal);
-  return {
-    starting(blocks: number): string {
-      return `Final denoise: loading ${DENOISE_MODEL} once for all ${blocks} block(s)…`;
-    },
-    async start(workDir: string, blocks: number): Promise<string> {
-      const loadSeconds = await worker.start(workDir);
-      return `Final denoise: model resident after ${loadSeconds.toFixed(1)}s — denoising ${blocks} block(s).`;
-    },
-    async separate(inputPath: string, outDir: string): Promise<string> {
-      await worker.separate(inputPath, outDir);
-      const dry = fs.readdirSync(outDir).filter((n) => n.includes(`(${DENOISE_STEM})`));
-      if (dry.length !== 1) {
-        throw new Error(`Final denoise: ${path.basename(inputPath)} produced ${dry.length} `
-          + `"(${DENOISE_STEM})" stems in ${outDir} — expected exactly 1.`);
-      }
-      return path.join(outDir, dry[0]);
-    },
-    dispose: () => worker.dispose(),
-  };
-}
-
-/** One separator process over one file — the exact seed-pipeline invocation.
- *  ONE-SHOT ONLY (denoiseFile): a single file has no model load to amortize. The
- *  block pass uses {@link ResidentSeparator} instead. */
+/** ClipForge's one-shot separator: one `python run_audio_separator.py` for one file. */
 function runSeparator(python: string, root: string, blockPath: string, outDir: string, model: string, signal?: AbortSignal): Promise<void> {
   const modelDir = separatorModelDir();
   fs.mkdirSync(modelDir, { recursive: true });

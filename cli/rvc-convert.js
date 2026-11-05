@@ -1,16 +1,16 @@
 /**
- * rvc-convert.js — headless whole-file RVC voice conversion, memory-safe.
+ * rvc-convert.js — headless whole-file RVC voice conversion, on a Crucible.
  *
- * Drives the REAL compiled runner (rvc-bridge.convertFileRvcChunked): silence-chunks
- * the input, converts each chunk in a RECYCLED worker process (each exits between
- * batches so unified memory is reclaimed — a full audiobook never balloons into swap
- * the way one long convert-dir does), then stitches the chunks back into --out. No
- * pipeline logic is reimplemented here; this only parses args and wires the call.
+ * Drives the REAL compiled door (crucible/rvc-file.convertFileAtVenue): silence-chunks
+ * the input here, converts the chunks in a Crucible `rvc` job, then stitches them back
+ * into --out. The server is --crucible-server when given, else the routing record
+ * decides. No pipeline logic is reimplemented here; this only parses args and wires
+ * the call. (It was a local urvc worker until 2026-11-04, docs/REORG-PLAN.md B2.)
  *
  * Run via the electron shim preload:
  *   node --require ./cli/electron-stub.js cli/rvc-convert.js \
  *        --input book.m4a --out "book RVC.flac" --model deathstalker_rvc_v1 \
- *        --index-rate 0 --protect-rate 0.2 --f0-method rmvpe
+ *        --index-rate 0 --protect-rate 0.2 --f0-method rmvpe [--crucible-server <name>]
  */
 'use strict';
 const fs = require('fs');
@@ -41,40 +41,42 @@ async function main() {
   const inputPath = path.resolve(args.input);
   if (!fs.existsSync(inputPath)) throw new Error(`input not found: ${inputPath}`);
 
-  const rvc = require('../dist/electron/rvc-bridge.js');
-  if (typeof rvc.convertFileRvcChunked !== 'function') {
-    throw new Error('compiled rvc-bridge missing convertFileRvcChunked — rebuild (npx tsc -p tsconfig.electron.json)');
+  const { convertFileAtVenue } = require('../dist/electron/crucible/rvc-file.js');
+  const { processVenueHost } = require('../dist/electron/crucible/generation-venue.js');
+  if (args['crucible-server'] === true) throw new Error('--crucible-server needs a server name');
+  if (args['batch-size'] !== undefined) {
+    console.log('[rvc] --batch-size is not read: it bounded the deleted local worker, and the server owns its memory');
   }
-  const ready = rvc.rvcEnhancementReady();
-  if (!ready.ok) throw new Error(ready.reason);
 
-  // Ctrl+C → cooperative abort. (convertFileRvcChunked kills the child on abort; this
-  // is an explicit user cancel, the one case where killing RVC mid-run is accepted.)
+  // Ctrl+C → cooperative abort: the door DELETEs the job on the server.
   const ac = new AbortController();
   process.on('SIGINT', () => { console.log('\n[rvc] SIGINT — aborting...'); ac.abort(); });
   process.on('SIGTERM', () => { console.log('\n[rvc] SIGTERM — aborting...'); ac.abort(); });
 
   const t0 = Date.now();
   let lastPct = -1;
-  const outPath = await rvc.convertFileRvcChunked({
+  const { outputPath: outPath, venue, chunks } = await convertFileAtVenue({
+    ...(args['crucible-server'] === undefined ? {} : { crucible: { server: String(args['crucible-server']) } }),
+    host: processVenueHost(),
     inputPath,
     outputPath: path.resolve(args.out),
-    modelName: args.model,
-    indexRate: numOr(args['index-rate'], 0.0),
-    protectRate: numOr(args['protect-rate'], 0.2),
-    f0Method: args['f0-method'] || 'rmvpe',
-    // Pitch shift. The bridge has always forwarded this; this wrapper never read it, so every
-    // caller through here converted at source pitch. Default 0 keeps existing callers identical.
-    nSemitones: numOr(args['n-semitones'], 0),
+    modelFolder: args.model,
+    knobs: {
+      indexRate: numOr(args['index-rate'], 0.0),
+      protectRate: numOr(args['protect-rate'], 0.2),
+      f0Method: args['f0-method'] || 'rmvpe',
+      // Pitch shift. Default 0 keeps existing callers identical.
+      nSemitones: numOr(args['n-semitones'], 0),
+    },
     chunkSeconds: numOr(args['chunk-seconds'], 600),
-    batchSize: numOr(args['batch-size'], 4),
     signal: ac.signal,
-    onProgress: (done, total) => {
-      console.log(`[RVC] ${done}/${total}`);
-      const pct = total ? Math.floor((done / total) * 100) : 0;
-      if (pct !== lastPct) { lastPct = pct; }
+    onLog: (line) => console.log(`[rvc] ${line}`),
+    onProgress: (p) => {
+      const pct = Math.floor((p.fraction ?? 0) * 100);
+      if (pct !== lastPct) { lastPct = pct; console.log(`[RVC] ${pct}%`); }
     },
   });
+  console.log(`[rvc] ${chunks} chunk(s) on crucible "${venue.server}"`);
   console.log(`[rvc] done in ${((Date.now() - t0) / 1000).toFixed(0)}s -> ${outPath}`);
   process.exitCode = 0;
 }

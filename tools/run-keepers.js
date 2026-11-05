@@ -333,6 +333,9 @@ const SUITES = [
   // memory bound; and a job that ends `done` having converted fewer files than
   // it was given fails rather than handing assembly a gapped set.
   'test-crucible-rvc',
+  // `--rvc`: one whole file through a voice on a Crucible (REORG B2): chunks at its
+  // silences, the job, the stitch, and a gapped result refused.
+  'test-crucible-rvc-file',
   // The denoise, same night, same fake: only the SEPARATOR moves — blocking
   // stays in the client — so the seam is one block in, the primary stem out, and
   // the primary is the one the SERVER named, never the one whose filename says

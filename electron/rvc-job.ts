@@ -76,7 +76,6 @@
 import { publishBridgeEvent } from './bridge-events';
 import { BrowserWindow } from 'electron';
 
-import { enhanceSentences, rvcEnhancementReady } from './rvc-bridge';
 import { getRvcVoiceById, resolveRvcIndexRate } from './rvc-models';
 import { acquireGpu, releaseGpu, warnProceedingWithoutGpu } from './gpu-arbiter';
 // The ONE rule for "did this refusal name a holder" — see queue-steps/runtime.ts.

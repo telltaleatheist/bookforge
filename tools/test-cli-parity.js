@@ -239,14 +239,14 @@ test('every new command is registered, with a handler and an adapter that exists
 });
 
 test('--rvc and --rvc-enhance are named as two different jobs, not one', () => {
-  // rvc-bridge.convertFileRvcChunked converts ONE FINISHED FILE; rvc-job
+  // crucible/rvc-file.convertFileAtVenue converts ONE FINISHED FILE; rvc-job
   // .runRvcEnhancement converts a session's PER-SENTENCE cache into a derived
   // set assembly reads. Collapsing them would silently answer a request for one
   // with the other.
   const py = read('cli/bookforge-tts.py');
   assert.ok(py.includes('"rvc": cmd_rvc,') && py.includes('"rvc-enhance": cmd_rvc_enhance,'),
     'both are registered');
-  assert.ok(read('cli/rvc-convert.js').includes('convertFileRvcChunked'),
+  assert.ok(read('cli/rvc-convert.js').includes('convertFileAtVenue'),
     '--rvc is the whole-file door');
   assert.ok(read('cli/rvc-enhance.js').includes('runRvcEnhancement'),
     '--rvc-enhance is the session door');
