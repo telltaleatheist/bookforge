@@ -95,6 +95,7 @@ import type {
   CrucibleInstallDoorEvent,
   CrucibleInstallDoorStatus,
 } from '../shared/crucible/install-door-wire';
+import type { CrucibleRepairEvent } from '../shared/crucible/repair-wire';
 import type {
   CrucibleUninstallPlan,
   CrucibleUninstallRefusalCode,
@@ -1400,6 +1401,9 @@ export interface ElectronAPI {
     }>;
     /** `GET /install/events` — every event of a running move, whoever started it. */
     onInstallEvent: (callback: (event: CrucibleInstallDoorEvent) => void) => () => void;
+    /** Check or repair one server; the steps arrive on `onRepairEvent`. */
+    repair: (name: string, options: { verifyOnly: boolean }) => Promise<{ success: boolean; error?: string }>;
+    onRepairEvent: (callback: (event: CrucibleRepairEvent) => void) => () => void;
     /** `POST /install` — **Try again**, shown only on `cannot` or `failed`. */
     installRetry: () => Promise<{ success: boolean; error?: string }>;
     /**
@@ -2957,6 +2961,12 @@ const electronAPI: ElectronAPI = {
     // Foundry's retry is `crucible:install-retry`; ours is `-start`, and it
     // never collided.
     installStatus: () => ipcRenderer.invoke('crucible:host-install-status'),
+    repair: (name: string, options: { verifyOnly: boolean }) => ipcRenderer.invoke('crucible:repair', name, options),
+    onRepairEvent: (callback: (event: CrucibleRepairEvent) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, repairEvent: CrucibleRepairEvent) => callback(repairEvent);
+      ipcRenderer.on('crucible:repair-event', listener);
+      return () => { ipcRenderer.removeListener('crucible:repair-event', listener); };
+    },
     onInstallEvent: (callback: (event: CrucibleInstallDoorEvent) => void) => {
       const listener = (_event: Electron.IpcRendererEvent, doorEvent: CrucibleInstallDoorEvent) =>
         callback(doorEvent);

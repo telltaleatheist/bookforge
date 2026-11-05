@@ -213,6 +213,14 @@ export interface CrucibleInstallPlan {
    * outcome's job, not a printed list's. The field is removed rather than left
    * empty so that a list cannot reappear in it without somebody deciding to.
    */
+  /**
+   * A CRUCIBLE IS ALREADY ON THIS MACHINE, so Install is not offered: "there should and
+   * will never be two copies installed" (Owen, 2026-11-04). Its config was found, or its
+   * runtime is installed with a config nobody could read, or the question could not be
+   * answered at all, which is not a yes to installing another. Null only when the machine
+   * was asked and said no.
+   */
+  existing: { readonly sentence: string } | null;
   /** Crucible's own README — the argument behind the sequence. */
   readme: string;
   /*

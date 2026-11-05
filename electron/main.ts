@@ -8689,9 +8689,25 @@ function setupIpcHandlers(): void {
     }
   };
 
-  ipcMain.handle('crucible:host-install', async (event) => runCrucibleInstall((progress) => {
-    if (!event.sender.isDestroyed()) event.sender.send('crucible:install-progress', progress);
-  }));
+  ipcMain.handle('crucible:host-install', async (event) => {
+    /*
+     * NEVER TWO COPIES (Owen, 2026-11-04: "there should and will never be two copies
+     * installed"). The screens no longer offer Install on a machine that has one; this
+     * is the door behind them, asked again at the press. "Try again" goes to the install
+     * door instead, because finishing an install is not a second copy.
+     */
+    const { crucibleInstallPlan } = await import('./crucible/install.js');
+    const { existing } = await crucibleInstallPlan();
+    if (existing !== null) {
+      return {
+        success: false,
+        refusal: { code: 'crucible_already_here', message: existing.sentence, command: null, detail: null },
+      };
+    }
+    return runCrucibleInstall((progress) => {
+      if (!event.sender.isDestroyed()) event.sender.send('crucible:install-progress', progress);
+    });
+  });
 
   /**
    * `GET /install` (PHASE19 §2.6) — is a move running, and what did the last
@@ -8970,6 +8986,26 @@ function setupIpcHandlers(): void {
       });
     }
   })();
+
+  /**
+   * CHECK OR REPAIR ONE SERVER (`crucible/repair.ts`). Answers at once; every step comes
+   * on `crucible:repair-event`, to every window, because a repair that hashes hundreds
+   * of gigabytes outlives whichever page started it. One per server at a time.
+   */
+  const repairsRunning = new Set<string>();
+  ipcMain.handle('crucible:repair', async (_event, name: string, options: { verifyOnly: boolean }) => {
+    if (repairsRunning.has(name)) {
+      return { success: false, error: `A check or repair of crucible "${name}" is already running.` };
+    }
+    repairsRunning.add(name);
+    const { processRepairDeps, repairCrucibleServer } = await import('./crucible/repair.js');
+    void repairCrucibleServer(
+      name, { verifyOnly: options.verifyOnly === true },
+      (repairEvent) => broadcastToAllWindows('crucible:repair-event', repairEvent),
+      processRepairDeps(),
+    ).finally(() => { repairsRunning.delete(name); });
+    return { success: true };
+  });
 
   ipcMain.handle('crucible:cancel-setup', async (_event, name: string, taskId: string) => {
     try {

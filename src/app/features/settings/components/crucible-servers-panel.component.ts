@@ -8,6 +8,7 @@ import { DesktopButtonComponent, DesktopStateSwitchComponent } from '../../../cr
 import { SERVER_STATE_CONTROL } from '@shared/queue/state-switch';
 import { ElectronService } from '../../../core/services/electron.service';
 import { CrucibleDoorsComponent } from './crucible-doors.component';
+import { CrucibleRepairComponent } from './crucible-repair.component';
 import { CrucibleEngineControlsComponent } from './crucible-engine-controls.component';
 import type {
   CrucibleActivityView,
@@ -73,7 +74,7 @@ import { coordinationWords } from './crucible-words';
   standalone: true,
   imports: [
     CommonModule, DesktopButtonComponent, DesktopStateSwitchComponent,
-    CrucibleDoorsComponent, CrucibleEngineControlsComponent,
+    CrucibleDoorsComponent, CrucibleRepairComponent, CrucibleEngineControlsComponent,
   ],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
@@ -222,6 +223,7 @@ import { coordinationWords } from './crucible-words';
             <p class="cru-meta">{{ url }} · {{ maskOf(row.name) }}</p>
           }
           <app-crucible-engine-controls [server]="row.name" [enabled]="row.enabled" />
+          <app-crucible-repair [server]="row.name" />
 
           <!--
             QUEUED ROWS THAT NAME THIS SERVER (crucible docs/PHASE7-LANES.md

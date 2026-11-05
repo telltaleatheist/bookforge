@@ -231,6 +231,9 @@ const SUITES = [
   'test-narrator-assemble',
   'test-narrator-align',
   'test-narrator-prep',
+  // Repair a Crucible through one view for both doors, and never offer Install on a
+  // machine that has one (Owen 2026-11-04). Against a fake: no real repair on real envs.
+  'test-crucible-repair',
   // THE BAND PREP IS HANDED (2026-11-04, docs/REORG-PLAN.md B1). The venue's
   // band becomes a floor and a cap in ONE place — `higgsPrepBudget` — and rides
   // the prep argv, so narrator's prep imports no model code to learn it. The

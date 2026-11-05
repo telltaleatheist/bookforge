@@ -150,6 +150,13 @@ import { CrucibleInstallProgressComponent } from './crucible-install-progress.co
                 </div>
               }
             }
+          } @else if (face() === 'existing') {
+            <!-- ── It has one, and it cannot be added as it stands. Never Install. ── -->
+            <div class="panel">
+              <p class="machine">{{ p.machine }}</p>
+              <p class="hint">{{ p.existing?.sentence }}</p>
+              <ng-container [ngTemplateOutlet]="connectForm" />
+            </div>
           } @else if (face() === 'install') {
             <!-- ── This machine can host one (or nothing says it cannot) ── -->
             <!--
@@ -289,6 +296,8 @@ import { CrucibleInstallProgressComponent } from './crucible-install-progress.co
         }
 
         <!-- ── 3. Get one on this machine ──────────────────────────────── -->
+        <!-- NOT DRAWN when this machine has one: its row is above, or the Add door is. -->
+        @if (!thisMachineHasOne()) {
         <button class="door" type="button" (click)="toggle('install')">
           <span class="door-name">Set an engine up on this machine</span>
           <span class="door-note">
@@ -300,14 +309,19 @@ import { CrucibleInstallProgressComponent } from './crucible-install-progress.co
           <div class="panel">
             @if (plan(); as p) {
               <p class="machine">{{ p.machine }}</p>
+              @if (p.existing; as existing) {
+                <p class="hint">{{ existing.sentence }}</p>
+              } @else {
               <p class="hint">{{ p.hostableWhy }}</p>
               <ng-container [ngTemplateOutlet]="installBody" [ngTemplateOutletContext]="{ p: p }" />
+              }
             } @else if (error(); as e) {
               <p class="bad">{{ e }}</p>
             } @else {
               <p class="hint">Measuring this machine…</p>
             }
           </div>
+        }
         }
 
         <!-- ── 4. Take it off again ────────────────────────────────────── -->
@@ -744,6 +758,9 @@ export class CrucibleDoorsComponent {
     return found !== null && found.present ? found.registeredAs : null;
   });
 
+  /** A Crucible's config was found here, registered or not. Install is not offered. */
+  readonly thisMachineHasOne = computed<boolean>(() => this.discovered()?.present === true);
+
   readonly serverCount = computed<number>(() => this.servers()?.servers.length ?? 0);
   readonly serverNames = computed<string>(
     () => (this.servers()?.servers ?? []).map((row) => row.name).join(', '),
@@ -758,7 +775,7 @@ export class CrucibleDoorsComponent {
    * an unmeasured card to "connect only" would be a wrong answer stated
    * confidently.
    */
-  readonly face = computed<'connected' | 'adopt' | 'install' | 'connect-only' | null>(() => {
+  readonly face = computed<'connected' | 'adopt' | 'existing' | 'install' | 'connect-only' | null>(() => {
     const view = this.servers();
     if (view === null) return null;
     /*
@@ -772,6 +789,8 @@ export class CrucibleDoorsComponent {
     if (view.discovered.present) return 'adopt';
     const plan = this.plan();
     if (plan === null) return null;
+    // ASKED BEFORE INSTALL IS OFFERED: the config above, then the runtime itself.
+    if (plan.existing !== null) return 'existing';
     return plan.hostable === 'no' ? 'connect-only' : 'install';
   });
 

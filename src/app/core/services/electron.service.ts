@@ -30,6 +30,7 @@ import type {
   CrucibleInstallDoorEvent,
   CrucibleInstallDoorStatus,
 } from '@shared/crucible/install-door-wire';
+import type { CrucibleRepairEvent } from '@shared/crucible/repair-wire';
 import type {
   CrucibleUninstallPlan,
   CrucibleUninstallRefusalCode,
@@ -4165,6 +4166,17 @@ export class ElectronService {
         : Promise.resolve({ success: false, error: 'Not running in Electron' }),
 
     /** Every event of a running move, whoever started it. Returns the unsubscribe. */
+    /** Check or repair one server. Answers at once; the steps come on {@link onRepairEvent}. */
+    repair: (name: string, options: { verifyOnly: boolean }): Promise<{ success: boolean; error?: string }> =>
+      this.isElectron
+        ? (window as any).electron.crucible.repair(name, options)
+        : Promise.resolve({ success: false, error: 'Not running in Electron' }),
+
+    onRepairEvent: (callback: (event: CrucibleRepairEvent) => void): (() => void) =>
+      (this.isElectron
+        ? (window as any).electron.crucible.onRepairEvent(callback)
+        : () => { /* no Electron, no repairs */ }),
+
     onInstallEvent: (callback: (event: CrucibleInstallDoorEvent) => void): (() => void) =>
       (this.isElectron
         ? (window as any).electron.crucible.onInstallEvent(callback)

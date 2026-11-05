@@ -870,6 +870,41 @@ export function crucibleHostFacts(host: InstallHost = processInstallHost()): Cru
  * string for a person to read and run; the only processes this spawns are the
  * two probes above, which list and query.
  */
+/**
+ * IS THERE ALREADY A CRUCIBLE HERE? Its config first, which is what "use the existing
+ * one" needs, then `detectHost()`, which also finds a runtime whose config cannot be read.
+ */
+export async function existingCrucibleOn(
+  facts: CrucibleHostFacts,
+  detect: () => Promise<{ server: unknown }> = async () => {
+    const bootstrap = await import('@crucible/bootstrap');
+    const { crucibleProcessRunner } = await import('./host-runner.js');
+    return bootstrap.detectHost({ distro: getWslDistro() }, crucibleProcessRunner());
+  },
+): Promise<{ sentence: string } | null> {
+  if (facts.discovered.present) {
+    return {
+      sentence: `This computer already has a Crucible, ${facts.discovered.serverName} at `
+        + `${facts.discovered.url}. Add it rather than installing a second one.`,
+    };
+  }
+  try {
+    const { server } = await detect();
+    if (server === null) return null;
+    return {
+      sentence: 'This computer already has Crucible installed, but its settings could not be read, '
+        + 'so BookForge cannot connect to it yet. Repair it, or start it once, rather than '
+        + 'installing a second copy.',
+    };
+  } catch (err) {
+    return {
+      sentence: 'BookForge could not tell whether this computer already has a Crucible '
+        + `(${err instanceof Error ? err.message : String(err)}), so it is not offering to install `
+        + 'one. Try again in a moment.',
+    };
+  }
+}
+
 export async function crucibleInstallPlan(
   host: InstallHost = processInstallHost(),
 ): Promise<CrucibleInstallPlan> {
@@ -883,6 +918,7 @@ export async function crucibleInstallPlan(
     hostable: verdict.hostable,
     hostableWhy: verdict.why,
     steps: await stepsFor(facts),
+    existing: await existingCrucibleOn(facts),
     readme: CRUCIBLE_README,
     driven,
     drivenWhy: driven ? null : drivenInstallUnavailableWhy(host.platform),
