@@ -2,7 +2,7 @@ import { ChangeDetectionStrategy, Component, computed, effect, inject, signal, u
 import { FormsModule } from '@angular/forms';
 
 import {
-  asciiFilename, contributorsFromString, generatedFilename, inheritMintMeta, MINT_LANGUAGES,
+  asciiFilename, contributorsFromString, fillMintGaps, generatedFilename, inheritMintMeta, MINT_LANGUAGES,
 } from '@owen/foundry-core/shared/mint-meta';
 import type { MintContributor, MintMeta } from '@owen/foundry-core/shared/mint-meta';
 import { carriedFromPlan } from '@owen/foundry-core/shared/pipeline';
@@ -161,9 +161,9 @@ export class MintMetaDialogComponent {
   }
 
   /**
-   * Pre-fill: the stored block when the project has one; otherwise a seed —
-   * the scan's own Info dictionary read through the comma rule, under the
-   * project's display title. The plan is fetched here for the MINT mode so
+   * Pre-fill, field by field, from the first source that says anything: the
+   * stored block, the host's record, then for a MINT the scan's own Info
+   * dictionary and the project's name (`meta:mint-seed`). The plan is fetched here for the MINT mode so
    * the language can pre-fill from the position (a translated position's
    * plan carries its language) and the run later writes into the folder the
    * plan named.
@@ -217,7 +217,28 @@ export class MintMetaDialogComponent {
         this.plan = await api.workspace.planExport(ask.inputPath, 'epub', this.ledger.aimedAt(ask.projectDir));
         planLanguage = this.plan.language ?? undefined;
       }
-      const inherited = inheritMintMeta(stored, host);
+      let inherited = inheritMintMeta(stored, host);
+      if (ask.mode === 'mint') {
+        /*
+         * ── THE PROJECT'S OWN WORD, UNDER EVERYTHING ABOVE (2026-11-05) ─────
+         *
+         * Owen: *"when i export an epub, it doesnt automatically fill the
+         * metadata."* Standalone, with no stored block and no host, this card
+         * used to ask `meta:read-pdf` about the scan by path — a path the app
+         * had never opened, so the read was refused and a `.catch(() => null)`
+         * made the refusal an empty form, even for a scan whose Info names its
+         * title. Main now reads the scan by PROJECT (`mintSeedFor`), and the
+         * project's name, in BookForge's convention, answers what the scan does
+         * not. Each source fills only the fields every source above it left
+         * empty. A scan that could not be read is said under the form.
+         */
+        const seed = await api.meta.mintSeed(ask.projectDir);
+        if (seed.problem !== null) {
+          const said = this.problem();
+          this.problem.set(said === null ? seed.problem : `${said} ${seed.problem}`);
+        }
+        inherited = fillMintGaps(fillMintGaps(inherited, seed.pdf), seed.name);
+      }
       if (inherited !== null) {
         this.title.set(inherited.title);
         this.subtitle.set(inherited.subtitle ?? '');
@@ -229,11 +250,10 @@ export class MintMetaDialogComponent {
         return;
       }
       /*
-       * THE SEED. In edit mode the file itself is the best witness — its OPF
-       * already says a title and a creator; in mint mode the scan's Info
-       * dictionary is (read leniently — a scan with no Info is ordinary). A
-       * failure to read either is a blank form, not a refusal: the person is
-       * about to type over it anyway.
+       * THE SEED, in edit mode: the file itself is the best witness — its OPF
+       * already says a title and a creator. (A mint's seed is read above.) A
+       * failure to read it is a blank form, not a refusal: the person is about
+       * to type over it anyway.
        */
       if (ask.mode === 'edit') {
         const read = await api.meta.readEpub(ask.path).catch(() => null);
@@ -246,18 +266,6 @@ export class MintMetaDialogComponent {
             : [{ first: '', last: '' }]);
           this.year.set(fields.date ?? '');
           this.language.set(fields.language ?? 'en');
-          return;
-        }
-      } else {
-        const read = await api.meta.readPdf(ask.inputPath).catch(() => null);
-        if (read?.ok && read.metadata.kind === 'pdf') {
-          const fields = read.metadata.fields;
-          this.title.set(fields.title ?? '');
-          const author = fields.author ?? '';
-          this.authors.set(author
-            ? contributorsFromString(author)
-            : [{ first: '', last: '' }]);
-          this.language.set(planLanguage ?? 'en');
           return;
         }
       }

@@ -20,6 +20,7 @@ import * as fs from 'fs/promises';
 import * as fsSync from 'fs';
 import { listProjects, getProjectPath, getVariants } from './manifest-service';
 import { collapseFilenameDots } from './path-utils';
+import { parseBookFilename } from '@owen/foundry-core/shared/book-filename';
 import type { ProjectManifest } from './manifest-types';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -319,68 +320,13 @@ export async function setCover(filePath: string, coverPath: string): Promise<voi
  * "Title - Subtitle. LastName, FirstName. (Year).ext"
  * "Title. LastName, FirstName. (Year).ext"
  * "Title. Author.ext"
+ *
+ * The parser is the library's (@owen/foundry-core, shared/book-filename.ts),
+ * moved there whole so Foundry's export card reads a book's name exactly as
+ * BookForge does (2026-11-05). One parser of one convention, in one place.
  */
 export function parseFilename(filename: string): BookMetadata {
-  const ext = path.extname(filename);
-  const base = filename.replace(ext, '');
-
-  const meta: BookMetadata = { title: base };
-
-  // Try: Title - Subtitle. Author. (Year)
-  // Or:  Title. Author. (Year)
-  // Or:  Title. Author
-  const yearMatch = base.match(/\.\s*\((\d{4})\)\s*$/);
-  let yearStr = '';
-  let stripped = base;
-  if (yearMatch) {
-    meta.year = parseInt(yearMatch[1]);
-    yearStr = yearMatch[0];
-    stripped = base.substring(0, base.length - yearStr.length);
-  }
-
-  // Split on ". " to separate title from author
-  const dotParts = stripped.split(/\.\s+/);
-  if (dotParts.length >= 2) {
-    const authorPart = dotParts[dotParts.length - 1].trim();
-    const titlePart = dotParts.slice(0, -1).join('. ').trim();
-
-    // Check for "Title - Subtitle" in title part
-    const dashIdx = titlePart.indexOf(' - ');
-    if (dashIdx !== -1) {
-      meta.title = titlePart.substring(0, dashIdx).trim();
-      meta.subtitle = titlePart.substring(dashIdx + 3).trim();
-    } else {
-      meta.title = titlePart;
-    }
-
-    // Parse author under the ONE rule (Owen, 2026-08-16): a comma means the
-    // segment is written "[Last], [First]" — strip the comma and read it that
-    // way; no comma means "[First] [Last]".
-    //
-    // `authorFull` is ALWAYS the natural "[First] [Last]" form. Every consumer
-    // treats it as display order and derives "Last, First" itself when it
-    // needs the file-as form (computeDescriptiveFilename, the shelf's
-    // fallback) — handing the comma'd form through is how a file named
-    // "… Bailey, Gene.epub" was inverted a second time into "Gene, Bailey,"
-    // on the first imported version.
-    if (authorPart.includes(',')) {
-      const parts = authorPart.split(',').map(s => s.trim()).filter(Boolean);
-      meta.authorLast = parts[0];
-      const first = parts.slice(1).join(' ');
-      if (first) meta.authorFirst = first;
-      meta.authorFull = first ? `${first} ${parts[0]}` : parts[0];
-    } else if (authorPart.includes(' ')) {
-      const parts = authorPart.split(/\s+/);
-      meta.authorFirst = parts.slice(0, -1).join(' ');
-      meta.authorLast = parts[parts.length - 1];
-      meta.authorFull = authorPart;
-    } else {
-      meta.authorLast = authorPart;
-      meta.authorFull = authorPart;
-    }
-  }
-
-  return meta;
+  return parseBookFilename(filename);
 }
 
 /**

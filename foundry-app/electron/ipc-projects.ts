@@ -8,7 +8,7 @@ import { readEpubMetadata, stampMintMetadata, readPdfMetadata } from '@owen/foun
 import { hostMintMeta } from '@owen/foundry-core/node/host';
 import { listProjects, readManifest, recordMintMeta } from '@owen/foundry-core/node/projects';
 import { describeProjectDelete, deleteProjectFolder, describeDocumentDelete, openExportDeleteDoor, deleteDocumentFile } from '@owen/foundry-core/node/doors-delete';
-import { admittedPdf, writePdfMetadataFor, exportedBook, writeEpubMetadataFor } from '@owen/foundry-core/node/doors-meta';
+import { admittedPdf, mintSeedFor, writePdfMetadataFor, exportedBook, writeEpubMetadataFor } from '@owen/foundry-core/node/doors-meta';
 import type { DocumentDeletion, MetadataWriteOutcome, MintMeta } from '@owen/foundry-core/shared/types';
 
 export function registerProjectDoors(): void {
@@ -164,4 +164,6 @@ export function registerProjectDoors(): void {
    * renderer holds.
    */
   ipcMain.handle('meta:mint-host', (_event, projectDir: string) => hostMintMeta(projectDir));
+  // The card's empty fields: the scan's Info and the project's name, read by main (doors-meta.ts).
+  ipcMain.handle('meta:mint-seed', (_event, projectDir: string) => mintSeedFor(projectDir));
 }

@@ -149,6 +149,7 @@ const api: FoundryApi = {
     writeMint: (projectDir, meta) => ipcRenderer.invoke('meta:mint-write', projectDir, meta),
     stampMint: (filePath, meta) => ipcRenderer.invoke('meta:mint-stamp', filePath, meta),
     hostSeed: (projectDir) => ipcRenderer.invoke('meta:mint-host', projectDir),
+    mintSeed: (projectDir) => ipcRenderer.invoke('meta:mint-seed', projectDir),
   },
 
   workspace: {
