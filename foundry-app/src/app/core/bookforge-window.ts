@@ -1,14 +1,11 @@
 /**
- * What BookForge's copy of the window leaves out (docs/REORG-PLAN.md, B3).
+ * What BookForge's copy of the window adds (docs/REORG-PLAN.md, B3).
  *
  * NO PAGE TOOLS. Owen ruled that BookForge's window has none: no light table and
- * no "Edit book". Hosted, the window already had no "Photograph a book…", no
- * workspace for dropped photographs and no taking a dropped PDF apart; the two
- * doors still open were the action menu's "Edit book" and "Edit the photographs",
- * and this is what shuts them. The capture code, its components and its IPC doors
- * stay in the tree, unreached, so putting them back is this one line.
+ * no "Edit book". The two doors the hosted window still had, the action menu's
+ * "Edit book" and "Edit the photographs", are deleted from this copy rather than
+ * switched off, in tools/foundry-window-edits.patch, so a re-copy keeps them out.
  */
-export const PAGE_TOOLS = false;
 
 /**
  * A line BookForge says in this window's notice tray (preload's `bookforgeWindow`).

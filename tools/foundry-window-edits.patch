@@ -6732,51 +6732,534 @@ index 16c5d408..2fa3a59e 100644
      // The File menu's Settings item. Main cannot route; it can only say where.
      api?.onNavigate((route) => { void this.router.navigateByUrl(route); });
  
+diff --git a/foundry-app/src/app/components/action-menu/action-menu.acts.ts b/foundry-app/src/app/components/action-menu/action-menu.acts.ts
+index 57b3fda8..8e80de87 100644
+--- a/foundry-app/src/app/components/action-menu/action-menu.acts.ts
++++ b/foundry-app/src/app/components/action-menu/action-menu.acts.ts
+@@ -321,46 +321,6 @@ export function analyse(this: ActionMenuComponent): void {
+   this.ui.openAnalysis();
+ }
+ 
+-/**
+- * Opens the table, or returns to the one already open.
+- *
+- * `captureTabIn` is idempotent by construction -- it hands back the existing
+- * tab for a project that already has one rather than making a second, which
+- * matters more here than on Home: this row is reachable FROM the table, so
+- * without that the door out of the room would put a second copy of the room
+- * beside it. The navigate is the neighbours' habit, for the case where this
+- * menu is drawn over a route that is not the workspace.
+- */
+-export function editPhotographs(this: ActionMenuComponent, dir: string): void {
+-  void this.router.navigateByUrl('/');
+-  this.documents.show(this.documents.captureTabIn(dir));
+-}
+-
+-/**
+- * Take the open book apart into a light table of its own.
+- *
+- * THE NAVIGATE IS `editPhotographs`' HABIT, one flight up, for its reason: this
+- * menu is drawn beside routes that are not the workspace, and the light table
+- * this ends on is a tab rather than a route. It goes FIRST, before minutes of
+- * rasterizing, so the progress card the pass raises is on screen where somebody
+- * can watch it and press Stop — the drop card's ruling, which opens the panel
+- * before the first page is drawn rather than after the last.
+- *
+- * THE PROJECT IS RE-READ FROM THE CATALOGUE rather than captured by the
+- * computed above, which holds the DIRECTORY on purpose: a summary is a snapshot
+- * that main re-announces, and a press acting on a minutes-old copy of a
+- * project's document list is the class of bug this app keeps writing down. The
+- * directory is the one handle that cannot go stale.
+- */
+-export function editBook(this: ActionMenuComponent): void {
+-  const dir = this.editable();
+-  if (dir === null) return;
+-  const project = this.projects.projectFor(dir);
+-  if (project === null) return;
+-  void this.router.navigateByUrl('/');
+-  void this.bookEdit.editBook(project);
+-}
+-
+ export function metadata(this: ActionMenuComponent): void {
+   /*
+    * AN EPUB EXPORT GETS THE MINT DIALOG — Owen's ruling (2026-08-24): the
+diff --git a/foundry-app/src/app/components/action-menu/action-menu.component.html b/foundry-app/src/app/components/action-menu/action-menu.component.html
+index a6eaa247..2c86bcdc 100644
+--- a/foundry-app/src/app/components/action-menu/action-menu.component.html
++++ b/foundry-app/src/app/components/action-menu/action-menu.component.html
+@@ -2,12 +2,11 @@
+     <nav class="menu" aria-label="Actions">
+       <!--
+         NAVIGATION, AS ONE SLIM STRIP. Nothing here makes anything: Home is
+-        where you go, Documents is what you look at, the light table is a place
+-        and Settings is where you go when the tools are not the answer. What
+-        used to separate them from the acts was a rule across the block; what
+-        separates them now is that they are a 30-pixel strip above a field of
+-        58-pixel tiles, which is a louder division than a one-pixel line and
+-        costs no height at all. See the class docblock for the order.
++        where you go, Documents is what you look at, and Settings is where you
++        go when the tools are not the answer. What used to separate them from
++        the acts was a rule across the block; what separates them now is that
++        they are a 30-pixel strip above a field of 58-pixel tiles, which is a
++        louder division than a one-pixel line and costs no height at all. See the class docblock for the order.
+ 
+         THE BRAND WENT WITH THE WRAP. A ⬙ at the top of this block was the
+         window's own mark at the left end of a full-width dock; in a panel whose
+@@ -18,8 +17,8 @@
+         <!-- Hosted, the host's book list is the library and Home is the one
+              surface that would list the same books from the other side — so the
+              door to it goes, not just the page behind it. The strip closes up
+-             around the gap, because the two that follow are flexible and the
+-             two after them are fixed squares. -->
++             around the gap, because the one that follows is flexible and the
++             one after it is a fixed square. -->
+         @if (!hosted()) {
+           <button
+             class="menu-item"
+@@ -47,97 +46,6 @@
+           <span class="menu-label">Documents</span>
+         </button>
+ 
+-        <!--
+-          THE WAY BACK TO THE PHOTOGRAPHS, and it is ON THE NAVIGATION STRIP on
+-          purpose.
+-
+-          A mint is a SNAPSHOT of the recipe rather than its funeral: the bank
+-          and the recipe survive it, and until Wave 21b there was simply no
+-          surface that reached them again. Owen minted, found he had not turned
+-          the pages, and there was no door -- Home opens the PDF once an
+-          original exists, which is correct and was the whole trap.
+-
+-          IT LIVES HERE RATHER THAN ON HOME ITSELF because the door belongs
+-          where the person is standing when they want it, which is looking at
+-          the book; Home stays a single door onto a project. And it sits with
+-          Home and Documents rather than among the acts because THE LIGHT TABLE
+-          IS A PLACE. Mint is an act and is deferred from this menu for exactly
+-          that reason -- a control naming somewhere you can go is a different
+-          kind of entry from one that performs something.
+-
+-          HIDDEN, NOT DISABLED, WHICH BREAKS THIS MENU'S USUAL RULE. Translate
+-          and Simplify stay visible and gray on a book they cannot run on,
+-          because they are tools that might apply to it later. A project that
+-          did not arrive as photographs has none and never will, so a permanent
+-          gray tile would be furniture rather than an education. Asked of the
+-          summary's own capture field, never inferred from an empty document
+-          list -- that field exists because emptiness is ALSO what a broken
+-          project looks like (types.ts says so at length).
+-
+-          A SQUARE WITH NO WORDS, unlike Home and Documents beside it, and that
+-          is a length decision rather than a rank one. "Edit the photographs" is
+-          three words and the strip has room for two labels; a quarter of the
+-          strip holding an ellipsis would say less than the mark does. The
+-          sentence it always had is on the hover, where it always was.
+-        -->
+-        @if (photographs(); as dir) {
+-          <button
+-            class="menu-item square"
+-            [class.active]="atTheTable()"
+-            aria-label="Edit the photographs"
+-            title="The photographs this book was made from, and the crops and turns still to set"
+-            (click)="editPhotographs(dir)"
+-          >
+-            <svg class="menu-icon" aria-hidden="true"><use href="#ft-capture" /></svg>
+-          </button>
+-        }
+-
+-        <!--
+-          EDIT BOOK — the same door, for a book that never had a light table.
+-
+-          Owen, 2026-09-21: *"im thinking we should have an 'edit book' option in
+-          the normal foundry window. after we open a pdf, and we have the step
+-          workflow on the left side and the tiles and everything, maybe the user
+-          can be given the option of editing the book directly (if it's a pdf),
+-          which would take them to the crop/page split/etc screen."*
+-
+-          THE TWO SQUARES ARE MUTUALLY EXCLUSIVE BY CONSTRUCTION, and that is the
+-          whole placement argument. The one above answers for a project that
+-          ARRIVED as photographs -- it already has a table, with the very crops
+-          and turns this would go and make a second copy of, so Owen's door is
+-          the one thing missing from the other kind of project. So editable() is
+-          asked of photographs() as well as of the catalogue, and at most one of
+-          these two is ever drawn.
+-
+-          IT SITS HERE, WITH HOME AND THE LIGHT TABLE, for its neighbour's own
+-          reason written just above: THE LIGHT TABLE IS A PLACE, and this control
+-          names somewhere you can go. That it makes a project on the way is a fact
+-          about the journey; what a person pressing it wants is the crop screen.
+-
+-          A SQUARE WITH NO WORDS, on the neighbour's length argument, and the same
+-          icon -- because it lands in the same room. The sentence is on the hover,
+-          where this strip keeps its sentences, and it says the one thing somebody
+-          has to know before pressing: A SECOND BOOK IS MADE. Nothing happens to
+-          the book on screen -- BookEditService's header carries that ruling, and
+-          why re-founding the open project would orphan its readings in silence.
+-
+-          GREYED WHILE A PASS IS RUNNING rather than hidden, breaking this strip's
+-          hidden-not-disabled habit on purpose: the reason the door is shut is
+-          temporary and is visible three inches away on the progress card, so a
+-          tile that vanished mid-rasterize would read as the offer being withdrawn.
+-        -->
+-        @if (editable()) {
+-          <button
+-            class="menu-item square"
+-            aria-label="Edit book"
+-            title="Take this book apart into its pages — crop, split and turn them, then rebuild it as a second book"
+-            [disabled]="bookEdit.busy()"
+-            (click)="editBook()"
+-          >
+-            <svg class="menu-icon" aria-hidden="true"><use href="#ft-capture" /></svg>
+-          </button>
+-        }
+-
+         <!--
+           SETTINGS, AT THE END OF THE STRIP, AND THE RULE UNDER IT IS GONE.
+ 
+@@ -147,7 +55,7 @@
+           the acts would be inviting somebody looking for Export to read past it.
+ 
+           WHAT CARRIES THAT NOW IS POSITION RATHER THAN A LINE. Settings is on
+-          the navigation strip — with Home and the light table, the things that
++          the navigation strip — with Home and Documents, the things that
+           take you somewhere rather than make something — and it is the LAST
+           thing on it, at the far end from Home, which is where a settings
+           control has sat in every window anybody has ever used. It is not in
 diff --git a/foundry-app/src/app/components/action-menu/action-menu.component.ts b/foundry-app/src/app/components/action-menu/action-menu.component.ts
-index 808bd047..2838c833 100644
+index 808bd047..5bc7879b 100644
 --- a/foundry-app/src/app/components/action-menu/action-menu.component.ts
 +++ b/foundry-app/src/app/components/action-menu/action-menu.component.ts
-@@ -18,6 +18,7 @@ import type { ActName } from '@owen/foundry-core/shared/types';
+@@ -17,7 +17,6 @@ import { fold } from '@owen/foundry-core/shared/original';
+ import type { ActName } from '@owen/foundry-core/shared/types';
  
  import { ActGatesService } from '../../core/act-gates.service';
- import { BookEditService } from '../../core/book-edit.service';
-+import { PAGE_TOOLS } from '../../core/bookforge-window';
+-import { BookEditService } from '../../core/book-edit.service';
  import { hosted } from '../../core/foundry';
  import { HostOpsService } from '../../core/host-ops.service';
  import { LedgerService } from '../../core/ledger.service';
-@@ -407,6 +408,7 @@ export class ActionMenuComponent {
-    * at the table", and the second is what `atTheTable` then lights.
-    */
-   protected readonly photographs = computed<string | null>(() => {
-+    if (!PAGE_TOOLS) return null;
-     const tab = this.stage.activeDocument();
-     if (tab === null) return null;
-     const project = this.projects.projectFor(tab.path);
-@@ -443,6 +445,7 @@ export class ActionMenuComponent {
-    * standing habit: every other door here is about the document on screen.
-    */
-   protected readonly editable = computed<string | null>(() => {
-+    if (!PAGE_TOOLS) return null;
-     if (this.photographs() !== null) return null;
-     const tab = this.stage.activeDocument();
-     if (tab === null) return null;
+@@ -154,8 +153,8 @@ import * as gates_ from './action-menu.gates';
+  * are laid out in exactly that sequence.
+  *
+  * THE THREE GROUPS BECAME TWO SHAPES. Navigation is a SLIM STRIP along the top
+- * of the block — Home and Documents as small labelled buttons, the light table
+- * and Settings as icon squares — and the acts are the grid below it. The rules
++ * of the block — Home and Documents as small labelled buttons, Settings as an
++ * icon square — and the acts are the grid below it. The rules
+  * that used to divide three groups are gone because the shapes now do that
+  * work: a 30-pixel strip of buttons and a field of 58-pixel tiles cannot be
+  * misread as one run of equals, which is the only thing the rules were for.
+@@ -202,11 +201,6 @@ export class ActionMenuComponent {
+   protected readonly stage = inject(StageService);
+   readonly projects = inject(ProjectsService);
+   readonly ledger = inject(LedgerService);
+-  /**
+-   * THE DOOR THAT TAKES A BOOK APART — protected rather than private because the
+-   * template reads its `busy` to grey the tile while a pass is running.
+-   */
+-  protected readonly bookEdit = inject(BookEditService);
+   /**
+    * THE OTHER HALF OF EVERY MAKE-TILE'S GATE — what this MACHINE can run.
+    *
+@@ -395,64 +389,6 @@ export class ActionMenuComponent {
+ 
+   protected analyse(): void { return acts.analyse.call(this); }
+ 
+-  /**
+-   * THE CAPTURE PROJECT THE PERSON IS STANDING IN, or null -- and null is what
+-   * hides the row rather than graying it (see the template).
+-   *
+-   * `projectFor` answers for BOTH tabs that can be open here without a second
+-   * reading: a minted PDF is a file inside the project directory, and the light
+-   * table's own tab holds that directory as its path, which `projectFor`
+-   * matches by equality on purpose (its docblock names the proof sheet as the
+-   * case that taught it). So one call covers "looking at the book" and "already
+-   * at the table", and the second is what `atTheTable` then lights.
+-   */
+-  protected readonly photographs = computed<string | null>(() => {
+-    const tab = this.stage.activeDocument();
+-    if (tab === null) return null;
+-    const project = this.projects.projectFor(tab.path);
+-    return project !== null && project.capture ? project.dir : null;
+-  });
+-
+-  /** Lit while the table IS what is open, the way Home lights with nothing open. */
+-  protected readonly atTheTable = computed<boolean>(
+-    () => this.stage.activeDocument()?.kind === 'capture');
+-
+-  protected editPhotographs(dir: string): void { return acts.editPhotographs.call(this, dir); }
+-
+-  /**
+-   * THE PROJECT IN FRONT OF THIS MENU, when its book is a PDF that could be
+-   * taken apart — Owen's *"if it's a pdf"*, asked of the catalogue.
+-   *
+-   * ── The three tests, and why each one is here ──────────────────────────────
+-   *
+-   * THERE IS A PROJECT. A loose file dragged onto the window has no founding
+-   * document, no shelf row and no title to derive a second one from, and Owen's
+-   * ask is explicitly about the window *"after we open a pdf"* with the steps
+-   * down the left — which is a project. A loose PDF still has the drop card's own
+-   * *Edit book* one gesture away, on the file itself.
+-   *
+-   * IT DID NOT ARRIVE AS PHOTOGRAPHS. `photographs()` is the light table it
+-   * already has; see the template for the argument, which is the placement
+-   * argument too. The two are mutually exclusive on purpose.
+-   *
+-   * AND ITS BOOK IS A PDF. `BookEditService.pdfOf` is that question, asked once
+-   * and in the same words the press will ask it in — so the tile cannot offer
+-   * what the press would then refuse.
+-   *
+-   * `stage.activeDocument()` and not the library's position, for this menu's own
+-   * standing habit: every other door here is about the document on screen.
+-   */
+-  protected readonly editable = computed<string | null>(() => {
+-    if (this.photographs() !== null) return null;
+-    const tab = this.stage.activeDocument();
+-    if (tab === null) return null;
+-    const project = this.projects.projectFor(tab.path);
+-    if (project === null) return null;
+-    return this.bookEdit.pdfOf(project) === null ? null : project.dir;
+-  });
+-
+-  protected editBook(): void { return acts.editBook.call(this); }
+-
+   protected canEditMetadata(): boolean { return gates_.canEditMetadata.call(this); }
+ 
+   protected metadata(): void { return acts.metadata.call(this); }
+diff --git a/foundry-app/src/app/core/book-edit.service.ts b/foundry-app/src/app/core/book-edit.service.ts
+deleted file mode 100644
+index 8af34e75..00000000
+--- a/foundry-app/src/app/core/book-edit.service.ts
++++ /dev/null
+@@ -1,217 +0,0 @@
+-import { Injectable, computed, inject, signal } from '@angular/core';
+-
+-import { isPdfName } from '@owen/foundry-core/shared/capture';
+-import type { ProjectDocument, ProjectSummary } from '@owen/foundry-core/shared/types';
+-
+-import { api } from './foundry';
+-import { CaptureService } from './capture.service';
+-import { OpenDocumentsService } from './documents.service';
+-import { NoticeService } from './notice.service';
+-import { PdfPagesService } from './pdf-pages.service';
+-import { ProjectsService } from './projects.service';
+-
+-/**
+- * EDIT THE BOOK YOU ARE READING — take its PDF apart onto a light table of its
+- * own, and hand the pages back as a second book.
+- *
+- * ── Owen's ask, 2026-09-21, verbatim ────────────────────────────────────────
+- *
+- * *"im thinking we should have an 'edit book' option in the normal foundry
+- * window. after we open a pdf, and we have the step workflow on the left side
+- * and the tiles and everything, maybe the user can be given the option of
+- * editing the book directly (if it's a pdf), which would take them to the
+- * crop/page split/etc screen. they can rebuild the book and itll have a new set
+- * of steps starting from the edited version they create from the original."*
+- *
+- * The gesture already existed, and only at the door: drop a PDF on the window
+- * and the card offers *Edit book*, which explodes it into pages you can crop,
+- * split and turn (`App.sortPdfs`). What was missing was the same offer ONE
+- * MOMENT LATER — after the book is open, the steps are down the left and the
+- * person has just discovered that every second page is upside down. Until now
+- * the only way there was to find the file on disk and drag it in again, which is
+- * a person working around their own library.
+- *
+- * ── IT MAKES A SECOND BOOK. IT DOES NOT EDIT THE OPEN ONE ───────────────────
+- *
+- * This is the ruling the whole file hangs on, and Owen's own sentence is the
+- * argument for it: *"itll have a NEW SET OF STEPS starting from the edited
+- * version they create from the original."* A project is a ledger — an ordered
+- * account of what was done to one document, with readings, overlays and
+- * corrections hanging off particular steps. Re-founding an open project on a
+- * different PDF would orphan all of it silently: the bank would still be there,
+- * still keyed to pages that no longer exist, and nothing on screen would say so.
+- *
+- * So the original is not touched at all. What is made is a NEW capture project
+- * whose photographs happen to be the old book's pages, and from the moment it is
+- * made it is an ordinary light table — the crop, the split and the turn are the
+- * ones that were always there, and its mint founds its own document with its own
+- * steps (`catalogueMint`, electron/projects.ts: *"from that moment the project is
+- * ORDINARY"*). Nothing below had to be built for that; it is verified rather than
+- * written.
+- *
+- * ── AND IT IS THE DROP CARD'S OWN TWO DOORS, IN SEQUENCE ────────────────────
+- *
+- * `IntakeWorkspaceService.createBook` says this at length and it is the same
+- * sentence here: `capture:create` makes a named empty project, `CaptureService
+- * .intake` copies files into one — and `intake` is ALREADY the door that knows a
+- * PDF in the list means "explode it first", because the light table's own drop
+- * needed exactly that (see its `isPdfName` block). So "take this book apart into
+- * a new book" is those two calls one after the other, and this service is the
+- * word "then". No rasterizing, no staging, no release, and no second opinion
+- * about any of it.
+- *
+- * ── THE ONE THING IT HAS TO DO ITSELF: A PATH IS NOT A `File` ───────────────
+- *
+- * The drop card is handed `File` objects by the browser. A book on the shelf is
+- * a PATH, and pdf.js runs in this renderer, so the bytes have to cross into it
+- * before anything can be drawn — `api.documentBytes`, the same door the scan
+- * pane beside a book reads its page from, and then a `File` composed over the
+- * bytes so that the door below receives what it already accepts.
+- *
+- * THAT READ IS GATED BY `admitted` (electron/documents.ts) and the refusal is
+- * *"was never opened in this app"*. It is admitted in the two places that put
+- * this book in front of somebody — opening the document admits its path, and
+- * loading a BOOK admits the scan behind it so the original pane can draw
+- * (electron/book.ts, which records this exact trap after measuring it). Both are
+- * true by the time this button can be pressed, because the button only exists
+- * while the book is open. A refusal is still SAID rather than swallowed: this is
+- * minutes of work about to not happen, and silence would read as a dead button.
+- */
+-@Injectable({ providedIn: 'root' })
+-export class BookEditService {
+-  private readonly captures = inject(CaptureService);
+-  private readonly documents = inject(OpenDocumentsService);
+-  private readonly notices = inject(NoticeService);
+-  private readonly pdfPages = inject(PdfPagesService);
+-  private readonly projects = inject(ProjectsService);
+-
+-  /** True from the press to the light table, so a second press cannot land. */
+-  private readonly running = signal(false);
+-
+-  /**
+-   * WHETHER A BOOK IS BEING TAKEN APART RIGHT NOW — this one or any other.
+-   *
+-   * A press is minutes of rasterizing and it makes a PROJECT, so a second press
+-   * on a button that still looks live is a second project on the shelf with the
+-   * same name and half a book in it. The rasterizing pass is the shared resource
+-   * either way — `PdfPagesService` holds one canvas and one worker per run and
+-   * its progress card holds one Stop — so the honest gate is "is there a pass",
+-   * and that is asked of the pass rather than of this service's own flag.
+-   */
+-  readonly busy = computed(() => this.running() || this.pdfPages.progress() !== null);
+-
+-  /**
+-   * The PDF this project was founded on, or null for a project with no such
+-   * thing to edit.
+-   *
+-   * ONE QUESTION, ASKED OF THE CATALOGUE — `originalOf` is what Home, the tree,
+-   * the OCR dialog and the export dialog all ask to mean "the book's own file",
+-   * and a fifth spelling of it here would be a fifth chance to disagree about
+-   * which file a project's steps start from. Its `path` is the live copy where
+-   * there is one and the archived original otherwise, which is the layer this app
+-   * edits and *"what the user means by 'the PDF'"* (electron/projects.ts).
+-   *
+-   * A PROJECT THAT ARRIVED AS PHOTOGRAPHS IS NOT OFFERED THIS, and the caller is
+-   * where that is decided rather than here: it already HAS a light table, with
+-   * the very crops and turns this would go and make a second copy of. See
+-   * `ActionMenuComponent`, where the two doors are mutually exclusive by
+-   * construction.
+-   */
+-  pdfOf(project: ProjectSummary): ProjectDocument | null {
+-    const original = this.projects.originalOf(project);
+-    if (original === null || original.missing) return null;
+-    if (original.kind !== 'pdf') return null;
+-    // The row's KIND and the file's own NAME both, because the name is what the
+-    // door below routes on: `intake` decides a file is a PDF by its extension
+-    // (`isPdfName`), so a row calling itself a PDF over a file that does not
+-    // spell one would have this hand intake a scan to be decoded as one frame.
+-    return isPdfName(original.label) ? original : null;
+-  }
+-
+-  /**
+-   * Take `project`'s PDF apart into a new light table, and stand in it.
+-   *
+-   * ── THE NAME IS THE ORIGINAL'S WITH A WORD ON IT ───────────────────────────
+-   *
+-   * *"Working Towards The Fuhrer (edited)"*. Two books made from one scan sit on
+-   * one shelf for as long as both exist, and a person who cannot tell them apart
+-   * at a glance will read the wrong one — `createCaptureProject` keys the folder
+-   * off a random suffix, so the TITLE is the only thing distinguishing them.
+-   * Editing an edit stacks the word rather than counting: *"… (edited) (edited)"*
+-   * is honest about what happened, where *"(edited 2)"* would invite the question
+-   * of what the first one was.
+-   *
+-   * ── AN EXPLOSION THAT WAS STOPPED STILL LEAVES THE TABLE ───────────────────
+-   *
+-   * `createBook`'s rule, for its reason, said there in full: the project *"was
+-   * named, it exists, and its light table is the surface the images can be
+-   * dragged onto directly"*. Pressing Stop on the progress card halfway through
+-   * a 600-page scan therefore lands on an empty or partial table rather than on
+-   * nothing — which is the outcome somebody who stopped it can see and act on,
+-   * where a project silently deleted underneath them would be this app throwing
+-   * away a folder it made on their behalf.
+-   */
+-  async editBook(project: ProjectSummary): Promise<boolean> {
+-    if (api === null) return false;
+-    if (this.busy()) {
+-      this.notices.notice.set('A book is already being taken apart. Wait for it to finish.');
+-      return false;
+-    }
+-    const original = this.pdfOf(project);
+-    if (original === null) {
+-      this.notices.notice.set(
+-        `${project.title} has no PDF behind it, so there are no pages to take apart.`);
+-      return false;
+-    }
+-
+-    this.running.set(true);
+-    try {
+-      let file: File;
+-      try {
+-        const bytes = await api.documentBytes(original.path);
+-        /*
+-         * RE-VIEWED, NOT COPIED. `documentBytes` answers a `Uint8Array`, whose
+-         * type says its buffer is `ArrayBufferLike` — so a `BlobPart` will not
+-         * take it, because in principle such a view could be over a
+-         * `SharedArrayBuffer`, which structured cloning across the preload
+-         * cannot produce. `bytes.slice()` would satisfy the compiler by making a
+-         * SECOND full copy of a scan that can run to hundreds of megabytes; a
+-         * view over the same bytes says the same thing for nothing.
+-         */
+-        const whole = new Uint8Array(
+-          bytes.buffer as ArrayBuffer, bytes.byteOffset, bytes.byteLength);
+-        /*
+-         * THE NAME MATTERS AND THE TYPE DOES NOT. `intake` routes on
+-         * `isPdfName(file.name)` and pdf.js reads the bytes, so the one thing
+-         * this has to get right is the name — and `label` is the row's own
+-         * filename, which `pdfOf` has already checked spells a PDF. It is
+-         * `label` rather than the tail of `path` because a document's name is a
+-         * fact the catalogue keeps and this side has no business re-deriving:
+-         * the house rule is that nothing in this app matches a document by the
+-         * last segment of a path.
+-         */
+-        file = new File([whole], original.label, { type: 'application/pdf' });
+-      } catch (err) {
+-        this.notices.notice.set(
+-          `${project.title} could not be read to take apart: `
+-          + `${err instanceof Error ? err.message : String(err)}`);
+-        return false;
+-      }
+-
+-      const dir = await this.captures.create(`${project.title} (edited)`);
+-      // `create` has already put its own sentence on the notice strip for a
+-      // failure. A second one here would be this file's guess at what main said.
+-      if (dir === null) return false;
+-
+-      // Every report this makes — how many pages landed, what would not draw —
+-      // is main's own, said on the notice strip by `intakePaths`. Nothing here
+-      // re-says any of it; what this method decides is only where the person
+-      // ends up.
+-      await this.captures.intake(dir, [file]);
+-      this.documents.show(this.documents.captureTabIn(dir));
+-      return true;
+-    } finally {
+-      this.running.set(false);
+-    }
+-  }
+-}
 diff --git a/foundry-app/src/app/core/bookforge-window.ts b/foundry-app/src/app/core/bookforge-window.ts
 new file mode 100644
-index 00000000..40cf415d
+index 00000000..4542246f
 --- /dev/null
 +++ b/foundry-app/src/app/core/bookforge-window.ts
-@@ -0,0 +1,26 @@
+@@ -0,0 +1,23 @@
 +/**
-+ * What BookForge's copy of the window leaves out (docs/REORG-PLAN.md, B3).
++ * What BookForge's copy of the window adds (docs/REORG-PLAN.md, B3).
 + *
 + * NO PAGE TOOLS. Owen ruled that BookForge's window has none: no light table and
-+ * no "Edit book". Hosted, the window already had no "Photograph a book…", no
-+ * workspace for dropped photographs and no taking a dropped PDF apart; the two
-+ * doors still open were the action menu's "Edit book" and "Edit the photographs",
-+ * and this is what shuts them. The capture code, its components and its IPC doors
-+ * stay in the tree, unreached, so putting them back is this one line.
++ * no "Edit book". The two doors the hosted window still had, the action menu's
++ * "Edit book" and "Edit the photographs", are deleted from this copy rather than
++ * switched off, in tools/foundry-window-edits.patch, so a re-copy keeps them out.
 + */
-+export const PAGE_TOOLS = false;
 +
 +/**
 + * A line BookForge says in this window's notice tray (preload's `bookforgeWindow`).

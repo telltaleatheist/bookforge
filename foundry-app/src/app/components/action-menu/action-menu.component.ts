@@ -17,8 +17,6 @@ import { fold } from '@owen/foundry-core/shared/original';
 import type { ActName } from '@owen/foundry-core/shared/types';
 
 import { ActGatesService } from '../../core/act-gates.service';
-import { BookEditService } from '../../core/book-edit.service';
-import { PAGE_TOOLS } from '../../core/bookforge-window';
 import { hosted } from '../../core/foundry';
 import { HostOpsService } from '../../core/host-ops.service';
 import { LedgerService } from '../../core/ledger.service';
@@ -155,8 +153,8 @@ import * as gates_ from './action-menu.gates';
  * are laid out in exactly that sequence.
  *
  * THE THREE GROUPS BECAME TWO SHAPES. Navigation is a SLIM STRIP along the top
- * of the block — Home and Documents as small labelled buttons, the light table
- * and Settings as icon squares — and the acts are the grid below it. The rules
+ * of the block — Home and Documents as small labelled buttons, Settings as an
+ * icon square — and the acts are the grid below it. The rules
  * that used to divide three groups are gone because the shapes now do that
  * work: a 30-pixel strip of buttons and a field of 58-pixel tiles cannot be
  * misread as one run of equals, which is the only thing the rules were for.
@@ -203,11 +201,6 @@ export class ActionMenuComponent {
   protected readonly stage = inject(StageService);
   readonly projects = inject(ProjectsService);
   readonly ledger = inject(LedgerService);
-  /**
-   * THE DOOR THAT TAKES A BOOK APART — protected rather than private because the
-   * template reads its `busy` to grey the tile while a pass is running.
-   */
-  protected readonly bookEdit = inject(BookEditService);
   /**
    * THE OTHER HALF OF EVERY MAKE-TILE'S GATE — what this MACHINE can run.
    *
@@ -395,66 +388,6 @@ export class ActionMenuComponent {
   protected canAnalyse(): boolean { return gates_.canAnalyse.call(this); }
 
   protected analyse(): void { return acts.analyse.call(this); }
-
-  /**
-   * THE CAPTURE PROJECT THE PERSON IS STANDING IN, or null -- and null is what
-   * hides the row rather than graying it (see the template).
-   *
-   * `projectFor` answers for BOTH tabs that can be open here without a second
-   * reading: a minted PDF is a file inside the project directory, and the light
-   * table's own tab holds that directory as its path, which `projectFor`
-   * matches by equality on purpose (its docblock names the proof sheet as the
-   * case that taught it). So one call covers "looking at the book" and "already
-   * at the table", and the second is what `atTheTable` then lights.
-   */
-  protected readonly photographs = computed<string | null>(() => {
-    if (!PAGE_TOOLS) return null;
-    const tab = this.stage.activeDocument();
-    if (tab === null) return null;
-    const project = this.projects.projectFor(tab.path);
-    return project !== null && project.capture ? project.dir : null;
-  });
-
-  /** Lit while the table IS what is open, the way Home lights with nothing open. */
-  protected readonly atTheTable = computed<boolean>(
-    () => this.stage.activeDocument()?.kind === 'capture');
-
-  protected editPhotographs(dir: string): void { return acts.editPhotographs.call(this, dir); }
-
-  /**
-   * THE PROJECT IN FRONT OF THIS MENU, when its book is a PDF that could be
-   * taken apart — Owen's *"if it's a pdf"*, asked of the catalogue.
-   *
-   * ── The three tests, and why each one is here ──────────────────────────────
-   *
-   * THERE IS A PROJECT. A loose file dragged onto the window has no founding
-   * document, no shelf row and no title to derive a second one from, and Owen's
-   * ask is explicitly about the window *"after we open a pdf"* with the steps
-   * down the left — which is a project. A loose PDF still has the drop card's own
-   * *Edit book* one gesture away, on the file itself.
-   *
-   * IT DID NOT ARRIVE AS PHOTOGRAPHS. `photographs()` is the light table it
-   * already has; see the template for the argument, which is the placement
-   * argument too. The two are mutually exclusive on purpose.
-   *
-   * AND ITS BOOK IS A PDF. `BookEditService.pdfOf` is that question, asked once
-   * and in the same words the press will ask it in — so the tile cannot offer
-   * what the press would then refuse.
-   *
-   * `stage.activeDocument()` and not the library's position, for this menu's own
-   * standing habit: every other door here is about the document on screen.
-   */
-  protected readonly editable = computed<string | null>(() => {
-    if (!PAGE_TOOLS) return null;
-    if (this.photographs() !== null) return null;
-    const tab = this.stage.activeDocument();
-    if (tab === null) return null;
-    const project = this.projects.projectFor(tab.path);
-    if (project === null) return null;
-    return this.bookEdit.pdfOf(project) === null ? null : project.dir;
-  });
-
-  protected editBook(): void { return acts.editBook.call(this); }
 
   protected canEditMetadata(): boolean { return gates_.canEditMetadata.call(this); }
 

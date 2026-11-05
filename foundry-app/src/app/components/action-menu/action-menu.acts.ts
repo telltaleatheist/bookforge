@@ -321,46 +321,6 @@ export function analyse(this: ActionMenuComponent): void {
   this.ui.openAnalysis();
 }
 
-/**
- * Opens the table, or returns to the one already open.
- *
- * `captureTabIn` is idempotent by construction -- it hands back the existing
- * tab for a project that already has one rather than making a second, which
- * matters more here than on Home: this row is reachable FROM the table, so
- * without that the door out of the room would put a second copy of the room
- * beside it. The navigate is the neighbours' habit, for the case where this
- * menu is drawn over a route that is not the workspace.
- */
-export function editPhotographs(this: ActionMenuComponent, dir: string): void {
-  void this.router.navigateByUrl('/');
-  this.documents.show(this.documents.captureTabIn(dir));
-}
-
-/**
- * Take the open book apart into a light table of its own.
- *
- * THE NAVIGATE IS `editPhotographs`' HABIT, one flight up, for its reason: this
- * menu is drawn beside routes that are not the workspace, and the light table
- * this ends on is a tab rather than a route. It goes FIRST, before minutes of
- * rasterizing, so the progress card the pass raises is on screen where somebody
- * can watch it and press Stop — the drop card's ruling, which opens the panel
- * before the first page is drawn rather than after the last.
- *
- * THE PROJECT IS RE-READ FROM THE CATALOGUE rather than captured by the
- * computed above, which holds the DIRECTORY on purpose: a summary is a snapshot
- * that main re-announces, and a press acting on a minutes-old copy of a
- * project's document list is the class of bug this app keeps writing down. The
- * directory is the one handle that cannot go stale.
- */
-export function editBook(this: ActionMenuComponent): void {
-  const dir = this.editable();
-  if (dir === null) return;
-  const project = this.projects.projectFor(dir);
-  if (project === null) return;
-  void this.router.navigateByUrl('/');
-  void this.bookEdit.editBook(project);
-}
-
 export function metadata(this: ActionMenuComponent): void {
   /*
    * AN EPUB EXPORT GETS THE MINT DIALOG — Owen's ruling (2026-08-24): the

@@ -2,12 +2,11 @@
     <nav class="menu" aria-label="Actions">
       <!--
         NAVIGATION, AS ONE SLIM STRIP. Nothing here makes anything: Home is
-        where you go, Documents is what you look at, the light table is a place
-        and Settings is where you go when the tools are not the answer. What
-        used to separate them from the acts was a rule across the block; what
-        separates them now is that they are a 30-pixel strip above a field of
-        58-pixel tiles, which is a louder division than a one-pixel line and
-        costs no height at all. See the class docblock for the order.
+        where you go, Documents is what you look at, and Settings is where you
+        go when the tools are not the answer. What used to separate them from
+        the acts was a rule across the block; what separates them now is that
+        they are a 30-pixel strip above a field of 58-pixel tiles, which is a
+        louder division than a one-pixel line and costs no height at all. See the class docblock for the order.
 
         THE BRAND WENT WITH THE WRAP. A ⬙ at the top of this block was the
         window's own mark at the left end of a full-width dock; in a panel whose
@@ -18,8 +17,8 @@
         <!-- Hosted, the host's book list is the library and Home is the one
              surface that would list the same books from the other side — so the
              door to it goes, not just the page behind it. The strip closes up
-             around the gap, because the two that follow are flexible and the
-             two after them are fixed squares. -->
+             around the gap, because the one that follows is flexible and the
+             one after it is a fixed square. -->
         @if (!hosted()) {
           <button
             class="menu-item"
@@ -48,97 +47,6 @@
         </button>
 
         <!--
-          THE WAY BACK TO THE PHOTOGRAPHS, and it is ON THE NAVIGATION STRIP on
-          purpose.
-
-          A mint is a SNAPSHOT of the recipe rather than its funeral: the bank
-          and the recipe survive it, and until Wave 21b there was simply no
-          surface that reached them again. Owen minted, found he had not turned
-          the pages, and there was no door -- Home opens the PDF once an
-          original exists, which is correct and was the whole trap.
-
-          IT LIVES HERE RATHER THAN ON HOME ITSELF because the door belongs
-          where the person is standing when they want it, which is looking at
-          the book; Home stays a single door onto a project. And it sits with
-          Home and Documents rather than among the acts because THE LIGHT TABLE
-          IS A PLACE. Mint is an act and is deferred from this menu for exactly
-          that reason -- a control naming somewhere you can go is a different
-          kind of entry from one that performs something.
-
-          HIDDEN, NOT DISABLED, WHICH BREAKS THIS MENU'S USUAL RULE. Translate
-          and Simplify stay visible and gray on a book they cannot run on,
-          because they are tools that might apply to it later. A project that
-          did not arrive as photographs has none and never will, so a permanent
-          gray tile would be furniture rather than an education. Asked of the
-          summary's own capture field, never inferred from an empty document
-          list -- that field exists because emptiness is ALSO what a broken
-          project looks like (types.ts says so at length).
-
-          A SQUARE WITH NO WORDS, unlike Home and Documents beside it, and that
-          is a length decision rather than a rank one. "Edit the photographs" is
-          three words and the strip has room for two labels; a quarter of the
-          strip holding an ellipsis would say less than the mark does. The
-          sentence it always had is on the hover, where it always was.
-        -->
-        @if (photographs(); as dir) {
-          <button
-            class="menu-item square"
-            [class.active]="atTheTable()"
-            aria-label="Edit the photographs"
-            title="The photographs this book was made from, and the crops and turns still to set"
-            (click)="editPhotographs(dir)"
-          >
-            <svg class="menu-icon" aria-hidden="true"><use href="#ft-capture" /></svg>
-          </button>
-        }
-
-        <!--
-          EDIT BOOK — the same door, for a book that never had a light table.
-
-          Owen, 2026-09-21: *"im thinking we should have an 'edit book' option in
-          the normal foundry window. after we open a pdf, and we have the step
-          workflow on the left side and the tiles and everything, maybe the user
-          can be given the option of editing the book directly (if it's a pdf),
-          which would take them to the crop/page split/etc screen."*
-
-          THE TWO SQUARES ARE MUTUALLY EXCLUSIVE BY CONSTRUCTION, and that is the
-          whole placement argument. The one above answers for a project that
-          ARRIVED as photographs -- it already has a table, with the very crops
-          and turns this would go and make a second copy of, so Owen's door is
-          the one thing missing from the other kind of project. So editable() is
-          asked of photographs() as well as of the catalogue, and at most one of
-          these two is ever drawn.
-
-          IT SITS HERE, WITH HOME AND THE LIGHT TABLE, for its neighbour's own
-          reason written just above: THE LIGHT TABLE IS A PLACE, and this control
-          names somewhere you can go. That it makes a project on the way is a fact
-          about the journey; what a person pressing it wants is the crop screen.
-
-          A SQUARE WITH NO WORDS, on the neighbour's length argument, and the same
-          icon -- because it lands in the same room. The sentence is on the hover,
-          where this strip keeps its sentences, and it says the one thing somebody
-          has to know before pressing: A SECOND BOOK IS MADE. Nothing happens to
-          the book on screen -- BookEditService's header carries that ruling, and
-          why re-founding the open project would orphan its readings in silence.
-
-          GREYED WHILE A PASS IS RUNNING rather than hidden, breaking this strip's
-          hidden-not-disabled habit on purpose: the reason the door is shut is
-          temporary and is visible three inches away on the progress card, so a
-          tile that vanished mid-rasterize would read as the offer being withdrawn.
-        -->
-        @if (editable()) {
-          <button
-            class="menu-item square"
-            aria-label="Edit book"
-            title="Take this book apart into its pages — crop, split and turn them, then rebuild it as a second book"
-            [disabled]="bookEdit.busy()"
-            (click)="editBook()"
-          >
-            <svg class="menu-icon" aria-hidden="true"><use href="#ft-capture" /></svg>
-          </button>
-        }
-
-        <!--
           SETTINGS, AT THE END OF THE STRIP, AND THE RULE UNDER IT IS GONE.
 
           It had a divider of its own for as long as this was a column, for a
@@ -147,7 +55,7 @@
           the acts would be inviting somebody looking for Export to read past it.
 
           WHAT CARRIES THAT NOW IS POSITION RATHER THAN A LINE. Settings is on
-          the navigation strip — with Home and the light table, the things that
+          the navigation strip — with Home and Documents, the things that
           take you somewhere rather than make something — and it is the LAST
           thing on it, at the far end from Home, which is where a settings
           control has sat in every window anybody has ever used. It is not in
