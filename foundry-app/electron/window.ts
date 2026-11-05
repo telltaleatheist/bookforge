@@ -231,9 +231,10 @@ export function openWindow(): BrowserWindow {
      * files. Resolved from the app root because `build/` is deliberately not
      * in the package's `files` list — when the path is absent, Electron
      * quietly keeps its default, which is the right degrade for a tree
-     * without the icon.
+     * without the icon. In BookForge this file compiles to
+     * dist/foundry-app/electron, three levels under the repo.
      */
-    icon: path.join(__dirname, '..', '..', 'build',
+    icon: path.join(__dirname, '..', '..', '..', 'foundry-app', 'build',
       process.platform === 'win32' ? 'icon.ico' : 'icon.png'),
     show: false,
     webPreferences: {

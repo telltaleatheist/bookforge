@@ -62,7 +62,8 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
-const RENDERER = path.join(__dirname, '..', 'dist', 'renderer');
+// In BookForge the renderer builds to the repo's dist/foundry-app/renderer (angular.json).
+const RENDERER = path.join(__dirname, '..', '..', 'dist', 'foundry-app', 'renderer');
 
 /** Every string that must not be readable on any Foundry screen. */
 const FORBIDDEN = [

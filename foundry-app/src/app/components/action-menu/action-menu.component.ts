@@ -18,6 +18,7 @@ import type { ActName } from '@owen/foundry-core/shared/types';
 
 import { ActGatesService } from '../../core/act-gates.service';
 import { BookEditService } from '../../core/book-edit.service';
+import { PAGE_TOOLS } from '../../core/bookforge-window';
 import { hosted } from '../../core/foundry';
 import { HostOpsService } from '../../core/host-ops.service';
 import { LedgerService } from '../../core/ledger.service';
@@ -407,6 +408,7 @@ export class ActionMenuComponent {
    * at the table", and the second is what `atTheTable` then lights.
    */
   protected readonly photographs = computed<string | null>(() => {
+    if (!PAGE_TOOLS) return null;
     const tab = this.stage.activeDocument();
     if (tab === null) return null;
     const project = this.projects.projectFor(tab.path);
@@ -443,6 +445,7 @@ export class ActionMenuComponent {
    * standing habit: every other door here is about the document on screen.
    */
   protected readonly editable = computed<string | null>(() => {
+    if (!PAGE_TOOLS) return null;
     if (this.photographs() !== null) return null;
     const tab = this.stage.activeDocument();
     if (tab === null) return null;
