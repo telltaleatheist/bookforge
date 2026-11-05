@@ -166,7 +166,7 @@ check('the align queue step succeeds on a report full of failures', () => {
     'the row must say the counts');
 });
 
-check('the align row claims the slot its DEVICE names, and the job resolves the name', () => {
+check('the align row claims the slot its DEVICE names, and a CPU row is refused by name', () => {
   // Owen, 2026-09-07: "make it an option the user can pick when adding it to the
   // queue. GPU or CPU? defaults to CPU." Two halves, and both are silent if they
   // drift: a row that declared 'cpu' and then ran on the card would align beside
@@ -176,12 +176,12 @@ check('the align row claims the slot its DEVICE names, and the job resolves the 
   assert.ok(/resource:\s*\(config[^)]*\)\s*=>\s*\(config\['device'\] === 'gpu' \? 'gpu' : 'cpu'\)/.test(step),
     "the align step must take its resource from the row's own device");
   const job = read('electron/coverage-align-job.ts');
-  assert.ok(/'--device', device/.test(job),
-    'the spawn must pass the RESOLVED device, not a hard-coded one');
-  assert.ok(/appleSilicon/.test(job) && /cuda\.available/.test(job),
-    "'gpu' is resolved to mps or cuda from the machine profile the app already probes");
-  assert.ok(/no GPU the aligner can/.test(job),
-    'a machine with neither refuses by name rather than aligning on the CPU nobody chose');
+  // The model runs on a Crucible's card (REORG B2), so 'gpu' resolves to no local
+  // device name any more, the argv carries none, and a CPU row - which a server
+  // has no answer for - is refused by name rather than run on a card nobody chose.
+  assert.ok(!/'--device'/.test(job), 'the measurement loads no model, so it names no device');
+  assert.ok(/crucible_align_cpu_row/.test(job),
+    "a row that chose the CPU is refused by name rather than run on the server's card");
 });
 
 check('the aligner refuses BOTH gpu device names while a BookForge job owns the card', () => {
@@ -235,29 +235,16 @@ check('narrator itself no longer refuses a book on coverage', () => {
 // by the other instrument under the same label reads as a coverage regression
 // nobody caused.
 
-check('every app door states --backend qwen3, and none of them resolves a backend', () => {
+check('no app door runs an aligner model, names a backend, or gates on a local env', () => {
+  // The model half is a Crucible `align` job and the measurement reads its
+  // document, whose own backend decides the scoring (REORG B2, 2026-11-04).
   const job = read('electron/coverage-align-job.ts');
-  assert.ok(/'--backend', 'qwen3'/.test(job),
-    'the per-chunk door must STATE the backend: narrator\'s DEFAULT_BACKEND is '
-    + 'still whisperx, which is its contract with a caller that names none');
   const bridge = read('electron/whisperx-align-bridge.ts');
-  assert.ok(/'--backend', 'qwen3'/.test(bridge),
-    'the whole-m4b door must state it too — "for generate-sentences logic AND '
-    + 'for normal post-render alignment"');
-  for (const [file, source] of [['coverage-align-job.ts', job],
-                                ['whisperx-align-bridge.ts', bridge]]) {
-    assert.ok(!/backend\s*[=:]\s*['"]whisperx['"]/.test(source),
-      `${file} names whisperx as a backend somewhere — there is no fallback arm`);
+  for (const [file, source] of [['coverage-align-job.ts', job], ['whisperx-align-bridge.ts', bridge]]) {
+    assert.ok(!/'--backend'/.test(source), `${file} names a backend on an argv again`);
+    assert.ok(!/resolveQwenAlignEnv|resolveWhisperxEnvRoot|align_audiobook\.py'/.test(source),
+      `${file} reaches for a local aligner env or script again`);
   }
-});
-
-check('the per-chunk door resolves ONE aligner env, and no door gates on it up front', () => {
-  const job = read('electron/coverage-align-job.ts');
-  assert.ok(/resolveQwenAlignEnv/.test(job),
-    'the job must ask qwen-aligner.ts — a second copy of that ladder is a second '
-    + 'answer, and the copy is the one that goes stale');
-  assert.ok(!/resolveWhisperxEnvRoot/.test(job),
-    'the job still reaches for the whisperx env; the align stage does not run there');
   /*
    * THE PLAN-TIME GATE IS GONE (2026-09-19, bug hunt finding B2).
    *
@@ -269,8 +256,7 @@ check('the per-chunk door resolves ONE aligner env, and no door gates on it up f
    * mlx-darwin block for qwen3-aligner, so `align` is off — was refused an
    * alignment the server it had just rendered on would have done.
    *
-   * What survives is the env resolution INSIDE `runCoverageAlignLocally`'s
-   * local-spawn arm, which is the arm that actually needs an interpreter.
+   * The local-spawn arm that still resolved an env went too (REORG B2).
    */
   const compiled = require(JOB);
   for (const symbol of ['coverageAlignPython', 'coverageAlignRefusal']) {

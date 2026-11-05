@@ -1064,7 +1064,6 @@ const SUITES = [
   // Components, upgrades and the GPU arbiter's ANSWER (pure — nothing is spawned
   // and nothing touches a card).
   'test-component-upgrades',
-  'test-qwen-align-env',
   'test-gpu-arbiter',
   'test-clean-step-door',
   // The book glossary a cleanup is handed (no server: lister and asker injected).

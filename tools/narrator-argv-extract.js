@@ -249,13 +249,11 @@ if (require.main === module) {
              '--sentences_dir', 'C:\\lib\\sent', '--device', 'CUDA'],
     assembly: ['--headless', '--session', 'abc', '--session_dir', WIN_SESSION,
                '--output_dir', 'C:\\out', '--assemble_only', '--no_split'],
-    // narrator's own spelling, and a Windows path for `--python` so the capture
-    // shows that the align door does NOT cross into the guest: it runs natively
-    // on the session `normalizeWslSessionToWindows` has already copied out.
+    // narrator's own spelling: the measurement over a Crucible's alignment, which
+    // runs natively and loads no model, so the capture shows it never crosses.
     align: ['align', '--session-dir', WIN_SESSION,
             '--report', WIN_SESSION + '\\coverage.json',
-            '--language', 'en', '--device', 'cpu',
-            '--python', 'C:\\FAKE\\whisperx\\python.exe'],
+            '--language', 'en', '--alignment', WIN_SESSION + '\\alignment.json'],
     resume: ['--headless', '--resume_session', WIN_SESSION],
     list: ['--headless', '--list_sessions'],
   };

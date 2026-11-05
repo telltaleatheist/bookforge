@@ -26,10 +26,10 @@
  *     session's own cancel handle, and it must do it under a BOUND: a server
  *     that will not stop cannot be allowed to hang the quit.
  *
- *  C. **The hours-long align has no ✕.** `runLongformAlign` takes a `signal`
- *     and `whisperx-align-bridge` passed none, so `cancelEpubAlign` — the door
- *     that kills the local align child, whole tree — reached nothing at all
- *     when the same alignment ran on a Crucible.
+ *  C. **The hours-long align has no ✕.** `cancelEpubAlign` must reach the run's
+ *     Crucible jobs: aborting the signal DELETEs the one in flight. (The
+ *     `align-longform` door and the local align child this first pinned are both
+ *     deleted, docs/REORG-PLAN.md B2.)
  *
  * No GPU, no model, no aligner, no network beyond 127.0.0.1.
  */
@@ -58,7 +58,6 @@ if (!fs.existsSync(path.join(DIST, 'data', 'rvc-voice-assets.json'))) {
 
 const { work } = installElectronStub('bf-cancel-doors-');
 const render = require(path.join(DIST, 'crucible', 'render.js'));
-const alignLongform = require(path.join(DIST, 'crucible', 'align-longform.js'));
 const servers = require(path.join(DIST, 'crucible', 'servers.js'));
 const registerFake = fakeNamer(servers);
 const { check, summary } = makeChecker();
@@ -488,42 +487,6 @@ function startCancellingAlignServer(patienceMs) {
   });
 }
 
-async function longformSignalCheck() {
-  const fake = await startCancellingAlignServer(5000);
-  const server = registerFake(fake.url);
-  const outputDir = path.join(work, 'align-direct');
-  fs.mkdirSync(outputDir, { recursive: true });
-  const audio = path.join(work, 'direct.m4b');
-  fs.writeFileSync(audio, Buffer.from('not really an m4b'));
-
-  const stop = new AbortController();
-  let thrown = null;
-  try {
-    const running = alignLongform.runLongformAlign({
-      server,
-      audioPath: audio,
-      sentences: [{ index: 0, text: 'He had been walking for some time.', kind: 'prose' }],
-      language: 'en',
-      outputDir,
-      onProgress: () => stop.abort(),
-      signal: stop.signal,
-    });
-    await running;
-  } catch (err) {
-    thrown = err;
-  } finally {
-    await fake.close();
-  }
-
-  await check('an aborted signal DELETEs the align job on the server', () => {
-    assert.strictEqual(fake.state.cancelled.length, 1,
-      'runLongformAlign must pass its signal to the generic job door, which cancels rather than '
-      + 'hanging up');
-    assert.ok(thrown && /cancel/i.test(String(thrown.message)),
-      `an aborted align must fail saying so; got: ${thrown && thrown.message}`);
-  });
-}
-
 async function bridgeAlignCancelChecks() {
   const bridge = require(path.join(DIST, 'whisperx-align-bridge.js'));
   const { ZipWriter } = require(path.join(DIST, 'epub-processor.js'));
@@ -619,7 +582,6 @@ async function writeEpub(ZipWriter, outPath, paragraphs) {
 (async () => {
   await renderCancelChecks();
   await quitChecks();
-  await longformSignalCheck();
   await bridgeAlignCancelChecks();
   summary('crucible-cancel-doors');
 })().catch((err) => {

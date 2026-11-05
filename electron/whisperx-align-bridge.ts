@@ -1,52 +1,37 @@
 /**
- * WhisperX force-alignment bridge — aligns a project's EPUB text to its audiobook
- * to produce ACCURATE read-along subtitles.
+ * Epub-align bridge — aligns a project's EPUB text to its audiobook to produce
+ * ACCURATE read-along subtitles.
  *
- * Unlike the whisper transcription path (generate-sentences-bridge), which infers
- * the words from the audio (and so inherits ASR spelling/word errors), this path
+ * Unlike the transcription path (generate-sentences-bridge), which infers the
+ * words from the audio (and so inherits ASR spelling/word errors), this path
  * takes the ebook as ground truth: it extracts the ebook's sentences in reading
- * order, hands them to `align_audiobook.py` (WhisperX rough-transcribe → coarse
- * DTW align → per-sentence forced alignment), and gets back a VTT whose text is
- * the ebook's own words with real audio timings.
+ * order and gets back a VTT whose text is the ebook's own words with real audio
+ * timings.
  *
- * TWO ENVIRONMENTS SINCE 2026-09-08, and the file name is now half a lie it is
- * not worth renaming a keeper over. Owen: *"go ahead and wire it up to alignment
- * so itll be used to align the chunks in app … for generate-sentences logic and
- * for normal post-render alignment"* — so the FORCED ALIGNMENT is
- * Qwen3-ForcedAligner-0.6B in the `qwen-align` env (395x realtime against
- * WhisperX's 18x on the same GPU; 890/1083 chunk starts inside 0.1 s against
- * 39/61), and the ROUGH TRANSCRIPT stage is still faster-whisper in the CPU-only
- * `whisperx-env`, named to the script as `--rough-python`. Neither env holds the
- * other's stack, measured on both machines. There is no whisperx arm behind the
- * align stage: a machine with no qwen env is refused by name.
+ * THE MODELS ARE CRUCIBLE'S, THE LOGIC IS BOOKFORGE'S (Owen, 2026-09-24: "all gpu
+ * use in bookforge should run through crucible"). `crucible/sentence-align.ts` runs
+ * Qwen3-ASR (an `asr` job) → the EPUB diff here → Qwen3-ForcedAligner (`align`
+ * jobs) on the windows the two disagree on → cue edges in real pauses. The local
+ * spawn of `align_audiobook.py` (faster-whisper rough pass in `whisperx-env`,
+ * qwen3/wav2vec2 forced alignment in `qwen-align-env`) is deleted
+ * (docs/REORG-PLAN.md, B2); the script itself stays as CLI-owned tooling for
+ * `cli/align_book_chapters.py`. The file name is older than both and is not worth
+ * renaming a keeper over.
  *
- * This bridge resolves both interpreters + the packaged script, spawns it, and
- * translates the script's STDOUT progress protocol into
- * 'generate-sentences:progress' events. The caller (startGenerateSentences) owns
- * embed + manifest linking + completion.
+ * The caller (startGenerateSentences) owns embed + manifest linking + completion.
  */
 
-import { BrowserWindow, app } from 'electron';
-import { spawn, ChildProcess } from 'child_process';
+import { BrowserWindow } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
-import * as os from 'os';
 
 import { loadEpubForComparison, HEADING_MARKER } from './epub-processor.js';
-import { componentManager } from './components/component-manager.js';
-import { namedCondaEnvCandidates } from './components/conda-env-detect.js';
 import * as manifestService from './manifest-service.js';
-import { toUnpackedPath } from './narrator-paths.js';
 import { getFfmpegPath } from './tool-paths.js';
-import { qwenAlignCacheDir, resolveQwenAlignEnv } from './qwen-aligner.js';
-import { narratorPythonRoot } from './narrator-spawn.js';
-import { GenerateSentencesConfig, sendProgress, glog, gerror } from './generate-sentences-bridge.js';
-import { StageTracker, type StageSpec } from './job-stages.js';
+import { GenerateSentencesConfig, sendProgress, glog } from './generate-sentences-bridge.js';
+import { crucibleAsrLanguage } from './crucible/asr.js';
 import { alignableTextRefusal } from '../shared/document/alignable-text';
 import { periodTerminatorGuard } from '../shared/text/sentence-abbreviations';
-
-/** Managed-component id for the CPU-only WhisperX alignment env. */
-export const WHISPERX_ENV_ID = 'whisperx-env';
 
 /**
  * Live aligns, keyed by jobId, so a queue cancel can actually REACH them —
@@ -68,22 +53,15 @@ export const WHISPERX_ENV_ID = 'whisperx-env';
  * forgets to open.
  */
 type LiveAlign =
-  /** The local spawn: `align_audiobook.py` and its multiprocessing workers. */
-  | { readonly where: 'here'; readonly child: ChildProcess }
-  /** An `align-longform` job on a Crucible; aborting DELETEs it (crucible/job.ts). */
-  | { readonly where: 'crucible'; readonly stop: AbortController };
+  /** The run's Crucible jobs; aborting DELETEs the one in flight (crucible/job.ts). */
+  { readonly where: 'crucible'; readonly stop: AbortController };
 const activeAligns = new Map<string, LiveAlign>();
 
 /**
- * Cancel the alignment for a job.
- *
- * LOCALLY that means the child, WHOLE TREE: WhisperX spawns multiprocessing
- * workers, so signalling only the parent orphans them (measured: the forked
- * children kept the GPU after the parent died) — Windows needs taskkill /T.
- * ON A CRUCIBLE it means aborting the job's signal, which the generic job door
- * turns into `DELETE /v1/jobs/{id}` and then reads the `cancelled` frame off
- * the stream it is already following — a cancel, not a hang-up, because
- * hanging up leaves the job running on somebody else's card.
+ * Cancel the alignment for a job: abort its signal, which the generic job door
+ * turns into `DELETE /v1/jobs/{id}` and then reads the `cancelled` frame off the
+ * stream it is already following — a cancel, not a hang-up, because hanging up
+ * leaves the job running on somebody else's card.
  *
  * Safe to call for an unknown/already-finished jobId.
  */
@@ -91,143 +69,17 @@ export function cancelEpubAlign(jobId: string): void {
   const live = activeAligns.get(jobId);
   if (!live) return;
   activeAligns.delete(jobId);
-  if (live.where === 'crucible') {
-    glog(`[epub-align] cancel requested job=${jobId} on crucible`);
-    live.stop.abort();
-    return;
-  }
-  const child = live.child;
-  const pid = child.pid;
-  glog(`[epub-align] cancel requested job=${jobId} pid=${pid ?? 'none'}`);
-  try {
-    if (pid && os.platform() === 'win32') {
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
-      require('child_process').execSync(`taskkill /F /T /PID ${pid}`, { stdio: 'ignore' });
-    } else if (pid) {
-      try { process.kill(-pid, 'SIGKILL'); } catch { child.kill('SIGKILL'); }
-    } else {
-      child.kill('SIGKILL');
-    }
-  } catch {
-    /* already exited — its entry came off the registry above either way */
-  }
+  glog(`[epub-align] cancel requested job=${jobId} on crucible`);
+  live.stop.abort();
 }
 
 /**
- * Resolve the python executable inside a conda env root (mirrors
- * component-manager's envPython).
- *
- * EXPORTED because "where is WhisperX" must have ONE answer, and the copy is
- * always the one that goes stale. It was `coverage-align-job.ts` that asked;
- * since the qwen3 cutover (2026-09-08) that door asks `qwen-aligner.ts` instead
- * and this pair is what names the interpreter for the ROUGH TRANSCRIPT stage —
- * still faster-whisper, still this component, delegated to the script as
- * `--rough-python`.
- */
-export function whisperxEnvPython(envRoot: string): string {
-  return envPython(envRoot);
-}
-
-function envPython(envRoot: string): string {
-  if (os.platform() === 'win32') {
-    const direct = path.join(envRoot, 'python.exe');
-    if (fs.existsSync(direct)) return direct;
-    const scripts = path.join(envRoot, 'Scripts', 'python.exe');
-    if (fs.existsSync(scripts)) return scripts;
-    return direct; // best guess
-  }
-  return path.join(envRoot, 'bin', 'python');
-}
-
-/**
- * Resolve the WhisperX env root, in order of preference:
- *   1. the installed managed component (production),
- *   2. WHISPERX_ENV_PATH (explicit dev override),
- *   3. a local `whisperx` conda env auto-detected on disk (dev convenience).
- * Each candidate is only accepted if its python actually exists.
- *
- * EXPORTED for `coverage-align-job.ts` — see `whisperxEnvPython`. The two align
- * paths (this bridge's whole-m4b alignment, and narrator's per-chunk coverage
- * pass) must find the SAME env, including the dev auto-detect, or a machine that
- * can do one can mysteriously not do the other.
- */
-export function resolveWhisperxEnvRoot(): string | null {
-  const managed = componentManager.resolveEntry(WHISPERX_ENV_ID);
-  if (managed && fs.existsSync(envPython(managed))) return managed;
-
-  const override = process.env.WHISPERX_ENV_PATH;
-  if (override && fs.existsSync(envPython(override))) return override;
-
-  for (const c of namedCondaEnvCandidates('whisperx')) {
-    if (c.platform === process.platform && fs.existsSync(envPython(c.path))) {
-      glog(`[epub-align] auto-detected whisperx env at ${c.path}`);
-      return c.path;
-    }
-  }
-  return null;
-}
-
-/**
- * WHICH SILENCE SCANNER PLACES THE CUE EDGES on this machine - decided HERE,
- * once per run, and said out loud; never a fallback inside the script.
- *
- * auto-editor's loudness envelope halves the mid-word cue-edge rate against
- * ffmpeg silencedetect (fix/align-cue-edges, measured on God's People ch.0:
- * 1.01 % vs 2.4 %), so it is the scanner a machine that has it uses. It is NOT
- * in the packaged whisperx-env (Owen's PC has 29.3.1 on PATH from the system
- * python; the Mac has none), so a machine without it runs silencedetect - and
- * the log and the report's `silenceSource` both say so, with the remedy. That
- * is a STATED STOPGAP until the whisperx-env recipe carries auto-editor, at
- * which point this probe is what makes every machine take the better path
- * with no code change.
- */
-export function silenceSourceFor(spawnPath: string): 'auto-editor' | 'ffmpeg' {
-  const exe = process.platform === 'win32' ? 'auto-editor.exe' : 'auto-editor';
-  const onPath = spawnPath.split(path.delimiter)
-    .filter((d) => d.trim())
-    .some((d) => { try { return fs.existsSync(path.join(d, exe)); } catch { return false; } });
-  if (onPath) {
-    glog('[epub-align] silence source: auto-editor (on PATH)');
-    return 'auto-editor';
-  }
-  glog("[epub-align] silence source: ffmpeg silencedetect - auto-editor is not on this machine's PATH, "
-    + 'so cue edges land at the coarser 2.4 % mid-word rate instead of 1.0 %. '
-    + 'Remedy: add auto-editor to the whisperx-env (or `pip install auto-editor` beside it).');
-  return 'ffmpeg';
-}
-
-/** Locate align_audiobook.py in dev (electron/scripts) or packaged (dist/electron/scripts, asarUnpack'd). */
-function resolveAlignScript(): string {
-  const candidates = [
-    path.join(app.getAppPath(), 'electron', 'scripts', 'align_audiobook.py'),
-    path.join(__dirname, '..', '..', 'electron', 'scripts', 'align_audiobook.py'),
-    path.join(__dirname, 'scripts', 'align_audiobook.py'),
-  ];
-  const found = candidates.find((p) => fs.existsSync(p)) || candidates[candidates.length - 1];
-  // Packaged: the spawned python can't read inside app.asar — hand it the
-  // asarUnpack'd real file (dist/electron/scripts/** is unpacked).
-  return toUnpackedPath(found);
-}
-
-/**
- * THE DEFAULTS FOR EVERY CALLER THAT PASSES NO OPTIONS — the app's Generate
- * Sentences button included. Named and gathered here because these three changed
- * the GUI's output in 2026-09-03 with no switch in the UI, and a default that
- * silently alters a shipped artifact deserves to be a decision someone can find.
- *
- *  * paragraph-aware segmentation: ON. It fixes a real defect (headings fused into
- *    the first prose cue) and the read-along text is strictly better for it.
- *  * silence snapping at 0.6 s: ON. Measured on McKinley, boundaries inside a
- *    detected pause went 18.6% -> 95.4% with drift unchanged. Bounded, so the
- *    worst case is a no-op.
- *  * report hole threshold: UNSET, i.e. it follows --hole-min-s (30 s) exactly as
- *    before. Lowering it changes what `audioNotInEpub` MEANS (see
- *    align_audiobook.py find_holes — it measures "cue longer than a slow reading
- *    of its text", not literal unmatched audio), so it is opt-in per run and the
- *    default report is unchanged.
+ * THE SEGMENTATION DEFAULT FOR EVERY CALLER THAT PASSES NO OPTIONS — the app's
+ * Generate Sentences button included: paragraph-aware segmentation ON. It fixes
+ * a real defect (headings fused into the first prose cue, 2026-09-03) and the
+ * read-along text is strictly better for it.
  */
 export const DEFAULT_PARAGRAPH_AWARE = true;
-export const DEFAULT_SNAP_SILENCE_S = 0.6;
 
 /** A sentence handed to the aligner, plus what kind of block it came from. */
 export interface AlignSentence {
@@ -493,55 +345,10 @@ function stageMessage(stage: string): string {
 }
 
 /**
- * The five pipeline stages, in order, each rendered as its own stacked bar. The
- * `weight` values are the stage's share of wall-clock time (they sum to 1) and
- * drive the headline master bar as a duration-weighted average of the per-stage
- * fractions — so it tracks real elapsed progress instead of lurching when the two
- * near-instant stages (prepare/coarse-align/write) snap to 100%. A flat average
- * would jump the master bar 40% for ~2s of actual work; these weights don't.
- */
-const ALIGN_STAGES: ReadonlyArray<StageSpec> = [
-  { name: 'prepare', label: 'Preparing audio', weight: 0.03 },
-  { name: 'transcribe', label: 'Transcribing narration', weight: 0.45 },
-  { name: 'coarse-align', label: 'Matching text to audio', weight: 0.04 },
-  { name: 'align', label: 'Fine-aligning', weight: 0.46 },
-  { name: 'write', label: 'Writing subtitles', weight: 0.02 },
-];
-
-interface AlignResult {
-  ok: boolean;
-  vtt?: string;
-  cues?: number;
-  fallbackCues?: number;
-  trimmedHead?: number;
-  trimmedTail?: number;
-  aligned?: number;
-  /** ok:false — the script's terminal error message. */
-  error?: string;
-  /** Rough-transcribe slices that errored (each ≈10 min of audio missing from the anchor stream). */
-  failedSlices?: number;
-  totalSlices?: number;
-  /** Align chunks that errored (their sentences carry coarse timing, not forced alignment). */
-  failedChunks?: number;
-  totalChunks?: number;
-  /** Drift self-check: cues verified against the rough transcript / worst pre-fix offset / cues corrected. */
-  driftChecked?: number;
-  driftMaxAbs?: number;
-  driftFixed?: number;
-  /** Boundary snapping: cue seams moved onto the middle of a detected silence / total seams considered. */
-  snappedBoundaries?: number;
-  totalBoundaries?: number;
-  /** Cues carrying a `NOTE heading` tag (headings the segmenter gave their own cue). */
-  headingCues?: number;
-  /** Path of the coverage report the script wrote (only when --report was passed). */
-  report?: string | null;
-}
-
-/**
  * Force-align the ebook variant identified by `config.epubVariantId` to the
  * audiobook at `config.m4bPath`. Returns the produced VTT path + cue count.
- * Throws with a clear message if the engine is missing, the variant can't be
- * resolved, or the script fails — the caller catches and falls back to whisper.
+ * Throws with a clear message if the variant can't be resolved, no Crucible can
+ * take the run, or the alignment fails there.
  */
 export async function runEpubAlign(
   jobId: string,
@@ -582,10 +389,12 @@ export async function runEpubAlign(
    * THE VENUE THE QUEUE ASSIGNED, passed through rather than re-decided. The row
    * already carries it (`GenerateSentencesConfig.runVenue`, written by the pump
    * at admission), and asking again here would be a second answer to "which
-   * machine is this book on" — the thing §4.4 exists to make one answer.
+   * machine is this book on" — the thing §4.4 exists to make one answer. A
+   * caller-named server (`config.crucible`) must agree with it.
    */
   return runEpubAlignOnFiles(jobId, win, epubPath, config.m4bPath, config.language, {
-    ...(config.runVenue === undefined ? {} : { crucibleServer: config.runVenue.server }),
+    ...(config.runVenue === undefined ? {} : { runVenue: config.runVenue }),
+    ...(config.crucible === undefined ? {} : { crucibleServer: config.crucible.server }),
   });
 }
 
@@ -641,7 +450,7 @@ export async function runEpubAlignOnClips(
     server: opts.crucibleServer,
     clips,
     sentences: sentences.map((s) => ({ text: s.text, kind: s.kind })),
-    language: language && language !== 'auto' ? language : 'en',
+    language: crucibleAsrLanguage(language),
     ffmpegPath: getFfmpegPath(),
     outDir: opts.outDir,
     ...(opts.signal ? { signal: opts.signal } : {}),
@@ -657,31 +466,16 @@ export async function runEpubAlignOnClips(
  * without a project) can drive the REAL alignment pipeline. `win` is only an event
  * sink (sendProgress guards isDestroyed) — a headless caller passes a stub.
  *
- * `opts.reportPath`: also write a coverage-report JSON there — which epub
- * sentence runs were never narrated and which audio ranges have no epub match
- * (ads/intros/disc breaks), each with text + timestamp anchors. The script fills
- * everything except the epub path (it only sees extracted sentences), which is
- * patched in here after a successful run.
- * `opts.holeMinS`: minimum unmatched-audio duration (s) treated as a hole — both
- * for the report and for whisper-fallback cue filling. 0 = every positive gap.
- * `opts.roughCachePath`: opt-in — cache the rough whisper transcript (words + segs
- * + lang) at this path so re-runs skip the ~30-40 min transcribe pass. Absent =
- * no caching (no behavior change). The caller supplies an explicit path.
- * `opts.alignWorkers`: opt-in override for the parallel align worker count. Absent
- * = the script auto-sizes (conservative: reserves 12 GB headroom for a concurrent
- * WSL vLLM lane, so it may pick 1 worker even with RAM free). Pass a positive int
- * only when the GPU/WSL lane is known idle; each worker budgets ~5 GB and the pool
- * self-shrinks under memory pressure regardless.
- * `opts.paragraphAware`: default true — segment the ebook on block boundaries as
- * well as punctuation, so unpunctuated headings stop being glued onto the prose
- * that follows them (see splitSentences). Pass false for the pre-2026-09-03
- * punctuation-only segmentation.
- * `opts.snapSilenceS`: default 0.6 — bounded window (s) for snapping each cue
- * boundary to the middle of a detected silence. 0 disables snapping.
- * `opts.reportHoleMinS`: minimum unmatched-audio duration (s) LISTED IN THE
- * REPORT, decoupled from `holeMinS` (which still governs whisper-fallback cue
- * filling and so changes the VTT). Default 3 — short stings, credits and applause
- * beds surface without inserting a single ASR cue.
+ * WHERE IT RUNS is decided once, the way a render's and a transcription's venue
+ * is (`venueForRunStep`): the run's venue when it has one, else the caller's
+ * named server, else the routing record. With no server reachable this THROWS
+ * with the reason; there is no local aligner to fall back to.
+ *
+ * `opts.reportPath`: where the run's report goes (stats, notPlaced, extraAudio,
+ * flaggedCues — `crucible/sentence-align.ts`); default beside the audio.
+ * `opts.roughCachePath`: keep (or reuse) the ASR transcript there, so a re-run on
+ * the same audio skips the one long GPU pass.
+ * `opts.paragraphAware`: default true — see DEFAULT_PARAGRAPH_AWARE.
  */
 export async function runEpubAlignOnFiles(
   jobId: string,
@@ -690,13 +484,10 @@ export async function runEpubAlignOnFiles(
   audioPath: string,
   language?: string,
   opts?: {
-    reportPath?: string; holeMinS?: number; roughCachePath?: string; alignWorkers?: number; device?: string;
-    paragraphAware?: boolean; snapSilenceS?: number; reportHoleMinS?: number;
-    /**
-     * A registered Crucible server's NAME, when the queue assigned this run to
-     * one. Absent means the local spawn below, which is still the only road on
-     * a machine with no server.
-     */
+    reportPath?: string; roughCachePath?: string; paragraphAware?: boolean;
+    /** The run's already-resolved venue (a queue row's `waitForResolved`). */
+    runVenue?: { where: 'crucible'; server: string };
+    /** The caller's own server NAME (the CLI's `--crucible-server`); must agree with `runVenue`. */
     crucibleServer?: string;
   },
 ): Promise<{ vttPath: string; cues: number; warning?: string; reportPath?: string }> {
@@ -704,366 +495,46 @@ export async function runEpubAlignOnFiles(
   if (!fs.existsSync(epubPath)) throw new Error(`Ebook file not found: ${epubPath}`);
   if (!fs.existsSync(audioPath)) throw new Error(`Audio file not found: ${audioPath}`);
 
-  // 2. Extract sentences from the ebook in reading order.
+  // Extract sentences from the ebook in reading order.
   const paragraphAware = opts?.paragraphAware ?? DEFAULT_PARAGRAPH_AWARE;
   const sentences = await extractAlignSentences(epubPath, paragraphAware);
 
+  const { venueForRunStep } = await import('./crucible/step-venue.js');
+  const { processVenueHost } = await import('./crucible/generation-venue.js');
+  const venue = await venueForRunStep({
+    ...(opts?.runVenue === undefined ? {} : { runVenue: opts.runVenue, runVenueSource: 'the queue row' }),
+    ...(opts?.crucibleServer === undefined ? {} : { callerNamed: { server: opts.crucibleServer } }),
+    host: processVenueHost(),
+  });
+
   /*
-   * 2b. THE SAME ALIGNMENT, ON A SERVER — when the queue assigned one.
-   *
-   * Crucible's `align-longform` runs these four stages with the SAME code for
-   * the two heavy ones: `coarse_align` and `snap_boundaries` were ported
-   * verbatim from `align_audiobook.py` and are held to it by a differential test
-   * over 27 books and 200 seam layouts. So this is not a second implementation
-   * of the alignment, it is the alignment somewhere else.
-   *
    * ONLY THE SENTENCES AND THE AUDIO CROSS. The EPUB stays here — it is this
    * app's book, and what the server needs from it is text, which the extraction
-   * above has already produced with its headings stamped. Sending the EPUB would
-   * mean the server parsing it a second way.
-   *
-   * THE LOCAL SPAWN BELOW IS NOT A FALLBACK. A run assigned to a server that
-   * fails there FAILS: silently re-running hours of compute on this machine
-   * would be a different venue than the one the queue charged a slot for, and
-   * the bench would be wrong about which card is busy.
+   * above has already produced with its headings stamped.
    */
-  /*
-   * 2026-09-24 — THE LOGIC IS BOOKFORGE'S, THE MODELS ARE CRUCIBLE'S. Owen: "all gpu
-   * use in bookforge should run through crucible … bookforge manages the logic, but
-   * we dont ever directly call the qwen model. we call it through the crucible api
-   * and get files back." So the server no longer runs the whole act (`align-longform`,
-   * faster-whisper `small` as its locator): this side runs `crucible/sentence-align.ts`
-   * — Qwen3-ASR (`asr` job) → the EPUB diff here → `align` job on the windows the two
-   * disagree on → cue edges at the centre of real pauses → the VTT. Same two files,
-   * same names, same place, so everything after this cannot tell the difference.
-   */
-  if (opts?.crucibleServer !== undefined) {
-    const { runSentenceAlign } = await import('./crucible/sentence-align.js');
-    const { getFfmpegPath } = await import('./tool-paths.js');
-    glog(`[epub-align] on crucible "${opts.crucibleServer}": `
-      + `${sentences.length} sentence(s), ${path.basename(audioPath)} (qwen3-asr + qwen3-aligner, BookForge diff)`);
-    const outDir = path.dirname(reportPath ?? audioPath);
-    const stop = new AbortController();
-    activeAligns.set(jobId, { where: 'crucible', stop });
-    try {
-      const r = await runSentenceAlign({
-        server: opts.crucibleServer,
-        audioPath,
-        sentences: sentences.map((s) => ({ text: s.text, kind: s.kind })),
-        language: language && language !== 'auto' ? language : 'en',
-        ffmpegPath: getFfmpegPath(),
-        outVttPath: path.join(outDir, 'alignment.vtt'),
-        reportPath: reportPath ?? path.join(outDir, 'align-report.json'),
-        ...(opts.roughCachePath ? { transcriptCachePath: opts.roughCachePath } : {}),
-        signal: stop.signal,
-        onProgress: (p) => sendProgress(win, jobId, Math.round(p.fraction * 100), p.message || stageMessage(p.stage)),
-        onLog: (line) => glog(`[epub-align/crucible] ${line}`),
-      });
-      glog(`[epub-align] crucible "${opts.crucibleServer}": ${r.cues} cue(s) placed`);
-      return { vttPath: r.vttPath, cues: r.cues, reportPath: r.reportPath };
-    } finally {
-      activeAligns.delete(jobId);
-    }
-  }
-
-  /*
-   * 3. THE TWO INTERPRETERS, both named, neither guessed.
-   *
-   * Owen, 2026-09-08: the app's aligner is qwen3 "for generate-sentences logic
-   * and for normal post-render alignment". So the SCRIPT runs under the
-   * qwen-align env, which is what holds `qwen_asr`, and the rough-transcript
-   * stage is delegated to the whisperx env with `--rough-python`, which is what
-   * holds `faster_whisper`.
-   *
-   * THEY ARE TWO ENVS BECAUSE THEY MEASURABLY ARE. `qwen-asr` 0.0.6 pins
-   * transformers 4.57.6 and drags gradio/flask; the whisperx env is CPU-only by
-   * design. Checked on this PC's `qwen-align` env, 2026-09-08: qwen_asr, torch,
-   * soundfile and numpy import, faster_whisper and whisperx do not.
-   *
-   * NO WHISPERX ARM BEHIND THE ALIGN STAGE. A machine that cannot resolve a qwen
-   * env does not run this door and is told which add-on to install; quietly
-   * aligning with wav2vec2 instead would ship a different measurement under the
-   * same label.
-   */
-  const alignEnv = resolveQwenAlignEnv();
-  if (!alignEnv.ok) throw new Error(alignEnv.error);
-  if (alignEnv.env.viaWsl) {
-    /*
-     * REFUSED BY NAME, AND THIS IS A KNOWN GAP RATHER THAN A DESIGN.
-     *
-     * The per-chunk door can cross into the guest because the thing it reads —
-     * the render's session — is written INSIDE the guest on ext4. This door
-     * reads an m4b and an EPUB out of the LIBRARY, which on this PC is the NAS
-     * share on Z:, and WSL has no /mnt for a network drive (memory:
-     * wsl-cannot-see-network-drives). Spawning it there would hand the guest a
-     * path it cannot open, halfway through a 40-minute transcribe.
-     *
-     * What unblocks it is a NATIVE CUDA qwen env on Windows named as
-     * `qwenAlignEnv`, which is also what `install_qwen_align.sh` is owed for.
-     */
-    throw new Error(
-      'The Qwen3 aligner on this machine lives in a WSL environment '
-      + `("${alignEnv.env.wslEnvName}"), and this alignment reads the audiobook and the ebook `
-      + 'out of the library, which the WSL guest cannot see when the library is on a network '
-      + 'drive. Point "qwenAlignEnv" in tool-paths.json at a NATIVE Windows conda prefix that '
-      + 'has qwen-asr, or run this alignment on the Mac. (The per-chunk alignment that runs '
-      + 'after a render is unaffected: its session is inside the guest already.)',
-    );
-  }
-  const python = alignEnv.env.python;
-
-  const roughEnvRoot = resolveWhisperxEnvRoot();
-  if (!roughEnvRoot) {
-    throw new Error(
-      'The rough-transcript stage needs faster-whisper, which lives in the "Ebook Alignment '
-      + '(WhisperX)" add-on and not in the Qwen3 aligner env. Install it in Settings → Add-ons '
-      + '(or set WHISPERX_ENV_PATH for dev) — both envs are needed for this alignment.',
-    );
-  }
-  const roughPython = envPython(roughEnvRoot);
-  const scriptPath = resolveAlignScript();
-
-  // 4. Write the sentences to a temp JSON file (cleaned up in finally).
-  const sentsJsonPath = path.join(os.tmpdir(), `bookforge-align-${jobId}-${Date.now()}.json`);
-  fs.writeFileSync(sentsJsonPath, JSON.stringify(sentences), 'utf-8');
-
-  // VTT is a temporary build artifact. Generate Sentences embeds it into the m4b
-  // and removes it; no persistent sidecar belongs in the project output folder.
-  const m4bPath = audioPath;
-  const outVtt = path.join(os.tmpdir(), `bookforge-align-${jobId}-${Date.now()}.vtt`);
-
-  const langCode = language && language !== 'auto' ? language : 'en';
-
-  // Managed torch cache so the wav2vec2 align model (~378 MB, fetched on first
-  // use) persists in the app's runtime folder instead of the user's ~/.cache.
-  // torch stores it at <TORCH_HOME>/hub/checkpoints/. Still set: the delegated
-  // rough stage runs in the whisperx env and inherits this environment.
-  const torchHome = path.join(app.getPath('userData'), 'runtime', 'whisperx-cache');
-  try { fs.mkdirSync(torchHome, { recursive: true }); } catch { /* best-effort */ }
-
-  // ...and the managed Hugging Face cache for the ~1.2 GB
-  // Qwen3-ForcedAligner-0.6B, which `from_pretrained` pulls on first use. Same
-  // arrangement, same reason; `components/qwen-align-env.ts` declares the
-  // variable and the doors are what set it. CREATED, not assumed — a cache
-  // directory that does not exist is a download into somewhere else.
-  const hfHome = qwenAlignCacheDir(app.getPath('userData'));
-  fs.mkdirSync(hfHome, { recursive: true });
-
-  // Put the app's bundled ffmpeg/ffprobe on PATH so the script's slicing calls
-  // AND whisperx.load_audio's internal ffmpeg resolve correctly (packaged apps
-  // don't have ffmpeg on the system PATH).
-  let ffmpegDir = '';
-  try { ffmpegDir = path.dirname(getFfmpegPath()); } catch { /* fall back to system ffmpeg */ }
-  const spawnPath = ffmpegDir ? `${ffmpegDir}${path.delimiter}${process.env.PATH || ''}` : (process.env.PATH || '');
-
-  glog(`[epub-align] spawning python=${python} (qwen3, ${alignEnv.env.source}) `
-    + `rough-python=${roughPython} script=${scriptPath} lang=${langCode} out=${outVtt}`);
-
+  const { runSentenceAlign } = await import('./crucible/sentence-align.js');
+  glog(`[epub-align] on crucible "${venue.server}" (${venue.origin}: ${venue.because}): `
+    + `${sentences.length} sentence(s), ${path.basename(audioPath)} (qwen3-asr + qwen3-aligner, BookForge diff)`);
+  const outDir = path.dirname(reportPath ?? audioPath);
+  const stop = new AbortController();
+  activeAligns.set(jobId, { where: 'crucible', stop });
   try {
-    return await new Promise<{ vttPath: string; cues: number; warning?: string; reportPath?: string }>((resolve, reject) => {
-      const args = [
-        scriptPath,
-        '--audio', m4bPath,
-        '--sentences', sentsJsonPath,
-        '--out', outVtt,
-        '--rough-model', 'base',
-        '--lang', langCode,
-        // QWEN3, ALWAYS, on the app's door (Owen, 2026-09-08). The script's own
-        // default stays whisperx so a hand-run is unchanged; the app states it.
-        '--backend', 'qwen3',
-        // The rough stage's interpreter — see the two-interpreter note above.
-        '--rough-python', roughPython,
-      ];
-      if (reportPath) args.push('--report', reportPath);
-      // THE SILENCE SOURCE, stated. align_audiobook.py has no default for it.
-      args.push('--silence-source', silenceSourceFor(spawnPath));
-      // Explicit compute device (cpu|mps|cuda|auto). Absent -> align_audiobook.py
-      // auto-selects (CUDA -> MPS -> CPU). Pass 'cpu' to keep align off a busy GPU.
-      if (opts?.device) args.push('--device', opts.device);
-      if (opts?.roughCachePath) args.push('--rough-cache', opts.roughCachePath);
-      if (opts?.alignWorkers !== undefined) {
-        if (!Number.isInteger(opts.alignWorkers) || opts.alignWorkers < 1) {
-          reject(new Error(`alignWorkers must be a positive integer (got ${opts.alignWorkers})`));
-          return;
-        }
-        args.push('--workers', String(opts.alignWorkers));
-      }
-      if (opts?.holeMinS !== undefined) {
-        if (!Number.isFinite(opts.holeMinS) || opts.holeMinS < 0) {
-          reject(new Error(`holeMinS must be a finite number >= 0 (got ${opts.holeMinS})`));
-          return;
-        }
-        args.push('--hole-min-s', String(opts.holeMinS));
-      }
-      if (opts?.snapSilenceS !== undefined) {
-        if (!Number.isFinite(opts.snapSilenceS) || opts.snapSilenceS < 0) {
-          reject(new Error(`snapSilenceS must be a finite number >= 0 (got ${opts.snapSilenceS})`));
-          return;
-        }
-        args.push('--snap-silence-s', String(opts.snapSilenceS));
-      }
-      if (opts?.reportHoleMinS !== undefined) {
-        if (!Number.isFinite(opts.reportHoleMinS) || opts.reportHoleMinS < 0) {
-          reject(new Error(`reportHoleMinS must be a finite number >= 0 (got ${opts.reportHoleMinS})`));
-          return;
-        }
-        args.push('--report-hole-min-s', String(opts.reportHoleMinS));
-      }
-
-      let child: ChildProcess;
-      try {
-        child = spawn(python, args, {
-          windowsHide: true,
-          stdio: ['ignore', 'pipe', 'pipe'],
-          env: {
-            ...process.env,
-            PATH: spawnPath,
-            PYTHONIOENCODING: 'UTF-8',
-            TOKENIZERS_PARALLELISM: 'false',
-            TORCH_HOME: torchHome,
-            HF_HOME: hfHome,
-            // narrator on the path, for the qwen3 backend's item->word mapping
-            // and its language table (align_audiobook.py: `narrator_aligner`).
-            // The script can also derive this from its own location, but only in
-            // a CHECKOUT: packaged, it runs out of app.asar.unpacked and the
-            // walk-up lands nowhere. This is the answer that works in both, and
-            // it is the same `narratorPythonRoot()` every narrator spawn uses.
-            PYTHONPATH: narratorPythonRoot(),
-          },
-        });
-      } catch (err) {
-        reject(err instanceof Error ? err : new Error(String(err)));
-        return;
-      }
-
-      let result: AlignResult | null = null;
-      let errorLine = '';
-      let stderr = '';
-      let buf = '';
-      // Five stacked stage bars. The script reports a live fraction only for the
-      // two long stages (transcribe/align) via SUBPROGRESS; the near-instant
-      // stages are filled to 100% here the moment the next STAGE begins. The
-      // headline percentage is the duration-weighted average (ALIGN_STAGES.weight),
-      // which is naturally monotonic since every stage pct only ever increases.
-      const stages = new StageTracker([...ALIGN_STAGES]);
-      let stageMsg = stageMessage('prepare');
-      const emitStages = () => {
-        sendProgress(win, jobId, stages.master(), stageMsg, stages.snapshot());
-      };
-
-      const handleLine = (raw: string) => {
-        const line = raw.trim();
-        if (!line) return;
-        const stage = /^STAGE\s+(\S+)/.exec(line);
-        if (stage) {
-          if (stages.has(stage[1])) {
-            stages.start(stage[1]);
-            stageMsg = stageMessage(stage[1]);
-            emitStages();
-          }
-          return;
-        }
-        const sub = /^SUBPROGRESS\s+(\S+)\s+(\d+)/.exec(line);
-        if (sub) {
-          if (stages.has(sub[1])) {
-            stages.set(sub[1], parseInt(sub[2], 10));
-            emitStages();
-          }
-          return;
-        }
-        // Raw PROGRESS lines are now redundant for the align path — the master bar
-        // is derived from the weighted stage fractions above — so they're ignored.
-        if (/^PROGRESS\s+\d+/.test(line)) return;
-        const res = /^RESULT\s+(.+)$/.exec(line);
-        if (res) {
-          try { result = JSON.parse(res[1]) as AlignResult; }
-          catch { gerror('[epub-align] failed to parse RESULT line', { line }); }
-          return;
-        }
-        const err = /^ERROR\s+(.+)$/.exec(line);
-        if (err) { errorLine = err[1]; return; }
-      };
-
-      child.stdout?.on('data', (d: Buffer) => {
-        buf += d.toString();
-        let idx: number;
-        while ((idx = buf.indexOf('\n')) >= 0) {
-          handleLine(buf.slice(0, idx));
-          buf = buf.slice(idx + 1);
-        }
-      });
-      // stderr carries the script's diagnostic log (coarse match rate, dropped
-      // runs, chunk failures) — stream it line-by-line so a CLI/console watcher
-      // sees WHAT the aligner is doing, not just the progress percentage; the
-      // rolling buffer stays for error reporting.
-      let errBuf = '';
-      child.stderr?.on('data', (d: Buffer) => {
-        const text = d.toString();
-        stderr = (stderr + text).slice(-4000);
-        errBuf += text;
-        let nl: number;
-        while ((nl = errBuf.indexOf('\n')) >= 0) {
-          const line = errBuf.slice(0, nl).trimEnd();
-          errBuf = errBuf.slice(nl + 1);
-          if (line) glog(`[epub-align] ${line}`);
-        }
-      });
-
-      // Register BEFORE any await point so a cancel arriving mid-align can reach it.
-      activeAligns.set(jobId, { where: 'here', child });
-
-      child.on('error', (err) => {
-        activeAligns.delete(jobId);
-        reject(err instanceof Error ? err : new Error(String(err)));
-      });
-      child.on('close', (code) => {
-        activeAligns.delete(jobId);
-        if (buf.trim()) handleLine(buf);
-        if (code === 0 && result && result.ok === true && result.vtt) {
-          stages.completeAll();
-          emitStages();
-          glog(`[epub-align] script DONE cues=${result.cues} fallbackCues=${result.fallbackCues ?? 0} trimmedHead=${result.trimmedHead} trimmedTail=${result.trimmedTail} failedSlices=${result.failedSlices ?? 0}/${result.totalSlices ?? 0} failedChunks=${result.failedChunks ?? 0}/${result.totalChunks ?? 0} driftChecked=${result.driftChecked ?? 0} driftMaxAbs=${result.driftMaxAbs ?? 0}s driftFixed=${result.driftFixed ?? 0} snapped=${result.snappedBoundaries ?? 0}/${result.totalBoundaries ?? 0} headingCues=${result.headingCues ?? 0}`);
-          // Partial failures still complete (coverage exists) but must be SEEN:
-          // each failed slice is ~10 min of audio absent from the anchor stream,
-          // each failed chunk leaves its sentences on coarse timing.
-          const warnings: string[] = [];
-          if (result.failedSlices) {
-            warnings.push(`${result.failedSlices} of ${result.totalSlices} transcription slice(s) failed — roughly ${result.failedSlices * 10} min of audio had no transcript to anchor against`);
-          }
-          if (result.failedChunks) {
-            warnings.push(`${result.failedChunks} of ${result.totalChunks} alignment chunk(s) failed — their sentences carry rough timing instead of forced alignment`);
-          }
-          const warning = warnings.length ? warnings.join('; ') : undefined;
-          if (warning) gerror(`[epub-align] completed WITH FAILURES: ${warning}`);
-          if (reportPath) {
-            // The script wrote the report (or died — we wouldn't be here); patch
-            // in the epub path it couldn't know. A missing/corrupt report is a
-            // real failure, not something to shrug past.
-            try {
-              const rep = JSON.parse(fs.readFileSync(reportPath, 'utf-8'));
-              rep.epub = epubPath;
-              fs.writeFileSync(reportPath, JSON.stringify(rep, null, 2), 'utf-8');
-            } catch (e) {
-              reject(new Error(`epub-align succeeded but the coverage report at ${reportPath} is unreadable: ${e instanceof Error ? e.message : e}`));
-              return;
-            }
-            glog(`[epub-align] coverage report -> ${reportPath}`);
-          }
-          resolve({ vttPath: result.vtt, cues: result.cues ?? 0, warning, reportPath: reportPath || undefined });
-          return;
-        }
-        // The script's terminal self-report (RESULT ok:false carries the most
-        // specific message, e.g. "all slices failed"); then its ERROR line;
-        // then raw stderr.
-        const detail = (result && result.ok === false && result.error)
-          || errorLine || stderr.trim().slice(-500) || `align script exited with code ${code}`;
-        reject(new Error(`epub-align failed: ${detail}`));
-      });
+    const r = await runSentenceAlign({
+      server: venue.server,
+      audioPath,
+      sentences: sentences.map((s) => ({ text: s.text, kind: s.kind })),
+      language: crucibleAsrLanguage(language),
+      ffmpegPath: getFfmpegPath(),
+      outVttPath: path.join(outDir, 'alignment.vtt'),
+      reportPath: reportPath ?? path.join(outDir, 'align-report.json'),
+      ...(opts?.roughCachePath ? { transcriptCachePath: opts.roughCachePath } : {}),
+      signal: stop.signal,
+      onProgress: (p) => sendProgress(win, jobId, Math.round(p.fraction * 100), p.message || stageMessage(p.stage)),
+      onLog: (line) => glog(`[epub-align/crucible] ${line}`),
     });
-  } catch (error) {
-    try { fs.unlinkSync(outVtt); } catch { /* absent/no partial output */ }
-    throw error;
+    glog(`[epub-align] crucible "${venue.server}": ${r.cues} cue(s) placed`);
+    return { vttPath: r.vttPath, cues: r.cues, reportPath: r.reportPath };
   } finally {
-    try { fs.unlinkSync(sentsJsonPath); } catch { /* best-effort cleanup */ }
+    activeAligns.delete(jobId);
   }
 }

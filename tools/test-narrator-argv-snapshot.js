@@ -49,6 +49,12 @@
  *
  * ── Re-baselines, and what each one was for ─────────────────────────────────
  *
+ * 2026-11-04, `align` ONLY, for the deletion of the local aligner (REORG B2). Its
+ * literal lost `--backend`, `--device`, `--python` and `--workers` and gained
+ * `--alignment`: the argv that already ran for every routed row, now the only
+ * one. The plan arms' `align` args moved with the fixture in the extractor;
+ * every other door's flags and plans compared equal before the rewrite.
+ *
  * 2026-09-06, the TWO ASSEMBLY DOORS, for **159a3d13** ("Merge coverage audit
  * rebuild: assembly reports, never refuses" — Owen's ruling, 2026-09-05). Both
  * doors moved from
@@ -317,18 +323,15 @@ const REQUIRED = {
    *                  gate drift apart.
    *   --language     the acoustic model. A wrong one scores every word badly and
    *                  refuses a book that was read correctly.
-   *   --device       cpu, by contract: the card belongs to the renders.
-   *   --python       the whisperx env. Absent, narrator refuses BY NAME rather
-   *                  than picking an interpreter — which is the behaviour we
-   *                  want and the one thing this door must not leave to chance.
+   *   --alignment    the Crucible `align` artifact this run measures from. The
+   *                  model ran on a server; without it narrator would load one.
    *   --chapter-gap  THE ASSEMBLY'S RULER. The cues this run writes are sealed
    *                  into a book assembled with silence between its chapters;
    *                  aligned without it they drift earlier by the gap at every
    *                  boundary, and assembly never rewrites a measurement. Absent
    *                  from this door from 2026-09-09 to 2026-09-11, silently.
    */
-  align: ['--session-dir', '--report', '--language', '--device', '--python',
-    '--chapter-gap'],
+  align: ['--session-dir', '--report', '--language', '--alignment', '--chapter-gap'],
 };
 for (const [door, must] of Object.entries(REQUIRED)) {
   check(`${door}: carries ${must.join(' ')}`, () => {

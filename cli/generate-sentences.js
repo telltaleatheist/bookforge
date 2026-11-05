@@ -8,13 +8,13 @@
  *     app's row does. Words come from the audio, so ASR spelling errors are possible.
  *     (It was faster-whisper on this machine until 2026-11-04, docs/REORG-PLAN.md B2.)
  *
- *   EPUB-ALIGN (--epub given): the ebook text is GROUND TRUTH; WhisperX forced
- *     alignment supplies only the timings (whisperx-align-bridge →
- *     runEpubAlignOnFiles → align_audiobook.py, CPU-only whisperx-env). Produces a
- *     VTT whose text is the book's own words — the "link epub source to audio" mode.
- *     With --crucible-server <name> it is the app's Crucible pipeline instead
- *     (crucible/sentence-align.ts: qwen3-asr-1.7b → the EPUB diff here →
- *     qwen3-aligner on the disputed windows → cue edges in real pauses).
+ *   EPUB-ALIGN (--epub given): the ebook text is GROUND TRUTH; the audio supplies
+ *     only the timings. The app's Crucible pipeline (whisperx-align-bridge →
+ *     runEpubAlignOnFiles → crucible/sentence-align.ts: qwen3-asr-1.7b → the EPUB
+ *     diff here → qwen3-aligner on the disputed windows → cue edges in real
+ *     pauses). The server is --crucible-server when given, else the routing record
+ *     decides. Produces a VTT whose text is the book's own words. (The local
+ *     WhisperX spawn is deleted, docs/REORG-PLAN.md B2.)
  *
  *   CLIPS (--clips <dir|list.txt> --epub --out-dir --crucible-server, 2026-09-25):
  *     many short clips whose places in the book are unknown. Each is LOCATED in the
@@ -107,72 +107,6 @@ function makeProgressWindow() {
       },
     },
   };
-}
-
-/** Console digest of the coverage report — enough to act on without opening the
- *  JSON, capped so a noisy book (hundreds of dropped headings) stays readable. */
-function printCoverageSummary(reportPath) {
-  const rep = JSON.parse(fs.readFileSync(reportPath, 'utf-8'));
-  const s = rep.summary;
-  const short = (t, n) => (t && t.length > n ? t.slice(0, n - 1) + '…' : t || '');
-  console.log(`[sentences] coverage report -> ${reportPath}`);
-  console.log(`[sentences]   epub: ${s.narratedSentences}/${s.epubSentences} sentences narrated; ` +
-    `${s.excludedSentences} excluded in ${s.excludedRuns} run(s) (head ${s.trimmedHead}, interior ${s.interiorDropped}, tail ${s.trimmedTail})`);
-  console.log(`[sentences]   audio: ${s.unmatchedAudioRanges} range(s) with no epub match ` +
-    `(≥${s.holeThresholdSeconds}s), ${Math.round(s.unmatchedAudioSeconds)}s of ${s.audioDurationTimestamp} total`);
-  if (s.reportedRanges != null && s.reportHoleThresholdSeconds !== s.holeThresholdSeconds) {
-    console.log(`[sentences]   report lists ${s.reportedRanges} range(s) at the lower ≥${s.reportHoleThresholdSeconds}s ` +
-      `threshold (a reading-speed estimate, not measured silence — see lowSpeechCues)`);
-  }
-  // null (not 0) means the silence map was absent, so nothing was measured — say so
-  // rather than printing a reassuring zero.
-  if (s.lowSpeechCues == null && rep.lowSpeechCues && rep.lowSpeechCues.measured === false) {
-    console.log('[sentences]   dead air: not measured (no silence map this run)');
-  } else if (s.lowSpeechCues) {
-    console.log(`[sentences]   dead air: ${s.lowSpeechCues} cue(s) ≥3s are ≤30% speech (measured against the silence map)`);
-  }
-  if (s.headingCues != null) console.log(`[sentences]   headings: ${s.headingCues} cue(s) tagged NOTE heading`);
-  const bs = rep.boundarySnap;
-  if (bs && bs.windowSeconds > 0 && s.contiguousCues) {
-    console.log(`[sentences]   boundary snap: ${bs.seamsSnapped}/${bs.seamsConsidered} seam(s) moved onto a silence ` +
-      `(window ${bs.windowSeconds}s, ${bs.silenceIntervals} silence intervals; ` +
-      `|move| median ${bs.medianAbsMoveSeconds}s max ${bs.maxAbsMoveSeconds}s)`);
-  } else if (bs && bs.windowSeconds > 0) {
-    // Non-contiguous cues share no seam; each EDGE is placed independently, so the
-    // number that means something is where those edges came from.
-    const es = s.cueEdgeSources || {};
-    console.log(`[sentences]   cue edges: ${es.endSilence || 0} end(s) + ${es.startSilence || 0} start(s) ` +
-      `placed in a detected pause, ${es.endWord || 0} end(s) off the word, ` +
-      `${es.endNextOnset || 0} inferred from the next onset ` +
-      `(${bs.silenceIntervals} intervals from ${bs.silenceSource || 'unknown'})`);
-  }
-  if (s.interpolatedCues) {
-    console.log(`[sentences]   ${s.interpolatedCues} cue(s) interpolated — never confirmed in the audio; ` +
-      `tagged NOTE align matched=interpolated`);
-  }
-  const MAX_LIST = 12;
-  const bigRuns = rep.epubNotInAudio.filter((r) => r.count >= 3);
-  for (const r of bigRuns.slice(0, MAX_LIST)) {
-    const at = r.narratedBefore ? `after ${r.narratedBefore.timestamp}` : (r.narratedAfter ? `before ${r.narratedAfter.timestamp}` : '');
-    console.log(`[sentences]   [epub ${r.reason}] ${r.count} sentences ${at}: "${short(r.firstSentence, 70)}" … "${short(r.lastSentence, 70)}"`);
-  }
-  if (bigRuns.length > MAX_LIST) console.log(`[sentences]   …and ${bigRuns.length - MAX_LIST} more epub run(s) ≥3 sentences (see report)`);
-  const smallRuns = rep.epubNotInAudio.length - bigRuns.length;
-  if (smallRuns > 0) console.log(`[sentences]   (+${smallRuns} run(s) of 1-2 sentences — headings etc., see report)`);
-  for (const h of rep.audioNotInEpub.slice(0, MAX_LIST)) {
-    console.log(`[sentences]   [audio] ${h.startTimestamp} -> ${h.endTimestamp} (${Math.round(h.durationSeconds)}s): ` +
-      (h.transcript ? `"${short(h.transcript, 110)}"` : '(no transcript segments)'));
-  }
-  if (rep.audioNotInEpub.length > MAX_LIST) console.log(`[sentences]   …and ${rep.audioNotInEpub.length - MAX_LIST} more audio range(s) (see report)`);
-  const d = rep.driftSelfCheck;
-  if (d && d.checkedCues > 0) {
-    console.log(`[sentences]   drift: ${d.checkedCues} cue(s) self-checked against the audio; ` +
-      `|offset| median ${d.medianAbsSeconds}s, p95 ${d.p95AbsSeconds}s, max ${d.maxAbsSeconds}s; ` +
-      `${d.correctedCues} corrected (>${d.correctionThresholdSeconds}s)`);
-    for (const c of (d.corrected || []).slice(0, 5)) {
-      console.log(`[sentences]     moved ${c.cueWas} -> ${c.movedTo} (${c.offsetSeconds > 0 ? '+' : ''}${c.offsetSeconds}s): "${short(c.text, 70)}"`);
-    }
-  }
 }
 
 /** Audio files a clips run accepts from a directory. */
@@ -348,30 +282,37 @@ async function main() {
   let warning;
 
   if (args.epub) {
-    // EPUB-ALIGN: ebook text as truth, WhisperX timing. CPU-only env; no GPU coupling.
+    // EPUB-ALIGN: ebook text as truth, Crucible timing.
     const wab = require('../dist/electron/whisperx-align-bridge.js');
     if (typeof wab.runEpubAlignOnFiles !== 'function') {
       throw new Error('runEpubAlignOnFiles missing — rebuild BookForge (npx tsc -p tsconfig.electron.json)');
     }
     const crucibleServer = args['crucible-server'] === undefined ? undefined : String(args['crucible-server']);
-    console.log(crucibleServer
-      ? `[sentences] EPUB-ALIGN: "${path.basename(args.epub)}" -> "${path.basename(args.audio)}" on crucible "${crucibleServer}" (qwen3-asr-1.7b + qwen3-aligner)`
-      : `[sentences] EPUB-ALIGN: "${path.basename(args.epub)}" -> "${path.basename(args.audio)}" (whisperx-env, device=${args.device || 'auto'})`);
+    console.log(`[sentences] EPUB-ALIGN: "${path.basename(args.epub)}" -> "${path.basename(args.audio)}" `
+      + (crucibleServer ? `on crucible "${crucibleServer}"` : '(the routing record picks the server)')
+      + ' (qwen3-asr-1.7b + qwen3-aligner)');
+    // The deleted local aligner's tuning flags: accepted (the wrapper passes them),
+    // and said out loud as not read rather than silently dropped.
+    const unread = [['hole-min', holeMinS], ['align-workers', alignWorkers], ['device', args.device],
+      ['snap-silence', snapSilenceS], ['report-hole-min', reportHoleMinS]]
+      .filter(([, v]) => v !== undefined).map(([f]) => `--${f}`);
+    if (unread.length > 0) {
+      console.log(`[sentences] ${unread.join(', ')} not read: they tuned the deleted local aligner; `
+        + 'the Crucible pipeline has its own rules (crucible/sentence-align.ts)');
+    }
     const reportPath = args.report ? path.resolve(args.report) : undefined;
     if (reportPath) fs.mkdirSync(path.dirname(reportPath), { recursive: true });
     const r = await wab.runEpubAlignOnFiles(jobId, makeProgressWindow(), args.epub, args.audio, language,
-      { reportPath, holeMinS, roughCachePath, alignWorkers, device: args.device,
-        snapSilenceS, paragraphAware, reportHoleMinS, ...(crucibleServer ? { crucibleServer } : {}) });
+      { reportPath, roughCachePath, paragraphAware, ...(crucibleServer ? { crucibleServer } : {}) });
     vttSource = r.vttPath;
     cues = r.cues;
     warning = r.warning;
-    // The Crucible pipeline writes its own report (stats, notPlaced, extraAudio, flaggedCues), not the
-    // WhisperX coverage report printCoverageSummary reads.
-    if (reportPath && crucibleServer) {
+    // The Crucible pipeline writes its own report (stats, notPlaced, extraAudio, flaggedCues).
+    if (reportPath) {
       const st = JSON.parse(fs.readFileSync(reportPath, 'utf-8')).stats || {};
       console.log(`[sentences] report -> ${reportPath}`);
       console.log(`[sentences]   ${JSON.stringify(st)}`);
-    } else if (reportPath) printCoverageSummary(reportPath);
+    }
   } else {
     // TRANSCRIBE: the app's own door — a Crucible asr job, Qwen3-ASR.
     const { transcribeAtVenue } = require('../dist/electron/crucible/asr.js');

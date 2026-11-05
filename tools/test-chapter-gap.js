@@ -197,8 +197,7 @@ test('an upstream enhancement pass does NOT take the gap off the assembly', () =
 
 const SPAWN_INPUTS = {
   reportPath: 'E:/lib/projects/Twain-a1b2/tts/hash/coverage.json',
-  device: 'cuda',
-  alignEnv: { python: '/home/fake/envs/qwen-align/bin/python' },
+  alignmentPath: 'E:/lib/projects/Twain-a1b2/tts/hash/alignment.json',
 };
 const alignArgv = (over = {}) => coverageAlignArgs(
   Object.assign({

@@ -4,11 +4,9 @@
  * ── What this is ───────────────────────────────────────────────────────────
  *
  * `electron/coverage-align-job.ts` force-aligns a rendered session's chunks
- * against their text by spawning `narrator align --backend qwen3 --python
- * <the WSL qwen-align env>` — on this PC a spawn that crosses into the guest,
- * on the Mac a native one, on any other machine a refusal by name
- * (`qwen-aligner.ts`). A Crucible `align` job runs the same Qwen3-ForcedAligner
- * on a server (crucible `docs/PHASE4-AUDIO.md` §2): one input per chunk named
+ * against their text. The model half is a Crucible `align` job, the only place
+ * the aligner runs (the local spawn is deleted, docs/REORG-PLAN.md B2):
+ * Qwen3-ForcedAligner on a server (crucible `docs/PHASE4-AUDIO.md` §2): one input per chunk named
  * `<index>.flac`, one `{index, text}` per chunk in the params, a `cue` event as
  * each chunk lands, and one `alignment.json` artifact holding the model's own
  * timestamped items per chunk. This module is that job: it reads the session's

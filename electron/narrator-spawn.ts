@@ -154,8 +154,9 @@ export interface NarratorSpawnRequest {
    * Windows the session it reads has normally been copied OUT of WSL first. The
    * qwen3 aligner broke that assumption in one place and only one: the
    * post-render alignment runs BEFORE that copy (the session is still on ext4,
-   * the render just wrote it there) and the env that holds `qwen-asr` on this PC
-   * is a WSL env — `electron/qwen-aligner.ts`, `viaWsl: true`. The guest cannot
+   * the render just wrote it there) and the env that held `qwen-asr` on this PC
+   * was a WSL env (that local aligner is deleted, docs/REORG-PLAN.md B2, and no
+   * door passes this any more; it goes with the spawn layer). The guest cannot
    * see the Z: network drive the session is copied to afterwards, and a Windows
    * spawn cannot run a `/home/...` interpreter, so the alignment has to happen
    * where the audio and the model already are.

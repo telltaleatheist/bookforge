@@ -17,7 +17,6 @@ import { llamaCudaComponent } from './llama-cuda';
 import { cudaRvcComponent } from './cuda-rvc';
 import { rvcEnvComponent } from './rvc-env';
 import { whisperxEnvComponent } from './whisperx-env';
-import { qwenAlignEnvComponent } from './qwen-align-env';
 import type {
   OptionalComponent,
   ComponentArtifact,
@@ -205,7 +204,6 @@ export function getCatalog(): OptionalComponent[] {
     cudaRvcComponent(),
     rvcEnvComponent(),
     whisperxEnvComponent(),
-    qwenAlignEnvComponent(),
     ...rvcVoiceComponents(),
   ];
 }

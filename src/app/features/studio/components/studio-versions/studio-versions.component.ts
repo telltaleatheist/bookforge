@@ -4,7 +4,6 @@ import {
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { ElectronService } from '../../../../core/services/electron.service';
-import { ComponentService } from '../../../../core/services/component.service';
 import { NoticeService } from '../../../../core/services/notice.service';
 import { SettingsService } from '../../../../core/services/settings.service';
 import { JobModelFieldComponent } from '../../../../shared/job-model-field.component';
@@ -611,28 +610,13 @@ const AUDIO_EXTS = new Set([
 
           @if (alignableEbookVariants().length > 0) {
             <div class="gs-methods">
-              <label class="gs-model gs-method" [class.sel]="pickerMethod() === 'epub-align'"
-                     [class.unavail]="!alignEngineInstalled()">
+              <label class="gs-model gs-method" [class.sel]="pickerMethod() === 'epub-align'">
                 <input type="radio" name="gsmethod" value="epub-align"
                        [checked]="pickerMethod() === 'epub-align'"
-                       [disabled]="!alignEngineInstalled()"
                        (change)="pickerMethod.set('epub-align')" />
                 <span class="gs-mname">Use my ebook (most accurate)</span>
-                @if (alignEngineInstalled()) {
-                  <span class="gs-mnote">Aligns your ebook’s exact words to the narration — perfect
-                    spelling, no transcription errors.</span>
-                } @else {
-                  <span class="gs-mnote">Needs the ebook-alignment engine — install it to enable
-                    this option (also in Settings → Speech to Text).</span>
-                  <span class="gs-mside">
-                    @if (alignEngineInstalling(); as msg) {
-                      <span class="gs-size">{{ msg }}</span>
-                    } @else {
-                      <button type="button" class="act gs-install"
-                              (click)="installAlignEngine($event)">Install</button>
-                    }
-                  </span>
-                }
+                <span class="gs-mnote">Aligns your ebook’s exact words to the narration — perfect
+                  spelling, no transcription errors.</span>
               </label>
               <label class="gs-model gs-method" [class.sel]="pickerMethod() === 'whisper'">
                 <input type="radio" name="gsmethod" value="whisper"
@@ -1128,9 +1112,6 @@ const AUDIO_EXTS = new Set([
     .gs-method .gs-mnote { grid-column: 2; }
     /* Engine-missing state: mute the option (radio is disabled) but keep the
        inline Install affordance at full strength. */
-    .gs-method.unavail { cursor: default; }
-    .gs-method.unavail .gs-mname, .gs-method.unavail .gs-mnote { opacity: 0.55; }
-    .gs-install { padding: 4px 12px; font-size: 0.75rem; }
     .gs-eblabel { display: block; font-size: 0.78rem; font-weight: 600; margin: 0 0 6px 2px; }
     .gs-model {
       display: grid; grid-template-columns: auto 1fr auto; align-items: center;
@@ -1141,8 +1122,6 @@ const AUDIO_EXTS = new Set([
     .gs-model input { grid-row: span 2; }
     .gs-mname { font-size: 0.86rem; font-weight: 600; }
     .gs-mnote { grid-column: 2; font-size: 0.72rem; color: var(--text-secondary); }
-    .gs-mside { grid-column: 3; grid-row: span 2; display: flex; align-items: center; }
-    .gs-size { font-size: 0.72rem; color: var(--text-secondary); white-space: nowrap; }
     .gs-note { margin-top: 12px; font-size: 0.75rem; color: var(--text-secondary); line-height: 1.45; }
     .gs-err { margin-top: 12px; font-size: 0.78rem; color: #ef4444; }
     .gs-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
@@ -1185,7 +1164,6 @@ const AUDIO_EXTS = new Set([
 })
 export class StudioVersionsComponent {
   private readonly electron = inject(ElectronService);
-  private readonly components = inject(ComponentService);
   private readonly queue = inject(QueueService);
   private readonly imports = inject(VariantImportService);
   private readonly dialog = inject(DialogService);
@@ -2882,40 +2860,6 @@ export class StudioVersionsComponent {
       badge: v.metadata?.language || undefined,
     })));
 
-  /** The epub-align method needs the whisperx alignment env — no silent runtime fallback. */
-  readonly alignEngineInstalled = computed(() => this.components.isInstalled('whisperx-env'));
-  /** Live label while the alignment engine install runs, else null. The install
-      runs in phases: `download`/`extract` carry a real percentage, but the later
-      relink (`postinstall`) and `verify-run` phases reset pct to 0 and run for
-      MINUTES with no further updates. Showing "0%" for those made the install
-      look stuck/failed, so surface a phase label instead of a misleading number. */
-  readonly alignEngineInstalling = computed(() => {
-    const c = this.components.components().find(s => s.component.id === 'whisperx-env');
-    if (c?.state !== 'installing') return null;
-    const p = c.progress;
-    if (p && (p.phase === 'download' || p.phase === 'extract')) {
-      return `Downloading… ${Math.round(p.pct ?? 0)}%`;
-    }
-    if (p && p.phase === 'postinstall') return 'Finishing install…';
-    if (p && p.phase === 'verify-run') return 'Verifying…';
-    return 'Installing…';
-  });
-
-  /** Inline install for the ebook-alignment engine (same managed install as the
-      Settings → Speech to Text → Ebook Alignment card). */
-  async installAlignEngine(ev: Event): Promise<void> {
-    ev.preventDefault(); ev.stopPropagation();
-    this.pickerError.set(null);
-    await this.components.install('whisperx-env');
-    if (!this.components.isInstalled('whisperx-env')) {
-      this.pickerError.set(this.components.error()
-        || 'The ebook-alignment engine could not be installed — see Settings → Speech to Text.');
-    } else if (this.pickerVariant()) {
-      // The user installed it to use it — select the now-enabled method.
-      this.pickerMethod.set('epub-align');
-    }
-  }
-
   private hasAuthoritativeTranscript(v: ProjectVariant): boolean {
     return v.kind === 'audiobook'
       && (!!v.vttPath || this.transcriptEligibleVariantIds().has(v.id));
@@ -2967,27 +2911,16 @@ export class StudioVersionsComponent {
   async openSentencePicker(v: ResolvedProjectVariant): Promise<void> {
     this.pickerError.set(null);
     this.pickerVariant.set(v);
-    // Component state must be known before defaulting the method (epub-align
-    // requires the alignment engine); ensureLoaded is cached after first use.
-    await this.components.ensureLoaded();
-    // Default the method by ebook availability: when the project has an ebook
-    // AND the alignment engine is installed, aligning its exact text is more
-    // accurate than transcribing the audio.
+    // Default the method by ebook availability: aligning a project's ebook is more
+    // accurate than transcribing the audio. Both run on a Crucible.
     const ebooks = this.alignableEbookVariants();
     if (ebooks.length > 0) {
-      this.pickerMethod.set(this.alignEngineInstalled() ? 'epub-align' : 'whisper');
-      // Seed the ebook choice either way so the option is ready if it enables.
+      this.pickerMethod.set('epub-align');
       const primary = ebooks.find(e => e.id === this.primaryId()) ?? ebooks[0];
       this.pickerEpubId.set(primary.id);
     } else {
       this.pickerMethod.set('whisper');
       this.pickerEpubId.set(null);
-    }
-    // Ensure runtime state is fresh.
-    await this.components.refresh();
-    // The fresh probe may contradict the cached default (engine removed since).
-    if (this.pickerMethod() === 'epub-align' && !this.alignEngineInstalled()) {
-      this.pickerMethod.set('whisper');
     }
   }
 
@@ -3003,13 +2936,6 @@ export class StudioVersionsComponent {
     if (method === 'epub-align' && !this.pickerEpubId()) {
       this.pickerError.set('Pick an ebook to align first.'); return;
     }
-    // Never queue an epub-align job without its engine — the runtime would
-    // silently fall back to plain whisper.
-    if (method === 'epub-align' && !this.alignEngineInstalled()) {
-      this.pickerError.set('The ebook-alignment engine isn’t installed yet — install it above or switch to Whisper.');
-      return;
-    }
-
     // The path is the one main resolved for this row — never rebuilt here, and never
     // queued unverified: a job pointed at a nonexistent m4b would sit in the queue
     // and fail minutes later, far from this click.

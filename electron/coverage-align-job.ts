@@ -28,11 +28,10 @@
  * *"good. go ahead and wire it up to alignment so itll be used to align the
  * chunks in app"* … *"for generate-sentences logic and for normal post-render
  * alignment"*. So this door passes `--backend qwen3` and there is no whisperx
- * arm behind it — not as a fallback, not when the qwen env is missing. A machine
- * with no qwen env does not align and is told so by name
- * (`qwen-aligner.qwenAlignRefusal`), because the two backends do not score words
- * on the same scale (`align/aligner.py`, `score_source`) and a book measured by
- * the other instrument under this label would be a silent substitution.
+ * arm behind it — not as a fallback. A run with no Crucible to align on does not
+ * align and is told so by name, because the two backends do not score words on
+ * the same scale (`align/aligner.py`, `score_source`) and a book measured by the
+ * other instrument under this label would be a silent substitution.
  *
  * WHAT BOUGHT IT, on Shift (Higgs mistborn, 16.56 h, RTX 3090 Ti in WSL), scored
  * against 1,083 known chunk starts: qwen3 395x realtime — 151 s for the whole
@@ -40,72 +39,36 @@
  * silence is subtracted. WhisperX on the same GPU: 18x, 39/61 inside 0.1 s, and
  * it parks ~0.9 s early in the inter-chunk gap.
  *
- * ── Two environments, one command line ──────────────────────────────────────
+ * ── THE MODEL RUNS ON A CRUCIBLE; THE MEASUREMENT RUNS HERE ─────────────────
  *
- * narrator's half of the alignment (manifest, chunk spans, sentence cues, the
- * report) is stdlib. The ALIGNMENT itself needs torch and `qwen_asr`, which
- * narrator's interpreters do not have and must not grow (the Orpheus envs are
- * pinned to torch 2.5.1 / vLLM 0.7.3), so `narrator align --python <that env>`
- * drives it over `align/worker.py`'s JSON-lines protocol with PYTHONPATH pointed
- * back at this checkout. Nothing is installed and nothing is copied.
- *
- * THE ENV IS RESOLVED BY `qwen-aligner.ts`, not here — one ladder for this door
- * and for the whole-m4b "Generate sentences" door, because a second copy of it is
- * a second answer and the copy is the one that goes stale.
- *
- * ── ON WINDOWS THE WHOLE SPAWN CROSSES INTO THE GUEST ───────────────────────
- *
- * `qwen-asr` wants a CUDA torch env and the PC's is a WSL env, so its interpreter
- * is a `/home/...` path a Windows process cannot execute. When
- * `resolveQwenAlignEnv()` answers `viaWsl`, `buildNarratorSpawn` is given that
- * env's NAME (`wslCondaEnv`) and runs narrator's half inside the guest too, with
- * every path in the argv translated. That is also what lets the POST-RENDER call
- * (`parallel-tts-bridge`, the tail of the TTS step) align a session that is still
- * on ext4 — the guest cannot see the Z: network drive the session is copied to
- * afterwards, which is exactly why the phase runs before the copy.
+ * The forced alignment is a Crucible `align` job (`runCoverageAlignOnCrucible`,
+ * `crucible/align.ts`): the session's chunk audio goes up and `alignment.json`
+ * comes back. narrator's half — manifest, chunk spans, sentence cues, the report
+ * — is stdlib and runs here as `narrator align --alignment`, in the tools env,
+ * native on every platform. The local model arm that ran Qwen3-ForcedAligner in
+ * a `qwen-align` env on this machine is deleted (2026-11-04, docs/REORG-PLAN.md
+ * B2): it was reached by nothing, and no model runs in BookForge.
  *
  * ── THE DEVICE IS THE USER'S CHOICE, MADE WHEN THE ROW WAS QUEUED ───────────
  *
  * Owen, 2026-09-07: "make it an option the user can pick when adding it to the
- * queue. GPU or CPU? defaults to CPU."
- *
- * It was `--device cpu`, always, and the default has not moved. The argument for
- * the default was measured on WhisperX (213.5 s of wall clock for 2,615 s of
- * audio, RTF 0.082, in the second cpu slot beside the assembly) and it is a
- * WEAKER argument for qwen3, which is a GPU model: 395x realtime on this PC's
- * 3090 Ti and 87x on the Mac's MPS, against a CPU rate nobody has measured
- * (float32 there, `align/aligner.py:_load_qwen3`). The default stands because
- * the queue is what it is — a CPU row runs beside the assembly, a GPU row waits
- * for the card — and because moving it is Owen's call with a measurement behind
- * it, not an inference from two GPU numbers. The POST-RENDER phase in
- * `parallel-tts-bridge.ts` asks for the GPU explicitly, and it is entitled to:
- * the TTS step already owns the gpu lane at that moment.
- *
- * 'gpu' IS RESOLVED TO A DEVICE NAME HERE, on the machine that runs the row —
- * `mps` on Apple Silicon, `cuda` where CUDA is present, and a machine with
- * neither refuses BY NAME rather than quietly aligning on the CPU the user did
- * not choose. The queue file is carried between machines; the name is not.
- *
- * The GPU row waits its turn like a render: the queue gives it the single gpu
- * slot through `gpuAdmission` (`queue-steps/align.ts`), and `align/aligner.py`
- * refuses cuda AND mps by name while BookForge's `external-gpu-job.lock` exists.
+ * queue. GPU or CPU? defaults to CPU." A Crucible has only the card, so a CPU
+ * row has no Crucible answer and is refused by name (`crucible_align_cpu_row`,
+ * RULING OWED below); the POST-RENDER phase asks for the GPU explicitly.
  */
 
-import { app, BrowserWindow } from 'electron';
+import { BrowserWindow } from 'electron';
 import { execSync, spawn, type ChildProcess } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 
 import { publishBridgeEvent } from './bridge-events';
 import { buildNarratorSpawn } from './narrator-spawn';
-import { qwenAlignCacheDir, resolveQwenAlignEnv } from './qwen-aligner';
 import { COVERAGE_REPORT_NAME } from '../shared/queue/coverage-policy';
 // The ONE resolver both assembly doors read the gap through — see the config
 // field below, and CLAUDE.md §"Three seconds between chapters".
 import { resolveChapterGap } from '../shared/audio/chapter-gap';
 import { seedSessionAuthorship } from './session-authorship';
-// The machine's own capability answer — see `resolveAlignDevice`.
-import { systemProbe } from './components/system-probe';
 // The venue decision's SHAPES only. The modules themselves are imported lazily
 // inside `runCoverageAlign`, so `coverageAlignArgs` stays loadable by the argv
 // keepers without the routing record, the registry or the network behind it.
@@ -276,25 +239,6 @@ export interface CoverageAlignDeps {
   venueHost?: VenueHost;
 }
 
-/**
- * How many aligner PROCESSES a CPU alignment runs at once (`narrator align
- * --workers`).
- *
- * ONE, UNTIL IT IS MEASURED. The pool exists because of Shift (2026-09-08):
- * 11.4 chunks/min, 115 minutes of CPU for a book whose render took 37 — Owen,
- * "align is taking way too long… 3x slower than the TTS render. we have to find
- * a more efficient way of handling this." But the number that is actually
- * fastest on this machine is a measurement, not arithmetic: the aligner shares
- * the box with the assembly encode, torch's own intra-op threads already spread
- * one chunk over the cores, and the pool divides those threads between workers.
- * That measurement is Owen's, on a free CPU, and HE sets this number when it is
- * in. Until then the app spawns exactly what it has always spawned.
- *
- * The qwen3 cutover of 2026-09-08 mostly retires the problem this constant was
- * written for — the whole Shift book aligned in 151 s on the GPU — but it does
- * not retire the constant: a CPU row still exists and still has not been swept.
- */
-const ALIGN_CPU_WORKERS = 1;
 
 /** Live align children, keyed by step id, so a queue cancel can reach them. */
 const activeAligns = new Map<string, ChildProcess>();
@@ -426,44 +370,10 @@ function sendProgress(
  * RUN makes, once, from inside `runCoverageAlign` — and every one of those
  * names something a person can repair.
  *
- * `runCoverageAlignLocally`'s own `fromAlignment === undefined` arm still
- * resolves the local env, because that arm IS the local spawn; it is reached by
- * nothing in the app today and is the legacy answer, never a fallback.
+ * The local model arm that still resolved that env (`runCoverageAlignLocally`
+ * with no alignment) is deleted too (2026-11-04, docs/REORG-PLAN.md B2): it was
+ * reached by nothing, and the model runs only on a Crucible.
  */
-
-/**
- * THE TORCH DEVICE THIS MACHINE CAN GIVE THE ALIGNER, for a row that asked for
- * the GPU — or a refusal naming what is missing.
- *
- * ONE DETECTOR, NOT A SECOND ONE. `systemProbe.profile()` is the same probe the
- * add-on catalog evaluates compatibility against and the same one the renderer
- * draws its Add-ons panel from (`appleSilicon`, `cuda.available`), cached after
- * the first call. Asking torch here — importing it in a subprocess to see what
- * it can see — would be a second answer to a question this app already answers,
- * and the two would disagree the day one of them is fixed.
- *
- * NO SILENT DOWNGRADE. A machine with neither card refuses by name: the operator
- * chose the GPU, the row waited for the single GPU slot to get it, and quietly
- * aligning on the CPU instead would spend that wait for nothing and report
- * success.
- */
-async function resolveAlignDevice(
-  device: 'cpu' | 'gpu',
-): Promise<{ ok: true; name: string } | { ok: false; error: string }> {
-  if (device !== 'gpu') return { ok: true, name: 'cpu' };
-  const profile = await systemProbe.profile();
-  // Apple Silicon first: on a Mac that reports both (it cannot today), Metal is
-  // the card that is actually there.
-  if (profile.appleSilicon) return { ok: true, name: 'mps' };
-  if (profile.cuda.available) return { ok: true, name: 'cuda' };
-  return {
-    ok: false,
-    error:
-      'This alignment was queued to run on the GPU, and this machine has no GPU the aligner can '
-      + 'use — no CUDA card and no Apple Silicon. Queue it on CPU instead: the aligner is '
-      + 'seconds a chunk there, and it runs beside the assembly rather than waiting for a card.',
-  };
-}
 
 /**
  * THE ALIGN COMMAND LINE, AS A VALUE.
@@ -479,73 +389,26 @@ export function coverageAlignArgs(
   spawnInputs: {
     /** Where the report goes — always `coverageReportPath(config.processDir)`. */
     reportPath: string;
-    /** The RESOLVED torch device name: 'cpu', 'mps' or 'cuda'. */
-    device: string;
-    /** The aligner env, for its interpreter. See `resolveQwenAlignEnv`. */
-    alignEnv: { python: string };
-  } | {
-    reportPath: string;
     /**
      * A CRUCIBLE `align` ARTIFACT — the model's items per chunk, already
-     * computed on a server's card. Its presence is what makes this the OTHER
-     * argv, and the difference is subtraction: `--device`, `--python`,
-     * `--workers` and `--backend` are all about loading and running a model,
-     * and this run loads none. narrator refuses the first two by name beside
-     * `--alignment` rather than ignoring them, so passing them would not be
-     * harmless; and the BACKEND is the document's own, because its items are
-     * scored under the rules of the model that made them (`backend_for_alignment`,
-     * python/narrator/align/run.py). Stating `--backend` here would pin this
-     * door to qwen3 the day Crucible's aligner changes, and narrator would
-     * refuse the disagreement — correctly, and for a reason nobody on this side
-     * intended.
+     * computed on a server's card. This run loads no model: `--device`,
+     * `--python`, `--workers` and `--backend` were all about loading and running
+     * one, and narrator refuses the first two by name beside `--alignment`. The
+     * BACKEND is the document's own, because its items are scored under the
+     * rules of the model that made them (`backend_for_alignment`,
+     * python/narrator/align/run.py). The local-model argv that carried them is
+     * deleted with the local aligner (2026-11-04, docs/REORG-PLAN.md B2).
      */
     alignmentPath: string;
   },
 ): string[] {
   const { reportPath } = spawnInputs;
-  if ('alignmentPath' in spawnInputs) {
-    return [
-      'align',
-      '--session-dir', config.processDir,
-      '--report', reportPath,
-      '--language', config.language,
-      '--alignment', spawnInputs.alignmentPath,
-      // THE SAME RULER, for the same reason as below: these cues are sealed into
-      // the m4b, and a transcript measured at a gap the assembly does not leave
-      // drifts by one gap per chapter boundary with nothing to say so.
-      '--chapter-gap', String(resolveChapterGap(config.chapterGap)),
-    ];
-  }
-  const { device, alignEnv } = spawnInputs;
-  // ONE RESOLVER, THE ASSEMBLY'S. Absent is the house default, not zero; a
-  // nonsense gap is refused by name here rather than measured.
-  const chapterGap = resolveChapterGap(config.chapterGap);
   const args = [
     'align',
     '--session-dir', config.processDir,
     '--report', reportPath,
     '--language', config.language,
-    // QWEN3, ALWAYS, AND NEVER RESOLVED AT RUNTIME. narrator's own
-    // DEFAULT_BACKEND is still whisperx (an unchanged default is its contract);
-    // the APP's door is qwen3 by Owen's ruling of 2026-09-08, so it says so.
-    '--backend', 'qwen3',
-    // The resolved device NAME. Stated rather than left to the CLI's own
-    // default so a reader of the job log can see which processor measured the
-    // book without going to look up what narrator defaults to.
-    '--device', device,
-    // The qwen-align interpreter. Absent, narrator refuses BY NAME rather than
-    // picking one, which is the behaviour we want everywhere else and the one
-    // thing this door must not leave to chance. It is passed EVEN WHEN the
-    // narrator parent is already running in that env (the WSL arm): the model
-    // then lives in a child process on both platforms, so `align/env.run_jobs`'s
-    // named worker refusals are the same failure on both, and the argv is one
-    // argv rather than two.
-    '--python', alignEnv.python,
-    // THE POOL IS A CPU THING. A GPU row holds the single GPU slot for one
-    // model on one card, and N processes there would fight over the same
-    // memory rather than over spare cores — so it says 1 out loud rather than
-    // leaning on the CLI default.
-    '--workers', String(device === 'cpu' ? ALIGN_CPU_WORKERS : 1),
+    '--alignment', spawnInputs.alignmentPath,
     /*
      * THE ASSEMBLY'S CHAPTER GAP, ON THE ALIGNER'S COMMAND LINE.
      *
@@ -554,16 +417,10 @@ export function coverageAlignArgs(
      * measurement and assembly never rewrites one."* This door did not, from the
      * gap's first day (efe021a2, 2026-09-09) until 2026-09-11, and every book
      * assembled in between carries a sentence transcript that drifts by the gap
-     * at every chapter boundary — the Pokemon book's cues ran 45 s short over 15
-     * boundaries, and nothing said so, because assembly seals a measured
-     * transcript exactly as it finds it.
-     *
-     * narrator spells it `--chapter-gap` on the `align` subcommand and
-     * `--chapter_gap` on the assembly compat door. Two spellings, one number.
-     * Unconditional, like the assembly doors': an explicit 0 is a real answer
-     * and a truthiness spread would eat it.
+     * at every chapter boundary. ONE RESOLVER, THE ASSEMBLY'S: absent is the
+     * house default, not zero; a nonsense gap is refused by name.
      */
-    '--chapter-gap', String(chapterGap),
+    '--chapter-gap', String(resolveChapterGap(config.chapterGap)),
   ];
   return args;
 }
@@ -968,58 +825,21 @@ async function runCoverageAlignOnCrucible(
 }
 
 /**
- * THE LOCAL SPAWN — `narrator align --backend qwen3` in this machine's qwen
- * env, exactly as this file has always run it. The legacy answer of
- * {@link runCoverageAlign}; never a fallback.
+ * NARRATOR'S HALF OVER ITEMS A SERVER ALREADY PRODUCED — `narrator align
+ * --alignment` in the tools env, which is native on every platform. No model is
+ * imported and no torch device is picked; the GPU half was a Crucible `align`
+ * job (`runCoverageAlignOnCrucible`). The local model arm that used to share
+ * this function (qwen env, `--backend qwen3`, `--device`) is deleted
+ * (2026-11-04, docs/REORG-PLAN.md B2).
  */
 export async function runCoverageAlignLocally(
   stepId: string,
   config: CoverageAlignConfig,
   mainWindow: BrowserWindow | null,
-  /**
-   * NARRATOR'S HALF OVER ITEMS A SERVER ALREADY PRODUCED — `electron/crucible/
-   * align.ts` shape (a), built 2026-09-18.
-   *
-   * With it, this is the same door doing the same work with the model's half
-   * subtracted: no qwen env to resolve (there is no model to import), no torch
-   * device to pick (nothing runs on one), and the parent interpreter is the one
-   * it always was — the tools env, which is native on every platform. That is
-   * what makes the remote aligner usable from a Mac at all: `align` is off on
-   * this machine because qwen3-aligner has no mlx-darwin block, and it never
-   * needed to be on to read a document.
-   *
-   * The spawn, the progress lines, the cancel and the close handling below are
-   * shared rather than copied, because two implementations of "run narrator
-   * align and report what it said" is how the two arms start disagreeing about
-   * what a failure means.
-   */
-  fromAlignment?: { alignmentPath: string },
+  fromAlignment: { alignmentPath: string },
 ): Promise<CoverageAlignResult> {
   const reportPath = coverageReportPath(config.processDir);
-  let alignEnv: { python: string; viaWsl?: boolean; wslEnvName?: string } | null = null;
-  let device = 'the server that aligned it';
-
-  if (fromAlignment === undefined) {
-    // The same refusal the CLI raises at plan time, said again here because a row
-    // can outlive the machine state that composed it: a queue restored after the
-    // add-on was uninstalled must say WHICH add-on rather than "python not found".
-    const resolvedEnv = resolveQwenAlignEnv();
-    if (!resolvedEnv.ok) {
-      const error = `${resolvedEnv.error} The rendered audio is intact.`;
-      sendProgress(mainWindow, stepId, { phase: 'error', percentage: 0, error, message: error });
-      return { success: false, error };
-    }
-    alignEnv = resolvedEnv.env;
-
-    const resolved = await resolveAlignDevice(config.device);
-    if (!resolved.ok) {
-      sendProgress(mainWindow, stepId, {
-        phase: 'error', percentage: 0, error: resolved.error, message: resolved.error,
-      });
-      return { success: false, error: resolved.error };
-    }
-    device = resolved.name;
-  } else if (!fs.existsSync(fromAlignment.alignmentPath)) {
+  if (!fs.existsSync(fromAlignment.alignmentPath)) {
     // Said before anything spawns: narrator would refuse it too, but this side
     // knows the path is one IT chose and can say so as a fact about the run.
     const error = `The alignment this measurement reads (${fromAlignment.alignmentPath}) is not on `
@@ -1027,17 +847,6 @@ export async function runCoverageAlignLocally(
     sendProgress(mainWindow, stepId, { phase: 'error', percentage: 0, error, message: error });
     return { success: false, error };
   }
-
-  /*
-   * BookForge's managed Hugging Face cache, so the ~1.2 GB
-   * Qwen3-ForcedAligner-0.6B checkpoint is fetched once for the whole app rather
-   * than once per user cache. `components/qwen-align-env.ts` DECLARES the
-   * variable and sets nothing; the doors are where it is set, and it is created
-   * here rather than assumed because a cache directory that does not exist is a
-   * download into somewhere else.
-   */
-  const hfHome = qwenAlignCacheDir(app.getPath('userData'));
-  fs.mkdirSync(hfHome, { recursive: true });
 
   /*
    * THE RULER, RESOLVED AND SAID OUT LOUD BEFORE ANYTHING SPAWNS.
@@ -1064,27 +873,15 @@ export async function runCoverageAlignLocally(
       config.chapterGap === undefined ? 'the house default — this caller stated none' : 'stated'
     }) — the transcript is measured for an assembly at that gap.`,
   );
-  const args = fromAlignment !== undefined
-    ? coverageAlignArgs(config, { reportPath, alignmentPath: fromAlignment.alignmentPath })
-    : coverageAlignArgs(config, { reportPath, device, alignEnv: alignEnv! });
+  const args = coverageAlignArgs(config, { reportPath, alignmentPath: fromAlignment.alignmentPath });
 
   const plan = buildNarratorSpawn({
     // No engine: this is a tools-env door. `PHASE_ENGINE.align` is 'refused',
     // so naming one here would be a compile-time-legal, runtime-refused mistake.
     phase: 'align',
     args,
-    // WHERE NARRATOR'S OWN HALF RUNS. Native everywhere except the machine whose
-    // qwen env lives in WSL: there the interpreter above is a guest path, so the
-    // whole spawn crosses and `buildNarratorSpawn` translates every path in the
-    // argv. See the header, and `narrator-spawn.ts`'s `wslCondaEnv`.
-    //
-    // NEITHER APPLIES OVER A PRECOMPUTED ALIGNMENT: there is no qwen interpreter
-    // in the argv to cross for, and HF_HOME points at a checkpoint cache nothing
-    // is going to read. Passing them anyway would work and would be a lie about
-    // what this run does.
-    ...(fromAlignment === undefined && alignEnv?.viaWsl
-      ? { wslCondaEnv: alignEnv.wslEnvName } : {} as const),
-    envExtras: fromAlignment === undefined ? { HF_HOME: hfHome } : {},
+    // Native everywhere: the tools env reads a document, and loads no model.
+    envExtras: {},
     // No cwdHint: narrator reads cwd for nothing, every path in this argv is
     // absolute, and the default (userData) always exists and is always writable.
   });
@@ -1092,22 +889,16 @@ export async function runCoverageAlignLocally(
 
   const startedAt = Date.now();
   /*
-   * WHICH BAR THIS SPAWN IS. Over a precomputed alignment this pass is the
-   * SECOND half of a routed row — the server placed the words, this measures the
-   * book from them — and its chunk count restarts at zero over the same total,
-   * so it says so and the queue draws (and times) it as its own stage.
-   *
-   * The legacy arm — the model running here, in this spawn — is the whole row
-   * and names no stage, which renders as the single bar it always has.
+   * WHICH BAR THIS SPAWN IS: the SECOND half of a routed row — the server placed
+   * the words, this measures the book from them — and its chunk count restarts at
+   * zero over the same total, so it says so and the queue draws (and times) it as
+   * its own stage.
    */
-  const stageOfThisPass: Pick<CoverageAlignProgress, 'stage'> =
-    fromAlignment === undefined ? {} : { stage: 'measure' };
+  const stageOfThisPass: Pick<CoverageAlignProgress, 'stage'> = { stage: 'measure' };
   sendProgress(mainWindow, stepId, {
     phase: 'preparing', percentage: 0,
     ...stageOfThisPass,
-    message: fromAlignment === undefined
-      ? `Loading the aligner (${device})…`
-      : 'Measuring the book against the items the server placed…',
+    message: 'Measuring the book against the items the server placed…',
   });
 
   return new Promise<CoverageAlignResult>((resolve) => {
@@ -1146,9 +937,7 @@ export async function runCoverageAlignLocally(
         sendProgress(mainWindow, stepId, {
           phase: 'aligning', percentage: 0, processed: 0, total,
           ...stageOfThisPass,
-          message: fromAlignment === undefined
-            ? `Aligning ${total} chunk(s) against the book on ${device}…`
-            : `Measuring ${total} chunk(s) against the items the server placed…`,
+          message: `Measuring ${total} chunk(s) against the items the server placed…`,
         });
         return;
       }
@@ -1162,13 +951,9 @@ export async function runCoverageAlignLocally(
           processed: aligned,
           total,
           ...stageOfThisPass,
-          // THE SAME SPLIT THE FIRST LINE MAKES. Over a precomputed alignment
-          // nothing here is aligning anything — the words are placed and this
-          // is the audit — and a per-chunk line that said "Aligning…" was the
-          // row's ONLY visible sentence for the whole second half.
-          message: fromAlignment === undefined
-            ? `Aligning… (chunk ${aligned}/${total})`
-            : `Measuring the book here… (chunk ${aligned}/${total})`,
+          // Nothing here is aligning anything — the words are placed and this
+          // is the audit — so the line says "Measuring", not "Aligning".
+          message: `Measuring the book here… (chunk ${aligned}/${total})`,
         });
       }
     };
@@ -1221,7 +1006,7 @@ export async function runCoverageAlignLocally(
         const found = summarizeCoverageReport(reportPath);
         // WHICH PROCESSOR, AND HOW LONG — the two facts an operator deciding
         // where to queue the NEXT one needs, and the reason the choice exists.
-        const ran = `on ${device} in ${Math.max(1, Math.round((Date.now() - startedAt) / 60000))} min`;
+        const ran = `on the server that aligned it in ${Math.max(1, Math.round((Date.now() - startedAt) / 60000))} min`;
         const message = found
           ? `Alignment complete ${ran} — ${found.line}`
           : `Alignment complete ${ran} — ${aligned} chunk(s) checked.`;
