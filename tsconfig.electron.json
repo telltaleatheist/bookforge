@@ -27,6 +27,12 @@
   "include": [
     "electron/**/*",
     "shared/**/*",
+    // The Foundry window's main-process half. Compiled here so it resolves
+    // @owen/foundry-core and @crucible/client from THIS node_modules: a second copy
+    // would be a second queue and host record, with no error anywhere. It emits to
+    // dist/foundry-app/electron, and foundry-app's Angular build to
+    // dist/foundry-app/renderer, the layout window.ts expects.
+    "foundry-app/electron/**/*",
     // packages/quire is the browser-based EPUB paginator. It is compiled here so
     // that it is type-checked alongside the app and built by `npm run
     // build:electron` with no extra step. rootDir is the repo root, so it emits
@@ -36,6 +42,7 @@
     "packages/quire/src/**/*"
   ],
   "exclude": [
-    "node_modules"
+    "node_modules",
+    "foundry-app/node_modules"
   ]
 }

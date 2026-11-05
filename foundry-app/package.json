@@ -2,66 +2,14 @@
   "name": "foundry-app",
   "productName": "Foundry",
   "version": "2.0.2",
-  "description": "Foundry desktop — read a scanned PDF, cast a clean EPUB.",
+  "description": "BookForge's book window: its Angular renderer. Its main-process half compiles in BookForge's own tsconfig.electron.json.",
   "private": true,
-  "main": "dist/electron/main.js",
   "scripts": {
     "ng": "ng",
-    "clean:electron": "shx rm -rf dist/electron dist/shared",
-    "build:electron": "npm run core:sync && npm run clean:electron && tsc -p tsconfig.electron.json",
-    "build:renderer": "npm run test:templates && ng build && npm run test:surface",
-    "build": "npm run build:electron && npm run build:renderer",
-    "typecheck": "tsc -p tsconfig.electron.json --noEmit",
-    "start": "npm run electron:dev",
-    "electron:dev": "node ../packages/foundry-core/tools/build-engine.mjs && npm run build:electron && node tools/free-port.cjs 4260 && concurrently -k -n ng,electron \"ng serve --port 4260\" \"wait-on http-get://localhost:4260 && electron . --dev\"",
-    "electron:prod": "npm run build && electron .",
-    "package:win-x64": "npm run build && electron-builder --win --x64",
-    "package:mac": "npm run build && electron-builder --mac --arm64",
-    "package:mac:signed": "npm run build && node tools/package-mac.cjs",
+    "build": "npm run test:templates && ng build && npm run test:surface",
     "test:templates": "node tools/test-no-backticks-in-templates.js",
-    "test:surface": "node tools/test-crucible-setup-surface.js",
-    "core:sync": "node tools/sync-foundry-core.cjs",
-    "core:check": "node tools/sync-foundry-core.cjs --check"
+    "test:surface": "node tools/test-crucible-setup-surface.js"
   },
-  "build": {
-    "appId": "com.telltale.foundry",
-    "productName": "Foundry",
-    "publish": null,
-    "directories": {
-      "output": "release"
-    },
-    "files": [
-      "dist/electron/**",
-      "dist/renderer/**",
-      "package.json"
-    ],
-    "fileAssociations": [
-      {
-        "ext": "pdf",
-        "name": "PDF document",
-        "description": "PDF document",
-        "role": "Editor"
-      },
-      {
-        "ext": "epub",
-        "name": "EPUB book",
-        "description": "EPUB book",
-        "role": "Editor"
-      }
-    ],
-    "win": {
-      "target": "nsis",
-      "icon": "build/icon.ico",
-      "artifactName": "Foundry-${version}-windows-${arch}.${ext}"
-    },
-    "mac": {
-      "target": "dmg",
-      "icon": "build/icon.png",
-      "artifactName": "Foundry-${version}-macos-${arch}.${ext}"
-    }
-  },
-  "_crucibleSdkPrereleaseNote": "crucible-client-2.0.34-1723fc5.tgz and crucible-bootstrap-2.0.34-1723fc5.tgz are unreleased packs from crucible main 1723fc5, for the repair door (reorg A5). They call themselves 2.0.34 and are not the published 2.0.34. Temporary: replaced by the release tarball at the flip.",
-  "_crucibleClientNote": "Crucible SDKs are vendored as immutable npm-pack tarballs: the LIBRARY this app is built against, never the release an install puts on a machine — that is the release channel's answer, read at install time (crucible docs/INSTALL-UNINSTALL.md 6.5). Compatibility with a server is the API version on X-Crucible-Api, not this number. Update both packages, integrity hashes, and generated module metadata together; directory dependencies are not supported.",
   "dependencies": {
     "@angular/common": "^21.0.0",
     "@angular/compiler": "^21.0.0",
@@ -69,10 +17,10 @@
     "@angular/forms": "^21.0.0",
     "@angular/platform-browser": "^21.0.0",
     "@angular/router": "^21.0.0",
-    "@crucible/bootstrap": "file:vendor/crucible-bootstrap-2.0.34-1723fc5.tgz",
-    "@crucible/client": "file:vendor/crucible-client-2.0.34-1723fc5.tgz",
-    "@owen/foundry-core": "file:../packages/foundry-core",
-    "@owen/tool-loop": "file:vendor/owen-tool-loop-0.1.0.tgz",
+    "@crucible/bootstrap": "file:../vendor/crucible-bootstrap-2.0.34-1723fc5.tgz",
+    "@crucible/client": "file:../vendor/crucible-client-2.0.34-1723fc5.tgz",
+    "@owen/foundry-core": "file:../vendor/owen-foundry-core-0.1.0.tgz",
+    "@owen/tool-loop": "file:../vendor/owen-tool-loop-0.1.0.tgz",
     "pdfjs-dist": "^6.2.108",
     "rxjs": "~7.8.0",
     "tslib": "^2.3.0"
@@ -82,11 +30,6 @@
     "@angular/cli": "^21.0.0",
     "@angular/compiler-cli": "^21.0.0",
     "@types/node": "^20.11.0",
-    "concurrently": "^9.1.0",
-    "electron": "^33.0.0",
-    "electron-builder": "^26.15.3",
-    "shx": "^0.4.0",
-    "typescript": "~5.9.2",
-    "wait-on": "^8.0.1"
+    "typescript": "~5.9.2"
   }
 }

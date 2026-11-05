@@ -144,7 +144,7 @@ import { stepOfGuideNode } from './pronunciation-guide-nodes';
 // reason they do.
 import {
   foundryFormsAtLister, foundryHostQueue, projectDirFromRequest, setFoundrySeam, watchFoundryQueue,
-  type FoundryJobRequest, type FoundryJobRow, type FoundryJobStepConfig, type FoundryRunJobOptions, type FoundryRunOutcome,
+  type FoundryJobRequest, type FoundryJobRow, type FoundryRunner, type FoundryJobStepConfig, type FoundryRunJobOptions, type FoundryRunOutcome,
 } from './foundry-host-queue';
 // This machine's Crucible servers, as the hosted window receives them — Owen's
 // ruling of 2026-09-14 that there is ONE registry and it is BookForge's. The
@@ -193,10 +193,9 @@ app.setName('BookForge');
 // The hosted Foundry — loaded HERE, at module scope, before anything ready
 // ─────────────────────────────────────────────────────────────────────────────
 //
-// Foundry is a second Electron app that BookForge runs inside its own process:
-// the whole of its `app/` folder is vendored at `foundry-app/` (see
-// foundry-app/VENDORED.md) and everything the host has to touch is four
-// functions in one compiled module.
+// The book window runs inside this process. It is BookForge's own code, in
+// `foundry-app/`, on the headless library `@owen/foundry-core`, and everything
+// the host has to touch is one module, its mount.
 //
 // LOADED AT MODULE SCOPE AND NOT LAZILY FROM THE BUTTON'S HANDLER. Importing
 // `mount.js` runs `protocol.registerSchemesAsPrivileged` for `foundry-file://`,
@@ -613,286 +612,11 @@ interface FoundryHostRecord {
   };
 }
 
-interface FoundryMountModule {
-  resumeModelPreparation(): Promise<unknown>;
-  /** Register everything Foundry owns in this main process. Once, after ready. */
-  mountFoundry(host?: FoundryHostRecord): void;
-  /**
-   * Open the Foundry window, or raise the one already open.
-   *
-   * `opts.document` (absolute path) IS the landing: it goes through the same
-   * admission door as a drop, so a wrong extension or a missing file is a
-   * logged refusal on Foundry's side rather than a throw, and a file that lies
-   * inside a project adopts into that project's context automatically. Foundry
-   * deliberately does NOT also send `project:open` when a document is named —
-   * Open lands on the file, not on the proof sheet beside it.
-   */
-  openFoundryWindow(projectDir?: string, opts?: { document?: string }): void;
-  /**
-   * Kill every live engine child, then WAIT for the settles and the lease
-   * releases. Idempotent; awaited on quit with a deadline that is real since
-   * PK6 — see the call site.
-   */
-  stopFoundry(): Promise<void>;
-  /** The library root Foundry is answering with, or null when unmounted. */
-  hostedLibraryDir(): string | null;
-  /**
-   * Is the hosted Foundry busy — its window open, or jobs held/queued/running?
-   *
-   * Added at foundry@c805bd6 for exactly one caller: the library-move gate in
-   * `library:set-root`. HELD JOBS COUNT, by their design: a held read has not
-   * started, but its output paths were minted at enqueue, and a root that moves
-   * between enqueue and Start tears its output exactly as a move mid-run would.
-   */
-  foundryBusy(): { windowOpen: boolean; jobsPending: number };
-  /**
-   * Foundry's window, or null before it is opened and after it closes (foundry
-   * f761f8a). The Edit menu on a Mac tests the focused window against THIS,
-   * not against a capture — an accessor is the fact, a capture is an inference.
-   */
-  foundryWindow(): BrowserWindow | null;
-  /**
-   * WHAT THIS HOST IS MAKING in a project, as of now — the push half of the
-   * host-operations socket.
-   *
-   * THE WHOLE SET, EVERY TIME, on `queue:changed`'s precedent: a diff protocol
-   * between two halves is a thing that goes wrong silently, and an absent node
-   * is a gone node, which is what makes removal free. An EMPTY list is a real
-   * statement ("nothing of mine is here any more") and is kept as one.
-   *
-   * Nothing pushed here is ever written to Foundry's ledger. A host node is a
-   * display row with the lifetime of OUR queue — see electron/foundry-host-nodes.ts.
-   */
-  setHostNodes(projectDir: string, nodes: readonly HostNode[]): void;
-  /**
-   * WHAT THIS HOST IS DOING AT ALL — the socket's second push door, and the one
-   * surface of Foundry's chrome that belongs to somebody else.
-   *
-   * `setHostNodes`'s mechanics exactly: the WHOLE value on every change rather
-   * than a diff, because a diff between two processes goes wrong silently and
-   * stays wrong. Foundry has no timer, polls nothing and advances no number by
-   * itself, so a chip showing a stale line is a push this side failed to make.
-   *
-   * ONE VALUE FOR THE PROCESS, not one per project — the whole of how it differs
-   * from the rows above. A node is a thing being made from a particular book; a
-   * status is our queue, which is one queue whichever book the window is
-   * standing in.
-   *
-   * NULL IS A REAL STATEMENT and is pushed like any other: it means the queue
-   * has nothing to say, and the chip leaves the chrome entirely. See
-   * electron/foundry-host-status.ts for what a snapshot is read as.
-   */
-  setHostStatus(status: HostStatus | null): void;
-  /**
-   * MAKE THE EPUB OF ONE LEDGER STEP, unattended, and answer with the landing.
-   *
-   * The seam's half of Owen's ruling — *"if they arent doing it from an epub then
-   * we export the epub automatically and then run the task they assigned"* — and
-   * the only reason narrate can be declared on `book` at all. It runs Foundry's
-   * own export path with nobody in front of it: the same plan, the same queue,
-   * the same file in `final/`, the same announcement, so an export made for this
-   * host is indistinguishable from one somebody pressed for.
-   *
-   * IT IS NOT HELD and it is not a model run — an export is arithmetic over a
-   * bank already on disk — so awaiting it is seconds rather than an unbounded
-   * wait on somebody finding the shelf.
-   *
-   * THE HOST IS TOLD FIRST. Foundry hands the landing to `onExport` and only then
-   * settles this promise, so by the time it resolves our announcement handler has
-   * been ENTERED but not necessarily finished. Anything this side needs recorded
-   * about the landing it must therefore record itself, from the landing it is
-   * given, rather than assume the callback got there — see
-   * `registerFoundryExportLanding`, which is written to be run twice.
-   *
-   * ITS REJECTIONS ARE FOUNDRY'S OWN SENTENCES, written to be shown to a person:
-   * the book nobody has read, the changes that would not replay, the engine's own
-   * stderr. They are surfaced verbatim, never paraphrased — this side knows less
-   * about why an export failed than the sentence does.
-   */
-  /**
-   * `to` (foundry@ceaad53): an absolute `.epub` path OUTSIDE every project in
-   * the library, refused by name otherwise. With it the file is written there
-   * and nowhere Foundry keeps, the landing comes back `unfiled`, and nothing is
-   * announced. A promised step still plans deferred with `after`; the stamp, the
-   * metadata patches, the chain's language and the mint-block inheritance ride
-   * unchanged. Leave it off and the door behaves exactly as before.
-   */
-  exportEpubFromStep(projectDir: string, stepId: string, opts?: { to?: string }): Promise<FoundryExportLanding>;
-  /**
-   * REVISE THE REGISTERED OPERATIONS IN A WINDOW THAT IS ALREADY OPEN.
-   *
-   * The other half of Owen's narrate report (2026-08-18: "the narrate button …
-   * is disappearing and disabling seemingly at random"). Our half was a race
-   * between computing the narrate FORM and Foundry's renderer boot (fixed in
-   * 577a70db by awaiting it; retired altogether on 2026-08-26, when the dialog
-   * came back to BookForge and the operation stopped declaring a form at all).
-   * This is the half that await could not reach: Foundry asked
-   * `host-ops:offers` ONCE, in its HostOpsService constructor, and nothing could
-   * revise the answer for the life of the window. So an operation whose
-   * availability changed after the window came up was invisible to it until the
-   * user closed and reopened.
-   *
-   * Foundry 29c40a0 added the push (`host-ops:offers-changed`, mirroring
-   * `status-changed` one surface along), and this is the call that fires it. The
-   * WHOLE list every time, replace not merge — `setHostNodes` and `setHostStatus`
-   * take the same posture for the same reason.
-   *
-   * ABSENCE IS NOT A STATE THIS SIDE HANDLES: the seam is vendored, so the method
-   * exists whenever the mount does. A host that never calls it simply keeps the
-   * first paint, which is what every version before this one had.
-   */
-  setHostOperations(operations: readonly FoundryHostOperation[]): void;
-  /**
-   * DELETE ONE EXPORT — the file under `<project>/final/` and its row in
-   * Foundry's `manifest.final`, nothing upstream of it.
-   *
-   * Owen, 2026-09-28: deleting an EPUB version here deletes THAT EPUB. It
-   * replaced `deleteLedgerStep`, which dropped the step the export was cast
-   * from — an AI-cleanup pass and its history went with a press that only
-   * meant the file, and Foundry's nav kept drawing the export. Its refusals
-   * (a job busy on the project) are whole sentences and are shown, not
-   * paraphrased. Foundry announces `projects:changed` so its windows re-read.
-   */
-  deleteExport(filePath: string): Promise<unknown>;
-  /**
-   * RUN ONE FOUNDRY JOB NOW — the execution half of the centralized queue.
-   *
-   * Owen's ruling of 2026-08-18 split the two: BookForge decides WHEN, Foundry
-   * still does the work, because Foundry's runner owns the ledger writes, the
-   * bank, the working-tree rotations and the export landings, and a second
-   * implementation of any of it over here would be two copies of one truth.
-   *
-   * IT STILL MINTS A FOUNDRY ROW and still fires their `onJobSettled` /
-   * `onExportLanded` — their constraint, and load-bearing for US: those listeners
-   * are what `exportEpubFromStep` awaits and what our node reconciliation reads,
-   * so a `runJob` that bypassed the row would break our own narrate. What
-   * disappears in hosted mode is the WAITING; a row is born running.
-   *
-   * OPTIONAL, because the seam is arriving: 29c40a0 does not have it. A row that
-   * reaches this and finds nothing FAILS WITH A SENTENCE (foundry-host-queue.ts)
-   * rather than falling back to Foundry's own queue, which is the thing the
-   * ruling removed.
-   *
-   * ── `venue` IS DECLARED THEIR WAY HERE, NOT OURS ──────────────────────────
-   *
-   * This is the MOUNT's shape — what the vendored subtree actually publishes
-   * (`RunOptions` in `foundry-app/electron/job-queue.ts`) — and over there the
-   * field is OPTIONAL, where absent means *that window's own default decides*.
-   * Ours is required and nullable, because a caller must STATE whether its kind
-   * travels. The translation between the two happens once, at the adapter that
-   * calls this, and the reason it must is written there.
-   *
-   * ── AND THE ANSWER IS A TYPED OUTCOME SINCE PK6 ──────────────────────────
-   *
-   * It resolved with the settled ROW, which could say `done`, `failed` and
-   * `cancelled` and had to say everything else in PROSE. Two things this
-   * scheduler acts on were therefore only readable by parsing a sentence: a card
-   * that is merely BUSY (which parks and retries itself — Q4) and the engine's
-   * last words (which a Stop then erased — P6/F7). `FoundryRunOutcome` states
-   * both, and its `wait` arm carries no row because nothing ran.
-   */
-  runJob?(
-    request: FoundryJobRequest,
-    opts: Omit<FoundryRunJobOptions, 'venue'> & { venue?: { server: string } },
-  ): Promise<FoundryRunOutcome>;
-  /**
-   * The rows for one project, pushed — their shelf's mirror of OUR queue.
-   *
-   * `setHostNodes`' mechanics exactly, which is what their agent asked for
-   * ("SAME SHAPE AS host-ops:nodes/changed… copy it rather than inventing"): the
-   * WHOLE set every time, replace not merge, because a row that has left our
-   * queue has left it and a merge would keep a finished read on their shelf
-   * forever. Optional for `runJob`'s reason.
-   */
-  setHostQueueRows?(projectDir: string, rows: readonly FoundryJobRow[]): void;
-  /**
-   * THE PRINTED FORMS OF THE BOOK A CLEANUP WILL READ (`foundry clean-forms` over
-   * the run's own book) — what `electron/narration-glossary.ts` decides readings
-   * from. Optional for `runJob`'s reason.
-   */
-  printedFormsForRun?(request: FoundryJobRequest, onLine?: (line: string) => void): Promise<unknown>;
-  /**
-   * THE PRINTED FORMS OF A BOOK AT ONE STEP (null: where it stands) — foundry
-   * c6e8824, for the pronunciation guide's own step. Optional for `runJob`'s reason.
-   */
-  printedFormsAt?(projectDir: string, at: string | null, onLine?: (line: string) => void): Promise<unknown>;
-  /**
-   * A READINGS-ONLY PASS from one step, planned and not queued — foundry 4ae272b. A
-   * `clean` request with `readingsOnly`, whose row is handed its readings file as a
-   * cleanup's is (`fixedReadings`). What the pronunciation guide's Apply queues.
-   */
-  planReadingsPass?(projectDir: string, stepId: string, label: string): Promise<FoundryJobRequest>;
-  /**
-   * OUR QUEUE HAS NO FOUNDRY WORK RUNNING — the one signal their vLLM reading
-   * server's lifetime hangs on.
-   *
-   * They derive keep-warm-or-tear-down from their own queue draining, and
-   * centralizing would have broken that silently: their list is empty after every
-   * job once we schedule, so the drain signal would fire between every pair of
-   * our rows. They asked for this instead of a count they would have to
-   * interpret, "because the knowledge lives where the scheduler is and a hint I
-   * have to interpret is a second scheduler in disguise".
-   *
-   * RUNNING, NOT "running or queued" — their narrowing, and they are right: a
-   * read queued behind two hours of TTS would otherwise hold a twenty-gigabyte
-   * server's VRAM for the whole narration, against the card this exists to
-   * protect. Optional for `runJob`'s reason.
-   *
-   * NAMED FOR THE DIRECTION IT TRAVELS. It was `foundryQueueIdle` until Foundry
-   * asked for this spelling before building against the other one, and the reason
-   * is a collision rather than taste: `foundryBusy()` is already on this seam and
-   * is a QUERY — it RETURNS `{windowOpen, jobsPending}` and we call it to ask. A
-   * `foundryQueueIdle()` beside it reads as the same shape, when it is the
-   * opposite direction of travel and answers nothing. `hostQueueDrained` says
-   * whose queue and what happened, and its tense is what stops the next reader
-   * treating it as state they may poll.
-   */
-  hostQueueDrained?(): void;
-}
-
-/**
- * Where the compiled seam sits, relative to this file's own compiled location.
- *
- * DEV LAYOUT ONLY, and knowingly so: from `dist/electron/main.js` the subtree is
- * two levels up at `foundry-app/dist/electron/mount.js`. A packaged build puts
- * `dist/` inside an asar and the subtree wherever the packaging wave decides to
- * stage it, so RESOLVING THIS IN THE PACKAGED LAYOUT IS AN EXPLICIT ITEM FOR THE
- * PACKAGING WAVE — it is not done here, and it is not papered over with a search
- * of candidate paths either, because a mount silently loaded from the wrong
- * place is worse than one that refuses.
- */
-const FOUNDRY_MOUNT_PATH = path.join(__dirname, '..', '..', 'foundry-app', 'dist', 'electron', 'mount.js');
-
-/**
- * Load the seam, or refuse to start.
- *
- * NO FALLBACK, and no degraded mode. A BookForge that came up without the mount
- * would look completely normal until the user pressed Edit in Foundry, and the
- * failure would then be a dead button rather than the one true fact, which is
- * that the vendored subtree was never built. So the refusal happens at startup,
- * it names the build step, and it says it in a dialog as well as the log because
- * the console is not where a user is looking.
- */
-function loadFoundryMount(): FoundryMountModule {
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    return require(FOUNDRY_MOUNT_PATH) as FoundryMountModule;
-  } catch (err) {
-    const sentence =
-      'BookForge cannot start: the hosted Foundry window has not been built. Its mount module is '
-      + `not at ${FOUNDRY_MOUNT_PATH}. Build the vendored subtree — run `
-      + '`cd foundry-app && npm install && npm run build` — and start BookForge again. '
-      + `(${(err as Error).message})`;
-    console.error(`[foundry-mount] ${sentence}`);
-    // Before ready on Windows and macOS this still draws; on Linux it logs. Either
-    // way the exit below is what actually stops the launch.
-    try { dialog.showErrorBox('Foundry is not built', sentence); } catch { /* pre-ready platform */ }
-    app.exit(1);
-    throw new Error(sentence);
-  }
-}
-
-const foundryMount: FoundryMountModule = loadFoundryMount();
+const foundryMount = require('../foundry-app/electron/mount') as typeof import('../foundry-app/electron/mount');
+type FoundryEngineRequest = Parameters<typeof foundryMount.runJob>[0];
+type FoundryEngineRunOptions = Parameters<typeof foundryMount.runJob>[1];
+type FoundryEngineRows = Parameters<typeof foundryMount.setHostQueueRows>[1];
+type FoundryHostQueueSeam = NonNullable<Parameters<typeof foundryMount.mountFoundry>[0]>['hostQueue'];
 
 /*
  * THE DOOR A RESUMED LANDING STEP ORDERS ITS EXPORT THROUGH.
@@ -3030,10 +2754,6 @@ async function buildPronunciationGuide(projectDir: string, at: string, startOver
  * the moment it lands.
  */
 async function planAdjustedStep(projectDir: string, guide: string, parent: string): Promise<FoundryJobRequest> {
-  if (typeof foundryMount.planReadingsPass !== 'function') {
-    throw new Error('The vendored Foundry is older than the readings pass, so the guide cannot be applied. '
-      + 'Re-vendor foundry-app.');
-  }
   const { applyReadingsPath, guidePathsOfStep } = await import('./narration-glossary.js');
   const { nextAppliedLabel, recordAdjusted } = await import('./pronunciation-applied.js');
   const request = await foundryMount.planReadingsPass(projectDir, parent, nextAppliedLabel(projectDir, parent, guide));
@@ -3072,10 +2792,6 @@ async function applyPronunciationGuide(projectDir: string, at: string): Promise<
   const { guidePathsOfStep, hasGuide, writeApplyReadings } = await import('./narration-glossary.js');
   const files = guidePathsOfStep(projectDir, at);
   if (!hasGuide(files)) throw new Error('This step has no pronunciation guide to apply. Build the guide first.');
-  if (typeof foundryMount.planReadingsPass !== 'function') {
-    throw new Error('The vendored Foundry is older than the readings pass, so the guide cannot be applied. '
-      + 'Re-vendor foundry-app.');
-  }
   /*
    * UNDER THE STEP ITS LATEST ADJUSTED STEP HANGS UNDER — a cleanup of this step, when
    * the guide was applied after one — so Update replaces that step (or numbers the next
@@ -14166,9 +13882,9 @@ app.whenReady().then(async () => {
      */
     hostQueue: {
       ...foundryHostQueue,
-      enqueue: (request, parentStep) => foundryHostQueue.enqueue(
-        request, parentStep, projectDirFromRequest(foundryProjectsDir(), request)),
-    },
+      enqueue: (request: unknown, parentStep: string | null) => foundryHostQueue.enqueue(
+        request as FoundryJobRequest, parentStep, projectDirFromRequest(foundryProjectsDir(), request as FoundryJobRequest)),
+    } as unknown as FoundryHostQueueSeam,
   });
   /*
    * Hand the mount's own three functions back to the queue module, and arm the
@@ -14177,10 +13893,8 @@ app.whenReady().then(async () => {
    * the only file that knows where the subtree sits (`setGpuHolderProbe`'s
    * precedent in the engine itself).
    *
-   * NULL IS A REAL ANSWER for all three: a subtree that predates the seam offers
-   * none of them, a row that tries to run says so in a sentence, and the pushes
-   * simply do not fire. What is NOT done here is a fallback to Foundry's own
-   * queue, which is the thing the ruling removed.
+   * THE CASTS ARE THE WHOLE TYPE BOUNDARY: foundry-host-queue.ts still declares these
+   * shapes by hand, narrower than the library's, and they cross unchanged at runtime.
    */
   setFoundrySeam({
     /*
@@ -14203,25 +13917,17 @@ app.whenReady().then(async () => {
      * second opinion about a run it did not make (`queue-steps/foundry-job.ts`
      * is the one reader).
      */
-    runJob: typeof foundryMount.runJob === 'function'
-      ? (request, opts) => {
-        const { venue, ...rest } = opts;
-        return foundryMount.runJob!(
-          request, venue === null ? rest : { ...rest, venue });
-      }
-      : null,
-    setQueueRows: typeof foundryMount.setHostQueueRows === 'function'
-      ? (dir, rows) => foundryMount.setHostQueueRows!(dir, rows)
-      : null,
-    drained: typeof foundryMount.hostQueueDrained === 'function'
-      ? () => foundryMount.hostQueueDrained!()
-      : null,
-    printedForms: typeof foundryMount.printedFormsForRun === 'function'
-      ? (request, onLine) => foundryMount.printedFormsForRun!(request, onLine)
-      : null,
-    printedFormsAt: typeof foundryMount.printedFormsAt === 'function'
-      ? (dir, at, onLine) => foundryMount.printedFormsAt!(dir, at, onLine)
-      : null,
+    runJob: (request, opts) => {
+      const { venue, ...rest } = opts;
+      return foundryMount.runJob(
+        request as unknown as FoundryEngineRequest,
+        (venue === null ? rest : { ...rest, venue }) as unknown as FoundryEngineRunOptions,
+      ) as unknown as ReturnType<FoundryRunner>;
+    },
+    setQueueRows: (dir, rows) => foundryMount.setHostQueueRows(dir, rows as unknown as FoundryEngineRows),
+    drained: () => foundryMount.hostQueueDrained(),
+    printedForms: (request, onLine) => foundryMount.printedFormsForRun(request as unknown as FoundryEngineRequest, onLine),
+    printedFormsAt: (dir, at, onLine) => foundryMount.printedFormsAt(dir, at, onLine),
     // A cleanup told to build its pronunciation guide first queues it here, then chains under it.
     guideAhead: (dir, at, startOver) => queuePronunciationGuide(dir, at, startOver),
     // …and a cleanup with a guide is followed by the guide applied as its own step.
@@ -14230,25 +13936,13 @@ app.whenReady().then(async () => {
   /*
    * AND THE WORD FOR "STOPPED, NOT CANCELLED" — foundry `47ae0d4`.
    *
-   * Taken from the MOUNT rather than retyped, which is the whole point of them
-   * re-exporting it there: `isResumableStop` is the one comparison, and a
-   * literal copied into this file is a second answer waiting to drift from it.
-   * A vendored copy too old to export it leaves this undefined, and the engine
-   * then aborts bare — which is exactly the behaviour that build already had.
+   * Taken from the MOUNT rather than retyped: `isResumableStop` is the one
+   * comparison, and a literal copied into this file is a second answer waiting to
+   * drift from it.
    */
   queueEngine.setResumableStopReason(
-    (foundryMount as { RESUMABLE_STOP?: unknown }).RESUMABLE_STOP);
+    foundryMount.RESUMABLE_STOP);
   watchFoundryQueue();
-  if (typeof foundryMount.runJob !== 'function') {
-    // Said once, at startup, where it is actionable — not per row, and not
-    // swallowed. Until the seam lands, work ordered in the hosted window is
-    // still Foundry's to schedule.
-    logger.warn(
-      'The hosted Foundry engine has no queue seam (runJob), so work ordered inside its window '
-      + 'is still scheduled by Foundry rather than by BookForge. Refresh the vendored subtree '
-      + 'once the seam lands.',
-    );
-  }
   logger.info('Hosted Foundry mounted', { libraryDir: foundryDataRoot() });
 
   // ── The rows BookForge contributes to that tree ──────────────────────────

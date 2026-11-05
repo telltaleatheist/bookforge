@@ -31,26 +31,13 @@
  * decided by the conversion's route (electron/vlm-endpoint.ts) and passed as
  * `--vlm-endpoint`, or left to MLX on an Apple Silicon Mac.
  *
- * ── Which program: the engine vendored with foundry-app (2026-09-24) ──
+ * ── Which program: the engine inside @owen/foundry-core ──
  *
- * The engine is not a downloaded executable any more. Owen: *"foundry.exe — this
- * was intended to be a model runner originally. i dont think it needs to be an
- * exe anymore. it can be an engine but maybe we should explode it out into
- * normal code that moves along with the app."* Foundry bundles its engine into
- * its app folder (`app/engine/foundry-engine.cjs`, Foundry's
- * tools/build-engine.mjs), and BookForge vendors that folder as `foundry-app/` —
- * so the engine BookForge runs is the one beside the Foundry code it hosts, by
- * construction. There is no `foundry-cli` add-on, no release check, no download,
- * and no version gate: the gates existed only because a separately downloaded
- * engine could be older than the app driving it, and one copy cannot disagree
- * with itself.
- *
- * Two answers, in order — the same two the hosted Foundry's own
- * `engineCommand()` gives (foundry-app/electron/engine.ts), so the two doors
- * always run the same engine:
+ * Two answers, in order, the same two the book window's `engineCommand()` gives,
+ * so the two doors always run the same engine:
  *   1. `FOUNDRY_BIN` — a developer pointing at a build of their own. A command,
  *      run with the job's arguments and nothing in front of them.
- *   2. The vendored bundle, run by THIS process's own runtime as Node:
+ *   2. The library's bundle, run by THIS process's own runtime as Node:
  *      `process.execPath` with `ELECTRON_RUN_AS_NODE=1` inside the app (the
  *      variable is inert under plain node, which is what the CLI harnesses in
  *      cli/ run on).
@@ -63,6 +50,7 @@
 import { spawn } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
+import { engineBundlePath } from '@owen/foundry-core/engine';
 
 // The one owner of the endpoint header map, and of removing it. See the
 // comment at the spawn in `runFoundry`.
@@ -82,13 +70,9 @@ export interface FoundryEngineCommand {
   source: string;
 }
 
-/**
- * `foundry-app/engine/foundry-engine.cjs`, from this module's compiled home:
- * dist/electron -> dist -> the repo (or app.asar, packaged — the `files` list
- * in package.json carries `foundry-app/engine/**`).
- */
+/** The engine bundle inside the installed `@owen/foundry-core` (unpacked from the asar when packaged). */
 export function foundryEngineBundlePath(): string {
-  return path.resolve(__dirname, '..', '..', 'foundry-app', 'engine', 'foundry-engine.cjs');
+  return engineBundlePath();
 }
 
 export function foundryEngineCommand(): FoundryEngineCommand {
@@ -98,8 +82,8 @@ export function foundryEngineCommand(): FoundryEngineCommand {
   const bundle = foundryEngineBundlePath();
   if (!fs.existsSync(bundle)) {
     throw new Error(
-      `The Foundry engine is missing: ${bundle} does not exist. It is vendored with `
-      + 'foundry-app/ (foundry-app/VENDORED.md), so this checkout or package is incomplete.'
+      `The Foundry engine is missing: ${bundle} does not exist. It ships in `
+      + '@owen/foundry-core, so this checkout or package is incomplete.'
     );
   }
   return {
