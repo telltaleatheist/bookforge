@@ -62,7 +62,7 @@ function startFake(behaviour) {
       state.submitted.push(body);
       if (behaviour === 'old') {
         // crucible v2.0.34 api/app.py _validation_refusal: 400, not 422.
-        send(res, 400, { error: { code: 'invalid_request', message: "body.type: Input should be 'pull', 'install', 'module' or 'engine'", details: { problems: [] } } });
+        send(res, 400, { error: { code: 'invalid_request', message: 'body.scope: Extra inputs are not permitted', details: { problems: [] } } });
         return true;
       }
       send(res, 200, { task_id: 'task-1' });
@@ -210,7 +210,7 @@ async function main() {
       isLocal: async () => { throw new Error('there is no row to ask about'); },
       localRepair: async (options) => {
         assert.deepStrictEqual(options.scope, { verifyOnly: false });
-        return { server: 'reinstalled', service: 'started', healthy: true, task: RESULT };
+        return { server: 'reinstalled', service: 'started', healthy: true, task: RESULT, detail: null };
       },
     });
     await check('a broken Crucible with no row can still be repaired, under its own key', () => {
@@ -233,7 +233,7 @@ async function main() {
         options.onStep({ name: 'server', status: 'ok', detail: 'The server answers.' });
         options.onRepair({ step: 'plan', state: 'running', subject: null, detail: null, bytesToCheck: 10 });
         options.onProgress({ bytesDone: 5, bytesTotal: 10, file: 'x' });
-        return { server: 'reinstalled', service: 'started', healthy: true, task: RESULT };
+        return { server: 'reinstalled', service: 'started', healthy: true, task: RESULT, detail: null };
       },
     });
     await check('this machine\'s row goes through bootstrap, into the same view', () => {
@@ -258,6 +258,17 @@ async function main() {
       assert.strictEqual(view.refusal.command, 'crucible install');
     });
   }
+
+  await check('Stop says what it will do, before it is pressed', () => {
+    const at = (step, local = false) => wire.reduceCrucibleRepair(
+      wire.reduceCrucibleRepair(null, { kind: 'started', server: 's', verifyOnly: false, local, taskId: null }),
+      { kind: 'frame', server: 's', step, state: 'running', subject: ENV, detail: null, bytesToCheck: null },
+    );
+    assert.match(wire.crucibleRepairStopWords(at('rebuild')), /after this environment finishes/);
+    assert.match(wire.crucibleRepairStopWords(at('repull')), /next repair finishes it/);
+    assert.strictEqual(wire.crucibleRepairStopWords(at('verify')), null);
+    assert.match(wire.crucibleRepairStopWords(at('verify', true)), /can't be stopped from here/);
+  });
 
   await check('a check that changed nothing never says it repaired anything', () => {
     const line = wire.crucibleRepairHeadline({ ...RESULT, verifyOnly: true, repaired: [] });

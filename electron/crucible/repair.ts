@@ -58,19 +58,26 @@ export interface RepairDeps {
     onStep: (step: { name: string; status: 'running' | 'ok' | 'failed'; detail: string }) => void;
     onRepair: (data: TaskRepairData) => void;
     onProgress: (progress: { bytesDone: number; bytesTotal: number | null; file: string }) => void;
-  }) => Promise<{ server: 'ok' | 'reinstalled'; service: 'running' | 'started'; task: RepairResult; healthy: boolean }>;
+  }) => Promise<{
+    server: 'ok' | 'reinstalled' | 'broken';
+    service: 'running' | 'started' | 'stopped';
+    task: RepairResult | null;
+    healthy: boolean;
+    detail: string | null;
+  }>;
   readonly sleep?: (ms: number) => Promise<void>;
   readonly streamLostBudgetMs?: number;
 }
 
 /**
- * A server that does not know the task refuses the body: 2.0.34 validates `type` against
- * its known tasks and answers `invalid_request` (crucible api/app.py). Anything else is
- * that server's own refusal, kept in its own words.
+ * A server that does not know the task refuses the body: 2.0.34's `TaskCreate` forbids
+ * extra fields, so `scope` comes back 400 `invalid_request`, "body.scope: Extra inputs are
+ * not permitted". Only that field: any other invalid request is a real refusal, kept in
+ * its own words rather than blamed on the server's age.
  */
 function tooOldForRepair(err: unknown): boolean {
   return err instanceof CrucibleRefused
-    && (err.code === 'invalid_request' || err.code === 'unknown_task_type');
+    && err.code === 'invalid_request' && /body\.scope\b/.test(err.serverMessage);
 }
 
 function frameEvent(server: string, data: TaskRepairData): CrucibleRepairEvent {
@@ -208,6 +215,14 @@ async function repairThroughBootstrap(
     onRepair: (data) => emit(frameEvent(server, data)),
     onProgress: (p) => emit({ kind: 'progress', server, bytesDone: p.bytesDone, bytesTotal: p.bytesTotal, file: p.file }),
   });
+  if (outcome.task === null) {
+    // Only a verify-only run should end here, and this door is never one. Said, not assumed.
+    emit({
+      kind: 'refused', server, code: 'repair_failed', needsUpdate: false, command: null,
+      message: outcome.detail ?? 'The repair ended with no result from the server, and nothing said why.',
+    });
+    return;
+  }
   const notes = [
     outcome.server === 'reinstalled' ? 'The server would not answer, so it was reinstalled.' : null,
     outcome.service === 'started' ? 'Its service was not running and was started.' : null,

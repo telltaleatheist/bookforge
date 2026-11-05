@@ -6,6 +6,7 @@ import {
   CRUCIBLE_REPAIR_HERE,
   crucibleRepairBytes,
   crucibleRepairHeadline,
+  crucibleRepairStopWords,
   reduceCrucibleRepair,
   type CrucibleRepairSubject,
   type CrucibleRepairView,
@@ -55,6 +56,7 @@ import {
             <div class="rep-bar"><div class="rep-fill" [style.width.%]="progressPct()"></div></div>
             <p class="rep-meta">{{ words }}</p>
           }
+          @if (stopWords(); as words) { <p class="rep-meta">{{ words }}</p> }
         }
 
         @if (v.refusal; as r) {
@@ -123,6 +125,11 @@ export class CrucibleRepairComponent {
     if (!res) return [];
     const said = new Set([...res.repaired, ...res.failed].map((f) => `${f.subject.kind}/${f.subject.id}`));
     return res.broken.filter((f) => !said.has(`${f.subject.kind}/${f.subject.id}`));
+  });
+
+  readonly stopWords = computed(() => {
+    const v = this.view();
+    return v ? crucibleRepairStopWords(v) : null;
   });
 
   readonly headline = computed(() => {

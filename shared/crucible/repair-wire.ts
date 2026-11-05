@@ -62,6 +62,8 @@ export interface CrucibleRepairView {
   readonly verifyOnly: boolean;
   readonly local: boolean;
   readonly taskId: string | null;
+  /** The step last reported, which decides what Stop can promise. */
+  readonly step: CrucibleRepairStep | null;
   /** The newest thing said about what is happening right now. */
   readonly line: string | null;
   /** A `wait` frame is standing: something this repair needs is in use. */
@@ -96,14 +98,14 @@ const STEP_WORDS: Readonly<Record<CrucibleRepairStep, string>> = {
 export function reduceCrucibleRepair(view: CrucibleRepairView | null, event: CrucibleRepairEvent): CrucibleRepairView {
   if (event.kind === 'started') {
     return {
-      phase: 'running', verifyOnly: event.verifyOnly, local: event.local, taskId: event.taskId,
+      phase: 'running', verifyOnly: event.verifyOnly, local: event.local, taskId: event.taskId, step: null,
       line: event.verifyOnly ? 'Starting the check…' : 'Starting the repair…', waiting: null,
       bytesToCheck: null, bytesDone: null, bytesTotal: null, file: null,
       result: null, hostNote: null, refusal: null,
     };
   }
   const base: CrucibleRepairView = view ?? {
-    phase: 'running', verifyOnly: false, local: false, taskId: null, line: null, waiting: null,
+    phase: 'running', verifyOnly: false, local: false, taskId: null, step: null, line: null, waiting: null,
     bytesToCheck: null, bytesDone: null, bytesTotal: null, file: null,
     result: null, hostNote: null, refusal: null,
   };
@@ -120,6 +122,7 @@ export function reduceCrucibleRepair(view: CrucibleRepairView | null, event: Cru
       }
       return {
         ...base,
+        step: event.step,
         waiting: null,
         line: said,
         bytesToCheck: event.bytesToCheck ?? base.bytesToCheck,
@@ -157,6 +160,19 @@ export function crucibleRepairHeadline(result: CrucibleRepairResult): string {
   return result.repaired.length > 0
     ? `${result.repaired.length} repaired (${looked}${caveat}).`
     : `Nothing needed repairing (${looked}${caveat}).`;
+}
+
+/**
+ * WHAT STOP WILL ACTUALLY DO, said before it is pressed. A hash stops within about a
+ * megabyte and between subjects at the next one, so those need no words; a rebuild is
+ * not interrupted, and this computer's door has no task to stop.
+ */
+export function crucibleRepairStopWords(view: CrucibleRepairView): string | null {
+  if (view.phase !== 'running') return null;
+  if (view.local) return "This repair runs on this computer and can't be stopped from here.";
+  if (view.step === 'rebuild') return 'Stop takes effect after this environment finishes.';
+  if (view.step === 'repull') return 'Stop halts the download; the next repair finishes it.';
+  return null;
 }
 
 /** "12.4 GB", for the bars and the summary. */
