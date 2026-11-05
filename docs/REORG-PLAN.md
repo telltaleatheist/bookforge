@@ -1,6 +1,6 @@
 # The reorganisation — Crucible, foundry-core, Foundry, BookForge (2026-11-04)
 
-Lead: **bookforge pc 1**. Devs: **foundry pc 1**, **crucible pc 1**, **bookforge pc 2**.
+Lead: **bookforge pc 1** — manages, assigns and reviews; builds nothing itself. Devs: **foundry pc 1**, **crucible pc 1**, **bookforge pc 2**.
 Every dev reports to bookforge pc 1. Nobody edits another dev's repo or checkout.
 Owner rulings are quoted from Owen, 2026-11-04.
 
@@ -40,12 +40,12 @@ BookForge still runs locally has a Crucible service (whisper/ASR, separator, ...
 C3 env recipes drop narrator once BookForge no longer needs it. Releases held for
 Owen's test pass.
 
-**B — BookForge (bookforge pc 2 + bookforge pc 1), repo `bookforge`, worktrees only.**
+**B — BookForge (bookforge pc 2), repo `bookforge`, worktrees only.**
 B1 (now) prep reads voice char budgets from `GET /v1/voices` instead of importing
 narrator's Higgs code · B2 BookForge's GPU-script callers switch to Crucible services
 (with C2) · **after A merges:** B3 BookForge onto `@owen/foundry-core` + the final
 window copy, page tools removed · B4 BookForge colour scheme · B5 Narrate modal in the
-Foundry window. bookforge pc 1 in parallel: **B6 narrator's audiobook half → TypeScript**
+Foundry window. bookforge pc 2, while B3-B5 wait on Phase A: **B6 narrator's audiobook half → TypeScript**
 (assemble, render session/retakes, VTT, text rules, compat, cli/manifest, gap
 normalizing, m4b tags) — then python/ and electron/scripts/*.py leave BookForge.
 
