@@ -79,3 +79,7 @@ all four servers; BookForge merges.
 - Members made public so the split window modules can reach them: tidy back when convenient.
 
 (Owen's test list, B2 additions) Generate Sentences both ways in the studio; the AI setup page reads sensibly with no local-model text; ClipForge's cleanup still works. Old model folders stay on disk: whisper-models, llama-models. Packaging: build/entitlements.mac.plist still justifies DYLD for llama, review when a Mac package is next built.
+
+(Owen's test list, C4 additions) Victoria's laptop, after the update reaches her, at her desk: `crucible doctor --verify-only --json` (read-only, 20-30 min, no GPU); read any `broken` rows before anyone runs repair there. B-Sides needs the same Repair button and detect-first install (b-side repo, no dev in this reorg).
+
+(Later) RVC voices are `unverified` in repair: the manifest pins only the archive, so damage to unpacked files can't be detected. Closing that means re-download and compare.
