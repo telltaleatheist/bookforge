@@ -54,7 +54,13 @@ const servers = require(path.join(REPO, 'dist', 'electron', 'crucible', 'servers
 const registerFake = fakeNamer(servers);
 const { check, summary } = makeChecker();
 
-/** A transcript the fake serves: two sentences in one word-timed segment, a word-less one, a boundary duplicate. */
+/**
+ * WHAT THE FAKE SERVES: a real Qwen3-ASR response, captured from a real server. A
+ * hand-written fake that used Whisper's word shape is how unspaced cues reached main.
+ */
+const QWEN_RESPONSE = JSON.parse(fs.readFileSync(path.join(REPO, 'tools', 'fixtures', 'qwen3-asr-transcript.json'), 'utf-8'));
+
+/** The cue RULES' fixture: two sentences in one word-timed segment, a word-less one, a boundary duplicate. Words carry their own spaces, which is the path `wordsAsPrinted` passes through. */
 const TRANSCRIPT = {
   model: 'qwen3-asr-1.7b',
   revision: 'edaa852ec7e1',
@@ -159,7 +165,7 @@ function startFake(behaviour) {
         return true;
       }
       if (name === 'transcript.json') {
-        send(res, 200, TRANSCRIPT);
+        send(res, 200, QWEN_RESPONSE);
         return true;
       }
       return false;
@@ -248,6 +254,29 @@ async function grouping() {
     assert.strictEqual(asr.vttTimestamp(59.9996), '00:01:00.000', 'carries into the minute (the local script would print 60.000)');
     assert.strictEqual(asr.vttTimestamp(-1), '00:00:00.000');
   });
+  await check("QWEN'S REAL RESPONSE: bare words take their spaces and punctuation from the segment text", () => {
+    const segment = QWEN_RESPONSE.segments[0];
+    assert.ok(segment.words.every((w) => /^[\p{L}\p{N}]+$/u.test(w.word) && w.probability === null),
+      'the captured fixture must stay in the shape the server really sends');
+    const { cues, vtt } = asr.transcriptToVtt(QWEN_RESPONSE);
+    assert.strictEqual(cues, 2);
+    assert.ok(vtt.includes('\nHistory can familiarize, and it can mourn.\n'), vtt);
+    const flat = (t) => t.replace(/\s+/g, ' ').trim();
+    const text = asr.groupTranscriptCues(QWEN_RESPONSE.segments).map((c) => c.text).join(' ');
+    assert.strictEqual(flat(text), flat(segment.text), 'every printed character survives');
+  });
+  await check('printed text is never lost: a token the text lacks, and text no token covers', () => {
+    const lost = asr.wordsAsPrinted({ start: 0, end: 3, text: 'One two three.',
+      words: [{ start: 0, end: 1, word: 'One' }, { start: 1, end: 2, word: 'three' }] });
+    assert.strictEqual(lost.map((w) => w.word).join(''), 'One two three.');
+    const extra = asr.wordsAsPrinted({ start: 0, end: 2, text: 'One.',
+      words: [{ start: 0, end: 1, word: 'One' }, { start: 1, end: 2, word: 'zzz' }] });
+    assert.strictEqual(extra.map((w) => w.word).join(''), 'One. zzz');
+  });
+  await check('words that already carry their spaces (Whisper) pass through untouched', () => {
+    const words = [{ start: 0, end: 1, word: ' Hello,' }, { start: 1, end: 2, word: ' there.' }];
+    assert.strictEqual(asr.wordsAsPrinted({ start: 0, end: 2, text: 'Hello, there.', words }), words);
+  });
   await check('a transcript missing a field is refused by name, never patched', () => {
     assert.throws(() => asr.transcriptToVtt({ ...TRANSCRIPT, segments: [{ start: 1, text: 'no end' }] }),
       (err) => err.code === 'crucible_asr_transcript_unreadable' && /segments\[0\]\.end/.test(err.message));
@@ -288,11 +317,12 @@ async function happyPath() {
   await check('the VTT lands at the local path with the grouped cues, and the scratch is gone', () => {
     assert.ok(fs.existsSync(outVtt));
     const text = fs.readFileSync(outVtt, 'utf-8');
-    assert.ok(text.startsWith('WEBVTT\n\n00:00:00.200 --> 00:00:01.100\nHe walked.\n'), text.slice(0, 80));
-    assert.strictEqual(outcome.cues, 4);
+    assert.ok(text.startsWith('WEBVTT\n\n00:00:00.880 --> '), text.slice(0, 80));
+    assert.ok(text.includes('And after the end of communism in 1989, many of the democracies'), text.slice(0, 200));
+    assert.strictEqual(outcome.cues, 2);
     assert.strictEqual(outcome.model, 'qwen3-asr-1.7b');
     assert.strictEqual(outcome.language, 'en');
-    assert.strictEqual(outcome.durationSec, 12.5);
+    assert.strictEqual(outcome.durationSec, QWEN_RESPONSE.duration_s);
     assert.ok(!fs.existsSync(`${outVtt}.${process.pid}.part`), 'no temp file left beside the VTT');
     assert.ok(!fs.readdirSync(require('os').tmpdir()).some((n) => n.startsWith('bookforge-crucible-asr-') && (() => {
       try { return fs.readdirSync(path.join(require('os').tmpdir(), n)).includes('transcript.json'); } catch { return false; }

@@ -283,6 +283,67 @@ export interface VttCue {
 }
 
 /**
+ * A segment's words AS THE TEXT PRINTS THEM, leading space and punctuation included.
+ *
+ * Qwen3-ASR's `words` are the aligner's tokens: letters and digits only, no space
+ * and no punctuation (measured on the Mac 2026-11-05: 410 words, zero of either). The
+ * sentence lives in `segment.text`. Whisper's words carried both, and the cue rule
+ * below reads them there, so on Qwen every cue came out as
+ * "Andaftertheendofcommunism…" and ended only at the 240-character cap. A fake that
+ * served Whisper-shaped words passed; only a real server showed it.
+ *
+ * So each token is found in the text, in order, comparing letters and digits only,
+ * and takes the text from where the last one stopped through its own trailing
+ * punctuation. Nothing printed is dropped: text a token skipped over rides with it,
+ * and whatever follows the last token joins that one. A token not in the text at
+ * all keeps its own spelling. Words that already carry whitespace are Whisper's and
+ * pass through unchanged.
+ */
+export function wordsAsPrinted(segment: TranscriptSegment): readonly TranscriptWord[] {
+  const words = segment.words ?? [];
+  if (words.length === 0 || words.some((w) => /\s/.test(w.word))) return words;
+  const isToken = /[\p{L}\p{N}]/u;
+  // The text's letters and digits, lower-cased, each unit mapped to where it ends in the text.
+  let folded = '';
+  const endAt: number[] = [];
+  for (let i = 0; i < segment.text.length;) {
+    const ch = String.fromCodePoint(segment.text.codePointAt(i) as number);
+    i += ch.length;
+    if (!isToken.test(ch)) continue;
+    const low = ch.toLowerCase();
+    folded += low;
+    for (let u = 0; u < low.length; u++) endAt.push(i);
+  }
+  const out: TranscriptWord[] = [];
+  let cursor = 0;
+  let printed = 0;
+  for (const w of words) {
+    const key = [...w.word].filter((c) => isToken.test(c)).join('').toLowerCase();
+    const at = key === '' ? -1 : folded.indexOf(key, cursor);
+    if (at < 0) {
+      out.push({ ...w, word: ` ${w.word}` });
+      continue;
+    }
+    cursor = at + key.length;
+    let end = endAt[cursor - 1];
+    // Its own trailing punctuation, up to the next space or the next token.
+    while (end < segment.text.length) {
+      const ch = String.fromCodePoint(segment.text.codePointAt(end) as number);
+      if (/\s/.test(ch) || isToken.test(ch)) break;
+      end += ch.length;
+    }
+    out.push({ ...w, word: segment.text.slice(printed, end) });
+    printed = end;
+  }
+  const rest = segment.text.slice(printed);
+  if (rest.trim() !== '' && out.length > 0) {
+    const last = out[out.length - 1];
+    out[out.length - 1] = { ...last, word: last.word + rest };
+  }
+  return out;
+}
+
+/**
  * The model's segments → sentence cues, the way the deleted
  * `transcribe_audiobook.py`'s `group_segments` did it: words accumulate into a cue that ends at a word
  * carrying sentence-final punctuation or once the cue holds 240 characters; a
@@ -312,7 +373,7 @@ export function groupTranscriptCues(segments: readonly TranscriptSegment[]): Vtt
   };
   for (const segment of segments) {
     if (segment.words !== undefined && segment.words.length > 0) {
-      for (const w of segment.words) {
+      for (const w of wordsAsPrinted(segment)) {
         if (start === null) start = w.start;
         end = w.end;
         words.push(w.word);

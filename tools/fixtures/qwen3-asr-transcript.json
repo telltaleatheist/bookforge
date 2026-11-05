@@ -1,0 +1,244 @@
+{
+ "_fixture": "Captured verbatim from qwen3-asr-1.7b on crucible 2.0.34 (mlx-darwin), 2026-11-05, with segments trimmed to the first two sentences. word = letters and digits only; the sentence is only in segment.text. Do not hand-edit to Whisper shape: a fake that did is how unspaced cues reached main.",
+ "model": "qwen3-asr-1.7b",
+ "revision": "7278e1e70fe206f11671096ffdd38061171dd6e5",
+ "hf_repo": "Qwen/Qwen3-ASR-1.7B",
+ "engine": "qwen-asr",
+ "dtype": "bfloat16",
+ "aligner": {
+  "model": "qwen3-aligner",
+  "revision": "c7cbfc2048c462b0d63a45797104fc9db3ad62b7",
+  "hf_repo": "Qwen/Qwen3-ForcedAligner-0.6B"
+ },
+ "language": "en",
+ "language_probability": 1,
+ "language_requested": "en",
+ "vad_filter": false,
+ "word_timestamps": true,
+ "initial_prompt": null,
+ "context": null,
+ "duration_s": 17.64,
+ "piece_max_s": 30,
+ "overlap_s": 0.4,
+ "pieces": 8,
+ "silent_pieces": 0,
+ "redecoded": [],
+ "context_echo": [],
+ "decode_loop": [],
+ "speech_only": false,
+ "speech": null,
+ "removed": null,
+ "segments": [
+  {
+   "start": 0,
+   "end": 16.64,
+   "text": "And after the end of communism in 1989, many of the democracies founded at these junctures failed in circumstances that, in some important respects, resemble our own. History can familiarize, and it can mourn.",
+   "words": [
+    {
+     "start": 0.88,
+     "end": 1.04,
+     "word": "And",
+     "probability": null
+    },
+    {
+     "start": 1.04,
+     "end": 1.36,
+     "word": "after",
+     "probability": null
+    },
+    {
+     "start": 1.36,
+     "end": 1.52,
+     "word": "the",
+     "probability": null
+    },
+    {
+     "start": 1.6,
+     "end": 1.84,
+     "word": "end",
+     "probability": null
+    },
+    {
+     "start": 1.84,
+     "end": 2,
+     "word": "of",
+     "probability": null
+    },
+    {
+     "start": 2,
+     "end": 2.64,
+     "word": "communism",
+     "probability": null
+    },
+    {
+     "start": 2.64,
+     "end": 2.8,
+     "word": "in",
+     "probability": null
+    },
+    {
+     "start": 2.8,
+     "end": 2.8,
+     "word": "1989",
+     "probability": null
+    },
+    {
+     "start": 3.68,
+     "end": 4,
+     "word": "many",
+     "probability": null
+    },
+    {
+     "start": 5.44,
+     "end": 5.52,
+     "word": "of",
+     "probability": null
+    },
+    {
+     "start": 5.52,
+     "end": 5.6,
+     "word": "the",
+     "probability": null
+    },
+    {
+     "start": 5.6,
+     "end": 6.4,
+     "word": "democracies",
+     "probability": null
+    },
+    {
+     "start": 6.4,
+     "end": 6.8,
+     "word": "founded",
+     "probability": null
+    },
+    {
+     "start": 6.8,
+     "end": 6.96,
+     "word": "at",
+     "probability": null
+    },
+    {
+     "start": 6.96,
+     "end": 7.2,
+     "word": "these",
+     "probability": null
+    },
+    {
+     "start": 7.2,
+     "end": 7.76,
+     "word": "junctures",
+     "probability": null
+    },
+    {
+     "start": 7.76,
+     "end": 8.24,
+     "word": "failed",
+     "probability": null
+    },
+    {
+     "start": 8.56,
+     "end": 8.64,
+     "word": "in",
+     "probability": null
+    },
+    {
+     "start": 8.64,
+     "end": 9.84,
+     "word": "circumstances",
+     "probability": null
+    },
+    {
+     "start": 9.92,
+     "end": 10,
+     "word": "that",
+     "probability": null
+    },
+    {
+     "start": 10,
+     "end": 10.16,
+     "word": "in",
+     "probability": null
+    },
+    {
+     "start": 10.16,
+     "end": 10.4,
+     "word": "some",
+     "probability": null
+    },
+    {
+     "start": 10.4,
+     "end": 10.96,
+     "word": "important",
+     "probability": null
+    },
+    {
+     "start": 10.96,
+     "end": 11.52,
+     "word": "respects",
+     "probability": null
+    },
+    {
+     "start": 11.52,
+     "end": 11.92,
+     "word": "resemble",
+     "probability": null
+    },
+    {
+     "start": 11.92,
+     "end": 12.24,
+     "word": "our",
+     "probability": null
+    },
+    {
+     "start": 12.24,
+     "end": 12.56,
+     "word": "own",
+     "probability": null
+    },
+    {
+     "start": 13.92,
+     "end": 14.48,
+     "word": "History",
+     "probability": null
+    },
+    {
+     "start": 14.48,
+     "end": 14.64,
+     "word": "can",
+     "probability": null
+    },
+    {
+     "start": 14.64,
+     "end": 15.52,
+     "word": "familiarize",
+     "probability": null
+    },
+    {
+     "start": 15.76,
+     "end": 15.92,
+     "word": "and",
+     "probability": null
+    },
+    {
+     "start": 15.92,
+     "end": 16,
+     "word": "it",
+     "probability": null
+    },
+    {
+     "start": 16,
+     "end": 16.24,
+     "word": "can",
+     "probability": null
+    },
+    {
+     "start": 16.24,
+     "end": 16.64,
+     "word": "mourn",
+     "probability": null
+    }
+   ]
+  }
+ ]
+}
