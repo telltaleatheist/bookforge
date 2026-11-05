@@ -315,16 +315,15 @@ async function venueDoor() {
       assert.ok(fs.existsSync(path.join(dir, 'alignment.json')), 'the GPU half is on disk (R6)');
       // THE OWED DOOR WAS BUILT (2026-09-18). Until then this returned
       // `narratorDoorOwedMessage` and the book was sealed with an estimated
-      // transcript; now the run continues into `narrator align --alignment`,
-      // which is `align.ts`'s shape (a). This box has no tools env, so what
-      // comes back is NARRATOR'S OWN refusal about the interpreter — and that
-      // is the assertion, because it proves the handoff happened rather than
-      // the old gap being reworded.
-      assert.strictEqual(result.success, false, 'no coverage.json here: this box has no tools env');
+      // transcript; now the run continues into the measurement over its items,
+      // which is `align.ts`'s shape (a). This session's state is not a real one,
+      // so what comes back is the session reader's own refusal, and that is the
+      // assertion: it proves the handoff happened.
+      assert.strictEqual(result.success, false, 'no coverage.json: the session state here is a stand-in');
       assert.ok(!/narrator has no door/.test(result.error),
         `the owed-door gap is closed, not reworded: ${result.error}`);
-      assert.ok(/tools Python environment is not installed/.test(result.error),
-        `expected narrator's own refusal, got: ${result.error}`);
+      assert.ok(/session-state.json is version None/.test(result.error),
+        `expected the session reader's refusal, got: ${result.error}`);
       // The card's work is a FILE, so a retry reads it rather than re-aligning.
       assert.strictEqual(result.alignmentPath, path.join(dir, 'alignment.json'));
       assert.deepStrictEqual(result.venue, { where: 'crucible', server, origin: 'decided here', because: 'the first enabled server that answered' });

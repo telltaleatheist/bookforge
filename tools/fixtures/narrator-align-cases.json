@@ -1,0 +1,329 @@
+{
+"ascii": [
+[
+"plain",
+"{\n  \"a\": \"plain\",\n  \"b\": 1.0,\n  \"c\": []\n}"
+],
+[
+"caf\u00e9",
+"{\n  \"a\": \"caf\\u00e9\",\n  \"b\": 1.0,\n  \"c\": []\n}"
+],
+[
+"del\u007fete",
+"{\n  \"a\": \"del\\u007fete\",\n  \"b\": 1.0,\n  \"c\": []\n}"
+],
+[
+"tab\tnew\nline",
+"{\n  \"a\": \"tab\\tnew\\nline\",\n  \"b\": 1.0,\n  \"c\": []\n}"
+],
+[
+"quote\"back\\",
+"{\n  \"a\": \"quote\\\"back\\\\\",\n  \"b\": 1.0,\n  \"c\": []\n}"
+],
+[
+"\ud83d\ude00 emoji",
+"{\n  \"a\": \"\\ud83d\\ude00 emoji\",\n  \"b\": 1.0,\n  \"c\": []\n}"
+],
+[
+"\u0001ctl",
+"{\n  \"a\": \"\\u0001ctl\",\n  \"b\": 1.0,\n  \"c\": []\n}"
+]
+],
+"report": "{\n  \"version\": 1,\n  \"engine\": \"higgs-v3\",\n  \"backend\": \"qwen3\",\n  \"scoreSource\": \"derived\",\n  \"language\": \"en\",\n  \"sessionId\": \"align-keeper\",\n  \"processDir\": \"<S>\",\n  \"chunksInManifest\": 26,\n  \"audited\": true,\n  \"policy\": {\n    \"minWordScore\": 0.4,\n    \"minAlignedRatio\": 0.9,\n    \"minUncredibleWords\": 3,\n    \"droppedRunWords\": 6,\n    \"maxDroppedSpans\": 0,\n    \"minInsertedAudioSeconds\": 1.0,\n    \"maxInsertedSpeechFraction\": 0.35\n  },\n  \"summary\": {\n    \"chunksAligned\": 14,\n    \"chunksSkipped\": 1,\n    \"chunksFailed\": 5,\n    \"failedIndices\": [\n      17,\n      18,\n      19,\n      20,\n      21\n    ],\n    \"alignedRatioMin\": 0.0,\n    \"alignedRatioMedian\": 0.875,\n    \"secondsPerChunkMedian\": 0,\n    \"secondsPerChunkMax\": 0,\n    \"errors\": 13,\n    \"errorIndices\": [\n      5,\n      6,\n      7,\n      8,\n      9,\n      10,\n      11,\n      12,\n      14,\n      16,\n      17,\n      18,\n      24\n    ]\n  },\n  \"chunks\": [\n    {\n      \"index\": 0,\n      \"wordsTotal\": 2,\n      \"wordsCredible\": 2,\n      \"alignedRatio\": 1.0,\n      \"durationSeconds\": 1.0,\n      \"elapsedSeconds\": 0,\n      \"failed\": false,\n      \"reasons\": [],\n      \"scoreSource\": \"derived\",\n      \"droppedText\": [],\n      \"insertedAudio\": []\n    },\n    {\n      \"index\": 1,\n      \"wordsTotal\": 10,\n      \"wordsCredible\": 10,\n      \"alignedRatio\": 1.0,\n      \"durationSeconds\": 2.8,\n      \"elapsedSeconds\": 0,\n      \"failed\": false,\n      \"reasons\": [],\n      \"scoreSource\": \"derived\",\n      \"droppedText\": [],\n      \"insertedAudio\": []\n    },\n    {\n      \"index\": 2,\n      \"wordsTotal\": 7,\n      \"wordsCredible\": 6,\n      \"alignedRatio\": 0.8571,\n      \"durationSeconds\": 3.0,\n      \"elapsedSeconds\": 0,\n      \"failed\": false,\n      \"reasons\": [],\n      \"scoreSource\": \"derived\",\n      \"droppedText\": [],\n      \"insertedAudio\": []\n    },\n    {\n      \"index\": 3,\n      \"wordsTotal\": 6,\n      \"wordsCredible\": 5,\n      \"alignedRatio\": 0.8333,\n      \"durationSeconds\": 2.0,\n      \"elapsedSeconds\": 0,\n      \"failed\": false,\n      \"reasons\": [],\n      \"scoreSource\": \"derived\",\n      \"droppedText\": [],\n      \"insertedAudio\": []\n    },\n    {\n      \"index\": 13,\n      \"wordsTotal\": 5,\n      \"wordsCredible\": 5,\n      \"alignedRatio\": 1.0,\n      \"durationSeconds\": 1.5,\n      \"elapsedSeconds\": 0,\n      \"failed\": false,\n      \"reasons\": [],\n      \"scoreSource\": \"derived\",\n      \"droppedText\": [],\n      \"insertedAudio\": []\n    },\n    {\n      \"index\": 15,\n      \"wordsTotal\": 5,\n      \"wordsCredible\": 4,\n      \"alignedRatio\": 0.8,\n      \"durationSeconds\": 1.5,\n      \"elapsedSeconds\": 0,\n      \"failed\": false,\n      \"reasons\": [],\n      \"scoreSource\": \"derived\",\n      \"droppedText\": [],\n      \"insertedAudio\": []\n    },\n    {\n      \"index\": 17,\n      \"wordsTotal\": 8,\n      \"wordsCredible\": 7,\n      \"alignedRatio\": 0.875,\n      \"durationSeconds\": 3.0,\n      \"elapsedSeconds\": 0,\n      \"failed\": true,\n      \"reasons\": [\n        \"1.20s of interior audio with no text at 1.20s (100% speech)\"\n      ],\n      \"scoreSource\": \"derived\",\n      \"droppedText\": [],\n      \"insertedAudio\": [\n        {\n          \"start\": 1.2,\n          \"end\": 2.4,\n          \"seconds\": 1.2,\n          \"speechFraction\": 1.0,\n          \"where\": \"interior\"\n        }\n      ]\n    },\n    {\n      \"index\": 18,\n      \"wordsTotal\": 7,\n      \"wordsCredible\": 4,\n      \"alignedRatio\": 0.5714,\n      \"durationSeconds\": 2.0,\n      \"elapsedSeconds\": 0,\n      \"failed\": true,\n      \"reasons\": [\n        \"aligned ratio 0.571 is below 0.90 (3 of 7 words not credible)\",\n        \"1.00s of tail audio with no text at 1.00s (100% speech)\"\n      ],\n      \"scoreSource\": \"derived\",\n      \"droppedText\": [],\n      \"insertedAudio\": [\n        {\n          \"start\": 1.0,\n          \"end\": 2.0,\n          \"seconds\": 1.0,\n          \"speechFraction\": 1.0,\n          \"where\": \"tail\"\n        }\n      ]\n    },\n    {\n      \"index\": 19,\n      \"wordsTotal\": 12,\n      \"wordsCredible\": 5,\n      \"alignedRatio\": 0.4167,\n      \"durationSeconds\": 3.5,\n      \"elapsedSeconds\": 0,\n      \"failed\": true,\n      \"reasons\": [\n        \"aligned ratio 0.417 is below 0.90 (7 of 12 words not credible)\",\n        \"1 dropped-text span(s), worst 7 word(s) from word 3: 'four five six seven eight nine ten'\"\n      ],\n      \"scoreSource\": \"derived\",\n      \"droppedText\": [\n        {\n          \"firstWord\": 3,\n          \"lastWord\": 9,\n          \"words\": 7,\n          \"text\": \"four five six seven eight nine ten\",\n          \"audioStart\": 1.1,\n          \"audioEnd\": 2.9,\n          \"worstScore\": 0.0\n        }\n      ],\n      \"insertedAudio\": []\n    },\n    {\n      \"index\": 20,\n      \"wordsTotal\": 7,\n      \"wordsCredible\": 7,\n      \"alignedRatio\": 1.0,\n      \"durationSeconds\": 8.0,\n      \"elapsedSeconds\": 0,\n      \"failed\": true,\n      \"reasons\": [\n        \"1.50s of head audio with no text at 0.00s (100% speech)\",\n        \"2.00s of interior audio with no text at 2.50s (100% speech)\",\n        \"2.50s of tail audio with no text at 5.50s (100% speech)\"\n      ],\n      \"scoreSource\": \"derived\",\n      \"droppedText\": [],\n      \"insertedAudio\": [\n        {\n          \"start\": 0.0,\n          \"end\": 1.5,\n          \"seconds\": 1.5,\n          \"speechFraction\": 1.0,\n          \"where\": \"head\"\n        },\n        {\n          \"start\": 2.5,\n          \"end\": 4.5,\n          \"seconds\": 2.0,\n          \"speechFraction\": 1.0,\n          \"where\": \"interior\"\n        },\n        {\n          \"start\": 5.5,\n          \"end\": 8.0,\n          \"seconds\": 2.5,\n          \"speechFraction\": 1.0,\n          \"where\": \"tail\"\n        }\n      ]\n    },\n    {\n      \"index\": 21,\n      \"wordsTotal\": 12,\n      \"wordsCredible\": 0,\n      \"alignedRatio\": 0.0,\n      \"durationSeconds\": 6.0,\n      \"elapsedSeconds\": 0,\n      \"failed\": true,\n      \"reasons\": [\n        \"aligned ratio 0.000 is below 0.90 (12 of 12 words not credible)\",\n        \"1 dropped-text span(s), worst 12 word(s) from word 0: 'One two three four five six seven eight nine ten eleven twelve.'\",\n        \"3.00s of head audio with no text at 0.00s (100% speech)\",\n        \"2.94s of tail audio with no text at 3.06s (100% speech)\"\n      ],\n      \"scoreSource\": \"derived\",\n      \"droppedText\": [\n        {\n          \"firstWord\": 0,\n          \"lastWord\": 11,\n          \"words\": 12,\n          \"text\": \"One two three four five six seven eight nine ten eleven twelve.\",\n          \"audioStart\": 3.0,\n          \"audioEnd\": 3.06,\n          \"worstScore\": 0.0\n        }\n      ],\n      \"insertedAudio\": [\n        {\n          \"start\": 0.0,\n          \"end\": 3.0,\n          \"seconds\": 3.0,\n          \"speechFraction\": 1.0,\n          \"where\": \"head\"\n        },\n        {\n          \"start\": 3.06,\n          \"end\": 6.0,\n          \"seconds\": 2.94,\n          \"speechFraction\": 1.0,\n          \"where\": \"tail\"\n        }\n      ]\n    },\n    {\n      \"index\": 22,\n      \"wordsTotal\": 5,\n      \"wordsCredible\": 5,\n      \"alignedRatio\": 1.0,\n      \"durationSeconds\": 3.0,\n      \"elapsedSeconds\": 0,\n      \"failed\": false,\n      \"reasons\": [],\n      \"scoreSource\": \"derived\",\n      \"droppedText\": [],\n      \"insertedAudio\": []\n    },\n    {\n      \"index\": 23,\n      \"wordsTotal\": 5,\n      \"wordsCredible\": 4,\n      \"alignedRatio\": 0.8,\n      \"durationSeconds\": 2.0,\n      \"elapsedSeconds\": 0,\n      \"failed\": false,\n      \"reasons\": [],\n      \"scoreSource\": \"derived\",\n      \"droppedText\": [],\n      \"insertedAudio\": []\n    },\n    {\n      \"index\": 25,\n      \"wordsTotal\": 5,\n      \"wordsCredible\": 5,\n      \"alignedRatio\": 1.0,\n      \"durationSeconds\": 1.5,\n      \"elapsedSeconds\": 0,\n      \"failed\": false,\n      \"reasons\": [],\n      \"scoreSource\": \"derived\",\n      \"droppedText\": [],\n      \"insertedAudio\": []\n    }\n  ],\n  \"errors\": [\n    {\n      \"index\": 5,\n      \"stage\": \"align\",\n      \"error\": \"the alignment document carries no chunk 5, so this chunk was never placed against its audio.\"\n    },\n    {\n      \"index\": 6,\n      \"stage\": \"align\",\n      \"error\": \"<S>/chapters/sentences/6.flac: backend 'qwen3' returned text that is not the text it was given: 18 normalized character(s) against our 19. Ours starts 'onetwothreefourfive', its 'onetwothreefoursix'.\"\n    },\n    {\n      \"index\": 7,\n      \"stage\": \"align\",\n      \"error\": \"chunk 7 of the alignment document carries no items list, so there is nothing to place its words with.\"\n    },\n    {\n      \"index\": 8,\n      \"stage\": \"align\",\n      \"error\": \"<S>/chapters/sentences/8.flac: backend 'qwen3' returned no items for 5 word(s). The model was given audio it could not place this text in at all.\"\n    },\n    {\n      \"index\": 9,\n      \"stage\": \"align\",\n      \"error\": \"chunk 9: item 2 is missing end; a precomputed item carries all three\"\n    },\n    {\n      \"index\": 10,\n      \"stage\": \"align\",\n      \"error\": \"chunk 10: item 1 ('two') has times that are not numbers: could not convert string to float: 'soon'\"\n    },\n    {\n      \"index\": 11,\n      \"stage\": \"align\",\n      \"error\": \"chunk 11: item 1 ('two') has times that are not numbers: float() argument must be a string or a real number, not 'NoneType'\"\n    },\n    {\n      \"index\": 12,\n      \"stage\": \"align\",\n      \"error\": \"chunk 12: item 0 is int, not an object with text/start/end\"\n    },\n    {\n      \"index\": 14,\n      \"stage\": \"align\",\n      \"error\": \"<S>/chapters/sentences/14.flac: backend 'qwen3' placed word 1 ('two') ending 0.000s before it starts 0.300s\"\n    },\n    {\n      \"index\": 16,\n      \"stage\": \"align\",\n      \"error\": \"<S>/chapters/sentences/16.flac: backend 'qwen3' returned end=inf for word 3 ('four')\"\n    },\n    {\n      \"index\": 17,\n      \"stage\": \"gate\",\n      \"error\": \"gate/order: chunk 17 sentence 1 has words the aligner placed out of order, so its cue is not a reading of this sentence\"\n    },\n    {\n      \"index\": 18,\n      \"stage\": \"cues\",\n      \"error\": \"chunk 18: sentence 1 ('Nothing here is.') has no placed word, so its cue would be invented rather than measured\"\n    },\n    {\n      \"index\": 24,\n      \"stage\": \"align\",\n      \"error\": \"<S>/chapters/sentences/24.flac: backend 'qwen3' returned text that is not the text it was given: 10 normalized character(s) against our 10. Ours starts 'caf/u00e9isopen', its 'cafeisopen'.\"\n    }\n  ],\n  \"skipped\": [\n    {\n      \"index\": 4,\n      \"reason\": \"no spoken text\",\n      \"text\": \"[break]\"\n    }\n  ]\n}\n",
+"vtt": "WEBVTT\n\nNOTE quality monotonic=1 cps=12.0 pace_ratio=1.00 boundary_silence=0.00 worst=1.00 source=derived\n\n00:00:00.000 --> 00:00:01.000\n<b>Chapter One.</b>\n\nNOTE quality monotonic=1 cps=19.2 pace_ratio=1.00 boundary_silence=0.00 worst=1.00 source=derived\n\n00:00:01.200 --> 00:00:02.605\nThe first sentence is here.\n\nNOTE quality monotonic=1 cps=18.6 pace_ratio=0.97 boundary_silence=0.41 worst=0.96 source=derived\n\n00:00:02.605 --> 00:00:04.000\nThe second one follows it.\n\nNOTE quality monotonic=1 cps=17.7 pace_ratio=1.18 boundary_silence=0.00 worst=1.00 source=derived\n\n00:00:04.200 --> 00:00:05.950\nStra\u00dfe \u03a3\u038a\u03a3\u03a5\u03a6\u039f\u03a3 ends\u2014well, here.\n\nNOTE quality monotonic=1 cps=10.4 pace_ratio=0.69 boundary_silence=0.00 worst=0.00 source=derived\n\n00:00:05.950 --> 00:00:07.200\nCaf\u00e9 d\u00e9j\u00e0 vu.\n\nNOTE quality monotonic=1 cps=12.3 pace_ratio=0.91 boundary_silence=0.00 worst=1.00 source=derived\n\n00:00:07.400 --> 00:00:08.050\nA dash \u2014\n\nNOTE quality monotonic=1 cps=13.3 pace_ratio=0.99 boundary_silence=0.00 worst=1.00 source=derived\n\n00:00:08.050 --> 00:00:09.400\nstands alone here.\n\nNOTE estimated chunk 5 - the aligner did not place this chunk, so these cue times are proportional to sentence length over the chunk's real audio.\n\n00:00:13.300 --> 00:00:14.800\nOne two three four five.\n\nNOTE estimated chunk 6 - the aligner did not place this chunk, so these cue times are proportional to sentence length over the chunk's real audio.\n\n00:00:15.000 --> 00:00:16.500\nOne two three four five.\n\nNOTE estimated chunk 7 - the aligner did not place this chunk, so these cue times are proportional to sentence length over the chunk's real audio.\n\n00:00:16.700 --> 00:00:18.200\nOne two three four five.\n\nNOTE estimated chunk 8 - the aligner did not place this chunk, so these cue times are proportional to sentence length over the chunk's real audio.\n\n00:00:18.400 --> 00:00:19.900\nOne two three four five.\n\nNOTE estimated chunk 9 - the aligner did not place this chunk, so these cue times are proportional to sentence length over the chunk's real audio.\n\n00:00:20.100 --> 00:00:21.600\nOne two three four five.\n\nNOTE estimated chunk 10 - the aligner did not place this chunk, so these cue times are proportional to sentence length over the chunk's real audio.\n\n00:00:21.800 --> 00:00:23.300\nOne two three four five.\n\nNOTE estimated chunk 11 - the aligner did not place this chunk, so these cue times are proportional to sentence length over the chunk's real audio.\n\n00:00:23.500 --> 00:00:25.000\nOne two three four five.\n\nNOTE estimated chunk 12 - the aligner did not place this chunk, so these cue times are proportional to sentence length over the chunk's real audio.\n\n00:00:25.200 --> 00:00:26.700\nOne two three four five.\n\nNOTE quality monotonic=1 cps=16.0 pace_ratio=1.00 boundary_silence=0.00 worst=1.00 source=derived\n\n00:00:26.900 --> 00:00:28.400\nOne two three four five.\n\nNOTE estimated chunk 14 - the aligner did not place this chunk, so these cue times are proportional to sentence length over the chunk's real audio.\n\n00:00:28.600 --> 00:00:30.100\nOne two three four five.\n\nNOTE quality monotonic=1 cps=16.0 pace_ratio=1.00 boundary_silence=0.00 worst=1.00 source=derived\n\n00:00:33.300 --> 00:00:34.800\nOne two three four five.\n\nNOTE estimated chunk 16 - the aligner did not place this chunk, so these cue times are proportional to sentence length over the chunk's real audio.\n\n00:00:35.000 --> 00:00:36.500\nOne two three four five.\n\nNOTE estimated chunk 17 - the aligner did not place this chunk, so these cue times are proportional to sentence length over the chunk's real audio.\n\n00:00:36.700 --> 00:00:38.075\nForward words go here.\n\n00:00:38.075 --> 00:00:39.700\nThen these backward words.\n\nNOTE estimated chunk 18 - the aligner did not place this chunk, so these cue times are proportional to sentence length over the chunk's real audio.\n\n00:00:39.900 --> 00:00:40.986\nThis one is placed.\n\n00:00:40.986 --> 00:00:41.900\nNothing here is.\n\nNOTE quality monotonic=1 cps=18.0 pace_ratio=1.00 boundary_silence=0.00 worst=0.00 source=derived\n\n00:00:42.100 --> 00:00:45.600\nOne two three four five six seven eight nine ten eleven twelve.\n\nNOTE quality monotonic=1 cps=4.4 pace_ratio=1.00 boundary_silence=0.00 worst=0.48 source=derived\n\n00:00:45.800 --> 00:00:53.800\nOnly these few words are said here.\n\nNOTE quality monotonic=1 cps=10.5 pace_ratio=1.00 boundary_silence=0.00 worst=0.00 source=derived\n\n00:00:54.000 --> 00:01:00.000\nOne two three four five six seven eight nine ten eleven twelve.\n\nNOTE quality monotonic=1 cps=10.0 pace_ratio=0.94 boundary_silence=0.00 worst=1.00 source=derived\n\n00:01:00.200 --> 00:01:01.200\nWell said.\n\nNOTE quality monotonic=1 cps=10.5 pace_ratio=0.98 boundary_silence=0.00 worst=1.00 source=derived\n\n00:01:01.200 --> 00:01:03.200\nBookkeeper went home.\n\nNOTE quality monotonic=1 cps=12.6 pace_ratio=0.87 boundary_silence=0.00 worst=1.00 source=derived\n\n00:01:03.400 --> 00:01:04.350\n<b>Chapter Two.</b>\n\nNOTE quality monotonic=1 cps=15.2 pace_ratio=1.05 boundary_silence=0.00 worst=0.24 source=derived\n\n00:01:04.350 --> 00:01:05.400\nA subtitle here.\n\nNOTE estimated chunk 24 - the aligner did not place this chunk, so these cue times are proportional to sentence length over the chunk's real audio.\n\n00:01:05.600 --> 00:01:07.100\nCaf\u00e9 is open.\n\nNOTE quality monotonic=1 cps=16.0 pace_ratio=1.00 boundary_silence=0.00 worst=1.00 source=derived\n\n00:01:07.300 --> 00:01:08.800\nOne two three four five.\n",
+"log": [
+"[ASSEMBLE] Inter-chunk gaps from <S>/chapters/sentences/gaps.json",
+"[ASSEMBLE] 3/3 chapter titles resolved from the TOC by document identity; 0 from the chapter's own first chunk",
+"[ASSEMBLE] No cover: the epub carried none and none is staged at <S>/cover.jpg. This audiobook ships without artwork.",
+"[align] 25 chunk(s) to align, 1 marker-only chunk(s) skipped; engine higgs-v3, backend qwen3, device cpu, scores derived, audited=True",
+"[align] reading items from a qwen3-forced-aligner alignment made on cuda \u2014 24/25 chunk(s) covered; the audio is decoded here for silences and scores",
+"[align] aligned 10/25 chunk(s)",
+"[align] aligned 20/25 chunk(s)",
+"[align] aligned 25/25 chunk(s)",
+"[align] chunk 5 FAILED at align: the alignment document carries no chunk 5, so this chunk was never placed against its audio.",
+"[align] chunk 5: 1 ESTIMATED cue(s) over its 1.50s of audio",
+"[align] chunk 6 FAILED at align: <S>/chapters/sentences/6.flac: backend 'qwen3' returned text that is not the text it was given: 18 normalized character(s) against our 19. Ours starts 'onetwothreefourfive', its 'onetwothreefoursix'.",
+"[align] chunk 6: 1 ESTIMATED cue(s) over its 1.50s of audio",
+"[align] chunk 7 FAILED at align: chunk 7 of the alignment document carries no items list, so there is nothing to place its words with.",
+"[align] chunk 7: 1 ESTIMATED cue(s) over its 1.50s of audio",
+"[align] chunk 8 FAILED at align: <S>/chapters/sentences/8.flac: backend 'qwen3' returned no items for 5 word(s). The model was given audio it could not place this text in at all.",
+"[align] chunk 8: 1 ESTIMATED cue(s) over its 1.50s of audio",
+"[align] chunk 9 FAILED at align: chunk 9: item 2 is missing end; a precomputed item carries all three",
+"[align] chunk 9: 1 ESTIMATED cue(s) over its 1.50s of audio",
+"[align] chunk 10 FAILED at align: chunk 10: item 1 ('two') has times that are not numbers: could not convert string to float: 'soon'",
+"[align] chunk 10: 1 ESTIMATED cue(s) over its 1.50s of audio",
+"[align] chunk 11 FAILED at align: chunk 11: item 1 ('two') has times that are not numbers: float() argument must be a string or a real number, not 'NoneType'",
+"[align] chunk 11: 1 ESTIMATED cue(s) over its 1.50s of audio",
+"[align] chunk 12 FAILED at align: chunk 12: item 0 is int, not an object with text/start/end",
+"[align] chunk 12: 1 ESTIMATED cue(s) over its 1.50s of audio",
+"[align] chunk 14 FAILED at align: <S>/chapters/sentences/14.flac: backend 'qwen3' placed word 1 ('two') ending 0.000s before it starts 0.300s",
+"[align] chunk 14: 1 ESTIMATED cue(s) over its 1.50s of audio",
+"[align] chunk 16 FAILED at align: <S>/chapters/sentences/16.flac: backend 'qwen3' returned end=inf for word 3 ('four')",
+"[align] chunk 16: 1 ESTIMATED cue(s) over its 1.50s of audio",
+"[align] chunk 17 FAILED at gate: gate/order: chunk 17 sentence 1 has words the aligner placed out of order, so its cue is not a reading of this sentence",
+"[align] chunk 17: 2 ESTIMATED cue(s) over its 3.00s of audio",
+"[align] chunk 18 FAILED at cues: chunk 18: sentence 1 ('Nothing here is.') has no placed word, so its cue would be invented rather than measured",
+"[align] chunk 18: 2 ESTIMATED cue(s) over its 2.00s of audio",
+"[align] chunk 24 FAILED at align: <S>/chapters/sentences/24.flac: backend 'qwen3' returned text that is not the text it was given: 10 normalized character(s) against our 10. Ours starts 'caf\u00e9isopen', its 'cafeisopen'.",
+"[align] chunk 24: 1 ESTIMATED cue(s) over its 1.50s of audio",
+"[align] 14 aligned, 5 failed coverage, 13 error(s); median ratio 0.875, median Xs/chunk",
+"[align] 15 of 32 sentence cue(s) are ESTIMATES - expected text over the chunk's real audio, marked in the VTT",
+"[align] 32 sentence cue(s) -> <O>/out.vtt",
+"[align] coverage report -> <O>/report.json",
+"[align] 14 chunk(s) aligned, 5 failed coverage, 13 could not be placed",
+"[align] retake: 5,6,7,8,9,10,11,12,14,16,17,18,19,20,21,24"
+],
+"refused": {
+"no engine": "Error: this alignment document names no `engine`, so there is no way to know how its items are scored. It is not an artifact this build can read.",
+"an unknown engine": "Error: this alignment document was made by 'whisperx-2', which this build has no scoring rule for (known: qwen3-forced-aligner). Reading it under another backend's rules would label its scores wrongly.",
+"no chunks list": "Error: this alignment document has no `chunks` list, so it holds no items to align with.",
+"a chunk with no index": "Error: chunk 0 of this alignment document carries no `index`, so there is no saying which of the session's chunks it is about.",
+"an index that is not a number": "Error: chunk 0 of this alignment document has index 'first', which is not a number.",
+"the same chunk twice": "Error: this alignment document holds chunk 0 twice; there is no saying which of the two the audio was placed against.",
+"about another session": "Error: this alignment document holds 1 chunk(s) and not one of them is a chunk of this session (it wants 0..25). It was made for a different render.",
+"an array": "Error: --alignment <S>/refused-an-array.json holds a list, not an alignment document."
+},
+"silences": [
+{
+"name": "shorter than a window",
+"size": 319,
+"runs": [],
+"want": []
+},
+{
+"name": "all quiet",
+"size": 16000,
+"runs": [],
+"want": [
+[
+0.0,
+1.0
+]
+]
+},
+{
+"name": "all loud",
+"size": 16000,
+"runs": [
+[
+0,
+16000,
+0.5
+]
+],
+"want": []
+},
+{
+"name": "a pause inside",
+"size": 32000,
+"runs": [
+[
+0,
+8000,
+0.5
+],
+[
+12000,
+32000,
+0.5
+]
+],
+"want": [
+[
+0.5,
+0.76
+]
+]
+},
+{
+"name": "a pause too short",
+"size": 32000,
+"runs": [
+[
+0,
+8000,
+0.5
+],
+[
+9000,
+32000,
+0.5
+]
+],
+"want": []
+},
+{
+"name": "at the limit of the threshold",
+"size": 16000,
+"runs": [
+[
+0,
+16000,
+0.00562
+]
+],
+"want": [
+[
+0.0,
+1.0
+]
+]
+},
+{
+"name": "just over the threshold",
+"size": 16000,
+"runs": [
+[
+0,
+16000,
+0.00563
+]
+],
+"want": []
+},
+{
+"name": "quiet tail",
+"size": 20011,
+"runs": [
+[
+0,
+10000,
+0.1
+]
+],
+"want": [
+[
+0.63,
+1.2506875
+]
+]
+}
+],
+"folds": [
+[
+"Stra\u00dfe",
+"strasse",
+"strasse"
+],
+[
+"\u03a3\u038a\u03a3\u03a5\u03a6\u039f\u03a3",
+"\u03c3\u03af\u03c3\u03c5\u03c6\u03bf\u03c3",
+"\u03c3\u03af\u03c3\u03c5\u03c6\u03bf\u03c3"
+],
+[
+"\u03c2",
+"\u03c3",
+"\u03c3"
+],
+[
+"\ufb01",
+"fi",
+"fi"
+],
+[
+"\u0130",
+"i\u0307",
+"i"
+],
+[
+"\u0149",
+"\u02bcn",
+"\u02bcn"
+],
+[
+"\u01c4",
+"\u01c6",
+"\u01c6"
+],
+[
+"\u00b5",
+"\u03bc",
+"\u03bc"
+],
+[
+"K",
+"k",
+"k"
+],
+[
+"\u00c5",
+"\u00e5",
+"\u00e5"
+],
+[
+"\u2167",
+"\u2177",
+"\u2177"
+],
+[
+"\u2460",
+"\u2460",
+"\u2460"
+],
+[
+"\u0663",
+"\u0663",
+"\u0663"
+],
+[
+"\u4e09",
+"\u4e09",
+"\u4e09"
+],
+[
+"\u2014",
+"\u2014",
+""
+],
+[
+"don't",
+"don't",
+"dont"
+],
+[
+"cafe\u0301",
+"cafe\u0301",
+"cafe"
+],
+[
+"\u13a0",
+"\u13a0",
+"\u13a0"
+],
+[
+"\uab70",
+"\u13a0",
+"\u13a0"
+],
+[
+"\ud801\udc00",
+"\ud801\udc28",
+"\ud801\udc28"
+],
+[
+"\u1e9e",
+"ss",
+"ss"
+],
+[
+"\u017f",
+"s",
+"s"
+],
+[
+"\u00bd",
+"\u00bd",
+"\u00bd"
+],
+[
+"_x_",
+"_x_",
+"x"
+],
+[
+" a b ",
+" a b ",
+"ab"
+]
+]
+}

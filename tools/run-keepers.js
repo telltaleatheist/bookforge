@@ -229,6 +229,7 @@ const SUITES = [
   'test-narrator-text',
   // TypeScript assembly: the Python's captured answers, and whole books through the worker door.
   'test-narrator-assemble',
+  'test-narrator-align',
   // THE BAND PREP IS HANDED (2026-11-04, docs/REORG-PLAN.md B1). The venue's
   // band becomes a floor and a cap in ONE place — `higgsPrepBudget` — and rides
   // the prep argv, so narrator's prep imports no model code to learn it. The

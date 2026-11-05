@@ -37,8 +37,7 @@
 // the snapshot does not cover. The e2a snapshot had five; `assembly-reassembly`
 // is the sixth, and it is in a different FILE, which is exactly why it was the
 // door that kept its `--tts_engine xtts` literal for a year after the render path
-// stopped needing one. `align` is the seventh, in a file of its own again, and it
-// is the one door narrator refuses a Higgs book for the absence of.
+// stopped needing one. `align` was the seventh until it moved to a worker thread (2026-11-05).
 const ANCHORS = [
   { name: 'prep', file: 'electron/parallel-tts-bridge.ts', start: "const args = [\n    '--headless',\n    '--ebook', ebookArgPath," },
   // TWO DOORS LEFT THIS LIST ON 2026-09-15, and their absence is the point:
@@ -50,14 +49,6 @@ const ANCHORS = [
   // rather than a refactor.
   { name: 'assembly-render', file: 'electron/parallel-tts-bridge.ts', start: "const args = [\n    '--headless',\n    // Only include --ebook" },
   { name: 'assembly-reassembly', file: 'electron/reassembly-bridge.ts', start: "const appArgs = [\n      '--headless',\n      '--ebook', epubPath," },
-  // FIVE NOW (seven until the local renderer went). The align door is the
-  // coverage guard's own spawn, and it is the
-  // one door in narrator's OWN spelling (dashes-and-words) rather than e2a's —
-  // which is exactly why it is worth pinning: a flag renamed on either side
-  // silently stops producing the report, and the only symptom is an assembly
-  // refusing a Higgs book for a reason that reads like the report was never
-  // asked for.
-  { name: 'align', file: 'electron/coverage-align-job.ts', start: "const args = [\n    'align',\n    '--session-dir', config.processDir," },
   // resume and list are single-line arrays inside their spawn call, so they are
   // pinned by the plan half rather than by a literal walk.
 ];
@@ -249,11 +240,6 @@ if (require.main === module) {
              '--sentences_dir', 'C:\\lib\\sent', '--device', 'CUDA'],
     assembly: ['--headless', '--session', 'abc', '--session_dir', WIN_SESSION,
                '--output_dir', 'C:\\out', '--assemble_only', '--no_split'],
-    // narrator's own spelling: the measurement over a Crucible's alignment, which
-    // runs natively and loads no model, so the capture shows it never crosses.
-    align: ['align', '--session-dir', WIN_SESSION,
-            '--report', WIN_SESSION + '\\coverage.json',
-            '--language', 'en', '--alignment', WIN_SESSION + '\\alignment.json'],
   };
 
   // engine: undefined means the tools env (assembly); 'orpheus' is
@@ -271,7 +257,6 @@ if (require.main === module) {
   const DOORS = [
     { name: 'prep', engine: 'higgs', phase: 'prep' },
     { name: 'assembly', engine: undefined, phase: 'assembly' },
-    { name: 'align', engine: undefined, phase: 'align' },
   ];
 
   /**

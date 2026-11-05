@@ -92,6 +92,13 @@ export function pyJsonDumps(value: unknown, depth = 0): string {
   return `{\n${entries.map(([key, item]) => `${inner}${jsonString(key)}: ${pyJsonDumps(item, depth + 1)}`).join(',\n')}\n${outer}}`;
 }
 
+/** `json.dumps`'s default escaping, applied to {@link pyJsonDumps}: past ASCII and DEL, one UTF-16 unit at a time. */
+export const pyJsonDumpsAscii = (value: unknown): string => pyJsonDumps(value)
+  .replace(/[^\n -~]/g, (ch) => `\\u${ch.charCodeAt(0).toString(16).padStart(4, '0')}`);
+
+/** `round(value, digits)`: correctly rounded on the exact binary value, which `toFixed` is not. */
+export const pyRound = (value: number, digits: number): number => Number(pyFixed(value, digits));
+
 /** `repr()` for what the refusal sentences quote: a string, a number, a bool, None. */
 export function pyRepr(value: unknown): string {
   if (value === null || value === undefined) return 'None';

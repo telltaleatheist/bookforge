@@ -58,12 +58,13 @@
  */
 
 import { BrowserWindow } from 'electron';
-import { execSync, spawn, type ChildProcess } from 'child_process';
+import { execSync, type ChildProcess } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 
 import { publishBridgeEvent } from './bridge-events';
-import { buildNarratorSpawn } from './narrator-spawn';
+import { startAlignment, type AlignRequest } from './narrator/align/align-door';
+import { getFfmpegPath } from './tool-paths';
 import { COVERAGE_REPORT_NAME } from '../shared/queue/coverage-policy';
 // The ONE resolver both assembly doors read the gap through — see the config
 // field below, and CLAUDE.md §"Three seconds between chapters".
@@ -376,53 +377,31 @@ function sendProgress(
  */
 
 /**
- * THE ALIGN COMMAND LINE, AS A VALUE.
+ * THE ALIGN REQUEST, AS A VALUE, so `tools/test-chapter-gap.js` can read the gap without an aligner.
  *
- * Split out of `runCoverageAlign` so the argv can be READ without spawning an
- * aligner, a GPU or an Electron app — `tools/test-chapter-gap.js` asserts the
- * chapter gap on it, and `tools/narrator-argv-extract.js` pins the whole literal.
- * Nothing else changed when it moved: the array below is the array that was
- * inside the spawn, and `runCoverageAlign` is its only caller in the app.
+ * THE ASSEMBLY'S CHAPTER GAP: these cues are sealed into the m4b, and a measurement is never
+ * rewritten. This door left it out from 2026-09-09 to 2026-09-11, and every book assembled in
+ * between drifts by the gap at every chapter boundary. ONE RESOLVER, THE ASSEMBLY'S: absent is the
+ * house default, not zero; a nonsense gap is refused by name.
  */
-export function coverageAlignArgs(
+export function coverageAlignRequest(
   config: CoverageAlignConfig,
-  spawnInputs: {
-    /** Where the report goes — always `coverageReportPath(config.processDir)`. */
+  inputs: {
+    /** Always `coverageReportPath(config.processDir)`. */
     reportPath: string;
-    /**
-     * A CRUCIBLE `align` ARTIFACT — the model's items per chunk, already
-     * computed on a server's card. This run loads no model: `--device`,
-     * `--python`, `--workers` and `--backend` were all about loading and running
-     * one, and narrator refuses the first two by name beside `--alignment`. The
-     * BACKEND is the document's own, because its items are scored under the
-     * rules of the model that made them (`backend_for_alignment`,
-     * python/narrator/align/run.py). The local-model argv that carried them is
-     * deleted with the local aligner (2026-11-04, docs/REORG-PLAN.md B2).
-     */
+    /** A Crucible `align` artifact: the model's items per chunk, computed on a server's card. */
     alignmentPath: string;
+    ffmpeg: string;
   },
-): string[] {
-  const { reportPath } = spawnInputs;
-  const args = [
-    'align',
-    '--session-dir', config.processDir,
-    '--report', reportPath,
-    '--language', config.language,
-    '--alignment', spawnInputs.alignmentPath,
-    /*
-     * THE ASSEMBLY'S CHAPTER GAP, ON THE ALIGNER'S COMMAND LINE.
-     *
-     * CLAUDE.md §"Three seconds between chapters": *"`narrator align` takes the
-     * SAME `--chapter-gap` and must be given the same value — it writes a
-     * measurement and assembly never rewrites one."* This door did not, from the
-     * gap's first day (efe021a2, 2026-09-09) until 2026-09-11, and every book
-     * assembled in between carries a sentence transcript that drifts by the gap
-     * at every chapter boundary. ONE RESOLVER, THE ASSEMBLY'S: absent is the
-     * house default, not zero; a nonsense gap is refused by name.
-     */
-    '--chapter-gap', String(resolveChapterGap(config.chapterGap)),
-  ];
-  return args;
+): AlignRequest {
+  return {
+    processDir: config.processDir,
+    alignmentPath: inputs.alignmentPath,
+    reportPath: inputs.reportPath,
+    language: config.language,
+    chapterGap: resolveChapterGap(config.chapterGap),
+    ffmpeg: inputs.ffmpeg,
+  };
 }
 
 /**
@@ -825,9 +804,8 @@ async function runCoverageAlignOnCrucible(
 }
 
 /**
- * NARRATOR'S HALF OVER ITEMS A SERVER ALREADY PRODUCED — `narrator align
- * --alignment` in the tools env, which is native on every platform. No model is
- * imported and no torch device is picked; the GPU half was a Crucible `align`
+ * NARRATOR'S HALF OVER ITEMS A SERVER ALREADY PRODUCED, in a worker thread
+ * (`narrator/align/`). No model is loaded; the GPU half was a Crucible `align`
  * job (`runCoverageAlignOnCrucible`). The local model arm that used to share
  * this function (qwen env, `--backend qwen3`, `--device`) is deleted
  * (2026-11-04, docs/REORG-PLAN.md B2).
@@ -851,7 +829,7 @@ export async function runCoverageAlignLocally(
   /*
    * THE RULER, RESOLVED AND SAID OUT LOUD BEFORE ANYTHING SPAWNS.
    *
-   * Resolved HERE as well as inside `coverageAlignArgs` (the resolver is pure, so
+   * Resolved HERE as well as inside `coverageAlignRequest` (the resolver is pure, so
    * both calls are the same number) for two reasons: the log line names which
    * gap this transcript is being measured for — the fact this door was missing
    * until 2026-09-11 — and a nonsense gap is refused as a RESULT rather than as a
@@ -873,19 +851,8 @@ export async function runCoverageAlignLocally(
       config.chapterGap === undefined ? 'the house default — this caller stated none' : 'stated'
     }) — the transcript is measured for an assembly at that gap.`,
   );
-  const args = coverageAlignArgs(config, { reportPath, alignmentPath: fromAlignment.alignmentPath });
-
-  const plan = buildNarratorSpawn({
-    // No engine: this is a tools-env door. `PHASE_ENGINE.align` is 'refused',
-    // so naming one here would be a compile-time-legal, runtime-refused mistake.
-    phase: 'align',
-    args,
-    // Native everywhere: the tools env reads a document, and loads no model.
-    envExtras: {},
-    // No cwdHint: narrator reads cwd for nothing, every path in this argv is
-    // absolute, and the default (userData) always exists and is always writable.
-  });
-  console.log('[COVERAGE-ALIGN] →', plan.describe());
+  const request = coverageAlignRequest(config, { reportPath, alignmentPath: fromAlignment.alignmentPath, ffmpeg: getFfmpegPath() });
+  console.log(`[COVERAGE-ALIGN] → measuring ${config.processDir} from ${fromAlignment.alignmentPath}`);
 
   const startedAt = Date.now();
   /*
@@ -902,12 +869,7 @@ export async function runCoverageAlignLocally(
   });
 
   return new Promise<CoverageAlignResult>((resolve) => {
-    const child = spawn(plan.command, plan.args, {
-      cwd: plan.cwd,
-      env: plan.env,
-      shell: false,
-      windowsHide: true,
-    });
+    const child = startAlignment(request);
     activeAligns.set(stepId, child);
 
     let total = 0;
@@ -920,8 +882,7 @@ export async function runCoverageAlignLocally(
      *   [align] 133 chunk(s) to align, 4 marker-only chunk(s) skipped; …
      *   [align] aligned 40/133 chunk(s)
      *
-     * The second is a stated contract on narrator's side (`align/run.py`'s
-     * `_progress_reporter`), not an incidental log line, because a bar wired to
+     * The second is a stated contract on the measuring side (`narrator/align/run.ts`), not an incidental log line, because a bar wired to
      * an incidental log line stops the day somebody rewords it.
      */
     const TOTAL_RE = /\[align\] (\d+) chunk\(s\) to align/;
@@ -1053,10 +1014,7 @@ export async function runCoverageAlignLocally(
 /**
  * Stop an in-flight alignment, whole tree.
  *
- * The tree matters: `narrator align --python` spawns the whisperx interpreter as
- * a CHILD, and signalling only the parent leaves that one holding the model —
- * the same orphan `cancelEpubAlign` was written for after two align trees
- * survived a queue cancel and had to be taskkill'd by hand.
+ * The worker kills its own ffmpegs, so it has no pid here and takes the `kill` below.
  */
 export function stopCoverageAlign(stepId: string): void {
   // A Crucible job: the abort sends DELETE /v1/jobs/{id} and the stream runs

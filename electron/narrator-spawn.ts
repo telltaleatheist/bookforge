@@ -127,7 +127,7 @@ export type NarratorEngineId = 'orpheus' | 'higgs';
  * so the module selection lives in ONE table rather than being invented twice.
  */
 export type NarratorPhase =
-  'serve' | 'prep' | 'worker' | 'align' | 'assembly';
+  'serve' | 'prep' | 'worker' | 'assembly';
 
 export interface NarratorSpawnRequest {
   /**
@@ -150,10 +150,9 @@ export interface NarratorSpawnRequest {
    *
    * ── Why an engine-agnostic phase ever crosses into the guest ──────────────
    *
-   * `align` is 'refused' in `PHASE_ENGINE` and native everywhere, because on
-   * Windows the session it reads has normally been copied OUT of WSL first. The
-   * qwen3 aligner broke that assumption in one place and only one: the
-   * post-render alignment runs BEFORE that copy (the session is still on ext4,
+   * The tools phases are native everywhere, because on Windows the session they
+   * read has normally been copied OUT of WSL first. The qwen3 aligner broke that
+   * assumption in one place and only one: the post-render alignment ran BEFORE that copy (the session is still on ext4,
    * the render just wrote it there) and the env that held `qwen-asr` on this PC
    * was a WSL env (that local aligner is deleted, docs/REORG-PLAN.md B2, and no
    * door passes this any more; it goes with the spawn layer). The guest cannot
@@ -309,21 +308,11 @@ export function bookforgeEngineForNarrator(narratorEngine: string): NarratorEngi
  * flags (`--prep_only`, `--assemble_only`, `--resume_session`, `--list_sessions`);
  * the worker is `compat.worker`, which is the same routing with `--worker_mode`
  * implied. See narrator's compat/FLAGS.md, "The two doors".
- *
- * `align` IS THE ONE PHASE THAT IS NOT A COMPAT DOOR. There is nothing to be
- * compatible with: e2a never had a forced aligner, so `compat/app.py` has no flag
- * that would reach one, and inventing an `--align_only` to route through a
- * translation layer written for ebook2audiobook's spelling would be a compat
- * door for a command e2a never had. It goes to narrator's own CLI, in narrator's
- * own dashes-and-words spelling (`narrator align --session-dir …`), which is the
- * interface `align/README.md` documents and the one an operator pastes by hand
- * out of the assembly's refusal.
  */
 const PHASE_MODULE: Record<NarratorPhase, string> = {
   serve: 'narrator.serve',
   worker: 'narrator.compat.worker',
   prep: 'narrator.compat.app',
-  align: 'narrator.cli',
   assembly: 'narrator.compat.app',
 };
 
@@ -343,28 +332,11 @@ const PHASE_MODULE: Record<NarratorPhase, string> = {
  * fact of Phase 1, not a design, and Phase 3 of the e2a removal moves both to the
  * tools env unconditionally. Modelling that as 'optional' says the truth now and
  * makes the Phase 3 edit one call site rather than a rule change.
- *
- * ── `align` is 'refused' too, and it is worth saying why ────────────────────
- *
- * It is ABOUT an engine — which engine rendered the session is what decides
- * whether it runs at all — but it does not RUN one. The alignment happens in the
- * aligner's own env, named on the command line as `--python`, and narrator's own
- * half of it (manifest, spans, sentence cues, the report) is pure stdlib plus the
- * tools env. Naming an engine here would route the alignment into a 6 GB vLLM
- * environment, or into the Mac's `narrator-mlx` env, neither of which has an
- * aligner in it.
- *
- * IT CAN STILL CROSS INTO THE GUEST, and `wslCondaEnv` is how (2026-09-08). The
- * post-render alignment runs BEFORE `normalizeWslSessionToWindows` copies the
- * session out — that is the whole point of where it sits — so on this PC the
- * audio is on ext4 and the qwen3 env is a WSL env. The caller states that env by
- * NAME; the phase still names no engine.
  */
 const PHASE_ENGINE: Record<NarratorPhase, 'required' | 'refused' | 'optional'> = {
   serve: 'required',
   prep: 'required',
   worker: 'required',
-  align: 'refused',
   assembly: 'optional',
 };
 

@@ -55,12 +55,12 @@ const { DEFAULT_CHAPTER_GAP, MAX_CHAPTER_GAP, resolveChapterGap } = require(GAP_
 const { buildNarrationSteps } = require(RUN_MODULE);
 
 /*
- * THE ALIGN DOOR'S ARGV, AND THE GATE'S ARITHMETIC.
+ * THE ALIGN DOOR'S REQUEST, AND THE GATE'S ARITHMETIC.
  *
  * `coverage-align-job.js` imports `electron` for `app.getPath` and nothing on
  * this path calls it, so one stub is enough — the same stub `cli/coverage-align.js`
- * and the argv snapshot use. `coverageAlignArgs` is pure given its inputs, which
- * is exactly why it was split out of `runCoverageAlign`: the flag can be read
+ * and the argv snapshot use. `coverageAlignRequest` is pure given its inputs, which
+ * is exactly why it was split out of `runCoverageAlign`: the gap can be read
  * here without an aligner, a GPU or an app.
  */
 const Module = require('module');
@@ -76,7 +76,7 @@ require.cache['electron-stub'] = {
     BrowserWindow: class {},
   },
 };
-const { coverageAlignArgs } = require(path.join(REPO, 'dist', 'electron', 'coverage-align-job.js'));
+const { coverageAlignRequest } = require(path.join(REPO, 'dist', 'electron', 'coverage-align-job.js'));
 const {
   TRANSCRIPT_LENGTH_TOLERANCE, transcriptLengthVerdict,
 } = require(path.join(REPO, 'dist', 'shared', 'audio', 'transcript-length.js'));
@@ -198,59 +198,48 @@ test('an upstream enhancement pass does NOT take the gap off the assembly', () =
 const SPAWN_INPUTS = {
   reportPath: 'E:/lib/projects/Twain-a1b2/tts/hash/coverage.json',
   alignmentPath: 'E:/lib/projects/Twain-a1b2/tts/hash/alignment.json',
+  ffmpeg: 'ffmpeg',
 };
-const alignArgv = (over = {}) => coverageAlignArgs(
+const alignGap = (over = {}) => coverageAlignRequest(
   Object.assign({
     processDir: 'E:/lib/projects/Twain-a1b2/tts/hash',
     language: 'en',
     device: 'gpu',
   }, over),
   SPAWN_INPUTS,
-);
+).chapterGap;
 /** The value that follows a flag in an argv, or undefined when the flag is absent. */
 const valueOf = (argv, flag) => {
   const at = argv.indexOf(flag);
   return at < 0 ? undefined : argv[at + 1];
 };
 
-test('the align door carries --chapter-gap at all', () => {
-  assert.ok(alignArgv().includes('--chapter-gap'),
-    'narrator align writes the transcript assembly seals; without this flag it writes it at '
-    + 'gap 0 and the cues drift by the gap at every chapter boundary');
-});
-
-test("--chapter-gap is narrator's spelling on the align subcommand", () => {
-  const argv = alignArgv();
-  assert.ok(!argv.includes('--chapter_gap'),
-    'the underscore spelling is the assembly compat door\'s; align would refuse it');
-});
-
 test('ABSENT resolves to the house default on the aligner too, not to zero', () => {
-  assert.strictEqual(valueOf(alignArgv(), '--chapter-gap'), String(DEFAULT_CHAPTER_GAP));
-  assert.strictEqual(valueOf(alignArgv(), '--chapter-gap'), '3',
+  assert.strictEqual(alignGap(), DEFAULT_CHAPTER_GAP);
+  assert.strictEqual(alignGap(), 3,
     'a caller that states nothing gets the gap its assembly will get');
 });
 
 test('an explicit zero reaches the aligner as zero', () => {
-  assert.strictEqual(valueOf(alignArgv({ chapterGap: 0 }), '--chapter-gap'), '0',
+  assert.strictEqual(alignGap({ chapterGap: 0 }), 0,
     'the butt-joined book must be measured butt-joined');
 });
 
 test('a stated gap reaches the aligner as stated', () => {
-  assert.strictEqual(valueOf(alignArgv({ chapterGap: 4.5 }), '--chapter-gap'), '4.5');
+  assert.strictEqual(alignGap({ chapterGap: 4.5 }), 4.5);
 });
 
 test('the aligner and the assembler resolve the SAME number', () => {
   for (const stated of [undefined, 0, 1.5, 4.5, MAX_CHAPTER_GAP]) {
     assert.strictEqual(
-      valueOf(alignArgv({ chapterGap: stated }), '--chapter-gap'),
-      String(resolveChapterGap(stated)),
+      alignGap({ chapterGap: stated }),
+      resolveChapterGap(stated),
       `the align door disagrees with the resolver at ${stated}`);
   }
 });
 
 test('a nonsense gap is refused by the align door, never measured', () => {
-  assert.throws(() => alignArgv({ chapterGap: -1 }), /chapterGap/);
+  assert.throws(() => alignGap({ chapterGap: -1 }), /chapterGap/);
 });
 
 // ── the gate that catches a transcript on the wrong ruler ───────────────────

@@ -53,6 +53,10 @@
  * RVC passes (REORG B2): the `--sentences_dir` spread that named their output went
  * with them. The regeneration masked that spread and required equality first.
  *
+ * 2026-11-05, `align` LEFT THE SNAPSHOT (REORG B6 step 6): the measurement runs in a worker thread
+ * (`electron/narrator/align/`), so there is no command line to pin. `tools/test-narrator-align.js`
+ * and `tools/test-chapter-gap.js` hold what this pinned.
+ *
  * 2026-11-04, `align` ONLY, for the deletion of the local aligner (REORG B2). Its
  * literal lost `--backend`, `--device`, `--python` and `--workers` and gained
  * `--alignment`: the argv that already ran for every routed row, now the only
@@ -335,7 +339,6 @@ const REQUIRED = {
    *                  boundary, and assembly never rewrites a measurement. Absent
    *                  from this door from 2026-09-09 to 2026-09-11, silently.
    */
-  align: ['--session-dir', '--report', '--language', '--alignment', '--chapter-gap'],
 };
 for (const [door, must] of Object.entries(REQUIRED)) {
   check(`${door}: carries ${must.join(' ')}`, () => {
@@ -360,29 +363,12 @@ check('no door sends a flag narrator files under IGNORE as XTTS-only', () => {
   }
 });
 
-check('the align door names no engine at all', () => {
-  // It is ABOUT an engine — which one rendered the session is what decides
-  // whether it runs — but it does not RUN one, and narrator's `align` subcommand
-  // has no --tts_engine to take: `align_session` reads the engine off the
-  // manifest. A door that started sending one would be naming a value nothing
-  // reads, which is the shape the DEAD-flag check above exists to catch.
-  assert.ok(!flags.align.includes("'--tts_engine'"),
-    'the align door sends --tts_engine; narrator align has no such flag');
-  assert.ok(!flags.align.includes("'--assemble_only'"),
-    'the align door sends a compat-door flag; it spawns narrator.cli, not compat.app');
-});
-
 check('no door names an ENGINE_NEAR_MISS', () => {
   // 'higgs', 'higgs-v2', 'higgs-v2-scaffold', 'higgs_v3' are refused by name on
   // the routes that resolve an engine. Every door builds its value through
   // narratorEngineId(), which is the only place the mapping lives.
   //
-  // ALIGN IS EXEMPT AND ONLY ALIGN, by the check above rather than by a skip
-  // here: it is asserted to carry NO --tts_engine, so the "passes when the thing
-  // it tests is absent" shape this loop was rewritten to avoid cannot come back
-  // through the exemption.
   for (const [door, argv] of Object.entries(flags)) {
-    if (door === 'align') continue;
     const at = argv.indexOf("'--tts_engine',");
     // NOT `continue`. A door with no --tts_engine at all would have skipped this
     // check silently — the "passes when the thing it tests is absent" shape. The
@@ -423,14 +409,14 @@ for (const arm of ARMS) {
      */
     assert.strictEqual(envOf(doors.prep).NARRATOR_ENGINE, 'higgs-v3',
       'prep does not name its engine');
-    for (const d of ['assembly', 'align']) {
+    for (const d of ['assembly']) {
       assert.ok(!('NARRATOR_ENGINE' in envOf(doors[d])),
         `${d} names an engine — it is engine-agnostic and runs in the tools env`);
     }
   });
 
   check(`${arm}: the tools doors are NEVER routed through WSL`, () => {
-    for (const d of ['assembly', 'align']) {
+    for (const d of ['assembly']) {
       assert.strictEqual(doors[d].viaWsl, false,
         `${d} was routed through WSL; assembly reads a session normalised onto `
         + 'Windows and the 9p mount would dominate the job');
@@ -439,12 +425,7 @@ for (const arm of ARMS) {
 
   check(`${arm}: every door reaches a narrator module, never a script path`, () => {
     for (const [name, row] of Object.entries(doors)) {
-      // `narrator.cli` is the align door and only the align door: e2a never had
-      // a forced aligner, so there is no compat flag that would reach one, and
-      // routing narrator's own subcommand through a translation layer written
-      // for ebook2audiobook's spelling would be a compat door for a command e2a
-      // never had.
-      assert.match(runOf(row), /-m narrator\.(compat\.(app|worker)|serve|cli)\b/,
+      assert.match(runOf(row), /-m narrator\.(compat\.(app|worker)|serve)\b/,
         `${name} does not spawn a narrator module: ${runOf(row)}`);
       assert.ok(!/\.py(?:'|"|\s|$)/.test(runOf(row)),
         `${name} still names a python SCRIPT: ${runOf(row)}`);

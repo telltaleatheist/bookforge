@@ -10,7 +10,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 export class FfmpegError extends Error {
-  constructor(message: string) {
+  /** The tail of what the child said, for a caller with its own sentence to put it in. */
+  constructor(message: string, readonly stderr = '') {
     super(message);
     this.name = 'FfmpegError';
   }
@@ -75,7 +76,7 @@ export function run(cmd: readonly string[], what: string, options: RunOptions = 
       if (options.signal?.aborted) {
         reject(new AssemblyCancelled());
       } else if (code !== 0) {
-        reject(new FfmpegError(`${what} failed (exit ${code}):\n  command: ${cmd.join(' ')}\n  stderr: ${stderr.trim()}`));
+        reject(new FfmpegError(`${what} failed (exit ${code}):\n  command: ${cmd.join(' ')}\n  stderr: ${stderr.trim()}`, stderr.trim()));
       } else {
         resolve();
       }

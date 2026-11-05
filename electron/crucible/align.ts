@@ -105,7 +105,7 @@ export const CRUCIBLE_ALIGNER_BY_BOOKFORGE_BACKEND: Readonly<Record<string, stri
   qwen3: 'qwen3-aligner',
 };
 
-/** The backend every app door passes. `coverageAlignArgs` spells the same word. */
+/** The backend every app door passes. */
 export const BOOKFORGE_ALIGN_BACKEND = 'qwen3';
 
 /** A backend, a session or a document this door cannot work with, named. */

@@ -8,14 +8,11 @@ import { setMaxListeners } from 'events';
 import * as path from 'path';
 import { parentPort, workerData } from 'worker_threads';
 
-import { pyJsonDumps } from '../py-compat';
+import { pyJsonDumpsAscii } from '../py-compat';
 import { buildManifest } from '../session/session-v1';
 import { AssemblyCancelled } from './ffmpeg-tools';
 import { assemble } from './run';
 import type { AssemblyRequest } from './assemble-door';
-
-/** `json.dumps`'s default, which escapes everything past ASCII, one UTF-16 unit at a time. */
-const asciiJson = (value: unknown): string => pyJsonDumps(value).replace(/[^\x00-\x7f]/g, (ch) => `\\u${ch.charCodeAt(0).toString(16).padStart(4, '0')}`);
 
 const port = parentPort!;
 const request = workerData as AssemblyRequest;
@@ -43,7 +40,7 @@ const log = (line: string): void => port.postMessage({ stream: 'stdout', text: `
       log,
       signal: abort.signal,
     });
-    log(asciiJson({
+    log(pyJsonDumpsAscii({
       success: true,
       session_id: manifest.source.sessionId,
       output_files: [result.m4bPath],
@@ -58,7 +55,7 @@ const log = (line: string): void => port.postMessage({ stream: 'stdout', text: `
     const message = err instanceof Error ? err.message : String(err);
     log(`assemble_audiobook() Exception: ${message}`);
     port.postMessage({ stream: 'stderr', text: `${err instanceof Error ? err.stack : message}\n` });
-    log(asciiJson({ success: false, error: message }));
+    log(pyJsonDumpsAscii({ success: false, error: message }));
     port.postMessage({ exit: 1 });
   }
 })();
