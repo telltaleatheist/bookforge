@@ -107,3 +107,5 @@ all four servers; BookForge merges.
 (For Owen, B6 step 7, lead accepted two small differences) Prep's cover file comes from sharp rather than Pillow: different bytes, and a CMYK cover comes out sRGB. Chinese words in the TOC titles of English-tagged books read `Bei Jing` rather than `beijing`, since porting pypinyin means carrying its dictionaries; the library run will count the books affected.
 
 (Assignment change, 2026-11-05) foundry pc 1 takes B3-B5, starting on branch `feat/foundry-core-adopt` in a BookForge worktree while bookforge pc 2 finishes B6. Nothing from it lands on main until Owen has tested Foundry and the lead accepts it, and the window copy stays re-runnable until then.
+
+(Owen to decide, B4) BookForge's Foundry window already uses BookForge's dark palette, and B4 makes BookForge's theme files the single source. It stays dark even when BookForge is set to light or system. Following BookForge's light/dark choice needs one new channel that also makes native menus, dialogs and scrollbars follow BookForge rather than the OS, plus a light-mode visual pass on a window designed dark-first. Not built unless Owen asks.
